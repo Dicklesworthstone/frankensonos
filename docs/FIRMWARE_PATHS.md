@@ -5309,3 +5309,16 @@ rather than returning.
 Six frames is therefore the hard limit of this approach:
 `read → 0x10406944 → 0x10406a90 → 0x10413f80 → 0x10414368 → 0x10414a00 →
 0x10411c6c`, all parsers, and the response writer is above the blocking frame.
+
+#### Bypassing the 405 block still returns 405
+
+Patched `0x10410624` to `b 0x1041067c` (skip the whole 405 block, jump to the
+allowed arm), rebooted, POSTed: **still 405**.
+
+So the 405 emitter at `0x10410630` is not the one that answers this request. That
+matches the cold breakpoint at `0x10410608` — the whole function is off-path.
+
+The 405 therefore comes from a second, unlocated emitter. Everything statically
+identified in this session (route machinery, gate, dispatcher, method switch,
+emitter) is off-path for `/audio_tap`; only the six-frame `finish` chain is real,
+and it blocks before the writer.
