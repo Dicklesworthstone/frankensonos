@@ -156,8 +156,9 @@ beyond `finish`. Bypassing the located method gate still returns 405, so the emi
 is off-path too and a second, unlocated emitter answers - every static address found so far is
 off-path for this request. The guest's HTTP stack has at least two parallel implementations and the
 one answering `/audio_tap` is the one never found; the next session should break on the listening
-accept loop and follow one connection end to end from `accept`, which reaches the real stack by
-construction. The
+accept loop and follow one connection end to end from `accept` - except that `accept` is **cold too**
+(`31bc513`). A server that answers must accept, so the stub, not the addresses, is the limit: it is
+missing executions outright. Replacing the debugger is the prerequisite for any further progress. The
 recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
 different emulator for the guest - a working debugger would finish the route question in a handful of
 runs. Corrections that got it there - `pkill -x`, tmux not
