@@ -5162,3 +5162,21 @@ thread, so the caller cannot be reached by `finish`.
 To get the consumer, break on the *read* of `obj+0x200` instead of finishing: the
 field is written at `0x104187ac`, so a watchpoint on that address (or a breakpoint
 where it is loaded) reaches the consumer without depending on the return.
+
+#### rwatch unsupported; consumer candidates found statically
+
+`rwatch` fails ("Expression cannot be implemented with read/access watchpoint") on
+this stub. Static search for readers of `obj+0x200` (`lwz ...,512(rX)`) gives a
+cluster in `0x10417xxx`:
+
+```
+104171a8: lwz 11, 512(3)     ; block = obj+0x200
+104171b0: lwz 0, 8(11)       ; block+8
+104171bc: cmpw 7, 0, 30      ; compare against something
+```
+
+So the allocated block carries a value at `+8` that is compared — that is the
+consumer shape, and `0x104171a8` is the best candidate.
+
+Also `0x1041722c`, `0x10417270`, `0x104172dc` read the same field in the same
+region.
