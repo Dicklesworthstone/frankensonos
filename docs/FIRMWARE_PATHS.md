@@ -4496,3 +4496,18 @@ is the first time a request-time hit has been obtained on a syscall anchor, and 
 confirms the diagnosis: the stub was racing TCG threads.
 
 Keep `thread=single` in the boot script from here.
+
+#### scheduler-locking on: first request traps, second still does not
+
+`set scheduler-locking on` with `thread=single`: the **first** request traps
+reliably, the second still goes silent.
+
+So the reliable recipe is one request per run, using the first hit as the anchor:
+
+1. boot (`thread=single`), attach, `set scheduler-locking on`
+2. arm `break *0x10546ea8`
+3. `continue`, wait for the startup hit, `continue` again
+4. send exactly one request, wait for the hit
+5. `finish`, read the saved LR at `r1+8`, repeat upward
+
+One hop per run is enough; the chain can be assembled across runs.
