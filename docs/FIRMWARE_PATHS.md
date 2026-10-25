@@ -5391,3 +5391,49 @@ stub accepts `Z0` and then does not deliver the trap.
 
 That is the final, protocol-level confirmation. The gdbstub in qemu 10.2.1 on
 mac99/ppc accepts breakpoints and never fires them for this guest.
+
+### Handoff: what a yto (qemu 8.2) run needs
+
+Beyond `/tmp/startgdb.sh` itself:
+
+**Files that must exist on yto**
+- `/tmp/ppcboot/boot/vmlinux-3.2.0-4-powerpc` — the PPC kernel (copied).
+- `/tmp/ppcrun5.gz` — the current initrd. It already contains the patched
+  `anacapad` (`/dev/chk` patch at `0x7710`; the `0x36b3cc`/`0x36b9a8`/`0x28d22c`/
+  `0x410620` experiments are in it too), `GCModel 20` + `VERSION S16` in
+  `conf/anacapa.conf`, and the edited `htdocs/xml/device_description.xml`.
+- `/tmp/ppcx/` — the unpacked tree, if the initrd is to be rebuilt.
+
+**Tools**
+- `gdb-multiarch` (or `powerpc-linux-gnu-gdb`) — `gdb` alone will not know
+  `powerpc:common`.
+- `nc` for the monitor socket; `sshpass` + `nc` inside the guest for requests.
+
+**Script edits for yto**
+- `pkill -x qemu-system-ppc` (never `-f`; `-f` matches the ssh command line).
+- Keep `-S`, `-accel tcg,thread=single,one-insn-per-tb=on`, the monitor socket and
+  `-serial file:`. Drop `-icount` (no benefit) and `-d in_asm` (produces nothing).
+- `-M mac99,via=pmu -cpu G4 -m 512` is the working machine; do not change it.
+
+**gdb sequence that works (one request per run)**
+```
+set architecture powerpc:common
+target remote :12345
+set scheduler-locking on
+break *0x105464a0          # accept — the anchor under test
+continue                   # wait for the startup hit, then continue again
+# send exactly one request, wait for the Breakpoint line
+finish                     # then x/4wx $r1 and read r1+4 for the saved LR
+```
+Never queue commands while the target is `Continuing`; wait for the prompt.
+
+**Guest-side setup for a request**
+```
+touch /tmp/device_unlocked_flag
+cd /tmp/hls && python -m SimpleHTTPServer 8099 &     # payload playlist
+printf 'GET /audio_tap?tap=test HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n' | nc 127.0.0.1 1400
+```
+
+**Success criterion for the retry:** `accept` traps more than once. If it does,
+the lane resumes and the next step is the six-frame `finish` chain past
+`0x10411c6c`.
