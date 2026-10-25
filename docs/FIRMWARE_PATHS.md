@@ -5322,3 +5322,14 @@ The 405 therefore comes from a second, unlocated emitter. Everything statically
 identified in this session (route machinery, gate, dispatcher, method switch,
 emitter) is off-path for `/audio_tap`; only the six-frame `finish` chain is real,
 and it blocks before the writer.
+
+#### Correct branch patch (0x10410620 → unconditional) still returns 405
+
+Patched `0x10410620` from `41 9e 00 5c` (bt) to `48 00 00 5c` (b) — the real
+bypass to the allowed arm at `0x1041067c`. Rebooted, POSTed: **still 405**.
+
+So the function at `0x10410608` is definitively off-path for this request,
+confirmed twice (cold breakpoint, and now a correct branch patch with no effect).
+
+The 405 is produced by a second emitter that has not been located. Every static
+address identified in this session is falsified as off-path.
