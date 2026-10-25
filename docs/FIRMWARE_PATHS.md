@@ -4844,3 +4844,25 @@ own handler at `+0x10`.
 
 That is the missing piece: count 1 with a zero entry falls through exactly like
 count 0.
+
+#### Route structure is two-level: container → pointer array → entry
+
+`0x1040dd34` takes the container (`obj+0x140`) and an index, reads the count at
+`+4`, and on a match calls `0x10409e14`, which does:
+
+```
+10409e40: lwz 9, 0(3)        ; array pointer from container+0
+10409e44: lwzx 9, 11, 9      ; entry = array[index]  (4-byte pointers)
+```
+
+So the layout is:
+
+```
+obj+0x140  container { +0: array pointer, +4: count }
+array      [ entry pointer, ... ]        (4 bytes each)
+entry      { ..., +0x10: handler }
+```
+
+Not inline entries. Populating it at runtime needs three writes (container pointer,
+array slot, entry handler) plus the count — which is why the single count write
+changed nothing.
