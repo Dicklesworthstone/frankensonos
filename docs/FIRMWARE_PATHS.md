@@ -5242,3 +5242,18 @@ dispatcher breakpoint, overwriting the pointer.
 
 The consumer `0x104171a8` reads `obj+0x200`; the fix therefore has to install the
 entry *after* that initialisation, or into whatever the consumer actually walks.
+
+#### Consumer 0x104171a8 is not reached either
+
+Armed at boot: no startup hit, no request hit.
+
+So the function that walks `obj+0x200` is not on this request's path. Combined with
+the previous result (installing the entry there changed nothing), the conclusion is
+that `obj+0x200` and its walker belong to a different request class — the static
+file path never consults them.
+
+That is consistent with everything: the request is classified static *before* any
+route container is walked, and the 405 is the static layer's method rejection.
+
+So the route machinery (both containers, the gate, the dispatcher) is all
+downstream of a classification that this request never passes.
