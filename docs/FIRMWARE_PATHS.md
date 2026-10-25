@@ -3640,3 +3640,18 @@ Next: find who calls the function containing `0x1036b424` at all (it has no
 `bl` callers — check for a vtable slot or a timer), and separately which of the
 eight shim names is actually `dlsym`'d (have the shim log each entry point to a
 file).
+
+#### libflash is never loaded — the shim is moot
+
+With a logging shim (each of the eight entry points appends its name to
+`/tmp/shim.log`), the file is **never created**, and `/proc/<pid>/maps` contains
+**no `libflash` mapping**. The daemon runs and serves without it.
+
+So the daemon never `dlopen`s libflash in this configuration: the model does not
+come from the shim, and the MDP payload added there is dead weight. All shim work
+is moot until something makes the dlopen happen.
+
+The switch function itself starts at `0x1036b298` (frame `-4128`) and has **156
+`bl` callers** — it is a general-purpose routine, and `0x1036b424` is a deep
+sub-path, not the entry. That is why the breakpoint there never fired: the
+function runs often, the model-switch block does not.
