@@ -113,11 +113,17 @@ fixed rather than retried: the live bootstrap sims now serialize and wait 120 s 
 loaded workspace run), and the Serve probe's one-second deadline became five (its fast case spawns a
 shell). The workspace is green as a whole.
 
-The release pipeline is proven end to end on this tree: `dsr build frankensonos --target
-darwin/arm64` succeeded (1/1, 682 s, manifest `publishable`), the tarball extracts, the binary
-answers `--version`/`--help`, and a simulator smoke passed (`fsonos sim` then `zones` listed both S1
-players and `volume Kitchen 30` read back 30). The built artifact is from `9d3e1df`, so the release
-revision still needs its own rebuild once the owner authorizes publication.
+The release pipeline is proven end to end: `dsr build frankensonos --target darwin/arm64` succeeded
+twice (1/1, 682 s and 696 s, manifest `publishable`), the tarball extracts, the binary answers
+`--version`/`--help`, and a simulator smoke passed (`fsonos sim` then `zones` listed both S1 players
+and `volume Office 22` read back 22). dsr builds the **tag**, not HEAD: both artifacts are from
+`9d3e1df` (`v0.1.0`), while `main` is `fec9149`. Publishing HEAD therefore needs a new tag after
+authorization, then one more build.
+
+The build host refused at first: dsr errors above 95% disk. Freeing 32 GiB of regenerable scratch
+(`/private/tmp/claude-501/-Users-jemanuel-projects`, `...-frankenterm`, and the repo `target/`) took
+the volume from 96% to 95% and the build went through. Note `/Volumes/USB_NVME` is not mounted, so
+`CARGO_TARGET_DIR` falls back to the boot volume.
 
 ## Next actions, in priority order
 
