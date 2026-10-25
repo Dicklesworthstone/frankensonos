@@ -122,8 +122,11 @@ route structure: a 16-bit count at `obj+0x144`, 16-byte entries with the handler
 dispatcher at `0x10414618`. The static tables were never the live data, which is why editing them did
 nothing. The dispatcher's own breakpoint then missed - and so did the same breakpoint on a *registered* route
 (`/status/VERSION`), which proves the address is the problem, not the route. The live structure is
-real (read from the walk). Hardware breakpoints (`hbreak`) are cold after the first hit too, so it is
-not the software-breakpoint patch: this stub traps once, of any kind, then goes silent. `finish` from
+real (read from the walk). **Correction from a static read of the loop:** `0x104145e0` loads the count
+and, when it is zero, branches past the loop body - so `0x10414618` (the loop's call return address) is
+cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
+(`hbreak`) are cold after the first hit too, so the stub still has a real one-trap limit, but some of
+the earlier "cold" results may be the empty array rather than the stub. `finish` from
 `read` is the only technique that still works, which makes each remaining frame a full boot. The
 recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
 different emulator for the guest - a working debugger would finish the route question in a handful of
