@@ -3915,3 +3915,15 @@ reached through another indirection that rewrites the address.
 That is the current wall: three different "obvious" call paths (the 11-entry
 lookup, the descriptor handler, its runtime twin) all fail to fire for a request
 that demonstrably reaches the server and returns a response.
+
+#### 404 producer not located
+
+The 404 body (`<HTML><HEAD><TITLE>Error 404</TITLE>`) is neither a file in
+`/opt/htdocs` nor a literal in the binary — `strings` finds no "404" and no
+"Error 404". The nearest templates are `HTTP Error %d` (`0x1043e710`, no direct
+reference) and a set of lowercase `<html><head>` pages.
+
+So the error page is assembled from parts (likely `Error %d` with 404) and the
+builder was not found in the time available. The dispatcher-by-behaviour probe
+therefore still stands as the next step: break on the code that formats the
+error body, not on a string that does not exist.
