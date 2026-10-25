@@ -176,3 +176,44 @@ on S2 the version word must lie inside `[+0x18, +0x1c]` (both inclusive), and on
 S1 `[+0x18] < 0x390018` and `[+0x1c] >= 0x390017`; the ring is then parsed and
 RSA-verified against the pinned key. S1 `memcmp` is at `0xacc4` (id at `+0x21`,
 length at `+0x20`, expected length arg), S2 at `0xcbd4`.
+
+## 2026-10-25: `/devmode` is not key-gated; the allowlist constants are not the clients' keys
+
+The check itself is in [`API_KEY_ALLOWLIST.md`](API_KEY_ALLOWLIST.md): a
+two-entry SHA-256 allowlist at `0x4aa99c`, reached only from `/mtmhhsetup`, and a
+statement path gated by one compiled RSA key (SHA-1 ref only, no chain). Two
+additions.
+
+### `/devmode` never looks at the header
+
+Route entry `0x6e7034` -> handler `0x4aa958` -> `0x4f4240`. The handler checks
+only the method (`1` = GET page, `5` = POST) and `content-type` ==
+`application/x-www-form-urlencoded` (literals `0x4f42ac`/`0x4f42b0`). The POST
+path `0x4f419c` -> `0x4f403c` (form parse) -> `0x4f7140` (button dispatch) has
+no `ap_request_get` anywhere, so the statement route is signature-gated only and
+the allowlist cannot be scored from it.
+
+### The constants are not any key the shipped clients use
+
+The S2 app builds `X-Sonos-Api-Key` at runtime: `OAuthConfig.oktaID` ->
+`ClientImpl.apiKey` -> `RestConnection.addHeader`. `oktaID` comes from
+`com.sonos.secrets.Secrets.getOktaClientIdProd`, a JNI function that XORs a
+36-byte blob with the SHA-256 hex of the package name (`com.sonos.secrets`).
+`scripts/s2_secrets_derive.py` recovers all of them offline; the prod values are
+`4851730c-497b-4a2a-89d7-69b2a5795a4d` (Okta client id) and
+`94bf0c87-d347-460f-be58-8b274ea5fa35` (client API key), identical in 80.28.36
+and 90.01.9. The S1 desktop app uses the same scheme with an XOR table at
+`0x100f714f0` in the 57.23 macOS build (five per-environment UUIDs plus
+controller id `0oap5iecdnocQ4Kf60h7`); all six were recovered.
+
+None of those, and not the published dummy
+`123e4567-e89b-12d3-a456-426655440000`, hashes to `0x676ea8`/`0x676e88`, in any
+case/dash/brace/newline/header-line form. Also negative: every printable string
+in both `anacapad` builds (1.67M), every string in the S1/S2 rootfs trees
+(29.7M), 479 UUIDs harvested from the repo, and `/usr/share/dict/words`. The
+same two digests sit in the S1 57.23-74170-1-12 `anacapad` at `0x50c0e4` /
+`0x50c104` (MIPS32 check at `0x4288e0`, caller `0x42a254`, which fetches
+`X-Sonos-Api-Key` at `0x50bc9c`), so the allowlist is fleet-wide and the
+preimages are per-client values that are not shipped as literals. The remaining
+source is the iOS app or a partner build; the derivation tool takes any
+`libsecrets.so`.

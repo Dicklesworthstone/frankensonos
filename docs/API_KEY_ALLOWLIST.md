@@ -31,9 +31,15 @@ value. There is no salt, no HMAC, no prefix.
   (49,114), and every UUID in either.
 
 So the accepted keys are **not shipped as literals** in either client. They are
-two fixed app-side keys (likely fetched or built at runtime); the digests in the
-firmware are the only device-side oracle. "Any non-empty `X-Sonos-Api-Key`
-passes" is false for this handler.
+two fixed app-side keys built at runtime; the digests in the firmware are the
+only device-side oracle. "Any non-empty `X-Sonos-Api-Key` passes" is false for
+this handler.
+
+The runtime construction is now known (2026-10-25): the S2 app XORs a 36-byte
+blob in `libsecrets.so` with the SHA-256 hex of the package name
+(`com.sonos.secrets`); `scripts/s2_secrets_derive.py` recovers every secret, and
+the resulting prod keys still do not match the digests. See the 2026-10-25
+section of [`RE_DEVMODE.md`](RE_DEVMODE.md).
 
 ## Statement path: pinned key, not a chain
 
