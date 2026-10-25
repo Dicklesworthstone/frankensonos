@@ -3667,3 +3667,15 @@ Practical route: patch `0x1036b3cc` from `lwz 11, 276(31)` (`817f0114`) to
 `li 11, 16` (`39600010`) so the switch block is always entered. Note `r9` at the
 switch is a boolean set by the guard, not the model code — the code comparisons
 come later in the chain.
+
+#### Forcing the guard does not change the model
+
+`0x1036b3cc` patched to `li 11, 16`: no abort, but the Server header is still
+`(ZP100)` and the description still has no AVTransport. So the guard is not what
+selects the model — the chain lands on the ZP100 arm either way.
+
+The switch function is called from the Server-header builder at `0x10369064`
+(`li 3, 784` → allocator `0x10434640` → `bl 0x1036b298`), and its return value is
+the model name formatted into `Linux UPnP/1.0 Sonos/%s (%s)` (`0x104f62a0`) at
+`0x10369090`. So the name is a *return value* of that function, produced by the
+arm taken inside it — the selection is the later code comparison, not the guard.
