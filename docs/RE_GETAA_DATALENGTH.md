@@ -100,3 +100,19 @@ the TCP connection and closes it before NEGOTIATE (server log: `Incoming connect
 `Closing down connection`, no SMB2 command), so every S1 request is a 404. The S1 client is a
 different dialect/negotiation path; the matrix above is S2-only and the offsets are the S2-line
 libsmb2 4.0.0.
+
+## CVE-2026-110712 on the live path: present, not observable
+
+`/getaa` makes the client issue QUERY_INFO with FileAllInformation, so the `FileNameLength`
+over-read (`smb2_decode_file_all_info`) is on this path. Patching the reply's
+`NameInformation.FileNameLength` (impacket struct field, confirmed on the wire) to `0x1000`,
+`0x10000`, `0x100000`, `0x1000000`, `0x7fffffff` and `0xffffffff` against a 120-byte
+`OutputBufferLength` gives **200 every time**, `/status/zp` 200 after each.
+
+The walk stops at the first UTF-16 NUL in the heap, so the over-read stays inside mapped heap and
+the device has no ASan to show it. The host-side PoC
+(`captures/research/smb-fuzz/poc_queryinfo_oob.c`) remains the proof of the defect; `/getaa` is the
+live reachability proof, not a crash oracle. CVE-2026-110713 (FileFsVolumeInformation) and
+-110714 (security descriptor) are not reachable here: the client asks FileAllInformation only.
+
+Harness: `~/sonos-root-local/recon/smbserv_qinfo.py <port> filename_len <value>`.
