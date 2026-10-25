@@ -3535,3 +3535,26 @@ write. Nothing else in the image creates the flag, and no plain HTTP route does.
 
 **The devmode/config-mode statement is therefore the single precondition for the
 whole HLS write**, and it is the lane's real next step.
+
+#### GCModel S16 in the conf removes the abort; the guest serves
+
+Adding `GCModel S16` to `conf/anacapa.conf` (the file uses `Key value`, next to
+`Port`) and dropping the `0x1036ba88` branch patch lets the model switch take a
+real arm: no `Aborted`, the daemon stays up, and 1400/1443 bind.
+
+Proof from inside the guest:
+
+```
+HTTP/1.1 200 OK
+Server: Linux UPnP/1.0 Sonos/57.23-74170 (ZP100)
+...
+<u:GetZoneAttributesResponse ...><CurrentZoneName>GovRoom</CurrentZoneName>
+<CurrentIcon></CurrentIcon><CurrentConfiguration>1</CurrentConfiguration>
+```
+
+Note the Server header reports **ZP100**, not S16 — so the value is not taken
+literally as a model name; it selects a code that lands on the ZP100 arm. The
+switch no longer reaches its default, which is what matters.
+
+Caveat: the host forward `tcp::14000-:1400` does not work (curl from the host
+gets 000) even though the guest listens; test from inside the guest with `nc`.
