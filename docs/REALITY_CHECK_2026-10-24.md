@@ -136,9 +136,11 @@ populated entries are both required, so the static fix is a gate store plus a pr
 no-route path (`0x10411a14` -> `0x10418788`) is an allocator, so with an empty table the dispatcher
 always falls through and the **static layer** rejects the POST - that is the 405. The route table is
 never populated because its population path is dead. The request path is now mapped end to end except
-one step: read -> line loop -> whitespace skip -> **classification** -> dispatcher. The classification
-is the only unread block and it is where the 405 is chosen; the remaining work is mechanical, not
-uncertain.
+one step: read -> line loop -> whitespace skip -> **classification** -> dispatcher. **The 405 mechanism is now fully explained:** `obj+0x200` is a *per-request* route container whose
+entries each carry a pattern list; an entry matches only when a pattern string-equals the path, and no
+match falls through to the static layer. The persistent `obj+0x140` table was a red herring. The fix is
+precise: populate `obj+0x200` with an entry whose `+0x30` points at a pattern node holding
+`/MediaRenderer/AVTransport/Control` - no model change needed.
 **Correction from a static read of the loop:** `0x104145e0` loads the count
 and, when it is zero, branches past the loop body - so `0x10414618` (the loop's call return address) is
 cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
