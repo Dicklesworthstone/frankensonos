@@ -3753,3 +3753,15 @@ conditionally and that condition is the gate — not the model code, not the
 description file.
 
 Next: find what walks the `0x1052ce68` table and the branch that skips it.
+
+#### The service table is halfword-indexed, not walked
+
+The MediaRenderer/MediaServer table starts at `0x1052cd18` (28-byte entries
+`{name, handler, 6 zeros}`, all sharing handler `0x1028a478`) and is reached at
+`0x103d0914` (`addi 18, 18, -13032` → the base). It is not linearly walked: the
+code does `lhax 14, 10, 18` at `0x103d0930`, a **halfword offset lookup** into
+the table, so entries are selected by an index, not iterated.
+
+That means the gate is the *index* the caller passes, not a branch around a loop.
+AVTransport sits at `0x1052ce84`; whatever index maps to it is what the caller
+must supply.
