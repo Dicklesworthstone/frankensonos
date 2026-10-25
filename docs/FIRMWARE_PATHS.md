@@ -3970,3 +3970,16 @@ So those two negatives are real: the handler is genuinely never called for
 
 Rule for the rest of the lane: always start the VM with `-S`, arm breakpoints,
 then `continue`.
+
+#### Response-write anchor: neither send nor write fires
+
+With the `-S` rule applied (armed at boot, then request sent), breakpoints on the
+`send` slot (`0x10546c98`) and the `write` slot (`0x10546240`) are **both cold**
+for a `GET /audio_tap?tap=test` that returns 404.
+
+So the response does not leave through either PLT slot — it must use `writev`,
+`sendto` (`0x105465f8`), or a buffered path that reaches the socket another way.
+
+That is the next anchor to try. The pattern so far: every candidate address is
+cold, so the remaining approach is to break on `sendto`/`writev` and, failing
+that, on the socket accept path and walk forward instead of backward.
