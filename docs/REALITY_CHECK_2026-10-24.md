@@ -106,12 +106,12 @@ the lab. The remaining guest blocker is the model: it resolves to ZP100, whose s
 AVTransport, so nothing can be played; libflash is never dlopened (the MDP shim is moot). The service set is a count at `obj+0x140` and an
 index array at `obj+0x770`; the 11-entry inventory that array feeds is complete and correct (AVTransport
 is in it), but a breakpoint proves that lookup is **not on the request path** - the request dispatcher
-itself is still unfound. The request path and the startup path turn out to be the same code (a stack dump showed it), and the
-model name hangs off a flags word at `obj+0x170` whose setter `0x1005dab8` has **no caller** - the same
-dead-code class as the advance path. Forcing that flag still did not register the route, so the model
-name, the flag and the route registration are three separate things; the route is the open one, and
-its consumer (the code that turns a `0x1052cd18` table entry into a live route) is where the next
-session starts. Corrections that got it there - `pkill -x`, tmux not
+itself is still unfound. Three dead items are now documented in the guest image: the advance path, the flag setter
+`0x1005dab8` and the service table `0x1052cd18` - all present, all unreferenced. Three structural
+edits (description file, forcing `obj+0x170`, adding the entry to the live table) left the 405
+unchanged, so the live dispatcher is not driven by either table. The guest's gdb stub has since
+stopped arming breakpoints entirely; the next session re-establishes it (fresh qemu, fresh gdb,
+logger control first) before touching the route again. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
