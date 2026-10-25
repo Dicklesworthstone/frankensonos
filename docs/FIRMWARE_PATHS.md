@@ -4573,3 +4573,15 @@ array at `obj+0x140` with a 16-bit count at `obj+0x144`, and each entry carries 
 handler at `+0x10`.
 
 That is the structure to populate for AVTransport — not the static tables.
+
+#### Route array is zeroed at init; the fill is elsewhere
+
+`0x1002c370`/`0x1002c378` zero `obj+0x140` and `obj+0x144` (with `obj+0x148` and
+`obj+0x14A` alongside), inside a memset-based initialiser. So the array is
+allocated inline and cleared at construction; entries are added later by a
+different function.
+
+Entry layout, from the dispatcher (`0x10414618`): handler at `entry+0x10`, entries
+16 bytes apart, count 16-bit at `obj+0x144`.
+
+Not yet found: the function that appends entries. That is the one to patch.
