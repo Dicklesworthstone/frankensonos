@@ -4413,3 +4413,21 @@ second-server hypothesis is unnecessary.
 Fix options: per-thread breakpoints (`break ... thread N` after selecting the
 serving thread), or a stub that reports all threads. The qemu gdbstub here
 appears to expose only CPU#0.
+
+#### Monitor has no thread list — and there is only one vCPU
+
+`info threads` is not a monitor command. `info cpus` reports:
+
+```
+* CPU #0: thread_id=3908928 model=7400_v2.9
+```
+
+**One vCPU.** So gdb's "Thread 1.1" is the vCPU, not a guest thread, and the
+daemon's 11 threads are all multiplexed onto that single CPU.
+
+Consequence: a breakpoint at an address *should* trap whichever guest thread
+executes it, so per-thread breakpoints are moot and the threading explanation for
+the cold anchors does not hold after all.
+
+The cold anchors remain unexplained. What is left: the stub may only honour
+breakpoints in the context it is currently following, or the addresses are wrong.
