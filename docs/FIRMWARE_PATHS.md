@@ -5114,3 +5114,16 @@ consumed earlier; the classification is not here either.
 Three callers of the line reader exist (`0x10414364`, `0x104144e0`, `0x104184f8`)
 and all three are readers/parsers. The static-vs-dispatcher decision is therefore
 above all of them, in whatever calls this header loop.
+
+#### 0x10418518 is not reached on the request either
+
+Armed at boot: no startup hit, no request hit.
+
+So the header loop at `0x104184f8` is not on this request's path. That is the same
+result as the dispatcher and the normaliser — every parser-shaped function found
+statically is cold.
+
+The one thing that has never failed is the `finish` chain from `read`, and its
+frames are all in `0x10406xxx`-`0x10414xxx`. The decision must be inside those
+frames, not above them — the earlier assumption that it sits in a caller is
+probably wrong.
