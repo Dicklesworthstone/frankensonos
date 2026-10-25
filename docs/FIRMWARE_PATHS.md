@@ -3814,3 +3814,25 @@ not a plain 6-byte stride and needs decoding before an index can be appended.
 Next: break where the *registration* happens (the caller of `0x103c5fcc` at
 `0x103c5c9c` is one; `0x103c5cd0` the other), and decode the index encoding from
 the table dump before writing anything.
+
+#### Correction: the `lhax` table is 0x1050cd18, not 0x1052cd18
+
+`lis 18, 4177` is `0x1051`, and `addi 18, 18, -13032` gives **`0x1050cd18`** — I
+had been reading `0x1052cd18`, which is the service-entry table and a different
+structure.
+
+At `0x1050cd18` the layout is 6-byte records of halfwords and `lhax` reads the
+first halfword of record `index`, which is a signed offset from the base:
+
+```
+idx 0 → 0x5fe4 → 0x10512cfc
+idx 1 → 0x5bb9 → 0x105128d1
+idx 2 → 0x578e → 0x105124a6
+```
+
+Those targets hold **float arrays** (`0x3f04b9ad` = 0.51…), so this table is a
+float/coefficient table, not the service list. The service entries are the
+28-byte `{name, handler, 20 zeros}` records at `0x1052cd18`.
+
+So `0x103d08cc` indexes a float table; the service registration path is a
+different function and still needs locating.
