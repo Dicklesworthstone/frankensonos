@@ -5180,3 +5180,24 @@ consumer shape, and `0x104171a8` is the best candidate.
 
 Also `0x1041722c`, `0x10417270`, `0x104172dc` read the same field in the same
 region.
+
+#### block+8 is a count; the block is another container
+
+```
+104171b0: lwz 0, 8(11)       ; count = block+8
+104171bc: cmpw 7, 0, 30      ; vs index
+104171d4: lwz 0, 12(11)      ; array = block+0xC
+104171dc: slwi 9, 30, 4      ; index * 16
+104171fc: lwz 9, 0(31)       ; entry pointer
+1041720c: lwz 0, 48(9)       ; entry+0x30
+```
+
+So the allocated block is a container with count at `+8` and array at `+0xC`,
+entries 16 bytes apart, and each entry has a pointer at `+0` and a field at `+0x30`
+that is compared.
+
+This is the same container shape as `obj+0x140` but a different instance. So the
+dispatcher's `obj+0x200` is a *per-request* route container, and this function
+walks it.
+
+The 405 is decided by whatever `entry+0x30` is compared against — the next read.
