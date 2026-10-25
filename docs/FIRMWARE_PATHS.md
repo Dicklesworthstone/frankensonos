@@ -5001,3 +5001,24 @@ That means the 405 comes from whatever consumes `obj+0x200` afterwards — the
 static-file layer — and the route table is indeed a red herring for this request.
 The dispatcher allocates and returns; the caller then serves the file and rejects
 POST.
+
+#### The first branch on a status is at 0x10413f80
+
+The frame after `read` (`0x10406a90`) is buffer bookkeeping. The next one
+(`0x10413f80`) branches on the return of `0x104069f0`:
+
+```
+10413f80: cmpwi 3, 0
+10413f84: xori 9, 3, 13      ; == 13 ?
+10413f90: xori 0, 3, 10      ; == 10 ?
+10413f9c: or 11, 9, 0
+10413fa0: cmpwi 7, 11, 0
+10413fa4: bt 0, 0x10414040   ; either → 0x10414040
+```
+
+So the read path returns a **status code**, and 10 and 13 are special-cased. That
+is the earliest decision point in the chain and the one to identify: whatever
+`0x104069f0` returns decides the branch.
+
+Next: what `0x104069f0` returns and what 10/13 mean — that is the real gate, and it
+sits before the dispatcher as suspected.
