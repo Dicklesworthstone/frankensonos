@@ -4484,3 +4484,15 @@ Practical consequence: a single-hit anchor is useless for a walk. The run has to
 be structured so the *first* hit is the request — i.e. send the request while the
 target is still stopped at the breakpoint's first hit is no good; instead boot,
 let startup settle, arm the breakpoint, then send immediately.
+
+#### `-accel tcg,thread=single` fixes the trap-once behaviour
+
+Adding `-accel tcg,thread=single` to the qemu line: the `read` breakpoint now
+**traps on the request**, which it never did before (previously it trapped once at
+startup and then went silent).
+
+A second request did not trap, so it is improved but not yet reliable. Still, this
+is the first time a request-time hit has been obtained on a syscall anchor, and it
+confirms the diagnosis: the stub was racing TCG threads.
+
+Keep `thread=single` in the boot script from here.
