@@ -4533,3 +4533,17 @@ the stack LR is no more usable than the reported PC for the libc-side frame.
 The chain above is all in the binary and is the request path: socket read →
 buffer handling → handler. `0x10414a00` and `0x10414368` are the two unexamined
 links and are where the route decision should be.
+
+#### 0x10414a00 tests the URI normaliser, not the route
+
+`0x10414a00: cmpwi 7, 3, 0` tests the return of `0x104142d0`, which is the **URI
+normaliser**: it rejects null/empty (`lbz 0,0(3)`), then runs a decode/normalise
+loop through `0x104066d4`, `0x10413f18` and `0x10414054` into a 512-byte buffer.
+Non-zero result falls through to a log call (`0x10411f30`).
+
+So this frame normalises and logs the path; it does not choose a handler. The
+route decision is above it, in the caller of this function.
+
+The chain from the socket read is real and now mapped to a normaliser, which is
+the right shape for a dispatcher's front half — the table lookup should be the
+next frame up.
