@@ -4613,3 +4613,17 @@ the breakpoint address is wrong.
 That closes the loop: the static model is coherent but unconnected to the live
 path, and every attempt to bridge them has failed. The one reliable observation
 remains the `finish` chain from `read`, whose frames are all below the decision.
+
+#### The chain frame 0x10411c6c is cold too
+
+Breakpoint on the frame that `finish` had produced (`0x10411c6c`): one startup
+hit, then nothing for the request.
+
+So even a frame taken from a live `finish` walk does not trap when armed as a
+breakpoint. The finish chain and the breakpoint mechanism disagree about the same
+address.
+
+That is the crux of the tooling problem: `finish` proves the frame executes, the
+breakpoint on it stays silent. Until that is resolved, no static address can be
+trusted as an anchor, and the only usable technique is `finish` from a syscall
+that does trap (`read`), one hop per run.
