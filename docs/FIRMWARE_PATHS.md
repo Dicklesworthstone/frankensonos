@@ -5437,3 +5437,23 @@ printf 'GET /audio_tap?tap=test HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n
 **Success criterion for the retry:** `accept` traps more than once. If it does,
 the lane resumes and the next step is the six-frame `finish` chain past
 `0x10411c6c`.
+
+#### New datum reframes it: the guest HAS routes, just not the service ones
+
+On the device `POST /MediaRenderer/AVTransport/Control` is **500** (routed) and
+`POST /advconfig` is **400**; in the guest `/advconfig` is **500** (routed) but
+AVTransport is **405**.
+
+So the guest's route table is partially populated — registration runs, the
+*service* routes are missing. That matches the static picture exactly:
+
+- `/advconfig` lives in the live table `0x1052d300` → works.
+- AVTransport lives only in `0x1052cd18`, which has **no reference** → dead.
+- The 11-service enumeration at `0x100bd0a8` (which *does* list AVTransport) has
+  **0 callers** → also dead.
+
+So the fix is to get AVTransport into `0x1052d300`. The earlier attempt wrote it
+over the terminator at `0x1052d610` and did nothing, which suggests the walker
+bounds the table by a **count**, not the zero record — the count is the missing
+piece, and it is not adjacent to the table (the words before `0x1052d300` are
+another entry, not a count).
