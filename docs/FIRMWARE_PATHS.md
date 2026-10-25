@@ -5296,3 +5296,16 @@ frames, and it produced six, all parsers.
 The next session should not try more static addresses. It should take the `finish`
 chain and keep going past the six frames already known, one hop per run, until the
 frame that writes the response appears.
+
+#### The chain stops at 0x10411c6c — that frame does not return
+
+Eight `finish` commands issued: the six known frames reproduce exactly, then the
+`finish` from `0x10411c6c` **does not return** (same behaviour as the dispatcher).
+
+So `0x10411c6c` is the last frame reachable by `finish`. The chain cannot be
+continued past it by that technique, because the function blocks or hands off
+rather than returning.
+
+Six frames is therefore the hard limit of this approach:
+`read → 0x10406944 → 0x10406a90 → 0x10413f80 → 0x10414368 → 0x10414a00 →
+0x10411c6c`, all parsers, and the response writer is above the blocking frame.
