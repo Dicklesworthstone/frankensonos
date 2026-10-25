@@ -3850,3 +3850,23 @@ constructions are `0x10267620` (base in `r3`, a parameter) and `0x103d0914`
 So the registration path is still unfound: the table exists, is uniform, and is
 referenced only by computed address from a register — not by a `lis`/`addi` of
 its own base.
+
+#### The enumeration DOES include AVTransport
+
+The list is a hardcoded store sequence at **`0x100bd0a8`** (frame `-320`), building
+an array of name pointers on the stack. Extracted in full:
+
+```
+/AlarmClock/Control            /MediaRenderer/RenderingControl/Control
+/AudioIn/Control               /MediaRenderer/AVTransport/Control   ← present
+/MusicServices/Control         /MediaRenderer/GroupRenderingControl/Control
+/QPlay/Control                 /MediaRenderer/Queue/Control
+/MediaServer/ConnectionManager/Control   /MediaRenderer/VirtualLineIn/Control
+/MediaServer/ContentDirectory/Control
+```
+
+So AVTransport **is** enumerated — the gate is after the list build, not in it.
+The list is built and then something filters or fails before registration.
+
+Next: follow what consumes this stack array (the call after the stores) and where
+the entries are dropped.
