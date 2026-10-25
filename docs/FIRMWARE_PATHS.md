@@ -5201,3 +5201,30 @@ dispatcher's `obj+0x200` is a *per-request* route container, and this function
 walks it.
 
 The 405 is decided by whatever `entry+0x30` is compared against — the next read.
+
+#### THE ANSWER: entries carry a linked list of path patterns, matched by string compare
+
+```
+1041720c: lwz 0, 48(9)       ; entry+0x30 = pattern list head
+10417214: cmpwi 7, 0, 0
+1041721c: bt 30, 0x104171ec  ; null → next entry
+10417220: bl 0x10417120      ; match(path, list)
+10417228: bf 2, 0x10417268   ; match → found
+```
+
+and `0x10417120` walks the list (24-byte stride) calling `0x10546bf0` — a string
+compare — against the request path:
+
+```
+10417134: lwz 4, 0(4)        ; pattern
+10417148: bl 0x10546bf0      ; compare with path
+10417154: lwzu 4, 24(31)     ; next pattern
+```
+
+So a route entry matches only when one of its patterns **string-equals** the
+request path. No match → loop ends at `0x10417240` returning 0 → the caller falls
+through to the static handler → 405.
+
+That is the complete mechanism. The per-request container `obj+0x200` is populated
+with entries whose `+0x30` is a pattern list; with no entries (or no matching
+pattern) the request is classified static.
