@@ -124,7 +124,10 @@ nothing. The dispatcher's own breakpoint then missed - and so did the same break
 (`/status/VERSION`), which proves the address is the problem, not the route. The live structure is
 real (read from the walk). Hardware breakpoints (`hbreak`) are cold after the first hit too, so it is
 not the software-breakpoint patch: this stub traps once, of any kind, then goes silent. `finish` from
-`read` is the only technique that still works, which makes each remaining frame a full boot. Corrections that got it there - `pkill -x`, tmux not
+`read` is the only technique that still works, which makes each remaining frame a full boot. The
+recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
+different emulator for the guest - a working debugger would finish the route question in a handful of
+runs. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
