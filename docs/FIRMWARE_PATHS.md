@@ -4057,3 +4057,18 @@ every other layer here.
 So the chain is now: `0x104118b8` (response writer) → `0x10411af0` →
 `0x10406804` (write-all) → `write`. The dispatcher is one more hop up, and the
 same technique applies: break on `0x104118b8` and read the LR.
+
+#### 0x104118b8 is only entered at startup, not per request
+
+Breakpoint on the writer entry `0x104118b8`: one hit at startup with
+`lr 0x10007a74` (the config/startup region), then **nothing** for the request.
+
+But the request demonstrably passes through `0x10411af0`, which is *inside* that
+function. So the function is entered at a point other than its prologue — it has
+multiple entry points, like the model switch earlier.
+
+So breaking on the prologue is the wrong anchor. The right one is the call site
+already known (`0x10411af0`), or the function's internal dispatch head.
+
+Chain so far, all confirmed by LR: `0x10411af0` → `0x10406804` → `write`. The
+dispatcher above `0x10411af0` is still unread.
