@@ -4321,3 +4321,19 @@ re-testing before any conclusion is drawn from them.
 
 The control is mandatory from here: always arm the logger alongside the target
 address. If the logger is cold, discard the run.
+
+#### Stub proven alive; the emitter is genuinely off-path for this request
+
+Fresh qemu, fresh gdb, logger control first: `break *0x10415590` **fires**
+immediately. The stub arms normally.
+
+Then, same session, `0x10406804` (emitter) armed and the request sent: **cold**.
+
+So with a proven-live stub, the `/audio_tap` response does not go through that
+emitter. The earlier hits there (LR `0x10411af4`, 150-byte body) must have been a
+different response — most likely the 404 page for a *different* path, or a
+startup-time write.
+
+That invalidates using the emitter as the anchor for this route. The chain
+`0x10411af0 → 0x10406804 → write` is real but belongs to whichever response it
+was captured on, not necessarily to `/audio_tap`.
