@@ -4457,3 +4457,16 @@ Helper entry `0x104068f4`. At the request hit the fd was 10 and the LR
 So the read side is now anchored exactly like the write side. Breakpoint at the
 helper entry `0x104068f4` did not hit on the request in this run (buffered
 commands), but `read` itself is a reliable anchor: filter by fd != 9/11.
+
+#### fd-filtered read breakpoint hits on the request
+
+`break *0x10546ea8 if $r3 != 9 && $r3 != 11` fires on the request (twice seen),
+so the socket read is now a working anchor and the fd filter keeps the logger out.
+
+`finish` from the hit was not captured — gdb queued the command while running and
+the interrupt landed in the kernel (`0xc004c684`). The pattern to use is: wait for
+the "Breakpoint N" line to appear, then send `finish` (never queue it while
+`Continuing`).
+
+So the read side is anchored and proven. The next run needs only the finish to
+land to yield the request handler.
