@@ -53,5 +53,9 @@ including READ framing) is retried, never fatal.
   be needed to make them meaningful, so `write:Count` is inert here.
 - The client is libsmb2 4.0.0. CVE-2025-1048/1050 (libsmb2 UAF family) are SMB *server*-side and above our
   fix line, so this matrix is a field-robustness check, not a CVE reproduction.
+- **This matrix only mutates SMB2 header words.** The QUERY_INFO *reply body* is a separate, live axis:
+  CVE-2026-110712/110713/110714 (heap OOB reads in the FileAllInformation, FileFsVolume/Attribute and
+  ACL decoders) are all present in 4.0.0 and proven there — `poc_queryinfo_oob.c` in this directory, and
+  `docs/RE_CVES.md` §7c. Build the reply body, not the header.
 - Cold-start flakiness is real: with a fresh port and file, roughly one in four cases 404s before the
   target op and shows `"applied": false`. Re-run those; the table above only records attempts that landed.

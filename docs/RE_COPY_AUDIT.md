@@ -1,16 +1,24 @@
-# Packet-length copies in anacapad: top 5
+# Packet-length copies in anacapad
 
-Method: full disassembly of both builds (`llvm-objdump --triple=powerpc` for
-57.23, `mips-linux-gnu-objdump -m mips:16` for 86.10), every `bl memcpy` /
-`jal memcpy|memmove` site, then the length argument traced to its source and
-the preceding 10-20 instructions read for a clamp. 491 sites on 86.10, 94 with
-a field-loaded length on 57.23. Ranked by "length comes from the wire and the
-destination is fixed".
+Static audit, no hardware. Two passes merged: one over both builds (57.23 PPC and 86.10 MIPS), one
+restricted to the 57.23 daemon and driven from the route table. Every claim is an instruction at a file
+offset; file offsets are `vaddr - 0x10000000` into the image named in each section.
 
-## 1. 57.23 `0x1007b2c4` — URL path span copied with no clamp (the one finding)
+Method, pass 1 (both builds): full disassembly (`llvm-objdump --triple=powerpc` for 57.23,
+`mips-linux-gnu-objdump -m mips:16` for 86.10), every `bl memcpy` / `jal memcpy|memmove` site, then the
+length argument traced to its source and the preceding 10–20 instructions read for a clamp. 491 sites on
+86.10, 94 with a field-loaded length on 57.23. Ranked by "length comes from the wire and the destination
+is fixed".
 
-Function entry `0x1007ad60` (`stwu 1,-5344(1)`), a URL splitter: `strchr` for
-`/` at `0x1007ae34` and again at `0x1007ae48`, then
+Method, pass 2 (57.23 only): the two copy PLT stubs (`memcpy@0x10546ad8`, `memmove@0x105465f0`), 1 534
+`bl` sites; the definition of the length register `r5` resolved backwards. 1 047 are `li` constants, 211
+are `mr`, and 61 load the length from a struct field. Those 61 were filtered by destination: 8 write to a
+stack slot, the rest to a heap pointer or an object field.
+
+## 1. 57.23 `0x1007b2c4` — URL path span copied with no clamp (the headline finding)
+
+Function entry `0x1007ad60` (`stwu 1,-5344(1)`), a URL splitter: `strchr` for `/` at `0x1007ae34` and
+again at `0x1007ae48`, then
 
 ```
 0x1007ae54  addi 29, 1, 3136        ; buffer
@@ -18,7 +26,7 @@ Function entry `0x1007ad60` (`stwu 1,-5344(1)`), a URL splitter: `strchr` for
 0x1007ae68  addi 9, 9, 1
 0x1007ae70  stw  9, 5244(1)         ; span stored
 0x1007ae74  li   5, 1025
-0x1007ae7c  bl   0x10546ba8         ; strlcpy(tail, buf, 1025)  <- clamped
+0x1007ae7c  bl   0x10546ba8         ; sonosDecodePercentEncodedStr(tail, buf, 1025)  <- clamped
 ...
 0x1007b2b8  lwz  5, 5244(1)         ; span again
 0x1007b2bc  mr   4, 18              ; src = ORIGINAL url base (r18 = r4)
@@ -27,46 +35,176 @@ Function entry `0x1007ad60` (`stwu 1,-5344(1)`), a URL splitter: `strchr` for
 0x1007b2d8  stb  30, 16(9)          ; NUL at dst+span
 ```
 
-The 1025-byte `strlcpy` clamp is **bypassed**: the span is computed before it
-and reused for the `memcpy`, which writes into a 5344-byte frame from `+16`.
-Any URL whose path span exceeds ~5328 bytes overruns the saved registers and
-the caller's frame; the 1025-byte buffer at `+3136` is not the destination, so
-the clamp gives a false sense of safety. No `cmpw`/`cmplw` on the span exists
-between `0x1007ae70` and the copy. Caller not yet identified (no direct `bl`
-and no stored pointer to `0x1007ad64`), so the reachable surface is open.
+The 1025-byte clamp is **bypassed**: the span is computed before it and reused for the `memcpy`, which
+writes into a 5344-byte frame from `+16`. Any URL whose path span exceeds ~5328 bytes overruns the saved
+registers and the caller's frame; the 1025-byte buffer at `+3136` is not the destination, so the clamp
+gives a false sense of safety. No `cmpw`/`cmplw` on the span exists between `0x1007ae70` and the copy.
 
-## 2. 86.10 `0x5f59b4` — `sonos::json::Stream` string read: BOUNDED
+Callers (pass 2): `0x101a06b4`, `0x101a0c9c`, `0x101cc704` — i.e. the URL/path cluster
+`0x101a0b70`, `0x101cc878`, `0x101ddd2c`. `0x101cc878` is also finding 2.1 below, so the same machinery
+both splits the URL and copies the long value. The cluster's own callers are vtable dispatches and are
+still unidentified; that is the open edge.
 
-Clamp immediately before the copy: `0x5f59a2` `addiu v1,-1`, `0x5f59a4`
-`subu a3,v1,a1`, `0x5f59a6` `sltu s1,a3`, `0x5f59aa` `move a3,s1` — the length
-is `min(capacity-1-offset, available)`. Copy at `0x5f59b4` uses `a3`.
+## 2. 57.23 unchecked copies, ranked
 
-## 3. 86.10 `0x4f80c4` — `RKVReportData::addPair`: BOUNDED
+### 2.1 `0x1ccc9c` — long-value fetch into a 2 100-byte stack buffer
 
-`0x4f80a2` `lw v0,0(s0)` (cap), `0x4f80a4` `subu a0,v0`, `0x4f80a6`
-`sltu a0,v1` (needed = key+1+value+1), `0x4f80aa` `btnez` → skip when it does
-not fit. Both copies (`0x4f80b8`, `0x4f80c4`) run only inside the fit.
+```
+101ccc90  lwz  5, 4208(30)      ; len  <- obj+4208
+101ccc94  mr   3, 23            ; dst  = sp+16
+101ccc98  lwz  4, 4212(30)      ; src  <- obj+4212
+101ccc9c  bl   memcpy
+```
 
-## 4. 86.10 `0x4cd3ea` — JSON string append: BOUNDED
+Function `0x101cc878`, frame 2 160. There is **no compare against `4208` anywhere in the function body**
+(grepped the whole range; the only `cmplw` at `0x101cc944` is on a `strrchr` result). The buffer runs
+`sp+16 … sp+2116`; saved `r21`–`r31` sit at `sp+2116…sp+2156` and LR at `sp+2164`, so anything over
+2 100 bytes overwrites saved registers and the return address.
 
-`0x4cd3ac` `addu v0,s1,v0`, `0x4cd3ae` `sltu a0,v0`, `0x4cd3b0` `btnez` →
-grow path (`0x4cd3d2`), else the copy at `0x4cd3ea` with `a2 = s1` fits.
+The setter `0x101cbbc8` is why this is interesting: it stores the length **only when it exceeds 1 024**
+(`cmplwi 7,3,1024` at `0x101cbbbc`) and imposes no upper cap, so the field is by construction a "long
+value" and the only question is how long the producer lets it get.
 
-## 5. 86.10 `0x4aa6b2` / `0x4aa6ec` — `/notify` body and params: BOUNDED
+### 2.2 `0x1a0d40` — first append into a 1 024-byte inline buffer, check applied to the wrong copy
 
-Body read `4f5990(req, sp+32, 4096, 0, 2000)` at `0x4aa6b2`; the query parser
-then gets 32/128-byte destinations at `0x4aa6ec` (`a2=32`, `a1=sp+4256`) and
-`0x4aa6de` (`a2=32`, `a3=sp+4128`).
+```
+101a0d30  addi 22, 1, 16
+101a0d34  lwz  5, 4232(27)      ; len <- obj+4232
+101a0d38  mr   3, 22
+101a0d3c  addi 4, 27, 4236      ; src = obj+4236 (inline)
+101a0d40  bl   memcpy
+101a0d5c  sub  0, 28, 22
+101a0d60  subfic 0, 0, 1024
+101a0d64  cmpw 7, 0, 29
+101a0d68  bt   29, …            ; skip the NEXT chunk if it does not fit
+```
 
-Also checked and bounded: devmode statement `memcpy` `0x4f3bc6` (length
-`<1025` enforced at `0x4f3b56`), the strdup-style sites `0x49b802` and
-`0x65a244/0x65a276` (strlen+1 then malloc), and the ring copy `0x5a8d06`
-(`sltu` at `0x5a8cf6`/`0x5a8cfe`).
+Function `0x101a0b70`, frame 1 104. The `1024 - (dst+len)` arithmetic at `0x101a0d5c`–`0x101a0d68` is
+computed **after** the copy and decides whether the *next* chunk fits, so the first copy is unbounded.
+The struct carries a 1 024-byte inline buffer at `+4236` with its length at `+4232`.
 
-## Status
+### 2.3 `0x372b00` — log formatter, 4 096-byte buffer, only a non-zero test
 
-One unbounded packet-length copy (`0x1007b2c4`). The rest of the sampled
-surface is careful; the parsers that matter most (JSON, SOAP args, GENA body)
-clamp. Next: identify the caller of `0x1007ad64` (search for the address in
-`.data.rel.ro` tables by offset, or break on it in the emulator) and craft a
->5.3 KB URL for it.
+```
+10372ad0  li   5, 4096
+10372adc  li   4, 0
+10372ae0  bl   memset           ; memset(sp+16, 0, 4096)
+10372ae4  lwz  5, 16(31)        ; len <- obj+16
+10372aec  cmpwi 7, 5, 0         ; the only test
+10372af8  mr   3, 28            ; dst = sp+16
+10372afc  addi 4, 31, 28        ; src = obj+28
+10372b00  bl   memcpy
+```
+
+Function `0x10372ab8`, frame 4 144. Saved `r27`–`r31` at `sp+4124`, LR at `sp+4148`: over 4 108 bytes
+clobbers the frame. Sixteen call sites (`ac_impl`, `chsrc`, `dp_zpimpl`, the zone-group builders, the
+crash uploader) — it is the shared "tag + struct" logger, so the length is whatever the logged struct
+holds, not a request field directly.
+
+### 2.4 `0x3747a4` — heap destination, reached straight from `/spotifyzc`
+
+```
+10374798  addi 3, 29, 32        ; dst = heap + 32
+1037479c  lwz  5, 4(27)         ; len <- 27+4
+103747a0  lwz  4, 12(27)        ; src <- 27+12
+103747a4  bl   memcpy
+```
+
+Function `0x103745d8`, called directly by the `/spotifyzc` handler `0x1008f208` — the only
+handler-reachable site a depth-1 call-graph walk from all 18 pre-auth handlers found. No length check in
+the block; the destination is a heap object, so the failure mode depends on the allocation size.
+
+### 2.5 `0x22abac` — OGG page body into an object field
+
+```
+1022ab80  stw  29, 6008(31)     ; len <- parsed page size
+1022aba0  lwz  5, 6008(31)
+1022aba4  mr   4, 28
+1022aba8  addi 3, 31, 8         ; dst = obj+8
+1022abac  bl   memcpy
+```
+
+Function `0x1022a62c`. The function's own strings include `ogg page size %d is larger than buffer %d`, so
+a check exists somewhere in the page path, but `0x1022abac` itself has none and `6008` is written
+straight from the parsed value at `0x1022ab80`.
+
+## 3. The 57.23 route table (new)
+
+`0x1052d000`, 28-byte entries `{name, handler, flags, …}`. This is the first complete list; the docs
+carried six names. Pre-auth handlers, in table order:
+
+| route | handler | route | handler |
+|---|---|---|---|
+| `/notify` | `0x1028a5b8` | `/advconfig` | `0x1028a724` |
+| `/xml/device_description.xml` | `0x1028b1a4` | `/testpoint` | `0x1000a858` |
+| `/xml/group_description.xml` | `0x1000cef4` | `/diaglevel` | `0x1028acc8` |
+| `/getaa` | `0x10009e64` | `/diagmsg` | `0x1028ad14` |
+| `/getrs` | `0x1028a5a8` | `/jobs` | `0x1036c570` |
+| `/getsetting` | `0x1028a5b0` | `/set-cr-netstart-dest-mac` | `0x1000c870` |
+| `/indexrepl` | `0x1000a2a0` | `/reset` | `0x1028ad74` |
+| `/msprox` | `0x1000a4c0` | `/sonarctl` | `0x1000c980` |
+| `/unlock`, `/unlock.htm` | `0x102a8e14` | `/wifictrl` | `0x1000cb78` |
+| `/devmode` | `0x1028acf4` | `/cloudqueuepoll` | `0x1000ccf8` |
+| `/testenv` | `0x1028c258` | `/info` | `0x1000c604` |
+| `/customsd`, `/customsd.htm` | `0x101516ec` | `/websocket/api` | `0x100649ec` |
+| `/tools`, `/tools.htm` | `0x10066eac` | `/spotifyzc` | `0x1008f208` |
+| `/ping` | `0x10066e94` | `/spotdbg` | `0x1000d10c` |
+| `/mdnsannounce` | `0x1000cf8c` | `/save_eq_presets` | `0x1000a5e4` |
+| `/udplog` | `0x101a5808` | `/getDSP` | `0x1000a8c4` |
+| `/putDSP` | `0x1000aa0c` | `/audio_tap` | `0x1000abd8` |
+
+`/notify`, `/getaa`, `/getrs`, `/getsetting`, `/unlock`, `/devmode`, `/udplog`, `/info`, `/tools`,
+`/customsd`, `/websocket/api`, `/spotifyzc` and the DSP pages answer with no devmode bit on either line.
+`/advconfig`, `/diaglevel`, `/diagmsg` and `/testenv` are open on 57.23 and 403 on 86.10 (bit 18);
+`/reset` is bit 22 on both. The bit map is in `FIRMWARE_PATHS.md`.
+
+## 4. 86.10 sites, checked
+
+### 4.1 `0x5f59b4` — `sonos::json::Stream` string read: BOUNDED
+
+Clamp immediately before the copy: `0x5f59a2` `addiu v1,-1`, `0x5f59a4` `subu a3,v1,a1`, `0x5f59a6`
+`sltu s1`, `0x5f59aa` `move a3,s1` — the length is `min(capacity-1-offset, available)`. The copy at
+`0x5f59b4` uses `a3`.
+
+### 4.2 `0x4f80c4` — `RKVReportData::addPair`: BOUNDED
+
+`0x4f80a2` `lw v0,0(s0)` (cap), `0x4f80a4` `subu a0,v0`, `0x4f80a6` `sltu a0,v1` (needed = key+1+value+1),
+`0x4f80aa` `btnez` → skip when it does not fit. Both copies (`0x4f80b8`, `0x4f80c4`) run only inside the
+fit.
+
+### 4.3 `0x4cd3ea` — JSON string append: BOUNDED
+
+`0x4cd3ac` `addu v0,s1,v0`, `0x4cd3ae` `sltu a0,v0`, `0x4cd3b0` `btnez` → grow path (`0x4cd3d2`), else
+the copy at `0x4cd3ea` with `a2 = s1` fits.
+
+### 4.4 `0x4aa6b2` / `0x4aa6ec` — `/notify` body and params: BOUNDED
+
+Body read `4f5990(req, sp+32, 4096, 0, 2000)` at `0x4aa6b2`; the query parser then gets 32/128-byte
+destinations at `0x4aa6ec` (`a2=32`, `a1=sp+4256`) and `0x4aa6de` (`a2=32`, `a3=sp+4128`).
+
+Also checked and bounded: devmode statement `memcpy` `0x4f3bc6` (length `<1025` enforced at `0x4f3b56`),
+the strdup-style sites `0x49b802` and `0x65a244`/`0x65a276` (strlen+1 then malloc), and the ring copy
+`0x5a8d06` (`sltu` at `0x5a8cf6`/`0x5a8cfe`).
+
+## 5. 57.23 sites, checked and bounded — do not re-audit
+
+| site | guard |
+|---|---|
+| `0x10293e34` | `cmplwi 7, 5, 15` at `0x10293e28`, 16-byte buffer |
+| `0x10293f70` | `cmplwi 7, 5, 10` at `0x10293f58`, 16-byte buffer |
+| `0x10131448` | `cmplwi 7, 5, 256` at `0x10131438` |
+| `0x1031fba8` | URI host, but the URI is `strlcpy`'d into a 192-byte field at `obj+7164` first (`0x1031fb58`), so the host is ≤ 191 into a 1 040-byte buffer |
+| `0x10324224`, `0x10126b88` | string-builder helpers; capacity/length pairs at `+3100/+3104` and `+20/+24` with doubling loops |
+| `0x1000c934` | `/set-cr-netstart-dest-mac` `sonosDecodePercentEncodedStr(src+4, sp+16, 1025, &n)` (`0x10546ba8`) — explicit 1 025 max into a 1 040-byte buffer |
+| `0x101a5934` | `/udplog` tokenizer with explicit 32 and 1 025 limits |
+| `0x10244388` | mbedTLS record copy; the length is the caller's buffer size |
+
+## 6. Status
+
+Two unbounded packet-length copies, both in the same URL/path cluster: `0x1007b2c4` (the headline, a
+>5.3 KB URL) and `0x101ccc9c` (a >2.1 KB "long value"). The rest of the sampled surface is careful; the
+parsers that matter most (JSON, SOAP args, GENA body) clamp.
+
+Next, in order: (a) identify the vtable callers of the `0x101a0b70` / `0x101cc878` / `0x101ddd2c` cluster
+so the reachable request is named, (b) craft a >5.3 KB URL and a >2.1 KB value on a muted player with
+`/status/zp` before and after plus ICMP. Neither has been run yet.

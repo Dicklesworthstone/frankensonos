@@ -10,7 +10,7 @@ version is listed separately as *pre-window, live* — it is not in the window b
 | component | S1 (57.23, PPC) | S2 (86.10, MIPS) | evidence |
 |---|---|---|---|
 | expat | embedded; **no version string in this build at all** (§5b) — the memo's 2.2.0 came from 34.16, not 57.23 | **2.5.0** | `strings anacapad \| grep expat_` → `expat_2.5.0` on 86.10 only; both builds static, no `libexpat` in either rootfs |
-| mbedTLS | **2.5.0** (`libmbedtls.so.10`) | **3.6.6** | `captures/firmware/s1_rootfs/lib/libmbedtls.so.10`; `sonos-root-local/fw/internals/libmbedtls.so.3.6.6`, NEEDED `libmbedtls.so.21` |
+| mbedTLS | **2.28.x** (`libmbedtls.so.14` / `libmbedcrypto.so.7` / `libmbedx509.so.1`) — **corrected 2026-10-25, was 2.5.0** | **3.6.6** | 57.23 rootfs images, both models: `57.23-74170-1-16-rootfs.bin` (squashfs) `lib/`, and `57.23-74170-1-12-rootfs.bin` (cramfs) `lib/`; `sonos-root-local/fw/internals/libmbedtls.so.3.6.6`, NEEDED `libmbedtls.so.21` |
 | libcurl | not used by the daemon | **static in `anacapad`**, mbedTLS backend, HTTP/2 present (`nghttp2` ×18, `HTTP/2` ×17, `ALPN` ×15); **version unpinnable** (three approaches, all null — see §5a) | `readelf -d` (no `libcurl` NEEDED); `strings` |
 | busybox | **v1.00** (`s1_rootfs/bin/busybox`), **v1.14.1** (`play1_rootfs/bin/busybox`); applets present: `telnetd`, `wget`, **no `httpd`** | not in the captured overlay (base-rootfs binary, not extracted) | `strings busybox \| grep -x httpd` → empty |
 | kernel | **2.4.25-LSDK-5.0.1.20** (2004) | not in the captured artifacts (image encrypted) | `captures/research/s1_attack_surface.md:28` |
@@ -165,3 +165,65 @@ own each time, version unchanged (stale signature, as expected).
 
 Paths: `captures/research/cve-lane/poison/{A,B,C}-*.upd` (5 606 749 B each, byte-identical to the vendor
 package outside the spliced entry), builder `poison/build.py`, serving log `/tmp/upd_access.log`.
+
+## 7. Window refresh 2026-09-25 … 2026-10-25 (2026-10-25)
+
+The window above closed on 10-23; this section carries the two days after it plus the version corrections
+that came with a proper look at the 57.23 rootfs images.
+
+### 7a. The S1 mbedTLS row was wrong: it is 2.28.x, not 2.5.0
+
+`captures/firmware/s1_rootfs` is the **34.16** tree, and its `lib/libmbedtls.so.10` is where the 2.5.0 in
+§1 came from. The 57.23 images ship a different library: `libmbedtls.so.14`, `libmbedcrypto.so.7`,
+`libmbedx509.so.1` — the 2.28 SOVERSION triple — in both `57.23-74170-1-16-rootfs.bin` (squashfs, `lib/`)
+and `57.23-74170-1-12-rootfs.bin` (cramfs, `lib/`). Symbol set agrees: `mbedtls_platform_zeroize` (2.7+),
+`mbedtls_x509_crt_parse_der_with_ext_cb` (2.16+), `mbedtls_x509_crt_verify_restartable` (2.7+).
+
+Consequence: the 2.5.0-era triage below is superseded for S1. 2.28 is the LTS branch and is patched
+through 2.28.10; the rootfs squashfs build stamp is 2026-02-17, so the shipped point release is
+2.28.10-or-later and the pre-2.28.10 advisories (CVE-2025-27809 hostname check, CVE-2025-27810
+uninitialised Finished) are **not** live on 57.23. S2 is 3.6.6 and is a different question (§7b).
+
+### 7b. mbedTLS 3.6.6 on S2: one in-window advisory, client-side only
+
+| CVE | pub | what | 3.6.6? | reachable? |
+|---|---|---|---|---|
+| CVE-2026-25832 | 09-14 | TLS 1.3 client accepts a HelloRetryRequest selection it should reject (3.6.x before 3.6.7, 4.1.x before 4.1.2) | yes | **client-side only.** The S2 daemon is a TLS *server* on `:1443` and a TLS *client* for outbound media/cloud fetches. A hostile server on an outbound fetch is the door; the fetch target is not attacker-chosen pre-auth (`OnlineUpdateBaseURL` is devmode-gated), so this is a MITM/rogue-server primitive, not a LAN one. |
+| CVE-2026-34876 | 03-xx | OOB read in `mbedtls_ccm_finish()` (3.x before 3.6.6) | **no — fixed at 3.6.6** | n/a |
+
+### 7c. libsmb2 4.0.0 on S2: four in-window CVEs behind the `/getaa` SMB client
+
+Published 2026-10-14 and 2026-10-22, all "through 6.2" / "before 6.3", so 4.0.0 is inside every range.
+The trust boundary is the **server reply**, and `/getaa?u=x-file-cifs://<us>:<port>/…` makes the player
+our client — no configuration, no credentials.
+
+| CVE | sink | trigger | class |
+|---|---|---|---|
+| CVE-2026-110712 | `smb2_decode_file_all_info` (`lib/smb2-data-file-info.c:202`) | QUERY_INFO FileAllInformation reply with a `FileNameLength` past the buffer; reached by `smb2_stat`/`smb2_fstat`, which is what the `/getaa` client already issues | heap OOB **read** |
+| CVE-2026-110713 | `smb2_decode_file_fs_volume_info` / `_fs_attribute_info` | QUERY_INFO FileFsVolume/FileFsAttribute reply with a missing or oversized name length | heap OOB **read** |
+| CVE-2026-110714 | `decode_acl` (`lib/smb2-data-security-descriptor.c:266`) | QUERY_INFO security-descriptor reply with `AclSize < 8`; the `size_t` underflow defeats the ACE bounds checks | heap OOB **read** |
+| CVE-2026-115505 | DCE/RPC NDR decoder (`lib/dcerpc.c`) | crafted `NetrShareEnum` reply with a wrapping `actual_count`/`max_count`; needs `smb2_share_enum_async()` | heap OOB **read and write**, CVSS 7.6 |
+
+`RE_SMB_STATE.md`'s matrix mutated only SMB2 **header** words (`OutputBufferOffset`, `OutputBufferLength`,
+`DataOffset`, …). The payload fields *inside* the QUERY_INFO reply are the untested axis, and 110712/110713/
+110714 all live there. 115505 needs a call site the `/getaa` path does not obviously use — treat it as
+"only if share enumeration is wired", not as reachable.
+
+**Proven on 4.0.0, not just 6.2.** The advisories say "through 6.2"; a v4.0.0 checkout built with ASan
+aborts on all three of the first CVEs. Reproducer: `captures/research/smb-fuzz/poc_queryinfo_oob.c`
+(build recipe in the header). Observed 2026-10-25:
+
+```
+case 1  heap-buffer-overflow READ of size 2 in utf16_size (unicode.c:202)
+        <- utf16_to_utf8 <- smb2_decode_file_all_info (smb2-data-file-info.c:158)
+case 2  same, <- smb2_decode_file_fs_volume_info (smb2-data-filesystem-info.c:63)
+case 3  heap-buffer-overflow READ of size 1 in smb2_get_uint8 (pdu.c:246)
+        <- decode_ace (smb2-data-security-descriptor.c:111) <- decode_acl (:262)
+```
+
+4.0.0's `smb2_stat_async` requests `SMB2_FILE_ALL_INFORMATION` (`lib/libsmb2.c`), so case 1 is the one a
+`/getaa` fetch reaches; case 3 needs a security-descriptor QUERY_INFO, which the art path does not
+obviously issue.
+
+Writer: `captures/research/smb-fuzz/smb_state_fuzz.py` already serves the right state machine; the change
+is to build the QUERY_INFO reply body instead of mutating the header.
