@@ -3622,3 +3622,21 @@ Shim set to write `20` at both `+0x44C` and `+0xA10` with magic `0xFA87B921`:
 still `ZP100`, still no AVTransport. So the MDP code is not reaching the switch —
 the shim path is not the one that feeds it, or `obj+0xE8` is overwritten before
 the switch runs.
+
+#### Breakpoints: neither the wrapper nor the switch runs
+
+With gdb attached from boot (`-S`), breakpoints at `0x1036b2e8` (right after
+`hal_flash_get_mdp2_wrapper`) and `0x1036b424` (first compare of the model
+switch) are **never hit** — not during startup, and not on a
+`GET /xml/device_description.xml`. The daemon stays up and keeps listening; the
+model stays `ZP100`.
+
+So the shim symbol is not the path that feeds the model, and the switch function
+is not on the startup or description path either. The MDP payload added to the
+shim (`magic 0xFA87B921`, code at `+0x44C`/`+0xA10`) is therefore inert until the
+real caller is found.
+
+Next: find who calls the function containing `0x1036b424` at all (it has no
+`bl` callers — check for a vtable slot or a timer), and separately which of the
+eight shim names is actually `dlsym`'d (have the shim log each entry point to a
+file).
