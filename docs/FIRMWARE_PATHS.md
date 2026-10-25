@@ -4640,3 +4640,16 @@ That leaves the stub itself as the only remaining suspect: it appears to honour 
 breakpoint for the first hit and then lose it. `finish` from `read` remains the
 only technique that works past the first hit, and it works because it does not
 depend on re-trapping an address.
+
+#### `-d in_asm` produces no live output
+
+Flags confirmed on the command line (`-d in_asm -D /tmp/q2.log`), qemu running,
+request served (404) — but the log stays **0 bytes**. qemu buffers the `-D` log
+and does not flush it while running, so it cannot be grepped live.
+
+Note: `/tmp/q.log` on the host is root-owned from an earlier run and `rm` fails
+with "Operation not permitted"; use a fresh path each time.
+
+To use in_asm the VM must be shut down first so the buffer flushes — which is
+still useful (it answers "did this address ever execute" after the fact), just
+not in-run.
