@@ -4795,3 +4795,17 @@ population path 0x10227714: never executes
 
 So the object is never populated because the population code never runs. The
 identity question is moot — there is nothing to compare against.
+
+#### Runtime write of handler + count: still 405
+
+At the dispatcher hit, wrote `0x1028a478` to `0x10649ae0` (obj+0x130) and `1` to
+`0x10649af4` (obj+0x144), verified both, continued, POSTed the control URL:
+**still 405**.
+
+So populating the singleton is not sufficient — consistent with the dispatcher
+itself being cold on requests. Both facts together mean the request never reaches
+`0x104143ec` at all, so its fields cannot matter.
+
+The remaining gap is therefore *before* the dispatcher: something between the
+socket read and `0x104143ec` diverts to the static handler. That is the one link
+never examined, and it is where the 405 is actually decided.
