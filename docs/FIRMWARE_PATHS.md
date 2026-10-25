@@ -4773,3 +4773,25 @@ comparison is incomplete.
 What is established: the dispatcher reads a fixed global object. If the population
 path targets a different instance, that is the bug — but it needs one more run
 where `0x10227714` actually fires to compare against `0x106499b0`.
+
+#### The population path never fires
+
+`0x10227714` armed alone: not hit at startup, not hit on the request.
+
+So the only reachable count writer is not actually reached either. The population
+path is dead in practice, which is consistent with the whole pattern: the code
+exists, has callers on paper, and never runs.
+
+Combined with the live readings, the picture is complete:
+
+```
+dispatcher object 0x106499b0 (static singleton)
+  obj+0x130 handler = 0
+  obj+0x140 array   = 0
+  obj+0x144 count   = 0
+  obj+0x40  source  = 0
+population path 0x10227714: never executes
+```
+
+So the object is never populated because the population code never runs. The
+identity question is moot — there is nothing to compare against.
