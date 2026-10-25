@@ -4984,3 +4984,20 @@ That is the honest end state of this line of attack: the dispatcher is real, the
 structure is real, the gate is real, and none of it changes the 405. Either the
 request is answered earlier by the static layer regardless, or the dispatcher's
 output feeds a later stage that is itself gated.
+
+#### 0x10418788 is an allocation, not the static handler
+
+```
+10418794: li 4, 16          ; alignment
+104187a0: li 3, 64          ; size
+104187a4: bl 0x10409e50     ; pool alloc
+104187ac: stw 3, 512(29)    ; obj+0x200 = block
+```
+
+It allocates a 64-byte, 16-aligned block and stores it at `obj+0x200`. So the
+no-route path allocates a response buffer; it does not itself produce the 405.
+
+That means the 405 comes from whatever consumes `obj+0x200` afterwards — the
+static-file layer — and the route table is indeed a red herring for this request.
+The dispatcher allocates and returns; the caller then serves the file and rejects
+POST.
