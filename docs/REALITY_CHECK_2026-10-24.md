@@ -165,7 +165,10 @@ client** (no gdb at all: `Z0`/`c`/`g`/`z0` over the socket) fails the same way, 
 the front-end. The verdict is replace the stub, do not tune it - or run the guest under an emulator
 whose ppc gdbstub is known-good. Note for that: `csd` has no qemu at all, and `yto` carries the *same*
 qemu 10.2.1 as `css`, so a different host alone does not change the version - an older qemu (8.x) built
-from source is the concrete next step. The
+from source is the concrete next step. **Tried: qemu 8.2.0 built from source on `yto` also fails** - the
+logger breakpoint (`0x10415590`) is called 41 times during a daemon restart loop and never traps, and
+the daemon loops on 8.2 where it is stable on 10.2.1. So the version is not the answer either; the next
+step is a different emulator entirely (or a qemu built with debug assertions). The
 recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
 different emulator for the guest - a working debugger would finish the route question in a handful of
 runs. Corrections that got it there - `pkill -x`, tmux not
