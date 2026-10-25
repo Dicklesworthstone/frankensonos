@@ -3558,3 +3558,23 @@ switch no longer reaches its default, which is what matters.
 
 Caveat: the host forward `tcp::14000-:1400` does not work (curl from the host
 gets 000) even though the guest listens; test from inside the guest with `nc`.
+
+#### Exploit run, first attempt (blocked at AVTransport)
+
+Done: `/tmp/device_unlocked_flag` created (0644), payload playlist built and served
+on `127.0.0.1:8099` (40 entries, 711-byte segment name: 32-byte
+`busybox  telnetd -l/bin/sh -p23 `, `13 dd 51 c8` at 0x20, `10 54 69 b8` at 0x28
+and 0x30, zero pad to 0x2c0, stub, `.ts`).
+
+Blocked: the device description (`/xml/device_description.xml`) lists only
+`DeviceProperties`, `SystemProperties`, `ZoneGroupTopology` and `GroupManagement`
+— **no AVTransport**. `POST /MediaRenderer/AVTransport/Control` answers 405 with
+`Allow: GET, HEAD`, so `SetAVTransportURI`/`Play` cannot be issued and nothing
+plays.
+
+`GET /audio_tap?tap=test` answers **404** (not 403, so the flag gate passes and
+the route is GET-only — a POST gets 405 with `Allow: GET, HEAD`). Whether the
+slot-23 push actually ran on that 404 is unverified; port 2323 is closed.
+
+Next: get AVTransport registered (it is missing from the description, so the
+service never came up), then re-run steps 3-5.
