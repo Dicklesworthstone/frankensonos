@@ -4281,3 +4281,17 @@ Result: no abort, but `POST /MediaRenderer/AVTransport/Control` still answers
 
 So the live table is not the dispatcher either, or the walker terminates by a
 count rather than the zero record (in which case the extra entry is ignored).
+
+#### Stack-LR walk: breakpoint did not hit this run
+
+Re-armed at `0x10406804` with `$r5 > 64` and `-S`: the breakpoint did not hit for
+the request (interrupt landed in the idle task). No frame dump obtained.
+
+Note the 405 observation is important and stands: **405 means the static handler
+matched the path**, so a lookup before it fails and falls through. That is
+consistent with everything seen — the path is being resolved by a table that does
+not contain the entry, then handed to the static handler, which rejects the
+method.
+
+So the remaining work is to find that failing lookup, and the stack-LR walk is
+still the right technique; it just needs a run where the breakpoint fires.
