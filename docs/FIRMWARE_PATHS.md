@@ -3721,3 +3721,17 @@ which is consistent with the arm patches changing nothing.
 
 The service list is therefore gated by something else (a flag or a different
 field), not by `obj+0x11C`.
+
+#### The description is a static file — there is no service-list flag
+
+`/xml/device_description.xml` is a **static file** (`/opt/htdocs/xml/device_description.xml`,
+3661 bytes, read-only, **0** occurrences of AVTransport). The service list is not
+built at runtime, so no flag gates it and there is nothing to force.
+
+Adding an AVTransport `<service>` block to the file makes it appear in the
+description, but `POST /MediaRenderer/AVTransport/Control` still answers **405
+with `Allow: GET, HEAD`** — the path is served as a static path, so the control
+handler is not registered either.
+
+So the missing AVTransport is two separate gaps: the static description, and the
+runtime route registration. Editing the file closes only the first.
