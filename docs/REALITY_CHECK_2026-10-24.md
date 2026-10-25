@@ -109,9 +109,11 @@ is in it), but a breakpoint proves that lookup is **not on the request path** - 
 itself is still unfound. Three dead items are now documented in the guest image: the advance path, the flag setter
 `0x1005dab8` and the service table `0x1052cd18` - all present, all unreferenced. Three structural
 edits (description file, forcing `obj+0x170`, adding the entry to the live table) left the 405
-unchanged, so the live dispatcher is not driven by either table. The guest's gdb stub has since
-stopped arming breakpoints entirely; the next session re-establishes it (fresh qemu, fresh gdb,
-logger control first) before touching the route again. Corrections that got it there - `pkill -x`, tmux not
+unchanged, so the live dispatcher is not driven by either table. **The most important tooling finding of the session:** the qemu gdbstub exposes only CPU#0, so every
+breakpoint was following one thread while the daemon serves on another (it has 11). That retroactively
+explains roughly a dozen "not hit" results - emitter, formatter, handler, strtok_r, recv, recvfrom - and
+means the structural conclusions drawn from them must be re-checked once threading is solved, not
+trusted as-is. Fixes: per-thread breakpoints on the serving thread, or a stub that enumerates threads. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
