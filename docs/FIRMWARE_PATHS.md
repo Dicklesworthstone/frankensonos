@@ -4130,3 +4130,17 @@ Chain, all by `finish`/LR:
 
 Next: resolve what is mapped at `0x0fe0xxxx` — that is the framework calling the
 handler, and the chooser sits there.
+
+#### 0x0fe0xxxx is not in the current maps
+
+The live process maps only `0x00400000` (text), `0x10000000` (data),
+`0x1000f000` (heap) and `0x77c…` (uClibc and friends). There is **no
+`0x0fe0xxxx` region**, so the return address `0x0fe03f04` cannot be resolved
+against this process.
+
+Either the address came from a different process/boot than the one now running,
+or it is a stack-resident trampoline. Resolving it needs the maps taken in the
+same session as the capture.
+
+Method for next time: at the `finish` that yields the caller, immediately read
+`/proc/<pid>/maps` and match the address before detaching.
