@@ -5042,3 +5042,19 @@ dispatcher.
 
 **The answer is `0x104069f0`** — it decides the class, and its 0x20 result for
 `/audio_tap` is what produces the 405.
+
+#### Correction: 0x104069f0 is a byte reader; 0x10413f80 tests CR/LF
+
+`0x104069f0` reads one byte from a stream struct (`+0xC` end, `+0x10` cursor,
+`+0x14` base) and returns it, or -1 at end. So `r3` at `0x10413f80` is a
+**character**, not a status.
+
+And the branch compares it against 13 (CR) and 10 (LF) — it is **line-end
+detection**, not a class gate.
+
+So 0x20 (space) and 0x41 ('A') were just the bytes at that point in the two
+requests, and the difference is incidental to where the reader happened to be —
+not a classification.
+
+The gate is therefore still ahead: the line is read, then classified somewhere
+after `0x10414040`.
