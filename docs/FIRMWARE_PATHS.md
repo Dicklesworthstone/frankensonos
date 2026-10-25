@@ -4511,3 +4511,25 @@ So the reliable recipe is one request per run, using the first hit as the anchor
 5. `finish`, read the saved LR at `r1+8`, repeat upward
 
 One hop per run is enough; the chain can be assembled across runs.
+
+#### Request-handler chain obtained from the socket read
+
+Step 5 executed. `finish` from the `read` hit, repeated, yields a real chain out of
+the syscall:
+
+```
+read
+ ← 0x10406944   read-all helper (fn 0x104068f4)
+ ← 0x10406a90
+ ← 0x10413f80
+ ← 0x10414368
+ ← 0x10414a00
+ ← 0x10411c6c   (near the writer function 0x104118b8)
+```
+
+The saved LR at `r1+4` on the first frame was `0x0fb2aafc` — physical again, so
+the stack LR is no more usable than the reported PC for the libc-side frame.
+
+The chain above is all in the binary and is the request path: socket read →
+buffer handling → handler. `0x10414a00` and `0x10414368` are the two unexamined
+links and are where the route decision should be.
