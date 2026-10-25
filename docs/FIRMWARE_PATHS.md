@@ -4351,3 +4351,15 @@ by status code — the text is not formatted inline.
 Every "obvious" anchor for this response has now been cold with a live stub:
 emitter `0x10406804`, formatter `0x1040cc38`, handler `0x1000abd8`. The response
 is produced by a path none of them are on.
+
+#### Status table structure; reader not located
+
+The table is regular `{text, code<<16}` pairs covering 0x130, 0x131 and
+0x190-0x19b (400-411): `0x194` = 404 `Forbidden`, `0x195` = 405
+`Method Not Allowed`.
+
+The base is at or before `0x105243b0` and has **no data reference**, and no
+`lis`/`addi` to it was found with the obvious immediates. So the reader is
+reached by a computed base like everything else here.
+
+Not located this round.
