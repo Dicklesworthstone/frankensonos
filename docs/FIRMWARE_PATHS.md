@@ -5333,3 +5333,16 @@ confirmed twice (cold breakpoint, and now a correct branch patch with no effect)
 
 The 405 is produced by a second emitter that has not been located. Every static
 address identified in this session is falsified as off-path.
+
+#### accept is cold too
+
+`accept` (`0x105464a0`) armed at boot, one connection opened: no hit.
+
+So even the accept loop is not reached — which is the strongest evidence yet that
+the stub, not the addresses, is the limiting factor. A server that answers a
+request must accept the connection; if `accept` never traps, the breakpoint
+mechanism is missing real executions.
+
+Everything points the same way now: the stub traps a handful of addresses once and
+then stops, and no amount of address selection fixes it. `read` trapping once was
+the exception, not the rule.
