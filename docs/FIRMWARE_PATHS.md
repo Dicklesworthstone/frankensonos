@@ -4470,3 +4470,17 @@ the "Breakpoint N" line to appear, then send `finish` (never queue it while
 
 So the read side is anchored and proven. The next run needs only the finish to
 land to yield the request handler.
+
+#### Read anchor: first hit only, then nothing
+
+Recipe followed with pauses: the first hit lands at startup, but after
+`continue` no further hit arrives — neither with the fd filter nor without it —
+while the daemon keeps serving (`/status/zp` 200, 11 threads).
+
+So `read` traps once and then stops trapping. That is the same intermittency seen
+with the emitter, now on a syscall that certainly runs.
+
+Practical consequence: a single-hit anchor is useless for a walk. The run has to
+be structured so the *first* hit is the request — i.e. send the request while the
+target is still stopped at the breakpoint's first hit is no good; instead boot,
+let startup settle, arm the breakpoint, then send immediately.
