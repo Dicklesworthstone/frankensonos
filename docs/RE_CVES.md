@@ -227,3 +227,24 @@ obviously issue.
 
 Writer: `captures/research/smb-fuzz/smb_state_fuzz.py` already serves the right state machine; the change
 is to build the QUERY_INFO reply body instead of mutating the header.
+
+### 7d. `mdputil` and `keyval`: shell-only, no HTTP path
+
+Both are **absent from every binary in the 57.23 rootfs**. `grep -l mdputil bin/* usr/sbin/* opt/bin/*` returns
+only `usr/sbin/netconfig.sh`; `opt/bin/anacapad` contains neither string. They are invoked exclusively from
+shell:
+
+- `usr/sbin/netconfig.sh:42-44` — `MODEL=`/`SUBMODEL=`/`WIFITYPE=` from `/bin/mdputil | /usr/sbin/keyval ^…`
+- `usr/sbin/netconfig.sh:69,122-123,135-136,192,209-214,251` and `wifi/wpaconfig:77-78,85-86` — `keyval`
+  over `netsettings.txt`, `ssidlist.txt`, `setmac` output and the WPA config
+- `keyval` is a `^key` / `-s key` extractor over stdin or a named file; `mdputil` prints the MDP blob
+
+The `/status` table (§1 of `RE_COPY_AUDIT.md`) has no `mdputil` or `keyval` entry either, so **no HTTP path
+reaches them**. They are only usable once you already have shell.
+
+The in-process route is different and does exist: `anacapad` imports `hal_flash_get_mdp` (`0x10546190`),
+`hal_flash_get_mdp2` (`0x105465a8`), `hal_flash_get_mdp2_wrapper`, `hal_flash_get_mdp_wrapper`,
+`sonosMdpSerialToString` and `hal_flash_mdp_write` (`0x10546ec8`) from `libflash.so.1`. The read/modify/write
+is one function, `0x1028d1dc` (frame 4 816, strings `MDP flag update`, `/jffs/settings`, `/opt`,
+`Incorrect householdId`), called from the network-settings writer `0x1000894c` (`%s/netsettings.txt`). So an
+MDP3 read needs code execution in the daemon, not a request.
