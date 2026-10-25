@@ -4144,3 +4144,17 @@ same session as the capture.
 
 Method for next time: at the `finish` that yields the caller, immediately read
 `/proc/<pid>/maps` and match the address before detaching.
+
+#### 0x0fe03f04 is a physical address, not a virtual one
+
+Read in-session at the `finish` (51 map lines, full dump): there is still no
+`0x0fe0xxxx` region. Every mapping is `0x00400000`, `0x10000000`, `0x1000f000` or
+`0x77c…`-`0x77e…`.
+
+So `0x0fe03f04` is a **physical** address. gdb in this setup reports physical PCs
+in some modes (seen earlier: `0x64231910`, `0x40e71810`), and the `finish` return
+value inherits that. It cannot be matched against `/proc/pid/maps`.
+
+To get the virtual caller, translate it with the monitor (`gva2gpa` works the
+other way; for physical→virtual the CPU's current context is needed) or read the
+saved LR from the stack frame instead of trusting the reported PC.
