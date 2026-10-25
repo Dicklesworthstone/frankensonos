@@ -3735,3 +3735,21 @@ handler is not registered either.
 
 So the missing AVTransport is two separate gaps: the static description, and the
 runtime route registration. Editing the file closes only the first.
+
+#### AVTransport IS in a route table — it is just not activated
+
+There are two route tables. The extra-routes table at `0x1052d300` (32-byte
+entries `{name, handler, 6 zeros}`) holds `/audio_tap` (`0x1052d338` →
+`0x1000abd8`) and `/advconfig` (`0x1052d354` → `0x1028a724`).
+
+The MediaRenderer services live in a second table at `0x1052ce68`, and
+`/MediaRenderer/AVTransport/Control` **is** there (`0x1052ce84`) with handler
+`0x1028a478` — the same handler as RenderingControl (`0x1052ce6c`) and
+GroupRenderingControl (`0x1052cea4`).
+
+But the route is not active: `GET` → **404**, `POST` → **405** (`Allow: GET, HEAD`,
+i.e. the static handler answers). So the MediaRenderer table is registered
+conditionally and that condition is the gate — not the model code, not the
+description file.
+
+Next: find what walks the `0x1052ce68` table and the branch that skips it.
