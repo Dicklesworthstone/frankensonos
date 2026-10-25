@@ -5457,3 +5457,15 @@ over the terminator at `0x1052d610` and did nothing, which suggests the walker
 bounds the table by a **count**, not the zero record — the count is the missing
 piece, and it is not adjacent to the table (the words before `0x1052d300` are
 another entry, not a count).
+
+#### The live table's walker is not reachable by immediate
+
+Neither `0x1052d300` nor its neighbours appear as a `lis`/`addi` pair with either
+`0x1053` or `0x1052` as the base, so the walker is reached another way (register
+or a table-of-tables) — the same shape as everything else here.
+
+Given the new datum, the more promising axis is the **model**, not the table: the
+device routes AVTransport because its model is real; the guest is forced to ZP100
+with a model *code* of 0. If registration is gated on a per-model service mask,
+the mask for code 0 is the thing to find — and it is a data table keyed by the
+same code the switch uses (20..34).
