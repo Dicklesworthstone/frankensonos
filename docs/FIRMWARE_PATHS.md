@@ -5097,3 +5097,20 @@ It is a **line reader**, and the classification is in its caller.
 
 The chain is now fully characterised up to the parser: read → line loop → line
 reader (CR/LF + comment strip) → caller. The caller is the only unread step.
+
+#### 0x104184f8 is a header loop, not the classification
+
+```
+104184f8: bl 0x10413f18      ; read a line
+10418500: cmpwi 7, 3, 0
+10418508: bt 30, 0x10418518  ; empty line → done
+1041850c: bl 0x10417d34      ; parse header line
+10418514: bt 2, 0x104184ec   ; loop
+```
+
+So it reads header lines until an empty one, parsing each. The request line is
+consumed earlier; the classification is not here either.
+
+Three callers of the line reader exist (`0x10414364`, `0x104144e0`, `0x104184f8`)
+and all three are readers/parsers. The static-vs-dispatcher decision is therefore
+above all of them, in whatever calls this header loop.
