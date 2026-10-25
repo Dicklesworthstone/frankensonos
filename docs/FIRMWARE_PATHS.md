@@ -4547,3 +4547,29 @@ route decision is above it, in the caller of this function.
 The chain from the socket read is real and now mapped to a normaliser, which is
 the right shape for a dispatcher's front half — the table lookup should be the
 next frame up.
+
+#### The dispatcher: handler at obj+0x130, entries at obj+0x140
+
+`0x104143ec` is the lookup. It takes the path and the request, rejects null/empty,
+then:
+
+```
+104144bc: lwz 3, 304(30)      ; handler = *(obj+0x130)
+104144c0: cmpwi 7, 3, 0
+104144c4: bf 30, 0x104145d0   ; set → dispatch
+```
+
+and on the dispatch path:
+
+```
+104145e0: lhz 0, 324(30)      ; count = *(obj+0x144)
+104145f0: addi 31, 30, 320    ; entries = obj+0x140
+10414614: bl 0x1040dd34       ; entry lookup by index
+10414618: lwz 11, 16(3)       ; handler from entry+0x10
+```
+
+So the route data lives **on the object**: handler pointer at `obj+0x130`, entry
+array at `obj+0x140` with a 16-bit count at `obj+0x144`, and each entry carries its
+handler at `+0x10`.
+
+That is the structure to populate for AVTransport — not the static tables.
