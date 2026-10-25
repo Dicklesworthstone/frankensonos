@@ -3655,3 +3655,15 @@ The switch function itself starts at `0x1036b298` (frame `-4128`) and has **156
 `bl` callers** — it is a general-purpose routine, and `0x1036b424` is a deep
 sub-path, not the entry. That is why the breakpoint there never fired: the
 function runs often, the model-switch block does not.
+
+#### obj+0x114 is the guard, and it is code-set, not config-set
+
+`0x1036b3cc: lwz 11, 276(31)` loads the guard; `0x1036b404: addi 0,11,-16;
+cmplwi 0,1` lets the switch run only for **16 or 17**. The field is zeroed by the
+block initialiser at `0x10289268` (which clears `0x100`-`0x118`) and written by
+~38 sites — a device-class value, not a config key. No conf key feeds it.
+
+Practical route: patch `0x1036b3cc` from `lwz 11, 276(31)` (`817f0114`) to
+`li 11, 16` (`39600010`) so the switch block is always entered. Note `r9` at the
+switch is a boolean set by the guard, not the model code — the code comparisons
+come later in the chain.
