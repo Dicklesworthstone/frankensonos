@@ -3927,3 +3927,26 @@ So the error page is assembled from parts (likely `Error %d` with 404) and the
 builder was not found in the time available. The dispatcher-by-behaviour probe
 therefore still stands as the next step: break on the code that formats the
 error body, not on a string that does not exist.
+
+#### The error formatter is not hit either
+
+The 404 page template is at `0x10523e94`:
+`<HTML><HEAD><TITLE>Error %d</TITLE></HEAD><BODY><H1>Error %d</H1><P>%s</P></BODY></HTML>`.
+Its only construction is `0x1040cc24` (inside the function at `0x1040cbd0`), used
+by the `snprintf` at `0x1040cc38`.
+
+Breakpoint at `0x1040cc38` on a `GET /audio_tap?tap=test`: **not hit**, even
+though the response is a 404 built from that exact template.
+
+So the 404 for this request does not come from that formatter either. Four
+anchors have now failed to fire on a request the server demonstrably answers:
+the 11-entry lookup, the descriptor handler, its runtime twin, and the error
+formatter.
+
+That pattern — every candidate address cold on a live request — points at the
+breakpoints themselves rather than at the code: the daemon's text is mapped at
+`0x00400000`-based addresses per `/proc/pid/maps`, while the file vaddrs are
+`0x10000000`-based, and gdb accepts both without error. A breakpoint that is
+silently inserted at an unmapped alias would never fire. Verifying one known-hot
+address (e.g. the trace logger `0x10415590`) would settle whether breakpoints
+work at all in the current setup.
