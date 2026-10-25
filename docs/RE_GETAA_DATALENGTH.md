@@ -67,3 +67,28 @@ case, liveness before/after, saves under `recon/getaa-saves/`).
 - `DataRemaining` is parsed and dropped, so it cannot be used to signal the surplus.
 - The S2 art handler that allocates the 0x4000 buffer is in the encrypted base rootfs, not in the
   overlay; the request size is fixed at 0x4000 on the wire (server log `READ len=16384`).
+
+## The `u=` filename is only an existence probe; content is a fixed candidate list
+
+Server-side SMB log for one request (`u=…/SHARE/real.jpg`):
+
+```
+smb2Create: real.jpg      <- opened and closed, never read
+smb2Create: folder.jpg    <- first candidate
+smb2QueryInfo / smb2Read / smb2Close folder.jpg
+```
+
+With `folder.jpg` absent the client tries, in order, `folder.jpg`, `Folder.jpg`, `folder.gif`,
+`Folder.gif`, and reads the first that exists (`folder.gif` alone returns 200). With `folder.jpg`
+absent and only `real.jpg` present the request is a 404: the URL's file component is never read.
+A nonexistent name makes the client open `.` and give up.
+
+Consequences:
+
+- The bytes are a **pure proxy**: no decode, no validation, no resize. Empty file, 2-byte SOI,
+  truncated JPEG, 4 KiB of random bytes, a PNG and a JPEG with `SOF0` dimensions `0xffff×0xffff`
+  all return 200 with the exact byte count. `w=`/`h=` are ignored (566×424 stays 566×424 at
+  `w=100&h=100`). The JPEG decode happens on the controller, not the player.
+- Multi-chunk reads are fine: 16 384, 16 385, 32 768 and 200 000-byte files all return intact
+  (the client loops READ with the honest `DataLength`), so the defect above is specific to a
+  reply that advertises more than it was asked for.
