@@ -158,7 +158,8 @@ off-path for this request. The guest's HTTP stack has at least two parallel impl
 one answering `/audio_tap` is the one never found; the next session should break on the listening
 accept loop and follow one connection end to end from `accept` - except that `accept` is **cold too**
 (`31bc513`). A server that answers must accept, so the stub, not the addresses, is the limit: it is
-missing executions outright. Replacing the debugger is the prerequisite for any further progress. The
+missing executions outright. Replacing the debugger is the prerequisite for any further progress. `-icount shift=0` does not help
+either (`f3567c3`): the verdict is replace the stub, do not tune it. The
 recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
 different emulator for the guest - a working debugger would finish the route question in a handful of
 runs. Corrections that got it there - `pkill -x`, tmux not
