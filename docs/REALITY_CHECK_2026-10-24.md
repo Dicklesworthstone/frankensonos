@@ -160,8 +160,10 @@ accept loop and follow one connection end to end from `accept` - except that `ac
 (`31bc513`). A server that answers must accept, so the stub, not the addresses, is the limit: it is
 missing executions outright. Replacing the debugger is the prerequisite for any further progress. `-icount shift=0` does not help
 either (`f3567c3`), and neither does `one-insn-per-tb` (`-singlestep` is gone in qemu 10) (`2106908`).
-Four mitigations failed: the stub is not delivering traps and no qemu knob fixes it. The verdict is
-replace the stub, do not tune it. The
+Four mitigations failed: the stub is not delivering traps and no qemu knob fixes it. A **bare RSP
+client** (no gdb at all: `Z0`/`c`/`g`/`z0` over the socket) fails the same way, so it is the stub, not
+the front-end. The verdict is replace the stub, do not tune it - or run the guest under an emulator
+whose ppc gdbstub is known-good. The
 recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
 different emulator for the guest - a working debugger would finish the route question in a handful of
 runs. Corrections that got it there - `pkill -x`, tmux not
