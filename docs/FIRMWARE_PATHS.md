@@ -4269,3 +4269,15 @@ advance path.
 
 The live routing table is the other one (`0x1052d300`, which holds `/audio_tap`
 and `/advconfig` and does work). AVTransport lives only in the dead table.
+
+#### AVTransport added to the live table — still 405
+
+The live table `0x1052d300` uses 28-byte entries `{name, handler, 5 zeros}` and
+terminates at `0x1052d610` (all-zero record). The terminator was overwritten with
+an AVTransport entry (`0x1043d8f8`, `0x1028a478`, 20 zeros).
+
+Result: no abort, but `POST /MediaRenderer/AVTransport/Control` still answers
+**405**.
+
+So the live table is not the dispatcher either, or the walker terminates by a
+count rather than the zero record (in which case the extra entry is ignored).
