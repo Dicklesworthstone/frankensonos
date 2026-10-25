@@ -4760,3 +4760,16 @@ populated.
 
 That is consistent with the live readings: four fields zero on `r30` while
 population code demonstrably runs elsewhere.
+
+#### Dispatcher object captured; population path not reached
+
+`r30` at `0x104144bc` = **`0x106499b0`** — a static singleton in `.data`, not a
+heap object.
+
+The population breakpoint `0x10227714` did **not** hit on the request (nor at
+startup in this run), so the second pointer could not be captured and the identity
+comparison is incomplete.
+
+What is established: the dispatcher reads a fixed global object. If the population
+path targets a different instance, that is the bug — but it needs one more run
+where `0x10227714` actually fires to compare against `0x106499b0`.
