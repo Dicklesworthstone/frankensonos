@@ -4708,3 +4708,21 @@ whatever `*(src+0x14)` holds. If that source is empty, the destination is empty,
 which matches the live reading of all-zero fields.
 
 Next: `0x10227714` (the only caller) and what object it passes as the source.
+
+#### The source object is `obj+0x2C`, count at `obj+0x40`
+
+At the only caller `0x10227714`:
+
+```
+1022770c: addi 4, 31, 44     ; source = obj+0x2C
+10227714: bl 0x10242b0c
+```
+
+and `0x10242b0c` reads the count from `*(src+0x14)` = **`obj+0x40`**.
+
+So the route array is copied from an inline sub-object at `obj+0x2C`, whose count
+lives at `obj+0x40`. If that sub-object is empty the copy yields zero — which is
+exactly what the live read showed.
+
+Next: whether `obj+0x40` is ever non-zero, and who fills the sub-object at
+`obj+0x2C`.
