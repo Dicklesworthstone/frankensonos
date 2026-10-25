@@ -4309,3 +4309,15 @@ Control to use next: break on `0x10415590` (the trace logger) in the same run as
 the emitter breakpoint. If the logger fires and the emitter does not, the emitter
 is genuinely off-path; if neither fires, the stub is not arming and the run is
 void.
+
+#### Control confirms the run is void: the stub is not arming
+
+Same run, both breakpoints armed at boot: neither `0x10406804` (emitter) nor
+`0x10415590` (logger control) fires, while the daemon serves normally.
+
+So the stub is not arming breakpoints in this configuration any more. Every
+"not hit" from these last runs is void, and the earlier cold results need
+re-testing before any conclusion is drawn from them.
+
+The control is mandatory from here: always arm the logger alongside the target
+address. If the logger is cold, discard the run.
