@@ -4746,3 +4746,17 @@ obj+0x40  (source count) = 0
 Everything upstream is unpopulated. The defect is at the top of this chain, not in
 any of the copies — and the pattern (three dead writers, dead setter, dead table)
 suggests the population code exists but is never invoked.
+
+#### The source-count writer IS reachable
+
+Writers of `obj+0x40` exist in quantity; the first one checked
+(`0x10010fb0`, in function `0x10010e84`) has **2 callers**, so the population code
+is invoked somewhere.
+
+So the "never invoked" theory is only partly right: population code runs, but not
+on the object the dispatcher reads. That points at an **object mismatch** rather
+than dead code — the dispatcher's `r30` is a different instance from the one being
+populated.
+
+That is consistent with the live readings: four fields zero on `r30` while
+population code demonstrably runs elsewhere.
