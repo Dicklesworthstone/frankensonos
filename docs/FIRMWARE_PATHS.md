@@ -3798,3 +3798,19 @@ that population is the real gate.
 
 To add AVTransport: append its index to the array at `obj+0x770` and bump
 `obj+0x140` (or patch the count/array in the guest).
+
+#### Service-list proof attempt: breakpoint not reached
+
+Breakpoint at `0x103c5c9c` (immediately before the list build call) was **not
+hit** on a `GET /xml/device_description.xml`, so the list built there is not the
+one the description uses — the description is the static file, and this list
+feeds something else (likely the UPnP service registration, which is exactly what
+is missing).
+
+The index encoding is also not yet pinned: `mulli 10,10,6` then `lhax 14,10,18`
+over a table whose first words are `0x1043d7c0`-style pointers, so `index*6` is
+not a plain 6-byte stride and needs decoding before an index can be appended.
+
+Next: break where the *registration* happens (the caller of `0x103c5fcc` at
+`0x103c5c9c` is one; `0x103c5cd0` the other), and decode the index encoding from
+the table dump before writing anything.
