@@ -3707,3 +3707,17 @@ reads — it wants the persisted `/VERSION` property.
 So the model name and the model *code* are separate: the code drives the switch
 (object config), the name comes from `/VERSION`. AVTransport registration is
 tied to whichever of the two actually gates the service list.
+
+#### Readers of obj+0x11C (28 sites) — none is a range gate
+
+`lwz ...,284(rX)` occurs 28 times. The two nearest the description path are:
+
+- `0x103d8ef8` — reads `+0x11C` and `+0x118`, adds them and shifts (`srwi 9,9,1`)
+- `0x1014b294` — `not` + `srwi 31`, i.e. a `code != 0` boolean, then a `strcmp`
+
+Neither compares the code against a range, so there is no range gate to force.
+The field is used as a boolean/offset by its readers, not as a model selector —
+which is consistent with the arm patches changing nothing.
+
+The service list is therefore gated by something else (a flag or a different
+field), not by `obj+0x11C`.
