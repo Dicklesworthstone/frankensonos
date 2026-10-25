@@ -129,6 +129,10 @@ cause is one level higher: **the request never reaches the dispatcher at all** -
 static-file handler, which answers 405. The empty singleton and the dead population path are
 downstream of that diversion. The next session starts at the diversion, reading the frames between
 `0x10406944` and `0x104143ec` for the branch that skips the dispatcher.
+
+**Root cause found:** the dispatcher is reached, but a gate global `0x10545fac` is `0` and its only
+setter (`0x10413f0c`) is dead - a fifth dead item. Setting the gate alone still answers 405; gate and
+populated entries are both required, so the static fix is a gate store plus a pre-built entry.
 **Correction from a static read of the loop:** `0x104145e0` loads the count
 and, when it is zero, branches past the loop body - so `0x10414618` (the loop's call return address) is
 cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
