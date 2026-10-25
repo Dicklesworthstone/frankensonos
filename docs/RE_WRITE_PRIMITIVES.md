@@ -334,3 +334,41 @@ baseline) — i.e. the copy is real and linear, but nothing overruns and the 402
 Because the control 402s too, the ten-arg body still dies in a validator before the account logic, so this
 matrix cannot discriminate arg *content* — only arg *size*, which is what it was for. Runner:
 `captures/research/addoauth_fuzz.py`.
+
+## Type-21 record: the feature-support list (static, 57.23 `bin/upgrade`, 2026-10-25)
+
+Correction to the earlier note: the section dispatch table is **two parallel arrays** — types at
+`0x10017950` (stride 0x10) and handlers at `0x1001795c` (stride 0x10). Type **1** is the version record
+(`0x100073b8`, 12-byte payload, `snprintf` into a 0x400 stack buffer, numeric triple compare in
+`0x1001132c`). Type **21** is `0x1000760c` and is not a version at all.
+
+`FUN_1000760c` (type 21):
+
+```
+iVar3 = *(int *)(param_1[1] + 8);      // record length from the header
+uVar4 = iVar3 - 0x10;                  // payload length
+__ptr = malloc(iVar3 - 0xf);           // payload + 1
+FUN_10006a20(1, fd, __ptr, uVar4);     // read the payload
+*(__ptr + iVar3 - 0x10) = 0;           // NUL-terminate
+param_1[4] = __ptr; param_1[5] = iVar3 - 0xf;
+FUN_100057d8(puVar5);                  // parse
+FUN_10005b2c(puVar5, &DAT_1002a5f0, DAT_1002be8c);   // required-token check
+FUN_10005a24(param_1 + 7, puVar5, &DAT_1002a5f0, uVar1);
+```
+
+The payload is a NUL-separated stream of **name\0value\0** pairs, optionally prefixed `!`
+(`FUN_100058d8`: `sVar4 = strlen(p)`, then requires `off + sVar4 + 1 < len` before reading the value at
+`p + sVar4 + 1`). Each pair is `strcmp`ed against a compiled entry in `FUN_10005c38` — entry layout is
+0x10c bytes, name at +0, value at +0x81, flag word at +0x104, optional callback at +0x108. A match sets
+bit 0 of the entry flags; `FUN_10005b2c` returns **10** ("attempted to upgrade to an incompatible
+version") when a *critical* entry (`flags & 2`) is still unset and the package does not carry it.
+
+**Tokens are compared in place.** Nothing copies a token into a fixed buffer, so a 1 KB token cannot
+overflow anything: it simply fails `strcmp` against the 129-byte compiled name and, if that entry is
+critical, produces error 10. The only fixed buffer on this path is the 0x400 `snprintf` in the *type-1*
+handler, which is bounded.
+
+**The 512 KiB is not in this binary.** `0x80000` never appears as an instruction immediate (no `lis rX, 8`
+anywhere; the only 32-bit occurrences are misaligned words inside data tables), and the type-21 handler
+mallocs exactly the declared length with no cap. So the 512 KiB abort is a *caller/reassembly* limit, not a
+parser bound — the next read is the record reader on the anacapad side, not this handler.
