@@ -122,8 +122,9 @@ route structure: a 16-bit count at `obj+0x144`, 16-byte entries with the handler
 dispatcher at `0x10414618`. The static tables were never the live data, which is why editing them did
 nothing. The dispatcher's own breakpoint then missed - and so did the same breakpoint on a *registered* route
 (`/status/VERSION`), which proves the address is the problem, not the route. The live structure is
-real (read from the walk); the dispatcher address `0x104144bc` is simply not the instruction that
-executes. Corrections that got it there - `pkill -x`, tmux not
+real (read from the walk). Hardware breakpoints (`hbreak`) are cold after the first hit too, so it is
+not the software-breakpoint patch: this stub traps once, of any kind, then goes silent. `finish` from
+`read` is the only technique that still works, which makes each remaining frame a full boot. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
