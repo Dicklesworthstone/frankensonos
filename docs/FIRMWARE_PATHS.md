@@ -4431,3 +4431,29 @@ the cold anchors does not hold after all.
 
 The cold anchors remain unexplained. What is left: the stub may only honour
 breakpoints in the context it is currently following, or the addresses are wrong.
+
+#### Discriminator result: the addresses were wrong, the tooling is fine
+
+`read` (`0x10546ea8`) **fires** — and it fired *before* the logger control, i.e.
+on ordinary startup traffic. So breakpoints do trap executed code.
+
+Therefore `recv`/`recvfrom` being cold means the server does not use them: it
+reads the socket with plain `read`. The tooling is sound; those addresses were
+simply wrong.
+
+The socket read goes through a read-all helper mirroring the write-all one:
+
+```
+10406934: lwz 3, 0(28)      ; fd
+10406938: mr 4, 29          ; buf
+1040693c: mr 5, 30          ; len
+10406940: bl read
+10406944: mr. 31, 3         ; loop on short read
+```
+
+Helper entry `0x104068f4`. At the request hit the fd was 10 and the LR
+`0x10406944`.
+
+So the read side is now anchored exactly like the write side. Breakpoint at the
+helper entry `0x104068f4` did not hit on the request in this run (buffered
+commands), but `read` itself is a reliable anchor: filter by fd != 9/11.
