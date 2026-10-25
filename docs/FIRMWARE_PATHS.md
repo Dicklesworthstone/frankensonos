@@ -3900,3 +3900,18 @@ entirely, and the whole `0x100bd0a8` path is a side structure.
 Next: find the actual request dispatcher — the code that maps a URI to a handler
 per request — and break there instead. The route tables at `0x1052cd18` /
 `0x1052d300` are the data it must consult.
+
+#### The tap handler breakpoint does not hit either
+
+Breakpoints at `0x1000abd8` (the descriptor's handler pointer) and at its
+runtime-mapped twin `0x40abd8` both **fail to hit** on a
+`GET /audio_tap?tap=test`, while the route answers 404 and the daemon is alive
+(11 threads).
+
+So the descriptor's function pointer is not the code that runs for the request —
+either the descriptor table is not the live routing table, or the handler is
+reached through another indirection that rewrites the address.
+
+That is the current wall: three different "obvious" call paths (the 11-entry
+lookup, the descriptor handler, its runtime twin) all fail to fire for a request
+that demonstrably reaches the server and returns a response.
