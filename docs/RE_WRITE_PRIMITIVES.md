@@ -372,3 +372,24 @@ handler, which is bounded.
 anywhere; the only 32-bit occurrences are misaligned words inside data tables), and the type-21 handler
 mallocs exactly the declared length with no cap. So the 512 KiB abort is a *caller/reassembly* limit, not a
 parser bound — the next read is the record reader on the anacapad side, not this handler.
+
+## memcpy/memmove length sweep, 86.10 anacapad (2026-10-25)
+
+Method: every `jal` to `memcpy@mips16plt` (`0x6db7d0`) or `memmove`, then keep only sites where the length
+(`a2`) is loaded from a struct **and** the source (`a1`) is loaded from the same base — the `{ptr,len}`
+packet-buffer idiom. 12 pairs; the five most packet-shaped:
+
+| site | length | guard |
+|---|---|---|
+| `0x5d7ffa` | `80(sp)` | **guarded** — `sltu` at `0x5d7fb0` compares `len + *(a0+16)` against capacity `*(a0+20)`, bails to `0x5d7fa0` (returns 27) |
+| `0x5bc904` | `*(u32*)(s0+4)` | none; destination is `alloc(len+12)` built at `0x5bc8da`–`0x5bc8ea` |
+| `0x5a7c94` | `56(sp)` | none; destination is `alloc(len+20)` (`0x5a7c78`–`0x5a7c82`) |
+| `0x4f9ae6` | `96(sp)` | **none, and no allocator in 40 instructions** — destination provenance unproven |
+| `0x647ba8` | `*(s0+16) - *(s0+12)` (`subu` at `0x647ba6`) | none between the difference and the destination |
+
+Checked sites for contrast: `0x4f3924` (`sltu` + `subu`, copies `min(len,255)` into a 256-byte stack buffer
+memset at `0x4f390c`), plus `0x5b7ace`, `0x5c2414`, `0x6562b8` which each carry an `sltu` before the call.
+
+**Net:** no site copies a raw packet length into a *fixed-size* destination without a guard; the unchecked
+ones are allocator-sized from the same length. Residual risk sits in `0x4f9ae6` (destination unproven) and
+`0x647ba8` (length is a field difference).
