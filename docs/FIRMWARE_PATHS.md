@@ -4901,3 +4901,27 @@ string in the loop. Our write set the handler but left `+0xC` zero, which takes 
 
 Since the loop only *collects*, the actual selection must happen after it. That is
 where to look next, and it explains why a populated entry alone changed nothing.
+
+#### Post-loop block uses a different structure (obj+0x194/0x198)
+
+```
+10414658: lis 9, 4180
+1041465c: lwz 0, 24492(9)     ; global 0x10545fac
+10414660: cmpwi 7, 0, 0
+10414664: bf 29, 0x104146e8   ; zero → elsewhere
+10414668: stw 0, 404(30)      ; obj+0x194
+1041466c: lwz 3, 408(30)      ; obj+0x198
+10414688: mulli 0, 0, 4408
+1041468c: mulli 3, 3, 92
+10414694: bl 0x10546560
+```
+
+So after collecting the route entries it switches on a **global flag at
+`0x10545fac`** and then works with `obj+0x194`/`obj+0x198` at strides 4408 and 92 —
+a different table from the route entries.
+
+If that global is zero the code goes to `0x104146e8` instead. So the route entries
+collected above are not what this block dispatches on; the global decides.
+
+That is the next thing to read: `0x104146e8` (the zero path) and what sets
+`0x10545fac`.
