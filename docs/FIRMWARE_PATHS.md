@@ -5148,3 +5148,17 @@ not in any of them — which means the static-vs-dispatch choice happens in the
 
 That reframes the earlier conclusion: the 405 is produced after the dispatcher
 allocates `obj+0x200` and returns, by the caller that consumes it.
+
+#### `finish` out of the dispatcher does not complete
+
+`finish` from `0x10411984` ran for >10 s without returning; the interrupt landed in
+the idle task. So the dispatcher does not return promptly on this path — it blocks
+or hands off.
+
+That is itself informative: the dispatcher is not a simple call-and-return, which
+fits the `obj+0x200` allocation — it likely queues work and returns via another
+thread, so the caller cannot be reached by `finish`.
+
+To get the consumer, break on the *read* of `obj+0x200` instead of finishing: the
+field is written at `0x104187ac`, so a watchpoint on that address (or a breakpoint
+where it is loaded) reaches the consumer without depending on the return.
