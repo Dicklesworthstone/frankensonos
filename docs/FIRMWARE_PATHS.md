@@ -4222,3 +4222,21 @@ stride 204), so the struct is reused for two purposes — worth keeping in mind.
 
 Next: find who calls `0x1005dab8`; that is the point where the model path becomes
 reachable at all.
+
+#### The flag setter is dead code — never called
+
+`0x1005dab8` (the function that writes `0x0F` to `obj+0x170`): **0 `bl` callers,
+0 data references**, and it is a proper function entry (`stwu`/`mflr` prologue at
+`0x1005dab8`, `blr` at `0x1005dab4` before it). Nothing calls it.
+
+The zero writer's function `0x10161350` has 3 `bl` callers, so that one runs.
+
+So the pair resolves cleanly: **the flag is never set because the only code that
+sets it is unreferenced.** The zero writer then has nothing to clear.
+
+That is the root cause of the whole model/service chain: `obj+0x170` stays 0, the
+model path at `0x1028d234`/`0x1028d23c` is never taken, the model name is never
+built, and the service set never gains AVTransport.
+
+It is the same defect class as the unwired advance path — a function present in
+the image with no reference to it.
