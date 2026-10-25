@@ -5022,3 +5022,23 @@ is the earliest decision point in the chain and the one to identify: whatever
 
 Next: what `0x104069f0` returns and what 10/13 mean — that is the real gate, and it
 sits before the dispatcher as suspected.
+
+#### THE GATE: the status differs — 0x20 vs 0x41
+
+`p/x $r3` at `0x10413f80`, same breakpoint, two requests:
+
+| request | status |
+|---|---|
+| `GET /audio_tap?tap=test` (405) | **0x20** |
+| `GET /status/VERSION` (200) | **0x41** |
+
+The values differ, so this status is the gate and `0x104069f0` is its producer.
+0x41 = `0b0100_0001`, 0x20 = `0b0010_0000` — bit flags, not a plain code.
+
+So the request is classified before the dispatcher, and `/audio_tap` is classified
+as 0x20 (a static/file class) rather than 0x41 (a served class). That is why
+populating the route table never helped: the request never reaches the route
+dispatcher.
+
+**The answer is `0x104069f0`** — it decides the class, and its 0x20 result for
+`/audio_tap` is what produces the 405.
