@@ -99,8 +99,12 @@ anacapad now **serves in the css guest** (11 threads, :1400/:1443 listening, Get
 200) with the device's own loader, the ABI-patched libflash and the /opt/s16 staging recipe committed
 (d4fcd97). The staged build is MIPS, and HLS exists only in the PPC model-16 build (the 57.23-1-12
 MIPS anacapad has zero HLS strings), so a PPC guest is the missing instrument for the next session.
-The PPC guest itself now boots the 1-16 build past module load to the `port 1400/1443/1843` binds and
-then SIGABRTs (~40 ms later, before `accept`). Corrections that got it there - `pkill -x`, tmux not
+The PPC guest now **serves**: the abort was a model switch with no default arm, and `GCModel` in the
+conf suppresses it - `GetZoneAttributes` answers 200 with the zone name. With `/tmp/device_unlocked_flag`
+present, `/audio_tap` answers 404 instead of 403, i.e. the unlock gate the HLS write needs is passed in
+the lab. The remaining guest blocker is the model: it resolves to ZP100, whose service set has no
+AVTransport, so nothing can be played; libflash is never dlopened (the MDP shim is moot) and the
+service list is gated by a consumer of the model code at `obj+0x11C` that is still being traced. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
