@@ -124,8 +124,11 @@ nothing. The dispatcher's own breakpoint then missed - and so did the same break
 (`/status/VERSION`), which proves the address is the problem, not the route. The live structure is
 real (read from the walk) but **empty, and empty all the way up**: the dispatcher's count is 0, the
 array it copies from (`obj+0x2C`) has count 0 at `obj+0x40` too, and the copy at `0x10242b0c` correctly
-copies nothing. Combined with the three dead writers, the dead flag setter and the dead table, the
-diagnosis has converged: the whole registration chain exists in the image and is never invoked.
+copies nothing. A runtime write of the handler and count into the singleton still answered 405, so the converged root
+cause is one level higher: **the request never reaches the dispatcher at all** - it is diverted to the
+static-file handler, which answers 405. The empty singleton and the dead population path are
+downstream of that diversion. The next session starts at the diversion, reading the frames between
+`0x10406944` and `0x104143ec` for the branch that skips the dispatcher.
 **Correction from a static read of the loop:** `0x104145e0` loads the count
 and, when it is zero, branches past the loop body - so `0x10414618` (the loop's call return address) is
 cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
