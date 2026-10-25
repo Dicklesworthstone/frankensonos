@@ -4599,3 +4599,17 @@ At this point the honest summary is that the static analysis has produced a
 coherent model (tables, entries, dispatcher, normaliser) but the live path has
 never been observed to enter any of it, and the one technique that did work
 (`finish` from the read hit) produced frames that are all *below* the decision.
+
+#### Registered route also misses the dispatcher — the address is the problem
+
+`GET /status/VERSION` returns **200** (a genuinely registered route), and the
+breakpoint at `0x104144bc` still does not fire.
+
+So the 405 for `/audio_tap` is not explained by "the lookup runs before the
+dispatcher" — the dispatcher address itself is not on the live path. Either
+`0x104143ec` is a different dispatcher (for another object or request class), or
+the breakpoint address is wrong.
+
+That closes the loop: the static model is coherent but unconnected to the live
+path, and every attempt to bridge them has failed. The one reliable observation
+remains the `finish` chain from `read`, whose frames are all below the decision.
