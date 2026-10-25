@@ -4295,3 +4295,17 @@ method.
 
 So the remaining work is to find that failing lookup, and the stack-LR walk is
 still the right technique; it just needs a run where the breakpoint fires.
+
+#### Unconditional breakpoint also cold; the daemon still serves
+
+Breakpoint at `0x10406804` with no condition, armed at boot: not hit for the
+request. The daemon is healthy throughout (11 threads, `/status/zp` returns 200).
+
+So the emitter is not on the path for these responses either, or the breakpoint
+mechanism has degraded again. Both have been true at different times in this
+session, and the two are now hard to separate without a control.
+
+Control to use next: break on `0x10415590` (the trace logger) in the same run as
+the emitter breakpoint. If the logger fires and the emitter does not, the emitter
+is genuinely off-path; if neither fires, the stub is not arming and the run is
+void.
