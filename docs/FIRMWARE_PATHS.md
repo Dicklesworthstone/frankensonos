@@ -4337,3 +4337,17 @@ startup-time write.
 That invalidates using the emitter as the anchor for this route. The chain
 `0x10411af0 → 0x10406804 → write` is real but belongs to whichever response it
 was captured on, not necessarily to `/audio_tap`.
+
+#### The 405 page is not built by 0x1040cc38 either
+
+Control fired (stub alive), then the formatter `0x1040cc38` armed and the request
+sent: **cold**.
+
+So the 405 body comes from somewhere else again. The status text is looked up from
+a table of `{text, code<<16}` pairs at `0x105243e0`-ish (`Forbidden`/0x1940000 =
+404, `Method Not Allowed`/0x1950000 = 405), so the producer is generic and keyed
+by status code — the text is not formatted inline.
+
+Every "obvious" anchor for this response has now been cold with a live stub:
+emitter `0x10406804`, formatter `0x1040cc38`, handler `0x1000abd8`. The response
+is produced by a path none of them are on.
