@@ -165,7 +165,11 @@ client** (no gdb at all: `Z0`/`c`/`g`/`z0` over the socket) fails the same way, 
 the front-end. The verdict is replace the stub, do not tune it - or run the guest under an emulator
 whose ppc gdbstub is known-good. Note for that: `csd` has no qemu at all, and `yto` carries the *same*
 qemu 10.2.1 as `css`, so a different host alone does not change the version - an older qemu (8.x) built
-from source is the concrete next step. **Tried: qemu 8.2.0 built from source on `yto` also fails** - the
+from source is the concrete next step. **Decisive comparison:** on the device, POST `/MediaRenderer/AVTransport/Control` answers **500** (the
+route exists) and POST `/advconfig` answers 400; in the guest, `/advconfig` answers **500** (routed) but
+AVTransport answers **405** (not routed). So the guest's route table is *partially* populated - the
+registration runs, but the service routes are missing, which points at the per-service list (model-driven)
+rather than at the table machinery. **Tried: qemu 8.2.0 built from source on `yto` also fails** - the
 logger breakpoint (`0x10415590`) is called 41 times during a daemon restart loop and never traps, and
 the daemon loops on 8.2 where it is stable on 10.2.1. So the version is not the answer either; the next
 step is a different emulator entirely (or a qemu built with debug assertions). The
