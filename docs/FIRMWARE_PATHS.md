@@ -4039,3 +4039,21 @@ everything else in this server).
 So the response path is: write-all helper `0x10406808` → `write`. Walking up from
 its caller is the remaining step, and the caller is reached by pointer, so it
 needs a breakpoint on the helper entry rather than a call-site search.
+
+#### One hop up: the response writer at 0x104118b8
+
+Breaking on the emitter entry (`0x10406804`) and reading the LR gives the caller
+directly:
+
+```
+lr 0x10411af4   r3 0x10649bb8 (global buffer)   r5 2
+```
+
+The call site is `0x10411af0: bl 0x10406804`; the caller snprintf's into the
+global buffer at `0x10649bb8` and then writes it. That function starts at
+`0x104118b8` (frame `-1104`) and has **no `bl` callers** — pointer-reached, like
+every other layer here.
+
+So the chain is now: `0x104118b8` (response writer) → `0x10411af0` →
+`0x10406804` (write-all) → `write`. The dispatcher is one more hop up, and the
+same technique applies: break on `0x104118b8` and read the LR.
