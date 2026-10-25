@@ -8,7 +8,28 @@ Two rules hold regardless: **flashing or modifying a device is human-led**
 (images, keys, decompiled code) is committed — analysis lives as prose here
 and in `docs/PROTOCOL.md` §9.
 
-## NCC whitepaper: what maps to our lines and what does not
+## /devmode POST is hash-gated, not signature-gated
+
+Route table `0x6e7034` -> handler `0x4aa958` -> `0x4f4240`, which dispatches on
+method: GET goes to `0x4f3fe0`, POST to `0x4f403c`. POST parses query-string
+parameters (`RparseNextQueryStringParam`) and accepts exactly:
+
+- `statement` (base64, decoded with `sonosBase64Dec*`),
+- `button` = `delete` (optional; sets a flag),
+- `csrfToken`.
+
+The decoded statement goes to `0x4ede64`, which calls `ZZ0130` (extracts a
+pointer/length pair) and then **`ZZ0218`**, whose whole body is two
+`memcmp(..., 32)` calls against values it computes with `ZZ0058` — the same
+hash helper the `X-Sonos-Api-Key` check uses (`ZZ0058` = `ZZ0062`/`ZZ0064`/
+`ZZ0061`, i.e. hash init/update/final). There is **no RSA verify on this
+path**: no `ZZ0109`, no `ZZ0121`, no compiled-key lookup.
+
+That matters: the devmode gate is a hash equality, so a captured valid
+statement is replayable, and forging reduces to controlling whatever bytes
+`ZZ0218` hashes rather than to holding a Sonos private key.
+
+NCC whitepaper: what maps to our lines and what does not
 
 Read of "Listen Up" (BHUSA 2024, NCC Group, 40 pp). Two distinct bugs, both
 older than our firmware:
