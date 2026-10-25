@@ -3590,3 +3590,20 @@ in serialisation (written out), never read from `anacapa.conf`, and neither
 So the model comes from the flash shim, which returns zeros for every call. The
 shim needs to hand back a real MDP/model code instead; that is the remaining
 blocker for AVTransport and therefore for the play step.
+
+#### What the daemon reads from the MDP (shim contract)
+
+The shim symbols are called with a **caller-supplied buffer**, not a returned
+pointer: `hal_flash_get_mdp_wrapper(buf)` at `0x1036b2d4` / `0x1036bb18` fills a
+512-byte buffer (`memset` then call), and `hal_flash_get_mdp2_wrapper(buf)` at
+`0x1036b2dc` / `0x1036bb20` fills a second buffer. The daemon then reads:
+
+- `lwz 9, 0(buf2)` — a **magic**, compared against `0xCA989B4A` and `0xFA87B921`
+- magic `0xCA989B4A` and `obj+0x180 < 3` → model code at **`buf2+0x44C`**
+- magic `0xFA87B921` → model code at **`buf2+0xA10`**
+- the code is stored to `obj+0xE8`
+
+The shim now zeroes both buffers, writes magic `0xFA87B921` at `+0` and `34` at
+`+0xA10`. Result: still `ZP100` and still no AVTransport, so either the wrapper
+is not on the startup path or the code is consumed elsewhere. The offsets above
+are the contract to work from; the payload itself is unproven.
