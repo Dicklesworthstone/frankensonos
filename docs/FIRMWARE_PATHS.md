@@ -3870,3 +3870,19 @@ The list is built and then something filters or fails before registration.
 
 Next: follow what consumes this stack array (the call after the stores) and where
 the entries are dropped.
+
+#### The consumer is a lookup, not a registration loop
+
+At `0x100bd3a8` the loop bound is **11** (`cmplwi 7, 29, 11`) — all entries are
+visited. Each iteration strcmps the request path (`*(r27+8)`) against the entry
+name (`*(r28+12)`) at `0x100bd39c`; on a match it branches to `0x100bd424` and
+skips the call. When the loop finishes without a match it calls
+**`0x102b0058`** at `0x100bd3cc`.
+
+So the drop condition is the strcmp at `0x100bd39c`: **match → `0x100bd424`,
+no match → `0x102b0058`**. Nothing is filtered from the list; the list is only
+used to classify the request path.
+
+`0x102b0058` is therefore the thing that decides what happens for a path that
+matched no service — and for `/MediaRenderer/AVTransport/Control` that is the
+branch actually taken, since the route answers 404.
