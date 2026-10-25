@@ -4627,3 +4627,16 @@ That is the crux of the tooling problem: `finish` proves the frame executes, the
 breakpoint on it stays silent. Until that is resolved, no static address can be
 trusted as an anchor, and the only usable technique is `finish` from a syscall
 that does trap (`read`), one hop per run.
+
+#### hbreak does not help either
+
+`hbreak *0x10411c6c` (hardware, IABR, no instruction patching): one startup hit,
+then cold on the request — identical to the software breakpoint.
+
+So the failure is not instruction patching. The stub traps the address once and
+then stops trapping it, for both breakpoint kinds.
+
+That leaves the stub itself as the only remaining suspect: it appears to honour a
+breakpoint for the first hit and then lose it. `finish` from `read` remains the
+only technique that works past the first hit, and it works because it does not
+depend on re-trapping an address.
