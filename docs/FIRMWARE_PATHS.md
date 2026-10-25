@@ -4072,3 +4072,17 @@ already known (`0x10411af0`), or the function's internal dispatch head.
 
 Chain so far, all confirmed by LR: `0x10411af0` → `0x10406804` → `write`. The
 dispatcher above `0x10411af0` is still unread.
+
+#### 0x10411af0 also does not hit for the request
+
+Breakpoint at the call site `0x10411af0`: one startup hit with `lr 0x10411ae0`
+(the function calling itself), then nothing for the request — even though the
+emitter hit earlier carried `lr 0x10411af4`, which is the return address of that
+exact call.
+
+So the call executes but the breakpoint at its address does not trap. Two
+possibilities: the address is inside an instruction that gdb cannot patch there,
+or the response is emitted by a second, identical call site.
+
+Chain confirmed by LR remains: `0x10411af0` → `0x10406804` → `write`. The
+dispatcher above is still unread.
