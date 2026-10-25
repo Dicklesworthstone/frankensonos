@@ -5279,3 +5279,20 @@ So the static layer allows method codes 7, 1 and 3, and anything else gets 405 w
 So POST's code is not among 7/1/3 in this path — either POST maps to a different
 code, or the allowed set differs for handler vs static paths. That is the last
 thing to check: what code POST carries.
+
+#### The method gate 0x10410608 is not reached either
+
+Armed at boot, POST sent (405 returned): no hit.
+
+So the 405 emitter at `0x10410630` and its method switch are not on this request's
+path either. Every static-layer address tried is cold, exactly as every route
+address was.
+
+That is the consistent, and now well-evidenced, finding of this whole session: the
+request is answered by code that none of the statically-identified functions sit
+on. The `finish` chain from `read` is the only thing that has ever produced real
+frames, and it produced six, all parsers.
+
+The next session should not try more static addresses. It should take the `finish`
+chain and keep going past the six frames already known, one hop per run, until the
+frame that writes the response appears.
