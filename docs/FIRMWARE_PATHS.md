@@ -5346,3 +5346,14 @@ mechanism is missing real executions.
 Everything points the same way now: the stub traps a handful of addresses once and
 then stops, and no amount of address selection fixes it. `read` trapping once was
 the exception, not the rule.
+
+#### icount does not help either
+
+`-icount shift=0,align=off,sleep=off` added alongside `thread=single`: `accept`
+still cold, request answered (404).
+
+So the stub problem is not TCG scheduling determinism. Three mitigations have now
+been tried and all failed to make breakpoints reliable beyond the first hit:
+`thread=single`, `scheduler-locking on`, `icount`.
+
+That is the final tooling verdict: replace the stub rather than tune it.
