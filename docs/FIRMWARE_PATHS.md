@@ -5517,3 +5517,20 @@ So any caller-supplied string of 64+ bytes overruns into the following field.
 The function has no `bl` callers (pointer-reached), so the reachable surface is
 whatever passes `r3` — the next step is to find that caller and confirm the string
 is attacker-controlled (a SOAP argument would make it pre-auth on :1400).
+
+### BoldOrchid: memcpy sites with a length taken from a struct field
+
+Scan of all 1424 `bl memcpy` sites for a preceding `lwz 5, d(rX)` (length loaded
+from memory) gives 58 hits. Top five, each with only a null/zero check before the
+copy and **no bound check**:
+
+| site | length source | preceding check |
+|---|---|---|
+| `0x10219954` | `*(obj+0x448)` | none |
+| `0x101a60e8` | `*(r31+4)` | `cmpw` on a different field |
+| `0x1021ecd0` | `*(r5+4956)` | `cmpwi` non-zero only |
+| `0x1022abac` | `*(r31+0x1778)` | `cmpwi` non-zero only |
+| `0x10126b88` | `*(r31+0x14)` | none |
+
+All five trust the field as the copy length. The strongest is `0x10219954`: the
+length is used twice (`0x1021993c`, `0x1021994c`) with no validation at all.
