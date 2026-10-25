@@ -4726,3 +4726,23 @@ exactly what the live read showed.
 
 Next: whether `obj+0x40` is ever non-zero, and who fills the sub-object at
 `obj+0x2C`.
+
+#### `obj+0x40` is zero too — the defect is upstream
+
+Live read at `0x104144bc`: `*(u16*)(obj+0x40) = 0x0`.
+
+So the source sub-object at `obj+0x2C` is empty as well, and the copy at
+`0x10242b0c` faithfully copies zero. The copy is not dropping anything.
+
+The chain of empty fields is now three deep:
+
+```
+obj+0x144 (count) = 0
+obj+0x140 (array) = 0
+obj+0x130 (handler) = 0
+obj+0x40  (source count) = 0
+```
+
+Everything upstream is unpopulated. The defect is at the top of this chain, not in
+any of the copies — and the pattern (three dead writers, dead setter, dead table)
+suggests the population code exists but is never invoked.
