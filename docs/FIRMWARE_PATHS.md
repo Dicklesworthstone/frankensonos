@@ -5469,3 +5469,16 @@ device routes AVTransport because its model is real; the guest is forced to ZP10
 with a model *code* of 0. If registration is gated on a per-model service mask,
 the mask for code 0 is the thing to find — and it is a data table keyed by the
 same code the switch uses (20..34).
+
+### BoldOrchid: unbounded strcpy into a 64-byte field
+
+`0x10284648: bl strcpy` copies the function's **first argument** (`r27`, set from
+`r3` at `0x10284548`) into `obj+0x17CC` with no bound.
+
+The destination is 64 bytes: the very next field is `obj+0x180C`
+(`0x10284650: addi 3, 29, 6156`), so `0x180C - 0x17CC = 0x40`.
+
+So any caller-supplied string of 64+ bytes overruns into the following field.
+The function has no `bl` callers (pointer-reached), so the reachable surface is
+whatever passes `r3` — the next step is to find that caller and confirm the string
+is attacker-controlled (a SOAP argument would make it pre-auth on :1400).
