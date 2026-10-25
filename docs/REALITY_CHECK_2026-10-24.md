@@ -104,9 +104,10 @@ conf suppresses it - `GetZoneAttributes` answers 200 with the zone name. With `/
 present, `/audio_tap` answers 404 instead of 403, i.e. the unlock gate the HLS write needs is passed in
 the lab. The remaining guest blocker is the model: it resolves to ZP100, whose service set has no
 AVTransport, so nothing can be played; libflash is never dlopened (the MDP shim is moot). The service set is a count at `obj+0x140` and an
-index array at `obj+0x770`; AVTransport is simply absent from that array, and the index encoding into
-the table at `0x1052cd18` (halfword `lhax` over a pointer-shaped table) is the one thing left to
-decode before the route can be added. Corrections that got it there - `pkill -x`, tmux not
+index array at `obj+0x770`; the 11-entry inventory that array feeds is complete and correct (AVTransport
+is in it), but a breakpoint proves that lookup is **not on the request path** - the request dispatcher
+itself is still unfound. That dispatcher is the single remaining hop; a breakpoint on a working route's
+handler (`/audio_tap`, `0x1000abd8`) and its LR chain is the way to it. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
