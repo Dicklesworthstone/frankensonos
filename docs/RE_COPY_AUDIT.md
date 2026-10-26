@@ -65,6 +65,49 @@ The setter `0x101cbbc8` is why this is interesting: it stores the length **only 
 (`cmplwi 7,3,1024` at `0x101cbbbc`) and imposes no upper cap, so the field is by construction a "long
 value" and the only question is how long the producer lets it get.
 
+**Setter semantics, corrected (2026-10-26).** `r29` is the `strncasecmp` result, not the span: the code
+continues only when `strncasecmp(url,"x-file-cifs://",14) == 0`, so `r29` is always **0** at the store.
+The three-way branch at `0x101cbbbc` is therefore: span `== 1024` → no store; span `< 1024` → store the
+span; span `> 1024` → **store 0**. So the first `memcpy` at `0x101ccc9c` is bounded by 1 023 and cannot
+overflow on its own.
+
+**The unbounded copy is the second one, `0x101cccd0`.** Immediately after, the same function does
+
+```
+101cccb4  bl   strchr            ; strchr(url + stored_len, '/')
+101cccb8  addi 0, 29, -1
+101cccbc  sub  27, 3, 0          ; len2 = slash - (tail - 1)
+101cccc4  mr   5, 27
+101ccccc  mr   3, 28             ; dst = sp+16 + stored_len
+101cccd0  bl   memcpy            ; no clamp, no NULL check on the strchr result
+```
+
+`len2` is the distance from the first `/` after the stored value to the **next** `/`, plus one — i.e. the
+length of the first path segment, straight off the wire, with no bound. A missing second `/` makes
+`strchr` return NULL and `len2` becomes `-(tail-1)`, a ~4 GiB `memcpy`. The `strlcpy` at `0x101cccf4`
+then gets `1024 - (stored_len + len2)`, again computed after both copies.
+
+**Overwrite map** (offsets from the copy destination `sp+16`, frame 2 160, LR saved at `sp+2164`):
+
+| bytes written | clobbers |
+|---|---|
+| 2 100 | saved `r21` |
+| 2 104 / 2 108 / 2 112 | `r22` / `r23` / `r24` |
+| 2 116 / 2 120 / 2 124 | `r25` / `r26` / `r27` |
+| 2 128 / 2 132 / 2 136 | `r28` / `r29` / `r30` |
+| 2 140 | `r31` |
+| 2 144 | caller frame start (back chain) |
+| 2 148 | **saved LR** |
+
+So the wire shape that reaches LR is a short host plus a first path segment of ~2 130+ bytes
+(`x-file-cifs://h/<2130 a's>/x`), because a host long enough to push the span past 1 024 zeroes the stored
+length and collapses the first copy.
+
+**Live status: not yet confirmed.** `.202` and `.81` both refuse `SetAVTransportURI` with 1023 in the
+current fleet state, and `AddURIToQueue` accepts the same DIDL (200 at host 50/1 200/3 000 and at path
+2 100/2 200) without crashing — so the DIDL `<res>` alone does not reach this copy and the route is still
+the open edge (see §1's caller note).
+
 ### 2.2 `0x1a0d40` — first append into a 1 024-byte inline buffer, check applied to the wrong copy
 
 ```
