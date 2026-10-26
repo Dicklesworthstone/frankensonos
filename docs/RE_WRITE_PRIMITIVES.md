@@ -610,3 +610,26 @@ wire only by *creating* a saved queue whose title is that long; a long ObjectID 
 
 Two consequences for a trigger: the name is truncated at 1024 first (`0x401` buffer at `FUN_101a000c`), and
 the copy is only reached when the abstract file has an entry.
+
+## CreateObject: 713 for every DIDL shape tried (2026-10-26)
+
+Moved to `.84` (S1 57.23, **standalone** — `.202` is a slave of the unreachable `.5.137`, where queue ops
+fail with 800) and made the queue non-empty first (`AddURIToQueue` of a local silent MP3 returned
+`FirstTrackNumberEnqueued 4`; `Browse Q:0` then reports `TotalMatches 4`). Volume 0.
+
+Every CreateObject still answers **713** (CantCreateObject):
+
+| ContainerID | Elements |
+|---|---|
+| `SQ:0` | item, `object.container.playlistContainer`, empty `r:resMD` |
+| `SQ:0` | `container` element, same class |
+| `SQ:` | `container` element, same class |
+| `SQ:` | item with `r:resMD` |
+| `SQ:0` | item, no `res` |
+| `SQ:` | item with `id="SQ:0"` |
+| `SQ:` | item with `r:resMD` containing the **real queue DIDL** (1 516 bytes from `Browse Q:0`) |
+
+So the two cheap hypotheses are eliminated: a non-empty queue and a standalone coordinator are both in
+place, and the DIDL is still rejected. The SCPD declares only `ContainerID`/`Elements` and no class
+constraint, so the accepted shape has to come from the binary (the CreateObject handler) rather than from
+guessing — the same route that resolved the `/api` shape.
