@@ -5672,3 +5672,23 @@ object. The record is filled by the credential path (`0x10215ca0` → `0x1014e22
 so a request fills the record and the snapshot write happens on the next tick. No direct `:1400` →
 sink edge is established yet; the open question is which tick drives `obj+0x14` and whether a request
 can force it.
+
+### BoldOrchid: the sink is a state machine keyed on record+8
+
+`0x10229cf8` is the tail of a writer that switches on `record+8`:
+
+```
+10229318: lwz 0, 8(31)       ; state
+1022931c: cmpwi 7, 0, 1
+10229320: bt 30, 0x10229350
+10229324: cmpwi 7, 0, 2
+...
+10229d04: cmpwi 7, 25, 199   ; 200-record cap
+```
+
+So the "record type" is the state field at `record+8`, and the blob is written by
+whichever state handler runs. The type is therefore not a separate tag — it is the
+state machine's own state, set by the caller before each write.
+
+That means "which record type carries a caller blob" resolves to: whichever state
+writes the caller's buffer. The state handlers are the next read.
