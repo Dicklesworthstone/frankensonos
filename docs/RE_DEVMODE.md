@@ -217,3 +217,37 @@ same two digests sit in the S1 57.23-74170-1-12 `anacapad` at `0x50c0e4` /
 preimages are per-client values that are not shipped as literals. The remaining
 source is the iOS app or a partner build; the derivation tool takes any
 `libsecrets.so`.
+
+## Where a statement can actually be obtained (2026-10-25)
+
+There is no generator on the device and none in any public repo. Checked:
+GitHub code search for `urn:sonos:device`, `urn:sonos:model`,
+`1.3.6.1.4.1.44974` and "Sonos Device Authentication" returns only this repo;
+the controller and the Android app carry the page, not a statement.
+
+Three sources exist, in order of availability:
+
+1. **The portal.** `https://developer.sonos.com/devmode/` is a Salesforce
+   Experience Cloud site; unauthenticated it 302s to
+   `/s/login?startURL=%2Fdevmode%2F` (Aura app, no public Apex endpoint), so it
+   needs the owner's Sonos login. The device's own `GET /devmode` supplies the
+   three inputs the form wants: model, device id and version, plus the
+   single-use `csrfToken` (`0x4f3fbc`, format at `0x686000`).
+2. **A device that has already been unlocked.** A successful POST persists the
+   statement: `0x4f3b44` calls `0x4f3e40` with flag 1, which
+   `constructJFFSRootPath(out, 1024, "debug")` (`0x4f3e48`, literal `0x69539c`),
+   `mkdir(out, 0777)`, `strlcat(out, "/devmode.bin")` (`0x4f3ed6`) and
+   `open64(out, O_WRONLY|O_CREAT|O_TRUNC, 0600)` — i.e.
+   **`/jffs/debug/devmode.bin`**. The temp form is `/tmp/devmode.tmp.bin`
+   (`0x4f3ef8`, flag 0). There is no route-table entry for it, but
+   `/status/ZPLocalSettingsFile/<name>` joins the settings root with `<name>`
+   and one `..` reaches `/jffs` (verified live for `../VERSION`), so
+   `GET /status/ZPLocalSettingsFile/../debug/devmode.bin` should return it.
+   **Untested — needs a unit that has ever accepted a statement.**
+3. **A captured statement from the same build.** The key is per build (see
+   `API_KEY_ALLOWLIST.md`), and the id is inside the signature, so a capture
+   only replays on the device it was issued for and only on that build.
+
+The two fixed digests in `ZZ0218` are *not* a shortcut: the function is dead in
+86.10-80260 (see `FIRMWARE_PATHS.md`), and even if wired, a fixed PEM would
+still have to be obtained once.

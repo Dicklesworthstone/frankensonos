@@ -32,16 +32,28 @@ parameters (`RparseNextQueryStringParam`) and accepts exactly:
 - `button` = `delete` (optional; sets a flag),
 - `csrfToken`.
 
-The decoded statement goes to `0x4ede64`, which calls `ZZ0130` (extracts a
-pointer/length pair) and then **`ZZ0218`**, whose whole body is two
-`memcmp(..., 32)` calls against values it computes with `ZZ0058` — the same
-hash helper the `X-Sonos-Api-Key` check uses (`ZZ0058` = `ZZ0062`/`ZZ0064`/
-`ZZ0061`, i.e. hash init/update/final). There is **no RSA verify on this
-path**: no `ZZ0109`, no `ZZ0121`, no compiled-key lookup.
+**Correction (2026-10-25): the live POST path is RSA-gated via `ZZ0137`;
+`ZZ0218` is dead code in 86.10-80260.** The earlier "hash-gated" reading came
+from `ZZ0218`'s existence, not from the call graph.
 
-That matters: the devmode gate is a hash equality, so a captured valid
-statement is replayable, and forging reduces to controlling whatever bytes
-`ZZ0218` hashes rather than to holding a Sonos private key.
+The real chain is `0x4aa958` -> `0x4f4240` -> method 5 **and** a
+`content-type: application/x-www-form-urlencoded` compare -> `0x4f419c`
+(a 4 s rate limiter: `slti 3` at `0x4f41be`, `sleep` at `0x4f41c4`) ->
+`0x4f5990` (body read, 2048 cap, 2000 ms) -> `0x4f403c` (form parse) ->
+`0x4f3b44` -> **`ZZ0137`** at `0x4f3b96`. `0x4f3b44` also enforces
+`len < 1025` (`sltiu s0,1025` at `0x4f3b56`) and maps the result to
+403 / 409 / 200 at `0x4f4166` / `0x4f416c` / `0x4f4156`.
+
+`ZZ0218`'s only caller is `0x4edf32`, and **no reference to `0x4edf32`
+exists in the image** — not as a direct `jal`, not as a branch, not as a
+pointer word at any alignment or with the ISA bit set, not in `.init_array`.
+Its two pinned digests (`0x60dfecfc…` at length `0x424`, `0xbac0d052…` at
+`0x34a`, table `0xd878`) are the *old* fixed-PEM form; the table behind them
+also carries the PEM labels, the `1.3.6.1.4.1.44974.3`/`.4` OIDs and the
+"Sonos Device Authentication Root CA" names, so it is a certificate-builder
+dictionary, not a live gate. Live timing agrees: a parser reject answers in
+0.6–1.0 s, a run that reaches the RSA verify takes 2.7–5.7 s (bead `8h3`),
+where a SHA-256 compare would be sub-millisecond.
 
 NCC whitepaper: what maps to our lines and what does not
 
