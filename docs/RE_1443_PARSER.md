@@ -176,3 +176,23 @@ smaller than the wrapped value is the bug shape.
 not a Ghidra type artefact. The consumer reads the field back through the unresolved GOT pointer, so
 whether the *copy* uses the truncated value or the original is still the open question; if it copies
 the original into a buffer sized from the truncated field, any JSON string over 64 KiB is an overflow.
+
+## Resolved: the copy uses the truncated u16, because the descriptor has no other length
+
+Full store list of `FUN_005f1890` (the only builder of this descriptor), from `0x5f1890`:
+
+```
+0x5f1892 sw a2,0x4(a0)    0x5f1894 sw a2,0x8(a0)    0x5f189a sh a3,0x18(a0)   <- the length
+0x5f18a4 sw s0,0x0(a0)    0x5f18a6 sw a2,0xc(a0)    0x5f18b0 sw a1,0x1c(a0)
+0x5f18b2 sw a2,0x10(a0)   0x5f18aa/0x5f18ac sb v0,0x1a/0x1b(a0)
+0x5f18b4 sb v1,0x20(a0)   0x5f18b8 sb v0,0x21(a0)
+```
+
+There is **no 32-bit length field**: the length exists only as the halfword at `+0x18`. Whatever
+the interface method does, it can only read the truncated value, so a JSON string of `65536 + n`
+bytes is copied as `n`.
+
+That settles the :1443 question in the negative for "the original length is used": the bug is a
+16-bit wrap of an attacker-controlled length, and it becomes an overflow exactly when the
+destination is a fixed buffer smaller than the wrapped value. Readers of `+0x18` exist (e.g.
+`0x48068a lhu a1,24(a2)`); the remaining work is matching one to a fixed destination.
