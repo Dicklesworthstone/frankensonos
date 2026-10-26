@@ -5844,3 +5844,25 @@ inside the result, not the object id.
 hangs — including on `memcpy`, which is a stub — so it is the process handshake, not analysis cost.
 `objdump` remains the working tool; the next attempt should be a direct stdin protocol test rather than
 more headless runs.
+
+### BoldOrchid: all four copies in 0x101cc878 are unbounded, lengths by pointer subtraction
+
+```
+101cca44: sub 29, 27, 3      ; len = p - q
+101cca50: addi 5, 29, 1
+101cca58: bl memcpy          ; dst = r1+16
+
+101ccb94: sub 29, 3, 4       ; len = p - q
+101ccba0: bl memcpy          ; dst = r22 (r1+16)
+
+101cccbc: sub 27, 3, 0       ; len = p - q
+101cccc4: mr 5, 27
+101cccd0: bl memcpy          ; dst = r28 = r23 + r28
+```
+
+So the function is a span splitter: it walks the browse result and copies each
+span with a length derived by subtraction, never by a cap. `0x101ccc9c` (the
+`obj+0x1070/0x1074` pair) is the same shape.
+
+Two of the four write to the stack at `r1+16`, so the 2160-byte frame is the bound
+for those — the same failure mode as the URL splitter, one frame smaller.
