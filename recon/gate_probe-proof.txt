@@ -1,0 +1,59 @@
+# gate_probe.py proof run — 2026-10-26, .202 (S1 57.23), muted
+
+device 192.168.4.202  gate probe  sizes 3900..6000
+  A n=3900  code=404      t=0.039738 pre=200 post=200 -
+  A n=4000  code=curlrc56 t=         pre=200 post=200 REACH
+  A n=4010  code=curlrc56 t=         pre=200 post=200 REACH
+  A n=4020  code=curlrc56 t=         pre=200 post=200 REACH
+  A n=4100  code=curlrc56 t=         pre=200 post=200 REACH
+  A n=4500  code=curlrc56 t=         pre=200 post=200 REACH
+  A n=5000  code=curlrc56 t=         pre=200 post=200 REACH
+  A n=5328  code=curlrc56 t=         pre=200 post=200 REACH
+  A n=5400  code=curlrc56 t=         pre=200 post=200 REACH
+  A n=6000  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=3900  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=4000  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=4010  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=4020  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=4100  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=4500  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=5000  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=5328  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=5400  code=curlrc56 t=         pre=200 post=200 REACH
+  B n=6000  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=3900  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=4000  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=4010  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=4020  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=4100  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=4500  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=5000  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=5328  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=5400  code=curlrc56 t=         pre=200 post=200 REACH
+  C n=6000  code=curlrc56 t=         pre=curlrc28 post=200 REACH
+  D n=3900  code=500      t=0.054737 pre=200 post=200 REACH
+  D n=4000  code=500      t=0.046156 pre=200 post=200 REACH
+  D n=4010  code=500      t=0.040335 pre=200 post=200 REACH
+  D n=4020  code=500      t=0.072282 pre=200 post=200 REACH
+  D n=4100  code=500      t=0.029398 pre=200 post=200 REACH
+  D n=4500  code=500      t=0.140745 pre=200 post=200 REACH
+  D n=5000  code=500      t=0.064787 pre=200 post=200 REACH
+  D n=5328  code=500      t=0.113207 pre=200 post=200 REACH
+  D n=5400  code=500      t=0.038855 pre=200 post=200 REACH
+  D n=6000  code=500      t=0.045772 pre=200 post=200 REACH
+  E n=3900  code=200      t=0.034002 pre=200 post=200 REACH
+  E n=4000  code=200      t=0.079760 pre=curlrc28 post=200 REACH
+  E n=4010  code=200      t=0.132020 pre=200 post=200 REACH
+  E n=4020  code=200      t=0.115714 pre=200 post=200 REACH
+  E n=4100  code=200      t=0.100176 pre=200 post=200 REACH
+  E n=4500  code=200      t=0.094332 pre=200 post=200 REACH
+  E n=5000  code=200      t=0.045334 pre=200 post=200 REACH
+  E n=5328  code=200      t=0.052078 pre=200 post=200 REACH
+  E n=5400  code=200      t=0.099439 pre=200 post=200 REACH
+  E n=6000  code=200      t=0.108472 pre=200 post=200 REACH
+
+# DesiredIcon pushed past the probe's range:
+E n=8000   code=200 post=200
+E n=12000  code=200 post=200
+E n=16000  code=200 post=200
+E n=24000  code=200 post=200
