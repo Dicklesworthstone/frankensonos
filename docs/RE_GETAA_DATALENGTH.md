@@ -254,3 +254,28 @@ The log is the only plausible sink and it is not reachable on this build:
 
 So the leak is real in memory (host cases A/D) but has no output on 86.10 until either a devmode
 statement unlocks `/logger` or a caller that uses `fs->name` is found in the S2 art library.
+
+## The QUERY_INFO buffer is 64 KiB, not 4 KiB — and the fault address is only half-controlled
+
+The client's QUERY_INFO request asks `OutputBufferLength = 65535` (`0xFFFF`, body+4). So the receive
+buffer is 64 KiB and the over-read only leaves it when the payload approaches that: `payload = 100 +
+2*UNITS`, so `UNITS = 32717` (payload 65 534) is the last size that fits, and `32718` (65 536) already
+overruns the request limit.
+
+At `UNITS = 32717` the request stops returning 200. The walk distance past the buffer end decides the
+outcome, and that distance is not stable:
+
+| DELTA (units past the buffer) | result |
+|---|---|
+| 1, 1024, 4096, 8192, 16384, 20480 | 200 (a NUL halfword is found) |
+| 18432 | 52 (empty reply, worker aborted) |
+| 24576, 32768 | 52 |
+
+Non-monotonic (18 432 aborts while 20 480 survives) because the walk stops at the first NUL in
+whatever heap data follows, not at a fixed boundary. Eight concurrent requests at `32717:1024` all
+returned 200, and a stale-`'A'` filler request (65 534-byte payload, then a 200-byte payload with
+`FileNameLength = 65634`) also returned 200 — neither groom moved the stop point.
+
+So the address is controlled only at its *start*: it is `buffer + payload + 2*DELTA`, and DELTA is
+ours. The end is the first NUL in the following heap, which varies run to run. A deterministic fault
+needs the buffer to end at the break (or an mmap guard page); the reply size alone does not achieve it.
