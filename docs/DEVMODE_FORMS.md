@@ -77,6 +77,14 @@ handler is `0x4f4240`:
 - Return mapping in `0x4f403c`: `ZZ0137` 0 -> **403**, 1 -> **409** (already
   installed; the log line is `R_ALLOW_SSH_PUBKEY_INSTALL may n...`), 2 -> 200
   (`Statement installed`).
+- `ZZ0137` returns the signature-verify result directly (S1 `0xad78`-`0xad84`
+  loads the compiled SPKI and jumps to the verify, then returns its value), so a
+  403 is a parse **or** binding/signature failure, never a transport problem.
+- The 409 branch is effectively dead in this build: it needs
+  `ZZ0018(payload, len, 0x2f0000)` (`0x4f3824` -> bit test, bit 0 = LSB of the
+  last payload byte) and `0x2f0000` is bit 3,076,096, while the payload is at
+  most 1024 bytes, so the first test is always 0 and the `&&` short-circuits.
+  Treat 200 as the only success.
 - There is **no** `ZZ0130` or `ZZ0218` call anywhere in the whole route chain
   `0x4f4240 -> 0x4f419c -> 0x4f403c -> 0x4f3b44`.
 
