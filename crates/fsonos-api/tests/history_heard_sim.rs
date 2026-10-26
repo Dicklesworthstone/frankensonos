@@ -272,3 +272,47 @@ fn what_a_room_plays_when_the_daemon_starts_is_the_play_it_left() {
     assert!(eventually(|| plays().len() == 2), "{:?}", plays());
     sim.shutdown();
 }
+
+#[test]
+fn an_already_playing_house_is_recorded_without_another_speaker_event() {
+    let (sim, lan, live) = house(&["Kitchen"]);
+    let kitchen = id(&live, "Kitchen");
+    control::play_uri(&*lan, &live.households(), &kitchen, EVENING, "").unwrap();
+    assert!(eventually(|| plays_now(&live, &kitchen, EVENING)));
+    // Let bootstrap and command read-backs settle before starting the
+    // follower, so it cannot rely on a pending startup NOTIFY.
+    std::thread::sleep(Duration::from_secs(1));
+    let surface = daemon(&sim, &live, MemStore::default(), Box::new(SystemClock));
+    let plays = || surface.recent_plays(&Client::Cli, None, 10).unwrap();
+    assert!(eventually(|| plays().len() == 1), "{:?}", plays());
+    assert_eq!(plays()[0].source_uri, EVENING);
+    sim.shutdown();
+}
+
+#[test]
+fn consecutive_duplicate_queue_occurrences_are_each_recorded_once() {
+    let (sim, lan, live) = house(&["Kitchen"]);
+    let kitchen = id(&live, "Kitchen");
+    let host = sim.player("Kitchen").unwrap().ip;
+    let repeated = "https://stream.example.invalid/repeated.mp3";
+    for _ in 0..2 {
+        soap::add_uri_to_queue(&*lan, host, repeated, "", false).unwrap();
+    }
+    let surface = daemon(&sim, &live, MemStore::default(), Box::new(SystemClock));
+    let plays = || surface.recent_plays(&Client::Cli, None, 10).unwrap();
+    control::play_queue_from(&*lan, &live.households(), &kitchen, 1).unwrap();
+    assert!(eventually(|| plays().len() == 1), "{:?}", plays());
+
+    // Two distinct listens well inside the recent-write deduplication window.
+    control::next(&*lan, &live.households(), &kitchen).unwrap();
+    assert!(eventually(|| live
+        .player(&kitchen)
+        .is_some_and(|p| p.queue_position == Some(2))));
+    assert!(eventually(|| plays().len() == 2), "{:?}", plays());
+    control::pause(&*lan, &live.households(), &kitchen).unwrap();
+    control::resume(&*lan, &live.households(), &kitchen).unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(plays().len(), 2, "{:?}", plays());
+    assert!(plays().iter().all(|p| p.source_uri == repeated));
+    sim.shutdown();
+}
