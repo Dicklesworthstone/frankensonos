@@ -47,6 +47,11 @@ The real chain is `0x4aa958` -> `0x4f4240` -> method 5 **and** a
 `ZZ0218`'s only caller is `0x4edf32`, and **no reference to `0x4edf32`
 exists in the image** — not as a direct `jal`, not as a branch, not as a
 pointer word at any alignment or with the ISA bit set, not in `.init_array`.
+The form cannot even feed it: the base64 decoder is given a 1024-byte output
+cap (`li v1,1024` at `0x4f4092`, stored as the decoder's limit at `0x4f40a0`),
+and `0x4f3b44` rejects `len >= 1025` at `0x4f3b56` — so the 1060-byte form
+`ZZ0218` wants can never arrive. Its wrapper also dispatches on
+`(input[0] & 5) == 1`, i.e. base64 `K`, not the PEM `-`.
 Its two pinned digests (`0x60dfecfc…` at length `0x424`, `0xbac0d052…` at
 `0x34a`, table `0xd878`) are the *old* fixed-PEM form; the table behind them
 also carries the PEM labels, the `1.3.6.1.4.1.44974.3`/`.4` OIDs and the
