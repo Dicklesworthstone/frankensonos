@@ -547,3 +547,14 @@ to whatever parses it.
 Neither body form crashed the daemon at 6 000, so the splitter is either not reached from those two
 actions or its span is not the whole icon string. That is the next thing to establish: whether
 `SetZoneAttributes`/`SetAVTransportURI` route through `0x1007ad60` at all.
+
+### Correction: the URL-span overflow does not kill the daemon
+
+`recon/crash_oracle.py` polls `/status/zp` at 100 ms and classifies every probe. Result: **112
+consecutive probes stayed 200** while `N=5800` answered 408, and the daemon was healthy afterwards
+(`getaa` 404 again). So a 408/000 on the request is a *dropped request*, not a daemon death — my earlier
+"crash" reading of 000 was wrong, and the SMB over-read (which really does drop `/status/zp` for 5–20 s)
+is still the only confirmed daemon-level crash.
+
+That means the URL-span copy is either not overflowing at all, or overflowing into a frame whose
+corruption the daemon absorbs. Both are testable, and the oracle is now the instrument that decides it.
