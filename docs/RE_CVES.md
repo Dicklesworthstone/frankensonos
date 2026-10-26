@@ -950,6 +950,18 @@ That is also the shape of the fix: drop the span copy, decode into the bounded b
 `.202` result (404 up to N≈3900, 408/000 from N≈5300) is the whole affected surface, and `.86` is a
 control rather than a second target.
 
+### 11b. Finding 2.1 (`0x101cc878`) — unpublished, and no S2 counterpart found
+
+Same CVE question, same answer: the 22-entry Sonos vendor list has nothing about a long value, a title or a
+SavedQueues entry being copied into a fixed buffer, so 2.1 is unpublished too.
+
+Scope is *probably* S1-only but **unproven**, unlike the URL span. The S2 build has no `memcpy` whose
+length is loaded from an object field inside a large frame — the whole binary yields four large-frame
+copies with any field- or slot-loaded length, and the closest (0x4ba8ba, `memcpy(sp+32, s0+340, 3276)`
+guarded by a flag byte at `336(s0)`) is a fixed size, not a field. So the 2.1 shape does not obviously
+exist on S2, but the object layout differs enough between builds that "not found by this search" is not
+"absent". Treat `.86` as untested for 2.1 rather than as a control.
+
 ## 14. Is there a newer S1 to diff, and is the Play:1 affected? — no, and unproven
 
 Two questions that decide whether the URL-span bug can be scoped by comparison instead of by testing.
