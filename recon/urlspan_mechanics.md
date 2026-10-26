@@ -30,3 +30,26 @@ for an unauthenticated request.
 Exact saved-register offsets (which N lands on which saved GPR and on the LR) need
 the function prologue's `stmw`/`stw` offsets; the prologue was not located in the
 time available, and the frame size did not appear as a literal `stwu -5344`.
+
+## Clobber map (prologue at 0x1007ad60)
+
+The splitter **is** the function: `0x1007ad60: stwu 1, -5344(1)`. Saved-register
+offsets from the prologue, and the URL length `X` that reaches each (dst is
+`r1+16`, `len = X-23`, so `X = offset - 16 + 23`):
+
+| saved | stack offset | bytes written | URL length X |
+|---|---|---|---|
+| r18 | 5288 (0x14A8) | 5272 | 5295 |
+| r24 | 5312 (0x14C0) | 5296 | 5319 |
+| r26 | 5320 (0x14C8) | 5304 | 5327 |
+| r27 | 5324 (0x14CC) | 5308 | 5331 |
+| r28 | 5328 (0x14D0) | 5312 | 5335 |
+| r30 | 5336 (0x14D8) | 5320 | 5343 |
+| **LR** | **5348 (0x14E4)** | **5332** | **5355** |
+
+So `X = 5355` is the first length that reaches the saved LR, and `X = 5335`
+already corrupts saved `r28`. The live 408/000 at N=5300-6000 brackets this
+exactly: 5300 is below r18, 5355 is the LR.
+
+Note `mfcr`/`stw 12` is not present — the CR is saved via `mfcr 12` and stored
+elsewhere, so the map above is the complete saved-GPR set.
