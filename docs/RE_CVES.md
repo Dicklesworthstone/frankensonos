@@ -356,8 +356,10 @@ nested content model is a pre-auth stack overflow through any SOAP/DIDL body.
 
 ## 9. Is there a write in expat 2.5.0, not just the amplification DoS? — no
 
-Short answer: **no reachable write.** Every write-class expat bug is either already fixed by 2.5.0 or
-needs an input class this daemon cannot produce. The amplification DoS (§8c) is the whole of it.
+Short answer: **no heap write.** Every heap-write expat bug is either already fixed by 2.5.0 or needs an
+input class this daemon cannot produce. There is one stack-exhaustion bug (CVE-2026-4224) and it is gated
+on an `ElementDeclHandler`; see the sibling section above, which owns that question. The amplification DoS
+(§8c) remains the only ungated issue.
 
 ### 9a. The write-class CVEs all predate 2.5.0
 
@@ -409,5 +411,7 @@ CVE-2026-72522 (OOB read plus infinite loop in the `*_toUtf16` functions) needs 
 ### 9c. Consequence
 
 The expat surface is a **thread-pinning DoS only** (§8c: ~75 ms per MB, four concurrent bodies pin all
-four workers). Nothing in expat gives a write primitive on this fleet without a > 2 GB body or an
-external-entity handler the daemon never installs.
+four workers). Nothing in expat gives a *heap* write on this fleet without a > 2 GB body or an
+external-entity handler. The one stack bug (CVE-2026-4224) needs an `ElementDeclHandler`; whether the
+daemon registers one is still unproven — expat is stripped and carries no `XML_*` symbols, so the
+setter block cannot be located by name.
