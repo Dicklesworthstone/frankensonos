@@ -5591,3 +5591,10 @@ straight-line call inside a dispatcher that switches on a record type
 accumulated record set larger than that overruns it. `+0x448` is the blob length
 being appended, `+0xE58` its data. Next: which record type carries a
 caller-controlled blob, and whether the serializer is on the :1400 response path.
+
+**The serializer is a callback, not a vtable method.** The constructor at
+`0x1021fb60` stores `0x10219cf8` (the serializer's own entry, `mflr r0` at
+`0x10219cf8`) into `object+0x14`, and the singleton `0x10545d78` is set to that
+object. So the record sink is reached through a function pointer; the object is
+created once at init. Remaining question is unchanged and now narrow: which
+record type carries a caller blob, and does any :1400 request reach this sink.
