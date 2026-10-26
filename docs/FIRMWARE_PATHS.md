@@ -5806,3 +5806,17 @@ N=5300-6000).
 
 The length is derived from the parsed span, not from a cap, so it is fully
 attacker-controlled by URL length.
+
+## Ghidra on this host (for the next person)
+
+Ghidra's release zips ship no macOS decompiler binary (`os/` has only `linux_x86_64` and `win_x86_64`),
+so it must be built: `make decomp_opt` in `Ghidra/Features/Decompiler/src/decompile/cpp` with
+`ADDITIONAL_FLAGS=-I$(brew --prefix binutils)/include` and
+`BFDLIB=$(brew --prefix binutils)/lib/libbfd-<ver>.dylib` (the unversioned `libbfd.dylib` does not exist,
+so `-lbfd` picks the static archive and fails on `_bfd_errmsg`). Install the result at
+`Ghidra/Features/Decompiler/os/mac_arm_64/decompile`.
+
+The binary then refuses to start with "Could not discover root of Ghidra installation" even though
+`server/server.conf` exists; `FileManage::discoverGhidraRoot` walks `argv[0]` and does not accept the
+layout. **Set `SLEIGHHOME=<ghidra root>`** and it works. `rea doctor` reports every Ghidra check green
+with `GHIDRA_INSTALL_DIR` set, but `rea function` still fails at the analysis step.
