@@ -1,13 +1,22 @@
 # smb_outage on .86 (86.10), 2026-10-26
-# oracle: /status/zp every 100 ms, 6 s settle after each request
+# oracle /status/zp every 100 ms, 30 s settle, fresh filename per delta
+# server restarted per delta, 1.5 s after the 445 bind
 
-delta=0            getaa=200   0.50s  down=None up=None outage=None
-delta=0x1000       getaa=404   0.18s  down=None up=None outage=None
-delta=0x8000       getaa=404   0.19s  down=None up=None outage=None
-delta=0xffff       getaa=404   0.14s  down=None up=None outage=None
-delta=0x10000      getaa=404   0.07s  down=None up=None outage=None
+delta=0            getaa=000  1.47s  down=23:38:17.218 up=23:38:21.059 outage=3.841  reset
+delta=0x100        getaa=404 20.49s  down=23:38:43.161 up=23:38:59.545 outage=16.384 timeout
+delta=0x1000       getaa=404  0.60s  down=23:39:24.075 up=23:39:24.726 outage=0.651  timeout
+delta=0x8000       getaa=404  0.42s  down=None up=None outage=None
+delta=0xffff       getaa=404  0.87s  down=None up=None outage=None
+delta=0x10000      getaa=404  0.17s  down=None up=None outage=None
 
-# An earlier run at delta=0 recorded down=20:57:39.844 up=20:57:41.142
-# outage=1.298 timeout - one transient, not reproducible at the same delta.
-# Every over-read delta makes the client reject the reply (404) and never
-# takes the daemon down; the oracle saw no DOWN at any delta.
+# Earlier runs, same shape:
+#   delta=0 000 0.45s down=23:30:59.705 up=23:31:03.584 outage=3.879 reset
+#   delta=0x1000 404 0.20s down=23:31:50.303 up=23:31:54.168 outage=3.865 reset
+#   delta=0 000 0.35s down=23:33:25.270 up=23:33:29.126 outage=3.856 reset
+#   delta=0 000 0.51s down=23:35:09.041 up=23:35:12.822 outage=3.781 refused
+#
+# The daemon does go down, always by itself and always back within 17 s.
+# The crash lands only on the first request after a server restart; later
+# requests get a fast 404 from the client until it has had a long gap
+# (30 s restores it), which is why the earlier 6 s-settle table read
+# "never down". A 404 here is the client rejecting, not a served image.

