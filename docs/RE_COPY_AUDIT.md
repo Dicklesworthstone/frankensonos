@@ -790,3 +790,12 @@ the blob at 0x400, so it lands on the exact 174-byte overrun case from the budge
 and played (`Seek TRACK_NR 6` → 200, `GetPositionInfo` shows the CIFS URI). The daemon stayed up
 throughout (oracle: 223 samples, 0 downs), so the serializer overrun is either not on the play path or
 benign at these sizes.
+
+**The serializer overrun is not observable on play or on any status page.** Playing the padded record
+(CIFS mp3) and then the HLS track, and hitting all eight `/status/*` pages, left the daemon up every
+time (oracle: 240 and 281 samples, 0 downs). With the blob capped at `0x400` and the title at 255 the
+maximum overrun is ~174 bytes into `.data`, so it is very likely benign by construction — a weak
+primitive, not a crash.
+
+`CreateSavedQueue` on the coordinator (AVTransport, correct service now) answers **811** with a
+2 046-byte title and the queue as the source, so the saved-queue route still needs its argument shape.
