@@ -675,6 +675,24 @@ Wire settability: the URI is carried by the item, and items are created from bro
 The wire entry that lets a chosen `res` URI into a queue is `AddURIToQueue` with DIDL metadata,
 so a `x-file-cifs://<long host>/x` res can be planted and then read back by browsing the queue.
 
+**Cheapest carrier on `.202`, and the 1 024 cap (2026-10-26).** `.202` is a slave of an unreachable
+coordinator (`RINCON_000E585C3DF801400` at `192.168.5.137`), so `AddURIToQueue` answers 800 and
+`BecomeCoordinatorOfStandaloneGroup` answers 401. The queue is therefore unusable there. The cheap
+carrier that does work is **`CreateObject` into `FV:2`**: one SOAP call, no queue, no coordinator, no
+audio — `200` and a fresh `ObjectID` (`FV:2/4`, `FV:2/5`).
+
+But **every field of a browse result is truncated to 1 024 characters.** A 2 200-char `dc:title` comes
+back as 1 023; a 2 200-char `res` comes back as 1 024 — and the same cap applies to a queue item
+browsed on `.81` (res 1 024 of 2 200). Since the setter only stores a value when the prefix exceeds
+1 024, and the prefix is `first_slash_after_scheme + 1`, a 1 024-char `res` gives a prefix of 1 025 →
+the field is stored as 0, and a 1 022-char `res` gives 1 023. Either way the first copy is <= 1 023,
+so **the browse result alone cannot overflow the 2 100-byte buffer**; the second copy (the first path
+segment, also capped at ~1 009 by the same truncation) is the only candidate and it is still short.
+
+So the open question is whether the item constructor runs on the *untruncated* string at
+`AddURIToQueue`/`CreateObject` time rather than on the browse result — the truncation is in the
+response, and a 2 200-byte `EnqueuedURI` is accepted by the queue on `.81` without a crash.
+
 ## 7. What actually feeds 2.1: a CIFS failure-message formatter, not a title
 
 Correction to the framing in §2.1. `0x101cc878` is not a generic "long value" reader — it is the
