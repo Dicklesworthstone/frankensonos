@@ -52,6 +52,11 @@ Verification, all three halves:
 - the differential vector above covers the MDP3→key half; only a real
   MDP3+OTP dump is still missing.
 
+Section headers are `{magic, type, size, flag}`; `flag & 4` marks an encrypted
+section and those carry `MAGIC_FW` (`886499ca`). Plaintext payload sections
+carry `621da74d` instead. The validator reports any flag-4 section that lacks
+the FW magic rather than skipping it silently.
+
 ## Second layout: fenway (model-8 family)
 
 `trulyspinach/sonos-fenway` `includes/mdp.h` documents a second MDP3 layout for

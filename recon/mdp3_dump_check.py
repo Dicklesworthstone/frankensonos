@@ -16,6 +16,7 @@ Exit 0 only if every step holds. Exit 2 means the dump is not usable at all.
 import argparse
 import hashlib
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -106,7 +107,12 @@ def main():
             data = open(a.package, "rb").read()
             for i, (off, size) in enumerate(mdp3.sections(data), 1):
                 body = data[off + 16:off + size]
+                flag = struct.unpack_from("<I", data, off + 12)[0]
                 if body[:4] != mdp3.MAGIC_FW:
+                    if flag & 4:
+                        print("section %-2d flagged encrypted but magic %s "
+                              "(skipped)" % (i, body[:4].hex()))
+                        ok = False
                     continue
                 try:
                     aes = subprocess.run(
