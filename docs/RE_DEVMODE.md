@@ -459,3 +459,11 @@ second way to lift a statement off any already-unlocked player in the wild.
 
 The app itself does not embed a statement (its only PEMs are the bare labels) and has no unlock URL, so
 the statement is still pasted in by the user.
+
+## The portal is alive; only the login is missing
+
+`https://developer.sonos.com/devmode/` answers **302** (to the login), while the old
+`www.sonos.com/en-us/unlock` is 404. So the minting page still exists and the owner's login is the only
+missing piece — after that `scripts/devmode_submit.py HOST` reads the model / device id / version /
+csrfToken, posts the statement with the spacing the form wants, and verifies the result. Nothing else
+in the chain needs the owner.
