@@ -1,55 +1,75 @@
-# The 1112-byte record sink: which record carries a blob, and how it is reached
+# The 1112-byte record sink: what fills it, and whether :1400 reaches it
 
-Singleton `0x10545d78`, constructor `0x1021fb60`, sink pointer stored at
-`obj+0x14` = `0x10219cf8` (ctor `0x1021fbd4`). The sink switches on
-`*(record)` (types 2..77).
+Lane LilacRaven, follow-up to the BoldOrchid thread in
+[`FIRMWARE_PATHS.md`](FIRMWARE_PATHS.md). Binary: the PPC S2 `anacapad`
+(`captures/research/ghidra-upd/anacapad`, `.text` at `0x1000755c`). All offsets are
+file offsets equal to vaddrs.
 
-## The blob-carrying record is type 77
+## The copy and its missing check
 
-Case `0x1021a9f4` (entered from the type-77 compare at `0x10219d18`):
+`0x10219848` is the blob-append case of the record serializer. It writes into the
+static buffer at `0x1054d5d0` (`addi r30, r11, -0x2a30` at `0x1021987c`) and the
+only size test is **after** the copy:
 
 ```
-0x1021a9f8  lwz 29, 23928(30)      ; the singleton itself
-0x1021aa00  lwz 31, 1744(29)       ; second blob = a pointer field
-0x1021aa04  addi 28, 29, 702       ; first blob = inline staging slot
-0x1021aa0c  cmpwi 7, 31, 0         ; no pointer -> skip
-0x1021aa58  bl 0x10546ad8          ; memcpy(obj+5133, obj+702, 33)
-0x1021aa6c  bl 0x1023b55c          ; strlcpy(obj+5166, *(obj+1744), 128)
+10219950: add   3, 29, 30        ; dest = 0x1054d5d0 + (name_len + 7)
+10219954: bl    memcpy           ; len = *(r31+0x448)
+10219958: lwz  0, 0x448(r31)
+1021995c: add  0, 29, 0
+10219960: cmplwi 7, 0, 0x458     ; 1112 — logs only, does not stop the copy
 ```
 
-So type 77 carries a **33-byte inline blob** and a **128-byte string via a
-pointer**. The staging slot is one of two 98-byte slots selected by
-`0x10069550` (`+702` / `+800`, chosen by a bool).
+So the destination is 1112 bytes and the copy is unchecked. The record is
+`r31 = *(singleton+8) + 0xE58`; the name is at `r31+0`, the blob length at
+`r31+0x448`, the blob at `r31+0x48` (`addi r4, r28, 0xea0` at `0x10219910`).
 
-## How the blob gets there
+The path is selected by bit `0x80` of the record's type word at `r31+0x44`:
+`andi. r9, r0, 0x80` at `0x102198ac` — set means "no blob", clear means "append it".
 
-`0x100b7c14` is the filler: it reads from a stream virtual in
-`min(256, remaining)` chunks into a 256-byte stack buffer (`0x100b7c60`,
-`0x100b7c94`) and hands each chunk to `0x1019d068`, which writes it into the
-staging slot; the loop ends when the reader is drained. Its callers are the
-record parser `0x100b7d30` (called at `0x100b8004` and `0x100b80c0` with the
-slot and length in r6/r7).
+## Who fills the blob, and the cap
 
-That parser is dispatched by **URI scheme**: `0x101a7560` compares the scheme
-against `wav` (`0x10471cac`) and `wma` (`0x10471d40`) and calls the decoder
-`0x101a73b8`; the surrounding string block is the scheme table
-(`x-sonosprog-http:`, `x-sonosapi-hls-static:`, `x-sonos-spotify:`, `file://`,
-`sirradio:`, …) with the error string `bad encaps: %s (%s)` at `0x10453a60`.
+`0x10224c58` is the only writer of the length:
+
+```
+10224c30: lwz  9, 0x34(r28)      ; type/id
+10224c34: cmpwi 7, 9, 0          ; 0 -> skip
+10224c3c: lwz  0, 0x38(r28)      ; blob length
+10224c40: cmpwi 7, 0, 0          ; <= 0 -> skip
+10224c48: cmpwi 7, 0, 0x400      ; > 1024 -> skip
+10224c58: stw  0, 0x448(r3)      ; length
+10224c5c: lwz  5, 0x38(r28)
+10224c60: stw  9, 0x44(r3)       ; type word (bit 0x80 lives here)
+10224c68: bl   memcpy            ; dest = r3+0x48, src = r28+0x3c
+```
+
+The source is a parsed descriptor `{id @+0x34, length @+0x38, data @+0x3c}`. The
+same function copies the record's name with `strlcpy(..., 0x41)` at `0x10224c2c`,
+so 64 bytes.
+
+## Arithmetic
+
+`64 + 7 + 1024 = 1095 <= 1112`. **Through this writer the sink is safe by 17
+bytes**, which is why the missing check has not bitten. The 1112 sink only
+overflows if either the name or the blob exceeds those caps.
+
+Open item, and the reason the sink is not closed: the serializer's name is at
+`r31+0` (`strlen` at `0x102198e0`), but the writer's `strlcpy` target is a
+different base (`r3 = *(conn+0x5c1c)`, name at `r3+0`). `+0xE58` is never written
+by a `stw`/`stb` in the whole `.text` (two hits, both `stw ..., 0xE58(r1)` on a
+stack frame), so the serializer's name field is filled through some other base.
+Until that is resolved the 64-byte bound cannot be assumed for it.
 
 ## Does a :1400 request reach it
 
-Yes, indirectly: the chain is the **stream reader for a playback source**, and
-a source is started by `SetAVTransportURI`/`Play` on `:1400`. The caller of the
-decoder is `0x100a84f4` inside `0x100a80f4` (a 1280-byte frame that also sets a
-10000 ms timeout and calls the stream opener `0x101756f4`); it is a virtual
-method (no direct `bl`, no stored pointer), so the exact vtable slot is the
-next read. The blob the sink receives is the **stream's own bytes**, not a
-request body: a caller controls it by pointing the player at a URI whose bytes
-it serves.
+Yes. The module is on the UPnP/XML response path, not the cloud path:
 
-## Consequence
+- `0x10081800` calls the module entry `0x1021df7c` at `0x10081814` and then emits
+  `kStorageMedia val="NONE, NETWORK"/>` (`0x1045fe80`, used at `0x10081828`).
+- A second caller, `0x10082e5c`, also calls `0x1021df7c`.
+- The record-type dispatcher in the serializer switches on `-0x70, -0x6f, -0x6d,
+  -0x77, -0xc7, -0x64` at `0x1021a1d8`–`0x1021a214` (indices 8..12) with a default
+  of `0x15`, i.e. a small closed set of UPnP record kinds, not a caller-chosen
+  string.
 
-Type 77 is the only sink case with a copy from the staging area, and the copy
-is a fixed 33 bytes into `obj+5133` — so the sink itself is not the overflow;
-the interesting surface is the 256-byte chunk buffer in `0x100b7c14` and the
-`0x1019d068` consumer, which is where a chunk-length bug would live.
+So a LAN `:1400` request that produces one of those record kinds reaches the
+sink; the blob is whatever the parsed descriptor carries, capped at 1024.
