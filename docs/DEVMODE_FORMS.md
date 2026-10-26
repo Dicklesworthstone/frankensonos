@@ -151,3 +151,16 @@ Practical consequence: the only remaining step is an authenticated portal
 session. `scripts/devmode_submit.py` already does the device half (reads the
 model/id/version/csrfToken, posts with the 5.5 s spacing, scores by latency), so
 one statement from the portal is a single command.
+
+## Validator location and the version window
+
+`ZZ0137` is an **undefined import** in `anacapad` (`Elf32_Sym` index 832, value
+0, `shndx` 0; PLT slot `0x6db5d0`, GOT `0x6f6164`), resolved from
+`libsonoscrypto.so.*`. The S2 copy of that library is not in this repo — only
+the S1 `.so.1` is — so the S2 validator body has to be read on the device.
+
+The S1 body (`ZZ0137` at `0xab54` in `57.23-74170-1-12/libsonoscrypto.so.1`)
+shows the window check exactly: the lower bound at `+0x18` must be `< 0x390018`
+(`0xac0c`) and the upper bound at `+0x1c` must be `>= 0x390017` (`0xac50`), i.e.
+the statement must cover `57.23` exactly. There is no PEM branch: the first
+compare is the magic (`lwl`/`lwr` of `0x28721e71` at `0xabac`/`0xabb8`).
