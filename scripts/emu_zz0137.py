@@ -6,9 +6,10 @@ function the device calls from POST /devmode. Running it here answers "would the
 device accept this statement, and if not, which check failed" without a device.
 
 Usage:
-    emu_zz0137.py STATEMENT [DEVICE_ID_HEX] [MODEL] [VER_MAJOR] [VER_MINOR]
+    emu_zz0137.py STATEMENT [DEVICE_ID|str:DEVICE_ID] [MODEL] [VER_MAJOR] [VER_MINOR]
 
-STATEMENT is the raw decoded TLV (not base64). DEVICE_ID_HEX defaults to
+STATEMENT is the raw decoded TLV (not base64). DEVICE_ID is hex, or ASCII
+with a `str:` prefix (that is what the player's Device ID is). It defaults to
 000102030405060708090a0b, MODEL to 0x2f, the version to 57.23.
 
 The signature verify is stubbed: reaching it prints "signature verify" and the
@@ -69,7 +70,13 @@ def main():
         print(__doc__)
         return 2
     blob = open(sys.argv[1], "rb").read()
-    devid = bytes.fromhex(sys.argv[2]) if len(sys.argv) > 2 else bytes(range(12))
+    arg = sys.argv[2] if len(sys.argv) > 2 else ""
+    if arg.startswith("str:"):
+        devid = arg[4:].encode()
+    elif arg:
+        devid = bytes.fromhex(arg)
+    else:
+        devid = bytes(range(12))
     model = int(sys.argv[3], 0) if len(sys.argv) > 3 else 0x2F
     major = int(sys.argv[4], 0) if len(sys.argv) > 4 else 57
     minor = int(sys.argv[5], 0) if len(sys.argv) > 5 else 23

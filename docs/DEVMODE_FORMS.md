@@ -156,9 +156,10 @@ and `blasty/sonos` only mention `/devmode` in passing, and the S2 APK carries no
 statement asset.
 
 Practical consequence: the only remaining step is an authenticated portal
-session. `scripts/devmode_submit.py` already does the device half (reads the
-model/id/version/csrfToken, posts with the 5.5 s spacing, scores by latency), so
-one statement from the portal is a single command.
+session. `scripts/devmode_submit.py` is the one-command flow: it reads the
+model/id/version/csrfToken, takes the statement as a deeplink/base64/file/stdin,
+validates it offline with `scripts/emu_zz0137.py` before spending a POST, posts
+with the 3.2 s spacing, and probes the unlock surface on success.
 
 ## Validator location and the version window
 

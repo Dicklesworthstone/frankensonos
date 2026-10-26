@@ -367,22 +367,32 @@ inside the signed region, so a blob minted for another serial fails on this
 device. The portal, for this device, is the only artifact that can work.
 
 So a statement must be minted with the owner's login. `scripts/devmode_submit.py`
-does the device half in one command: it reads the model / device id / version /
-csrfToken the form wants, posts the returned base64 with the 5.5 s spacing the
-4 s limiter needs, and scores the reply by elapsed time (0.6–1.0 s = parser
-reject, 2.7–5.7 s = reached the signature check, 200 = accepted, 409 = already
-unlocked).
+is the one-command flow for the device half:
+
+```
+./devmode_submit.py IP                                   # portal inputs only
+./devmode_submit.py IP --statement 'sonos://devMode/set?statement=...'
+./devmode_submit.py IP --statement stmt.b64              # or a file, or -
+pbpaste | ./devmode_submit.py IP --statement - --verify
+```
+
+It reads the model / device id / version / csrfToken the form wants, accepts the
+statement as a deeplink, base64, file or stdin, **validates it offline first**
+(`scripts/emu_zz0137.py`, so a malformed or wrong-device blob never costs a
+POST), posts it with the 3.2 s spacing the daemon's 3 s limiter needs, retries
+on 5xx, and scores the reply by elapsed time (0.6–1.0 s = parser reject,
+2.7–5.7 s = reached the signature check, 200 = accepted, 409 = valid but
+capability-less). `--verify` then probes `/unlock`, 2323, 22 and `/testenv`.
+Exit codes: 0 accepted, 1 rejected, 2 unreachable, 3 failed the offline check.
 
 ## Replay tool and the response codes
 
-`recon/devmode.py IP [STATEMENT]` does the whole exchange: GET `/devmode`, scrape the `csrfToken` out of
-the hidden input, base64 the statement, POST it, then check port 22. The form is an 11×80 textarea,
-which matches the 842-byte PEM shape.
-
-Observed codes: a 1-byte statement gets **403** (rejected), not 400 — so 403 is the "statement did not
-verify" answer and must not be confused with the route-level 403 that `/unlock` returns unconditionally
-on both lines. A successful POST is expected to answer 200 and open port 22; the tool exits 0 only when
-port 22 is actually open, so it cannot report a false success.
+`scripts/devmode_submit.py` supersedes `recon/devmode.py` (still present, no
+offline gate). Observed codes: a 1-byte statement gets **403** (rejected), not
+400 — so 403 is the "statement did not verify" answer and must not be confused
+with the route-level 403 that `/unlock` returns unconditionally on both lines.
+A successful POST answers 200; `--verify` reports port 22 rather than assuming
+it, so the tool cannot report a false success.
 
 ## Why `/unlock` is always 403: it is loopback-gated
 
