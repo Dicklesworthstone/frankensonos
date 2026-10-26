@@ -5715,3 +5715,20 @@ that is the "record type" in practice.
 `*(that+8)`, then `*(that+8)` again, compares it to 0 and writes 1 back (`stw 0,8(9)` after `li 0,1`).
 So the serializer's behaviour is selected by a state word, not by a record type — the record type only
 picks which state transition runs.
+
+### BoldOrchid: the serializer has exactly one memcpy, and it is fixed-length
+
+Scanning the whole sink function (`0x10227000`-`0x10229d30`) for `bl memcpy` gives
+exactly one hit:
+
+```
+10227518: addi 4, 31, 940    ; src = record+0x3AC
+1022751c: li 5, 33           ; fixed 33 bytes
+10227520: addi 3, 1, 512     ; dst = stack
+10227524: bl memcpy
+```
+
+So the 1112-byte serializer copies **no caller blob with memcpy** — every variable
+part goes through `strcat`/`sprintf` instead. That means the record-type question
+is really "which state `strcat`s a caller string", and the bound to check is the
+destination buffer, not a copy length.
