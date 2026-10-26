@@ -5598,3 +5598,20 @@ caller-controlled blob, and whether the serializer is on the :1400 response path
 object. So the record sink is reached through a function pointer; the object is
 created once at init. Remaining question is unchanged and now narrow: which
 record type carries a caller blob, and does any :1400 request reach this sink.
+
+### BoldOrchid: the record sink and its cap
+
+Constructor `0x1021fb60` builds the record once:
+
+```
+1021fbc8: addi 9, 9, -25352    ; 0x10229cf8
+1021fbd4: stw 9, 20(31)        ; obj+0x14 = sink
+1021fbb0: addi 11, 11, -9496   ; 0x1054dae8
+1021fbbc: stw 11, 8(10)        ; record+8 = buffer
+```
+
+The sink `0x10229cf8` is the tail of a writer that caps at **200 records**
+(`10229d04: cmpwi 7, 25, 199`), then returns 0.
+
+So the sink is a bounded record appender, not a copy. The blob it carries is
+whatever the caller passes; the cap is on record count, not on blob length.
