@@ -74,6 +74,31 @@ MDP3+OTP pair exists (the public paths are the EL3 exploit on a physical
 Amlogic device and `mdputil` on a rooted fenway unit). So the tool now covers
 both documented layouts and still waits on one dump.
 
+## How the two inputs come off the owner's own hardware
+
+Neither input is in any shipped package, so the dump procedure is part of the
+tool's contract:
+
+- **S1 (PPC, 57.23).** `/dev/mdp` is the MDP device (`mdputil` strings at
+  `0x3240` and `0x3270`). `mdputil` is statically linked with the whole
+  `libupgrade` MDP API (`upgrade_get_mdp3` at `0x74a`, `upgrade_mdp_write` at
+  `0x898`) and prints `MDP3VERSION=%u` (`0x2edc`), but its getopt string
+  `Aa:whfv:M:m:r:e:s:Ik:b:l:F:C:P:T:i:d:Bx:y:z:L:` (`0x2c6c`) has no dump
+  option, so it never emits a key blob. A dump is `dd if=/dev/mdp bs=1
+  skip=0x1200 count=0x4000` (the smdp page offset, `--smdp`) or a small helper
+  against `upgrade_get_mdp3`.
+- **OTP on S1.** No userland tooling: `grep -rl otp s1_rootfs` matches only
+  `sbin/udhcpc` and `etc/services`, there is no `/dev/otp`, and the inflated
+  kernel (`57.23-74170-1-16-kernel.uImage`, gzip at `0x5779`) has no `efuse`
+  string — the OTP is read by the bootloader, so a userland read has to go
+  through `devmem` on the eFUSE window.
+- **Play:1 / fenway.** `mdputil` is present in that rootfs too; the fenway
+  layout applies (`--layout=fenway`).
+- **Amlogic (86.10).** `anacapad` loads `libsonos-mdp.so.1` (`0x1be5d`) and
+  imports `hal_flash_get_mdp_wrapper` / `hal_flash_get_mdp2_wrapper`
+  (`0x1beeb` / `0x1beb2`), but the library is not in the `s2_overlay` tree, so
+  the 86.10 rootfs is needed to read its MDP3 accessor.
+
 ## What userland reaches today
 
 `anacapad` imports `hal_flash_get_mdp`, `hal_flash_get_mdp2`,
