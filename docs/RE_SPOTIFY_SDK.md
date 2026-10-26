@@ -21,20 +21,32 @@ state machine, not a function prologue: it sets `r26 = 2` and branches back to
 `0x10229318` (`b 0x10229318` at `0x10229d0c`), so the caller must arrive with
 the object in `r31` and the machine's state already loaded.
 
-## The record is a track, not a generic blob
+## The 1112-byte record is the audio-out credentials blob
 
 The size function `0x102490c8` is `li r3,0x458; blr` — 1112 bytes exactly. Its
 caller `0x102490d0` compares the requested size against it (`cmplw r7,r3` at
 `0x102490f0`, `bge` to the error at `0x102490fc`) and allocates through
-`0x102194a0`. The strings in that range name the source files:
+`0x102194a0`. The strings in that function name
+`.../esdk/src/modules/mod_audio_out.c` (`0x1048057c`) and
+`track_delivery_ended` (`0x104809ac`).
 
-- `.../esdk/src/track_pipeline.c` (`0x10489a88`)
-- `.../esdk/src/track.c` (`0x10489818`)
-- `id: %u : -> UPCOMING` / `UPCOMING -> PLAYING` / `PLAYING->` (`0x10489af4`,
-  `0x10489b0c`, `0x10489b2c`)
+The sink is a **record dispatcher**, not a copy: it switches on the record's
+first word. Type 50 (`cmpwi 7,4,50` at `0x10219de0`) is the credentials blob
+handler `0x10219848`, whose strings are `SpCallbackConnectionNewCredentials`
+and the assert text `data_size <= sizeof(blob_aligned)`. The append is
 
-So the record is the SDK's per-track pipeline state (upcoming/playing/download),
-and the sink is its state advance.
+```
+1021994c  lwz  5, 0x448(31)      ; len, from the record
+10219950  add  3, 29, 30         ; dst = 0x1054d5d0 + running offset
+10219954  bl   memcpy            ; src = rec + 0x48
+10219960  cmplwi 7, 0, 0x458     ; the bound check, AFTER the copy
+```
+
+The check only reaches an `assert` (`0x102199c4`) whose handler `0x10219464`
+does not abort, so an over-long record set corrupts silently. The destination
+`0x1054d5d0` is `.bss` and the next global (`0x1054dac8`, the 4776-byte
+SocketManager state, `memset` at `0x1021c73c`) is 1272 bytes away — an append
+past 1272 clobbers live state, not padding. (Record-count cap: 200.)
 
 ## Reachability: no `:1400` request reaches it
 
