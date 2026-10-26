@@ -74,3 +74,25 @@ consumed before any validation of the terminator. If the body buffer is exactly
 parser is handed a length longer than the allocation. To confirm: find the vtable slot that
 reaches `0x4ece50`, read where the destination buffer is allocated and whether anything
 terminates it, then send a body whose last byte is non-zero and whose allocation is tight.
+
+## The string sink chain (named)
+
+A JSON string value reaches a copy through this fixed chain:
+
+```
+rapidjson ReaderHandler::String (0x5f4f90)
+  -> sonos::json::bindString (0x5f1428)          ; args: (iface, key, type, char *text, uint len)
+  -> FUN_005f13c0 (0x5f13c0)                     ; builds a descriptor, calls iface->vtable[1]
+  -> RJsonDataBinding vtable 0x6ab9c8 slot 1 = 0x5f16e4
+  -> FUN_0051b9b4(dest, 0x240000)                ; the copy
+```
+
+`bindString`'s signature is `(RJsonDataBindingInterface&, unsigned int, unsigned char, char*,
+unsigned int)` — the last argument is the JSON string length, i.e. **attacker-controlled and
+unvalidated at this point**; the destination comes from the binding table, not from the packet.
+The constant `0x240000` is a descriptor word (high byte 0x24), not a length.
+
+`0x51b9b4` is the same body the token lane hit as the "real getter"; it is a jump target with no
+prologue of its own and the linear MIPS16 decode from it is misaligned, so its internal bound
+check (if any) is the remaining read. The next step is a correct entry point for `0x51b9b4` and
+then the destination sizes in the binding tables that feed `bindString`.
