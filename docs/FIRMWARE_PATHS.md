@@ -5774,3 +5774,13 @@ least `0x89 + len`.
 Callers: `0x10212420` and `0x1021255c`, both passing caller-supplied pointers. If
 either destination is a fixed buffer while the source length is packet-derived,
 that is the bug.
+
+### BoldOrchid: both callers pass pointer pairs, not fixed buffers
+
+`0x10212420` and `0x1021255c` both do `mr 4, 31; mr 3, 30` — destination and source
+are both pointers supplied to the enclosing function, not stack buffers at the call
+site. So the copy is a record-to-record transfer and the destination's size is
+decided wherever those pointers are allocated, one level up.
+
+That means `0x101a60e8` is only a bug if some allocation site sizes the destination
+from something other than `src+4`. The copy itself is faithful.
