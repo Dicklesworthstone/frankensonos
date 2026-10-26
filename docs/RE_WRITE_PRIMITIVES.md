@@ -516,3 +516,29 @@ via base `0x67113c + 0x2f3c`).
 
 So a 101 needs all eight headers present, an auth token, and connection type 0/1 — the protocol header and
 the upgrade headers alone leave at least one flag clear and the status at 0x48, which is the 400.
+
+### True entries and the exact handshake condition (2026-10-26)
+
+The symbols are odd (`0x4e8d7d`, `0x4e7d45`); the real entries are the even addresses, each preceded by the
+PIC prologue `li v0,33 / la v1,4efb60 / sll / addu / move gp` and then `save`:
+**prepareWebsocketHeader = `0x4e8d7c`** (`save 40,ra,s0-s1` at `0x4e8d8c`),
+**captureWebsocketCommandToken = `0x4e7d44`** (`save 136,ra,s0-s1` at `0x4e7d52`). Decoding from the odd
+symbol address is what produced the misaligned read.
+
+`prepareWebsocketHeader` is a strict chain: `updateHeaderTargets(this,1)` → if 0,
+`captureWebsocketCommandToken(this)` → if 0, `activateNamespaceFromHeader(this,1)`. Its dispatcher
+(`0x4e8dc4`) only calls it when the connection-kind tag matches (`*(a1) == *(a0+9496)`), `*(a1+8) == 1`,
+`*(a3) == 1` and `*(a1+48) == 0`.
+
+`captureWebsocketCommandToken` then requires, in this order:
+
+1. `0x4e7d5c` `lw v0,10344(a0)` + `0x4e7d60` `cmpi v0,52` — **`*(u32 *)(this+0x2868)` must be exactly
+   0x34**, else it jumps straight to the fail at `0x4e7e76`;
+2. `this[0x24f4]` (`hasAuthToken`) must be non-zero;
+3. `isConnectionType(this+0x18, 0, 2)` must return 0 — connection type 2 sets status **0x4e**, and a
+   connection type outside {0,1} sets **0x4f**; only 0 and 1 proceed to `RAuthSplitToken` on the buffer at
+   `this+0x1bb` with the 0x2000 cap.
+
+Status 0x34 is produced **only** by `checkIfValid` when all eight header flags are set; any missing flag
+leaves 0x48. So the 400 is not a missing subprotocol and not a missing UDN alone — it is the status word
+never reaching 0x34, and the first of the three conditions above is the one to satisfy.
