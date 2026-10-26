@@ -611,7 +611,7 @@ reason, so the table is short on purpose.
 
 | CVE | pub | sink | verdict |
 |---|---|---|---|
-| CVE-2026-92392 | 10-14 | `struct Curl_easy` teardown when an **upload** gets `RST_STREAM` (`HTTP_1_1_REQUIRED` / `REFUSED_STREAM`) | **the one live candidate.** The daemon uploads mime posts over HTTP/2 and a hostile server can send `RST_STREAM`. Gated on the version being 8.12.0–8.22.0, which cannot be pinned (§5a) — so it stays *unproven*, not reachable. |
+| CVE-2026-92392 | 10-14 | `struct Curl_easy` teardown when an **upload** gets `RST_STREAM` (`HTTP_1_1_REQUIRED` / `REFUSED_STREAM`) | **the one live candidate, and the upload half is now proven.** The `POST` literal (`0x664aa4`) is loaded in the same function as the multipart builder (`0x4f0cdc` next to `0x4f0e8a`), `cr_mime_*` wrappers exist (×6) and `nghttp2`/`ALPN` are linked, so the daemon POSTs a mime body over HTTP/2 and a hostile server can answer `RST_STREAM`. Only the version gate (8.12.0–8.22.0) is open, and it cannot be pinned (§5a). |
 | CVE-2026-92391 | 10-14 | `curl_mime_free` recursion | dead: needs thousands of *nested* parts; the daemon's mime trees are built in code, not from a request. |
 | CVE-2026-92387 | 10-14 | pingpong response loop (`pingpong` area) | dead: no pingpong protocol strings. |
 | CVE-2026-92389 / -92388 | 10-14 | TFTP direction confusion / FTP wildcard write callback | dead: no `tftp://`, no `ftp://`. |
@@ -635,6 +635,9 @@ Nothing new is reachable. The in-window set reduces to what §7c and §8c alread
 libsmb2 over-reads and one measured expat DoS. The only unresolved in-window item is CVE-2026-92392, and
 it is unresolved for one reason only — the curl version cannot be pinned from a stripped static binary
 (§5a). Pinning it needs a live `curl_version_info` or a build date, not more static work.
+
+Re-swept 2026-10-26: nothing new against any shipped component (libsmb2's last entry is still 10-22). The
+window is exhausted; the next useful move on this lane is the version pin, not another pass.
 
 ## 9. Window 2026-09-26 … 2026-10-26, named sinks only
 
