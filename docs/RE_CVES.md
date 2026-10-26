@@ -319,3 +319,23 @@ The six `XML_Parse` call sites are `0x1038d890`, `0x1038d9b0`, `0x1038da3c`, `0x
 `0x1041ced4`.
 
 Harness: `/tmp/expat250/h.c` (not committed — throwaway, 20 lines).
+
+## expat 2.5.0: is there a write, not just the amplification DoS? (2026-10-25)
+
+Enumerated every expat CVE published since 2.5.0 (2022-10) and filtered for memory classes. **No heap write
+exists for 2.5.0 in that set.**
+
+| CVE | class | 2.5.0? | gate |
+|---|---|---|---|
+| CVE-2026-76641 | OOB **read** (CWE-125), external entities | yes | needs external-entity parsing |
+| CVE-2026-4224 | **stack overflow** (CWE-674) on a deeply nested content model | yes | needs a registered `ElementDeclHandler` **and** an inline DTD |
+| CVE-2026-102633 | integer overflow in `expat_realloc` (32-bit) | **no** — 2.7.2–2.8.5 only | — |
+| CVE-2026-66046 / 2025-59375 | O(N²) `storeAtts`, large allocations | yes | none — already ranked as DoS |
+| CVE-2026-93990 | UTF-16 surrogate accepted | yes | UTF-16 input |
+| CVE-2026-7210 | hash-flood entropy (Python binding) | n/a here | — |
+
+So the answer to "is there a write" is **no heap write, one stack-exhaustion bug**: CVE-2026-4224. Its gate is
+an `ElementDeclHandler`, which the daemon must register — the binary carries `requested feature requires
+XML_DTD support in Expat`, so DTD support is compiled in, but whether a handler is registered is unproven
+statically (expat is stripped, no `XML_*` symbols). If a handler is registered, an inline DTD with a deeply
+nested content model is a pre-auth stack overflow through any SOAP/DIDL body.
