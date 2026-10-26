@@ -46,3 +46,28 @@ control, Search 4 KB. All 200 (or 402 for the garbage filter), 9-24 ms, no RST a
 
 Both parsers are bounded and benign. Nothing reset, crashed or wedged on either build; the whole matrix is
 negative, with the S1-vs-S2 difference confined to how the 401 path handles an unread body.
+
+## 713 is "Restricted parent", and the daemon hard-codes it for `S:`
+
+CreateObject answering 713 for `SQ:`, `SQ:0` and `SQ:1` is not a DIDL problem. CDS:1 defines **713 =
+Restricted parent** (`UPnP-av-ContentDirectory-v1-Service.pdf`, the error table repeated for CreateObject,
+DestroyObject, ImportResource, ExportResource and TransferResource — `pdftotext` line 2857 etc.).
+
+The daemon agrees, and the check is a literal string compare:
+
+```
+101550fc  stwu 1, -16(1)
+10155100  lis 4, 4164 / addi 4, 4, 1836      ; 0x1044072C = "S:"
+10155114  addi 3, 3, 1041                    ; obj+1041 = the parent id
+10155118  bl 0x10546270                      ; strcmp
+10155124  li 3, 713                          ; equal -> 713, unconditionally
+1015512c  lwz 3, 4(31) / bl 0x101541d0       ; otherwise continue
+```
+
+So `S:` — the Saved Queues root — is rejected as a parent by construction. `SQ:` and `SQ:0` do not match
+that compare, so their 713 comes from the other two sites (`0x100ffb80`, a status→error mapping table, and
+`0x101686b8`, a default error path) and is still a restriction verdict, not a parse failure.
+
+Consequence: stop guessing ids. Browse the parent first and read the `restricted` attribute on each child;
+CreateObject only succeeds under a container whose `restricted` is `0`. The Elements DIDL is not the
+variable to fix.
