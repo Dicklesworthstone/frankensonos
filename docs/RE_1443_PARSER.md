@@ -247,3 +247,18 @@ Live on `.86`, every shape tried still answers **400 with an empty body**:
 (TLS) and `:1400`. So the route is right and the handler rejects before the chaos action runs —
 the parameter transport (query vs body vs header) or a required extra field is still unknown.
 `getChaosAction` itself only decides delay/drop from the entry state; the parse is upstream.
+
+## The `/api` route is a muse websocket, not a REST endpoint
+
+`/api` and `/websocket/api` are both matched routes (a nonsense path 404s, these 400), and the firmware
+carries the handshake it wants:
+
+```
+Sec-WebSocket-Protocol: lechmere.%u
+lechmere.%hhu%n
+```
+
+`lechmere` is the muse websocket subprotocol. Sending `Sec-WebSocket-Protocol: lechmere.1` (and 2..10),
+with the upgrade headers, on either route, still answers 400 with an empty body — so the remaining
+condition is something else in the handshake (the api-key header alone does not satisfy it either).
+The JSON binder sits behind that handshake, which is why nothing JSON-shaped ever reached it.
