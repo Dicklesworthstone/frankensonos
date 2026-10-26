@@ -66,7 +66,10 @@ The same header also shows the page is the **third** member of `struct smdp`
 (MDP1 512 + MDP2 4096, then MDP3), so a whole-region dump carries it at
 `0x1200`; `--smdp` slices exactly that page out before parsing (tested with a
 synthetic smdp image). `otp OTP` prints the derived AES key so a dump can be
-sanity-checked before use.
+sanity-checked before use. Only `OTP[0xD0:0xE0]` is ever read (the reference's
+single OTP access, `sonostool.py:113`), so a partial dump down to `0xE0` is
+enough — the tool accepts it. `--layout=auto` picks the family from the field
+magic at `0x580` so an operator does not have to know it.
 
 The same repo's public dumps are kernel/rootfs only, and the
 `BookCatKid/sonos-firmware-archive` key-recovery ledger records that no public

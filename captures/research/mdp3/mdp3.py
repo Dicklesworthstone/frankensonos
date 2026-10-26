@@ -37,6 +37,7 @@ FENWAY_MAGIC = {
     "model": (bytes.fromhex("46372819"), bytes.fromhex("8dc6ccf4")),
 }
 LAYOUT = "amlogic"
+AUTO = False
 SMDP = False
 SMDP_MDP3_OFF = 512 + 4096  # struct smdp: MDP1 page, MDP2 page, then MDP3
 TAG = {"jffs": b"ubifs", "rootfs": b"rootfs", "model": b"model"}
@@ -53,7 +54,9 @@ def xor(a, b):
 
 
 def aes_key(otp):
-    if len(otp) != OTP_LEN:
+    # only OTP[0xD0:0xE0] is used (the reference's single OTP read), so a
+    # partial dump down to 0xE0 is enough.
+    if len(otp) < 0xE0:
         sys.exit("wrong OTP length")
     return hashlib.sha256(otp[0xD0:0xE0]).digest()[:0x10]
 
@@ -121,13 +124,15 @@ def sections(d):
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
-    global LAYOUT
+    global LAYOUT, SMDP, AUTO
     argv = [a for a in sys.argv[1:] if not a.startswith("--layout=") and a != "--smdp"]
     for a in sys.argv[1:]:
         if a.startswith("--layout="):
             LAYOUT = a.split("=", 1)[1]
         if a == "--smdp":
             SMDP = True
+        if a == "--layout=auto":
+            AUTO = True
     sys.argv = [sys.argv[0]] + argv
     cmd = sys.argv[1]
     if cmd == "selftest":
@@ -157,6 +162,14 @@ def main():
             if len(mdp) < SMDP_MDP3_OFF + MDP_LEN:
                 sys.exit("input too short for an smdp image")
             mdp = mdp[SMDP_MDP3_OFF:SMDP_MDP3_OFF + MDP_LEN]
+        if AUTO:
+            probe = mdp[OFF["jffs"]:OFF["jffs"] + 4]
+            if probe in FENWAY_MAGIC["jffs"]:
+                LAYOUT = "fenway"
+            elif probe == MAGIC_FSKEY:
+                LAYOUT = "amlogic"
+            else:
+                sys.exit("cannot detect layout at 0x%x" % OFF["jffs"])
     if cmd == "fields":
         for kind, off, magic in (("jffs", OFF["jffs"], MAGIC_FSKEY),
                                  ("rootfs", OFF["rootfs"], MAGIC_FSKEY),
