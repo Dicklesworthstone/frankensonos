@@ -152,3 +152,22 @@ The stub's `lw t9,-32724(gp)` targets `0x6f7b8c`, which is in `.got` (not `.got.
 start at `0x6f6008`), and no `DT_REL`/`DT_JMPREL` entry covers it, so the pointer is installed at
 runtime by an initializer. `bindStdString` itself is at `0x5f1621` (36 bytes) and
 `bindStdStringArrayAndSize` at `0x5f15e9`.
+
+## bindStdString / bindStdStringArrayAndSize: the "cap" is the attacker length truncated to u16
+
+Both are thin wrappers over the generic binder and are referenced **only** from the type table at
+`0x6f8ba8` (bindStdString) and `0x6f8bac` (bindStdStringArrayAndSize), i.e. their caller is
+`FUN_005f13c0`'s type dispatch, not a per-field site:
+
+- `bindStdString` `0x5f1620` → `FUN_005f13c0(5, iface, key, type, string*, len, …)`
+- `bindStdStringArrayAndSize` `0x5f15e8` → `FUN_005f158c(iface, count, 0, out, cap)` then
+  `FUN_005f13c0(5, iface, key, 0, string*, len, cap, …)`
+
+Neither wrapper clamps anything. The length reaches `FUN_005f1890`, which stores it as a
+**halfword**: `0x5f189a  sh a3,0x18(a0)`. `FUN_005f13c0`'s parameter is declared `undefined2` for
+the same reason.
+
+So the "cap" is not a cap: it is the attacker's JSON string length **narrowed to 16 bits**. A
+string of 65 536 + n bytes is passed on as n. Whether that overflows depends only on the
+destination size in the interface method (the unresolved `0x51b9b4` stub), so a fixed destination
+smaller than the wrapped value is the bug shape.
