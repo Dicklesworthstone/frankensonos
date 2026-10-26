@@ -262,3 +262,10 @@ lechmere.%hhu%n
 with the upgrade headers, on either route, still answers 400 with an empty body — so the remaining
 condition is something else in the handshake (the api-key header alone does not satisfy it either).
 The JSON binder sits behind that handshake, which is why nothing JSON-shaped ever reached it.
+
+Tried and rejected (all 400): subprotocol versions 0-16 and 20/32, role-shaped subprotocols
+(`lechmere.controller|player|admin|app`), a literal `lechmere:` / `X-Lechmere:` header, the
+`X-Sonos-Api-Key` + `X-Sonos-Corr-Id` pair, a `Host: lechmere.<id>.ws.sonos.com`, and query variants.
+The handler does work before rejecting (the 400 arrives after a delay, not immediately), so it is reading
+something and failing — `failed to read lechmere header: %d` is the message to chase, from
+`RMuseController::prepareWebsocketHeader` / `captureWebsocketCommandToken`.
