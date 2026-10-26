@@ -248,3 +248,70 @@ The in-process route is different and does exist: `anacapad` imports `hal_flash_
 is one function, `0x1028d1dc` (frame 4 816, strings `MDP flag update`, `/jffs/settings`, `/opt`,
 `Incorrect householdId`), called from the network-settings writer `0x1000894c` (`%s/netsettings.txt`). So an
 MDP3 read needs code execution in the daemon, not a request.
+
+## 8. In-window sweep restricted to shipped components (2026-09-25 … 2026-10-25)
+
+Window is the 30 days up to today. Only components that are actually in the images are listed; anything
+the fleet does not ship is dropped rather than scored.
+
+### 8a. Inventory, from the images (corrects §1)
+
+`57.23-74170-1-16-rootfs.bin` extracted to `/tmp/sq57` (squashfs, uncompressed). Every ELF, with the
+version string where one exists:
+
+| component | version | evidence |
+|---|---|---|
+| busybox | **1.24.2** — *not* v1.00/v1.14.1, those are the 34.16 and play1 trees | `strings bin/busybox` → `BusyBox v1.24.2` |
+| wpa_supplicant | **2.8** | `strings wifi/wpa_supplicant` → `wpa_supplicant v2.8` |
+| glibc | **2.3.5** | `strings lib/libc.so.6` → `glibc 2.3.5` |
+| zlib | **1.2.11**, static in `anacapad` | `strings opt/bin/anacapad` → `1.2.11` |
+| mbedTLS | 2.28.x | §7a |
+| libmpg123, libsbc, libuuid | unpinned (no version string; sonames only) | `lib/libmpg123.so.0`, `lib/libsbc.so.1`, `lib/libuuid.so.1` |
+| udhcpc | separate binary, not a busybox applet | `file sbin/udhcpc` |
+
+Applets actually compiled into busybox (probed): `find grep ifconfig insmod mount ping route telnetd
+wget`. **`tar`, `awk`, `gzip`, `unzip`, `dpkg-deb`, `httpd` are absent.**
+
+### 8b. In-window CVEs, scored
+
+| CVE | pub | component | applies? | reachable? |
+|---|---|---|---|---|
+| CVE-2026-115506 | 10-22 | expat ≤ 2.9.0 | **yes** (S2 2.5.0; S1 unpinned) | **live, DoS.** Entity amplification detected too late in `accountingDiffTolerated()`. Any SOAP/DIDL body reaches it — the wrapper calls `XML_Parse` on the raw body. Measured below. |
+| CVE-2026-110712 / -110713 / -110714 | 10-14 | libsmb2 4.0.0 | **yes** | **proven on 4.0.0**, §7c. `/getaa` QUERY_INFO reply. |
+| CVE-2026-115505 | 10-22 | libsmb2 4.0.0 | yes | needs `smb2_share_enum_async`; not shown on the `/getaa` path. |
+| CVE-2026-92392 | 10-14 | curl (static, unpinned) | unproven | h2 upload UAF; version cannot be pinned (§5a) and no upload site is named. |
+| CVE-2026-107695 / -107697 | 10-08 | FFmpeg 5.0.3 | yes | HLS demuxer; §2 already carries the measured self-reference negative. |
+| CVE-2026-78807 | 10-08 | wpa_supplicant 2.8 | yes | **local only** (CVSS AV:L) — driver-based PMKSA selection. Not a LAN door. |
+| CVE-2026-71971 / -71972 / -71974 | 09-29 | U-Boot | yes as a version matter | **not reachable here.** 71971 is `__net_defragment` (needs `CONFIG_IP_DEFRAG` and a network-booting U-Boot), 71974 is the Android bootmeth partition read, 71972 is the BMP RLE8 splash decoder. Sonos U-Boot does none of the three. |
+| CVE-2026-88833 / -88838 / -88842 / -92205 / -90954 / -108119 | 10-13…10-23 | busybox | yes as a version matter | **not reachable.** Every one is `tar`, `dpkg-deb`, `awk` or libarchive; none of those applets is compiled in (§8a). |
+| CVE-2026-8674 | 09-17 | glibc DNS stub resolver | **no** — affects 2.26…2.44, we ship 2.3.5 | n/a |
+| CVE-2026-58055 | — | nghttp2 | **no** — it is the `nghttpx` proxy, we ship `libnghttp2` | n/a |
+| CVE-2026-76844 | 08-24 (just outside) | zlib 1.2.11 | yes | `gz_write()` only; the daemon uses the raw inflate path, not `gzFile`. |
+| mpg123 | — | — | nothing in window | n/a |
+
+### 8c. CVE-2026-115506 measured on expat 2.5.0
+
+Built the exact tag (`R_2_5_0`) and drove it the way the daemon does — `XML_ParserCreate(NULL)` then
+`XML_Parse(body, len, 1)`, no `XML_SetParamEntityParsing`. General-entity nesting, `multi=100`,
+`depth=40`, `count=300`:
+
+| body | result |
+|---|---|
+| 747 B | error `limit on input amplification factor … breached`, 9.2 ms |
+| 15 KB | same error, 6.0 ms |
+| 71 KB | same, 9.3 ms |
+| 221 KB | same, 26.3 ms |
+| 521 KB | same, 38.6 ms |
+| 1.02 MB | same, 75.1 ms |
+
+So 2.5.0 **has** the accounting guard (the `expat: Accounting(%p): …` format string is in the S2 binary)
+and the bug is that it fires late: the work is done first, then the parse fails. Cost is ~75 ms per MB,
+capped near 100× amplification. A 256 KiB body — a size the `/notify` path is already known to accept —
+costs ~19 ms, so four concurrent bodies pin all four worker threads. That is a thread-pinning lever that
+stacks with the existing `/notify` stall, not a seconds-long hang on its own; the advisory's "tens of
+seconds" needs ~100 MB bodies.
+
+Parameter-entity shapes do **not** help: `%aN;` in content parses clean (`ok=1`) in 0.3 ms at 137 KB,
+because the expansion never lands in the document.
+
+Harness: `/tmp/expat250/h.c` (not committed — throwaway, 20 lines).
