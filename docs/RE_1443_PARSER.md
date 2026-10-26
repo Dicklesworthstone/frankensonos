@@ -210,3 +210,26 @@ auth: the string `Invalid request parameters` is referenced once, from the data 
 the handler validates a shape before anything else. Next: recover that shape (the `namespace`/`interval`/
 `delayMs` strings sit together at `0x282c88`, next to `MuseChaos`, which suggests a chaos-injection
 control endpoint) and then drive the JSON binder with an over-long string.
+
+## /api request shape (bb-p75)
+
+`:1443` is TLS-only and `/api/*` answers a bare 400 until the shape is right. The shape is in the
+string block at file offset `0x282c00` (vaddr `0x682c00`):
+
+```
+chaos: delaying request for %s#%s by %d ms | chaos: dropping request for %s#%s | MuseChaos
+<html><body>set: namespace=%s, command=%s, interval=%d, delayMs=%d</body></html>
+<html><body>Invalid request parameters</body></html>
+namespace | interval | delayMs
+```
+
+So the fault-injection endpoint is **MuseChaos** and takes `namespace`, `command`, `interval`,
+`delayMs`; success echoes them, failure is the "Invalid request parameters" body. The generic
+command-header binding table (`FUN_006084a4`, `0x6084a4`) registers the field names in order —
+`command, cmdId, namespace, groupId, sessionId, playerId, deviceId, userId, locationId,
+serviceId, householdId, corrId, authorization, intendedTargets, upnpAnacapaPort,
+upnpTimeoutMillis` — each via `FUN_005f53f4(obj, name, 5, index)`, i.e. type 5, which is the
+`bindStdString` family whose length is the truncated u16.
+
+Next: drive `bindStdString` with a >64 KiB string on one of those fields and watch for the
+16-bit wrap (the destination sizes are the unresolved part).
