@@ -5732,3 +5732,24 @@ So the 1112-byte serializer copies **no caller blob with memcpy** — every vari
 part goes through `strcat`/`sprintf` instead. That means the record-type question
 is really "which state `strcat`s a caller string", and the bound to check is the
 destination buffer, not a copy length.
+
+### BoldOrchid: the serializer is fully bounded — every variable field is capped at 33
+
+The only variable copies in the sink are four `strlcpy` calls, all with length 33:
+
+```
+10228fdc: lwz 4, 592(31)     ; src = record+0x250
+10228fe0: li 5, 33
+10228fe4: addi 3, 31, 523    ; dest = record+0x20B
+10228fec: bl strlcpy
+... same shape at 0x10229000 (dest +0x22C), 0x10229014 (dest r29), 0x10229024 (dest +0x1EA)
+```
+
+Plus the single fixed 33-byte `memcpy` at `0x10227524`.
+
+So the 1112-byte serializer has **no unbounded copy at all**: one fixed memcpy and
+four 33-byte strlcpy. The record type question is answered — every state writes
+fixed-size fields, and the caller blob is truncated to 33 bytes wherever it lands.
+
+That makes the serializer a dead end for overflow, and the lane's live candidates
+remain `0x10219954` and `0x101a60e8`.
