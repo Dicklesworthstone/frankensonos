@@ -482,3 +482,45 @@ four workers). Nothing in expat gives a *heap* write on this fleet without a > 2
 external-entity handler. The one stack bug (CVE-2026-4224) needs an `ElementDeclHandler`; whether the
 daemon registers one is still unproven — expat is stripped and carries no `XML_*` symbols, so the
 setter block cannot be located by name.
+
+## 10. The stack path (CVE-2026-4224) is closed: the SOAP parser registers no ElementDeclHandler
+
+The sibling section above left this open because expat is stripped. It can be settled from the call shape
+without symbols.
+
+`XML_ParserCreate` is `0x1041c124` (called with a NULL encoding). The daemon's SOAP/DIDL XML context is
+built by `0x10387150`, which does exactly:
+
+```
+10387170  bl   0x1041bb78        ; XML_ParserFree(old)
+10387178  bl   0x1041c124        ; XML_ParserCreate(NULL)
+10387180  stw  3, 4(31)          ; ctx+4 = parser  (the feeder 0x1038d810 reads ctx+4)
+10387184  bl   0x10419edc        ; setter: stores offsets 0/4
+10387194  bl   0x10419f34        ; setter: stores offset 60
+103871ac  bl   0x10419f20        ; setter: stores offsets 52 and 56
+```
+
+Mapped against the `struct XML_ParserStruct` field order (`m_startElementHandler` at 52, `m_endElementHandler`
+56, `m_characterDataHandler` 60, … `m_externalEntityRefHandler` 100, `m_skippedEntityHandler` 108,
+`m_unknownEncodingHandler` 112, **`m_elementDeclHandler` 116**), that is user data, character data and the
+start/end element pair. **Nothing stores to offset 116.**
+
+That is decisive because `doProlog` gates the whole model builder on the handler:
+
+```c
+case XML_ROLE_ELEMENT_NAME:
+  if (parser->m_elementDeclHandler) {
+    ...
+    dtd->in_eldecl = XML_TRUE;      /* only set here */
+```
+
+With the handler NULL, `in_eldecl` never becomes true, the scaffold is never built and `build_model`
+(`xmlparse.c:5573`, the recursive function) is never called. A deeply nested content model is therefore
+just a flat scan — which is what the measurements in §9b already showed (1 000 nested `(` parse clean in
+0.0 ms).
+
+Residual: a **second** XML consumer exists at `0x103cb870` and its bulk initializer *does* store offset 116
+(`0x103cb9b8`), so it registers an ElementDeclHandler. It sits in a stringless module (`0x103cxxxx`) and
+the static call-graph walk from the 19 pre-auth handlers does not reach it within five levels — the
+handlers dispatch through vtables. If that consumer ever parses a request body, 4224 becomes live there;
+until then the SOAP path is closed.
