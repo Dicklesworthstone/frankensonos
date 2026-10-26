@@ -4,14 +4,13 @@
 The splitter copies `span` bytes from a source pointer into a 5344-byte frame
 (dst +16, so the frame edge is 5328 bytes). Two candidate sources:
 
-  raw      the request target as received  -> break at ~5328 raw bytes for
-           both alphabets
-  decoded  a percent-decoded copy          -> '%41' is 3 raw bytes per decoded
-           byte, so the break moves out to ~3x5328 raw bytes
-
-So: sweep the same raw lengths with 'A' and with '%41' and compare where the
-answer stops being 404 and where the daemon dies. Same break = raw source;
-a 3x later break for '%41' = decoded source.
+Static answer first: the copy source is the raw target (r18 = arg2 at
+0x1007ada4, used at 0x1007b2bc) and the length is the raw span
+(second_slash - url_base at 0x1007ae60, used at 0x1007b2b8). This script
+measures what the wire actually does, because the percent-decoder runs first
+and changes the failure point: 'A' survives to ~4050 raw bytes while '%41'
+already fails at ~1300, i.e. at 1/3 the raw length. The decoder is therefore an
+independent amplifier even though it is not the copy source.
 
 Measured on .202 (2026-10-26): both alphabets break at the same raw length
 ('A' first non-404 at 4020, '%41' at 3990) and '%41' is still broken at 12000
@@ -117,9 +116,10 @@ def main():
             ratio = rp[1] / ra[1]
             print(f"ratio {ratio:.2f}")
             if ratio < 1.5:
-                print("VERDICT: same break -> the copy source is the RAW target")
+                print("VERDICT: same break -> raw length alone drives it")
             elif 2.5 < ratio < 3.5:
-                print("VERDICT: break moved ~3x -> the copy source is DECODED")
+                print("VERDICT: '%41' breaks at ~1/3 the raw length -> the "
+                      "percent-decoder is an independent amplifier")
             else:
                 print("VERDICT: inconclusive ratio")
         if a.json:
