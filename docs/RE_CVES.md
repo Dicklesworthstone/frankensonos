@@ -900,3 +900,33 @@ of the raw span). So the bug is **S1-only as far as this scan reaches** — the 
 (`file://` ×3, `http://` ×17) but its percent-decode path is bounded.
 
 That matters for scoping: the 0-day is a 57.23 bug, and `.202` is the right and only test unit for it.
+
+## 11. Is the URL-span overflow already a CVE? No — and the nearest published analogue
+
+Asked directly now that it is the lead. Two independent sweeps say it is unpublished:
+
+- NVD `keywordSearch=sonos` over twelve months in 90-day chunks (2025-10-01 … 2026-10-26): **two** hits,
+  neither about anacapad — CVE-2026-4149 (Era 300, SMB `DataOffset`) and CVE-2026-75093 (the `sonos` Rust
+  crate, `tract`).
+- The complete vendor list at OpenCVE (`vendor=sonos`, 22 CVEs back to 2020) contains nothing about a URL,
+  path, URI or request-line span. The Sonos CVEs are the ZDI audio-codec and SMB series, the 2023
+  wireless-driver pair, and the `tract` crate.
+
+So `0x1007b2c4` is a genuine 0-day, not a rediscovery.
+
+Two published neighbours are worth keeping in view:
+
+- **CVE-2023-27355** (8.8, `AV:A`, root) — "MPEG-TS parser … lack of proper validation of the length of
+  user-supplied data prior to copying it to a fixed-length stack-based buffer", ZDI-CAN-19773, tested
+  against Sonos One `70.3-35220`. Same class as our finding, same product line, and 57.23 is *older* than
+  the version the advisory calls affected, so it should still be live. Caveat: the TS demuxer is not in
+  `anacapad` (no `mpegts`/`m3u8`/`EXT-X` strings in either build), so on S1 the component is still
+  unidentified — the earlier "naive AFC=3/afelen=0xFF shape plays and does not crash" note means the
+  *shape* was wrong, not that the bug is absent.
+- **CVE-2026-4149** (9.8, Era 300) — the SMB reply `DataOffset` field. Our S2 build already requires it to
+  be exactly `0x50` (see `RE_GETAA_DATALENGTH.md`), so that one is fixed on our line; the S1 line has no
+  SMB client in the daemon at all.
+
+Practical read: the URL-span overflow is the only pre-auth *stack write* we hold that is both unpublished
+and in a component we have located. CVE-2023-27355 is the best second target, but it needs the S1 media
+component identified first.
