@@ -1,0 +1,30 @@
+  fired           1998:0  getaa=200:0.062472
+  fired           1998:1  getaa=200:0.067795
+  fired          32700:1  getaa=200:0.140160
+  fired          32717:1  getaa=200:0.064297
+  fired      32717:18432  getaa=200:0.061300
+  fired      32717:24576  getaa=200:0.071171
+  fired      32717:32768  getaa=200:0.072264
+  fired          32718:1  getaa=200:0.061762
+
+N                 getaa        first DOWN            first UP              outage
+          1998:0  200:0.062472 -                     -                     never down
+          1998:1  200:0.067795 -                     -                     never down
+         32700:1  200:0.140160 -                     -                     never down
+         32717:1  200:0.064297 -                     -                     never down
+     32717:18432  200:0.061300 -                     -                     never down
+     32717:24576  200:0.071171 -                     -                     never down
+     32717:32768  200:0.072264 -                     -                     never down
+         32718:1  200:0.061762 -                     -                     never down
+
+# Notes, 2026-10-26
+# The player only speaks SMB when the getaa URL carries NO port; with an
+# explicit port it sends `HEAD /S HTTP/1.1` to that port and never reaches
+# libsmb2. So the harness must serve on 445 (root) and omit the port.
+# With this impacket build the client's SMB1 NEGOTIATE carries a dialect list
+# impacket rejects ("SMB2 not supported, fallbacking"), so the session falls
+# back to SMB1 and the patched smb2QueryInfo never runs - the art is still
+# served (200) but the FileAllInformation over-read is not exercised.
+# Forcing SMB2 by patching the dialect check makes the session 404 instead.
+# Net result at the daemon level: no DOWN for any N, i.e. the over-read costs
+# the request, never the daemon.
