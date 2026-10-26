@@ -109,19 +109,24 @@ slow probe cannot fake a crash.
 | `0x40` | 2 | 000, 200 | 1 | 3.877 s |
 | `0x60` | 1 | 200 | 0 | 0.072 s blip |
 | `0x80` | 1 | 200 | 0 | - |
-| `0x100` | 4 | 000, 000, 200, 200 | 2 | 3.762 s, 3.698 s |
-| `0x200` | 2 | 200, 200 | 0 | - |
-| `0x400` | 2 | 200, 200 | 0 | - |
-| `0x800` | 1 | 200 | 0 | - |
-| `0x1000` | 1 | 200 | 0 | - |
-| `0xffff` | 2 | 000, 000 | 2 | 3.804 s, 3.689 s |
+| `0x100` | 6 | 000, 000, 200 x4 | 2 | 3.762 s, 3.698 s |
+| `0x200` | 3 | 200, 200, 000 | 1 | 3.808 s |
+| `0x400` | 3 | 200 x3 | 0 | - |
+| `0x800` | 2 | 200 x2 | 0 | - |
+| `0x1000` | 3 | 200, 000, 000 | 2 | 3.851 s, 3.765 s |
+| `0x2000` | 2 | 000 x2 | 2 | 4.202 s, 3.424 s |
+| `0x4000` | 2 | 404, 200 | 1 | 2.314 s |
+| `0x8000` | 1 | 404 | 0 | - |
+| `0xffff` | 4 | 000 x4 | 4 | 3.804, 3.689, 3.704, 3.823 s |
 
-- **The crash is probabilistic, not a threshold.** `0x100` crashes 2 of 4
-  runs, `0xffff` 2 of 2, `0x40` 1 of 2, and `0x200`-`0x1000` never crashed.
-  The earlier "0x400 crashes" line was a single sample; `0x400` has since
-  survived 2/2.
+- **The crash is probabilistic, not a threshold.** The rate climbs with the
+  value (0x100 2/6, 0x200 1/3, 0x1000 2/3, 0x2000 2/2, 0xffff 4/4) but the
+  curve is not clean: 0x400 and 0x800 never crashed in 3 and 2 runs, and 0x40
+  crashed once of two. Treat any single sample as noise.
 - Every crash is the same shape: `getaa` 000, `/status/zp` refused for
-  3.69-3.88 s, then the daemon answers again on the same version. No restart
-  loop, no version change.
+  2.3-4.2 s, then the daemon answers again on the same version. No restart
+  loop, no version change, always recovered.
+- Above ~0x4000 the client often gives up earlier and answers 404 instead of
+  reaching the decoder, so the useful range is 0x100-0x2000.
 - The first case of a session is the least trustworthy: the very first `0x40`
-  run crashed, the repeat did not, so warm up with a control before counting.
+  run crashed, the repeat did not. Warm up with a control before counting.
