@@ -116,3 +116,31 @@ live reachability proof, not a crash oracle. CVE-2026-110713 (FileFsVolumeInform
 -110714 (security descriptor) are not reachable here: the client asks FileAllInformation only.
 
 Harness: `~/sonos-root-local/recon/smbserv_qinfo.py <port> filename_len <value>`.
+
+## Every reply field the client consumes, with wire offsets
+
+`recon/smbserv_fuzz.py` mutates one named reply field per case (fresh port and server, warm-up request
+first because a cold first connection 404s, liveness before/0.6 s/2.0 s after). Offsets are absolute in
+the SMB2 PDU, 64-byte header included.
+
+| op | field | type | wire offset | values tried | result |
+|---|---|---|---|---|---|
+| NEGOTIATE | `SecurityBufferOffset` | u16 | **120** | 127, 136 | 404; 129 tolerated |
+| SESSION_SETUP | `SecurityBufferOffset` | u16 | **68** | 71, 73, 80 | 404 |
+| SESSION_SETUP | `SecurityBufferLength` | u32 | **70** | 0, 1, 0x4000 | 404 |
+| QUERY_INFO | `OutputBufferLength` | u32 | **68** | 0, 1, 0x10000, 0xffffffff | 404 |
+| QUERY_INFO | `OutputBufferOffset` | u16 | **72** | 71, 73, 80 | 404 |
+| READ | `DataLength` | u32 | **68** | > 0x4000 | 404 or **9.4 s hang** |
+| READ | `DataOffset` | u8 | **66** | ≠ 0x50 | 404 |
+| CREATE | `CreateContextsOffset`/`Length` | u32 | 144 / 148 | — | not exposed by this impacket build; contexts unused |
+| IOCTL | `InputOffset`/`InputCount` | u32 | 88 / 92 | — | not issued by `/getaa` |
+
+Only READ `DataLength` produces anything worse than a clean 404. The reason is visible in the parsers:
+`smb2_process_query_info_fixed` checks `offset+length` against the received length (`0x1efb0`), the
+length against `max_transact_size` (`0x1efc8`) and `offset >= 72` (`0x1efd0`);
+`smb2_process_session_setup_fixed` checks `offset+length <= received` (`0x1fce8`) and `offset >= 72`
+(`0x1fcfc`); `smb2_process_ioctl_variable` checks the count against the available bytes (`0x1d6ec`).
+`smb2_process_read_fixed` has no length check at all — only `DataOffset == 0x50` (`0x1f930`).
+
+Harness fixes needed to get here: `smb2Negotiate` returns `(None, [pkt], …)` and the packet carries the
+response under `Data`, not `Buffer`; the original `res[0][0]` path raises for NEGOTIATE.
