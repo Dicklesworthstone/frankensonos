@@ -462,3 +462,17 @@ The descriptor layout has **no other length field**: `+0` vtable, `+4`/`+8` the 
 So the copy uses the **truncated u16 at `d+0x18`**; the original length never reaches the descriptor. A JSON
 string over 65535 bytes is therefore copied at most 65535 bytes — truncation, not an overrun, unless a
 consumer re-reads the source length from somewhere else (none does: the descriptor is the only carrier).
+
+### Consumer side: the u16 is used as both the copy length and the bound (2026-10-26)
+
+Follow-up to the truncation finding. The descriptor's length field is read as a **halfword** and used
+directly:
+
+- `0x5f1af2` — `lhu a3,24(a0)` then `jal 0x5f59c8` with that value as the length;
+- `0x5f1b02` — `lhu v0,24(s0)` then `sltu a3,v0` against the value returned by `0x5f1908`, i.e. the *same*
+  truncated u16 is the bound the copy is checked against;
+- `0x5f1690` — the descriptor copy-constructor copies the field with `lhu`/`sh`, so the truncation propagates
+  through every copy.
+
+So a >65535-byte JSON string is bound-checked and copied against 65535: the tail is silently dropped, and the
+check can never fire for the real length because both sides are the same truncated value.
