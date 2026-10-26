@@ -391,9 +391,37 @@ Two consequences that decide exploitability:
    more promising of the two.
 
 The frame is 5 344 with the destination at `+16`, so the copy leaves the frame at a span of 5 328 and
-the NUL follows it. Saved `r21`–`r31` sit at `sp+2116…2156` and LR at `sp+2164` — i.e. 2 100 and 2 148
-bytes from the destination — but the live runs only degrade above ~4 000, so something between the
-splitter and the copy consumes the first ~2 000 bytes of span; that gap is the next thing to resolve.
+the NUL follows it.
+
+**What the NUL can reach (offsets from `dst = sp+16`).** The prologue saves `CR` at `sp+5268`, `r14`–`r31`
+at `sp+5272…5340` and LR at `sp+5348`, i.e. at these distances from the destination:
+
+| span | slot | note |
+|---|---|---|
+| 2 100 | first byte past the 2 100-byte buffer | unused stack |
+| 5 224 / 5 228 / 5 240 | locals `sp+5240`, `sp+5244`, `sp+5256` | `sp+5244` **is the offset the NUL itself uses** — self-modifying |
+| 5 252 | saved `CR` | condition-register word |
+| 5 256 … 5 324 | saved `r14` … `r31`, step 4 | |
+| 5 296 | saved **`r24`** | the URL base pointer, reused as a copy source at `0x1007b328` |
+| 5 312 | saved **`r28`** | the object pointer: `lwz 9,0(28)` → `lwz 9,8(9)` → `bctrl` at `0x1007b2f4` |
+| 5 332 | saved **LR** | return address |
+| 5 344 … 5 400 | caller frame `sp+0 … sp+56` | back chain, then the caller's own locals |
+
+The three worth naming, best first:
+
+1. **`r28` at span 5 312.** Zeroing its low byte moves the object pointer down by `obj & 0xff`; the very
+   next use is an indirect call through `*(*(r28)+8)`, so the vtable load comes from a shifted address —
+   a controlled indirect call rather than a crash.
+2. **LR at span 5 332.** Zeroing the low byte of the return address re-enters the caller's 256-byte page
+   at `LR & ~0xff`. For caller `0x101cc704` that lands on `0x101cc700` (`addi 6,1,12` falling straight
+   into `bl 0x1007ad60`), i.e. the splitter re-entered with the caller's registers still live.
+3. **`r24` at span 5 296.** The URL base, later used as a `memcpy` source; zeroing its low byte shifts
+   that source by `url & 0xff`.
+
+Every one of these is a *single* zeroed byte with the rest of the pointer intact, which is why the NUL is
+the usable primitive and the ASCII copy is not. The live runs only degrade above ~4 000, so something
+between the splitter and the copy still consumes the first ~2 000 bytes of span; that gap is the next
+thing to resolve.
 
 ## 2026-10-26: which routes reach the splitter (live on .202)
 
