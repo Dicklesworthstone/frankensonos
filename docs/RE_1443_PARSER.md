@@ -129,3 +129,19 @@ Reachability: the constructor is referenced only from a data table at `0x1047f92
 registration) and the sink only from the constructor, so the caller is whoever owns the
 descriptor — not yet located. That is the next read, and it decides whether any `:1400` request
 reaches the dispatcher at all.
+
+## Unblocked: the primitive is `sonos::json::bindStdString`
+
+The "unresolvable GOT slot" was a red herring — the slot holds the lazy PLT0 address and the resolver
+takes its index from the stack, so the *symbol* is recoverable from the ELF's own `.dynsym`, which is
+intact. Decoding `0x5f16e4` as MIPS16 (the file is big-endian MIPS; `readelf` needs `-B` and the
+section headers are stripped, so parse `PT_DYNAMIC` by hand) lands inside a named function:
+
+```
+_ZN5sonos4json13bindStdStringER25RJsonDataBindingInterfacejhPNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEj
+= sonos::json::bindStdString(RJsonDataBindingInterface&, unsigned, unsigned char, std::string*, unsigned)
+```
+
+So the destination is a `std::string` and the fifth argument is a length cap, not a fixed buffer. The
+overflow, if any, is therefore in a caller that copies the bound string into fixed storage, or in the
+cap being attacker-controlled. Next: the callers of `bindStdString` and what they do with the result.
