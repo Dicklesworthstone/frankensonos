@@ -369,3 +369,28 @@ Routes that deliver one:
 - `AddURIToQueue` / `SetAVTransportURI` with an `x-file-cifs:` URI — the URI
   matrix in `RE_URI_HANDLING.md` shows Add accepting that scheme at 200/30 B
   and rejecting at 804/4 KB, which is the length gate beside this splitter.
+
+### What the overwrite actually is (verified at the instruction level)
+
+```
+1007b2b4  addi 31, 1, 16      ; dst = sp+16
+1007b2b8  lwz  5, 5244(1)     ; len = span (no clamp anywhere)
+1007b2bc  mr   4, 18          ; src = ORIGINAL url base (not the decoded copy)
+1007b2c0  mr   3, 31
+1007b2c4  bl   memcpy
+1007b2d8  stb  30, 16(9)      ; NUL at dst+span  <- second, one-byte primitive
+```
+
+Two consequences that decide exploitability:
+
+1. **The bytes are literal URL text.** The source is the raw URL, so the overwrite is ASCII — a saved LR
+   becomes `0x41414141` for `AAAA`, which is not a mapped address. Percent-encoding does not help here
+   because the copy does not run on the decoded buffer.
+2. **The NUL write at `dst+span` is independent of the copy** and lands one byte past it. Choosing the
+   span so that `dst+span` sits on a saved pointer gives a clean single-NUL corruption, which is the
+   more promising of the two.
+
+The frame is 5 344 with the destination at `+16`, so the copy leaves the frame at a span of 5 328 and
+the NUL follows it. Saved `r21`–`r31` sit at `sp+2116…2156` and LR at `sp+2164` — i.e. 2 100 and 2 148
+bytes from the destination — but the live runs only degrade above ~4 000, so something between the
+splitter and the copy consumes the first ~2 000 bytes of span; that gap is the next thing to resolve.
