@@ -351,9 +351,20 @@ Nothing public carries one. Checked and empty:
   (offsets 24760/24792) and the same 294-byte SPKI (17378) as the firmware, so
   the app is a validator and forwarder, not a minter. `X-Sonos-Api-Key` does
   not appear in the app's dex at all — it is a firmware-only header.
+- Sonos's own GitHub org (28 repos), the Wayback Machine (no snapshot of
+  `/devmode/`), the `docs.sonos.com` index, and the community search carry
+  nothing. The nearest public artifacts are `nickblt/sonos-websocket`
+  `src/certs/sonos-ca.pem` (the *root CA*) and `palchrb/vibb-launcher`, which
+  documents the player leaf's SAN shape (`urn:sonos:udn:RINCON_…`) — neither is
+  a devmode statement.
 - The portal itself is not guest-callable: `/s/sfsites/aura` answers
   `Guest user access is not allowed` even with the page's own `fwuid` and
   context, and `/webruntime/api/apex/execute` 302s to login.
+
+**Even a published statement would not substitute.** `ZZ0137` `memcmp`s the
+statement's device id against the caller's own id (`0xcbd4`) and the id sits
+inside the signed region, so a blob minted for another serial fails on this
+device. The portal, for this device, is the only artifact that can work.
 
 So a statement must be minted with the owner's login. `scripts/devmode_submit.py`
 does the device half in one command: it reads the model / device id / version /
