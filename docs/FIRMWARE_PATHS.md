@@ -5564,3 +5564,10 @@ So the sink at `0x10219954` consumes a field that its writer caps at 1024 — th
 unbounded-copy candidate is **bounded upstream**, and the real question is whether
 the destination at `0x10219954` is at least 1024 bytes. If it is, that site is
 safe; if not, the 1024 cap is the wrong bound and the bug is the mismatch.
+
+**Tracing the 1112-byte buffer.** The destination is not a stack frame: the
+function loads a singleton (`lwz 9,23928(26)` = `0x10545d78`), takes `*(r9+8)`,
+and the buffer is `that+0xE58` with the length at `that+0x448`. Only the
+`0x10219xxx` cluster uses that global, so it is a response/record builder, not a
+parser. Callers of the builder: `0x10219f60` and `0x1021a0fc`. Next: name those
+two callers' HTTP handlers and find what fills `+0x448`.
