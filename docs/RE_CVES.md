@@ -499,6 +499,7 @@ produce:
 | CVE-2026-56405 | integer overflow in `getAttributeId` | `i == INT_MAX` |
 | CVE-2026-56407 | integer overflow in `textLen` handling | `poolLength > INT_MAX` |
 | CVE-2026-56408 | integer overflow in `copyString` | > 2 GB |
+| **CVE-2026-25210** | integer overflow in the `doContent` tag-buffer reallocation (`bufSize = (bufEnd - buf) * 2`) | > 2 GB tag — patch adds a `SIZE_MAX / 2` guard |
 
 56132 is the only one that is not a 2 GB threshold, and it is the only one worth testing. Upstream's own
 regression test (`test_scaff_index_shared_across_external_entity_parser`) needs
@@ -568,3 +569,50 @@ Residual: a **second** XML consumer exists at `0x103cb870` and its bulk initiali
 the static call-graph walk from the 19 pre-auth handlers does not reach it within five levels — the
 handlers dispatch through vtables. If that consumer ever parses a request body, 4224 becomes live there;
 until then the SOAP path is closed.
+
+## 11. In-window sweep with named sinks only (2026-09-26 … 2026-10-26)
+
+Window is the 30 days to today. Rule for this pass: a CVE is listed only if it has a **named sink** in the
+component's own code. Anything whose sink is a protocol or API the daemon does not use is dropped with the
+reason, so the table is short on purpose.
+
+### 11a. What the daemon actually uses (feature filter, measured)
+
+| feature | used? | evidence |
+|---|---|---|
+| curl ping-pong protocols (FTP, IMAP, SMTP, POP3, TFTP) | **no** | zero hits for `ftp://` `imap://` `smtp://` `pop3://` `tftp://` in `s2_overlay/bin/anacapad` |
+| curl SSH / known_hosts | no | same, plus no `libssh` NEEDED |
+| curl MIME API | **yes** | `mime.c` strings: `Cannot rewind mime/post data`, `Mime post already completely uploaded`, `mime_read()` |
+| curl HTTP/2 | yes | `nghttp2` ×18, `HTTP/2` ×17, `ALPN` ×15 |
+| multipart bodies | yes, but **hand-built** | fixed boundary literals `##123456789###BOUNDARY`, `SONOSMULTIPARTBOUNDARY.BLAHBLAHBLAH`, `multipart/%s; boundary=%s` |
+| expat DTD | yes | §8c |
+| expat ElementDeclHandler | no | §10 |
+
+### 11b. The table
+
+| CVE | pub | sink | verdict |
+|---|---|---|---|
+| CVE-2026-92392 | 10-14 | `struct Curl_easy` teardown when an **upload** gets `RST_STREAM` (`HTTP_1_1_REQUIRED` / `REFUSED_STREAM`) | **the one live candidate.** The daemon uploads mime posts over HTTP/2 and a hostile server can send `RST_STREAM`. Gated on the version being 8.12.0–8.22.0, which cannot be pinned (§5a) — so it stays *unproven*, not reachable. |
+| CVE-2026-92391 | 10-14 | `curl_mime_free` recursion | dead: needs thousands of *nested* parts; the daemon's mime trees are built in code, not from a request. |
+| CVE-2026-92387 | 10-14 | pingpong response loop (`pingpong` area) | dead: no pingpong protocol strings. |
+| CVE-2026-92389 / -92388 | 10-14 | TFTP direction confusion / FTP wildcard write callback | dead: no `tftp://`, no `ftp://`. |
+| CVE-2026-87864 / -87865 | 10-14 | IMAP APPEND injection / knownhost callback | dead: no `imap://`, no libssh. |
+| CVE-2026-107928 / -87866 | 10-14 | GnuTLS WebSocket info leak / wolfSSL pinning | dead: mbedTLS backend, not GnuTLS or wolfSSL. |
+| CVE-2026-92390 / -86410 | 10-14 | curl **tool** only (`-J`, SFTP redirect) | dead: we ship libcurl. |
+| CVE-2026-107660 | 10-18 | `tls_open()` in `libavformat/tls_mbedtls.c` | live as a MITM primitive: needs an `https://IP/…` media URL. Already ranked in §2. |
+| CVE-2026-113351 | 10-20 | `XML_ParserReset` byte-count accounting | dead: 2.7.2–2.9.0 only, and the daemon frees and recreates the parser rather than resetting it. |
+| CVE-2026-110712 / -110713 / -110714 | 10-14 | `smb2_decode_file_all_info`, `_fs_volume_info`, `decode_acl` | **proven on 4.0.0**, §7c, reproducer committed. |
+| CVE-2026-115505 | 10-22 | `lib/dcerpc.c` NDR counts | needs `smb2_share_enum_async`; no call site found. |
+| CVE-2026-115506 | 10-22 | `accountingDiffTolerated` | live DoS, measured §8c. |
+| CVE-2026-78807 | 10-08 | driver-based PMKSA selection | local only (AV:L). |
+| CVE-2026-71971 / -71972 / -71974 | 09-29 | U-Boot `__net_defragment` / BMP RLE8 / bootmeth | dead: Sonos U-Boot does none of the three. |
+| CVE-2026-88833…92205, -108119 | 10-13…10-23 | busybox tar / dpkg-deb / awk / libarchive | dead: none of those applets is compiled in (§8a). |
+| CVE-2026-8674 | 09-17 | glibc DNS stub resolver assertion | dead: affects 2.26–2.44, we ship 2.3.5. |
+| CVE-2026-58055 | — | `nghttpx` proxy | dead: we ship `libnghttp2`, not the proxy. |
+
+### 11c. Result
+
+Nothing new is reachable. The in-window set reduces to what §7c and §8c already carry: three proven
+libsmb2 over-reads and one measured expat DoS. The only unresolved in-window item is CVE-2026-92392, and
+it is unresolved for one reason only — the curl version cannot be pinned from a stripped static binary
+(§5a). Pinning it needs a live `curl_version_info` or a build date, not more static work.
