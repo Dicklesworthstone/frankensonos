@@ -19,14 +19,32 @@ mdp3.py luks MDP OTP HEX32          # LUKS key derivation
 mdp3.py selftest                    # synthetic MDP3 round-trip
 ```
 
-Verification, both halves:
+## Known vector (differential against the published tool)
+
+`captures/research/mdp3/vector_test.py` builds a synthetic MDP3 (jffs, rootfs,
+model fields) and OTP, decrypts every field with **both** this tool and
+`sonostool.py` at blasty/sonos `27be438`, and asserts byte equality, then
+compares the LUKS derivation. Vector hashes: mdp
+`84fde277c0c463718188644500770fa62f7eb10dce23108320cfb23c8cae0476`, otp
+`d9c76fa34978cb9620dab8c3f46bbe075fddc145eb282b39009141f98d0cfe82`; all
+three fields and the LUKS key are identical (`VECTOR OK`).
+
+The vector immediately caught a real bug in the port: the per-blob tag is
+padded to **8** bytes and XORed **modulo its own length** over the 12-byte IV
+(`keymod` in the reference), not zero-padded to 12 as the first version did.
+The selftest had round-tripped because both sides shared the wrong rule; only
+the differential exposed it.
+
+Verification, all three halves:
 
 - `selftest` builds an MDP3 with two sealed fields and round-trips them
   (`selftest ok`).
 - `upd-pem 57.23-74170-1-16.upd … model16-private.pem` decrypts the real
   package: section 7 is the preinstall script (`#!/b`), section 8 the kernel
-  (`48000005`), section 9 a squashfs (`73717368` = `hsqs`). So the section
-  half is proven against real data; only the MDP3→model-key half awaits a dump.
+  (`48000005`), section 9 a squashfs (`73717368` = `hsqs`). Re-run after the
+  keymod fix, unchanged.
+- the differential vector above covers the MDP3→key half; only a real
+  MDP3+OTP dump is still missing.
 
 ## What userland reaches today
 

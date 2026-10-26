@@ -54,13 +54,21 @@ def field(mdp, off, magic):
     return mdp[off + 12:off + 12 + n]
 
 
+def keymod(tag):
+    return tag + b"\0" * (8 - len(tag)) if len(tag) < 8 else tag
+
+
+def xor_mod(a, km):
+    return bytes(x ^ km[i % len(km)] for i, x in enumerate(a))
+
+
 def encdec(blob, otp, tag):
     key = aes_key(otp)
     ct_len = len(blob) - 12 - 16
     if ct_len % 0x10:
         sys.exit("body not AES-block aligned")
     ct = blob[:ct_len]
-    iv = xor(blob[ct_len:ct_len + 12], tag.ljust(12, b"\0"))
+    iv = xor_mod(blob[ct_len:ct_len + 12], keymod(tag))
     ks = b"".join(iv + struct.pack(">I", 2 + i) for i in range(ct_len // 0x10))
     out = xor(aes_ecb(key, ks), ct)
     pad = out[-1]
@@ -77,7 +85,7 @@ def enc(plain, otp, tag):
     iv = os.urandom(12)
     ks = b"".join(iv + struct.pack(">I", 2 + i) for i in range(len(plain) // 0x10))
     ct = xor(aes_ecb(key, ks), plain)
-    return ct + xor(iv, tag.ljust(12, b"\0")) + os.urandom(16)
+    return ct + xor_mod(iv, keymod(tag)) + os.urandom(16)
 
 
 def sections(d):
