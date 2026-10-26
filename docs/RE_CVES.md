@@ -339,3 +339,56 @@ an `ElementDeclHandler`, which the daemon must register — the binary carries `
 XML_DTD support in Expat`, so DTD support is compiled in, but whether a handler is registered is unproven
 statically (expat is stripped, no `XML_*` symbols). If a handler is registered, an inline DTD with a deeply
 nested content model is a pre-auth stack overflow through any SOAP/DIDL body.
+
+## 9. Is there a write in expat 2.5.0, not just the amplification DoS? — no
+
+Short answer: **no reachable write.** Every write-class expat bug is either already fixed by 2.5.0 or
+needs an input class this daemon cannot produce. The amplification DoS (§8c) is the whole of it.
+
+### 9a. The write-class CVEs all predate 2.5.0
+
+| CVE | class | fixed in | 2.5.0? |
+|---|---|---|---|
+| CVE-2022-25314 | integer overflow in `copyString` → heap OOB **write** | 2.4.5 | no |
+| CVE-2022-25315 | integer overflow in `storeRawNames` → heap OOB **write** | 2.4.5 | no |
+| CVE-2022-40674 | use-after-free in `doContent` | 2.4.9 | no |
+| CVE-2022-43680 | use-after-free in `XML_ExternalEntityParserCreate` | **2.5.0 itself** | no |
+
+2.5.0 was released on 2022-10-25 *for* CVE-2022-43680 — its own `Changes` entry reads
+`#616 #649 #650  CVE-2022-43680 -- Fix heap use-after-free after overeager destruction of a shared DTD`.
+So the version string `expat_2.5.0` in the S2 binary is the post-UAF-fix release.
+
+### 9b. The 2.8.2 batch is write-class but out of reach
+
+2.8.2 (2026-06-25) fixed nine integer overflows and one OOB store. All of them are before 2.5.0's
+successors and therefore apply to 2.5.0 as a version matter, but each needs an input this daemon cannot
+produce:
+
+| CVE | site | what it needs |
+|---|---|---|
+| CVE-2026-56132 | OOB **store** into `scaffIndex` in `doProlog` | DTD **sharing across parsers** |
+| CVE-2026-56403 | integer overflow in `storeAtts` | 2^31 attributes |
+| CVE-2026-56404 | integer overflow in `addBinding` | `len == INT_MAX` |
+| CVE-2026-56405 | integer overflow in `getAttributeId` | `i == INT_MAX` |
+| CVE-2026-56407 | integer overflow in `textLen` handling | `poolLength > INT_MAX` |
+| CVE-2026-56408 | integer overflow in `copyString` | > 2 GB |
+
+56132 is the only one that is not a 2 GB threshold, and it is the only one worth testing. Upstream's own
+regression test (`test_scaff_index_shared_across_external_entity_parser`) needs
+`XML_SetExternalEntityRefHandler` **and** `XML_SetElementDeclHandler` **and** a `%e;` parameter entity
+that loads an external subset — the sharing is what makes `scaffIndex` and `m_groupSize` diverge.
+
+Measured on the 2.5.0 build: a plain parser with 40, 100 and 1 000 nested `(` in an element content
+model parses clean (`ok=1`, ≤ 0.4 ms). The same document after `XML_ParserReset` parses clean. The
+`XML_ExternalEntityParserCreate` variant errors out before the model because the daemon-style setup has
+no external-entity handler. The daemon has neither setter (its only expat entry points are the six
+`XML_Parse` call sites in §8c), so 56132 is **not reachable**.
+
+CVE-2026-72522 (OOB read plus infinite loop in the `*_toUtf16` functions) needs `XML_UNICODE`, i.e. a
+16-bit-character build; the daemon is the narrow build.
+
+### 9c. Consequence
+
+The expat surface is a **thread-pinning DoS only** (§8c: ~75 ms per MB, four concurrent bodies pin all
+four workers). Nothing in expat gives a write primitive on this fleet without a > 2 GB body or an
+external-entity handler the daemon never installs.
