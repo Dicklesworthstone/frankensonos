@@ -65,3 +65,37 @@ sonos://devMode/clear
 The portal page produces that URI (as a QR/deeplink) for a given serial; the app
 is only a courier. A cached statement on a previously used phone would work, but
 there is no app-side minting endpoint.
+
+## 2026-10-25: the desktop app is a second courier, and no statement is published
+
+The 57.23 macOS app has a devmode client too. It reads
+`<support-dir>/debug/devmode.bin` (`snprintf("%s/debug/devmode.bin")` at
+`0x10087dbe4`, `stat` + size compare at `0x10087dc04`/`0x10087dc18`, then
+`/devmode.bin` under `%s/debug` at `0x10087dd7c`), and it renders the same
+`Enter DevMode Code` form the device serves (format string at `0x10087e188`).
+So the portal hands out a **file** as well as a deeplink; both are couriers, and
+neither mints.
+
+Guest access to the portal is closed, so the statement cannot be pulled without
+the owner's session:
+
+- `GET https://developer.sonos.com/devmode/` -> `302 /s/login/?startURL=%2Fdevmode%2F`.
+- The site is Salesforce Experience Cloud; `aura://ApexActionController/ACTION$execute`
+  answers `{"state":"NEW","returnValue":null}` + `No apex action available for
+  <class>.<method>` for every `DevMode*` class/method guess, i.e. guest Apex is
+  not exposed. `aura://ComponentController/ACTION$getPage` returns `actions: []`.
+- `https://developer.sonos.com/s/sitemap.xml` lists only `/s/*` routes; `/devmode/`
+  is a custom top-level route and is not in it.
+- The Wayback Machine has no capture of the URL (`/web/*/developer.sonos.com/devmode*`
+  returns an empty CDX set).
+
+No published statement exists either: `gh` code search for `urn:sonos:device`,
+`28721e71` and the base64 magic `KHIe` returns nothing Sonos, the `sonos` GitHub
+org has no devmode repo, the NCC BlackHat 2024 whitepaper, the RomHack 2023 deck
+and `blasty/sonos` only mention `/devmode` in passing, and the S2 APK carries no
+statement asset.
+
+Practical consequence: the only remaining step is an authenticated portal
+session. `scripts/devmode_submit.py` already does the device half (reads the
+model/id/version/csrfToken, posts with the 5.5 s spacing, scores by latency), so
+one statement from the portal is a single command.
