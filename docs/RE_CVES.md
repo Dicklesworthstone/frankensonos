@@ -237,17 +237,26 @@ mapped, controlled neighbour: `poc_utf16_margin.c` case A returns `"Z"` read fro
 decodes a full surrogate pair (`f0 90 80 80`) from outside the iovec, both with no ASan report; cases B
 and C are the 2-byte minimal margins ASan still catches (`unicode.c:202` and `:216`).
 
-Live on `.86`, rewriting `FileNameLength` to `buflen - 100 + margin`: margin 2 and 4096 return the whole
-image with the daemon alive; 60000 kills the request and leaves `/status/zp` unanswering until the socket
-closes. 8192 survived once and wedged once, so the middle of the range is heap-layout dependent — only the
-2-byte floor is stable.
+Live on `.86`, rewriting `FileNameLength` to `buflen - 100 + margin`, fresh server per run, 2-3 shots
+per run. The margin is a gradient, and the *large* end is the reliable one:
 
-**The trail site is the fragile one (2026-10-26).** Forcing the surrogate branch — `name_len = buflen - 98`
+| margin | runs | outcome |
+|---|---|---|
+| 2 | 1 | 3/3 shots 200, daemon alive |
+| 4096 | 1 | 200, alive |
+| 8192 | 2 | 200 once, wedged once |
+| 16384 | 4 | wedged 3, survived 1 — borderline |
+| 24576 / 32768 / 60000 | 4 | **wedged every run on the first shot** |
+
+A wedged run means `/getaa` returns 000 and `/status/zp` stops answering until the offending socket closes;
+the daemon recovers on its own. So the deterministic live trigger is `FileNameLength >= buflen + 24576`,
+not the 2-byte floor — the floor is the minimal over-read, the large margin is what leaves the mapped heap.
+
+**The trail site is not reliably worse (2026-10-26).** Forcing the surrogate branch — `name_len = buflen - 98`
 with the last in-bounds unit set to a lone lead surrogate `0xD800` — makes the loop take the trail load at
-`0x3daf4` (`unicode.c:216`) two bytes past the body. At the same 2-byte margin as the code-unit site, the
-first request still returns the image and the **second wedges the daemon** until the socket closes, where
-the code-unit site survived 3/3. So the cheapest live trigger is the surrogate trail, not a large
-`FileNameLength`.
+`0x3daf4` (`unicode.c:216`) two bytes past the body. Across 3 runs at the same 2-byte margin it wedged once
+and survived twice, i.e. the same layout dependence as the code-unit site. It is a distinct instruction and
+a distinct trigger, but not a stronger one.
 
 
 ### 7d. `mdputil` and `keyval`: shell-only, no HTTP path
