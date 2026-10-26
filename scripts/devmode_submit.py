@@ -269,7 +269,9 @@ def main():
             print("  rejected after the signature check: shape is right, the "
                   "signature or the device id is wrong")
         elif code == 403:
-            print("  rejected before the signature check: malformed blob")
+            print("  rejected: fast, so probably the parser (the latency is "
+                  "not conclusive on S1 - a filler signature also answers in "
+                  "0.03s)")
         elif code >= 500:
             print("  daemon error, retrying")
             continue

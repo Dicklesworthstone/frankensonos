@@ -307,3 +307,39 @@ inner layout, not the transport or the preamble. The preamble checks were read
 from the S1 parser (`0xabac` magic, `0xabe8` model, `0xac14`/`0xac58` version
 bounds — lower is *strict*, `[+0x18] < 0x390018`; `0xac84` devid length;
 `0xacb0` `memcmp`; `0xacd4` payload bound; `0x9fc8` ring magic).
+
+## 2026-10-26 (3): the ring check, and what a valid ring is
+
+The stop is `ZZ0121` (`0x9f24` in the S1 lib), the ring parser. Its layout, read
+end to end:
+
+```
+ring:
+  +0x00 u32 BE 0x621DA74D
+  +0x04 u32 BE count        ; must be <= remaining, and >= what the parse consumes
+  +0x08 u16 BE 1            ; version, exact
+  +0x0a u8, +0x0b u8        ; copied verbatim
+  +0x0c u32 BE nkeys        ; < 9
+  +0x10 nkeys x 0x108 key record
+        u32 BE nkeys2       ; < 9, may be 0
+        nkeys2 x 0x108 key record
+        u8 nsig             ; 1 or 2
+        nsig x { u32 BE len (< 0x800), u8 type, len bytes }
+```
+
+Every `0x108` record repeats the same triplet — magic `0x621DA74D` (`0x922c`),
+`count` <= remaining (`0x9244`), `version == 1` (`0x9254`) — then a `u16` at
+`+0xa`, a `u32 n < 9` at `+0xc` and `n` nested records at `+0x10`.
+
+The check that a hand-built ring fails is the **final one at `0xa3c4`**: the
+declared `count` at `ring+4` must be `>= cursor - ring_start`, i.e. it must cover
+every byte the parse consumed. A ring with `count = 0` parses the header and then
+dies there. `nkeys2 == 0` is fine (`0xa3bc` branches straight to the verify).
+
+A valid ring therefore needs `count = len(ring)` and a signature block; the
+emulator's `build()` in `scripts/emu_devmode_stmt_s1.py` emits exactly that and
+its `valid` case reaches the verifier (`verify=True`).
+
+Caveat found while testing: the latency classifier is **not** conclusive on S1.
+The emulator-valid blob with a `0xAA` filler signature still answers `403` in
+`0.03 s`, so "fast = malformed" only holds on S2. The script now says so.
