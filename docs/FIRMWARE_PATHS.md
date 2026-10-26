@@ -5534,3 +5534,12 @@ copy and **no bound check**:
 
 All five trust the field as the copy length. The strongest is `0x10219954`: the
 length is used twice (`0x1021993c`, `0x1021994c`) with no validation at all.
+
+**Orchestrator verification of the top site.** `0x10219954` is real and is in the
+**PPC S2 `anacapad`** (`captures/research/ghidra-upd/anacapad`, entry `0x1000755c`),
+not in a library. Enclosing function starts `0x10219848` (`stwu 1,-64(1)`); the
+destination is `r28+0xE58` (an object field, not a stack buffer), the length is
+`*(r31+0x448)` loaded at `0x1021994c`, and the only bound check is **after** the
+copy: `cmplwi 7,0,1112` at `0x10219960`. So the destination region is 1112 bytes
+(`0x458`) and a field longer than that overruns it. Next: identify the object and
+what writes `+0x448`, then whether a packet can set it.
