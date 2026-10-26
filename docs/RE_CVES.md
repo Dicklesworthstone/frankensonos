@@ -930,3 +930,22 @@ Two published neighbours are worth keeping in view:
 Practical read: the URL-span overflow is the only pre-auth *stack write* we hold that is both unpublished
 and in a component we have located. CVE-2023-27355 is the best second target, but it needs the S1 media
 component identified first.
+
+### 11a. Affected scope: S1 only — the S2 handler has no span copy at all
+
+Checked the S2 equivalent before anyone spends device time on `.86`. The 86.10 `x-file-cifs` handler is a
+small function (prologue `0x4a9c90`, `save 1080,ra,s0-s1`, frame 1080) that does exactly three things:
+
+```
+4a9cac  li   a2, 3
+4a9cb4  jal  strncmp            ; strncmp(v1, "x-f", 3)
+4a9cce  jal  sonosDecodePercentEncodedStr   ; (v1+3, sp+24, 1025)
+```
+
+**Zero `memcpy` and zero `strchr` in the whole function.** The URL is decoded straight into a 1025-byte
+stack buffer with the clamp honoured, and there is no second, unclamped span copy. So the `0x1007b2c4`
+overflow is **57.23 / S1 only**; 86.10 / S2 does not carry that code path.
+
+That is also the shape of the fix: drop the span copy, decode into the bounded buffer. It means the live
+`.202` result (404 up to N≈3900, 408/000 from N≈5300) is the whole affected surface, and `.86` is a
+control rather than a second target.
