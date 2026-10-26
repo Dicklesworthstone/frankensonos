@@ -380,3 +380,23 @@ The route table marks exactly three routes with flag `0x10` — `/device_account
 200. So `0x10` is a local-only gate, and the old unlock flow is reachable only from the device itself.
 That is why the LAN-reachable path is `/devmode` and why the statement is the whole problem: the
 loopback routes cannot be used without already having local execution.
+
+## The app is the delivery vehicle (and it validates locally)
+
+The current Android app (`com.sonos.acr2`, pulled from `d.apkpure.net`) has a whole devmode module:
+`DevModeStatementLoader`, `DevModeUriParser`, `DevModeUriIsValid`, `handleClearDevModeStatement`,
+`checkIfDevModeStatementShouldBeCached`, and a `sonos://devMode/*` deeplink scheme. The statement arrives
+**through that deeplink**, so it is handed to the app by the unlock page, not fetched from the player.
+
+`DevModeManager.trySetStatement` validates it on-device with a native call:
+
+```
+NativeDevModeJNI.validateDevModeStatement(buf, len, 47, str, str.len, major, minor, …)
+```
+
+so the statement is **versioned** (`DevModeData.majorVer/minorVer`) and bound to a string, and the
+validator lives in a native lib that is *not* in the base APK (no `.so` in the zip; it is in an ABI
+split). That lib is the next target: it holds the verification key, and a local validator means a
+statement can be checked without touching a player.
+
+The base APK's only PEM is a 1634-byte CA (`a7baadd8…`), not the 842-byte statement.
