@@ -275,9 +275,15 @@ the minimal 2-byte margin (`name_len = body - 98`) and a padded QUERY_INFO body,
 
 So at >= 16 KiB the allocation's end abuts unmapped memory and a **2-byte** over-read faults deterministically
 — the size is the grooming knob, and the fault no longer depends on the layout lottery that made the small
-margins unreliable. The wedge is still transient: `/status/zp` flaps for ~20 s after the sockets close and
-then the daemon is fully back (`/status/zp` and `/xml/device_description.xml` both 200). `name_len` is a u16,
-so bodies above ~65.6 KB need `name_len` clamped to 65535 and the margin grows with the excess.
+margins unreliable. `name_len` is a u16, so bodies above ~65.6 KB need `name_len` clamped to 65535 and the
+margin grows with the excess.
+
+**The fault is a crash, not a hung thread (2026-10-26).** The daemon is supervised and restarts: after a
+groomed fault the transport drops from `PLAYING` to `STOPPED` and `GetMediaInfo`'s `CurrentURI` comes back
+empty (it was `x-rincon:RINCON_…` before), i.e. in-memory state is gone. Reproduced on three consecutive
+faults; `/status/zp` returns 200 again within ~12 s each time. So a 2-byte heap over-read in a QUERY_INFO
+reply is a remote daemon-restart primitive from one unauthenticated `/getaa` request, with the reply size as
+the only knob.
 
 **The trail site is not reliably worse (2026-10-26).** Forcing the surrogate branch — `name_len = buflen - 98`
 with the last in-bounds unit set to a lone lead surrogate `0xD800` — makes the loop take the trail load at
