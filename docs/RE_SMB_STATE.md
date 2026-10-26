@@ -93,3 +93,35 @@ normal image), so today this is a remote DoS with a measured margin, not a leak.
 **S1 does not take the same URL.** `/getaa?u=x-file-cifs://…` answers 404 on the 57.23 Play:5
 (`.202`) for the encoded, unencoded and `x-smb` forms, and the SMB server sees no connection, so the
 crash above is an S2 result until the S1 art path is found.
+
+### Measured outage table (crash_oracle, 2026-10-26)
+
+`recon/smb_outage.sh HOST PORT VALUE` serves one patched reply, polls
+`/status/zp` every 100 ms with `recon/crash_oracle.py`, fires the `/getaa` at
+t=3 s and keeps polling to time the recovery. Every row is one 22 s run; the
+oracle needs two consecutive failed probes before it calls DOWN, so a single
+slow probe cannot fake a crash.
+
+| FileNameLength | runs | getaa | crashes | longest outage |
+|---|---|---|---|---|
+| `0x06` | 1 | 200 | 0 | - |
+| `0x20` | 1 | 200 | 0 | - |
+| `0x40` | 2 | 000, 200 | 1 | 3.877 s |
+| `0x60` | 1 | 200 | 0 | 0.072 s blip |
+| `0x80` | 1 | 200 | 0 | - |
+| `0x100` | 4 | 000, 000, 200, 200 | 2 | 3.762 s, 3.698 s |
+| `0x200` | 2 | 200, 200 | 0 | - |
+| `0x400` | 2 | 200, 200 | 0 | - |
+| `0x800` | 1 | 200 | 0 | - |
+| `0x1000` | 1 | 200 | 0 | - |
+| `0xffff` | 2 | 000, 000 | 2 | 3.804 s, 3.689 s |
+
+- **The crash is probabilistic, not a threshold.** `0x100` crashes 2 of 4
+  runs, `0xffff` 2 of 2, `0x40` 1 of 2, and `0x200`-`0x1000` never crashed.
+  The earlier "0x400 crashes" line was a single sample; `0x400` has since
+  survived 2/2.
+- Every crash is the same shape: `getaa` 000, `/status/zp` refused for
+  3.69-3.88 s, then the daemon answers again on the same version. No restart
+  loop, no version change.
+- The first case of a session is the least trustworthy: the very first `0x40`
+  run crashed, the repeat did not, so warm up with a control before counting.
