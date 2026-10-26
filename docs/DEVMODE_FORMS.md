@@ -324,7 +324,10 @@ ring:
         u32 BE nkeys2       ; < 9, may be 0
         nkeys2 x 0x108 key record
         u8 nsig             ; 1 or 2
-        nsig x { u32 BE len (< 0x800), u8 type, len bytes }
+        nsig x signature entry:
+          u32 BE reflen (< 0x800), u8 reftype, reflen bytes   ; the key ref
+          u8 (1), u32 BE (1)                                  ; unnamed, 1/1 in every sample
+          u32 BE siglen, siglen bytes                         ; the signature
 ```
 
 Every `0x108` record repeats the same triplet — magic `0x621DA74D` (`0x922c`),
@@ -336,9 +339,12 @@ declared `count` at `ring+4` must be `>= cursor - ring_start`, i.e. it must cove
 every byte the parse consumed. A ring with `count = 0` parses the header and then
 dies there. `nkeys2 == 0` is fine (`0xa3bc` branches straight to the verify).
 
-A valid ring therefore needs `count = len(ring)` and a signature block; the
-emulator's `build()` in `scripts/emu_devmode_stmt_s1.py` emits exactly that and
-its `valid` case reaches the verifier (`verify=True`).
+A valid ring therefore needs `count = len(ring)` and a complete signature entry.
+Proven: a ring built from this layout alone, with no reference to `build()`,
+drives the real parser to the verifier — `emu_devmode_stmt_s1.run()` returns
+`verify=True` in 430 steps, the same as its own `valid` case. Posted to `.202`
+(the id it carries) the device still answers `403` in `0.05 s`, which is now
+attributable to the `0xAA` filler signature rather than the parse.
 
 Caveat found while testing: the latency classifier is **not** conclusive on S1.
 The emulator-valid blob with a `0xAA` filler signature still answers `403` in
