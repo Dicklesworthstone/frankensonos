@@ -726,3 +726,9 @@ SCPD has no `CreateSavedQueue` (401 Invalid Action); it exposes `CreateObject`/`
 `Browse` on `SQ:0` returns a DIDL container, so the container exists. `CreateObject` with a DIDL item
 answers 713 (Object not found), i.e. the `ContainerID`/`parentID` pair is wrong, not the title. Once a
 create succeeds with a short title, the same call with a 2 139-byte `dc:title` is the 2.1c trigger.
+
+**The favourite title is capped at 1 023 bytes, which is below the 2.1c threshold.** `CreateObject` into
+`FV:2` succeeds (200, object `FV:2/19`) with a 2 139-byte title, but the device stores 1 023 — and the
+2.1c setter only stores values *longer than* 1 024. So a favourite title cannot reach 2.1c by itself;
+the long value has to come from a field with a bigger cap (the `res`/art fields are capped at 37/64 in
+the same test, so not those either).
