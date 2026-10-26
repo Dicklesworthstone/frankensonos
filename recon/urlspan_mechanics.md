@@ -53,3 +53,28 @@ exactly: 5300 is below r18, 5355 is the LR.
 
 Note `mfcr`/`stw 12` is not present — the CR is saved via `mfcr 12` and stored
 elsewhere, so the map above is the complete saved-GPR set.
+
+## 2.1c clobber map (prologue 0x101cc878)
+
+Second stack write, same primitive, different frame: `0x101cc878: stwu 1, -2160(1)`,
+destination `r1+16`. Saved offsets from the prologue, and the span that reaches each
+(`span = offset - 16`):
+
+| saved | offset | span |
+|---|---|---|
+| r21 | 2116 | 2100 |
+| r22 | 2120 | 2104 |
+| r23 | 2124 | 2108 |
+| r24 | 2128 | 2112 |
+| r25 | 2132 | 2116 |
+| r26 | 2136 | 2120 |
+| r27 | 2140 | 2124 |
+| r28 | 2144 | 2128 |
+| r29 | 2148 | 2132 |
+| r30 | 2152 | 2136 |
+| r31 | 2156 | 2140 |
+| **LR** | **2164** | **2148** |
+
+So a browse-result span of 2148 bytes reaches the saved LR — 1207 bytes shorter
+than the URL path needs (`X=5355`). The saved set is dense here (`r21`-`r31`
+contiguous), unlike the URL splitter's sparse set, so the aim window is cleaner.
