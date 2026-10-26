@@ -96,3 +96,20 @@ The constant `0x240000` is a descriptor word (high byte 0x24), not a length.
 prologue of its own and the linear MIPS16 decode from it is misaligned, so its internal bound
 check (if any) is the remaining read. The next step is a correct entry point for `0x51b9b4` and
 then the destination sizes in the binding tables that feed `bindString`.
+
+## Sink status: binder slot reached, copy primitive still unnamed
+
+Confirmed by the vtable dump: `RJsonDataBinding` vtable `0x6ab9c8`, slot 1 = `0x5f16e4`, and
+`0x5f16e4` is a thunk `FUN_0051b9b4(param_1, 0x240000)`.
+
+`0x51b9b4` is **not** a function: it is an unnamed 0x20-byte PIC stub (MIPS32, immediately after
+`__cxa_guard_release` ends at `0x51b9b4`) of the form `lui t9,0x52; addiu t9,t9,-17988;
+lui gp,0x1e; addiu gp,gp,16804; addu gp,gp,t9; lw t9,-32724(gp); b 0x51bb04` (the lazy
+resolver). So the copy primitive is whatever the GOT slot holds, and that slot is **not**
+resolvable from the file: the computed address `0x6f7b8c` has no relocation and lies past EOF
+(NOBITS), and neither `.rel.plt` nor `.rel.dyn` covers it.
+
+That is the honest stop for this read: the chain is JSON string -> `bindString` -> binder slot 1
+-> stub -> GOT. Naming the primitive needs the GOT slot resolved (run-time or by a correct gp),
+and only then can the destination sizes in the binding tables be compared against the
+attacker-controlled length.
