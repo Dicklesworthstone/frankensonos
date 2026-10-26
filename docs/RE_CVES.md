@@ -352,8 +352,10 @@ Measured, not just read: built `R_2_5_0` with `-fsanitize=address,undefined` and
 200 k attributes on one element, a 4 MiB attribute value, billion laughs, 200 k entity refs inside one
 attribute value, 200 k nested elements, 100 k namespace declarations, a 2 MiB namespace URI, and the
 `#812` out-of-order-entity-close reproducer with `XML_StopParser` — whole-buffer and chunked at 64, 128,
-256, 512, 1024 and 4096 bytes. **Zero ASan/UBSan reports.** The 4 MiB token at 64-byte chunks is the
-slowest (quadratic, as expected) and still clean.
+256, 512, 1024 and 4096 bytes. **Zero ASan/UBSan reports** on every run that finished, including the
+slowest: the 4 MiB single token at 64-byte chunks (quadratic, as expected) completed clean, as did
+200 k attributes at 64-byte chunks. The only non-clean outcome was the 200 k-attribute case at 256-byte
+chunks, which hit a 300 s wall — time, not a fault.
 
 Two corrections to §5b while measuring:
 
