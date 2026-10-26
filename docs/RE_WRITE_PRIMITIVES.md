@@ -633,3 +633,18 @@ So the two cheap hypotheses are eliminated: a non-empty queue and a standalone c
 place, and the DIDL is still rejected. The SCPD declares only `ContainerID`/`Elements` and no class
 constraint, so the accepted shape has to come from the binary (the CreateObject handler) rather than from
 guessing — the same route that resolved the `/api` shape.
+
+## CreateSavedQueue shape solved — but titles cap at 1023 before the copy (2026-10-26)
+
+`CreateSavedQueue` on AVTransport takes `InstanceID, Title, EnqueuedURI, EnqueuedURIMetaData`. With the queue
+non-empty, **the title alone is enough**: `Title=sq1` with both URI fields empty returns
+`AssignedObjectID SQ:4` (and `SQ:5` with a URI+DIDL). The earlier 811 was the empty queue, not the shape.
+
+Saved queues then appear under `Browse SQ:` as `<container id="SQ:n">` with the title. But the title is
+**truncated to 1023 characters in the browse result**: a 2046-byte title is created fine (`SQ:7`) and
+browsing returns `200` in 0.13 s with the daemon alive, and the longest returned title measures exactly
+**1023**. Titles of 2100, 2200 and 3000 behave identically (200, alive).
+
+So the 1025-byte intermediate buffer in `FUN_101a000c` (`0x401`) caps the value before the `0x101cc878` copy
+ever runs — a saved-queue title can never exceed 1023 there, which is why nothing trips the 2100-byte buffer
+on this route.
