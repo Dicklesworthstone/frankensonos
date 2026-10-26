@@ -371,6 +371,25 @@ Two corrections to §5b while measuring:
 CVE-2026-77214 (over-read) stays unreachable: the only expat entry point called anywhere is
 `0x1041ced4` (`XML_Parse`), six times, and no 3-argument `XML_ParseBuffer` call site exists.
 
+### 8e. The one non-DoS expat fix after 2.5.0, and why it is not on the path
+
+`c4208e7` (2.6.0, issue #812) guards `entityTrackingOnClose` in `processInternalEntity` with
+`parser->m_openInternalEntities->entity == entity`, so an entity closed out of order no longer pops the
+wrong node off the open-entity stack. It is the only post-2.5.0 fix that touches parser state rather than
+just cost.
+
+Reproduced with the upstream regression shape (`<!DOCTYPE t1[<!ENTITY e1 'angle<'><!ENTITY e2 '&e1;'>]><t1>&e2;`,
+single-byte feeding, `XML_StopParser` from the character handler): on `R_2_5_0` it parses clean
+(`ok=1`), and under `-fsanitize=address` with LeakSanitizer there is **no leak and no ASan report** — the
+run just takes ~60 s in LSan's exit scan where the plain build returns instantly. So the wrong-pop is
+benign on this shape; it is not a write.
+
+**Not reachable as the daemon is written.** `XML_StopParser` is what makes the parser suspend mid-entity,
+and the wrapper `FUN_1038d8b0` never calls it and never checks for a suspended status: it only splits the
+body at UTF-8 character boundaries, buffers a partial multi-byte sequence in `parser+8`, and calls
+`XML_Parse(parser, p, len, 0)` on each complete prefix, then `XML_Parse(parser, 0, 0, 1)` to finish. No
+handler in the daemon stops the parser, so the out-of-order-close path stays dormant.
+
 The six `XML_Parse` call sites are `0x1038d890`, `0x1038d9b0`, `0x1038da3c`, `0x1038dad8`, `0x1038db30`,
 `0x1038db78` (file offsets `0x38d890` …), all inside one wrapper, all four-argument. `XML_Parse` itself is
 `0x1041ced4`.
