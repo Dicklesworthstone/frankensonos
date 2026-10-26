@@ -657,6 +657,22 @@ credentials:
 | CVE-2026-110713 | `smb2_decode_file_fs_volume_info` @`0x21050` | `LabelLength` at `0x210f8`, source fixed at payload+`0x12` @`0x210fc`, `srwi` @`0x21100`, then `utf16_to_utf8`. No bound. |
 | CVE-2026-110714 | `decode_acl` (static, called from `smb2_decode_security_descriptor` @`0x21698`) | `acl_size` clamped into `v.len` at `0x21914`/`0x2191c`, then `addi r9,r9,-8` **unconditional** at `0x2194c`; `acl_size < 8` underflows to ~`SIZE_MAX` and every later `smb2_get_uint*` check is dead. The descriptor offset checks are also 32-bit and wrap (`addi r10,r9,8` + `cmplw` at `0x217a0`/`0x217cc`/`0x21838`). |
 
+### 9a-bis. Correction: the SMB parser is not in the daemon process
+
+`anacapad` does not link libsmb2 at all — zero `smb2_` dynamic symbols, zero `libsmb2` strings and no
+`DT_NEEDED` entry, in **both** builds. So the `/getaa` client lives in a separate binary or library in the
+S2 rootfs, and the three decoder sinks in §9a run outside the daemon.
+
+That matters for triage in two directions. It is still fully pre-auth and still reached by a rogue SMB
+server, but a fault in the parser does not take `:1400`/`:1443` down — which is consistent with the
+round-1 `DataLength` observation (the request stalls, `/status/zp` keeps answering 200, and the daemon
+needs no recovery). Conversely the parser process is a *different* target with its own lifetime, and the
+three CVEs are DoS against it rather than against the daemon.
+
+Environment note: the local RE tree `~/sonos-root-local` (which held `fw/internals/libsmb2.so.1` and the
+`recon/` harnesses) disappeared from the machine during this round. The offsets in §9a are therefore
+doc-only until it is restored; the `captures/firmware/` copies of the daemons are unaffected.
+
 ### 9b. busybox `udhcpc` — CVE-2026-88833, and it runs here
 
 Named sink: the `udhcpc` raw-packet path. The client replaces the validated packet length with an
