@@ -144,3 +144,35 @@ length against `max_transact_size` (`0x1efc8`) and `offset >= 72` (`0x1efd0`);
 
 Harness fixes needed to get here: `smb2Negotiate` returns `(None, [pkt], …)` and the packet carries the
 response under `Data`, not `Buffer`; the original `res[0][0]` path raises for NEGOTIATE.
+
+## The FileNameLength over-read: faulting instruction and a 2-byte margin
+
+Call site: `smb2_decode_file_all_info` reads the u16 at payload+96 (`0x20fa0`–`0x20fb0`), then calls
+`utf16_to_utf8(iov_base + 100, FileNameLength / 2)` at `0x20fc0` (PLT `0x40210`). Nothing compares
+`FileNameLength` with `iov_len`.
+
+Faulting instruction: `lhbrx r10, 0, r9` at **`0x270e4`** in the sizing pass, and the same load at
+**`0x27164`** in the conversion pass. Both sit in a loop whose only bound is `p < base + FileNameLength`
+(`0x270dc`, `0x2715c`), so the first load past the iovec is at `base + iov_len`. The surrogate branches
+read `p + 2` with no bound at all (`0x271e8`, `0x27238`).
+
+Steering: the reply's `OutputBufferLength` is set to the real serialized payload length
+`100 + 2*UNITS`, the name is `'A' * UNITS` (no NUL halfwords), and `FileNameLength = 2*UNITS + 2`.
+That makes the walk read exactly **one UTF-16 unit (2 bytes) past the buffer** — the minimum margin —
+and the next bytes are the following heap chunk. At `UNITS = 1998` the payload ends at 4096, the
+caller's buffer size, so the 2-byte read lands on the chunk after it.
+
+Observed (fresh port and server per case, warm-up, liveness before/after):
+
+| UNITS | payload end | 2-byte read lands | result |
+|---|---|---|---|
+| 1996–1999 | 4092–4098 | inside / just past the caller's buffer | 200 |
+| 2000 | 4100 | past the buffer | 5/10 200, 5/10 no answer (worker pinned) |
+| 2000–2005 (first scan) | 4100–4110 | past the buffer | curl 52 (empty reply, worker aborted) or 28 (hang) |
+
+`/status/zp` answers 200 before, after and 1.2 s later in every case: the worker dies or stalls, the
+daemon does not. The outcome depends on what the neighbouring chunk holds — a NUL halfword stops the
+walk (200), anything else keeps it walking (hang), and an unmapped page aborts the connection (52).
+
+Harness: `~/sonos-root-local/recon/smbserv_qinfo2.py <port> <units> <delta>`, sweep
+`recon/getaa_oob.py <ip> <units>:<delta> …`.
