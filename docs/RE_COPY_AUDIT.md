@@ -874,3 +874,14 @@ So a >2 KiB title is accepted and stored. Caveat measured immediately after: bro
 with `BrowseMetadata` returns the title **truncated to 1023 bytes**, so the stored value is
 longer than what the browse path hands back — which is exactly the serializer/reader split that
 matters for the 2.1c NUL and for any title-driven overrun.
+
+### The 2 139-byte span is accepted, and the setter guard is not what the doc said
+
+Re-read of `0x101cbbbc`: it is `cmplwi 7,3,1024` followed by **`bt 2`** — branch if *equal*. So the
+store is skipped only when the span is exactly 1 024, not "unless it exceeds 1 024"; 1 023 is stored
+normally. The cap on titles (1 023 bytes) therefore does not block the setter at all.
+
+Live on the coordinator: `SetAVTransportURI` with a 2 139-byte share (`x-file-cifs://host/<2139 A>/x.mp3`,
+span 2 139) answers **200** and the daemon survives (`zp` 200). So the copy runs with the span that
+zeroes the caller's `r31` — the corruption is silent rather than fatal, which is what a low-byte zeroing
+of a still-mapped pointer looks like.
