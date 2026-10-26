@@ -643,3 +643,9 @@ in the live sweep is a different entry again.
 **Bare paths do not reach 2.1c.** `/` + 2138/2139/2140 `A` + `/x` answers 404 with the daemon up on
 `.202`, so the 2.1c NUL needs the ContentDirectory/SavedQueues route the lane identified, not a bare
 path. The bare-path 404s that break at ~4 020 are a third thing again.
+
+**A long `ObjectID` alone does not fire it.** `Browse` on ContentDirectory with a 2 139-byte ObjectID
+answers a SOAP 500 with the daemon up, so the long value is not the object id — it is a value *inside*
+the browse result (a title or a SavedQueues entry), which means the span has to come from data the
+player already holds, not from the request. That is a materially different requirement from the URL
+cases and is the thing to confirm next.
