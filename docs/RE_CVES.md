@@ -276,7 +276,7 @@ wget`. **`tar`, `awk`, `gzip`, `unzip`, `dpkg-deb`, `httpd` are absent.**
 
 | CVE | pub | component | applies? | reachable? |
 |---|---|---|---|---|
-| CVE-2026-115506 | 10-22 | expat ≤ 2.9.0 | **yes** (S2 2.5.0; S1 unpinned) | **live, DoS.** Entity amplification detected too late in `accountingDiffTolerated()`. Any SOAP/DIDL body reaches it — the wrapper calls `XML_Parse` on the raw body. Measured below. |
+| CVE-2026-115506 | 10-22 | expat ≤ 2.9.0 | **yes on both lines** — S2 is 2.5.0; S1 is unpinned but carries the guard's own strings (`expat: Accounting(%p)`, `limit on input amplification factor … breached`), so it is ≥ 2.4.0 and affected | **live, DoS.** Entity amplification detected too late in `accountingDiffTolerated()`. Any SOAP/DIDL body reaches it — the wrapper calls `XML_Parse` on the raw body. Measured below. |
 | CVE-2026-110712 / -110713 / -110714 | 10-14 | libsmb2 4.0.0 | **yes** | **proven on 4.0.0**, §7c. `/getaa` QUERY_INFO reply. |
 | CVE-2026-115505 | 10-22 | libsmb2 4.0.0 | yes | needs `smb2_share_enum_async`; not shown on the `/getaa` path. |
 | CVE-2026-92392 | 10-14 | curl (static, unpinned) | unproven | h2 upload UAF; version cannot be pinned (§5a) and no upload site is named. |
@@ -313,5 +313,9 @@ seconds" needs ~100 MB bodies.
 
 Parameter-entity shapes do **not** help: `%aN;` in content parses clean (`ok=1`) in 0.3 ms at 137 KB,
 because the expansion never lands in the document.
+
+The six `XML_Parse` call sites are `0x1038d890`, `0x1038d9b0`, `0x1038da3c`, `0x1038dad8`, `0x1038db30`,
+`0x1038db78` (file offsets `0x38d890` …), all inside one wrapper, all four-argument. `XML_Parse` itself is
+`0x1041ced4`.
 
 Harness: `/tmp/expat250/h.c` (not committed — throwaway, 20 lines).
