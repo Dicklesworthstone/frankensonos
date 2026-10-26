@@ -427,3 +427,14 @@ modulus     = 86563be24edd2c535aa0d5c98dc11d19b62182…
 It is a **third** key: neither `28a096f5…` nor `b2927a28…`. So devmode statements are signed by a
 private key we still do not have, and the app's RSA check is only a client-side pre-filter — the player
 itself just compares a compiled SHA-256, which is why forging is not an option and a capture is.
+
+## The S1 desktop controller knows a `devmode.bin`
+
+The shipped S1 Controller binary carries the same form template (11×80 textarea, `csrfToken`, submit
+and delete buttons) plus two paths the player does not otherwise expose: `%s/debug/devmode.bin` and
+`/devmode.bin`. Both 404 on an unlocked-never device, so the file is the **cached statement written
+after a successful unlock** — which makes retrieval trivial once a device is unlocked, and gives a
+second way to lift a statement off any already-unlocked player in the wild.
+
+The app itself does not embed a statement (its only PEMs are the bare labels) and has no unlock URL, so
+the statement is still pasted in by the user.
