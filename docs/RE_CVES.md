@@ -869,3 +869,34 @@ exploitation, so this gap matters.
    added**, so the LONG ceiling cannot separate them.
 
 Net: the pin needs runtime data. `curl_version_info` from a live process, a core, or a build date.
+
+## 13. Is the URL-span overflow (RE_COPY_AUDIT finding 1) a known CVE? — no, and it is not on S2
+
+Two questions the CVE lane can answer for the exploit work.
+
+### 13a. No published CVE covers it
+
+Searched the Sonos vendor CVE set and the 2026 advisories. Everything published against Sonos hardware is
+one of: the `mt_7615.ko` WPA2 four-way-handshake stack overflow (CVE-2023-50809), the Era 300 SMB
+response OOB (CVE-2026-4149) and heap overflow (CVE-2025-1051), or `sonos/tract` (a Rust ML library that
+is not in this firmware). **Nothing covers a URL/path span copy in `anacapad`.**
+
+Consequence: there is no upstream patch to crib the clobber semantics from, and no vendor write-up to
+lean on. The overwrite map has to be derived from the frame itself (SapphireIvy's assignment), and the
+finding is genuinely unpublished.
+
+### 13b. The same shape is not at the S2 percent-decode sites
+
+`sonosDecodePercentEncodedStr` is imported on S2 (`R_MIPS_JUMP_SLOT` at `0x6f6520`, PLT stub `0x6dc440`)
+and has exactly **two** call sites:
+
+| site | call | bound |
+|---|---|---|
+| `0x4a9cce` | `sonosDecodePercentEncodedStr(str+3, sp+24, 1025, &n)` after a `strncmp(str, …, 3)` | 1 025 into a 1 056-byte gap (frame 1 080) — fits |
+| `0x4cc848` | `sonosDecodePercentEncodedStr(src, sp+13056, 2048, &n)` | 2 048 into a 14 640-byte frame — fits |
+
+Both are the *clamped* form. Neither has the S1 pattern (span computed before the clamp, then `memcpy`
+of the raw span). So the bug is **S1-only as far as this scan reaches** — the S2 URI machinery exists
+(`file://` ×3, `http://` ×17) but its percent-decode path is bounded.
+
+That matters for scoping: the 0-day is a 57.23 bug, and `.202` is the right and only test unit for it.
