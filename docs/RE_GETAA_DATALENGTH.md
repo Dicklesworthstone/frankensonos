@@ -167,8 +167,13 @@ Observed (fresh port and server per case, warm-up, liveness before/after):
 | UNITS | payload end | 2-byte read lands | result |
 |---|---|---|---|
 | 1996–1999 | 4092–4098 | inside / just past the caller's buffer | 200 |
+| 1998, 12 s settle between runs | 4096 | first chunk after the caller's buffer | **4/4 200** |
 | 2000 | 4100 | past the buffer | 5/10 200, 5/10 no answer (worker pinned) |
 | 2000–2005 (first scan) | 4100–4110 | past the buffer | curl 52 (empty reply, worker aborted) or 28 (hang) |
+
+With a clean worker state the 1998 case is deterministic: the two bytes belong to the next chunk and
+are read without a fault. The 2000+ cases are not, because the payload has already outgrown the
+caller's 4096-byte buffer and the read lands wherever the next allocation happens to be.
 
 `/status/zp` answers 200 before, after and 1.2 s later in every case: the worker dies or stalls, the
 daemon does not. The outcome depends on what the neighbouring chunk holds — a NUL halfword stops the
