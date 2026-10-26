@@ -262,6 +262,23 @@ response header carries a name, and the `/status/anacapa.log` page returns the e
 both `.86` and `.202`, so the log page is not a channel either. The over-read is therefore a heap read with
 no exfiltration path — it matters for corruption and the wedge, not for disclosure.
 
+**Reply size grooms the fault (2026-10-26).** The over-read walks linearly, so whether it faults is decided
+by what follows the reply allocation — and that is steerable from the server side by the reply *size*. With
+the minimal 2-byte margin (`name_len = body - 98`) and a padded QUERY_INFO body, a fresh server per run:
+
+| body size | runs | outcome |
+|---|---|---|
+| 8192, 10240 | 2 | 200 every shot |
+| 11264, 12288 | 3 | 11264 wedged 2/2; 12288 wedged once then survived — noisy edge |
+| **16384** | 3 | **6/6 shots wedged** |
+| 24576, 32768, 49152, 65536 | 4 | wedged every shot |
+
+So at >= 16 KiB the allocation's end abuts unmapped memory and a **2-byte** over-read faults deterministically
+— the size is the grooming knob, and the fault no longer depends on the layout lottery that made the small
+margins unreliable. The wedge is still transient: `/status/zp` flaps for ~20 s after the sockets close and
+then the daemon is fully back (`/status/zp` and `/xml/device_description.xml` both 200). `name_len` is a u16,
+so bodies above ~65.6 KB need `name_len` clamped to 65535 and the margin grows with the excess.
+
 **The trail site is not reliably worse (2026-10-26).** Forcing the surrogate branch — `name_len = buflen - 98`
 with the last in-bounds unit set to a lone lead surrogate `0xD800` — makes the loop take the trail load at
 `0x3daf4` (`unicode.c:216`) two bytes past the body. Across 3 runs at the same 2-byte margin it wedged once
