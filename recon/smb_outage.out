@@ -1,0 +1,19 @@
+# smb_outage.py, .202 (S1 57.23), 2026-10-26
+# harness: impacket SMB1 on 445, share S, FileNameLength += delta
+# oracle: /status/zp every 100 ms, 1.0 s probe timeout
+
+{"delta": "0", "getaa": "200", "req_s": 0.117, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x100", "getaa": "200", "req_s": 0.584, "down_at": "20:38:55.531", "up_at": "20:38:55.678", "outage_s": 0.147, "reason": "timeout"}
+{"delta": "0x400", "getaa": "200", "req_s": 0.66, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x1000", "getaa": "200", "req_s": 0.115, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0xffff", "getaa": "200", "req_s": 0.219, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x2000", "getaa": "200", "req_s": 0.286, "down_at": "20:39:42.743", "up_at": "20:39:42.890", "outage_s": 0.147, "reason": "timeout"}
+{"delta": "0x10000", "getaa": "200", "req_s": 0.565, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x100000", "getaa": "200", "req_s": 0.143, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0xffff", "getaa": "200", "req_s": 0.126, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0xffff", "getaa": "200", "req_s": 1.112, "down_at": "20:40:17.969", "up_at": "20:40:18.124", "outage_s": 0.155, "reason": "timeout"}
+{"delta": "0xffff", "getaa": "200", "req_s": 0.456, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+
+# result: 11 samples over 8 deltas, every getaa 200, daemon never actually down.
+# the three DOWN rows are one 1.0 s probe timeout each (0.147-0.155 s), i.e. the
+# oracle's own timeout while the daemon was busy - not an outage.
