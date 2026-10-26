@@ -43,7 +43,24 @@ and the assert text `data_size <= sizeof(blob_aligned)`. The append is
 ```
 
 The check only reaches an `assert` (`0x102199c4`) whose handler `0x10219464`
-does not abort, so an over-long record set corrupts silently. The destination
+does not abort, so an over-long record set corrupts silently.
+
+**One record carries both the title and the blob (2026-10-26).** `r31` is `ctx + 0xe58`
+(`addi 31,28,3672` at `0x10219874`), so the record *is* the structure: the title sits at record
+offset 0 (copied first with `memcpy(&0x1054d5d2, rec, strlen(rec) & 0xff)`), the blob at record
+offset `0x48` (`ctx+0xea0`), and the length at record offset `0x448` (`ctx+0x12a0`). The record is
+`0x44c` bytes — exactly the `memset` at `0x1021a3f0`. So no separate request is needed: the
+credentials record sets both fields, and the title is the record's own first field.
+
+The title can only ever contribute **255** bytes because the serializer truncates it with `& 0xff`
+(`0x102198e0`-`0x102198f4`). The write is `7 + title_len + data_size` bytes from `0x1054d5d0`, so
+the overflow condition against the 1112-byte global is
+
+    title_len + data_size > 1105
+
+With `data_size` capped only by the 0x400-byte source buffer, an 82-byte title plus a 1024-byte
+blob already overruns by one byte, and a 255-byte title plus 1024 overruns by 174. The record's own
+type is 50 (`0x10219de0`); type 152 (`0x10219f04`) reaches the same handler. The destination
 `0x1054d5d0` is `.bss` and the next global (`0x1054dac8`, the 4776-byte
 SocketManager state, `memset` at `0x1021c73c`) is 1272 bytes away — an append
 past 1272 clobbers live state, not padding. (Record-count cap: 200.)
