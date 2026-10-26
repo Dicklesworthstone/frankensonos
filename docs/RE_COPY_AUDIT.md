@@ -766,3 +766,14 @@ The API route family that owns the record is in the descriptor table at `0x1044c
 `upnp`, `upnpMusicServices`, `upnpQueue` — i.e. `POST /api/v1/players/local/upnp*?protocolVersion=1`.
 Those routes answer 200 but return an empty `parameters` list even for `GetZoneGroupState`, so the
 blob cannot be read back through the proxy as it stands.
+
+### Corrections and a new lever
+
+- `CreateSavedQueue` and `AddURIToQueue` live on **AVTransport**, not ContentDirectory — that is why
+  ContentDirectory answered 401 for them.
+- The 1 023-byte cap is on **characters**, so a multi-byte title beats it in bytes: `CreateObject` into
+  `FV:2` with 1 023 × `Ж` (2 bytes each = **2 046 bytes**) succeeds (`FV:2/20`). Browsing `FV:2` with
+  that title still did not fault (oracle: 286 samples, 0 downs), so the cap was not the only obstacle.
+- `AddURIToQueue` on AVTransport answers 800 for `x-sonos-http:` (raw and percent-encoded) and
+  `x-rincon-mp3radio://`, with and without `upnp:class` and `protocolInfo`, on an empty queue. The URI
+  form is the thing to get right; the queue record is where the serializer's title+blob would come from.
