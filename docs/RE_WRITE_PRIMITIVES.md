@@ -393,3 +393,21 @@ memset at `0x4f390c`), plus `0x5b7ace`, `0x5c2414`, `0x6562b8` which each carry 
 **Net:** no site copies a raw packet length into a *fixed-size* destination without a guard; the unchecked
 ones are allocator-sized from the same length. Residual risk sits in `0x4f9ae6` (destination unproven) and
 `0x647ba8` (length is a field difference).
+
+### Follow-up: there is no 512 KiB cap anywhere in `upgrade` (2026-10-25)
+
+Chased the open question from the type-21 read. Four places checked, none caps:
+
+- `FUN_10006c2c` (record header, 16 bytes) validates only the magic `0x35167f49` and that the type word is
+  `0x11` or `0xffffffff` — **no length check**.
+- `FUN_10007fa0` (record loop) checks only `local_498 < 0x10` (minimum), never a maximum, and never compares
+  the record length against the remaining section length.
+- `FUN_1000760c` (type 21) `malloc(len - 0xf)` — allocation follows the declared length, so a large record is
+  fine as long as memory allows.
+- The fetch is `execl("/usr/bin/wget", "wget", "-qC", "-T", "300", "-O", "-", <url>)` at `FUN_10008f54`
+  (strings `0x10018804` `-qC`, `0x10018808` `-T`, `0x1001880c` `300`, `0x10018810` `-O`, `0x10017b88` `-`) —
+  no size limit, no `--max-filesize`.
+
+So the 512 KiB abort is **not in this binary's parser**: it has to be the transport (wget/server) or the
+caller that feeds the stream. Combined with the type-21 finding (tokens compared in place, no copy), the
+"1 KB token" is not what makes a large record fail — the record size alone does.
