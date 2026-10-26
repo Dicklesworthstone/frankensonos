@@ -163,13 +163,15 @@ def main():
                 sys.exit("input too short for an smdp image")
             mdp = mdp[SMDP_MDP3_OFF:SMDP_MDP3_OFF + MDP_LEN]
         if AUTO:
-            probe = mdp[OFF["jffs"]:OFF["jffs"] + 4]
-            if probe in FENWAY_MAGIC["jffs"]:
+            # the CAAM magics are unique to fenway; the shared FSKEY is not.
+            jffs = mdp[OFF["jffs"]:OFF["jffs"] + 4]
+            model = mdp[OFF["model"]:OFF["model"] + 4]
+            if jffs == FENWAY_MAGIC["jffs"][0] or model == FENWAY_MAGIC["model"][0]:
                 LAYOUT = "fenway"
-            elif probe == MAGIC_FSKEY:
+            elif jffs == MAGIC_FSKEY or model == MAGIC_RSAKEY:
                 LAYOUT = "amlogic"
             else:
-                sys.exit("cannot detect layout at 0x%x" % OFF["jffs"])
+                sys.exit("cannot detect layout at 0x580/0x780")
     if cmd == "fields":
         for kind, off, magic in (("jffs", OFF["jffs"], MAGIC_FSKEY),
                                  ("rootfs", OFF["rootfs"], MAGIC_FSKEY),
