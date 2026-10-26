@@ -372,3 +372,11 @@ Observed codes: a 1-byte statement gets **403** (rejected), not 400 — so 403 i
 verify" answer and must not be confused with the route-level 403 that `/unlock` returns unconditionally
 on both lines. A successful POST is expected to answer 200 and open port 22; the tool exits 0 only when
 port 22 is actually open, so it cannot report a false success.
+
+## Why `/unlock` is always 403: it is loopback-gated
+
+The route table marks exactly three routes with flag `0x10` — `/device_account`, `/unlock`,
+`/unlock.htm` — and all three answer 403 to every method from the LAN while `/devmode` (flags 0) answers
+200. So `0x10` is a local-only gate, and the old unlock flow is reachable only from the device itself.
+That is why the LAN-reachable path is `/devmode` and why the statement is the whole problem: the
+loopback routes cannot be used without already having local execution.
