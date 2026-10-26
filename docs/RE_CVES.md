@@ -351,11 +351,14 @@ binary):
 | 390 B, 6 levels | guard fires | `ok=1`, 154 ms |
 | 446 B, 7 levels | guard fires | `ok=1`, 1.6 s |
 | 502 B, 8 levels | guard fires, 100 ms | `ok=1`, **15.5 s** |
-| 558 B, 9 levels | guard fires | `ok=1`, >200 s |
+| 558 B, 9 levels | guard fires | `ok=1`, **156.2 s** |
 
-Each level is ×10 time. A **502-byte** SOAP or DIDL body therefore costs ~15 s of a worker thread, and
-four concurrent bodies pin all four (`NumThreads 4`). That is two orders of magnitude better per byte
-than the 75 ms/MB amplification path in §8c, and it needs no large body at all.
+Each level is exactly ×10 time (154 ms → 1.6 s → 15.5 s → 156 s) and every one of them *completes*, so
+the cost is real work, not a reject. A **558-byte** SOAP or DIDL body therefore holds one worker thread
+for 156 s, and four concurrent bodies pin all four (`NumThreads 4`) for the same period — well past the
+10 s `TimeOut`, so the requests do not even fail fast. A tenth level is ~26 minutes. That is two orders
+of magnitude better per byte than the 75 ms/MB amplification path in §8c, and it needs no large body at
+all.
 
 Also live in this configuration, and proven: **CVE-class #780** — `XML_ExternalEntityParserCreate(p, NULL,
 NULL)` segfaults in `setContext` (`while (*context != '\0')` with `context == NULL`), because with
