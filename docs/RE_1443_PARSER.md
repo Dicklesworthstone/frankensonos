@@ -300,3 +300,26 @@ Live on `.86` (now reporting `86.10-81100`): a full standard upgrade (`Connectio
 lechmere.1`) still answers **400** on both `/api` and `/websocket/api`, with and without
 `x-sonos-method`/`x-sonos-uri`. The gate that fails is therefore before or inside
 `updateHeaderTargets`, not the protocol header.
+
+### The frame format is in the binary too
+
+Next to the handshake strings:
+
+```
+X-Sonos-Udn
+Sec-WebSocket-Protocol: lechmere.%u\r\n%s: %s\r\n
+x-sonos-method: \0 x-sonos-uri: \0 SOAPACTION: \0
+Bad protocol version: %c%c
+Bad message type: %c%c; %d
+Bad extended header length: %c%c
+could not recv extended header; expected %u read %u
+```
+
+So a frame is a two-character protocol version, a two-character message type, an extended-header
+length and then `x-sonos-method` / `x-sonos-uri` / `SOAPACTION` headers — a binary envelope, not JSON.
+The handshake itself sends the subprotocol plus one extra `<name>: <value>` header, and `X-Sonos-Udn`
+is the obvious candidate.
+
+A real client (`websockets` 17.3) reproduces the 400 on both `/api` and `/websocket/api`, with and
+without `X-Sonos-Udn` and with `lechmere.1`/`.2`, so the missing condition is something else in
+`prepareWebsocketHeader` — worth reading properly rather than guessing further.
