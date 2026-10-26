@@ -181,3 +181,26 @@ walk (200), anything else keeps it walking (hang), and an unmapped page aborts t
 
 Harness: `~/sonos-root-local/recon/smbserv_qinfo2.py <port> <units> <delta>`, sweep
 `recon/getaa_oob.py <ip> <units>:<delta> …`.
+
+## The margin floor is 2 bytes; the surrogate trail is guarded
+
+The surrogate branch reads the low half at `p + 2` (`0x271e8`, `0x27238`), but only after
+`cmplw end, p+2` / `bt 0x27300` at `0x271e0`–`0x271e4`: when the high surrogate is the last unit
+inside the declared length, the code writes U+FFFD and returns without reading. So a trailing high
+surrogate cannot push the over-read below one unit.
+
+Measured on `.86` with the last unit set to U+D800 (raw `00 d8`, impacket's latin-1 encoder cannot
+take a lone surrogate):
+
+| UNITS:DELTA | last unit | reads | result |
+|---|---|---|---|
+| 1998:0 | U+D800 | nothing past the buffer | 3/3 200 |
+| 1998:1 | U+D800 | the neighbour unit at `p+2` | 3/3 200 |
+| 1998:1 | 'A' | the neighbour unit at `p` | 3/3 200 |
+
+So the floor is **2 bytes** (one UTF-16 unit) and the only way past it is a declared length that
+already exceeds the buffer.
+
+Harness locations after the `~/sonos-root-local` tree disappeared: `recon/smbserv_qinfo2.py` and
+`recon/getaa_oob.py` in this repo, share `~/smbshare/folder.jpg`, interpreter
+`/private/tmp/fsonos-venv/bin/python` (`SMB_PY` overrides), `SURROGATE=1` for the U+D800 variant.
