@@ -431,3 +431,14 @@ functions have no `bl` caller and no pointer anywhere in the image — they are
 Before the copy the splitter calls only `strncasecmp`, `strchr`, `strrchr`,
 `strlen`, `strcpy`, `memcpy`, `isalpha` and `sonosDecodePercentEncodedStr` — no
 `open`/`stat`/`fopen` — so nothing about the target file can gate the write.
+
+### The 408 is a length gate, and it may be pre-empting the copy
+
+A long *share* (`x-file-cifs://host/<5000 A>/x.jpg`, span ≈ 5 013 by the splitter's own arithmetic) also
+answers 408, and the daemon stays up. So the 408 tracks total URL length, not the span, and it arrives
+before the copy can matter.
+
+That makes the next question concrete: **is the 408 emitted before or after the copy?** If before, this
+route never reaches the overflow and the primitive needs a different entry (the same splitter is called
+from `0x101a06b4`, `0x101a0c9c`, `0x101cc704`, and a SOAP or POST body has no URL-length gate). If
+after, the copy runs and the 408 is just the response the crashed frame never sends.
