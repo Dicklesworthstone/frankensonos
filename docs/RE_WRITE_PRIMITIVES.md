@@ -411,3 +411,20 @@ Chased the open question from the type-21 read. Four places checked, none caps:
 So the 512 KiB abort is **not in this binary's parser**: it has to be the transport (wget/server) or the
 caller that feeds the stream. Combined with the type-21 finding (tokens compared in place, no copy), the
 "1 KB token" is not what makes a large record fail — the record size alone does.
+
+### Live confirmation: an over-long record desynchronises and aborts the fetch (2026-10-25, .202)
+
+Built `/tmp/overrun-t21.upd` from the genuine package by taking the type-21 record at file offset **0x1c**
+(header `49 7f 16 35 | 15 00 00 00 | 54 00 00 00`, i.e. magic, type 21, length 84 — all little-endian on
+disk) and raising its length field to 4180 (+4096) **without adding bytes**, so the reader consumes 4 KiB of
+the following records.
+
+Result: the device accepted `BeginSoftwareUpdate` (200), read **131 072 bytes and then the connection died**
+(`ABORT BrokenPipeError served=131072`), the daemon restarted twice (~8 s and ~5 s) and came back on
+57.23-74170 with the version unchanged. Control runs of the same package unmodified deliver all 5 606 749
+bytes, so 131 072 is not a fetch cap — it is how much had been buffered when the parser bailed and stopped
+reading.
+
+That confirms the mechanism predicted above: the declared length is trusted, nothing compares it against the
+bytes present, the stream desynchronises, the magic check fails, the reader stops, and the transfer dies at
+the socket-buffer boundary. **The abort point is the parser's first error, not 512 KiB.**
