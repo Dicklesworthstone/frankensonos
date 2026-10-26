@@ -679,3 +679,87 @@ named but not verifiable at an offset without the S2 rootfs.
 - All nine zlib hits are consumer-side (vm2, Nicotine+, libsoup, Thrift, hex_core, undici, adm-zip,
   esaml, hackney); no zlib-core CVE in the window.
 - mbedTLS and nghttp2: zero results in the window.
+
+## 12. The real expat DoS: quadratic default-attribute collisions (CVE-2025-66382 / CVE-2026-45186)
+
+§8c ranked the amplification bug at ~75 ms/MB. That is the *weak* one. The quadratic attribute-collision
+bug is 40× stronger and needs no amplification trick at all.
+
+### 12a. Sink
+
+`defineAttribute`, `xmlparse.c:6383`:
+
+```c
+if (value || isId) {
+  int i;
+  for (i = 0; i < type->nDefaultAtts; i++)          /* linear scan, per attribute */
+    if (attId == type->defaultAtts[i].id)
+      return 1;
+```
+
+Called from `XML_ROLE_IMPLIED_ATTRIBUTE_VALUE` / `XML_ROLE_REQUIRED_ATTRIBUTE_VALUE` (`xmlparse.c:4964`,
+`:5005`), gated only on `dtd->keepProcessing` — **no handler needed**, so the daemon's bare
+`XML_ParserCreate` + `XML_Parse` reaches it.
+
+The `value || isId` test is the whole trick: an `#IMPLIED` attribute passes `value = NULL` and `isId = 0`,
+so the scan is skipped and the cost is linear. A **default value** (`a1 CDATA "v"`) turns it into O(n²).
+
+### 12b. Measured on 2.5.0
+
+`<!DOCTYPE e [<!ELEMENT e EMPTY><!ATTLIST e a1 CDATA "v" a2 CDATA "v" …>]><e/>`
+
+| attributes | body | time |
+|---|---|---|
+| 2 000 | 31 KB | 1.0 ms |
+| 10 000 | 159 KB | 17.2 ms |
+| 40 000 | 669 KB | 230.4 ms |
+| 150 000 | 2.23 MB | **3 247.5 ms** |
+
+Ratios 13.4× and 14.1× for 4× and 3.75× the input — n², as the code says. Extrapolating: 4 MB ≈ 13 s,
+8 MB ≈ 52 s. The advisory's "~2 MiB → 25–100 s" is this shape on slower hardware than this Mac.
+
+Control, same generator with `#IMPLIED` instead of a default: 40 000 attributes = 11.3 ms, i.e. 20× faster
+and linear. That is the discriminator, and it is why the earlier "many attributes" probe looked harmless.
+
+### 12c. Status
+
+- **CVE-2025-66382** (published 2025-11-28, "crafted file ~2 MiB → 25–100 s", through 2.7.3) — live on
+  2.5.0, sink named, reproduced.
+- **CVE-2026-45186** (published 2026-05-10, "attribute name collision checks", before 2.8.1) — the same
+  sink; the 2.8.1 fix replaces the linear scan with a `defaultAttsNames` hash table (`PR #1216`).
+- Both are **outside the 30-day window**, so they are listed here as pre-window/live, not as window hits.
+
+This supersedes §8c as the expat DoS of record: one 2 MB SOAP body holds a worker for ~3 s on this
+hardware, and four of them pin all four threads for the duration.
+
+## 10. Window 2026-09-26 … 2026-10-26, kernel — and the two S1 kernels
+
+The kernel was treated as unreadable. It is not: the S1 kernel image is gzip from offset `0x5779`
+(`57.23-74170-1-16-kernel.uImage`), and it decompresses to 1 511 544 bytes.
+
+**There are two different S1 kernels, per model.**
+
+| package | kernel | evidence |
+|---|---|---|
+| `57.23-74170-1-16` (Play:5 Gen1 class, type-2 records name models 2 and 5) | **Linux 2.4.22-rincon**, built 2026-02-17 | `Linux version 2.4.22-rincon- (secbuild@aws-bionic-sec-82) (gcc version 3.4.4)` |
+| `57.23-74170-1-12` (Play:1) | 2.6.35 | `vermagic=2.6.35 mod_unload MIPS32_R2 32BIT` on every `.ko` in that rootfs |
+
+So "the S1 kernel" is not one thing, and 2.4.22 is two years older than 2.6.35. Any kernel CVE has to be
+checked against both, and most fail on the older one for lack of the subsystem.
+
+### 10a. In-window kernel CVEs with a named file, and why they do not land
+
+| CVE | named file | verdict |
+|---|---|---|
+| 98167, 98169, 98170, 98171 | `fs/smb/client/smb2ops.c` | SMB2/3 only. 2.4.22 has **no SMB2 at all** (zero `smb2`/`SMB2` strings) and only the old `fs/cifs` client (`cifs_mount`, `cifs_open`, …); SMB2 support did not land until 3.7. N/A on both. |
+| 98168 | `fs/smb/client/cifssmb.c` (`cifs_query_reparse_point`) | reparse points are SMB2-era. N/A. |
+| 98182 | `net/mac80211/cfg.c` | the bug is the monitor-with-no-TXQ path (4.19+). N/A. |
+| 98233 | `net/packet/af_packet.c` | the bug is in the virtio `VNET_HDR` error path (2.6.22+). N/A on 2.4.22. |
+| 98229, 98230, 98231 | `net/xfrm/*` | no `xfrm` strings in the 2.4.22 kernel. N/A. |
+| 98234 | `net/sched/sch_hhf.c` | hhf arrived in 2.6.38. N/A. |
+| 98246, 98247 | `net/bluetooth/*` | no bluetooth in the kernel. N/A. |
+| 98184–98196 | marvell / microchip / intel / ti / broadcom wifi | the device runs the Atheros SDK driver, not these. N/A. |
+| **98255** | `net/ipv4/tcp_input.c` (old ACKs in the fast path) | **the only plausible one** — long-standing code that exists in 2.4.22. Unverifiable at an offset: the kernel is fully stripped and carries no function-name strings (`tcp_ack`, `tcp_rcv_established` both absent). |
+
+Net: the kernel contributes no named sink we can currently point at. The useful product of this sweep is
+the version map in §10, not a CVE.
