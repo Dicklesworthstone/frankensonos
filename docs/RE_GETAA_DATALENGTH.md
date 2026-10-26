@@ -225,3 +225,32 @@ holds the floor at one code unit. Disassembly of the built dylib confirms `0x3da
 
 Build: `cmake -DCMAKE_C_FLAGS=-fsanitize=address … && make` in the v4.0.0 checkout, then link the PoC
 with `-fsanitize=address -L b/lib -lsmb2`.
+
+## Does the decoded name reach an output? No, not on 86.10
+
+The over-read name is decoded and stored, but nothing on this path prints it. Proven by capturing the
+whole SMB conversation through a byte proxy (`recon/tcpproxy.py`, both directions hexdumped):
+
+```
+C> NEGOTIATE / SESSION_SETUP x2 / TREE_CONNECT
+C> CREATE namelen=20 "folder.jpg"      <- from the URL
+C> CREATE namelen=20 "folder.jpg"      <- candidate list
+C> CREATE namelen=20 "folder.jpg"      <- QUERY_INFO target
+C> QUERY_INFO (FileID) / READ (FileID) / CLOSE (FileID) / CLOSE (FileID)
+```
+
+Every name on the wire is the 20-byte URL/candidate string. The reply's decoded name is 22 bytes
+(`folder.jpg` + the two neighbour bytes) and never appears in a later request. The HTTP response
+carries no name either (`Cache-Control`, `CONTENT-LENGTH`, `CONTENT-TYPE`, `Server`, `Connection` only).
+
+The log is the only plausible sink and it is not reachable on this build:
+
+- every `/status` file page is empty on both lines — not just the logs, but `resolv.conf`,
+  `householdsettings.json` and `localsettings.txt` too; only `/status/VERSION` returns content;
+- `/logger` and `/diagmsg` answer 403 on `.86` (and `/logger` 404 on `.202`), because both sit behind
+  devmode bit 18 (`docs/RE_WRITE_PRIMITIVES.md`), so the destination cannot be set to `udp`/`stderr`
+  without a statement;
+- a UDP listener on 4444 sees nothing while `/getaa` runs.
+
+So the leak is real in memory (host cases A/D) but has no output on 86.10 until either a devmode
+statement unlocks `/logger` or a caller that uses `fs->name` is found in the S2 art library.
