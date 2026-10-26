@@ -265,13 +265,14 @@ def main():
         if code == 409:
             print("accepted but capability-less (409); treat as installed")
             return 0
-        if code == 403 and dt >= 2.5:
-            print("  rejected after the signature check: shape is right, the "
-                  "signature or the device id is wrong")
-        elif code == 403:
-            print("  rejected: fast, so probably the parser (the latency is "
-                  "not conclusive on S1 - a filler signature also answers in "
-                  "0.03s)")
+        if code == 403:
+            # Latency does not separate the stages: a structurally complete
+            # statement answers in 0.06-0.11 s and a magic-only blob in
+            # 0.07-0.16 s, so only the offline check above is stage evidence.
+            print("  rejected (403); the offline check above says how far the "
+                  "blob got" + (" (slow: it did reach the signature)"
+                                if dt >= 2.5 else ""))
+            return 1
         elif code >= 500:
             print("  daemon error, retrying")
             continue
