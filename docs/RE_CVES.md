@@ -384,6 +384,11 @@ single-byte feeding, `XML_StopParser` from the character handler): on `R_2_5_0` 
 run just takes ~60 s in LSan's exit scan where the plain build returns instantly. So the wrong-pop is
 benign on this shape; it is not a write.
 
+Built the same repro against `R_2_6_0` for comparison: identical behaviour — `ok=1`, no leak, no ASan
+report, and the same LSan exit-scan cost (both builds hit a 120 s wall under load). The fix is therefore
+not observable on this input at all, which is what a state-consistency fix that never dereferences the
+wrong node looks like.
+
 **Not reachable as the daemon is written.** `XML_StopParser` is what makes the parser suspend mid-entity,
 and the wrapper `FUN_1038d8b0` never calls it and never checks for a suspended status: it only splits the
 body at UTF-8 character boundaries, buffers a partial multi-byte sequence in `parser+8`, and calls
