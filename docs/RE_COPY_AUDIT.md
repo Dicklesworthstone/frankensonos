@@ -674,3 +674,31 @@ So the field is non-zero **only** when the prefix already exceeds 1024, which is
 Wire settability: the URI is carried by the item, and items are created from browse results.
 The wire entry that lets a chosen `res` URI into a queue is `AddURIToQueue` with DIDL metadata,
 so a `x-file-cifs://<long host>/x` res can be planted and then read back by browsing the queue.
+
+## 7. What actually feeds 2.1: a CIFS failure-message formatter, not a title
+
+Correction to the framing in §2.1. `0x101cc878` is not a generic "long value" reader — it is the
+**formatter for `x-file-cifs:` failure messages**, and the long value is a *message detail string*.
+
+Evidence, all inside `0x101cc878`:
+
+```
+101cc958  lis 11, 4165 / addi 9, 11, -4632   ; 0x1045EDD8 = "x-file-cifs:"
+101cc96c  lwz 0, 4(9) / lwz 11, 8(9) / lbz 8, 12(9)
+101cc97c  stw 10, 16(1) / stw 0, 20(1) / stw 11, 24(1) / stb 8, 28(1)   ; 13-byte literal into sp+16
+101cc98c  bl 0x103897b8                       ; bounded copy of the URL into sp+28, limit 1013
+101cc9f8  lwz 28, 4208(30)                    ; the stored length
+101cca0c  lwz 29, 4212(30)                    ; the stored string
+101cca18  bl 0x10546b00                       ; strrchr(str, '/')
+101ccc9c  bl memcpy                           ; sp+16 <- *(obj+4212), *(obj+4208)
+```
+
+The store side is `0x101cbb38(obj, str, 0, 0)`, which puts `str` at `obj+4212`, zeroes `obj+4208`, and
+only records a length at `obj+4208` when it exceeds 1024 (`0x101cbbc4`/`0x101cbbc8`). It has **six call
+sites** — `0x101cbd78`, `0x101cbec0`, `0x101cd168`, `0x101cd2b4`, `0x101cdb5c`, `0x101cdca0` — all in the
+CIFS client, all passing a detail string.
+
+Consequence for routing: the wire field is **whatever ends up in a CIFS failure message** — the URL, the
+share, or the path — not a queue title or a DIDL title. `/getaa?u=x-file-cifs://…` is therefore the
+natural driver, and the same request shape as finding 1. A long ObjectID on Browse producing a 500 is
+consistent with this (the id lands in a message), but the id itself is not the copy source.
