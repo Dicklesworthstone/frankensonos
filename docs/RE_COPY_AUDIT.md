@@ -732,3 +732,20 @@ create succeeds with a short title, the same call with a 2 139-byte `dc:title` i
 2.1c setter only stores values *longer than* 1 024. So a favourite title cannot reach 2.1c by itself;
 the long value has to come from a field with a bigger cap (the `res`/art fields are capped at 37/64 in
 the same test, so not those either).
+
+### 2.1d CreateObject attempts on .202 (2026-10-26)
+
+Path matters: `ContentDirectory/Control` under `/MediaRenderer` answers **405**; the service is
+on `/MediaServer/ContentDirectory/Control`.
+
+With a well-formed DIDL-Lite item (`dc:title`, `upnp:class`, `res` with `protocolInfo`) and
+`ContainerID` `SQ:0`, CreateObject still answers **500 / UPnPError 713** ("object does not
+exist"). `Browse` on `SQ:0` answers 200 with an **empty** `DIDL-Lite`, so the queue container
+exists but holds nothing — the suggested "non-empty queue first" precondition is real and
+unmet.
+
+Making it non-empty is the current blocker: `AddURIToQueue` on `/MediaRenderer/Queue/Control`
+answers **500 / 401** (invalid args) for every shape tried — bare URI, URI plus DIDL metadata,
+`DesiredFirstTrackNumberEnqueued` 0 and 1, `EnqueueAsNext` 0 and 1, `x-file-cifs://` and
+`http://` URIs. So the argument contract for AddURIToQueue is the next thing to read, not the
+DIDL.
