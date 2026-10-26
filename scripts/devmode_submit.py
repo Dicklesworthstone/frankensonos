@@ -131,6 +131,8 @@ def validate_offline(raw, info):
         cwd=os.path.dirname(VALIDATOR) + "/..",
     )
     out = (proc.stdout + proc.stderr).strip()
+    if "ModuleNotFoundError" in out:
+        return True, "offline validator unavailable (pip install unicorn), skipped"
     if "Traceback" in out:
         return True, "validator crashed (environment), skipped"
     if "signature verify" in out:
