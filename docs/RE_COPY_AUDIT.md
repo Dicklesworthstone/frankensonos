@@ -394,3 +394,40 @@ The frame is 5 344 with the destination at `+16`, so the copy leaves the frame a
 the NUL follows it. Saved `r21`–`r31` sit at `sp+2116…2156` and LR at `sp+2164` — i.e. 2 100 and 2 148
 bytes from the destination — but the live runs only degrade above ~4 000, so something between the
 splitter and the copy consumes the first ~2 000 bytes of span; that gap is the next thing to resolve.
+
+## 2026-10-26: which routes reach the splitter (live on .202)
+
+**Any path reaches it, and no file has to exist.** A bare `/<A*N>` behaves
+identically to `/status/<A*N>` — the splitter runs in the generic URL dispatch
+before route matching, so the 404 at small N is the router's answer *after* the
+copy has already happened.
+
+Live, `.202`, HTTP only:
+
+| N | bare `/<A*N>` | `/status/<A*N>` |
+|---|---|---|
+| 1000 | 404 | 200 |
+| 3000 | 404 | 200 |
+| 4000 | 404 | 200 |
+| 4010 | 404 | — |
+| 4020 | 408 | 408 |
+| 4500 | 408 | 408 |
+| 5300 | 000/408 | 408 |
+| 6000 | 408 | 408 |
+
+The break is between 4010 and 4020, not the ~5328 the frame math predicts, so the
+destination offset or the span base needs revisiting. The daemon recovers at
+once (`/status` and `/xml/device_description.xml` both 200 immediately after), so
+the smash costs the connection, not the process.
+
+Static corroboration: the splitter `0x1007ad60` has exactly three call sites —
+`0x101a06b4` (in `0x101a05b4`), `0x101a0c9c` (in `0x101a0b70`), `0x101cc704` (in
+`0x101cc6c0`). None of the 26 route handlers reaches it by a direct `bl` chain
+(BFS to depth 8 from `/getaa`, `/getrs`, `/getsetting`, `/status`, `/raw`
+explores 0/152/152/176/0 functions and never hits it), and the three entry
+functions have no `bl` caller and no pointer anywhere in the image — they are
+`jalr` targets, which is exactly why the reach is route-independent.
+
+Before the copy the splitter calls only `strncasecmp`, `strchr`, `strrchr`,
+`strlen`, `strcpy`, `memcpy`, `isalpha` and `sonosDecodePercentEncodedStr` — no
+`open`/`stat`/`fopen` — so nothing about the target file can gate the write.
