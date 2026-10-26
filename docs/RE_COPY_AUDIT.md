@@ -649,3 +649,28 @@ answers a SOAP 500 with the daemon up, so the long value is not the object id �
 the browse result (a title or a SavedQueues entry), which means the span has to come from data the
 player already holds, not from the request. That is a materially different requirement from the URL
 cases and is the thing to confirm next.
+
+### 2.1c which field feeds the copy, and how it is set
+
+The copy source is `obj+4212` with length `obj+4208`, and both are written by the item
+constructor `FUN_101cbb38` (`0x101cbb38`): `param_1[0x41d] = param_2` (the URI string) and,
+only for a CIFS URI, `param_1[0x41c] = first_slash_after_scheme + 1 - uri`.
+
+So the copied value is **the URI prefix through the first `/` after `x-file-cifs://`** — the
+host/share part — not a title and not the ObjectID. The store is conditional:
+
+```
+101cbbb4  sub  3, 3, 31        ; first_slash - uri
+101cbbb8  addi 3, 3, 1
+101cbbbc  cmplwi 7, 3, 1024
+101cbbc0  bt 2, 101cbbcc       ; == 1024 -> skip
+101cbbc4  bf 29, 101cbbe8      ; <= 1024 -> skip
+101cbbc8  stw 29, 4208(30)     ; only > 1024 stores
+```
+
+So the field is non-zero **only** when the prefix already exceeds 1024, which is why the
+2 100-byte buffer is reachable at all.
+
+Wire settability: the URI is carried by the item, and items are created from browse results.
+The wire entry that lets a chosen `res` URI into a queue is `AddURIToQueue` with DIDL metadata,
+so a `x-file-cifs://<long host>/x` res can be planted and then read back by browsing the queue.
