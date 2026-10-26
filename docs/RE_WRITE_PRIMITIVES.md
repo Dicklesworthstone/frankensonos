@@ -571,3 +571,19 @@ area. Consequences by N (the URL length):
 
 Attacker control is 1:1: URL byte *i* lands at `dst+i`, so the return address is simply URL bytes 5332–5335
 in big-endian order; the only byte not under control is the terminator at `dst+N`.
+
+## Does SetZoneAttributes/DesiredIcon reach the splitter 0x1007ad60? **No** (2026-10-26)
+
+Static: the splitter has exactly three callers — `0x101a06b4` (in `0x101a05b4`), `0x101a0c9c`, and
+`0x101cc704` (in `0x101cc6c0`) — and all three are generic URL-part helpers (`0x101cc6c0` calls
+`0x1007867c` and then the splitter with two stack out-pointers; `0x101a05b4` builds a `'/'`-terminated
+string first). None of them is reachable from the DeviceProperties action descriptor: `SetZoneAttributes`
+lives at `0x104eb968` and is referenced only from the descriptor table at `0x104fc100`, whose handler
+pointers (`0x103992d0` … `0x1039972c`) are ctor/dtor pairs that never call the splitter.
+
+Live confirmation on `.202`: `SetZoneAttributes` with `DesiredIcon` of 1 000, 5 300 and 6 000 characters
+answers **200 in 0.03–0.12 s with the daemon alive** each time (the splitter's signature is a reset at
+≥4000), and `GetZoneAttributes` returns a `CurrentIcon` of exactly **128 characters** — the value is
+truncated into a 128-byte field and stored, never stack-copied.
+
+So the SOAP route is dead for the overflow; the URL has to arrive through one of the three splitter callers.
