@@ -145,3 +145,10 @@ _ZN5sonos4json13bindStdStringER25RJsonDataBindingInterfacejhPNSt7__cxx1112basic_
 So the destination is a `std::string` and the fifth argument is a length cap, not a fixed buffer. The
 overflow, if any, is therefore in a caller that copies the bound string into fixed storage, or in the
 cap being attacker-controlled. Next: the callers of `bindStdString` and what they do with the result.
+
+**Correction to the mode.** `0x5f16e4` is MIPS16 and calls `jalx 0x51b9b4` with `a1 = 36`, so
+`0x51b9b4` is MIPS32 and the earlier linear MIPS16 decode from it was misaligned by construction.
+The stub's `lw t9,-32724(gp)` targets `0x6f7b8c`, which is in `.got` (not `.got.plt`: the PLT relocs
+start at `0x6f6008`), and no `DT_REL`/`DT_JMPREL` entry covers it, so the pointer is installed at
+runtime by an initializer. `bindStdString` itself is at `0x5f1621` (36 bytes) and
+`bindStdStringArrayAndSize` at `0x5f15e9`.
