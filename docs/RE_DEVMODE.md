@@ -251,3 +251,53 @@ Three sources exist, in order of availability:
 The two fixed digests in `ZZ0218` are *not* a shortcut: the function is dead in
 86.10-80260 (see `FIRMWARE_PATHS.md`), and even if wired, a fixed PEM would
 still have to be obtained once.
+
+## 2026-10-25 (2): which verifier the POST uses, and where a statement comes from
+
+### The live POST path is ZZ0137 on both builds; ZZ0218 is a replay gate off the path
+
+- S2: `0x4f403c` (form parse) -> `0x4f3b44` -> `jal ZZ0137` at `0x4f3b96`. The
+  only call sites of `ZZ0130` (`0x4edf44`) and `ZZ0218` (`0x4edf4c`) are inside
+  `0x4edf32`, and `0x4edf32` has **no** `jal` and no pointer literal anywhere in
+  the image (searched both `0x4edf32` and the ISA-bit form `0x4edf33`), so the
+  replay gate is dead code on 86.10.
+- S1 57.23-74170-1-12: `0x4ba1f8` (form parse) -> `0x4b98b4` -> `jal ZZ0137` at
+  `0x4b995c`. The 842/1060 gate is inlined at `0x487588` (length tests at
+  `0x487a3c`/`0x487a4c`, SHA-256 + `memcmp` against `0x518fb0`/`0x518fd0`) and is
+  reached only through a C++ class (`0x487c18` <- `0x4874c8` <- `0x437c44` /
+  `0x4a7170`), not from the route.
+- The wrapper's dispatch is `(input[0] & 5) == 1` (`0x4edf34`-`0x4edf3c`), which
+  is true for `'K'` = base64 of the TLV magic `0x28721e71`, not for a PEM's `'-'`.
+  So `ZZ0218` is an exact-blob replay allowlist over two known statements, not a
+  PEM parser. `ZZ0130` (`0xad6c`) is only a getter: `obj+0xc` -> `*r4`,
+  `obj+8` -> `*r5`.
+- Consequence: a statement is verified by parse+signature (ZZ0137) on every live
+  path; the two compiled digests are an additional gate that no route reaches
+  (dead on S2, class-only on S1).
+  Both form parsers also cap the decoded statement at 1024 bytes
+  (`0x4f4092`, `0x4ba320`), so the 1060-byte variant cannot arrive by form.
+
+### The statement source is the portal, and the app consumes it by deeplink
+
+The S2 app has a full unlock flow (`com.sonos.passport.devmode`):
+
+- `DevModeDeeplinkHandler` accepts `sonos://devMode/set?statement=<base64>` or
+  `sonos-2://devMode/set?...` (scheme check at `DevModeDeeplinkHandler.java:24`,
+  host `devMode`, single path segment `set`).
+- `DevModeUtilsKt.devModeStatementStringToByteArray` base64-decodes it (spaces
+  replaced by `+` first).
+- `DevModeManager.trySetStatement` validates it locally with the same verifier
+  the device uses: `NativeDevModeJNI.validateDevModeStatement(buf, len, 47,
+  controllerId, ..., majorVer, minorVer, ...)` — model 47, version window from
+  `DevModeData`.
+- `DevModeUriParser$checkIfDevModeStatementShouldBeCached$1` caches the string
+  only if `SignedDevModeStatement.enables(1)`; `DevModeStatementLoader` replays
+  the cached string at startup.
+
+The generator is `https://developer.sonos.com/devmode/`, which redirects to
+`login.sonos.com` and only exists after sign-in with the owner's account. No
+published statement was found: GitHub code search for `urn:sonos:device`,
+`28721e71` and the base64 magic prefix `KHIe` returns nothing Sonos-related, the
+S2 APK carries no statement asset, and community search turns up no pasted blob.
+So the portal remains the only source, and the app is now a second *consumer*
+(deeplink) rather than a second source.
