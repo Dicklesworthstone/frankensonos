@@ -5543,3 +5543,24 @@ destination is `r28+0xE58` (an object field, not a stack buffer), the length is
 copy: `cmplwi 7,0,1112` at `0x10219960`. So the destination region is 1112 bytes
 (`0x458`) and a field longer than that overruns it. Next: identify the object and
 what writes `+0x448`, then whether a packet can set it.
+
+### BoldOrchid round 2: who writes obj+0x448
+
+Twelve writers. Three matter:
+
+- `0x10394ffc` — init, zeroes the block (`stw 0, 1096(3)` alongside `0x450`/`0x454`/`0x458`)
+- `0x103952d4` — init, stores a pointer
+- `0x10224c58` — the parser path, and it **does bound-check**:
+
+```
+10224c48: cmpwi 7, 0, 1024     ; length > 1024 → skip
+10224c4c: bc 13, 29, 0x10224c6c
+10224c58: stw 0, 1096(3)       ; obj+0x448 = length
+10224c5c: lwz 5, 56(28)        ; length used
+10224c68: bl memcpy
+```
+
+So the sink at `0x10219954` consumes a field that its writer caps at 1024 — the
+unbounded-copy candidate is **bounded upstream**, and the real question is whether
+the destination at `0x10219954` is at least 1024 bytes. If it is, that site is
+safe; if not, the 1024 cap is the wrong bound and the bug is the mismatch.
