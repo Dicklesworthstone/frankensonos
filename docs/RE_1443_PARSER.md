@@ -323,3 +323,27 @@ is the obvious candidate.
 A real client (`websockets` 17.3) reproduces the 400 on both `/api` and `/websocket/api`, with and
 without `X-Sonos-Udn` and with `lechmere.1`/`.2`, so the missing condition is something else in
 `prepareWebsocketHeader` — worth reading properly rather than guessing further.
+
+## Corrected decode of the gate (true entry 0x4e7d44)
+
+The symbol address is odd (`0x4e7d45`); the true entry is `0x4e7d44`, and the first four
+instructions are PIC setup, so a decode from the symbol is off by one. Correct bytes:
+
+```
+4e7d44  li v0,33          4e7d48  la v1,4efb60     4e7d4c  sll v0,16      4e7d50  addu v0,v1
+4e7d52  save 136,ra,s0-s1 4e7d56  move gp,v0        4e7d58  sw v0,16(sp)   4e7d5a  move s1,a0
+4e7d5c  lw v0,10344(a0)   4e7d60  cmpi v0,52        4e7d62  btnez 4e7e76   <- fail
+4e7d66  lbu v0,9460(a0)   4e7d6a  beqz v0,4e7e76    <- fail
+```
+
+So the exact condition is: **state `+0x2868` must equal 52 and the byte at `+0x24f4` must be
+non-zero**, both checked before anything else.
+
+`+0x24f4` is not attacker-supplied: it is written in `RMuseController::updateHeaderTargets`
+(`0x4e8c60  sb v0,9460(s1)`) from the **return value of a header lookup** whose destination is
+`this+0x2518`, and it is cleared wholesale at `0x47aeee` (a run of `sb v0` over `+0x24f0…`).
+`updateHeaderTargets` then re-checks `state == 52` and `*(this+0x24d8) < 33` at
+`0x4e8c64`-`0x4e8c74`.
+
+So the 400 is `updateHeaderTargets` refusing before the protocol header is ever looked at: the
+missing piece is whatever makes that lookup succeed, not `lechmere`.
