@@ -38,3 +38,30 @@ the Sonos login) is still the only source: the statement is signed by the
 compiled devmode key and embeds the unit's id. The PEM check does not mint
 statements and cannot be replayed as one. The portal procedure is in
 `docs/RE_DEVMODE.md`.
+
+## The app-side flow (current Android app, `com.sonos.acr2`)
+
+The app does not mint statements either; it receives one as a deeplink and
+posts it. Decompiled from the APK:
+
+- `DevModeDeeplinkHandler` accepts scheme `sonos` or `sonos-2`, host `devMode`,
+  exactly one path segment: `set` or `clear`.
+- `set` reads query parameter `statement`, replaces spaces with `+`, decodes it
+  with Kotlin `Base64.Default` (`DevModeUtilsKt.devModeStatementStringToByteArray`)
+  and calls `DevModeManager.trySetStatement(controllerId, bytes)`.
+- `trySetStatement` runs the **same** native validator the device uses
+  (`NativeDevModeJNI.validateDevModeStatement`, with the device's major/minor
+  version) and only stores the statement if it validates; it is cached in a
+  Room/SQLCipher `DevModeStatementRepository`.
+- `clear` drops the cached statement.
+
+So the delivery URI is:
+
+```
+sonos://devMode/set?statement=<base64 TLV>      (sonos-2:// also accepted)
+sonos://devMode/clear
+```
+
+The portal page produces that URI (as a QR/deeplink) for a given serial; the app
+is only a courier. A cached statement on a previously used phone would work, but
+there is no app-side minting endpoint.
