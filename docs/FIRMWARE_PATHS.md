@@ -5692,3 +5692,21 @@ state machine's own state, set by the caller before each write.
 
 That means "which record type carries a caller blob" resolves to: whichever state
 writes the caller's buffer. The state handlers are the next read.
+
+### BoldOrchid: state 1 resolves through a global registry
+
+State 1 (`0x10229350`) calls `0x10249c00`, which looks a record up in the global
+registry `0x1054ddac`:
+
+```
+10249c14: lwz 3, 23980(31)   ; 0x1054ddac
+10249c18: bl 0x1024919c      ; lookup
+10249c28: lwz 0, 548(3)      ; record+0x224
+10249c2c: cmpwi 7, 0, 1      ; == 1 ?
+```
+
+So the state handler is a registry lookup plus a field test at `record+0x224`, not
+a blob copy. The blob is written by a later state; state 1 only resolves and gates.
+
+Registry `0x1054ddac` is the thing that decides which record is being serialized —
+that is the "record type" in practice.
