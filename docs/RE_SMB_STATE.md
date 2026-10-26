@@ -102,31 +102,33 @@ t=3 s and keeps polling to time the recovery. Every row is one 22 s run; the
 oracle needs two consecutive failed probes before it calls DOWN, so a single
 slow probe cannot fake a crash.
 
-| FileNameLength | runs | getaa | crashes | longest outage |
-|---|---|---|---|---|
-| `0x06` | 1 | 200 | 0 | - |
-| `0x20` | 1 | 200 | 0 | - |
-| `0x40` | 2 | 000, 200 | 1 | 3.877 s |
-| `0x60` | 1 | 200 | 0 | 0.072 s blip |
-| `0x80` | 1 | 200 | 0 | - |
-| `0x100` | 6 | 000, 000, 200 x4 | 2 | 3.762 s, 3.698 s |
-| `0x200` | 3 | 200, 200, 000 | 1 | 3.808 s |
-| `0x400` | 3 | 200 x3 | 0 | - |
-| `0x800` | 2 | 200 x2 | 0 | - |
-| `0x1000` | 3 | 200, 000, 000 | 2 | 3.851 s, 3.765 s |
-| `0x2000` | 2 | 000 x2 | 2 | 4.202 s, 3.424 s |
-| `0x4000` | 2 | 404, 200 | 1 | 2.314 s |
-| `0x8000` | 1 | 404 | 0 | - |
-| `0xffff` | 4 | 000 x4 | 4 | 3.804, 3.689, 3.704, 3.823 s |
+| FileNameLength | runs | runs with an outage | longest outage |
+|---|---|---|---|
+| `0x06` | 1 | 0 | - |
+| `0x20` | 1 | 0 | - |
+| `0x40` | 2 | 1 | 3.877 s |
+| `0x60` | 1 | 0 | 0.072 s blip only |
+| `0x80` | 1 | 0 | - |
+| `0x100` | 6 | 2 | 3.762 s, 3.698 s |
+| `0x200` | 3 | 1 | 3.808 s |
+| `0x400` | 6 | 3 | 3.990 s, 3.883 s, 0.960 s |
+| `0x800` | 5 | 3 | 3.799 s, 1.178 s, 1.008 s |
+| `0x1000` | 3 | 2 | 3.851 s, 3.765 s |
+| `0x2000` | 2 | 2 | 4.202 s, 3.424 s |
+| `0x4000` | 2 | 1 | 2.314 s |
+| `0x8000` | 1 | 0 | - |
+| `0xffff` | 4 | 4 | 3.804, 3.689, 3.704, 3.823 s |
 
-- **The crash is probabilistic, not a threshold.** The rate climbs with the
-  value (0x100 2/6, 0x200 1/3, 0x1000 2/3, 0x2000 2/2, 0xffff 4/4) but the
-  curve is not clean: 0x400 and 0x800 never crashed in 3 and 2 runs, and 0x40
-  crashed once of two. Treat any single sample as noise.
-- Every crash is the same shape: `getaa` 000, `/status/zp` refused for
-  2.3-4.2 s, then the daemon answers again on the same version. No restart
-  loop, no version change, always recovered.
+- **There is no threshold.** Every value from `0x40` up has produced an outage
+  at least once; the rate only rises with the value (0x100 2/6, 0x400 3/6,
+  0x800 3/5, 0xffff 4/4). Earlier "0x400 never crashes" and "0x800 never
+  crashes" lines were small-sample artefacts - both have since crashed 3/6 and
+  3/5.
+- Every crash is the same shape: `getaa` 000 or 404, `/status/zp` refused for
+  0.96-4.20 s, then the daemon answers again on the same version. No restart
+  loop, no version change, always recovered (one run ended still down at the
+  22 s window edge, so the tail can exceed it).
 - Above ~0x4000 the client often gives up earlier and answers 404 instead of
-  reaching the decoder, so the useful range is 0x100-0x2000.
+  reaching the decoder, so the useful range is 0x40-0x2000.
 - The first case of a session is the least trustworthy: the very first `0x40`
   run crashed, the repeat did not. Warm up with a control before counting.
