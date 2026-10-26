@@ -97,10 +97,19 @@ tool's contract:
   through `devmem` on the eFUSE window.
 - **Play:1 / fenway.** `mdputil` is present in that rootfs too; the fenway
   layout applies (`--layout=fenway`).
-- **Amlogic (86.10).** `anacapad` loads `libsonos-mdp.so.1` (`0x1be5d`) and
-  imports `hal_flash_get_mdp_wrapper` / `hal_flash_get_mdp2_wrapper`
-  (`0x1beeb` / `0x1beb2`), but the library is not in the `s2_overlay` tree, so
-  the 86.10 rootfs is needed to read its MDP3 accessor.
+- **Amlogic (86.10).** The rootfs is public: `86.10-80260-1-12-rootfs.squashfs`
+  from `BookCatKid/sonos-firmware-archive` release `firmware-86.10-80260`,
+  sha256 `218687383c08648d366d31f5d26bf27b55a8ce7f1f450bc55e5cae1b7e527c1b`
+  (matches the repo's receipt). It carries `lib/libflash.so.1` and
+  `bin/mdputil`. `libsonos-mdp.so.1` there is only the colour/serial helper
+  (`sonosGetColorVariantString`, `sonosMdpSerialToString`) — no flash access.
+  `libflash.so.1` has **only** `hal_flash_get_mdp` (512 bytes, `0x18ca`) and
+  `hal_flash_get_mdp2` (4096, `0x1a84`); there is **no** `get_mdp3`. The MDP
+  offset is not a constant: it is a flash-info field at `+80`, filled in
+  `hal_flash_info_init` (`0x15b4`) from the partition table and read back in
+  `hal_flash_get_mdp` (`0x18c8`). So an S2 dump is
+  `read_from_offset(fd, info+80 + 0x1200, 0x4000)` — the page sits at the smdp
+  offset inside the MDP region, which is exactly what `--smdp` slices.
 
 ## What userland reaches today
 
