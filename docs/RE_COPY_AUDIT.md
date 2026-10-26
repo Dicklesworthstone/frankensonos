@@ -442,3 +442,48 @@ That makes the next question concrete: **is the 408 emitted before or after the 
 route never reaches the overflow and the primitive needs a different entry (the same splitter is called
 from `0x101a06b4`, `0x101a0c9c`, `0x101cc704`, and a SOAP or POST body has no URL-length gate). If
 after, the copy runs and the 408 is just the response the crashed frame never sends.
+
+### 2.1a Overwrite map (frame 2160, dst sp+16, buffer 2100)
+
+`stwu sp,-2160(sp)` at `0x101cc878`; saves `r21`@2116, `r22`@2120, `r23`@2124, `r24`@2128,
+`r25`@2132, `r26`@2136, `r27`@2140, `r28`@2144, `r29`@2148, `r30`@2152, `r31`@2156, LR@2164
+(`0x101cc8b0`–`0x101cc8c8`), restored in the same order at `0x101cc8ec`–`0x101cc91c`. The copy is
+`memcpy(sp+16, obj+4212, obj+4208)` at `0x101ccc9c` with `r3 = r23 = sp+16` (`0x101ccc64`).
+
+| N (bytes copied) | first byte touched | fully overwritten |
+|---|---|---|
+| 2101 / 2104 | r21 | r21 |
+| 2105 / 2108 | r22 | r22 |
+| 2109 / 2112 | r23 | r23 |
+| 2113 / 2116 | r24 | r24 |
+| 2117 / 2120 | r25 | r25 |
+| 2121 / 2124 | r26 | r26 |
+| 2125 / 2128 | r27 | r27 |
+| 2129 / 2132 | r28 | r28 |
+| 2133 / 2136 | r29 | r29 |
+| 2137 / 2140 | r30 | r30 |
+| 2141 / 2144 | r31 | r31 |
+| 2145 / 2148 | caller back chain | back chain |
+| 2149 / 2152 | **LR** | **LR** |
+
+`r30` is the object pointer and `r31` the source string, so both are live at the epilogue.
+
+### 2.1b The setter does not store a long length — it stores only at exactly 1024
+
+`0x101cbbc8` is not the `>1024` arm. Decoding the two branches:
+
+- `0x101cbbbc` `cmplwi 7,3,1024`; `0x101cbbc0` `41 82 00 0c` — BO=12 (bit0=0), BI=2 (CR0 EQ):
+  **branch if `r3 != 1024`** → `0x101cbbcc` (return, no store).
+- `0x101cbbc4` `40 9d 00 24` — BO=4, BI=29 (CR7 GT): branch if `r3 <= 1024` → `0x101cbbe8`
+  (`stw 3,4208`). The `>1024` arm at `0x101cbbc8` (`stw 29,4208`, `r29` = `obj+4` from the
+  constructor at `0x1007a928`) is therefore only reached for `r3 > 1024` **if** the first branch is
+  taken on equality — which the BO/BI decode says it is not.
+
+Live check on `.84` (the coordinator; `.202` is a stereo slave and answers 1023): `SetAVTransportURI`
+with 2100, 2150, 2200 and 3000-character URIs all return 200, `/status/zp` 200 after each, and
+`GetPositionInfo` returns the 3000-character URI intact. Nothing in 2100–3000 crashes, which matches
+"length stays 0" rather than "length is the URI length".
+
+So 2.1 is real as a copy site but its trigger is narrower than the audit's `>1024` reading: the
+length must be exactly 1024 for the field to be set at all, and 1024 never reaches the saved
+registers. A >2100 value needs the `>1024` arm to be live, i.e. the branch decode above to be wrong.
