@@ -196,3 +196,17 @@ That settles the :1443 question in the negative for "the original length is used
 16-bit wrap of an attacker-controlled length, and it becomes an overflow exactly when the
 destination is a fixed buffer smaller than the wrapped value. Readers of `+0x18` exist (e.g.
 `0x48068a lhu a1,24(a2)`); the remaining work is matching one to a fixed destination.
+
+## The port is reachable from the LAN (TLS)
+
+`:1443` is open on both lines from an ordinary LAN host, and it speaks **HTTPS**: a plain `http://`
+request is reset, `https://` answers. `/` and `/api` are 403/400 without credentials, but `/status`
+answers 200 with a diagnostics index (`enetports`, `wireless`, `zp`, `VERSION`, `proc/ath_rincon/status`,
+`ifconfig`, `showstp`), and `/api/<anything>` consistently answers **400** with an empty body.
+
+So the "local" REST surface is not local at all — it is a second, richer attack surface than `:1400`,
+and it is the one that carries the `bindStdString` u16 truncation. The 400 is a parameter check, not
+auth: the string `Invalid request parameters` is referenced once, from the data table at `0x1f8080`, so
+the handler validates a shape before anything else. Next: recover that shape (the `namespace`/`interval`/
+`delayMs` strings sit together at `0x282c88`, next to `MuseChaos`, which suggests a chaos-injection
+control endpoint) and then drive the JSON binder with an over-long string.
