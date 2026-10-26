@@ -1,0 +1,24 @@
+# SMB tables on .84 (Play:5, 57.23) - the working unit, 2026-10-26
+# over-read: deltas 0..0x10000, 0xffff x2 | stall: N=4,5,6,10,16,24, sockets held 8-12 s
+# oracle: /status/zp every 100 ms, 1.0 s probe timeout
+
+## over-read
+{"delta": "0", "getaa": "200", "req_s": 0.167, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x100", "getaa": "200", "req_s": 0.18, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x400", "getaa": "200", "req_s": 0.113, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x1000", "getaa": "200", "req_s": 0.127, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x2000", "getaa": "200", "req_s": 0.158, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0x10000", "getaa": "200", "req_s": 0.242, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0xffff", "getaa": "200", "req_s": 0.127, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"delta": "0xffff", "getaa": "200", "req_s": 0.216, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+
+## stall
+{"n": 4, "codes": ["000", "000", "000", "000"], "req_s": 6.03, "held_s": 12.0, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"n": 5, "codes": ["000", "000", "000", "000", "000"], "req_s": 6.05, "held_s": 12.0, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"n": 6, "codes": ["000", "000", "000", "000", "000", "000"], "req_s": 6.05, "held_s": 12.0, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"n": 10, "codes": ["000", "000", "000", "000", "000", "000", "000", "000", "000", "000"], "req_s": 6.04, "held_s": 8.0, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"n": 16, "codes": ["000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000"], "req_s": 6.04, "held_s": 8.0, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+{"n": 24, "codes": ["000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000"], "req_s": 6.05, "held_s": 8.0, "down_at": null, "up_at": null, "outage_s": null, "reason": null}
+
+# result: 14 samples. Every getaa 200 (over-read) or 000 (stall, client timeout);
+# ZERO DOWN rows on .84 - the daemon never dropped, not even at N=24.
