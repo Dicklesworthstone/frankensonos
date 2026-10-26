@@ -342,8 +342,15 @@ Nothing public carries one. Checked and empty:
 - Web search: the portal page title, the OID, the CA name, Reddit, the Sonos
   community, the NCC paper — no statement.
 - Local: the S1 controller DMG carries only mbedtls PEM *label* constants; the
-  Safari/Brave/Edge/Arc caches have never seen `developer.sonos.com`; no APK or
-  IPA is on disk; no keychain item for `sonos.com`.
+  Safari/Brave/Edge/Arc caches have never seen `developer.sonos.com`; no
+  keychain item for `sonos.com`.
+- Both Android apps, now checked directly: `com.sonos.acr2` 90.01.9 (all 14
+  splits of the xapk) and the S1 controller 11.16.1 contain **no** `KHIe`
+  (base64 of the `0x28721e71` magic) and no certificate other than Amazon's.
+  `libsonoscrypto.so` in the 90.01.9 app carries the *same* two pinned digests
+  (offsets 24760/24792) and the same 294-byte SPKI (17378) as the firmware, so
+  the app is a validator and forwarder, not a minter. `X-Sonos-Api-Key` does
+  not appear in the app's dex at all — it is a firmware-only header.
 - The portal itself is not guest-callable: `/s/sfsites/aura` answers
   `Guest user access is not allowed` even with the page's own `fwuid` and
   context, and `/webruntime/api/apex/execute` 302s to login.
