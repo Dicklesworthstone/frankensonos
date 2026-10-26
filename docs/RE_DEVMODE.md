@@ -297,3 +297,27 @@ published statement was found: GitHub code search for `urn:sonos:device`,
 S2 APK carries no statement asset, and community search turns up no pasted blob.
 So the portal remains the only source, and the app is now a second *consumer*
 (deeplink) rather than a second source.
+
+## Statement source, re-checked 2026-10-25
+
+The portal is still the only source and it is still alive:
+`GET https://developer.sonos.com/devmode/` → `302
+https://developer.sonos.com/s/login?startURL=%2Fdevmode%2F`. It is a Salesforce
+community login, so a statement needs a Sonos developer account and a device id.
+
+Two things confirm the code is pasted, never fetched:
+
+- The device page is local-only. `anacapad` builds it from one literal
+  (`0x685ff1`, S2 86.10): `Model: %u<br />Device ID: %s<br />Version: %d.%d` plus
+  a textarea named `statement` and a `csrfToken`. There is no link, no fetch and
+  no "get a code" button.
+- The statement is a file once installed. The daemon reads `debug/devmode.bin`,
+  stages `/tmp/devmode.tmp.bin` and persists `/devmode.bin`; the S1 controller
+  mirrors it at `<datadir>/debug/devmode.bin` (`0xdf966c` in
+  `captures/firmware/s1_controller/SonosController.bin`) and replays the cached
+  string at startup.
+
+Because the device id is inside the signed digest, a statement is bound to one
+device: a blob captured from another unit verifies but does not unlock this one.
+The S1 controller carries no devmode deeplink (only `sonos:///settings…`), so the
+app cannot mint one either.
