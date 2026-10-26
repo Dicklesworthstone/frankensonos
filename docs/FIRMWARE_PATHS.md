@@ -5571,3 +5571,15 @@ and the buffer is `that+0xE58` with the length at `that+0x448`. Only the
 `0x10219xxx` cluster uses that global, so it is a response/record builder, not a
 parser. Callers of the builder: `0x10219f60` and `0x1021a0fc`. Next: name those
 two callers' HTTP handlers and find what fills `+0x448`.
+
+### BoldOrchid: destination of the 0x10219954 copy is a static buffer
+
+```
+1021987c: addi 30, 11, -10800   ; r30 = 0x1054d5d0 (static .data buffer)
+10219950: add 3, 29, 30         ; dest = 0x1054d5d0 + offset
+10219954: bl memcpy             ; len = *(obj+0x448), capped 1024 upstream
+```
+
+So the copy lands in a **global buffer at `0x1054d5d0`**, not a heap or stack object.
+Whether it is safe is therefore a question of that buffer's size versus the 1024
+cap plus the offset — a static data-layout question, not a parser one.
