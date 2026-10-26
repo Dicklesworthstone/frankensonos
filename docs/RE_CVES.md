@@ -252,6 +252,16 @@ A wedged run means `/getaa` returns 000 and `/status/zp` stops answering until t
 the daemon recovers on its own. So the deterministic live trigger is `FileNameLength >= buflen + 24576`,
 not the 2-byte floor — the floor is the minimal over-read, the large margin is what leaves the mapped heap.
 
+**The leaked name reaches no output (2026-10-26).** The over-read does land in the decoded name, but
+nothing on this build emits it. `fstat_cb_1` (`lib/libsmb2.c:1758-1790`) copies only attributes, size and
+timestamps out of `struct smb2_file_all_info` and never touches `fs->name`; the client re-opens the file by
+the name from the URL, so both CREATEs on the wire carry `folder.jpg` and not the decoded string. Proved by
+differential response: a 4096-byte over-read (name ~4096 chars) against a plain control gives **byte-identical
+headers and body** (325 B, same `CONTENT-TYPE`/`CONTENT-LENGTH`). Error bodies are empty (404 and 500), no
+response header carries a name, and the `/status/anacapa.log` page returns the empty `ZPSupportInfo` XML on
+both `.86` and `.202`, so the log page is not a channel either. The over-read is therefore a heap read with
+no exfiltration path — it matters for corruption and the wedge, not for disclosure.
+
 **The trail site is not reliably worse (2026-10-26).** Forcing the surrogate branch — `name_len = buflen - 98`
 with the last in-bounds unit set to a lone lead surrogate `0xD800` — makes the loop take the trail load at
 `0x3daf4` (`unicode.c:216`) two bytes past the body. Across 3 runs at the same 2-byte margin it wedged once
