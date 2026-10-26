@@ -381,8 +381,13 @@ that loads an external subset — the sharing is what makes `scaffIndex` and `m_
 Measured on the 2.5.0 build: a plain parser with 40, 100 and 1 000 nested `(` in an element content
 model parses clean (`ok=1`, ≤ 0.4 ms). The same document after `XML_ParserReset` parses clean. The
 `XML_ExternalEntityParserCreate` variant errors out before the model because the daemon-style setup has
-no external-entity handler. The daemon has neither setter (its only expat entry points are the six
-`XML_Parse` call sites in §8c), so 56132 is **not reachable**.
+no external-entity handler.
+
+Decisive test: upstream's own trigger document (`<!ELEMENT a (((…b…)))>`, `<!ENTITY % e SYSTEM 'ext'>`,
+`%e;`, a second deep model) fed to a bare `XML_ParserCreate(NULL)` with **no handlers at all** — the
+daemon's configuration — parses clean on 2.5.0 (`ok=1`, 0.4 ms, 342 bytes). Without the handler the
+external subset is skipped, `dtdCopy` never runs, and `scaffIndex` is never shared. So 56132 is **not
+reachable**.
 
 CVE-2026-72522 (OOB read plus infinite loop in the `*_toUtf16` functions) needs `XML_UNICODE`, i.e. a
 16-bit-character build; the daemon is the narrow build.
