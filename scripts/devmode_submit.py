@@ -11,7 +11,11 @@ Everything after that is mechanical, so this tool does all of it:
     so a malformed or wrong-device blob never costs a POST;
   * posts it with the spacing the daemon's 3 s limiter requires, retries on
     transport errors, and scores the answer;
-  * after a 200, probes the unlock surface (/unlock, 2323, 22, /testenv).
+  * after a 200, probes the unlock surface (/debug/devmode.bin, /testenv,
+    /ssh/fingerprints, tcp 22/2323) and fails if none of them flipped.
+
+Transport is curl: urllib cannot reach the 192.168.4.0/24 players from this
+host (scoped route, EHOSTUNREACH), curl can.
 
   ./devmode_submit.py 192.168.4.50                       # portal inputs only
   ./devmode_submit.py 192.168.4.50 --statement 'sonos://devMode/set?statement=...'
@@ -21,7 +25,8 @@ Everything after that is mechanical, so this tool does all of it:
 
 A rejected statement leaves the player as it was. 200 is accepted; 409 is
 "valid but grants no capability" (the branch is effectively dead on 86.10);
-403 is a reject.
+403 is a reject. Exit 0 accepted (and, unless --no-verify, unlocked), 1 reject,
+2 unreachable, 3 validator reject or accepted-but-nothing-flipped.
 """
 import argparse
 import base64
@@ -41,10 +46,20 @@ VALIDATOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "emu_zz0137
 DEEPLINK = re.compile(r"sonos-?2?://devMode/set\?(?:.*&)?statement=([^&\s]+)", re.I)
 
 
+def _curl(args, data=None, timeout=30):
+    """Run curl. urllib cannot reach the 192.168.4.0/24 players on this host
+    (scoped route: python gets EHOSTUNREACH, curl does not), so curl is the
+    transport. Returns (exit code, stdout bytes)."""
+    cmd = ["curl", "-sS", "-m", str(timeout)] + args
+    proc = subprocess.run(cmd, input=data, capture_output=True)
+    return proc.returncode, proc.stdout
+
+
 def get_page(host, scheme, port):
-    url = f"{scheme}://{host}:{port}/devmode"
-    with urllib.request.urlopen(url, timeout=10) as r:
-        return r.read().decode("utf-8", "replace")
+    rc, out = _curl(["-k", f"{scheme}://{host}:{port}/devmode"], timeout=10)
+    if rc != 0:
+        raise OSError(f"curl exit {rc}")
+    return out.decode("utf-8", "replace")
 
 
 def parse_page(html):
@@ -110,6 +125,8 @@ def validate_offline(raw, info):
         capture_output=True, text=True, cwd=os.path.dirname(VALIDATOR) + "/..",
     )
     out = (proc.stdout + proc.stderr).strip()
+    if "Traceback" in out:
+        return True, "validator crashed (environment), skipped"
     return proc.returncode == 0, out
 
 
@@ -117,47 +134,31 @@ def post(host, scheme, port, csrf, statement, button):
     body = urllib.parse.urlencode(
         {"csrfToken": csrf, "statement": statement, "button": button}
     ).encode()
-    req = urllib.request.Request(
-        f"{scheme}://{host}:{port}/devmode",
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
     t0 = time.monotonic()
+    rc, out = _curl(
+        ["-k", "-o", "-", "-w", "\n%{http_code}", "-X", "POST",
+         "-H", "Content-Type: application/x-www-form-urlencoded",
+         "--data-binary", "@-", f"{scheme}://{host}:{port}/devmode"],
+        data=body,
+    )
+    dt = time.monotonic() - t0
+    text, _, code = out.decode("utf-8", "replace").rpartition("\n")
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            code, text = r.status, r.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as e:
-        code, text = e.code, e.read().decode("utf-8", "replace")
-    return code, text, time.monotonic() - t0
+        return int(code), text, dt
+    except ValueError:
+        return 0, text, dt
 
 
 def probe(host, scheme, port):
-    """Report the post-unlock surface."""
+    """Report the post-unlock surface. True means the unlock landed."""
     out = []
-    try:
-        with urllib.request.urlopen(f"{scheme}://{host}:{port}/unlock", timeout=5) as r:
-            out.append(f"/unlock {r.status}")
-    except urllib.error.HTTPError as e:
-        out.append(f"/unlock {e.code}")
-    except OSError as e:
-        out.append(f"/unlock error {e}")
+    for path in ("/debug/devmode.bin", "/testenv", "/ssh/fingerprints"):
+        rc, body = _curl(["-k", "-o", "/dev/null", "-w", "%{http_code}",
+                          f"{scheme}://{host}:{port}{path}"], timeout=5)
+        out.append(f"{path} {body.decode() if rc == 0 else 'error ' + str(rc)}")
     for p in (2323, 22):
-        s = socket.socket()
-        s.settimeout(3)
-        try:
-            s.connect((host, p))
-            out.append(f"tcp/{p} open")
-        except OSError:
-            out.append(f"tcp/{p} closed")
-        finally:
-            s.close()
-    try:
-        with urllib.request.urlopen(f"{scheme}://{host}:{port}/testenv", timeout=5) as r:
-            out.append(f"/testenv {r.status}")
-    except urllib.error.HTTPError as e:
-        out.append(f"/testenv {e.code}")
-    except OSError as e:
-        out.append(f"/testenv error {e}")
+        rc, _ = _curl(["-o", "/dev/null", f"telnet://{host}:{p}"], timeout=3)
+        out.append(f"tcp/{p} {'closed' if rc == 7 else 'open'}")
     return out
 
 
@@ -172,7 +173,8 @@ def main():
     ap.add_argument("--port", type=int, default=1400)
     ap.add_argument("--dry-run", action="store_true", help="validate, do not POST")
     ap.add_argument("--no-validate", action="store_true")
-    ap.add_argument("--verify", action="store_true", help="probe the unlock surface")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="skip the post-accept unlock probe")
     a = ap.parse_args()
 
     try:
@@ -238,9 +240,15 @@ def main():
             print("  " + text.strip()[:300].replace("\n", "\n  "))
         if code == 200:
             print("ACCEPTED")
-            if a.verify:
-                for line in probe(a.host, a.scheme, a.port):
+            if not a.no_verify:
+                print("verifying the unlock:")
+                lines = probe(a.host, a.scheme, a.port)
+                for line in lines:
                     print("  " + line)
+                if not any(" 200" in l for l in lines) and not any(
+                        "open" in l for l in lines):
+                    print("  no probe flipped: check /status/support, then reboot")
+                    return 3
             return 0
         if code == 409:
             print("accepted but capability-less (409); treat as installed")
