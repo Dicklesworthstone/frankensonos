@@ -59,3 +59,17 @@ including READ framing) is retried, never fatal.
   `docs/RE_CVES.md` §7c. Build the reply body, not the header.
 - Cold-start flakiness is real: with a fresh port and file, roughly one in four cases 404s before the
   target op and shows `"applied": false`. Re-run those; the table above only records attempts that landed.
+
+## Live: a patched QUERY_INFO body kills anacapad (2026-10-25)
+
+The body axis is now tested on hardware. `recon/smbserv_body.py PORT 96 0xffff` serves the normal
+FileAllInformation reply with `NameInformation.FileNameLength` (offset 96) set to `0xffff`, and
+`/getaa?u=x-file-cifs://…/SHARE/real.jpg` against it takes the player down: the request never answers
+(`curl` 000), `/status/zp` is unreachable for ~5-20 s, then the daemon is back on the same version.
+Reproduced 2/2; the control (same harness, unpatched reply) answers 200. The server log shows the
+patched reply was actually sent (`PATCHED off=96 val=0xffff buflen=102/116`), so this is the client
+decoder, not the harness.
+
+That is CVE-2026-110712's sink (`smb2_decode_file_all_info` → `utf16_to_utf8`) reached over the LAN with
+no credentials. It is an OOB **read**, so today it is a remote DoS; the next question is whether the
+over-read can be steered into a leak (the decoded name lands in the art URL path) or into a write.
