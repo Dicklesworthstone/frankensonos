@@ -37,6 +37,8 @@ FENWAY_MAGIC = {
     "model": (bytes.fromhex("46372819"), bytes.fromhex("8dc6ccf4")),
 }
 LAYOUT = "amlogic"
+SMDP = False
+SMDP_MDP3_OFF = 512 + 4096  # struct smdp: MDP1 page, MDP2 page, then MDP3
 TAG = {"jffs": b"ubifs", "rootfs": b"rootfs", "model": b"model"}
 
 
@@ -120,10 +122,12 @@ def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     global LAYOUT
-    argv = [a for a in sys.argv[1:] if not a.startswith("--layout=")]
+    argv = [a for a in sys.argv[1:] if not a.startswith("--layout=") and a != "--smdp"]
     for a in sys.argv[1:]:
         if a.startswith("--layout="):
             LAYOUT = a.split("=", 1)[1]
+        if a == "--smdp":
+            SMDP = True
     sys.argv = [sys.argv[0]] + argv
     cmd = sys.argv[1]
     if cmd == "selftest":
@@ -143,9 +147,16 @@ def main():
         return
     if cmd == "upd-pem":
         mdp = otp = None
+    elif cmd == "otp":
+        mdp = b""
+        otp = open(sys.argv[2], "rb").read()
     else:
         mdp = open(sys.argv[2], "rb").read()
         otp = open(sys.argv[3], "rb").read()
+        if SMDP:
+            if len(mdp) < SMDP_MDP3_OFF + MDP_LEN:
+                sys.exit("input too short for an smdp image")
+            mdp = mdp[SMDP_MDP3_OFF:SMDP_MDP3_OFF + MDP_LEN]
     if cmd == "fields":
         for kind, off, magic in (("jffs", OFF["jffs"], MAGIC_FSKEY),
                                  ("rootfs", OFF["rootfs"], MAGIC_FSKEY),
@@ -199,6 +210,11 @@ def main():
                 input=body[0x13A:], capture_output=True, check=True).stdout
             open(os.path.join(outdir, "%02d.bin" % i), "wb").write(plain[0x10:])
             print("section %d -> %02d.bin" % (i, i))
+    elif cmd == "otp":
+        k = aes_key(otp)
+        print("aes key sha256(otp[0xD0:0xE0])[:16] =", k.hex())
+        if otp[0xD0:0xE0] == b"\0" * 16:
+            print("warning: OTP slice is all zero")
     elif cmd == "model-pem":
         pem = encdec(field(mdp, OFF["model"], MAGIC_RSAKEY, "model"), otp, TAG["model"])
         sys.stdout.buffer.write(pem)

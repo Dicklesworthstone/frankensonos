@@ -62,6 +62,12 @@ offsets, but the key fields are `{magic, len, reserved}` TLVs with CAAM magics
 parses that shape and bounds `len` against the slot; a synthetic fenway page
 round-trips all three fields (`fenway-model` decrypts).
 
+The same header also shows the page is the **third** member of `struct smdp`
+(MDP1 512 + MDP2 4096, then MDP3), so a whole-region dump carries it at
+`0x1200`; `--smdp` slices exactly that page out before parsing (tested with a
+synthetic smdp image). `otp OTP` prints the derived AES key so a dump can be
+sanity-checked before use.
+
 The same repo's public dumps are kernel/rootfs only, and the
 `BookCatKid/sonos-firmware-archive` key-recovery ledger records that no public
 MDP3+OTP pair exists (the public paths are the EL3 exploit on a physical
