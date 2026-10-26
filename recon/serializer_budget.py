@@ -38,6 +38,8 @@ def word(d, off):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=BIN)
+    ap.add_argument("--title", type=int, default=None, help="title length to evaluate")
+    ap.add_argument("--len", type=int, default=None, help="blob length to evaluate")
     a = ap.parse_args()
     d = open(a.bin, "rb").read()
 
@@ -82,6 +84,20 @@ def main():
     print("\nworst case end offset %#x -> overrun %#x bytes past the budget,"
           % (worst, worst - BUDGET))
     print("landing range 0x1054da28..0x1054dad6 (includes the emit string at 0x1054da3c).")
+
+    if a.title is not None and a.len is not None:
+        start = PREFIX + a.title
+        end = start + a.len
+        emit = 0x1054DA3C - 0x1054D5D0          # 0x46c
+        print("\nevaluate title=%d len=%d:" % (a.title, a.len))
+        print("  copy occupies offsets %#x..%#x (budget %#x)" % (start, end, BUDGET))
+        print("  overrun: %d bytes" % max(0, end - BUDGET))
+        if start <= emit < end:
+            print("  emit string 0x1054da3c IS overwritten by blob byte %#x" % (emit - start))
+        else:
+            print("  emit string 0x1054da3c NOT reached (needs len > %#x)" % (emit - start))
+        if a.len > BLOB_MAX:
+            print("  note: len %#x exceeds the setter cap %#x" % (a.len, BLOB_MAX))
     return 0 if ok else 1
 
 
