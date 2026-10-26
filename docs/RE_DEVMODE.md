@@ -321,3 +321,12 @@ Because the device id is inside the signed digest, a statement is bound to one
 device: a blob captured from another unit verifies but does not unlock this one.
 The S1 controller carries no devmode deeplink (only `sonos:///settings…`), so the
 app cannot mint one either.
+
+## Decision: the statement is replayable, not forgeable
+
+`ZZ0218` only hashes the statement and `memcmp`s 32 bytes against a compiled digest; there is no RSA
+verify on the live POST path, and the two accepted lengths (842 / 1060) are fixed. So the statement is
+a **fixed blob**: capture one and it replays on any device of that line, with no key material needed.
+The whole devmode problem therefore reduces to *obtaining one statement* — the parser work is done.
+Two candidate sources remain: the app's unlock flow and any archived copy of the PEM (the two digests
+are `60dfecfc…` and `d7b94102…`; neither matches any of the 132 bundle certs, checked as PEM and DER).
