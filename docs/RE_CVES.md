@@ -955,6 +955,11 @@ control rather than a second target.
 Same CVE question, same answer: the 22-entry Sonos vendor list has nothing about a long value, a title or a
 SavedQueues entry being copied into a fixed buffer, so 2.1 is unpublished too.
 
+Checked outside NVD as well, because NVD keyword search can lag a disclosure and ZDI is the CNA behind
+every Sonos CVE: ZDI's **published** index (`/advisories/published/`, 2.5 MB) contains exactly one Sonos
+entry — the Era 300 SMB one, CVE-2026-4149 — and its **upcoming** index (2.4 MB) contains none. So neither
+finding is sitting in a ZDI queue either.
+
 Scope is *probably* S1-only but **unproven**, unlike the URL span. The S2 build has no `memcpy` whose
 length is loaded from an object field inside a large frame — the whole binary yields four large-frame
 copies with any field- or slot-loaded length, and the closest (0x4ba8ba, `memcpy(sp+32, s0+340, 3276)`
