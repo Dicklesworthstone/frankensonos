@@ -587,3 +587,26 @@ answers **200 in 0.03–0.12 s with the daemon alive** each time (the splitter's
 truncated into a 128-byte field and stored, never stack-copied.
 
 So the SOAP route is dead for the overflow; the URL has to arrive through one of the three splitter callers.
+
+## What feeds the 0x101cc878 copy: a saved-queue record name from `<dir>/abstract` (2026-10-26)
+
+`0x101cc878` (frame 2160, the 2100-byte buffer) is called from the result-set iterator `FUN_101a016c`:
+
+```
+FUN_1019fe30(param_1)                       // open "%s/abstract" for reading
+while (FUN_1019ff94(param_1)) {             // next entry
+  FUN_101a000c(param_1, auStack_420, 0x401) // build the entry string into a 1025-byte buffer
+  FUN_101cc878(param_2, auStack_420, ...)   // the copy under test
+}
+```
+
+`FUN_1019fe30` `snprintf`s `"%s/abstract"` (format at `0x1044eff4`-adjacent, `DAT_10545c40` is the directory)
+and `fopen`s it; `FUN_101a000c` `fread`s an 8-byte record, writes the literal `x-file-cifs://` prefix into the
+buffer and appends the record's name.
+
+So the value is **a saved-queue entry name read from the device's `abstract` file** — not the Browse
+ObjectID, which is why a 2139-byte ObjectID gives a clean 500 instead of the reset. It is settable from the
+wire only by *creating* a saved queue whose title is that long; a long ObjectID cannot reach it.
+
+Two consequences for a trigger: the name is truncated at 1024 first (`0x401` buffer at `FUN_101a000c`), and
+the copy is only reached when the abstract file has an entry.
