@@ -5710,3 +5710,8 @@ a blob copy. The blob is written by a later state; state 1 only resolves and gat
 
 Registry `0x1054ddac` is the thing that decides which record is being serialized —
 that is the "record type" in practice.
+
+**Verified: it is a state machine on `object+8`.** At `0x10219f68` the code loads `*(singleton)`, then
+`*(that+8)`, then `*(that+8)` again, compares it to 0 and writes 1 back (`stw 0,8(9)` after `li 0,1`).
+So the serializer's behaviour is selected by a state word, not by a record type — the record type only
+picks which state transition runs.
