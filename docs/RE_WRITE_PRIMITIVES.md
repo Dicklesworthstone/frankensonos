@@ -476,3 +476,22 @@ directly:
 
 So a >65535-byte JSON string is bound-checked and copied against 65535: the tail is silently dropped, and the
 check can never fire for the real length because both sides are the same truncated value.
+
+## /api on :1443 — the route is matched, the 400 comes from an unfilled request struct (2026-10-26)
+
+`/api` is a route in the status/diagnostic name blob at `0x667394` (between `/tmp/wifi_card_mac_addr` and
+`/cloud`). The matcher compares it with `strcmp(path,"/api")` at `0x47abba` and returns 1 on a match, so the
+handler is reached — which is why both ports answer 400 rather than 404.
+
+The handler is `0x47ab54`: it builds a JSON binding descriptor (`a0=sp+40`, `a1=sp+116`, `a2=request`,
+`a3="/api"` at `0x47ab9a` → `0x4c3b48`), runs `0x4c43e0`, and then **returns -2 unconditionally**
+(`li v0,2; neg v0` at `0x47aba6`).
+
+The 400 *text* has exactly one reference in the whole binary — the pool word at `0x5f8080` used by
+`muse::buildApiRequest` (`0x5f7e98`), which logs it and returns an empty request when
+**`param_4 == 0 || param_2 == -1`**: a null command path or protocol version -1.
+
+So the accepted shape is **a JSON body that fills the request struct** — the route alone is never enough, and
+a query string cannot help because the handler binds the body. An empty body leaves `param_4`/`param_2` at
+their defaults, `buildApiRequest` takes the 400 branch, and the handler's -2 becomes the 400 with an empty
+body and `Connection: close`.
