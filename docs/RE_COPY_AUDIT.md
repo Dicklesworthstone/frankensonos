@@ -299,3 +299,30 @@ overwrite lands in the caller's frame without taking the daemon down — consist
 note that the destination is `sp+16` and the *caller's* frame follows. To make it a control-flow bug we
 need either a route without the 408 pre-check, or enough length to reach the saved LR of the outer
 frame.
+
+## Who reaches the splitter, and whether a file must exist (2026-10-26)
+
+The splitter is `0x101a02ac`. It is reached only through the `x-file-cifs:`
+URL handler `0x1007ad60` (`strncasecmp` against `x-file-cifs:` at
+`0x1044ede8`, 12 bytes), and `0x1007ad60` has exactly **three** callers:
+
+| caller | enclosing function | what it is |
+|---|---|---|
+| `0x101a06b4` | `0x101a05b4` | CIFS share/path splitter — `lookup resulted in path w/o share` |
+| `0x101a0c9c` | `0x101a0b70` | `atomtable` helper |
+| `0x101cc704` | `0x101cc6c0` | `trackValidateURI` — `unplayable queue entry`; called from `0x101cc878` (queue context) and `0x101ddd2c` (saved-queue DIDL) |
+
+**No file has to exist, and no SMB session is opened first.** In `0x101a05b4`
+the call at `0x101a06b4` is followed only by string helpers (`0x10415590`,
+`0x1007b36c`) — no connect, no open. The overflow is a pure URL-parse event,
+so the URL only has to be well-formed enough to reach the splitter.
+
+Routes that deliver one:
+
+- `GET /getaa?u=x-file-cifs://…` — live-confirmed by the owner on `.202`:
+  N=5300–6000 answer 408 or 000. The handler `0x10009e64` is a thin dispatcher
+  into `0x100fe4dc`, which reaches the CIFS code through the AVT/URI layer
+  rather than directly, so the reach is indirect but real.
+- `AddURIToQueue` / `SetAVTransportURI` with an `x-file-cifs:` URI — the URI
+  matrix in `RE_URI_HANDLING.md` shows Add accepting that scheme at 200/30 B
+  and rejecting at 804/4 KB, which is the length gate beside this splitter.
