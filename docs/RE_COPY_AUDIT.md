@@ -799,3 +799,14 @@ primitive, not a crash.
 
 `CreateSavedQueue` on the coordinator (AVTransport, correct service now) answers **811** with a
 2 046-byte title and the queue as the source, so the saved-queue route still needs its argument shape.
+
+### The cap is 1 023 **bytes**, and it is one byte short
+
+`CreateSavedQueue` on the coordinator works (200, `AssignedObjectID SQ:0`) once `EnqueuedURIMetaData`
+carries real DIDL — that was the 811. But the stored title is **1 023 bytes** (512 × `Ж`), the same cap
+as favourites, and the 2.1c setter's guard is `cmplwi 7,3,1024` (`0x101cbbbc`) — an unsigned "store only
+if greater". So every title path lands exactly **one byte short** of the threshold, and browsing `SQ:`
+with it still does not fault (oracle: 235 samples, 0 downs).
+
+That one byte is now the whole problem for 2.1c: either a field with a larger cap exists, or the guard is
+reached some other way.
