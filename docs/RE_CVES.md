@@ -228,6 +228,20 @@ obviously issue.
 Writer: `captures/research/smb-fuzz/smb_state_fuzz.py` already serves the right state machine; the change
 is to build the QUERY_INFO reply body instead of mutating the header.
 
+**Faulting instruction and margin (2026-10-25).** The read is the code-unit load in `utf16_size`,
+`ldrh w12, [x8]` at `0x3daa0` in `utf16_to_utf8` (source `unicode.c:202`, `le16toh(*utf16++)`); the
+surrogate trail load `ldrh w12, [x8, #0x2]` at `0x3daf4` (`unicode.c:216`) is the second site. With
+`name_len = N` the loop reads exactly `N` bytes past `reply+100`, so the smallest over-read is **2 bytes**
+(`N = 2`, one code unit). Handing the decoder an iovec shorter than its allocation steers that read onto a
+mapped, controlled neighbour: `poc_utf16_margin.c` case A returns `"Z"` read from the neighbour and case D
+decodes a full surrogate pair (`f0 90 80 80`) from outside the iovec, both with no ASan report; cases B
+and C are the 2-byte minimal margins ASan still catches (`unicode.c:202` and `:216`).
+
+Live on `.86`, rewriting `FileNameLength` to `buflen - 100 + margin`: margin 2 and 4096 return the whole
+4068-byte image with the daemon alive; margin 8192 and above kill the request and leave `/status/zp`
+unanswering until the socket closes. So the over-read is survivable only while it stays inside the mapped
+heap, and the margin that matters is single-digit bytes, not the 4096 the first PoC used.
+
 ### 7d. `mdputil` and `keyval`: shell-only, no HTTP path
 
 Both are **absent from every binary in the 57.23 rootfs**. `grep -l mdputil bin/* usr/sbin/* opt/bin/*` returns
