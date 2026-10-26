@@ -171,3 +171,8 @@ So the "cap" is not a cap: it is the attacker's JSON string length **narrowed to
 string of 65 536 + n bytes is passed on as n. Whether that overflows depends only on the
 destination size in the interface method (the unresolved `0x51b9b4` stub), so a fixed destination
 smaller than the wrapped value is the bug shape.
+
+**Verified independently.** `0x5f189a` is `sh a3,24(a0)` — a halfword store, so the u16 wrap is real and
+not a Ghidra type artefact. The consumer reads the field back through the unresolved GOT pointer, so
+whether the *copy* uses the truncated value or the original is still the open question; if it copies
+the original into a buffer sized from the truncated field, any JSON string over 64 KiB is an overflow.
