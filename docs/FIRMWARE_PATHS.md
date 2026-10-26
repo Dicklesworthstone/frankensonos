@@ -5838,3 +5838,9 @@ allocation, exactly as with `0x101a60e8`.
 The object is the same one the 2139-byte ObjectID reached, so the pair is filled
 from the browse result — which matches the observation that the long value is data
 inside the result, not the object id.
+
+**Status: the decompiler binary runs, the Ghidra handshake does not.** `decompile` starts and prompts
+`[decomp]>` with `SLEIGHHOME` set, and the `.sla` specs are present, but every `decompileFunction` call
+hangs — including on `memcpy`, which is a stub — so it is the process handshake, not analysis cost.
+`objdump` remains the working tool; the next attempt should be a direct stdin protocol test rather than
+more headless runs.
