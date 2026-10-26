@@ -428,3 +428,22 @@ reading.
 That confirms the mechanism predicted above: the declared length is trusted, nothing compares it against the
 bytes present, the stream desynchronises, the magic check fails, the reader stops, and the transfer dies at
 the socket-buffer boundary. **The abort point is the parser's first error, not 512 KiB.**
+
+## The 1112-byte sink is the korn event dispatcher (57.23 anacapad, 2026-10-25)
+
+`FUN_1021fb54` (called from the init path at `0x1021fb60`) allocates 0x14f8 bytes, zeroes it, stores it in
+the singleton `DAT_10545d78`, and installs `FUN_10219cf8` at `ctx+0x14` — the sink. `FUN_10219cf8` is a
+type dispatcher (`*param_2` = event type, 0x14…0x7d) whose assert strings name it: `sp_korn_event_count(korn)
+< SP_MAX_EVENTS` (0x2f = 47) in `0x102232d0`, source path `esdk/src/korn/korn.c`. So the records are **korn
+events**, and the queue is capped at 47.
+
+**The one type carrying a caller blob is 0x1a** (metadata changed): `0x1021a370` re-dispatches to
+`0x1021ae40` → `0x102232d0`, which `memset`s two blobs (`obj+0x9cc`, len 0x48c; `obj+0xe58`, len 0x44c) and
+then calls `FUN_102402e8("", obj+0xe58)`; that takes the mutex `FUN_1021f408` and invokes the registered
+consumer `(*DAT_1054f5b8)(str, dest, DAT_1054f5c0)`. The blob is **forwarded, not copied into the object**.
+Type 0x4b is the only fixed copy: `memcpy(obj+0x140d, obj+0x2be, 0x21)` plus `strlcpy(obj+0x142e, …, 0x80)`.
+
+**Reachability from :1400: indirect only.** The sink is the korn event queue; nothing in the HTTP/SOAP
+handlers calls `ctx+0x14` directly (293 `lwz …,20(rX)`+`bctrl` sites exist, all vtable-generic). :1400
+actions reach it by driving the playback state machine that emits the events — so a request can enqueue, but
+cannot address the sink itself.
