@@ -193,3 +193,35 @@ The ring is a nested structure parsed by `ZZ0121` (`0x9f24`): u32 magic
 (< 9), then a second count block and a u8 that must be 1 or 2, then 264-byte
 entries. The entry body is not fully mapped yet; a real statement from the
 portal carries it, so the triager is usable without that mapping.
+
+## 2026-10-26: LAN survey — no player is unlocked; portal inputs for each
+
+`/debug/devmode.bin` is the post-unlock cache (the S2 writer builds
+`/tmp/devmode.tmp.bin` and renames it to `debug/devmode.bin`, literals at
+`0x285fca`), so a 404 is a reliable "locked" probe. Six players answer on
+`192.168.4.0/24`; **all six 404** on `:1400` and the two S2 units also 404 on
+`:1443`:
+
+| addr | model | device id | version | `/debug/devmode.bin` |
+|---|---|---|---|---|
+| .26 | Bridge | `RINCON_000E584F3B8801400` | — | 404 (no `/devmode`) |
+| .81 | 8 | `000E58CADE94` | 86.10 | 404 |
+| .84 | 16 | `000E5880108A` | 57.23 | 404 |
+| .86 | 20 | `7828CA9221DC` | 86.10 | 404 |
+| .201 | 5 | `000E5816C16A` | 57.23 | 404 |
+| .202 | 16 | `000E585D8C10` | 57.23 | 404 |
+
+`/testenv` and `/ssh/fingerprints` are `403` on every player that serves them,
+matching the lock state.
+
+The portal form wants exactly the model and device id above, so any one row is a
+complete submission. No public statement endpoint exists either: `/devmode/`,
+`/devmode/<id>/devmode.bin`, `/devmode/devmode.bin` and
+`/devmode/?deviceId=…` all return the 269 KB login page.
+
+No published statement was found in any searched source: `gh` code search for
+`urn:sonos:device`, `urn:sonos:device:`, `28721e71` and `KHIe`; `gh` issue
+search; the `sonos` org repos; `darkarnium/sonor` and `trulyspinach/sonos-fenway`
+(the custom rootfs has no `devmode` string); the NCC BlackHat 2024 whitepaper,
+the RomHack 2023 deck and `blasty/sonos`; the Sonos community search (3 hits,
+none about devmode); Reddit; and the Wayback CDX set for the URL.
