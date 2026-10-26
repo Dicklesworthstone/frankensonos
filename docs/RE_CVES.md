@@ -674,6 +674,36 @@ credentials:
 | CVE-2026-110713 | `smb2_decode_file_fs_volume_info` @`0x21050` | `LabelLength` at `0x210f8`, source fixed at payload+`0x12` @`0x210fc`, `srwi` @`0x21100`, then `utf16_to_utf8`. No bound. |
 | CVE-2026-110714 | `decode_acl` (static, called from `smb2_decode_security_descriptor` @`0x21698`) | `acl_size` clamped into `v.len` at `0x21914`/`0x2191c`, then `addi r9,r9,-8` **unconditional** at `0x2194c`; `acl_size < 8` underflows to ~`SIZE_MAX` and every later `smb2_get_uint*` check is dead. The descriptor offset checks are also 32-bit and wrap (`addi r10,r9,8` + `cmplw` at `0x217a0`/`0x217cc`/`0x21838`). |
 
+### 9a-ter. The 110714 advisory understates its own fix, and the pattern space is now closed
+
+Two things worth having before anyone tries to exploit or triage §9a:
+
+**The advisory names one defect; the fix closes nine.** CVE-2026-110714's text mentions only "AclSize below
+8". The commit (`523abe20`) also converts every unchecked `v.len -=` in `decode_ace` to a checked
+`DEC_VLEN` — seven sites at `lib/smb2-data-security-descriptor.c` 134, 151, 164, 168, 172, 177, 190 — plus
+the two in `decode_acl` (258, 275). Those are not independent bugs: they compound, because once the
+`acl_size < 8` underflow has made `v.len` ~`SIZE_MAX` at 258, every later `smb2_get_uint*` bound check in
+`decode_ace` is dead and the unchecked decrements keep it dead.
+
+**The offset checks are the wrapping form.** `offset_dacl + 8 <= vec->len` (line 341) and
+`offset_owner + 2 + SID_ID_AUTH_LEN < vec->len` (line 328) are 32-bit adds; an offset near `0xFFFFFFFF`
+wraps, passes, and yields a wild `v.buf`. The fix rewrites them as `offset < vec->len && vec->len -
+offset >= N`.
+
+**No fourth `utf16_to_utf8` sink exists.** All seven call sites in 4.0.0 were checked; only the two the
+advisories name are unbounded:
+
+| site | bound |
+|---|---|
+| `smb2-data-file-info.c:158` (`name_len`) | **none** — CVE-2026-110712 |
+| `smb2-data-filesystem-info.c:63` (`volume_label_length`) | **none** — CVE-2026-110713 |
+| `smb2-cmd-query-directory.c:79` (`name_len`) | `80 + name_len > vec->len` → error |
+| `smb2-data-reparse-point.c:80`, `:96` | `suboffset + sublen + 12 > reparse_data_length`, itself checked against `vec->len` |
+| `dcerpc.c:887` | inside the NDR decoder, i.e. the 115505 class |
+
+So the three CVEs cover the whole `utf16_to_utf8` pattern space, and `v.len -=` appears nowhere outside
+`smb2-data-security-descriptor.c`.
+
 ### 9a-bis. Correction: the SMB parser is not in the daemon process
 
 `anacapad` does not link libsmb2 at all — zero `smb2_` dynamic symbols, zero `libsmb2` strings and no
