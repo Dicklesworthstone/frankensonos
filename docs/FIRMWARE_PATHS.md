@@ -5866,3 +5866,11 @@ span with a length derived by subtraction, never by a cap. `0x101ccc9c` (the
 
 Two of the four write to the stack at `r1+16`, so the 2160-byte frame is the bound
 for those — the same failure mode as the URL splitter, one frame smaller.
+
+**Why the handshake hangs: the built console registers no commands.** Driving the binary directly
+(`script -q /dev/null decompile`, because `tcgetattr` on a pipe fails with "Unknown error with input
+file stream") shows the prompt but `help`, `load` and `file` all answer `ERROR: Invalid command` — only
+the built-in `quit` works. So `IfaceCapability::registerAllCommands` produced nothing, which is a
+build/link problem in our from-source console, and it is also why Ghidra waits forever: it sends
+commands the binary does not know. Next attempt: build with the project's own gradle target
+(`gradle buildNatives`) instead of the bare Makefile, which is what populates the capability list.
