@@ -3,7 +3,7 @@
 
 use super::continuation::Readiness;
 use super::paging::Observation;
-use super::{MAX_PLAYLIST_REQUESTS, PlaylistObservation, Reader, valid_playlist_track};
+use super::{MAX_PLAYLIST_REQUESTS, PlaylistObservation, Reader, valid_taste_track};
 use crate::client::{PAGE_LIMIT, PlaylistItem, SimplifiedPlaylist};
 use crate::library::{LibraryItem, Origin};
 use fsonos_core::store::{
@@ -83,7 +83,7 @@ impl Progress {
             let valid = track.position > previous
                 && track.position <= self.examined
                 && track.item.origin == Origin::Taste
-                && valid_playlist_track(&track.item);
+                && valid_taste_track(&track.item);
             previous = track.position;
             valid
         })
@@ -97,7 +97,7 @@ impl Progress {
             if let Some(item) = serde_json::from_value::<PlaylistItem>(entry)
                 .ok()
                 .and_then(|entry| entry.library_item(Origin::Taste))
-                .filter(valid_playlist_track)
+                .filter(valid_taste_track)
             {
                 self.tracks.push(Occurrence { position, item });
             }

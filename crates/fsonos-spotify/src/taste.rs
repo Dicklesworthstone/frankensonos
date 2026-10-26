@@ -15,9 +15,10 @@
 //! ones they follow) are kept by name, so a search can play one. What they
 //! played lately, on any device, is kept with when ([`Taste::heard`]): the
 //! DJ counts it as heard, so it doesn't come straight back. A followed or
-//! top artist the owner never saved anything by brings a few of their top
-//! tracks into the pool (as taste tracks), so following an artist is
-//! enough for the DJ to play them.
+//! top artist the owner never saved anything by brings a few tracks into
+//! the pool (as taste tracks), so following an artist is enough for the DJ
+//! to play them. Apps without the top-tracks endpoint use a bounded sample
+//! from that artist's albums and singles instead.
 //!
 //! A grant without the taste scopes reads none of this and fails nothing:
 //! the DJ's taste is the library alone, and [`TasteRead::missing_scopes`]
@@ -35,12 +36,13 @@ use fsonos_core::store::{CachedPlaylist, Store};
 
 use crate::SpotifyError;
 use crate::client::{
-    Artist, ArtistTopTracks, CursorPage, FullTrack, PlayHistory, TASTE_SCOPES, decode, unix_seconds,
+    Artist, CursorPage, FullTrack, PlayHistory, TASTE_SCOPES, decode, unix_seconds,
 };
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
 use crate::session::Session;
 
+mod artists;
 mod continuation;
 mod paging;
 mod playlist_scan;
@@ -70,10 +72,10 @@ const _: () = assert!(TOP_TRACK_PM * ARTIST_PM <= MAX_TASTE_PM * 1000);
 const MAX_PAGES: usize = 20;
 const MAX_PLAYLISTS: usize = 25;
 const MAX_PLAYLIST_REQUESTS: usize = 4;
-/// Followed and top artists with nothing saved whose top tracks one sync
-/// reads, and how many of each one's tracks join the pool.
+/// Followed and top artists with nothing saved whose tracks one sync reads,
+/// and how many of each one's tracks join the pool.
 const MAX_ARTIST_READS: usize = 50;
-const ARTIST_TOP_TRACKS: usize = 3;
+const ARTIST_TRACKS: usize = 3;
 
 /// What one taste read did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -89,10 +91,11 @@ pub struct TasteRead {
     pub playlist_tracks: usize,
     /// Durable unfinished playlist work for the daemon's bounded continuation pass.
     pub continuation: PlaylistContinuation,
-    /// Top tracks of followed or top artists the owner saved nothing by.
+    /// Tracks of followed or top artists the owner saved nothing by: their
+    /// top tracks, or a catalog sample when that endpoint is unavailable.
     pub artist_tracks: usize,
-    /// Why those top tracks couldn't be read, when they couldn't (an app
-    /// the endpoint is closed to, say). Optional: it leaves the read whole.
+    /// Why those artist tracks couldn't be read. Optional: it leaves the
+    /// read whole and retains previously cached music for unread artists.
     pub artist_tracks_unread: Option<String>,
     /// Reads that failed or reached a budget before completion, and why.
     pub failed: Vec<(String, String)>,
@@ -125,7 +128,7 @@ pub struct Taste {
     /// when that read succeeded; `None` when it wasn't read, so the cached
     /// plays stay.
     pub heard: Option<Vec<(String, i64)>>,
-    /// The followed or top artists (lowercased names) whose top tracks this
+    /// The followed or top artists (lowercased names) whose tracks this
     /// read meant to bring and didn't: more of them than one sync reads, or
     /// their read failed. The sync keeps what it cached for them before.
     pub artists_unread: Vec<String>,
@@ -223,7 +226,7 @@ pub async fn read_taste<S: Store + ?Sized>(
         cx,
         read: &mut read,
     };
-    // The followed and top artists, for their top tracks below.
+    // The followed and top artists, for their tracks below.
     let mut artists: Vec<Artist> = Vec::new();
     if follow {
         for artist in reader.followed().await {
@@ -267,16 +270,15 @@ pub async fn read_taste<S: Store + ?Sized>(
         .filter(|a| !covered.contains(&a.name.to_lowercase()))
         .collect();
     let (today, later) = todays_artists(unsaved, now);
-    let (tracks, done) = reader.artist_top_tracks(&today).await;
+    let (tracks, unread) = reader.artist_tracks(&today).await;
     for item in tracks {
         // Weighed as the artist's: `Taste::weigh` multiplies in ARTIST_PM.
         taste.track(item, 1000);
     }
-    taste.artists_unread = today[done.min(today.len())..]
-        .iter()
-        .chain(&later)
-        .map(|a| a.name.to_lowercase())
-        .collect();
+    taste.artists_unread = unread;
+    taste
+        .artists_unread
+        .extend(later.iter().map(|artist| artist.name.to_lowercase()));
     (taste, read)
 }
 
@@ -307,7 +309,7 @@ fn covered_artists(saved: &[LibraryItem], tracks: &[LibraryItem]) -> HashSet<Str
         .collect()
 }
 
-/// Whether a failed artist top-tracks read is that endpoint's own trouble
+/// Whether a failed artist read is that endpoint's own trouble
 /// (closed to this app, or a server error) rather than the Web API's.
 fn endpoints_own(e: &SpotifyError) -> bool {
     matches!(e, SpotifyError::Api { status, .. } if *status == 403 || *status >= 500)
@@ -419,55 +421,9 @@ impl Reader<'_> {
             }
         }
     }
-
-    /// Up to [`ARTIST_TOP_TRACKS`] top tracks of each of `artists`. An
-    /// answer that isn't one (the endpoint closed to this app, a server
-    /// error) stops these reads and is noted apart, leaving the taste read
-    /// whole; a rate limit halts it as any read does. Returns the tracks,
-    /// and how many of `artists`, from the first on, were read.
-    async fn artist_top_tracks(&mut self, artists: &[&Artist]) -> (Vec<LibraryItem>, usize) {
-        let mut tracks = Vec::new();
-        let mut done = 0;
-        for artist in artists {
-            let Some(id) = artist.id.as_deref() else {
-                done += 1;
-                continue;
-            };
-            if self.read.halted.is_some() {
-                break;
-            }
-            let url = self.session.endpoints().artist_top_tracks(id);
-            let read = match self.session.get_brief(self.cx, &url).await {
-                Ok(body) => decode::<ArtistTopTracks>(&body, "artist top tracks"),
-                // What stops any read (rate limited, signed out, offline)
-                // halts this one; the endpoint's own trouble is noted apart.
-                Err(e) if halts(&e) && !endpoints_own(&e) => {
-                    self.read.halted = Some(format!("artist top tracks: {e}"));
-                    break;
-                }
-                Err(e) => Err(e),
-            };
-            match read {
-                Ok(top) => {
-                    for track in top.tracks.iter().take(ARTIST_TOP_TRACKS) {
-                        if let Some(item) = track.library_item(Origin::Taste, None) {
-                            self.read.artist_tracks += 1;
-                            tracks.push(item);
-                        }
-                    }
-                    done += 1;
-                }
-                Err(e) => {
-                    self.read.artist_tracks_unread = Some(e.to_string());
-                    break;
-                }
-            }
-        }
-        (tracks, done)
-    }
 }
 
-fn valid_playlist_track(item: &LibraryItem) -> bool {
+fn valid_taste_track(item: &LibraryItem) -> bool {
     item.source_uri
         .strip_prefix("spotify:track:")
         .is_some_and(|id| {

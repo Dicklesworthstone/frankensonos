@@ -573,6 +573,18 @@ impl Endpoints {
         )
     }
 
+    /// A bounded sample of an artist's own albums and singles. Unlike top
+    /// tracks, this catalog endpoint remains available to development apps.
+    #[must_use]
+    pub fn artist_albums(&self, artist_id: &str, limit: u32) -> String {
+        format!(
+            "{}/artists/{}/albums?include_groups=album,single&limit={}&offset=0&market=from_token",
+            self.api,
+            percent_encode(artist_id),
+            limit.clamp(1, 10)
+        )
+    }
+
     /// The artists the owner follows (cursor paging: `next` carries on).
     #[must_use]
     pub fn followed_artists(&self) -> String {

@@ -227,7 +227,7 @@ fn sync_notes(taste: &TasteRead, genres: &GenreRead, albums: &Expansion) -> Vec<
         notes.push(format!("taste signals not read: {}", failed.join(", ")));
     }
     if let Some(why) = &taste.artist_tracks_unread {
-        notes.push(format!("artist top tracks not read ({why})"));
+        notes.push(format!("artist tracks not read ({why})"));
     }
     let stopped = |what: &str, why: Option<&String>| {
         why.map(|why| format!("the {what} read stopped early ({why})"))

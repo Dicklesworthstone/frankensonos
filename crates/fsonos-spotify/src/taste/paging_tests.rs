@@ -251,6 +251,9 @@ mod playlist_progress;
 #[path = "playlist_continuation_tests.rs"]
 mod playlist_continuation;
 
+#[path = "artist_catalog_tests.rs"]
+mod artist_catalog;
+
 impl Drop for Server {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
