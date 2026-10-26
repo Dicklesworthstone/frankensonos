@@ -233,3 +233,17 @@ upnpTimeoutMillis` — each via `FUN_005f53f4(obj, name, 5, index)`, i.e. type 5
 
 Next: drive `bindStdString` with a >64 KiB string on one of those fields and watch for the
 16-bit wrap (the destination sizes are the unresolved part).
+
+## /api/chaos: route confirmed, parameter transport still open
+
+The route name table at `0x6764a8` (packed strings) holds `chaos`, `setrecoveryurl`,
+`legacy_anacapad` and `forceupdate` (with `/var/run/forceupdate`); `/api/` is a prefix applied to
+each registered name by `FUN_004e440c` (`0x4e440c`, `PTR_s__api__004e4498`). The chaos handler
+class is `RMuseChaosEntry` (`getChaosAction` at `0x4e6fa0`).
+
+Live on `.86`, every shape tried still answers **400 with an empty body**:
+`GET /api/chaos?namespace=x&command=y&interval=1&delayMs=0`,
+`GET /api/chaos` bare, `POST /api/chaos` with a JSON body of the same four fields, on `:1443`
+(TLS) and `:1400`. So the route is right and the handler rejects before the chaos action runs —
+the parameter transport (query vs body vs header) or a required extra field is still unknown.
+`getChaosAction` itself only decides delay/drop from the entry state; the parse is upstream.
