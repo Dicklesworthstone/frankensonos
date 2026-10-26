@@ -5820,3 +5820,21 @@ The binary then refuses to start with "Could not discover root of Ghidra install
 `server/server.conf` exists; `FileManage::discoverGhidraRoot` walks `argv[0]` and does not accept the
 layout. **Set `SLEIGHHOME=<ghidra root>`** and it works. `rea doctor` reports every Ghidra check green
 with `GHIDRA_INSTALL_DIR` set, but `rea function` still fails at the analysis step.
+
+### BoldOrchid: 2.1c copy is memcpy(dst, *(obj+0x1074), *(obj+0x1070))
+
+```
+101ccc90: lwz 5, 4208(30)     ; len = *(obj+0x1070)
+101ccc94: mr 3, 23             ; dst = r23
+101ccc98: lwz 4, 4212(30)      ; src = *(obj+0x1074)
+101ccc9c: bl memcpy            ; no bound
+```
+
+Both the length and the source are fields on the object at `+0x1070`/`+0x1074`, so
+whatever populates that pair is the wire-facing input. The destination `r23` is a
+pointer from the enclosing function, so the bound question is the destination's
+allocation, exactly as with `0x101a60e8`.
+
+The object is the same one the 2139-byte ObjectID reached, so the pair is filled
+from the browse result — which matches the observation that the long value is data
+inside the result, not the object id.
