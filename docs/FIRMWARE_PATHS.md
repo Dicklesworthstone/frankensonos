@@ -5753,3 +5753,24 @@ fixed-size fields, and the caller blob is truncated to 33 bytes wherever it land
 
 That makes the serializer a dead end for overflow, and the lane's live candidates
 remain `0x10219954` and `0x101a60e8`.
+
+### BoldOrchid: 0x101a60e8 is a struct copy with an unbounded tail
+
+```
+101a60c4: cmpw 7, 30, 31      ; dest == src ?
+101a60d8: bl strcpy           ; header field
+101a60dc: lwz 5, 4(31)        ; len = src+4
+101a60e0: addi 3, 30, 137     ; dest blob = dest+0x89
+101a60e4: addi 4, 31, 137     ; src blob  = src+0x89
+101a60e8: bl memcpy           ; no bound
+101a60f8: stw 9, 4(30)        ; dest+4 = len
+```
+
+So it copies a whole record: a strcpy'd header, then `src+4` bytes from `src+0x89`
+to `dest+0x89`. The length is the source record's own field, and the destination is
+whatever the caller supplies — no size is passed in, so the destination must be at
+least `0x89 + len`.
+
+Callers: `0x10212420` and `0x1021255c`, both passing caller-supplied pointers. If
+either destination is a fixed buffer while the source length is packet-derived,
+that is the bug.
