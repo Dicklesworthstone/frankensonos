@@ -175,6 +175,28 @@ def main():
                 input=body[0x13A:], capture_output=True, check=True).stdout
             open(os.path.join(outdir, "%02d.bin" % i), "wb").write(plain[0x10:])
             print("section %d -> %02d.bin" % (i, i))
+    elif cmd == "model-pem":
+        pem = encdec(field(mdp, OFF["model"], MAGIC_RSAKEY), otp, TAG["model"])
+        sys.stdout.buffer.write(pem)
+    elif cmd == "verify":
+        import tempfile
+        pem = encdec(field(mdp, OFF["model"], MAGIC_RSAKEY), otp, TAG["model"])
+        with tempfile.NamedTemporaryFile(suffix=".pem") as kf:
+            kf.write(pem)
+            kf.flush()
+            data = open(sys.argv[4], "rb").read()
+            for i, (off, size) in enumerate(sections(data), 1):
+                body = data[off + 16:off + size]
+                if body[:4] != MAGIC_FW:
+                    continue
+                aes = subprocess.run(
+                    ["openssl", "pkeyutl", "-decrypt", "-inkey", kf.name,
+                     "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha1"],
+                    input=body[0x32:0x132], capture_output=True, check=True).stdout
+                plain = subprocess.run(
+                    ["openssl", "enc", "-aes-128-cbc", "-d", "-K", aes.hex(), "-iv", "00" * 16],
+                    input=body[0x13A:], capture_output=True, check=True).stdout[0x10:]
+                print("section %d %s" % (i, "squashfs" if plain[:4] == b"hsqs" else plain[:4].hex()))
     elif cmd == "luks":
         key_in = bytes.fromhex(sys.argv[4])
         if len(key_in) != 0x20 or key_in[:16] not in (b"\0" * 16, b"\xff" * 16):

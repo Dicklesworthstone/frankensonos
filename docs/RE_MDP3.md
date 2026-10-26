@@ -29,6 +29,12 @@ compares the LUKS derivation. Vector hashes: mdp
 `d9c76fa34978cb9620dab8c3f46bbe075fddc145eb282b39009141f98d0cfe82`; all
 three fields and the LUKS key are identical (`VECTOR OK`).
 
+End-to-end chain, one command: a synthetic MDP3 whose model field is the real
+`model16-private.pem` (`model-pem` round-trips it byte-identically) feeds
+`verify` on `57.23-74170-1-16.upd`, which reports section 7 `23212f62`, section
+8 `48000005`, section 9 `73717368` (squashfs). Synthetic vector hashes: mdp
+`b6eb6023…c4b2d0`, otp `4103c4b3…82299b`.
+
 The vector immediately caught a real bug in the port: the per-blob tag is
 padded to **8** bytes and XORed **modulo its own length** over the 12-byte IV
 (`keymod` in the reference), not zero-padded to 12 as the first version did.
