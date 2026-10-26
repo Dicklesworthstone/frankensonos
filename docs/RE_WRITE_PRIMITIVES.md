@@ -495,3 +495,24 @@ So the accepted shape is **a JSON body that fills the request struct** — the r
 a query string cannot help because the handler binds the body. An empty body leaves `param_4`/`param_2` at
 their defaults, `buildApiRequest` takes the 400 branch, and the handler's -2 becomes the 400 with an empty
 body and `Connection: close`.
+
+## Muse websocket handshake: what the server actually validates (2026-10-26)
+
+`lechmere.N` alone is not enough because the validator checks **eight header-presence flags**, not one.
+`RMuseHeaderHandler::checkIfValid` (`0x4e8318`) memsets a 0x200000 buffer, sets the status word to **0x34**
+(valid), then tests bit 1 of the byte at header-object offsets **0x1bd, 0xe5, 0x109, 0x12d, 0x151, 0x175,
+0x271, 0x295**; the first clear flag sets the status to **0x48** and selects a message naming that header.
+Two of the eight names are resolved: **`X-Sonos-Udn`** (`0x673fb0`) and **`Sec-WebSocket-Protocol`**
+(`0x673fbc` / `0x6824e0`); the other six sit behind `.bss` bases not yet resolved.
+
+`RMuseController::captureWebsocketCommandToken` (`0x4e7d44`) then requires, in order: status **== 0x34**,
+`hasAuthToken` (`this+0x24f4`) non-zero, and a connection type in {0,1} via `isConnectionType` (type 2 →
+status 0x4e). The token is split out of the header buffer at `this+0x1bb` by `RAuthSplitToken` with a 0x2000
+cap.
+
+`updateHeaderTargets` (`0x4e8b18`) adds one more gate: if the status is 0x34 **and** the length at
+`this+0x24d8` exceeds 0x20, it sets 0x48 and logs `failed to read lechmere header: %d` (`0x674078`, reached
+via base `0x67113c + 0x2f3c`).
+
+So a 101 needs all eight headers present, an auth token, and connection type 0/1 — the protocol header and
+the upgrade headers alone leave at least one flag clear and the status at 0x48, which is the 400.
