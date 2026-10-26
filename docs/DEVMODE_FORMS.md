@@ -18,15 +18,67 @@ digest. Only one is the `/devmode` POST path.
   (`certvalStats`, log category `certval`, "Expected cert validation failure"),
   not the HTTP handler.
 
+## The two pinned digests, extracted
+
+Emulating `ZZ0218` (Unicorn PPC, relocations applied, SHA-256 stubs, stop at the
+first `memcmp` `0xbb28`) yields the two compiled values:
+
+```
+842  -> 60dfecfc0bbb153654322dc33fc56bd5d57a617d2a4347e6785ab016c09b6d62
+1060 -> bac0d0523cfa7bf82bddf1a5cbec40e60c303fe4d8d2595c101e4112269b5153
+```
+
+The 842/1060 lengths are PEM sizes of ~630/795-byte DER certificates, i.e. EC
+leaf/intermediate certificates, not the 4096-bit RSA Sonos roots. No preimage is
+shipped:
+
+- the PEM template at `0xd8b8` (842/1060/1200 windows from `0xd8b8` and from the
+  `BEGIN` marker `0xd8d4`) — no match;
+- all 89 DER certificates in `fw/internals/fallback.rcb`, including the two
+  roots the template names (`Sonos Device Authentication Root CA` at `0x4fce`,
+  `Sonos Test Device Authentication Root CA` at `0x5625`) — no match;
+- all 493 DER certificates in the type-22 bundle of `86.10-80260-1-12.upd`
+  (record at `0x16c`, 149527 bytes) — no match;
+- the S2 APK: no `BEGIN CERTIFICATE`, no `urn:sonos:`, no base64 statement
+  (`KHIec`/`cR5yK`).
+
+Each was tried as DER, as bare base64, and as PEM with 64/76-column wrapping,
+LF/CRLF, with and without a trailing newline or NUL. So the pinned certificates
+are issued at runtime and are not recoverable from the image; the digests are
+only useful to *check* a candidate PEM offline.
+
 ## ZZ0137 — the live `/devmode` POST
 
-- Handler `0x4f3b44` calls `ZZ0137` at `0x4f3b96` with the decoded statement,
+Route entry: the `/devmode` string is at `0x6656b4`; the route table record at
+`0x6e7034` holds `{name = 0x6656b4, handler = 0x4aa959}`. The handler is a
+two-instruction thunk (`save; jal 0x4f4240; restore` at `0x4aa958`), so the real
+handler is `0x4f4240`:
+
+- `0x4f4240`: method 1 -> GET `0x4f3fe0`; method 5 -> require
+  `Content-Type: application/x-www-form-urlencoded` (string `0x675dd4`,
+  `strcasecmp` at `0x4f4268`) else 400, then POST `0x4f419c`; other methods 405;
+  null devmode object 500.
+- `0x4f419c`: rate-limits to one POST per 3 s (`sonosClockGetTime` at
+  `0x4f41a6`, `sleep(3 - delta)` at `0x4f41c4`), reads at most 2048 bytes with a
+  2000 ms timeout (`0x4f5990`), then calls the form parser `0x4f403c`.
+- `0x4f403c`: `RparseNextQueryStringParam` over the body. Recognised keys:
+  `statement` (base64, decoded into a 1024-byte buffer by `0x4ede64`),
+  `button=delete`, `csrfToken` (compared with `0x4eec54` against the object's
+  token). **A POST with no `csrfToken` is 400** (`local_1c == 0` ->
+  `LAB_004f4160`), so a 403 from the device proves the token was accepted and
+  the statement itself was rejected.
+- `0x4f3b44` is the validator: `ZZ0137` at `0x4f3b96` with the decoded
+  statement,
   the model, the device id and the version bytes; the notify path calls it at
   `0x4f3aa2`.
 - `ZZ0137` requires the TLV magic `0x28721e71`, the model, a version window, the
   device id (`memcmp`), a payload and a ring; the signature is checked against
   the one compiled SPKI (`ZZ0080`).
-- There is **no** `ZZ0130` or `ZZ0218` call anywhere in `0x4f3b44..0x4f3cb0`.
+- Return mapping in `0x4f403c`: `ZZ0137` 0 -> **403**, 1 -> **409** (already
+  installed; the log line is `R_ALLOW_SSH_PUBKEY_INSTALL may n...`), 2 -> 200
+  (`Statement installed`).
+- There is **no** `ZZ0130` or `ZZ0218` call anywhere in the whole route chain
+  `0x4f4240 -> 0x4f419c -> 0x4f403c -> 0x4f3b44`.
 
 So the live POST uses the device-bound TLV. The PEM+digest check is a
 certificate pin, and a PEM posted as a `statement` fails at the TLV magic.
