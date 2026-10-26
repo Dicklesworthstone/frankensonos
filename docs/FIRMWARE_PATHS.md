@@ -5583,3 +5583,11 @@ two callers' HTTP handlers and find what fills `+0x448`.
 So the copy lands in a **global buffer at `0x1054d5d0`**, not a heap or stack object.
 Whether it is safe is therefore a question of that buffer's size versus the 1024
 cap plus the offset — a static data-layout question, not a parser one.
+
+**The builder is a record serializer.** `0x10219f60` is not a vtable thunk but a
+straight-line call inside a dispatcher that switches on a record type
+(`cmpwi 7,4,180`, `cmpwi 7,4,192`, …). The copy is followed by
+`cmplwi 7,0,1112` on the *resulting offset*, so 1112 is the whole buffer and any
+accumulated record set larger than that overruns it. `+0x448` is the blob length
+being appended, `+0xE58` its data. Next: which record type carries a
+caller-controlled blob, and whether the serializer is on the :1400 response path.
