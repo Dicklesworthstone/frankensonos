@@ -361,3 +361,14 @@ csrfToken the form wants, posts the returned base64 with the 5.5 s spacing the
 4 s limiter needs, and scores the reply by elapsed time (0.6–1.0 s = parser
 reject, 2.7–5.7 s = reached the signature check, 200 = accepted, 409 = already
 unlocked).
+
+## Replay tool and the response codes
+
+`recon/devmode.py IP [STATEMENT]` does the whole exchange: GET `/devmode`, scrape the `csrfToken` out of
+the hidden input, base64 the statement, POST it, then check port 22. The form is an 11×80 textarea,
+which matches the 842-byte PEM shape.
+
+Observed codes: a 1-byte statement gets **403** (rejected), not 400 — so 403 is the "statement did not
+verify" answer and must not be confused with the route-level 403 that `/unlock` returns unconditionally
+on both lines. A successful POST is expected to answer 200 and open port 22; the tool exits 0 only when
+port 22 is actually open, so it cannot report a false success.
