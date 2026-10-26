@@ -542,3 +542,32 @@ symbol address is what produced the misaligned read.
 Status 0x34 is produced **only** by `checkIfValid` when all eight header flags are set; any missing flag
 leaves 0x48. So the 400 is not a missing subprotocol and not a missing UDN alone — it is the status word
 never reaching 0x34, and the first of the three conditions above is the one to satisfy.
+
+## S1 57.23 URL-span overflow at 0x1007b2c4 — exact overwrite map (2026-10-26)
+
+Function entry `0x1007ad60`, frame `stwu 1,-5344(1)`. The copy is **`memcpy(sp+16, r18, *(u32 *)(sp+5244))`**
+(`0x1007b2c4`; `0x10546ad8` is the `memcpy` PLT slot), followed by a forced NUL at `sp+16+len`
+(`stb 30,16(9)` at `0x1007b2d8`). The length at `sp+5244` is a parsed span length, computed as
+`ptr - base + 1` at `0x1007ae60`–`0x1007ae70`; the earlier copy into `sp+3136` is bounded (`li 5,1025`), this
+one is not.
+
+Destination `dst = sp+16`, so the saved slots sit at these **byte offsets from dst** (all big-endian, written
+straight from URL bytes):
+
+| offset | slot |
+|---|---|
+| 5252 | CR |
+| 5256 / 5260 / 5264 / 5268 / 5272 / 5276 / 5280 | r14 / r15 / r16 / r17 / r18 / r19 / r20 |
+| 5284 / 5288 / 5292 / 5296 / 5300 / 5304 / 5308 / 5312 / 5316 / 5320 / 5324 | r21 / r22 / r23 / r24 / r25 / r26 / r27 / r28 / r29 / r30 / r31 |
+| **5332** | **LR** (4 bytes, 5332–5335) |
+
+The frame top is `dst+5328` (`sp+5344`), so the LR slot is 8 bytes *past* the frame — it is the caller's save
+area. Consequences by N (the URL length):
+
+- N ≤ 5251 — clean;
+- N ≥ 5252 — CR and then saved registers are overwritten (matches the live 5300 → 408/000);
+- N ≥ 5332 — LR partially overwritten; **N ≥ 5336 — LR fully attacker-chosen**, and the forced NUL lands at
+  `dst+N` beyond it.
+
+Attacker control is 1:1: URL byte *i* lands at `dst+i`, so the return address is simply URL bytes 5332–5335
+in big-endian order; the only byte not under control is the terminator at `dst+N`.
