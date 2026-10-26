@@ -1,0 +1,20 @@
+# smb_wedge.py, .202 (S1 57.23), 2026-10-26
+# server: impacket SMB1 on 445, smbComReadAndX stalls 600 s; sockets held 12-15 s after the requests time out
+# oracle: /status/zp every 100 ms, 1.0 s probe timeout
+
+{"n": 1, "codes": ["000"], "req_s": 8.03, "down_at": "20:49:23.178", "up_at": "20:49:23.350", "outage_s": 0.172, "reason": "timeout"}
+{"n": 2, "codes": ["000", "000"], "req_s": 8.03, "down_at": "20:49:35.256", "up_at": "20:49:35.426", "outage_s": 0.17, "reason": "timeout"}
+{"n": 3, "codes": ["000", "000", "000"], "req_s": 8.03, "down_at": "20:49:47.173", "up_at": "20:49:47.399", "outage_s": 0.226, "reason": "timeout"}
+{"n": 4, "codes": ["000", "000", "000", "000"], "req_s": 8.05, "down_at": "20:49:58.267", "up_at": "20:49:58.445", "outage_s": 0.178, "reason": "timeout"}
+{"n": 5, "codes": ["000", "000", "000", "000", "000"], "req_s": 8.05, "down_at": "20:50:21.333", "up_at": "20:50:21.984", "outage_s": 0.651, "reason": "timeout"}
+{"n": 6, "codes": ["000", "000", "000", "000", "000", "000"], "req_s": 8.04, "down_at": "20:50:35.467", "up_at": "20:50:35.617", "outage_s": 0.15, "reason": "timeout"}
+{"n": 4, "codes": ["000", "000", "000", "000"], "req_s": 6.04, "held_s": 15.0, "down_at": "20:51:11.681", "up_at": "20:51:11.848", "outage_s": 0.167, "reason": "timeout"}
+{"n": 5, "codes": ["000", "000", "000", "000", "000"], "req_s": 6.04, "held_s": 15.0, "down_at": "20:51:46.826", "up_at": "20:51:46.984", "outage_s": 0.158, "reason": "timeout"}
+{"n": 6, "codes": ["000", "000", "000", "000", "000", "000"], "req_s": 6.05, "held_s": 15.0, "down_at": "20:52:09.843", "up_at": "20:52:09.998", "outage_s": 0.155, "reason": "timeout"}
+{"n": 10, "codes": ["000", "000", "000", "000", "000", "000", "000", "000", "000", "000"], "req_s": 6.05, "held_s": 12.0, "down_at": "20:52:46.035", "up_at": "20:52:46.191", "outage_s": 0.156, "reason": "timeout"}
+{"n": 16, "codes": ["000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000"], "req_s": 6.07, "held_s": 12.0, "down_at": "20:53:09.061", "up_at": "20:53:09.280", "outage_s": 0.219, "reason": "timeout"}
+{"n": 24, "codes": ["000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000", "000"], "req_s": 6.06, "held_s": 12.0, "down_at": "20:53:33.203", "up_at": "20:53:33.350", "outage_s": 0.147, "reason": "timeout"}
+
+# result: 12 samples, N=1..6,10,16,24. Every /getaa hangs (000 at the client timeout)
+# but the daemon keeps answering /status/zp throughout - the only DOWN rows are one
+# 1.0 s probe timeout each (0.147-0.651 s). On 57.23 the stall is not a daemon wedge.
