@@ -19,6 +19,7 @@ run stops there, because the compiled SPKI is what decides and we cannot sign.
 Every earlier check is the real code.
 """
 import hashlib
+import os
 import struct
 import sys
 
@@ -155,13 +156,16 @@ def main():
     for k, v in enumerate([len(devid), 0x602000, 0x602100, 0x602200, 0x602300, major, minor]):
         mu.mem_write(STACK + 16 + k * 4, struct.pack(">I", v))
 
-    state = {"stop": None, "sha": bytearray(), "stage": None}
+    state = {"stop": None, "sha": bytearray(), "stage": None, "hist": []}
 
     def hook(uc, pc, _size, _ud):
         if pc == SENTINEL:
             state["stop"] = "returned"
             uc.emu_stop()
             return
+        if 0x9F24 <= pc < 0xA400:
+            state["hist"].append(pc)
+            del state["hist"][:-40]
         for addr, name in STAGES:
             if pc == addr:
                 state["stage"] = name
@@ -181,14 +185,14 @@ def main():
             for i, c in enumerate(data):
                 uc.mem_write(a0 + i, bytes([c]))
             uc.reg_write(UC_MIPS_REG_V0, a0)
-        elif name == "mbedtls_sha256_init":
+        elif name in ("mbedtls_sha256_init", "mbedtls_sha256_free"):
             uc.reg_write(UC_MIPS_REG_V0, 0)
         elif name in ("mbedtls_sha256_starts", "mbedtls_sha256_starts_ret"):
             uc.reg_write(UC_MIPS_REG_V0, 0)
-        elif name == "mbedtls_sha256_update":
+        elif name in ("mbedtls_sha256_update", "mbedtls_sha256_update_ret"):
             state["sha"] += bytes(uc.mem_read(a1, a2))
             uc.reg_write(UC_MIPS_REG_V0, 0)
-        elif name == "mbedtls_sha256_finish":
+        elif name in ("mbedtls_sha256_finish", "mbedtls_sha256_finish_ret"):
             for i, c in enumerate(hashlib.sha256(bytes(state["sha"])).digest()):
                 uc.mem_write(a1 + i, bytes([c]))
             uc.reg_write(UC_MIPS_REG_V0, 0)
@@ -207,9 +211,13 @@ def main():
     v0 = mu.reg_read(UC_MIPS_REG_V0)
     if state["stop"] == "returned":
         print("ACCEPTED" if v0 == 1 else "REJECTED", f"(ZZ0137 -> {v0}, last check: {state['stage']})")
+        if os.environ.get("EMU_TRACE"):
+            print("ring parser:", " ".join(f"{x:#x}" for x in state["hist"]))
         return 0 if v0 == 1 else 1
     pc = mu.reg_read(UC_MIPS_REG_PC)
     print(f"stopped at {pc:#x} after \"{state['stage']}\": {state['stop']}")
+    if os.environ.get("EMU_TRACE"):
+        print("ring parser:", " ".join(f"{x:#x}" for x in state["hist"]))
     return 1
 
 

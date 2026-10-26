@@ -343,3 +343,63 @@ its `valid` case reaches the verifier (`verify=True`).
 Caveat found while testing: the latency classifier is **not** conclusive on S1.
 The emulator-valid blob with a `0xAA` filler signature still answers `403` in
 `0.03 s`, so "fast = malformed" only holds on S2. The script now says so.
+
+## The ring: every check, and the shape that passes them
+
+The ring is parsed by `ZZ0121` (`0x9f24`, S1 lib). The checks, in order, and
+what each rejects:
+
+| # | site | check | reject |
+|---|---|---|---|
+| 1 | `0x9f48` | ring at least 4 bytes | `s3 < s2` |
+| 2 | `0x9fd4` | u32 magic `0x621da74d` | mismatch |
+| 3 | `0x9ff4` | at least 8 bytes | short |
+| 4 | `0xa020` | u32 at `+4` (declared length) `>=` the u32 at `+8` | declared < count |
+| 5 | `0xa02c` | at least 10 bytes | short |
+| 6 | `0xa05c` | u16 at `+8` == 1 (version) | mismatch |
+| 7 | `0xa06c` | at least 12 bytes | short |
+| 8 | `0xa0b8` | u32 at `+0xc` (entry count) < 9 | `>= 9` |
+| 9 | `0xa104` | each of `count` 264-byte entries parses (`0x8ac4`) | any entry |
+| 10 | `0xa124` | a second u32 count follows, < 9 | short / `>= 9` |
+| 11 | `0xa174` | each second-list entry parses | any entry |
+| 12 | `0xa1d8` | `ZZ0057` (`0x86e8`): the low 31 bits of every entry's first u32 are unique across both lists | duplicate |
+| 13 | `0xa210` | u8 section count is 1 or 2 | other |
+| 14 | `0xa244` | per section: u32 length < 2048 | `>= 2048` |
+| 15 | `0xa2a0` | per section: u8 kind passes `ZZ0119` (`0x90ec`), i.e. 1..5 | other |
+| 16 | `0xa2b8` | the section body fits | short |
+| 17 | `0xa304` | u8 after the body passes `ZZ0118` (`0x90d0`), i.e. == 1 | other |
+| 18 | `0xa344` | u32 after that passes `ZZ0120` (`0x90e0`), i.e. == 1 | other |
+| 19 | `0xa37c` | u32 after that (a byte count) < 257 | `>= 257` |
+| 20 | `0xa388` | that many bytes fit | short |
+| 21 | `0xa3d4` | consumed bytes `<=` the declared length at `+4` | overrun |
+
+Check 21 is the return value: the parser returns the declared length, so a ring
+whose declared length is 0 returns 0 and looks like a reject even when every
+other check passed.
+
+A minimal ring that passes all 21:
+
+```
+u32 magic 0x621da74d
+u32 declared_length      # total ring bytes, must be >= consumed
+u16 version = 1
+u8 0, u8 0
+u32 entry_count = 0
+u32 second_count = 0
+u8  section_count = 1
+u32 section_length = 0
+u8  section_kind = 1
+u8  1
+u32 1
+u32 0
+```
+
+With that ring, `ZZ0137` runs to the signature verify and fails only there
+(`scripts/emu_zz0137.py` prints `stopped ... after "signature verify"`). The same
+ring built for `.202`'s model/id/version behaves identically, so the ring is not
+version-specific.
+
+On the wire the device still answers 403 in 0.06-0.11 s, and a magic-only blob
+answers in 0.07-0.16 s, so latency does not separate "parser reject" from
+"signature reject" at this granularity; the offline run is the only place the
+distinction is visible.
