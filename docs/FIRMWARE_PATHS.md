@@ -5627,3 +5627,43 @@ The sink `0x10229cf8` is the tail of a writer that caps at **200 records**
 
 So the sink is a bounded record appender, not a copy. The blob it carries is
 whatever the caller passes; the cap is on record count, not on blob length.
+
+### The 1112-byte sink: record type 50, the credentials blob, and where the buffer sits
+
+Follow-up to the serializer note above. The dispatcher `0x10219cf8` switches on the record's first word;
+the branch at `0x10219de0` (`cmpwi 7,4,50`) is **record type 50** and lands on the handler `0x10219848`.
+
+That handler is the credentials/login-token serializer — its own strings are
+`SpCallbackConnectionNewCredentials`, `Unable to create reusable login token` and the assert text
+`data_size <= sizeof(blob_aligned)`.
+
+The append, in full:
+
+```
+10219868  lwz  28, 8(9)          ; 9 = singleton 0x10545d78, 28 = the 5368-byte allocation
+10219874  addi 31, 28, 3672      ; 31 = record base = alloc + 0xE58
+1021987c  addi 30, 11, -10800    ; 30 = 0x1054d5d0, the 1112-byte global
+102198dc  mr   3, 31
+102198e0  bl   strlen            ; name length
+...                              ; TLV: 0x49, namelen, +0x44, 0xFFFFFE00|…, bloblen
+1021994c  lwz  5, 1096(31)       ; len = rec + 0x448
+10219950  add  3, 29, 30         ; dst = global + running offset
+10219954  bl   memcpy            ; src = rec + 0x48 (set at 0x10219910)
+10219960  cmplwi 7, 0, 1112      ; the bound check, AFTER the copy
+```
+
+The check only reaches an `assert` (`0x102199c4`, file line 417), and the assert handler `0x10219464`
+does **not** abort — it calls `0x1023eb00` if a handler is installed and returns. So an over-long record
+set corrupts memory silently; the assert is telemetry, not a stop.
+
+Where the buffer sits matters more than its size. `0x1054d5d0` is in `.bss`, and the next global object
+begins at `0x1054dac8` — the SocketManager state struct, `memset` to 0 over **4776 bytes** at init
+(`0x1021c73c`). So the gap is 1272 bytes: an append that runs past 1272 clobbers live SocketManager
+state, not just padding.
+
+Reachability: the sink is installed at `obj+0x14` by the SocketManager constructor `0x1021fb54` (class
+table entry `0x1047f928`), but it has **no `bl` and no stored pointer** — it is invoked through the
+object. The record is filled by the credential path (`0x10215ca0` → `0x1014e224`, blob at `rec+0x48`),
+so a request fills the record and the snapshot write happens on the next tick. No direct `:1400` →
+sink edge is established yet; the open question is which tick drives `obj+0x14` and whether a request
+can force it.
