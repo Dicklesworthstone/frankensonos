@@ -336,6 +336,35 @@ seconds" needs ~100 MB bodies.
 Parameter-entity shapes do **not** help: `%aN;` in content parses clean (`ok=1`) in 0.3 ms at 137 KB,
 because the expansion never lands in the document.
 
+### 8c-bis. Correction: the daemon's build has NO amplification guard, and billion laughs is 16 s for 502 bytes
+
+§8c measured the accounting guard on a build that had `XML_DTD` **defined**. The daemon's build has it
+**undefined**, and every `accountingDiffTolerated()` call site is inside `#ifdef XML_DTD`
+(`xmlparse.c` 2649, 2773, 2838, 4044, 4196, 4288, 4495, 4548, 4717, 5652, …). With `XML_DTD` undefined
+the guard is compiled out entirely, so the expansion is never rejected — it runs to completion.
+
+Measured, same harness, only the config differs (`XML_DTD` off, `XML_GE`/`XML_NS` on, matching the
+binary):
+
+| body | `XML_DTD` on | `XML_DTD` off (daemon) |
+|---|---|---|
+| 390 B, 6 levels | guard fires | `ok=1`, 154 ms |
+| 446 B, 7 levels | guard fires | `ok=1`, 1.6 s |
+| 502 B, 8 levels | guard fires, 100 ms | `ok=1`, **15.5 s** |
+| 558 B, 9 levels | guard fires | `ok=1`, >200 s |
+
+Each level is ×10 time. A **502-byte** SOAP or DIDL body therefore costs ~15 s of a worker thread, and
+four concurrent bodies pin all four (`NumThreads 4`). That is two orders of magnitude better per byte
+than the 75 ms/MB amplification path in §8c, and it needs no large body at all.
+
+Also live in this configuration, and proven: **CVE-class #780** — `XML_ExternalEntityParserCreate(p, NULL,
+NULL)` segfaults in `setContext` (`while (*context != '\0')` with `context == NULL`), because with
+`XML_DTD` undefined the `if (context)` guard around the `setContext` call is itself inside `#ifdef
+XML_DTD`. ASan: `SEGV on unknown address 0x000000000000`, `#0 setContext xmlparse.c:6636`,
+`#1 XML_ExternalEntityParserCreate xmlparse.c:1404`. Fixed by `4eeaf49` in 2.6.0. Reachability is
+unresolved: it needs the daemon to call `XML_ExternalEntityParserCreate`, which the wrapper
+`FUN_1038d8b0` does not.
+
 ### 8d. Is there a write in expat 2.5.0? No — settled
 
 Every expat security fix published after 2.5.0 is denial of service or robustness, not a heap write:
