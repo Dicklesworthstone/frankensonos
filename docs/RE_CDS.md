@@ -71,3 +71,37 @@ that compare, so their 713 comes from the other two sites (`0x100ffb80`, a statu
 Consequence: stop guessing ids. Browse the parent first and read the `restricted` attribute on each child;
 CreateObject only succeeds under a container whose `restricted` is `0`. The Elements DIDL is not the
 variable to fix.
+
+## 811 on CreateSavedQueue is an empty-source verdict, and the argument order is in the SCPD
+
+811 is **undocumented**: the community custom-error table for AVTransport stops at 800 (`701`–`718` are
+the spec codes, `737`–`739` and `800` the vendor ones; there is no 811).
+
+The device's own service description does give the exact signature, in order
+(`opt/htdocs/xml/AVTransport1.xml`):
+
+```
+InstanceID  Title  EnqueuedURI  EnqueuedURIMetaData   (in)
+NumTracksAdded  NewQueueLength  AssignedObjectID  NewUpdateID   (out)
+```
+
+and `A_ARG_TYPE_SavedQueueTitle` is a plain `string` with **no declared max**.
+
+In the binary the handler is `0x101dfdd8` (frame 22 736; it builds a `"%s/%s"` path at `0x101dfe38` and
+calls `0x10216acc` with limit 577). The 811 return is:
+
+```
+101e02a0  lwz 9, 92(31)          ; a string field
+101e02a4  lbz 0, 0(9)            ; first byte
+101e02a8  cmpwi 7, 0, 0
+101e02ac  bc 13, 30, …           ; non-empty -> skip
+101e02b0  lwz 0, 112(31)         ; a flag
+101e02b4  li 30, 811             ; empty string + flag set -> 811
+```
+
+So 811 is a **content** verdict raised on an empty string field, not a parse or DIDL failure — the same
+shape as 713 in that respect. The field is read as the queue source; supplying a real `EnqueuedURI`
+alongside the metadata is what clears it. The sibling branch at `0x101e0298` returns 803 for the other
+case, so 803 and 811 are distinct verdicts and should not be conflated.
+
+Note the handler is only valid on the **coordinator** (`.84`, not `.202`), which is why `.202` 800s.
