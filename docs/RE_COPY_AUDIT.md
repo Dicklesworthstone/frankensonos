@@ -225,3 +225,37 @@ This is a **stack write** primitive reached pre-auth from a single GET, which is
 over-read lacks. Next: find the exact N where the saved LR is overwritten (the 408/000 split suggests
 the return address is already being clobbered before the frame is fully overrun), and whether the
 overwritten bytes are attacker-shaped enough to steer control.
+
+### 1a. Exact overwrite map (finding 1, `0x1007ad60`)
+
+Frame `stwu 1,-5344(1)`; destination `r1+16` (`0x1007b2b4`); length = the span at `r1+5244`
+(`0x1007b2b8`); source = the **original URL base** `r18` (`0x1007b2bc`); `memcpy` at
+`0x1007b2c4`; then `stb 30,16(9)` with `9 = r1+span` writes a NUL one byte past the copy
+(`0x1007b2d8`). The epilogue restores from these same slots and does `mtlr 0` at `0x1007b084`.
+
+Saved-slot offsets **from dst** (`dst = r1+16`), all restored in the epilogue:
+
+| dst off | slot | dst off | slot |
+|---|---|---|---|
+| 5252 | CR (`mtcrf` at 0x1007b08c) | 5296 | r24 |
+| 5256 | r14 | 5300 | r25 |
+| 5260 | r15 | 5304 | r26 |
+| 5264 | r16 | 5308 | r27 |
+| 5268 | r17 | 5312 | r28 |
+| 5272 | r18 | 5316 | r29 |
+| 5276 | r19 | 5320 | r30 |
+| 5280 | r20 | 5324 | r31 |
+| **5284** | **r21** | **5332** | **LR** (4 bytes, 5332-5335) |
+| 5288 | r22 | 5328 | caller frame begins (r1+5344) |
+| 5292 | r23 | | |
+
+So the thresholds are: `N ≤ 5252` safe; `N ≥ 5253` clobbers CR; `N ≥ 5288` reaches r21;
+`N ≥ 5328` reaches r31; `N ≥ 5336` overwrites all four LR bytes; `N ≥ 5337` writes into the
+caller's frame. The NUL lands at `dst+N`.
+
+**What the attacker controls:** the URL bytes themselves, raw (the source is the original
+string, not the percent-decoded copy), so every clobbered byte is attacker-chosen. The one
+structural constraint is that the span ends at the **second `/`** after `url+14` (`strchr` at
+`0x1007ae34`/`0x1007ae48`, span `= second_slash - url + 1` at `0x1007ae60`), so the last copied
+byte is always `/` (0x2f). For a clean LR overwrite use `N = 5337`: LR bytes 5332-5335 are free
+and the `/` lands at 5336 in the caller's frame.
