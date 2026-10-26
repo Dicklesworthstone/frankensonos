@@ -487,3 +487,44 @@ Two transport facts from the run: the csrfToken must be URL-encoded (a raw `/`
 in the token gives 400 — `urlencode` already does this), and the offline gate
 needs `unicorn`, which is absent on the mini, so it now names the dependency
 and skips rather than blocking the POST.
+
+## The ring check, named (2026-10-26)
+
+The stage the tool stops at is `ZZ0121` at `0x9f24` in the 57.23 lib (S2:
+`ZZ0121`'s counterpart in `libsonoscrypto.so.3`). It is a container parser, not
+a signature check. In order:
+
+| site | check |
+|---|---|
+| `0x9f48` | `end < ring+4` → reject |
+| `0x9fd4` | `*(u32)ring` must equal **`0x621da74d`** |
+| `0x9ff4` | `end < ring+8` → reject |
+| `0xa020` | `ring_len < *(u32)(ring+4)` → reject (the declared total) |
+| `0xa02c` | `end < ring+10` → reject |
+| `0xa05c` | `*(u16)(ring+8)` must equal **1** |
+| `0xa068` | `end < ring+12` → reject |
+| `0xa07c` | `end < ring+16` → reject |
+| `0xa0b4` | `*(u32)(ring+12)` (count 1) must be **< 9** |
+| `0xa0b4`–`0xa110` | each entry: `u32 kind` must be **< 7**, `u32 len` must be **< 257**, `len` bytes must fit; kind 5 is a key reference and takes a 4-byte payload |
+| `0xa114` | the same again for a second count at the cursor, also **< 9** |
+| `0xa1a0` | if count 2 is 0, the first list is validated by `0x86e8` |
+| `0xa1f8` | a byte `n` must satisfy `(n-1) & 0xff < 2`, i.e. **1 or 2** |
+| `0xa270` | each reference: `u32 len` must be **< 2048**, `u8 type` must be **1..5** (`0x90ec`), then `len` bytes |
+| `0xa1bc` | the first list is handed to `0x86e8` with the reference array |
+
+So a statement's ring is a `0x621da74d` container: `u32 total_len`, `u16
+version = 1`, two bytes, `u32 count1 < 9` and its entries, `u32 count2 < 9` and
+its entries, then a count byte of 1 or 2 and that many `{u32 len < 2048, u8
+type 1..5, data}` references. The reference the resolver actually accepts is
+type 3 with length 20 — the SHA-1 of the build's pinned SPKI (`f4df800d…` on
+57.23, `8d08e900…` on 86.10).
+
+Built to that shape (92 bytes, one kind-5 entry, one type-3/20 reference) the
+blob reaches the device's **slow path**: 4.16 s on the second POST instead of
+the 0.02 s parser reject. It still fails, at the signature, which is expected
+without the vendor key.
+
+Open: the emulator still reports `ring parse` for the same blob and faults
+inside `0x86e8` (the first-list validator) on my stub plumbing, so the exact
+sub-check that rejects a synthetic is not yet pinned. The device is the better
+oracle for that.
