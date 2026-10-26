@@ -52,6 +52,14 @@ Verification, all three halves:
 - the differential vector above covers the MDP3→key half; only a real
   MDP3+OTP dump is still missing.
 
+An encrypted section body is an envelope: `MAGIC_FW`, BE32 header length,
+byte recipient length at `0x14`, recipient at `0x16`, four reserved bytes,
+BE32 RSA length, the RSA ciphertext, BE32 cipher id (1), BE32 data length,
+then the payload at the header length. The recipient is variable-length, so
+the fixed `0x32`/`0x132`/`0x13A` offsets only hold for a 20-byte recipient;
+`envelope()` parses the general shape (proved with a 32-byte recipient and
+against the real package, where it yields `fd88f264…d437`).
+
 Section headers are `{magic, type, size, flag}`; `flag & 4` marks an encrypted
 section and those carry `MAGIC_FW` (`886499ca`). Plaintext payload sections
 carry `621da74d` instead. The validator reports any flag-4 section that lacks

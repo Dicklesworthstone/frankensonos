@@ -111,6 +111,35 @@ def enc(plain, otp, tag):
     return ct + xor_mod(iv, keymod(tag)) + os.urandom(16)
 
 
+def envelope(body):
+    """Parse a section envelope: (recipient_hex, rsa_ct, data_len, encrypted).
+
+    Layout: magic, BE32 header_len, ..., byte recipient_len at 0x14,
+    recipient at 0x16, BE32 rsa_len, rsa ciphertext, BE32 cipher_id, BE32
+    data_len; the payload follows at header_len. The recipient field is
+    variable-length, so the fixed 0x32/0x132/0x13A offsets only hold for a
+    20-byte recipient.
+    """
+    if body[:4] != MAGIC_FW:
+        sys.exit("no envelope magic")
+    hlen = struct.unpack_from(">I", body, 4)[0]
+    if not 0x3A <= hlen <= len(body):
+        sys.exit("implausible envelope header length %d" % hlen)
+    rlen = body[0x14]
+    recipient = body[0x16:0x16 + rlen].hex()
+    rl = 0x16 + rlen + 4
+    rsa_len = struct.unpack_from(">I", body, rl)[0]
+    ro = rl + 4
+    rsa_ct = body[ro:ro + rsa_len]
+    if ro + rsa_len + 8 != hlen:
+        sys.exit("unexpected envelope layout")
+    cipher_id = struct.unpack_from(">I", body, ro + rsa_len)[0]
+    data_len = struct.unpack_from(">I", body, ro + rsa_len + 4)[0]
+    if cipher_id != 1 or hlen + data_len > len(body):
+        sys.exit("unsupported or truncated envelope")
+    return recipient, rsa_ct, data_len, body[hlen:hlen + data_len]
+
+
 def sections(d):
     o = 0
     while o < len(d):
@@ -197,10 +226,11 @@ def main():
             body = data[off + 16:off + size]
             if body[:4] != MAGIC_FW:
                 continue
+            _r, rsa_ct, _n, _enc = envelope(body)
             aes = subprocess.run(
                 ["openssl", "pkeyutl", "-decrypt", "-inkey", sys.argv[4],
                  "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha1"],
-                input=body[0x32:0x132], capture_output=True, check=True).stdout
+                input=rsa_ct, capture_output=True, check=True).stdout
             plain = subprocess.run(
                 ["openssl", "enc", "-aes-128-cbc", "-d", "-K", aes.hex(), "-iv", "00" * 16],
                 input=body[0x13A:], capture_output=True, check=True).stdout
@@ -215,7 +245,7 @@ def main():
             body = data[off + 16:off + size]
             if body[:4] != MAGIC_FW:
                 continue
-            wrapped = body[0x32:0x132]
+            _r, wrapped, _n, _enc = envelope(body)
             aes = subprocess.run(
                 ["openssl", "pkeyutl", "-decrypt", "-inkey", "/dev/stdin",
                  "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha1"],
@@ -244,10 +274,11 @@ def main():
                 body = data[off + 16:off + size]
                 if body[:4] != MAGIC_FW:
                     continue
+                _r, rsa_ct, _n, enc = envelope(body)
                 aes = subprocess.run(
                     ["openssl", "pkeyutl", "-decrypt", "-inkey", kf.name,
                      "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha1"],
-                    input=body[0x32:0x132], capture_output=True, check=True).stdout
+                    input=rsa_ct, capture_output=True, check=True).stdout
                 plain = subprocess.run(
                     ["openssl", "enc", "-aes-128-cbc", "-d", "-K", aes.hex(), "-iv", "00" * 16],
                     input=body[0x13A:], capture_output=True, check=True).stdout[0x10:]
