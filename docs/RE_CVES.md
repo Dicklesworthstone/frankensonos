@@ -616,3 +616,57 @@ Nothing new is reachable. The in-window set reduces to what §7c and §8c alread
 libsmb2 over-reads and one measured expat DoS. The only unresolved in-window item is CVE-2026-92392, and
 it is unresolved for one reason only — the curl version cannot be pinned from a stripped static binary
 (§5a). Pinning it needs a live `curl_version_info` or a build date, not more static work.
+
+## 9. Window 2026-09-26 … 2026-10-26, named sinks only
+
+Swept NVD per component against our exact versions. Reported only where the advisory names a function or
+object we can point at in the binary; everything else in the window is behavioural or consumer-side and is
+listed as excluded at the end.
+
+### 9a. libsmb2 4.0.0 — three named decoders, all pre-auth via `/getaa`
+
+All three sinks exist at these offsets in `~/sonos-root-local/fw/internals/libsmb2.so.1`
+(`libsmb2.so.4.0.0`, sha256 `ba823cc9…`), and all three are reached by a rogue SMB server with no
+credentials:
+
+| CVE | named sink | the unchecked use |
+|---|---|---|
+| CVE-2026-110712 | `smb2_decode_file_all_info` @`0x20ea4` | `FileNameLength` read at `0x20fac`, then `lhz r4,0x1e(r1)` / `addi r3,r3,0x64` / `srwi r4,r4,1` / `bl utf16_to_utf8` at `0x20fb0`–`0x20fc0`. The only length checks in the function are the fixed `cmplwi r9,0x27` @`0x20ec8` and `cmplwi r9,0x3f` @`0x20f10`. |
+| CVE-2026-110713 | `smb2_decode_file_fs_volume_info` @`0x21050` | `LabelLength` at `0x210f8`, source fixed at payload+`0x12` @`0x210fc`, `srwi` @`0x21100`, then `utf16_to_utf8`. No bound. |
+| CVE-2026-110714 | `decode_acl` (static, called from `smb2_decode_security_descriptor` @`0x21698`) | `acl_size` clamped into `v.len` at `0x21914`/`0x2191c`, then `addi r9,r9,-8` **unconditional** at `0x2194c`; `acl_size < 8` underflows to ~`SIZE_MAX` and every later `smb2_get_uint*` check is dead. The descriptor offset checks are also 32-bit and wrap (`addi r10,r9,8` + `cmplw` at `0x217a0`/`0x217cc`/`0x21838`). |
+
+### 9b. busybox `udhcpc` — CVE-2026-88833, and it runs here
+
+Named sink: the `udhcpc` raw-packet path. The client replaces the validated packet length with an
+attacker-controlled value from the IP header without re-validating the minimum size, underflows when
+subtracting header sizes, then copies with a massively oversized length. CVSS 6.5, `AV:A`.
+
+`udhcpc` is live on both lines: `/opt/log/udhcpc.log` is in both binaries (`0x667149` S2, `0x5049c5` S1)
+and the S2 daemon reads `/tmp/udhcpc_resp_mac_addr` (`0x67671d`). Trigger is a rogue DHCP server on the
+LAN — no auth, no share, nothing on the device. This is the only in-window item whose sink is a copy with
+an attacker-derived length.
+
+### 9c. FFmpeg 5.0.3 (S2 only — no `libav*` in the S1 rootfs)
+
+| CVE | named sink | note |
+|---|---|---|
+| CVE-2026-107678 | `av_encryption_init_info_free()` (`libavutil/encryption_info.c`) via `mov_read_pssh()` | recursive free of the `AVEncryptionInitInfo` list; tens of thousands of small pssh boxes. Needs an MP4 through the demuxer. |
+| CVE-2026-107660 | `tls_open()` (`libavformat/tls_mbedtls.c`) | skips hostname checks for IP-address hosts — the mbedTLS TLS path, i.e. ours. |
+| CVE-2026-107696 | `ff_rtsp_connect()` | unbounded RTSP 3xx redirect follow. |
+| CVE-2026-107698 | `ff_rtsp_connect()` | SSRF: redirect `Location` not validated. |
+| CVE-2026-107676 | `av_dynamic_hdr_plus_to_t35()` | up to three uninitialised payload bytes when `tone_mapping_flag` is 0. |
+
+FFmpeg is statically linked in the S2 daemon and absent from S1, so these are S2-only. The sinks are
+named but not verifiable at an offset without the S2 rootfs.
+
+### 9d. Excluded, with the reason
+
+- **CVE-2026-102633** (expat, `expat_realloc()` integer overflow, 32-bit) — named sink, but 2.7.2–2.8.5
+  only; we ship 2.5.0.
+- **CVE-2026-115505** (libsmb2 DCE/RPC NDR) — names a file (`lib/dcerpc.c`), not a function, and `/getaa`
+  never calls `smb2_share_enum_async`.
+- **CVE-2026-92392** (curl HTTP/2 upload UAF) — names `struct Curl_easy`, an object rather than a
+  function; reachable only if the build is ≥ 8.12.0, which the build date makes likely but does not prove.
+- All nine zlib hits are consumer-side (vm2, Nicotine+, libsoup, Thrift, hex_core, undici, adm-zip,
+  esaml, hackney); no zlib-core CVE in the window.
+- mbedTLS and nghttp2: zero results in the window.
