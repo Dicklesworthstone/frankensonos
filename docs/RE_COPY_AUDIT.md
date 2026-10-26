@@ -484,6 +484,10 @@ with 2100, 2150, 2200 and 3000-character URIs all return 200, `/status/zp` 200 a
 `GetPositionInfo` returns the 3000-character URI intact. Nothing in 2100–3000 crashes, which matches
 "length stays 0" rather than "length is the URI length".
 
-So 2.1 is real as a copy site but its trigger is narrower than the audit's `>1024` reading: the
-length must be exactly 1024 for the field to be set at all, and 1024 never reaches the saved
-registers. A >2100 value needs the `>1024` arm to be live, i.e. the branch decode above to be wrong.
+No branch or `bl` in the whole function targets `0x101cbbc8` (scanned every `bc`/`bl` in
+`0x101cbb38`–`0x101cbc08`), so the `>1024` arm is unreachable. The length is stored **only when it is
+exactly 1024**, and 1024 never reaches the saved registers.
+
+So 2.1 is a real unchecked copy but not a live overflow on this build: the field it copies is either
+0 or 1024. Making it a >2100 overflow needs a setter path that stores the length unconditionally, or
+the `>1024` arm to be reachable through a different entry.
