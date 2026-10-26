@@ -131,7 +131,7 @@ Three separate facts, in the order they matter:
 
 Consequence: `m_bufferEnd` only ever advances right after a matching `XML_GetBuffer(len)`, so **CVE-2026-77214 is unreachable on 57.23.** 86.10 was not read for this (the MIPS build has no symbol table and the offset probe was inconclusive), so carry it there as "same wrapper, unmeasured" rather than as a measurement. It is a version-level bug we do not have a door for, not a maybe.
 
-## 5a. Why the curl version is unpinnable (three approaches, all null)
+## 5a. Why the curl version is unpinnable (six approaches, all null)
 
 1. **Version literal.** `curl_version()` normally carries `"libcurl/" LIBCURL_VERSION`; neither `libcurl/` nor the `libcurl/%d.%d.%d` format is present. Under `-ffunction-sections -Wl,--gc-sections` the whole `curl_version`/`curl_version_info` pair is dropped because the daemon never calls it.
 2. **Bare `x.y.z` sweep.** Every string matching a bare version triple in the binary is one of `2.0.0 17.2.7 1.54.1 1.2.11 1.1.0` — no `8.x` anywhere.
@@ -852,3 +852,20 @@ the version map in §10, not a CVE.
 answer). So reply size *raises* the hit rate but does not yet make the fault reliable, and the earlier
 "6/6" and "every shot" should be read as best-case. A deterministic crash is the precondition for
 exploitation, so this gap matters.
+
+### 5a-bis. Three more attempts (2026-10-26), still null
+
+4. **The wrapper's own error string.** The daemon logs `failed to set options %d %s` around its
+   `curl_easy_setopt` wrapper, so the option numbers are in that function. The string is at vaddr
+   `0x67b10c` (file `0x27b10c`), but it has **zero** literal-pool references: MIPS16 loads 32-bit
+   constants as a `00HH LLLL` pair (verified against a known case, `POST` at `0x664aa4` referenced from
+   `0x4f0cdc`), and `00 67 b1 0c` appears nowhere. The string is dead in this build.
+5. **Jump-table hunt.** `curl_easy_setopt` would carry a large switch table. The biggest candidate
+   (256 entries at `0x6b9128`) is referenced once, from `0x647818`, whose enclosing function has a
+   `sltiu a3,224` bound — but 224 does not match curl's `CURLOPTTYPE_LONG` ceiling (326 at 8.12.0, 327
+   from 8.16.0), and the MIPS16 decode there is misaligned, so the match is not established.
+6. **LONG-option diff.** If the daemon passed an option added in 8.12.0 the version would be bounded
+   from below. Diffing `include/curl/curl.h` 8.11.0 against 8.12.0: **no `CURLOPTTYPE_LONG` option was
+   added**, so the LONG ceiling cannot separate them.
+
+Net: the pin needs runtime data. `curl_version_info` from a live process, a core, or a build date.
