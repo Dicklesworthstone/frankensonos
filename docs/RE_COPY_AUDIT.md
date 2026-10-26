@@ -586,3 +586,33 @@ is still the only confirmed daemon-level crash.
 
 That means the URL-span copy is either not overflowing at all, or overflowing into a frame whose
 corruption the daemon absorbs. Both are testable, and the oracle is now the instrument that decides it.
+
+### 2.1c The NUL at `dst+span+1` and what a 2100–5400 span reaches
+
+The terminator is `stb 0,17(9)` at `0x101cca68` with `r9 = sp + span` (`0x101cca60`), i.e. a single
+zero byte at `dst + span + 1` = `sp + span + 17`. `span` is the distance between the first and last
+`/` in the URL (`0x101cca44`), so one long path segment sets it directly.
+
+The splitter's frame is 2160 and its caller is `0x101a016c` (frame 1072, called from `0x101cbe80`,
+frame 9568). Offsets below are `span`; the address is `caller_sp + (span - 2143)`.
+
+| span | target | note |
+|---|---|---|
+| 2099–2123 | splitter's saved r21–r27 | caller scratch |
+| 2127 | splitter's saved **r28** | caller's `r28` = the splitter's object argument |
+| 2131 | splitter's saved **r29** | caller's `r29` = `sp+16`, the URL buffer |
+| 2135 | splitter's saved **r30** | caller's `r30` = the outer object |
+| 2139 | splitter's saved **r31** | caller's `r31` = the iterator/vtable object |
+| 2143 | caller back chain | |
+| 2147 | splitter's saved LR | `0x101a0210` → `0x101a0200`, re-enters the call setup (benign) |
+| 2151 | caller's flag byte at `sp+8` | |
+| 3199–3211 | caller's saved r28–r31 | `0x101cbe80`'s registers, restored when `0x101a016c` returns |
+| 3219 | caller's saved LR | `0x101ce414` → `0x101ce400`, both `b 0x101ce2f8` (benign) |
+
+**Useful one: span 2139.** It zeroes the low byte of the caller's `r31`, and `0x101a0224` immediately
+does `lwz 9,0(31)` / `lwz 9,12(9)` / `bctrl` — a vtable dispatch through a pointer shifted back to its
+256-byte page base. `r28` at 2127 is the same trick on the object handed to the splitter, but it is not
+dereferenced before the next call.
+
+Both LR hits are benign because the zeroed targets land on equivalent instructions; the pointers are
+the primitive, not the return address.
