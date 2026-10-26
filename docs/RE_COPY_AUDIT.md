@@ -720,3 +720,9 @@ Consequence for routing: the wire field is **whatever ends up in a CIFS failure 
 share, or the path — not a queue title or a DIDL title. `/getaa?u=x-file-cifs://…` is therefore the
 natural driver, and the same request shape as finding 1. A long ObjectID on Browse producing a 500 is
 consistent with this (the id lands in a message), but the id itself is not the copy source.
+
+**The saved-queue route on S1 is `CreateObject`, not `CreateSavedQueue`.** The 57.23 ContentDirectory
+SCPD has no `CreateSavedQueue` (401 Invalid Action); it exposes `CreateObject`/`DestroyObject`, and
+`Browse` on `SQ:0` returns a DIDL container, so the container exists. `CreateObject` with a DIDL item
+answers 713 (Object not found), i.e. the `ContainerID`/`parentID` pair is wrong, not the title. Once a
+create succeeds with a short title, the same call with a 2 139-byte `dc:title` is the 2.1c trigger.
