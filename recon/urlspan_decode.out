@@ -1,0 +1,14 @@
+# urlspan_decode.py proof, .202, 2026-10-26
+# two independent --compare runs; both land in the same raw band
+
+## run 1
+[pct41] first 408 at n=1400, break (silent/dead) at n=1910
+
+raw 'A'  break at 4885 bytes sent
+'%41'    break at 5735 bytes sent
+ratio 1.17
+VERDICT: same break -> the copy source is the RAW target
+
+## run 2 (tight A scan 4300..4800 step 20 -> break 4380 sent 4385)
+## run 2 (tight pct41 scan 1430..1600 step 7 -> break 1528 sent 4589)
+ratio 4589/4385 = 1.05 -> RAW
