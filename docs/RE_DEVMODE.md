@@ -467,3 +467,23 @@ the statement is still pasted in by the user.
 missing piece — after that `scripts/devmode_submit.py HOST` reads the model / device id / version /
 csrfToken, posts the statement with the spacing the form wants, and verifies the result. Nothing else
 in the chain needs the owner.
+
+### End-to-end run of `devmode_submit.py` (2026-10-26)
+
+Run from `mac-mini-max` (Tailscale `100.68.51.94`, which holds `192.168.4.171/22`)
+because the controller host's `192.168.4.x` is dead. `.86` was not up; `.201`
+(Play:5, model 5) and `.202` (Play:5, model 16) were, both 57.23.
+
+What works: the GET page, the csrfToken, the POST transport, and
+`button=delete` (200 in 0.03 s). What fails, and where: a 46-byte synthetic
+statement (magic, model 16, id `000E585D8C10`, bounds `0x390000`..`0x39ffff`,
+no ring) is rejected by the **statement parser at the ring stage**, 403 in
+0.02 s. The offline emulator on the same blob agrees exactly:
+`REJECTED (ZZ0137 -> 0, last check: ring parse)`. So the tool and the device
+agree; the blob is simply incomplete, and a real statement is the only thing
+still missing.
+
+Two transport facts from the run: the csrfToken must be URL-encoded (a raw `/`
+in the token gives 400 — `urlencode` already does this), and the offline gate
+needs `unicorn`, which is absent on the mini, so it now names the dependency
+and skips rather than blocking the POST.
