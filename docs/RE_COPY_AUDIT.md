@@ -535,3 +535,15 @@ Two ways forward, in order of promise:
 
 Anything that needs a real address in the payload has to come from somewhere other than the URL text
 (a SOAP body or a POST body can carry raw bytes; the URL cannot).
+
+### SOAP bodies carry long URLs past the request-line limit
+
+`recon/gate_probe.py` on `.202`: a URL in the request line dies at ~4 010, but the same URL inside a SOAP
+body does not — `SetZoneAttributes` with a 6 000-byte `DesiredIcon` answers **200** at every length
+tested (3 900…6 000), and `SetAVTransportURI` answers 500 (bad URI, but parsed). So the request-line
+limit is a transport limit, not the splitter's, and a SOAP body is the way to deliver a >5 328-byte URL
+to whatever parses it.
+
+Neither body form crashed the daemon at 6 000, so the splitter is either not reached from those two
+actions or its span is not the whole icon string. That is the next thing to establish: whether
+`SetZoneAttributes`/`SetAVTransportURI` route through `0x1007ad60` at all.
