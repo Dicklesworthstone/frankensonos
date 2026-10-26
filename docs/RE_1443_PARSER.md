@@ -269,3 +269,34 @@ Tried and rejected (all 400): subprotocol versions 0-16 and 20/32, role-shaped s
 The handler does work before rejecting (the 400 arrives after a delay, not immediately), so it is reading
 something and failing — `failed to read lechmere header: %d` is the message to chase, from
 `RMuseController::prepareWebsocketHeader` / `captureWebsocketCommandToken`.
+
+## The websocket handshake gate (bb-p75)
+
+`RMuseController::prepareWebsocketHeader` (`0x4e8d7c`) is a three-step chain, each step must
+return 0: `updateHeaderTargets(this,1)` → `captureWebsocketCommandToken(this)` →
+`activateNamespaceFromHeader(this,1,…)`.
+
+`captureWebsocketCommandToken` (`0x4e7d44`) opens with the hard gate:
+
+```
+if (*(int *)(this + 0x2868) != 0x34 || this[0x24f4] == 0) goto fail;
+```
+
+`0x34` (52) is a state constant written by `li v0,52; sw v0,10344(s0)` at `0x4e854e`/`0x4e855a`.
+Past it the connection type is tested with `isConnectionType(conn,0,2)` — type **2 is an error**
+(state `0x4e`), types 1 and 0 proceed to `RAuthSplitToken(this+0x1bb, 0x2000)` on the
+`Authorization` header.
+
+The wire vocabulary in the same string block (`0x674000`-ish): `lechmere.%hhu%n`,
+`x-sonos-method: `, `x-sonos-uri: `, `SOAPACTION: `, `Bad protocol version: %c%c`,
+`Bad message type: %c%c; %d`, `Bad extended header length: %c%c`,
+`could not recv extended header; expected %u read %u`, `Sec-WebSocket-Protocol:|%02u`,
+`protocol version negotiation failed due to unknown version (%s)`. So after the upgrade the
+server reads a **binary muse frame** (message type + extended-header length + protocol version),
+not text.
+
+Live on `.86` (now reporting `86.10-81100`): a full standard upgrade (`Connection: Upgrade`,
+`Upgrade: websocket`, `Sec-WebSocket-Version: 13`, `Sec-WebSocket-Key`, `Sec-WebSocket-Protocol:
+lechmere.1`) still answers **400** on both `/api` and `/websocket/api`, with and without
+`x-sonos-method`/`x-sonos-uri`. The gate that fails is therefore before or inside
+`updateHeaderTargets`, not the protocol header.
