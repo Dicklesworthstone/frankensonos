@@ -6,11 +6,13 @@ function the device calls from POST /devmode. Running it here answers "would the
 device accept this statement, and if not, which check failed" without a device.
 
 Usage:
-    emu_zz0137.py STATEMENT [DEVICE_ID|str:DEVICE_ID] [MODEL] [VER_MAJOR] [VER_MINOR]
+    emu_zz0137.py STATEMENT [DEVICE_ID|str:DEVICE_ID] [MODEL] [VER_MAJOR] [VER_MINOR] [WINDOW_LO,WINDOW_HI]
 
 STATEMENT is the raw decoded TLV (not base64). DEVICE_ID is hex, or ASCII
 with a `str:` prefix (that is what the player's Device ID is). It defaults to
 000102030405060708090a0b, MODEL to 0x2f, the version to 57.23.
+WINDOW_LO,WINDOW_HI overrides the hardcoded 57.23 version window (the S1
+library only knows that one; pass the target version for other firmware).
 
 The signature verify is stubbed: reaching it prints "signature verify" and the
 run stops there, because the compiled SPKI is what decides and we cannot sign.
@@ -80,6 +82,12 @@ def main():
     model = int(sys.argv[3], 0) if len(sys.argv) > 3 else 0x2F
     major = int(sys.argv[4], 0) if len(sys.argv) > 4 else 57
     minor = int(sys.argv[5], 0) if len(sys.argv) > 5 else 23
+    # The S1 library hardcodes the 57.23 window. For another version, patch the
+    # two immediates so the bound check matches the target firmware.
+    window = None
+    if len(sys.argv) > 6:
+        lo, _, hi = sys.argv[6].partition(",")
+        window = (int(lo, 0), int(hi or lo, 0))
 
     d = open(LIB, "rb").read()
     phoff, = struct.unpack(">I", d[28:32])
@@ -125,6 +133,13 @@ def main():
         target = stubs[name]
         mu.mem_write(stub_addr + i - 12, struct.pack(">I", 0x08000000 | ((target >> 2) & 0x03FFFFFF)))
 
+    if window:
+        lo, hi = window
+        for addr, word in ((0xAC0C, 0x3C020000 | ((lo + 1) >> 16)),
+                           (0xAC10, 0x24420000 | ((lo + 1) & 0xFFFF)),
+                           (0xAC50, 0x3C030000 | (hi >> 16)),
+                           (0xAC54, 0x24630000 | (hi & 0xFFFF))):
+            mu.mem_write(addr, struct.pack(">I", word))
     mu.mem_write(BUF, blob)
     mu.mem_write(DEV, devid)
     mu.reg_write(UC_MIPS_REG_SP, STACK)

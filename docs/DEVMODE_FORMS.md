@@ -259,3 +259,29 @@ Negative across every public corpus reachable:
 The LAN is also empty this session: a full `192.168.4.0/24` ping sweep answers
 only the Mac itself, so `.86`, `.81` and `.202` are powered off and no
 `/debug/devmode.bin` can be fetched.
+
+## Live end-to-end run against the units (2026-10-26)
+
+All three units answered. The flow works up to the statement content; the exact
+failure point is the ring body, not the transport, the form or the id.
+
+```
+$ scripts/devmode_submit.py 192.168.4.86
+model     20
+device id 7828CA9221DC
+version   86.10
+csrf      NSDPWQEIFdB5tQ9ZZBWOSeU0WD183xof
+```
+
+- `GET /debug/devmode.bin` -> **404** on all three (`.86`, `.81`, `.202`), so
+  none is unlocked; `GET /unlock` -> **403** on all three.
+- A 579-byte hand-built TLV with the real model, id and version passes the
+  offline gate's magic/model/version/id/payload checks and stops at
+  `ring parse` on every unit.
+- Forcing the POST (`--no-validate`) gets `HTTP 403` in 0.04 s with the stock
+  `Error 403` page — a parser reject, matching the offline verdict.
+
+The offline validator is the S1 library, whose version window is hardcoded to
+57.23 (`lower < 0x390018`, `upper >= 0x390017`). `emu_zz0137.py` now takes a
+`WINDOW_LO,WINDOW_HI` argument and `devmode_submit.py` passes the device's own
+version, so the gate is correct on 86.10 too.

@@ -119,10 +119,16 @@ def validate_offline(raw, info):
     major, _, minor = (info.get("version") or "0.0").partition(".")
     with open("/tmp/.devmode_stmt.bin", "wb") as fh:
         fh.write(raw)
+    argv = [sys.executable, VALIDATOR, "/tmp/.devmode_stmt.bin",
+            f"str:{info['device_id']}", f"0x{int(info['model']):x}", major, minor or "0"]
+    try:  # the validator only knows the 57.23 window; give it the real one
+        ver = (int(major) << 16) | int(minor)
+        argv.append(f"{ver:#x},{ver:#x}")
+    except ValueError:
+        pass
     proc = subprocess.run(
-        [sys.executable, VALIDATOR, "/tmp/.devmode_stmt.bin",
-         f"str:{info['device_id']}", f"0x{int(info['model']):x}", major, minor or "0"],
-        capture_output=True, text=True, cwd=os.path.dirname(VALIDATOR) + "/..",
+        argv, capture_output=True, text=True,
+        cwd=os.path.dirname(VALIDATOR) + "/..",
     )
     out = (proc.stdout + proc.stderr).strip()
     if "Traceback" in out:
