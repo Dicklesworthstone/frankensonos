@@ -238,9 +238,17 @@ decodes a full surrogate pair (`f0 90 80 80`) from outside the iovec, both with 
 and C are the 2-byte minimal margins ASan still catches (`unicode.c:202` and `:216`).
 
 Live on `.86`, rewriting `FileNameLength` to `buflen - 100 + margin`: margin 2 and 4096 return the whole
-4068-byte image with the daemon alive; margin 8192 and above kill the request and leave `/status/zp`
-unanswering until the socket closes. So the over-read is survivable only while it stays inside the mapped
-heap, and the margin that matters is single-digit bytes, not the 4096 the first PoC used.
+image with the daemon alive; 60000 kills the request and leaves `/status/zp` unanswering until the socket
+closes. 8192 survived once and wedged once, so the middle of the range is heap-layout dependent — only the
+2-byte floor is stable.
+
+**The trail site is the fragile one (2026-10-26).** Forcing the surrogate branch — `name_len = buflen - 98`
+with the last in-bounds unit set to a lone lead surrogate `0xD800` — makes the loop take the trail load at
+`0x3daf4` (`unicode.c:216`) two bytes past the body. At the same 2-byte margin as the code-unit site, the
+first request still returns the image and the **second wedges the daemon** until the socket closes, where
+the code-unit site survived 3/3. So the cheapest live trigger is the surrogate trail, not a large
+`FileNameLength`.
+
 
 ### 7d. `mdputil` and `keyval`: shell-only, no HTTP path
 
