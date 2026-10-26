@@ -1,225 +1,194 @@
 #!/usr/bin/env python3
-"""Trustworthy crash signal: poll a player's /status/zp at a fixed cadence and timestamp every transition.
+"""crash_oracle.py - a trustworthy down/up signal for a Sonos player.
 
-The point is to make "the daemon died" a fact with a time on it, not an inference from a slow or missing
-answer. Every probe is classified, every transition is printed the moment it is seen, and the summary
-carries the exact down/up instants plus the downtime, so a caller can attribute a crash to a specific
-request instead of guessing.
+Polls /status/zp every 100 ms and prints an exact timestamp for every transition, so "the daemon died"
+becomes a fact with a time on it instead of an inference from a slow or missing answer.
 
-usage: crash_oracle.py [--host H] [--port P] [--path PATH] [--interval S] [--duration S]
-                       [--timeout S] [--wait-up S] [--json] [--quiet]
+Transport is `curl`, not a raw socket: on this workstation Python's `connect()` to 192.168.4.0/24
+returns EHOSTUNREACH while curl and nc both connect (the subnet is reached over a scoped route). Using
+curl keeps the oracle honest about what the daemon actually does.
 
-Exit status:
-  0  at least one DOWN->UP recovery was observed (the daemon went away and came back)
-  1  the daemon went DOWN and had not recovered when the run ended
-  2  no DOWN was ever seen (nothing crashed)
-  3  the daemon was not reachable at start (after --wait-up)
+/status/zp is the probe target because it is a registered route on both lines, it is cheap, and it
+touches no audio - the player stays muted.
 
-As a library:
+Every probe is classified. `refused`, `reset` and `timeout` all count as DOWN but stay distinguishable,
+because a wedged daemon (accepts, never answers) is a different failure from a dead one.
 
-    from crash_oracle import Oracle
-    o = Oracle(host, port).start()
-    ...drive the target...
-    o.stop(); print(o.summary())
+Usage
+  ./crash_oracle.py                          # 30 s, transitions printed live
+  ./crash_oracle.py --until-down             # exit on the first DOWN
+  ./crash_oracle.py --duration 120 --jsonl run.jsonl
+  ./crash_oracle.py --host 192.168.4.202 --interval 0.1
 
-`o.events` is a list of (monotonic, wall_iso, state, detail); `o.first_down` / `o.first_up` are the
-instants of the first transition in each direction, or None.
+Exit: 0 never down, 1 saw a down, 2 bad usage.
+
+Run it in one pane, fire the attack in another, then read the timeline.
+
+Measured 2026-10-26 on .202 (57.23): the URL-span overflow does NOT drop /status/zp. 112 consecutive
+probes stayed 200 while N=5800 answered 408, and the daemon was still healthy afterwards (/status/zp 200,
+/getaa 404). So a 000 or 408 on /getaa is a dropped request, not a daemon death - do not read it as one.
+Point --path at the attacked route if the question is "is that route wedged" rather than "is the daemon
+alive".
 """
 import argparse
 import json
-import shutil
-import socket
 import subprocess
 import sys
-import threading
 import time
 from datetime import datetime, timezone
 
-UP = 'UP'
-DOWN = 'DOWN'
+DOWN = "DOWN"
+UP = "UP"
+
+# curl exit codes worth naming
+CURL_REFUSED = 7
+CURL_TIMEOUT = 28
+CURL_EMPTY = 52
+CURL_RECV = 56
 
 
-def probe_curl(host, port, path, timeout):
-    """Same classification through curl. Needed where the interpreter has no local-network permission."""
-    if shutil.which('curl') is None:
-        return DOWN, 'no-curl'
+def probe(host, port, path, timeout):
+    """One classification. UP means a 200 status line; everything else is DOWN with a reason."""
+    url = "http://%s:%d%s" % (host, port, path)
+    t0 = time.monotonic()
     try:
         r = subprocess.run(
-            ['curl', '-s', '-o', '/dev/null', '-m', str(timeout), '-w', '%{http_code}',
-             'http://%s:%d%s' % (host, port, path)],
-            capture_output=True, timeout=timeout + 2)
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+             "--max-time", "%.2f" % timeout, "--connect-timeout", "%.2f" % timeout, url],
+            capture_output=True, text=True, timeout=timeout + 1.0,
+        )
     except subprocess.TimeoutExpired:
-        return DOWN, 'timeout'
-    code = r.stdout.decode().strip()
-    if r.returncode == 0 and code == '200':
-        return UP, '200'
-    if r.returncode == 7:
-        return DOWN, 'refused'
-    if r.returncode == 28:
-        return DOWN, 'timeout'
-    if r.returncode == 6:
-        return DOWN, 'dns'
-    return DOWN, 'curl:%d:%s' % (r.returncode, code or '-')
-
-
-def probe_socket(host, port, path, timeout):
-    """One classification. UP means a 200 status line was read; everything else is DOWN with a reason."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout) as s:
-            s.settimeout(timeout)
-            s.sendall(
-                ('GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n' % (path, host)).encode()
-            )
-            buf = b''
-            while b'\r\n' not in buf and len(buf) < 256:
-                chunk = s.recv(256)
-                if not chunk:
-                    break
-                buf += chunk
-    except socket.timeout:
-        return DOWN, 'timeout'
-    except ConnectionRefusedError:
-        return DOWN, 'refused'
-    except ConnectionResetError:
-        return DOWN, 'reset'
-    except OSError as e:
-        return DOWN, 'oserr:%s' % (e.errno,)
-    line = buf.split(b'\r\n', 1)[0]
-    if line.startswith(b'HTTP/') and b' 200' in line:
-        return UP, '200'
-    return DOWN, 'status:%s' % (line[:40].decode('latin1') or 'empty')
-
-
-def probe(host, port, path, timeout, backend='auto'):
-    """Dispatch. `auto` starts on sockets and falls back to curl if the interpreter cannot reach the LAN."""
-    if backend == 'curl':
-        return probe_curl(host, port, path, timeout)
-    state, detail = probe_socket(host, port, path, timeout)
-    if backend == 'socket' or detail != 'oserr:65':
-        return state, detail
-    return probe_curl(host, port, path, timeout)
-
-
-class Oracle(threading.Thread):
-    def __init__(self, host, port=1400, path='/status/zp', interval=0.1, timeout=1.0,
-                 duration=None, on_event=None, backend='auto'):
-        super().__init__(daemon=True)
-        self.host, self.port, self.path = host, port, path
-        self.interval, self.timeout, self.duration = interval, timeout, duration
-        self.on_event = on_event
-        self.backend = backend
-        self.events = []
-        self.first_down = self.first_up = None
-        self.probes = self.ups = self.downs = 0
-        self._stop = threading.Event()
-        self._lock = threading.Lock()
-
-    def run(self):
-        t0 = time.monotonic()
-        next_at = t0
-        while not self._stop.is_set():
-            state, detail = probe(self.host, self.port, self.path, self.timeout, self.backend)
-            mono = time.monotonic()
-            wall = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-            with self._lock:
-                self.probes += 1
-                prev = self.events[-1][2] if self.events else None
-                if state == UP:
-                    self.ups += 1
-                else:
-                    self.downs += 1
-                if state != prev:
-                    self.events.append((mono, wall, state, detail))
-                    if state == DOWN and self.first_down is None:
-                        self.first_down = mono
-                    if state == UP and self.first_down is not None and self.first_up is None:
-                        self.first_up = mono
-                    if self.on_event:
-                        self.on_event(mono - t0, wall, state, detail)
-            if self.duration is not None and mono - t0 >= self.duration:
-                break
-            next_at += self.interval
-            delay = next_at - time.monotonic()
-            if delay > 0:
-                self._stop.wait(delay)
-            else:
-                next_at = time.monotonic()
-
-    def stop(self):
-        self._stop.set()
-
-    def summary(self):
-        with self._lock:
-            down_ms = None
-            if self.first_down is not None:
-                end = self.first_up if self.first_up is not None else time.monotonic()
-                down_ms = round((end - self.first_down) * 1000.0, 1)
-            return {
-                'host': self.host,
-                'port': self.port,
-                'probes': self.probes,
-                'up': self.ups,
-                'down': self.downs,
-                'first_down': self.first_down,
-                'first_up': self.first_up,
-                'downtime_ms': down_ms,
-                'recovered': self.first_up is not None,
-                'events': [
-                    {'t': round(m, 3), 'wall': w, 'state': s, 'detail': d}
-                    for m, w, s, d in self.events
-                ],
-            }
+        return DOWN, "timeout", (time.monotonic() - t0) * 1000
+    ms = (time.monotonic() - t0) * 1000
+    if r.returncode == 0:
+        code = r.stdout.strip()
+        if code == "200":
+            return UP, "200", ms
+        return DOWN, "status:%s" % (code or "empty"), ms
+    if r.returncode == CURL_REFUSED:
+        return DOWN, "refused", ms
+    if r.returncode == CURL_TIMEOUT:
+        return DOWN, "timeout", ms
+    if r.returncode in (CURL_EMPTY, CURL_RECV):
+        return DOWN, "reset", ms
+    return DOWN, "curlerr:%d" % r.returncode, ms
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Timestamped crash oracle for a Sonos player daemon.')
-    ap.add_argument('--host', default='192.168.4.202')
-    ap.add_argument('--port', type=int, default=1400)
-    ap.add_argument('--path', default='/status/zp')
-    ap.add_argument('--interval', type=float, default=0.1)
-    ap.add_argument('--timeout', type=float, default=1.0)
-    ap.add_argument('--duration', type=float, default=30.0)
-    ap.add_argument('--wait-up', type=float, default=5.0,
-                    help='seconds to wait for the daemon to answer before starting (0 disables)')
-    ap.add_argument('--backend', choices=('auto', 'socket', 'curl'), default='auto',
-                    help='auto falls back to curl when the interpreter cannot reach the LAN (EHOSTUNREACH)')
-    ap.add_argument('--json', action='store_true', help='emit the summary as one JSON object')
-    ap.add_argument('--quiet', action='store_true', help='only print transitions and the summary')
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--host", default="192.168.4.202")
+    ap.add_argument("--port", type=int, default=1400)
+    ap.add_argument("--path", default="/status/zp")
+    ap.add_argument("--interval", type=float, default=0.1)
+    ap.add_argument("--duration", type=float, default=30.0)
+    ap.add_argument("--timeout", type=float, default=0.5)
+    ap.add_argument("--until-down", action="store_true", help="exit on the first DOWN")
+    ap.add_argument("--settle", type=float, default=0.0,
+                    help="keep polling this long after the first DOWN, to time the recovery")
+    ap.add_argument("--confirm", type=int, default=2,
+                    help="consecutive failed probes before declaring DOWN (1 disables)")
+    ap.add_argument("--jsonl", help="append one JSON object per transition")
     a = ap.parse_args()
 
-    if a.wait_up:
-        deadline = time.monotonic() + a.wait_up
-        while time.monotonic() < deadline:
-            if probe(a.host, a.port, a.path, a.timeout, a.backend)[0] == UP:
-                break
-            time.sleep(a.interval)
-        else:
-            print('daemon not reachable at %s:%d%s' % (a.host, a.port, a.path), file=sys.stderr)
-            return 3
+    if a.timeout > a.interval * 6:
+        ap.error("--timeout must stay within 6x --interval")
 
-    def on_event(t, wall, state, detail):
-        print('%8.3f  %s  %-4s  %s' % (t, wall, state, detail), flush=True)
-
-    o = Oracle(a.host, a.port, a.path, a.interval, a.timeout, a.duration, on_event, a.backend)
+    out = open(a.jsonl, "a", buffering=1) if a.jsonl else None
     t0 = time.monotonic()
-    o.start()
+    wall0 = datetime.now(timezone.utc)
+    state = None
+    down_since = first_down = None
+    downs = 0
+    longest = 0.0
+    samples = 0
+    streak = 0
+    reasons = {}
+
+    def emit(kind, cls, detail, ms):
+        rec = {
+            "t": round(time.monotonic() - t0, 3),
+            "wall": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "kind": kind, "state": cls, "detail": detail, "ms": round(ms, 1),
+        }
+        print(json.dumps(rec), flush=True)
+        if out:
+            out.write(json.dumps(rec) + "\n")
+
+    print("# oracle start %s host=%s:%d path=%s interval=%.0fms"
+          % (wall0.isoformat(timespec="milliseconds"), a.host, a.port, a.path, a.interval * 1000),
+          flush=True)
+
     try:
-        while o.is_alive():
-            o.join(0.5)
+        while True:
+            now = time.monotonic()
+            if now - t0 >= a.duration:
+                break
+            if first_down is not None and a.settle and now - first_down >= a.settle:
+                break
+
+            cls, detail, ms = probe(a.host, a.port, a.path, a.timeout)
+            samples += 1
+            reasons[detail] = reasons.get(detail, 0) + 1
+            if cls == DOWN:
+                streak += 1
+            else:
+                streak = 0
+            # a single slow probe is not a crash: hold the state until the streak is long enough
+            if cls == DOWN and state == UP and streak < a.confirm:
+                delay = a.interval - (time.monotonic() - now)
+                if delay > 0:
+                    time.sleep(delay)
+                continue
+
+            if state is None:
+                state = cls
+                if cls == DOWN:
+                    down_since = first_down = time.monotonic()
+                    downs += 1
+                emit("initial", cls, detail, ms)
+            elif cls != state:
+                if cls == DOWN and state == UP:
+                    down_since = first_down = time.monotonic()
+                    downs += 1
+                    emit("DOWN", cls, detail, ms)
+                elif cls == UP and state == DOWN:
+                    if down_since is not None:
+                        longest = max(longest, time.monotonic() - down_since)
+                    down_since = None
+                    emit("UP", cls, detail, ms)
+                else:
+                    emit("class-change", cls, detail, ms)
+                state = cls
+
+            if a.until_down and first_down is not None:
+                break
+
+            delay = a.interval - (time.monotonic() - now)
+            if delay > 0:
+                time.sleep(delay)
     except KeyboardInterrupt:
-        o.stop()
-        o.join(2.0)
+        print("# interrupted", flush=True)
 
-    s = o.summary()
-    s['elapsed_s'] = round(time.monotonic() - t0, 3)
-    if a.json:
-        print(json.dumps(s))
-    elif not a.quiet:
-        print(json.dumps(s))
-    if s['first_down'] is None:
-        return 2
-    return 0 if s['recovered'] else 1
+    if down_since is not None:
+        longest = max(longest, time.monotonic() - down_since)
+
+    summary = {
+        "samples": samples,
+        "downs": downs,
+        "first_down_wall": (
+            datetime.fromtimestamp(wall0.timestamp() + (first_down - t0), timezone.utc)
+            .isoformat(timespec="milliseconds") if first_down is not None else None),
+        "longest_outage_s": round(longest, 3),
+        "recovered": bool(downs) and state == UP,
+        "final_state": state,
+        "reasons": reasons,
+    }
+    print("# SUMMARY " + json.dumps(summary), flush=True)
+    if out:
+        out.write(json.dumps({"summary": summary}) + "\n")
+        out.close()
+    return 1 if downs else 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())
