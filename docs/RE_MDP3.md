@@ -60,6 +60,12 @@ the fixed `0x32`/`0x132`/`0x13A` offsets only hold for a 20-byte recipient;
 `envelope()` parses the general shape (proved with a 32-byte recipient and
 against the real package, where it yields `fd88f264…d437`).
 
+Model-8 OTA envelopes carry **no IV**: they use an all-zero CBC IV and a
+16-byte plaintext prefix that is discarded after unpadding. `--legacy-model8`
+selects that path (`unwrap()`); modern envelopes take the IV from the first 16
+payload bytes and keep the plaintext as-is. A synthetic legacy envelope
+decrypts to its exact 21-byte payload with the flag and to 32 bytes without it.
+
 Section headers are `{magic, type, size, flag}`; `flag & 4` marks an encrypted
 section and those carry `MAGIC_FW` (`886499ca`). Plaintext payload sections
 carry `621da74d` instead. The validator reports any flag-4 section that lacks

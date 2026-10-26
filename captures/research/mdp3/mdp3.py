@@ -37,6 +37,7 @@ FENWAY_MAGIC = {
     "model": (bytes.fromhex("46372819"), bytes.fromhex("8dc6ccf4")),
 }
 LAYOUT = "amlogic"
+LEGACY8 = False
 AUTO = False
 SMDP = False
 SMDP_MDP3_OFF = 512 + 4096  # struct smdp: MDP1 page, MDP2 page, then MDP3
@@ -140,6 +141,32 @@ def envelope(body):
     return recipient, rsa_ct, data_len, body[hlen:hlen + data_len]
 
 
+def unwrap(rsa_ct, enc, keyfile):
+    """RSA-unwrap the AES key and decrypt one envelope payload.
+
+    Model-8 OTA envelopes carry no IV: they use an all-zero CBC IV and discard
+    a 16-byte plaintext prefix after unpadding (--legacy-model8).
+    """
+    aes = subprocess.run(
+        ["openssl", "pkeyutl", "-decrypt", "-inkey", keyfile,
+         "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha1"],
+        input=rsa_ct, capture_output=True, check=True).stdout
+    if not LEGACY8:
+        # modern envelopes: the first 16 payload bytes are the IV and the
+        # plaintext is returned as-is (no padding is stripped).
+        return subprocess.run(
+            ["openssl", "enc", "-aes-128-cbc", "-d", "-K", aes.hex(),
+             "-iv", enc[:16].hex()],
+            input=enc[16:], capture_output=True, check=True).stdout
+    plain = subprocess.run(
+        ["openssl", "enc", "-aes-128-cbc", "-d", "-K", aes.hex(), "-iv", "00" * 16],
+        input=enc, capture_output=True, check=True).stdout
+    pad = plain[-1]
+    if not 1 <= pad <= 16 or plain[-pad:] != bytes([pad]) * pad:
+        sys.exit("bad section padding")
+    return plain[:-pad][16:]
+
+
 def sections(d):
     o = 0
     while o < len(d):
@@ -153,8 +180,9 @@ def sections(d):
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
-    global LAYOUT, SMDP, AUTO
-    argv = [a for a in sys.argv[1:] if not a.startswith("--layout=") and a != "--smdp"]
+    global LAYOUT, SMDP, AUTO, LEGACY8
+    argv = [a for a in sys.argv[1:] if not a.startswith("--layout=")
+            and a not in ("--smdp", "--legacy-model8")]
     for a in sys.argv[1:]:
         if a.startswith("--layout="):
             LAYOUT = a.split("=", 1)[1]
@@ -162,6 +190,8 @@ def main():
             SMDP = True
         if a == "--layout=auto":
             AUTO = True
+        if a == "--legacy-model8":
+            LEGACY8 = True
     sys.argv = [sys.argv[0]] + argv
     cmd = sys.argv[1]
     if cmd == "selftest":
@@ -226,15 +256,9 @@ def main():
             body = data[off + 16:off + size]
             if body[:4] != MAGIC_FW:
                 continue
-            _r, rsa_ct, _n, _enc = envelope(body)
-            aes = subprocess.run(
-                ["openssl", "pkeyutl", "-decrypt", "-inkey", sys.argv[4],
-                 "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha1"],
-                input=rsa_ct, capture_output=True, check=True).stdout
-            plain = subprocess.run(
-                ["openssl", "enc", "-aes-128-cbc", "-d", "-K", aes.hex(), "-iv", "00" * 16],
-                input=body[0x13A:], capture_output=True, check=True).stdout
-            open(os.path.join(outdir, "%02d.bin" % i), "wb").write(plain[0x10:])
+            _r, rsa_ct, _n, payload = envelope(body)
+            open(os.path.join(outdir, "%02d.bin" % i), "wb").write(
+                unwrap(rsa_ct, payload, sys.argv[4]))
             print("section %d -> %02d.bin" % (i, i))
     elif cmd == "upd":
         data = open(sys.argv[4], "rb").read()
@@ -245,15 +269,9 @@ def main():
             body = data[off + 16:off + size]
             if body[:4] != MAGIC_FW:
                 continue
-            _r, wrapped, _n, _enc = envelope(body)
-            aes = subprocess.run(
-                ["openssl", "pkeyutl", "-decrypt", "-inkey", "/dev/stdin",
-                 "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha1"],
-                input=wrapped, capture_output=True, check=True).stdout
-            plain = subprocess.run(
-                ["openssl", "enc", "-aes-128-cbc", "-d", "-K", aes.hex(), "-iv", "00" * 16],
-                input=body[0x13A:], capture_output=True, check=True).stdout
-            open(os.path.join(outdir, "%02d.bin" % i), "wb").write(plain[0x10:])
+            _r, rsa_ct, _n, payload = envelope(body)
+            open(os.path.join(outdir, "%02d.bin" % i), "wb").write(
+                unwrap(rsa_ct, payload, "/dev/stdin"))
             print("section %d -> %02d.bin" % (i, i))
     elif cmd == "otp":
         k = aes_key(otp)
@@ -274,15 +292,10 @@ def main():
                 body = data[off + 16:off + size]
                 if body[:4] != MAGIC_FW:
                     continue
-                _r, rsa_ct, _n, enc = envelope(body)
-                aes = subprocess.run(
-                    ["openssl", "pkeyutl", "-decrypt", "-inkey", kf.name,
-                     "-pkeyopt", "rsa_padding_mode:oaep", "-pkeyopt", "rsa_oaep_md:sha1"],
-                    input=rsa_ct, capture_output=True, check=True).stdout
-                plain = subprocess.run(
-                    ["openssl", "enc", "-aes-128-cbc", "-d", "-K", aes.hex(), "-iv", "00" * 16],
-                    input=body[0x13A:], capture_output=True, check=True).stdout[0x10:]
-                print("section %d %s" % (i, "squashfs" if plain[:4] == b"hsqs" else plain[:4].hex()))
+                _r, rsa_ct, _n, payload = envelope(body)
+                plain = unwrap(rsa_ct, payload, kf.name)
+                print("section %d %d bytes %s" % (i, len(plain),
+                      "squashfs" if plain[:4] == b"hsqs" else plain[:4].hex()))
     elif cmd == "luks":
         key_in = bytes.fromhex(sys.argv[4])
         if len(key_in) != 0x20 or key_in[:16] not in (b"\0" * 16, b"\xff" * 16):
