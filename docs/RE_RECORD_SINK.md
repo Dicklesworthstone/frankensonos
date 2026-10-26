@@ -50,7 +50,9 @@ so 64 bytes.
 
 `64 + 7 + 1024 = 1095 <= 1112`. **Through this writer the sink is safe by 17
 bytes**, which is why the missing check has not bitten. The 1112 sink only
-overflows if either the name or the blob exceeds those caps.
+overflows if either the name or the blob exceeds those caps — and 1095 is still
+under the 1272-byte gap to the next global, so even the worst case through this
+writer stays inside the buffer region.
 
 Open item, and the reason the sink is not closed: the serializer's name is at
 `r31+0` (`strlen` at `0x102198e0`), but the writer's `strlcpy` target is a
@@ -61,15 +63,23 @@ Until that is resolved the 64-byte bound cannot be assumed for it.
 
 ## Does a :1400 request reach it
 
-Yes. The module is on the UPnP/XML response path, not the cloud path:
+Not directly — corrected by `f3788ef` (see [`RE_SPOTIFY_SDK.md`](RE_SPOTIFY_SDK.md)).
+The record is the Spotify SDK's **audio-out credentials blob**, record type 50
+(`cmpwi 7,4,50` at `0x10219de0`), whose handler is `0x10219848`; the strings are
+`SpCallbackConnectionNewCredentials` and the assert text
+`data_size <= sizeof(blob_aligned)`. The whole `0x1022xxxx` call graph stays
+inside the SDK, and the `:1400` route handlers all live at `0x4axxxx`/`0x4fxxxx`,
+so a request only influences the sink indirectly, by changing what the daemon
+asks the SDK to play.
 
-- `0x10081800` calls the module entry `0x1021df7c` at `0x10081814` and then emits
-  `kStorageMedia val="NONE, NETWORK"/>` (`0x1045fe80`, used at `0x10081828`).
-- A second caller, `0x10082e5c`, also calls `0x1021df7c`.
-- The record-type dispatcher in the serializer switches on `-0x70, -0x6f, -0x6d,
-  -0x77, -0xc7, -0x64` at `0x1021a1d8`–`0x1021a214` (indices 8..12) with a default
-  of `0x15`, i.e. a small closed set of UPnP record kinds, not a caller-chosen
-  string.
+The bound check at `0x10219960` only reaches an `assert` whose handler
+(`0x10219464`) does not abort, so an over-long record corrupts silently. The
+destination `0x1054d5d0` is `.bss` and the next global, the 4776-byte
+SocketManager state at `0x1054dac8`, is only 1272 bytes away — an append past
+1272 clobbers live state rather than padding. Record-count cap is 200.
 
-So a LAN `:1400` request that produces one of those record kinds reaches the
-sink; the blob is whatever the parsed descriptor carries, capped at 1024.
+Daemon-side datapoint that does not change the conclusion: `0x10081800` calls
+`0x1021df7c` (SDK) at `0x10081814` and then emits
+`kStorageMedia val="NONE, NETWORK"/>` (`0x1045fe80`), and `0x10082e5c` calls the
+same entry. So daemon code does call into the SDK, but neither site is a `:1400`
+handler.
