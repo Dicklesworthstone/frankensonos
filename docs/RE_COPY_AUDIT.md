@@ -286,3 +286,16 @@ reaches it and no file has to exist:
   5400-byte path. This is a 57.23-only bug.
 - The three callers stay vtable-dispatched: `0x101a07d0`, `0x101a0b70` and
   `0x101ddd2c` have no direct `bl` to them anywhere in the image.
+
+### Corrected live picture (the 408 is the player's own answer, not a timeout)
+
+Timed with `-m 25`: `N=4000` answers **408 in 0.02 s** — instant, so it is the daemon rejecting, not a
+slow fetch. `N=5600` answers 000 in 0.03 s. Repeating `N=6000` three times gives 000, 408, 408, and
+`/status/zp` stays 200 throughout: the daemon does **not** die.
+
+So the shape is: ≤2500 processed (404), ≥4000 rejected with an instant 408, occasionally the connection
+dies instead. The copy is reached (the frame is 5344 and the crash zone starts above it) but the
+overwrite lands in the caller's frame without taking the daemon down — consistent with the audit's own
+note that the destination is `sp+16` and the *caller's* frame follows. To make it a control-flow bug we
+need either a route without the 408 pre-check, or enough length to reach the saved LR of the outer
+frame.
