@@ -777,3 +777,16 @@ blob cannot be read back through the proxy as it stands.
 - `AddURIToQueue` on AVTransport answers 800 for `x-sonos-http:` (raw and percent-encoded) and
   `x-rincon-mp3radio://`, with and without `upnp:class` and `protocolInfo`, on an empty queue. The URI
   form is the thing to get right; the queue record is where the serializer's title+blob would come from.
+
+### The queue blocker was the stereo pair, not the URI
+
+`.202` is the **right** channel of a stereo pair (`ZoneName "X (R)"`), and every AVTransport queue
+action answers 800 on it. The coordinator is `.84` (`ZoneName "X"`, `RINCON_000E5880108A01400`), and the
+same `AddURIToQueue` there answers **200** with a track number. So all queue work must be addressed to
+the coordinator — the same rule the controller uses for group commands.
+
+With that, a track was queued carrying a 255-byte title and a 1 373-byte metadata blob (the setter caps
+the blob at 0x400, so it lands on the exact 174-byte overrun case from the budget tool), then selected
+and played (`Seek TRACK_NR 6` → 200, `GetPositionInfo` shows the CIFS URI). The daemon stayed up
+throughout (oracle: 223 samples, 0 downs), so the serializer overrun is either not on the play path or
+benign at these sizes.
