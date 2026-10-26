@@ -225,3 +225,36 @@ search; the `sonos` org repos; `darkarnium/sonor` and `trulyspinach/sonos-fenway
 (the custom rootfs has no `devmode` string); the NCC BlackHat 2024 whitepaper,
 the RomHack 2023 deck and `blasty/sonos`; the Sonos community search (3 hits,
 none about devmode); Reddit; and the Wayback CDX set for the URL.
+
+## What the statement binds to (settles "is it replayable?")
+
+The statement is bound to the **player's own Device ID**, not to the app/controller:
+
+- `GET /devmode` (`0x4f3f44`) renders `Device ID: %s` from `0x4f3d60`, which copies
+  6 bytes from the identity singleton (`0x4fa320` -> `0x595ccc`) and formats them
+  into 20 characters (`0x4fa220`, length `0x14`) — the MAC-derived device id.
+- The POST path passes the same object field: `ZZ0137(statement, len, model,
+  obj+0x414, *(obj+0x494), major, minor, ...)` at `0x4f3b96`, and `ZZ0137`
+  `memcmp`s it against `statement+33` at `0xacb0`.
+
+So a statement is replayable on the *same* player (re-POSTing is idempotent) but
+not portable: another player's statement fails the id compare. An
+already-unlocked player is only useful if it is one of ours.
+
+## Published-statement search (2026-10-26)
+
+Negative across every public corpus reachable:
+
+- GitHub code search: `"sonos://devMode"` and `"devMode/set?statement"` return
+  only this repo; `filename:devmode.bin` returns 0; `KHIec` is too generic
+  (7056 hits, none Sonos).
+- Wayback: no capture of `developer.sonos.com/devmode*` and none of the old
+  `SoCo/SoCo/wiki/Developer-Mode`.
+- Sonos community search (`en.community.sonos.com/search?q=devmode`) returns 3
+  unrelated threads.
+- No `devmode*.bin` anywhere under `~/Library/Application Support`, `~/.local/share`
+  or `~/.config`, and no `sonos.com` cookie in the Chrome profile.
+
+The LAN is also empty this session: a full `192.168.4.0/24` ping sweep answers
+only the Mac itself, so `.86`, `.81` and `.202` are powered off and no
+`/debug/devmode.bin` can be fetched.
