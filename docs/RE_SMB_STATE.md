@@ -89,3 +89,7 @@ So the over-read is tolerated up to roughly half a kilobyte and faults somewhere
 between 512 and 2048 bytes past the buffer — consistent with walking off the heap
 chunk. The decoded garbage does not surface in the art response (200 with the
 normal image), so today this is a remote DoS with a measured margin, not a leak.
+
+**S1 does not take the same URL.** `/getaa?u=x-file-cifs://…` answers 404 on the 57.23 Play:5
+(`.202`) for the encoded, unencoded and `x-smb` forms, and the SMB server sees no connection, so the
+crash above is an S2 result until the S1 art path is found.
