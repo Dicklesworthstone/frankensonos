@@ -400,3 +400,15 @@ split). That lib is the next target: it holds the verification key, and a local 
 statement can be checked without touching a player.
 
 The base APK's only PEM is a 1634-byte CA (`a7baadd8…`), not the 842-byte statement.
+
+## The app ships the devmode verifier
+
+The ABI split (`config.armeabi_v7a.apk` from the same XAPK) carries `libsonoscrypto.so` — the same
+library name as on the player — exporting `sonosRsaGetDevModePublicKey`, `validateDevModeStatement`,
+`isDevModeFlagEnabled` and `isDevModeFlagEnabledValidate`. So statements are **RSA-signed** and the app
+verifies them locally against a public key before handing them to a player; the player's compiled
+SHA-256 is a separate, second gate.
+
+Consequence: a candidate statement can be checked offline against that public key without touching a
+player, and the key itself is extractable from the lib (`mbedtls_rsa_import`/`check_pubkey` are linked).
+Next: pull the key blob out of `libsonoscrypto.so` and build the offline verifier.
