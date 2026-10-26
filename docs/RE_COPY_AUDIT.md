@@ -504,3 +504,16 @@ So finding 1 is real code but the `/getaa` shape does not drive it with a long s
 break on long paths is therefore **something else**, and the promising target is finding 2.1
 (`0x101ccc9c`, a 2 100-byte stack buffer whose setter only stores values *longer than 1 024* and imposes
 no upper bound) — that one is fed by a "long value" field, not by a URL split.
+
+### Reconciled: the bare-path branch is the one that overflows
+
+`recon/urlspan_source.py` settles the source question: the same raw length breaks with `A` and with
+`%41`, and `%41` is still broken at 36 000 raw characters, so the copy reads the **raw target** and the
+decoded buffer is not involved. Combined with the earlier correction: the `x-file-cifs://` form only
+puts the *share* in the span, but a **bare path** takes the other branch, where the span is the whole
+target — and that is the branch that breaks at ~4 020.
+
+So the 408 is not a length gate in front of the copy; it is the splitter's own failure answer *after*
+the copy has already run. The daemon survives because the overwrite lands in the caller's frame rather
+than on the return address, which is the next thing to fix: the span must be pushed past 5 328 and the
+bytes at the saved-register offsets must be chosen deliberately.
