@@ -113,3 +113,19 @@ That is the honest stop for this read: the chain is JSON string -> `bindString` 
 -> stub -> GOT. Naming the primitive needs the GOT slot resolved (run-time or by a correct gp),
 and only then can the destination sizes in the binding tables be compared against the
 attacker-controlled length.
+
+## The 1112-byte sink (PPC 57.23 build): constructor, singleton, and what it does
+
+`FUN_1021fb54` (store at `0x1021fb60`) sets descriptor `+0xc = 0x14f8`, memsets the buffer at
+`+8`, publishes it as the singleton `DAT_10545d78`, and installs two function pointers:
+`FUN_1021f8f8` at descriptor `+0x10` and **`FUN_10219cf8` at `+0x14`** — the sink. It also seeds
+the record (`*singleton = param_1`, `[1] = singleton`, `[2] = &DAT_1054dae8`, `[0x501] = 10`).
+
+`FUN_10219cf8` is a **command dispatcher on `*param_2`** (ids `0x14`, `0x1e`, `0x4d`, …), writing
+into the singleton. Its copies are all bounded: `strlcpy(..., 0x80)` at several sites and a fixed
+`memcpy(singleton+0x140d, __s2, 0x21)` at `0x1021a1xx`. So the sink is not itself a length bug.
+
+Reachability: the constructor is referenced only from a data table at `0x1047f92c` (init
+registration) and the sink only from the constructor, so the caller is whoever owns the
+descriptor — not yet located. That is the next read, and it decides whether any `:1400` request
+reaches the dispatcher at all.
