@@ -111,22 +111,21 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
                 .map(from_entry),
         );
     } else if !taste.artists_unread.is_empty() {
-        // The artists this read didn't get to (more of them than one sync
-        // reads, or their read failed) keep the top tracks cached for them
-        // before, instead of having them retired.
-        let lead = |e: &LibraryEntry| {
-            e.track
-                .artist
-                .as_deref()
-                .and_then(|joined| split_artists(joined).into_iter().next())
-                .map(|name| name.to_lowercase())
-        };
+        // Keep cached music credited to an unread artist, including a guest
+        // credit: catalog samples can contain shared releases. Preserve the
+        // actual lead artist and all other metadata in the cached item.
         let cached = store.library()?;
         items.extend(
             cached
                 .iter()
                 .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
-                .filter(|e| lead(e).is_some_and(|name| taste.artists_unread.contains(&name)))
+                .filter(|e| {
+                    e.track.artist.as_deref().is_some_and(|joined| {
+                        split_artists(joined)
+                            .iter()
+                            .any(|name| taste.artists_unread.contains(&name.to_lowercase()))
+                    })
+                })
                 .map(from_entry),
         );
     }

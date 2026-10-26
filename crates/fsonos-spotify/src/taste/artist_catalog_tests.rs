@@ -282,6 +282,15 @@ fn failed_catalog_refreshes_retain_previous_artist_music_and_rate_limits_stop_re
         let server = Server::new();
         followed(&server, vec![artist(ARTIST, NAME)]);
         catalog(&server, ARTIST, NAME, ALBUM);
+        let lead = "CatalogCollaborator";
+        let lead_name = "Harbor Guest";
+        server.set(&format!("/v1/artists/{lead}"), artist(lead, lead_name));
+        let mut tracks: Vec<Value> = (1..=6).map(|n| song(n, ARTIST, NAME)).collect();
+        tracks[0]["artists"] = json!([
+            { "id": lead, "name": lead_name },
+            { "id": ARTIST, "name": NAME }
+        ]);
+        server.set(&format!("/v1/albums/{ALBUM}/tracks"), page(tracks, 0, None));
         runtime().block_on(async {
             let cx = Cx::current().unwrap();
             let mut store = MemStore::default();
@@ -291,6 +300,14 @@ fn failed_catalog_refreshes_retain_previous_artist_music_and_rate_limits_stop_re
                 .unwrap();
             let before = store.library().unwrap();
             assert_eq!(before.len(), 3);
+            for entry in &before {
+                let credits = crate::library::split_artists(entry.track.artist.as_deref().unwrap());
+                if entry.track.source_uri == "spotify:track:CatalogTrack1" {
+                    assert_eq!(credits, [lead_name, NAME], "preserve the lead and guest");
+                } else {
+                    assert_eq!(credits, [NAME], "single-artist music also stays");
+                }
+            }
             assert!(
                 before
                     .iter()
