@@ -517,3 +517,21 @@ So the 408 is not a length gate in front of the copy; it is the splitter's own f
 the copy has already run. The daemon survives because the overwrite lands in the caller's frame rather
 than on the return address, which is the next thing to fix: the span must be pushed past 5 328 and the
 bytes at the saved-register offsets must be chosen deliberately.
+
+### What the ASCII-only source means for control flow
+
+The copy is raw target text, so every overwritten byte is printable ASCII. A saved LR becomes
+`0x41414141` for `AAAA`, which is not a mapped address — so a straight return-address overwrite does not
+land anywhere useful, and the daemon survives because the overwrite stops in the caller's frame.
+
+Two ways forward, in order of promise:
+
+1. **The NUL write is the real primitive.** `stb 30, 16(9)` writes one `0x00` at `dst+span`, exactly one
+   byte past the copy, and the span is chosen by the request. Placing that NUL on the low byte of a saved
+   pointer shifts it down by up to 255 bytes — a classic partial-pointer overwrite that needs no
+   non-printable bytes at all.
+2. **Reach a frame whose LR is at an offset the span can hit**, and accept the `0x41414141` return only
+   as a crash oracle, not as control.
+
+Anything that needs a real address in the payload has to come from somewhere other than the URL text
+(a SOAP body or a POST body can carry raw bytes; the URL cannot).
