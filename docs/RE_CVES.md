@@ -927,9 +927,25 @@ Two published neighbours are worth keeping in view:
   be exactly `0x50` (see `RE_GETAA_DATALENGTH.md`), so that one is fixed on our line; the S1 line has no
   SMB client in the daemon at all.
 
-Practical read: the URL-span overflow is the only pre-auth *stack write* we hold that is both unpublished
-and in a component we have located. CVE-2023-27355 is the best second target, but it needs the S1 media
-component identified first.
+
+### 11c. CVE-2023-27355 does not apply to S1 — there is no TS demuxer here
+
+Followed up the "best second target" and it does not survive contact. S1 57.23 has no HLS or MPEG-TS
+handling at all:
+
+- `m3u8`, `EXT-X`, `mpegts`, `mp2t`, `transport stream` — **zero** occurrences in `anacapad` and zero
+  anywhere in the extracted 57.23 rootfs (`grep -rl` over the whole tree).
+- No `audio/*` MIME strings either; the eight `audio` hits are the websocket subprotocol names
+  (`v1.api.smartspeaker.audio`) and event names. The daemon hands URLs to the player firmware rather than
+  demuxing.
+- `/opt/bin` holds only `anacapad` and `anacapactl` — there is no separate media binary to hold a demuxer.
+
+CVE-2023-27355 was tested against a Sonos One, i.e. an S2 device, where FFmpeg does the demuxing. So on the
+S1 line it is not reachable, and the earlier "naive AFC=3/afelen=0xFF shape plays and does not crash 57.23"
+note was measuring the player's own firmware, not `anacapad`.
+
+Practical read, corrected: the URL-span overflow is the only pre-auth *stack write* we hold, full stop —
+unpublished, located, and S1-only. There is no second published target on this line.
 
 ### 11a. Affected scope: S1 only — the S2 handler has no span copy at all
 
