@@ -693,6 +693,37 @@ So the open question is whether the item constructor runs on the *untruncated* s
 `AddURIToQueue`/`CreateObject` time rather than on the browse result — the truncation is in the
 response, and a 2 200-byte `EnqueuedURI` is accepted by the queue on `.81` without a crash.
 
+**There is no third field, but there is a second path (2026-10-26).** `FUN_101cc878` reads exactly two
+object fields, `+0x1074` (source string) and `+0x1070` (offset/length), plus its `param_2` argument.
+The argument only selects the branch:
+
+```
+101cc8xx  bl FUN_100a7138      ; 1 = known scheme (incl. x-file-cifs), 0 = unknown
+101cc8xx  bl FUN_1007acb8      ; 1 = starts with "//" -> skip everything
+101cc8xx  bl FUN_1007acf0      ; 1 = starts with "/" or "X:/" -> path A, 0 -> path B
+```
+
+Path A is the bounded `memcpy(dst, +0x1074, +0x1070)` already described. **Path B treats `+0x1070` as
+a start offset and copies to the *last* `/` in the stored string**:
+
+```
+101cc9xx  lwz  4, 4212(30)     ; str  = obj+0x1074
+101cc9xx  lwz  3, 4208(30)     ; off  = obj+0x1070
+101cc9xx  bl   strrchr(str,'/')
+101cc9xx  bl   strchr(str+off,'/')
+101cc9xx  sub  5, last, (str+off)
+101cc9xx  bl   memcpy          ; dst = sp+16, len = last_slash + 1 - (str + off)
+```
+
+So the length is `last_slash + 1 - (str + off)` — driven by the *stored string*, not by the field, and
+unbounded. A stored URI with many `/` after the offset gives a long copy even with a tiny `+0x1070`.
+Both branches need `+0x1070 != 0`, which only the x-file-cifs setter produces, so the object has to be
+built with a CIFS URI and then called with a non-scheme argument to take path B.
+
+The setter exists twice with identical logic — `FUN_101cbb38` (vtable `0x10475a48`) and `FUN_101cc518`
+— so both object flavours behave the same; there is no setter that stores anything other than the
+prefix or 0.
+
 ## 7. What actually feeds 2.1: a CIFS failure-message formatter, not a title
 
 Correction to the framing in §2.1. `0x101cc878` is not a generic "long value" reader — it is the
