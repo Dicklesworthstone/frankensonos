@@ -810,3 +810,19 @@ with it still does not fault (oracle: 235 samples, 0 downs).
 
 That one byte is now the whole problem for 2.1c: either a field with a larger cap exists, or the guard is
 reached some other way.
+
+### The copy is object-generic — the "other field" is the same slot on other objects
+
+`0x101cc878` takes the object as `r3` and copies `r3+4212`/`r3+4208`, gated by the byte at `r3+4216`
+(`0x101cc8d8`). It is called with five different objects: `0x101ce814` passes `r31+28`, `0x101cebc4`
+passes `r20`, and `0x101ccd7c`/`0x101cd85c`/`0x101cec24` pass their own. So there is no second field
+inside the object — the same `+4208/+4212/+4216` triple is copied for whichever object is handed in.
+
+The only writer is the setter `0x101cbb38`, and it has ten callers, each a different object:
+`0x101cbd78` (`r28+19684`), `0x101cd168` (`r27`), `0x101cdb5c` (a stack object), `0x101da6c8` (`r22`),
+and six more. The wire actions behind them are `SetAVTransportURI` (`0x101ce388` → `0x101cbc08`) and
+the queue-add path; `SetNextAVTransportURI` is reachable but answers 701 unless a track is playing.
+
+So the blocker is not the field, it is the validators: `SetAVTransportURI` 714s past ~3800,
+`AddURIToQueue` 804s past ~1000, and the queue actions 800 on a slave. Any of the ten setter callers
+would do if one of its actions accepted a >2100 string.
