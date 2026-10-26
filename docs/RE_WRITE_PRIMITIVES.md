@@ -447,3 +447,18 @@ Type 0x4b is the only fixed copy: `memcpy(obj+0x140d, obj+0x2be, 0x21)` plus `st
 handlers calls `ctx+0x14` directly (293 `lwz …,20(rX)`+`bctrl` sites exist, all vtable-generic). :1400
 actions reach it by driving the playback state machine that emits the events — so a request can enqueue, but
 cannot address the sink itself.
+
+## :1443 JSON binding — the copy length is the truncated u16 (2026-10-26)
+
+`bindStdString` (`0x5f1621`) and `bindStdStringArrayAndSize` (`0x5f15e9`) both funnel into
+`FUN_005f13c0`, whose **length parameter is declared `undefined2`** — the caller's `uint` is truncated at the
+call boundary. `FUN_005f13c0` builds a 36-byte descriptor via `FUN_005f1890`, which stores the length as
+`*(undefined2 *)(d + 0x18) = param_4`.
+
+The descriptor layout has **no other length field**: `+0` vtable, `+4`/`+8` the same `param_3`, `+0xc`
+`param_8`, `+0x10` `param_9`, `+0x14` `param_7`, `+0x18` **u16 length**, `+0x1a`/`+0x1b` `param_5`, `+0x1c`
+`param_2`, `+0x20` `param_6`, `+0x21` 0. Its destructor (`0x5f16e4`) frees 36 bytes, confirming the size.
+
+So the copy uses the **truncated u16 at `d+0x18`**; the original length never reaches the descriptor. A JSON
+string over 65535 bytes is therefore copied at most 65535 bytes — truncation, not an overrun, unless a
+consumer re-reads the source length from somewhere else (none does: the descriptor is the only carrier).
