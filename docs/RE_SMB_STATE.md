@@ -73,3 +73,19 @@ decoder, not the harness.
 That is CVE-2026-110712's sink (`smb2_decode_file_all_info` → `utf16_to_utf8`) reached over the LAN with
 no credentials. It is an OOB **read**, so today it is a remote DoS; the next question is whether the
 over-read can be steered into a leak (the decoded name lands in the art URL path) or into a write.
+
+### Boundary measurement
+
+Same harness, varying only `FileNameLength` (the reply's name is ~6 bytes):
+
+| value | bytes read past the name | result |
+|---|---|---|
+| `0x40` (64) | ~128 | 200, daemon survives |
+| `0x100` (256) | ~512 | 200, survives |
+| `0x400` (1024) | ~2048 | **crash** (000, dead ~5 s) |
+| `0xffff` | ~131 KB | **crash**, 2/2 |
+
+So the over-read is tolerated up to roughly half a kilobyte and faults somewhere
+between 512 and 2048 bytes past the buffer — consistent with walking off the heap
+chunk. The decoded garbage does not surface in the art response (200 with the
+normal image), so today this is a remote DoS with a measured margin, not a leak.
