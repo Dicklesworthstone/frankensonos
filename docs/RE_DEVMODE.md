@@ -330,3 +330,27 @@ a **fixed blob**: capture one and it replays on any device of that line, with no
 The whole devmode problem therefore reduces to *obtaining one statement* — the parser work is done.
 Two candidate sources remain: the app's unlock flow and any archived copy of the PEM (the two digests
 are `60dfecfc…` and `d7b94102…`; neither matches any of the 132 bundle certs, checked as PEM and DER).
+
+### Exhaustive negative search for an archived statement (2026-10-25)
+
+Nothing public carries one. Checked and empty:
+
+- GitHub code search: `urn:sonos:device`, `urn:sonos:model`,
+  `1.3.6.1.4.1.44974`, `Sonos Device Authentication`, `sonos://devMode`,
+  `devMode/set?statement`, `DevModeStatement`, `validateDevModeStatement` — the
+  only hits are this repository.
+- Web search: the portal page title, the OID, the CA name, Reddit, the Sonos
+  community, the NCC paper — no statement.
+- Local: the S1 controller DMG carries only mbedtls PEM *label* constants; the
+  Safari/Brave/Edge/Arc caches have never seen `developer.sonos.com`; no APK or
+  IPA is on disk; no keychain item for `sonos.com`.
+- The portal itself is not guest-callable: `/s/sfsites/aura` answers
+  `Guest user access is not allowed` even with the page's own `fwuid` and
+  context, and `/webruntime/api/apex/execute` 302s to login.
+
+So a statement must be minted with the owner's login. `scripts/devmode_submit.py`
+does the device half in one command: it reads the model / device id / version /
+csrfToken the form wants, posts the returned base64 with the 5.5 s spacing the
+4 s limiter needs, and scores the reply by elapsed time (0.6–1.0 s = parser
+reject, 2.7–5.7 s = reached the signature check, 200 = accepted, 409 = already
+unlocked).
