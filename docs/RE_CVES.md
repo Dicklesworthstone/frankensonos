@@ -839,3 +839,10 @@ checked against both, and most fail on the older one for lack of the subsystem.
 
 Net: the kernel contributes no named sink we can currently point at. The useful product of this sweep is
 the version map in §10, not a CVE.
+
+**Independent re-run, and it is not deterministic.** Same harness, same host, fresh server per size:
+`UNITS 8100 DELTA 1` (body ~16.3 KiB) wedged **1 of 2**; `UNITS 12200 DELTA 1` (~24.5 KiB) wedged **1 of
+3**. The surviving shots answer 404 (the share holds a stub JPEG, so a 404 is the normal non-crash
+answer). So reply size *raises* the hit rate but does not yet make the fault reliable, and the earlier
+"6/6" and "every shot" should be read as best-case. A deterministic crash is the precondition for
+exploitation, so this gap matters.
