@@ -412,3 +412,18 @@ SHA-256 is a separate, second gate.
 Consequence: a candidate statement can be checked offline against that public key without touching a
 player, and the key itself is extractable from the lib (`mbedtls_rsa_import`/`check_pubkey` are linked).
 Next: pull the key blob out of `libsonoscrypto.so` and build the offline verifier.
+
+### The devmode public key, extracted
+
+`sonosRsaGetDevModePublicKey` returns a 294-byte **DER SubjectPublicKeyInfo** (RSA-2048) at `.rodata`
+offset `0xE54F` of the app's `libsonoscrypto.so`, with length `0x126` = 294 — the same 294-byte shape as
+the device's compiled update-key entries, which confirms the record format independently.
+
+```
+SHA-1(SPKI) = dfa45c421d2335394b73df09307d9100996a356f
+modulus     = 86563be24edd2c535aa0d5c98dc11d19b62182…
+```
+
+It is a **third** key: neither `28a096f5…` nor `b2927a28…`. So devmode statements are signed by a
+private key we still do not have, and the app's RSA check is only a client-side pre-filter — the player
+itself just compares a compiled SHA-256, which is why forging is not an option and a capture is.
