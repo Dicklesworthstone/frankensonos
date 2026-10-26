@@ -259,3 +259,30 @@ structural constraint is that the span ends at the **second `/`** after `url+14`
 `0x1007ae34`/`0x1007ae48`, span `= second_slash - url + 1` at `0x1007ae60`), so the last copied
 byte is always `/` (0x2f). For a clean LR overwrite use `N = 5337`: LR bytes 5332-5335 are free
 and the `/` lands at 5336 in the caller's frame.
+
+### 1.1 Reachability, measured live on .202 (2026-10-26)
+
+The splitter runs on the **request target before routing**, so every route
+reaches it and no file has to exist:
+
+| request | n=10 | n=5300 | n=5400 |
+|---|---|---|---|
+| `/zzz/<A*n>` (no such route, no file) | 404 | 408 | 000 |
+| `/info/<A*n>` (fixed route) | 404 | 408 | 408 |
+| `/info?x=<A*n>` (long query, short path) | 200 | 408 | 408 |
+| absolute-form target `http://host/zzz/<A*n>` | — | — | 408 |
+| `/devmode`, `/art/`, `/raw/`, `/msprox?uuid=` | 404/405 | 408 | 000/408 |
+
+- The flip is at the frame, not the route: 404 up to n=10, 408 from n≈5300,
+  and connection resets (000) at n=5330-5336, i.e. just past the 5328 bytes
+  between `dst` (`+16`) and the end of the 5344-byte frame. n=5340 is flaky
+  (408 or 000) because the smash lands in the caller's frame.
+- 408 is the daemon's own answer, not a restart: the body is the stock
+  `Error 408` page and `/info` is byte-identical before and after. So 408 is
+  the splitter's long-span path and 000 is the smash.
+- Both the path and the query count, and an absolute-form target works, so the
+  span is the whole request target, not a path component.
+- **S2 is unaffected**: `.86` and `.81` (86.10) answer 404 for the same
+  5400-byte path. This is a 57.23-only bug.
+- The three callers stay vtable-dispatched: `0x101a07d0`, `0x101a0b70` and
+  `0x101ddd2c` have no direct `bl` to them anywhere in the image.
