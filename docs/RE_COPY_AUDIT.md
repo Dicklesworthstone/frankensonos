@@ -639,3 +639,7 @@ Items` — the **ContentDirectory** browse area. `0x10477ddc` sits next to `Save
 So the SOAP `SetZoneAttributes`/`DesiredIcon` route is dead for this overflow; the reachable
 route is ContentDirectory browse (or the SavedQueues handler), and the `/getaa?u=` shape used
 in the live sweep is a different entry again.
+
+**Bare paths do not reach 2.1c.** `/` + 2138/2139/2140 `A` + `/x` answers 404 with the daemon up on
+`.202`, so the 2.1c NUL needs the ContentDirectory/SavedQueues route the lane identified, not a bare
+path. The bare-path 404s that break at ~4 020 are a third thing again.
