@@ -204,3 +204,24 @@ already exceeds the buffer.
 Harness locations after the `~/sonos-root-local` tree disappeared: `recon/smbserv_qinfo2.py` and
 `recon/getaa_oob.py` in this repo, share `~/smbshare/folder.jpg`, interpreter
 `/private/tmp/fsonos-venv/bin/python` (`SMB_PY` overrides), `SURROGATE=1` for the U+D800 variant.
+
+## Host proof of the guard (ASan, libsmb2 v4.0.0 2ef9bb7)
+
+`captures/research/smb-fuzz/poc_utf16_margin.c` (git-ignored) now has five cases; run against an ASan
+build of the exact tag:
+
+| case | setup | result |
+|---|---|---|
+| A | iov 100, alloc 104, name_len 2, 'Z' in the neighbour | name=`Z`, no report |
+| B | iov 100, alloc 100, name_len 2 | **READ of size 2 at `0x3daa0`** (unicode.c:202) |
+| C | iov 102, alloc 102, name_len 4, lead surrogate | **READ of size 2 at `0x3daf4`** (unicode.c:216) |
+| D | iov 100, alloc 104, surrogate pair in the neighbour | name=U+10000 (`f0 90 80 80`), no report |
+| E | iov 102, alloc 102, name_len 2, lead surrogate as the last unit | no report |
+
+A and D show the over-read really consumes neighbour bytes; B and C name both faulting loads; E shows
+the guard (`end == p+2` at `0x271e0` on MIPS, the `cmp`/`b.eq` before `0x3daf4` on arm64) is what
+holds the floor at one code unit. Disassembly of the built dylib confirms `0x3daa0: ldrh w12,[x8]` and
+`0x3daf4: ldrh w12,[x8,#2]`.
+
+Build: `cmake -DCMAKE_C_FLAGS=-fsanitize=address … && make` in the v4.0.0 checkout, then link the PoC
+with `-fsanitize=address -L b/lib -lsmb2`.
