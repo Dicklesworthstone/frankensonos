@@ -949,3 +949,38 @@ overflow is **57.23 / S1 only**; 86.10 / S2 does not carry that code path.
 That is also the shape of the fix: drop the span copy, decode into the bounded buffer. It means the live
 `.202` result (404 up to N≈3900, 408/000 from N≈5300) is the whole affected surface, and `.86` is a
 control rather than a second target.
+
+## 14. Is there a newer S1 to diff, and is the Play:1 affected? — no, and unproven
+
+Two questions that decide whether the URL-span bug can be scoped by comparison instead of by testing.
+
+### 14a. No newer S1 binary exists to diff
+
+The newest S1 image in the set is `57.23-74170` (both `-1-12` and `-1-16`). Sonos puts legacy players on a
+separate version track from current hardware, so there is no later S1 release to pull and diff — which
+means there is **no upstream fix to read** for the intended bound. The overwrite map has to come from the
+frame (SapphireIvy) and the primitive from the NUL write (FoggyBirch), not from a vendor patch.
+
+### 14b. The Play:1 build has the URI subsystem but a different dispatcher
+
+`57.23-74170-1-12/anacapad` (MIPS, the Play:1 model):
+
+| marker | PPC `-1-16` | MIPS `-1-12` |
+|---|---|---|
+| `http://` | 17 | 23 |
+| `https://` | present | 6 |
+| `file://` | **3** | **0** |
+| `sonosDecodePercentEncodedStr` | imported | imported (`R_MIPS_JUMP_SLOT` at `0x543220`) |
+
+So the URI machinery is there on both, but the **`file://` branch is PPC-only**. The S1 splitter is reached
+from the dispatcher that owns `http://`/`https://`/`file://`, so the Play:1 either has a different
+dispatcher or a different set of branches — either way, **do not assume the Play:1 is affected**. It has to
+be tested on hardware.
+
+### 14c. Decoder caveat for the MIPS build
+
+`mips-linux-gnu-objdump -m mips:16` misdecodes this binary: `jal` targets print as bare numbers
+(`jal 190`), PLT stubs decode as garbage, and the `.rel.plt` table decodes as instructions. Greps for
+`li a2,1025` and `-5344` both return zero, so instruction-level claims on `-1-12` need a fixed decoder
+first. This is the same misalignment SapphireIvy hit on the S2 binary, and it is why 14b is stated at
+string level only.
