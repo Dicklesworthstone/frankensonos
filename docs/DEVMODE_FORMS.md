@@ -285,3 +285,25 @@ The offline validator is the S1 library, whose version window is hardcoded to
 57.23 (`lower < 0x390018`, `upper >= 0x390017`). `emu_zz0137.py` now takes a
 `WINDOW_LO,WINDOW_HI` argument and `devmode_submit.py` passes the device's own
 version, so the gate is correct on 86.10 too.
+
+## 2026-10-26 (2): end-to-end run of `devmode_submit.py` against .86
+
+Ran the whole flow against `192.168.4.86` (model 20, `7828CA9221DC`, 86.10).
+Stages and exact failure points:
+
+1. `devmode_submit.py 192.168.4.86` — page fetch, parse and portal block all
+   work (`model 20`, `device id 7828CA9221DC`, `version 86.10`, fresh csrf),
+   exit 0. This is the point a real run stops at today: no statement exists.
+2. `--statement <fake>` — the offline validator stops it before any POST:
+   `REJECTED (ZZ0137 -> 0, last check: model)`, exit 3. Correct, the validator
+   is model-8-specific and the blob was synthetic.
+3. `--statement <fake> --no-validate` — reaches the device: `HTTP 403 in 0.04s`,
+   classified `rejected before the signature check: malformed blob`, exit 1.
+
+A hand-built TLV that satisfies every preamble check the parser makes (magic
+`0x28721e71`, model, version window, devid length + `memcmp`, payload length,
+ring magic `0x621da74d`) still fast-rejects, so the remaining gap is the ring's
+inner layout, not the transport or the preamble. The preamble checks were read
+from the S1 parser (`0xabac` magic, `0xabe8` model, `0xac14`/`0xac58` version
+bounds — lower is *strict*, `[+0x18] < 0x390018`; `0xac84` devid length;
+`0xacb0` `memcmp`; `0xacd4` payload bound; `0x9fc8` ring magic).
