@@ -5784,3 +5784,25 @@ decided wherever those pointers are allocated, one level up.
 
 That means `0x101a60e8` is only a bug if some allocation site sizes the destination
 from something other than `src+4`. The copy itself is faithful.
+
+### BoldOrchid: the URL-span overflow mechanics at 0x1007b2c4
+
+```
+1007ae60: sub 9, 9, 24        ; len = X - 24
+1007ae68: addi 9, 9, 1        ; len = X - 23
+1007ae70: stw 9, 5244(1)      ; stash len
+...
+1007b2b4: addi 31, 1, 16      ; dst = r1+16
+1007b2b8: lwz 5, 5244(1)      ; len from the stash
+1007b2c0: mr 3, 31
+1007b2c4: bl memcpy           ; NO bound
+```
+
+So the copy is `memcpy(r1+16, src, X-23)` into a 5344-byte frame with the
+destination at `+16` — the usable space is `5344 - 16 = 5328`, and the saved
+registers/LR sit above it. Any `X-23 > 5328`, i.e. `X > 5351`, overwrites saved
+state; that matches the live observation (404 at N=1000/3000, 408/000 at
+N=5300-6000).
+
+The length is derived from the parsed span, not from a cap, so it is fully
+attacker-controlled by URL length.
