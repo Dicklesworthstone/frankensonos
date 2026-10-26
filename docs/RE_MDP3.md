@@ -52,6 +52,22 @@ Verification, all three halves:
 - the differential vector above covers the MDP3→key half; only a real
   MDP3+OTP dump is still missing.
 
+## Second layout: fenway (model-8 family)
+
+`trulyspinach/sonos-fenway` `includes/mdp.h` documents a second MDP3 layout for
+the MPC8314 family: the same 0x4000 page and the same 0x580/0x680/0x780
+offsets, but the key fields are `{magic, len, reserved}` TLVs with CAAM magics
+(`0xF0A2ADE7` AES128 black, `0x618C4DE8` AES128 red, `0x19283746` RSAREF priv,
+`0xF4CCC68D` PKCS1 priv) in fixed 256/256/2048-byte slots. `--layout=fenway`
+parses that shape and bounds `len` against the slot; a synthetic fenway page
+round-trips all three fields (`fenway-model` decrypts).
+
+The same repo's public dumps are kernel/rootfs only, and the
+`BookCatKid/sonos-firmware-archive` key-recovery ledger records that no public
+MDP3+OTP pair exists (the public paths are the EL3 exploit on a physical
+Amlogic device and `mdputil` on a rooted fenway unit). So the tool now covers
+both documented layouts and still waits on one dump.
+
 ## What userland reaches today
 
 `anacapad` imports `hal_flash_get_mdp`, `hal_flash_get_mdp2`,
