@@ -172,3 +172,24 @@ shows the window check exactly: the lower bound at `+0x18` must be `< 0x390018`
 (`0xac0c`) and the upper bound at `+0x1c` must be `>= 0x390017` (`0xac50`), i.e.
 the statement must cover `57.23` exactly. There is no PEM branch: the first
 compare is the magic (`lwl`/`lwr` of `0x28721e71` at `0xabac`/`0xabb8`).
+
+## Offline triage of a candidate statement
+
+`scripts/emu_zz0137.py` runs the real `ZZ0137` (S1 lib, MIPS32) under Unicorn
+with the `.MIPS.stubs` trampolines patched to handlers (`memcmp`, `memset`,
+`memcpy`, `mbedtls_sha256_*`) and reports the first failing check by name:
+
+```
+scripts/emu_zz0137.py statement.bin <device-id-hex> <model> <major> <minor>
+```
+
+It prints `ACCEPTED`/`REJECTED` plus the last check reached (magic, model,
+version bounds, device id, payload, ring, signature verify). The signature verify
+itself is real code but cannot pass without the private key, so a statement that
+reaches it is structurally sound and fails only on the signature.
+
+The ring is a nested structure parsed by `ZZ0121` (`0x9f24`): u32 magic
+`0x621da74d`, u32 entry count (< 9), u16 version (must be 1), u8, u8, u32
+(< 9), then a second count block and a u8 that must be 1 or 2, then 264-byte
+entries. The entry body is not fully mapped yet; a real statement from the
+portal carries it, so the triager is usable without that mapping.
