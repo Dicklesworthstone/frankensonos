@@ -826,3 +826,20 @@ the queue-add path; `SetNextAVTransportURI` is reachable but answers 701 unless 
 So the blocker is not the field, it is the validators: `SetAVTransportURI` 714s past ~3800,
 `AddURIToQueue` 804s past ~1000, and the queue actions 800 on a slave. Any of the ten setter callers
 would do if one of its actions accepted a >2100 string.
+
+### 2.1e CreateSavedQueue works on the coordinator with real DIDL metadata (2026-10-26)
+
+Queue actions go to the **coordinator**: `.84` answers, `.202` is the right channel of a stereo
+pair. The 811 was the missing `EnqueuedURIMetaData` — with a real DIDL-Lite item there,
+`CreateSavedQueue` on `/MediaRenderer/AVTransport/Control` returns **200**:
+
+```
+Title "T1"          -> 200, NumTracksAdded 1, AssignedObjectID SQ:1
+Title 2046 x 'A'    -> 200, AssignedObjectID SQ:3
+Title 2139 x 'B'    -> 200, AssignedObjectID SQ:6, daemon alive
+```
+
+So a >2 KiB title is accepted and stored. Caveat measured immediately after: browsing `SQ:6`
+with `BrowseMetadata` returns the title **truncated to 1023 bytes**, so the stored value is
+longer than what the browse path hands back — which is exactly the serializer/reader split that
+matters for the 2.1c NUL and for any title-driven overrun.
