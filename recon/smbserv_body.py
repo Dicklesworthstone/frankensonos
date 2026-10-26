@@ -50,6 +50,21 @@ def patched(connId, smbServer, recvPacket):
 
 SMB2Commands.smb2QueryInfo = staticmethod(patched)
 
+_TC = SMB2Commands.smb2TreeConnect
+
+
+def _tc(connId, smbServer, recvPacket):
+    try:
+        f = getattr(recvPacket, "fields", {})
+        d = f.get("Data")
+        print("TREE", d.get("PathBuffer") if hasattr(d, "get") else d, flush=True)
+    except Exception as e:
+        print("TREE-err", e, flush=True)
+    return _TC(connId, smbServer, recvPacket)
+
+
+SMB2Commands.smb2TreeConnect = staticmethod(_tc)
+
 srv = SimpleSMBServer(listenAddress="0.0.0.0", listenPort=PORT)
 srv.setSMB2Support(True)
 srv.addShare("SHARE", SHARE)
