@@ -87,7 +87,9 @@ tool's contract:
   `libupgrade` MDP API (`upgrade_get_mdp3` at `0x74a`, `upgrade_mdp_write` at
   `0x898`) and prints `MDP3VERSION=%u` (`0x2edc`), but its getopt string
   `Aa:whfv:M:m:r:e:s:Ik:b:l:F:C:P:T:i:d:Bx:y:z:L:` (`0x2c6c`) has no dump
-  option, so it never emits a key blob. A dump is `dd if=/dev/mdp bs=1
+  option, so it never emits a key blob. Note `MDP3VERSION=%u` is read from
+  **MDP1+0x78** (`lw a2,120(s0)` at 86.10 `mdputil` `0x401644`), not from the
+  MDP3 page — the field is a version counter in MDP1. A dump is `dd if=/dev/mdp bs=1
   skip=0x1200 count=0x4000` (the smdp page offset, `--smdp`) or a small helper
   against `upgrade_get_mdp3`.
 - **OTP on S1.** No userland tooling: `grep -rl otp s1_rootfs` matches only
@@ -110,6 +112,12 @@ tool's contract:
   `hal_flash_get_mdp` (`0x18c8`). So an S2 dump is
   `read_from_offset(fd, info+80 + 0x1200, 0x4000)` — the page sits at the smdp
   offset inside the MDP region, which is exactly what `--smdp` slices.
+
+**Nothing at runtime reads the MDP3 page.** 86.10 `anacapad` has no
+`read_from_offset` and no `hal_flash_get_mdp3` (only `hal_flash_get_mdp`, 4
+refs), and its MDP call sites consume MDP2 device info only. So MDP3+OTP is an
+**offline package-decryption** input, not a device-behaviour input: the tool
+exists for the former and no daemon path depends on it.
 
 ## What userland reaches today
 
