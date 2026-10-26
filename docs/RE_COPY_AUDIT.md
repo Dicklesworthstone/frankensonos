@@ -491,3 +491,16 @@ exactly 1024**, and 1024 never reaches the saved registers.
 So 2.1 is a real unchecked copy but not a live overflow on this build: the field it copies is either
 0 or 1024. Making it a >2100 overflow needs a setter path that stores the length unconditionally, or
 the `>1024` arm to be reachable through a different entry.
+
+### Correction: on the `/getaa` form the span is only the share, not the path
+
+The span is computed once (`stw 9, 5244(1)` at `0x1007ae70`) and never updated, and it is
+`second_slash - url_base` where the search starts at `url+14` (past `x-file-cifs://`). For
+`x-file-cifs://host/SHARE/file.jpg` the second slash is the one *after the share*, so the span is about
+18 bytes — the long filename never enters it. A bare `/<A*N>` path has no slash after `+14` at all, so it
+takes the NULL branch and may not reach the copy either.
+
+So finding 1 is real code but the `/getaa` shape does not drive it with a long span. The live 4010→408
+break on long paths is therefore **something else**, and the promising target is finding 2.1
+(`0x101ccc9c`, a 2 100-byte stack buffer whose setter only stores values *longer than 1 024* and imposes
+no upper bound) — that one is fed by a "long value" field, not by a URL split.
