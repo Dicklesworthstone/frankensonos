@@ -749,3 +749,20 @@ answers **500 / 401** (invalid args) for every shape tried — bare URI, URI plu
 `DesiredFirstTrackNumberEnqueued` 0 and 1, `EnqueueAsNext` 0 and 1, `x-file-cifs://` and
 `http://` URIs. So the argument contract for AddURIToQueue is the next thing to read, not the
 DIDL.
+
+### The serializer's title+blob carrier: `SetAVTransportURI` with a DIDL
+
+The 1112-byte serializer (`0x10219cfc`, API subsystem, record type `0x98`) reads its blob from
+`obj+3672` with the length at `obj+4768` (`0x10219874` `addi r31,r28,3672`, `0x10219878`
+`lwz 0,1096(r31)`). The buffer is 1100 bytes: `memset(obj+3672, 0, 1100)` at `0x1021a3f8` and a
+template copy from `0x1044cc34` at `0x1021a41c`.
+
+The only request that fills both fields is `SetAVTransportURI` with a DIDL carrying `dc:title` and
+`r:resMD` — the title is the string, `r:resMD` is the blob. Verified live on `.84`: the call returns
+200 and the player stores the track (the read-back `TrackMetaData` is rebuilt from the URI, so the
+stored blob is not echoed).
+
+The API route family that owns the record is in the descriptor table at `0x1044cc34` —
+`upnp`, `upnpMusicServices`, `upnpQueue` — i.e. `POST /api/v1/players/local/upnp*?protocolVersion=1`.
+Those routes answer 200 but return an empty `parameters` list even for `GetZoneGroupState`, so the
+blob cannot be read back through the proxy as it stands.
