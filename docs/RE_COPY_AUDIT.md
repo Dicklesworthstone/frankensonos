@@ -616,3 +616,26 @@ dereferenced before the next call.
 
 Both LR hits are benign because the zeroed targets land on equivalent instructions; the pointers are
 the primitive, not the return address.
+
+### 1b. SetZoneAttributes does **not** reach the splitter
+
+`SetZoneAttributes` is a DeviceProperties action: the response builder is `FUN_10320bf4`
+(`0x10320bf4`, action-table entry `0x104eb8f0`) and the request handler that calls it is
+`FUN_1015c830` (`0x1015cf9c`). `DesiredIcon` is only a *name* there, and the handler's only
+outbound call of interest is `FUN_10070300(…,"SpeakerOnly",…)` at `0x1015c8xx` — **no call to
+`0x1007ad60` and none to its three callers** (`0x101a05b4`, `0x101a0b6c`, `0x101cc6c0`).
+
+The splitter's real neighbourhood, one level up from those callers:
+
+```
+0x1007ad60 <- 0x101a06b4 (FUN_101a05b4) <- 0x101a0a38 (FUN_101a07cc) <- 0x1007f840
+0x1007ad60 <- 0x101a0c9c (FUN_101a0b6c) <- 0x101a1f04/0x101a2164 (FUN_101a1c84) <- data 0x1046f8ac
+0x1007ad60 <- 0x101cc704 (FUN_101cc6c0) <- 0x101ccc04/0x101ccc78 (FUN_101cc878), 0x101dddf8 (FUN_101ddd28) <- data 0x10477ddc
+```
+
+`0x1046f8ac` sits in a table surrounded by `Audiobooks`, `Movies`, `Playlist ID`, `Playlist
+Items` — the **ContentDirectory** browse area. `0x10477ddc` sits next to `SavedQueues`.
+
+So the SOAP `SetZoneAttributes`/`DesiredIcon` route is dead for this overflow; the reachable
+route is ContentDirectory browse (or the SavedQueues handler), and the `/getaa?u=` shape used
+in the live sweep is a different entry again.
