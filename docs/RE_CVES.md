@@ -328,6 +328,47 @@ seconds" needs ~100 MB bodies.
 Parameter-entity shapes do **not** help: `%aN;` in content parses clean (`ok=1`) in 0.3 ms at 137 KB,
 because the expansion never lands in the document.
 
+### 8d. Is there a write in expat 2.5.0? No — settled
+
+Every expat security fix published after 2.5.0 is denial of service or robustness, not a heap write:
+
+| release | CVE | class |
+|---|---|---|
+| 2.6.0 | CVE-2023-52425 | quadratic runtime on big tokens (DoS) |
+| 2.6.0 | CVE-2023-52426 | billion laughs when built without `XML_DTD` (DoS) |
+| 2.7.0 | CVE-2024-8176 | stack overflow from chained entities (DoS) |
+| 2.7.2 | CVE-2025-59375 | dynamic-memory amplification to OOM |
+| 2.8.0 | CVE-2026-41080 | too little SipHash entropy (hash flooding) |
+| 2.8.5 | CVE-2026-93990 | high surrogate accepted (damage downstream, not in expat) |
+
+The one in-window CVE that *is* a write, CVE-2026-102633 (integer overflow in `expat_realloc`, 32-bit
+only, heap overflow), is version-gated **2.7.2–2.8.5**: the vulnerable `expat_realloc` shape arrived with
+the 2.7.2 alloc tracker. 2.5.0 allocates through `MALLOC`/`REALLOC` at each site instead, and each site is
+guarded — `poolGrow` bails on `blockSize < 0`, `storeAtts` on
+`(unsigned)m_attsSize > (size_t)(-1) / sizeof(ATTRIBUTE)`, `addBinding` on both
+`len > INT_MAX - EXPAND_SPARE` and `(unsigned)(len + EXPAND_SPARE) > (size_t)(-1) / sizeof(XML_Char)`.
+
+Measured, not just read: built `R_2_5_0` with `-fsanitize=address,undefined` and drove eight shapes —
+200 k attributes on one element, a 4 MiB attribute value, billion laughs, 200 k entity refs inside one
+attribute value, 200 k nested elements, 100 k namespace declarations, a 2 MiB namespace URI, and the
+`#812` out-of-order-entity-close reproducer with `XML_StopParser` — whole-buffer and chunked at 64, 128,
+256, 512, 1024 and 4096 bytes. **Zero ASan/UBSan reports.** The 4 MiB token at 64-byte chunks is the
+slowest (quadratic, as expected) and still clean.
+
+Two corrections to §5b while measuring:
+
+- The daemon's expat is built **without `XML_DTD`**. The string `requested feature requires XML_DTD
+  support in Expat` is present and `XML_DTD` occurs exactly once in the whole binary, inside it. So
+  parameter entities and external DTD are out, and CVE-2023-52426 (the no-`XML_DTD` billion laughs)
+  applies rather than being excluded.
+- The wrapper `FUN_1038d8b0` does **not** hand the body over in one call: it splits at UTF-8 character
+  boundaries and calls `XML_Parse(parser, p, len, 0)` per segment, carrying a partial multi-byte
+  character in `parser+8`. The chunks are still large, so CVE-2023-52425 stays DoS-only, but "a single
+  call to XML_Parse" is not literally true.
+
+CVE-2026-77214 (over-read) stays unreachable: the only expat entry point called anywhere is
+`0x1041ced4` (`XML_Parse`), six times, and no 3-argument `XML_ParseBuffer` call site exists.
+
 The six `XML_Parse` call sites are `0x1038d890`, `0x1038d9b0`, `0x1038da3c`, `0x1038dad8`, `0x1038db30`,
 `0x1038db78` (file offsets `0x38d890` …), all inside one wrapper, all four-argument. `XML_Parse` itself is
 `0x1041ced4`.
