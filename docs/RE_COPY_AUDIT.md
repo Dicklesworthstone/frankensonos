@@ -1044,3 +1044,24 @@ format) so the intern table gets OUR strings; (b) the pump that then assigns the
 keys and fills the iterator's offset table — the writer-side sibling of
 `fcn.1007fef4`. Both are static-readable from the fetch object's vtable
 (`0x10080000`: `bctrl` via `*(obj)+0xe4`, then `FUN_101e4468` / `FUN_101e4548`).
+
+### Cache locations + lifecycle (2026-10-27, continued)
+
+- `DAT_10545c38` (abstract write side, `FUN_101e474c` mode 2) = **`/jffs/shadow2`**;
+  the read side (`FUN_1019fe30`, `0x10545c40`) = **`/jffs/shadow`**. Both are
+  `strdup`ed at init (`0x1000d3c8`).
+- `fcn.10072590` / its sibling = `sonosRmDirRecursive`+`sonosMkDirRecursive` on
+  each cache dir — a cache-reset helper called from the **sharelist index**
+  machinery (`fcn.1007f868`, strings: `"sharelist"`, `"need to recover ix=%d"`,
+  `"removing index before re-indexing"`). So `/jffs/shadow{,2}` hold the
+  **sharelist index cache**; the reset fires on re-index/recovery paths.
+- The fetch object constructor `FUN_101e4468` installs vtable `PTR_FUN_10478a98`
+  (slot +8 = `0x1035d160` recv-with-deadline, +0x30 = `0x1035b778` size check)
+  — the stream class behind `FUN_101e474c`'s mode pump.
+
+Net: the attacker-served `/abstract` lands in a **cache** directory whose
+lifetime is governed by the sharelist re-index cycle — persistence across
+reboot is conditional (cache reset timing), not guaranteed. For the H14 chain
+persistence doesn't matter (single-shot SetAVTransportURI → fetch → iterate →
+NUL happens within one request), but for any future "persist a file on /jffs"
+lane the reset conditions need mapping.
