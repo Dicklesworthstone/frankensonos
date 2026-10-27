@@ -1085,3 +1085,26 @@ abstract carry intern-table keys that resolve to attacker strings):
 2. Serve an abstract whose records reference keys that decode to attacker
    strings; entry URIs then carry controlled bytes through the splitter window.
 3. Mapped-vs-unmapped tail discriminator → crash delta → aimed `bctrl`.
+
+### Probe-gate status (2026-10-27 evening)
+
+After the one successful end-to-end fetch, the device stopped dialing entirely —
+new ports, fresh share names, getaa tickles, and Play all return 200 without any
+outbound connection (verified: listener live, `wc -c` 0 on server logs across
+~15 attempts over ~40 min). The gate is stateful inside anacapad (sharelist
+index + likely a per-host cooldown), not URI-keyed. `.86` rejects the same
+setter with UPnPError 1023 (different setter path on S2 — its own RE task).
+
+Trigger candidates for the next session, in order of cheapness:
+1. Map the re-index trigger: `fcn.1007f868`'s recovery branch needs
+   `0x1007c39c(*(obj+0x5110)) != 0` — find what sets `obj+0x5110` (likely a
+   "shares changed" flag from the CIFS registration path).
+2. The indexer worker `fcn.100800b0` (frame 0x1e180) — read its entry conditions;
+   it is invoked from the sharelist state machine (`0x100809a0` region).
+3. Device reboot of `.84` (power-cycle or updater path) clears in-memory state —
+   guaranteed fresh window for the discriminator, needs owner approval per
+   device discipline.
+
+Once any of these reopens the fetch window, the discriminator is a single
+served-abstract swap: mapped tail (`0x105464b0`) vs unmapped tail (`0x41414141`)
+at the saved-r31 window → crash delta → aimed `bctrl`.
