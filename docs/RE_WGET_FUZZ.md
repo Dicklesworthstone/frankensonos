@@ -149,8 +149,9 @@ and at 20 s (`timeout(1)` rc 124 both times). Upstream fixed exactly this in 1.2
 (`3459024bf404`) by re-arming the alarm on every line read (`set_alarm()` at the top of
 `fgets_trim_sanitize`).
 
-Impact: the updater waits on the child, so the update neither completes nor errors — the unit stays
-in the update state until something else reboots it. Pre-auth, no memory corruption.
+Impact: the updater waits on the child with a bare blocking `waitpid(pid, &status, 0)`
+(`0x100090fc`) and imports no `alarm` at all, so the update neither completes nor errors — the unit
+stays in the update state until something else reboots it. Pre-auth, no memory corruption.
 
 ## Finding 2 — 1-byte heap underflow on a scheme-less `?`/`#` Location
 
