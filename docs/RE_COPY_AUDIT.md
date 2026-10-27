@@ -1250,3 +1250,17 @@ PresentationMap sync verdict (this round): the re-index scheduler is fed by
 `presentationMapVersion`/`presentationMapUri` argument names — a **cloud
 music-services config** event, not LAN-reachable. `SetZoneAttributes` probed
 (200) but carries different arguments.
+
+### 2026-10-27 night II: S2 art-cache negative marking + worker pool
+
+After the pin runs, `.86` began returning instant 404s for new art names on the
+same source (negotiate offers visible but the chain stops before QUERY_INFO;
+QINFO patch count 0). The art cache **negatively marks the source after failed/
+pinned fetches**; recovery took >1 min of cooldown. This matches the .84-side
+probe-gate behavior — the art cache marks per-source state, and the worker pool
+recovers slowly after pins.
+
+Practical consequence for the crash ladder: each ladder rung needs (a) a fresh
+source key (host:port variant) OR (b) a post-pin cooldown, and (c) a warm-up
+shot (the first shot after cooldown often 404s before the pool is warm —
+matches "2-3 shots per run" in the prior lane's recipe).
