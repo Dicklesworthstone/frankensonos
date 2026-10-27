@@ -1024,3 +1024,84 @@ be tested on hardware.
 `li a2,1025` and `-5344` both return zero, so instruction-level claims on `-1-12` need a fixed decoder
 first. This is the same misalignment SapphireIvy hit on the S2 binary, and it is why 14b is stated at
 string level only.
+
+## 15. Window refresh 2026-09-26 … 2026-10-26 (uwk, 2026-10-27)
+
+Fresh NVD API sweep (`pubStartDate=2026-09-26`, `pubEndDate=2026-10-27`,
+keyword per component) against the MEASURED versions — mbedTLS 2.28.x (57.23,
+wbz correction), 3.6.6 (S2), libsmb2 4.0.0, busybox 1.24.2 (57.23 rootfs),
+expat 2.5.0 (86.10), curl static-unpinned, glibc 2.3.5, wpa_supplicant 2.8,
+zlib 1.2.11. Every in-window hit is in the table with its version verdict;
+nothing is summarised away silently.
+
+### 15a. Per-version match table
+
+| CVE | pub | component @measured version | version match? | surface-reachable? |
+|---|---|---|---|---|
+| CVE-2026-110712 / -110713 / -110714 | 10-14 | libsmb2 4.0.0 | **yes** ("through 6.2"; ASan-proven on the 4.0.0 tag, §7c) | **yes, pre-auth** — rogue SMB server via `/getaa`; but runs outside `anacapad` (§9a-bis). Daemon-restart primitive, not RCE. Carried, unchanged. |
+| CVE-2026-115505 | 10-22 | libsmb2 4.0.0 | yes | **no** — DCE/RPC NDR needs `smb2_share_enum_async`, no call site on the `/getaa` path. |
+| CVE-2026-115506 | 10-22 | expat 2.5.0 (S2); S1 unpinned-but-affected | yes | **yes, DoS only** — measured twice (§8c/§8c-bis); the daemon build has NO guard (`XML_DTD` compiled out), 558-byte body = 156 s of worker time. |
+| CVE-2026-102633 | 09-29 | expat 2.5.0 | **no** — 2.7.2–2.8.5 only | n/a |
+| CVE-2026-77214 | 10-07 | expat 2.5.0 | yes as version matter | **no** — `XML_ParseBuffer` never called (§5b, settled at instruction level). |
+| CVE-2026-113351 | 10-20 | expat 2.5.0 | **no** — 2.7.2–2.9.0, and the daemon frees+recreates rather than resets | n/a |
+| CVE-2026-88833 | 10-13 | busybox **udhcpc** — the 57.23 rootfs ships a SEPARATE `sbin/udhcpc` binary (36,592 B PPC, version string `0.9.8`), not the 1.24.2 applet | version of the standalone client unproven against the advisory range (busybox git udhcpc) | **plausible, pre-auth via rogue DHCP server** — carried from §9b; the standalone binary's lineage is the open check. |
+| CVE-2026-88829 / -88834 | 10-13/10-14 | busybox httpd | **n/a** — `strings bin/busybox \| grep httpd` = 0 hits on the 57.23 rootfs; no `httpd` applet (§8a re-verified today) | n/a |
+| CVE-2026-88838 / -88842 / -90954 / -92205 / -108119 | 10-13…10-21 | busybox mount/dpkg/dpkg-deb/libarchive/tar | **n/a** — none of those applets compiled in (§8a) | n/a |
+| CVE-2026-76014 | 08-19 (pre-window) | busybox wget `-T` NULL deref, ≤1.30.1 | version range covers 1.24.2 | **local-only** (`-T` is a CLI argument; the updater's execl line is fixed, not attacker-controlled) |
+| CVE-2026-92392 | 10-14 | curl (static, unpinned) | 8.12.0–8.22.0, **unproven** (§5a: six null probes) | upload half now proven (§11b: mime + h2 linked, POST literal); version still unpinnable offline. **The one live unresolved candidate.** |
+| CVE-2026-86414 | 10-20 | curl | 7.10.8–8.22.0 (curl.se) | **no** — needs an HTTP proxy in the chain (`CURLOPT_PROXY`); the daemon talks direct to LAN/cloud endpoints. |
+| CVE-2026-86415 | 10-20 | curl | 8.21.0–8.22.0 | **no** — Schannel client-cert cache; the build is mbedTLS-backend. |
+| CVE-2026-94266 | 10-20 | curl | 7.62.0–8.22.0 | **no** — `CURLINFO_EFFECTIVE_URL` credential leak; the daemon never calls getinfo (strings: no `CURLINFO_`). |
+| CVE-2026-86412 | 10-20 | curl | 8.18.0–8.22.0 | **no** — cookie-jar file rewrite; daemon uses no cookie jar. |
+| CVE-2026-107928 / -87865 / -92387…-92389 | 10-14/10-20 | curl | various | **no** — GnuTLS/libssh2/FTP/IMAP/TFTP surfaces absent from the binary (§11a feature filter). |
+| CVE-2026-88836 | 10-13 | busybox | **rejected upstream** (Red Hat: not a security vulnerability) | n/a |
+| mbedTLS | — | 2.28.x (57.23) / 3.6.6 (S2) | **zero in-window CVEs** — NVD keyword sweep 2026-09-26…10-27 returns 0; the advisory index's latest batch is 2026-07 (CVE-2026-50580/50586/50588 etc., fixed in 3.6.6+/2.28 LTS EOL 2025-03: 2.28.10 is the last 2.28 release and predates those fixes — the 57.23 2.28.x lib is 2.28.10-or-never, so the July batch's 2.28 fixes are **already in or the branch never got them**; none is published in-window either way) | n/a |
+| nghttp2 | — | libnghttp2 (static, in curl) | **zero in-window CVEs** (CVE-2026-58055 is the nghttpx proxy; CVE-2026-27135 is May, pre-window) | n/a |
+| sqlite | — | not in either rootfs as a server surface | zero relevant in-window hits (all 16 are consumers) | n/a |
+| glibc | — | 2.3.5 (57.23) | CVE-2026-8674 (DNS search-domain assert) affects 2.26–2.44 | **no** — version out of range (already §8b). |
+| kernel | — | 2.4.22-rincon (S1 -1-16) / 2.6.35 (S1 -1-12) | §10 carries the full named-file sweep | no new in-window sink |
+
+### 15b. Sonos advisory watch (SSA page diffed 2026-10-27)
+
+`https://www.sonos.com/en-us/security-advisory` lists exactly five advisories:
+SSA-2024-0001, SSA-2024-0002, SSA-2025-0001, SSA-2025-0002, SSA-2026-0001.
+**No new SSA in the window.**
+
+**SSA-2026-0001 (2026-03-25, CVE-2026-4149) — folded in, per the bead comment.**
+Advisory text (fetched and read today): "All S2 Systems. Affected versions:
+All releases prior to Sonos Systems release v17.7 (build 92.0-72171) … A
+vulnerability exists in the SMB protocol client implementation within Sonos S2
+systems which allows an attacker to force a protocol downgrade to a vulnerable
+version … a specially crafted SMB response … potentially leading to arbitrary
+code execution. This issue … does not affect Sonos S1 systems."
+
+- Version window: our S2 fleet is **86.10-81100 < 92.0-72171 → inside the
+  affected range.** This is the only vendor-published, version-matching,
+  pre-auth RCE-class family for hardware we own.
+- Surface: the S2 SMB *client* (libsmb2 4.0.0) driven by a rogue server — the
+  same `/getaa?u=x-file-cifs://` door as §7c, plus the downgrade angle the
+  advisory names. Note the two CVE families (4149 downgrade-RCE; the
+  110712/13/14 read set) are distinct bugs in the same client.
+- Caveat measured earlier (§11/RE_GETAA_DATALENGTH.md): our S2 build requires
+  SMB reply `DataOffset == 0x50` — that specific 4149 shape may already be
+  gated in 86.10 even though the version floor is not met. Re-verify on
+  `.86`/`.81` before claiming.
+
+### 15c. Verdict
+
+**Zero NEW version-matching, surface-reachable CVEs in 2026-09-26…2026-10-26**
+beyond what §7c/§8/§11 already carry (libsmb2 read set, expat DoS, udhcpc
+candidate). The in-window delta this pass adds: four new curl advisories
+(86412/86414/86415/94266) — all dead on feature filters — and busybox
+CVE-2026-88829/88834 (httpd; applet absent). The mbedTLS and nghttp2 windows
+are empty. The falsifier ("zero version-matching surface-reachable CVEs") is
+**not** met only because SSA-2026-0001/CVE-2026-4149 remains an open
+version-matching RCE candidate pending an on-device downgrade-path check —
+that is the bead's surviving item, not a new finding.
+
+Sources: NVD API 2.0 keyword sweeps (exact query in the harness history),
+curl.se/docs/security.html + per-CVE pages (fetched 2026-10-27),
+mbed-tls.readthedocs.io security-advisories index (2026-03 and 2026-07 batches
+are the newest), sonos.com/en-us/security-advisory + SSA-2026-0001 page
+(fetched 2026-10-27), OpenCVE vendor=sonos (22 entries, newest
+CVE-2026-55832 tract, 2026-09 — Rust ML library, not in firmware).
