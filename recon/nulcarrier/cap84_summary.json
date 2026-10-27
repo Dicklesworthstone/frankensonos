@@ -1,0 +1,25 @@
+{
+ "AVT/SetAVTransportURI(uri)": {
+  "ok_max": 1019,
+  "first_fail": 1020,
+  "err": 714,
+  "note": "byte-precise bisect; OK at 1019, 714 at 1020"
+ },
+ "AVT/AddURIToQueue(uri)": {
+  "ok_max": 1019,
+  "first_fail": 1020,
+  "err": 804,
+  "note": "1000-1019 OK, 1020+ 804"
+ },
+ "AVT/SetNextAVTransportURI(uri)": {
+  "pending": "701 gate (not playing); during-playback run in flight"
+ },
+ "AVT/CreateSavedQueue(Title arg)": {
+  "ok": "accepts 3000+ byte plain Title (>2100 carrier candidate)",
+  "note": "stored title browses back truncated to 1023; carrier must be checked against the +4208 field path"
+ },
+ "CDS/CreateObject(FV:2,title in dc:title)": {
+  "err": 402,
+  "note": "arg shape wrong in this run; doc previously accepted 2046-byte titles into FV:2 with stored cap 1023"
+ }
+}

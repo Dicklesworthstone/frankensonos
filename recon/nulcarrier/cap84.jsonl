@@ -1,0 +1,35 @@
+{"action": "AVT/SetAVTransportURI(uri)", "alive": true, "err": null, "http": "200?", "len": 500, "result": {}, "ts": "01:39:57.317Z"}
+{"action": "AVT/SetAVTransportURI(uri)", "alive": true, "err": null, "http": "200?", "len": 1000, "result": {}, "ts": "01:40:57.465Z"}
+{"action": "AVT/SetAVTransportURI(uri)", "alive": true, "err": "714", "http": "200?", "len": 2000, "result": "", "ts": "01:41:57.625Z"}
+{"action": "AVT/SetAVTransportURI(uri)", "alive": true, "err": "714", "http": "200?", "len": 2100, "result": "", "ts": "01:42:57.752Z"}
+{"action": "AVT/SetAVTransportURI(uri)", "alive": true, "err": "714", "http": "200?", "len": 2200, "result": "", "ts": "01:43:57.868Z"}
+{"action": "AVT/SetAVTransportURI(uri)", "alive": true, "err": "714", "http": "200?", "len": 3000, "result": "", "ts": "01:44:57.998Z"}
+{"action": "AVT/SetAVTransportURI(uri)", "alive": true, "err": "714", "http": "200?", "len": 3800, "result": "", "ts": "01:45:58.133Z"}
+{"action": "AVT/SetNextAVTransportURI(uri)", "alive": true, "err": "701", "http": "200?", "len": 500, "result": "", "ts": "01:46:58.264Z"}
+{"action": "AVT/SetNextAVTransportURI(uri)", "alive": true, "err": "701", "http": "200?", "len": 1000, "result": "", "ts": "01:47:58.398Z"}
+{"action": "AVT/SetNextAVTransportURI(uri)", "alive": true, "err": "701", "http": "200?", "len": 2000, "result": "", "ts": "01:48:58.554Z"}
+{"action": "AVT/SetNextAVTransportURI(uri)", "alive": true, "err": "701", "http": "200?", "len": 2100, "result": "", "ts": "01:49:58.717Z"}
+{"action": "AVT/SetNextAVTransportURI(uri)", "alive": true, "err": "701", "http": "200?", "len": 2200, "result": "", "ts": "01:50:58.837Z"}
+{"action": "AVT/SetNextAVTransportURI(uri)", "alive": true, "err": "701", "http": "200?", "len": 3000, "result": "", "ts": "01:51:58.971Z"}
+{"action": "AVT/SetNextAVTransportURI(uri)", "alive": true, "err": "701", "http": "200?", "len": 3800, "result": "", "ts": "01:52:59.371Z"}
+{"action": "AVT/AddURIToQueue(uri)", "alive": true, "err": null, "http": "200?", "len": 500, "result": {"FirstTrackNumberEnqueued": "13", "NewQueueLength": "13", "NumTracksAdded": "1"}, "ts": "01:53:59.522Z"}
+{"action": "AVT/AddURIToQueue(uri)", "alive": true, "err": null, "http": "200?", "len": 1000, "result": {"FirstTrackNumberEnqueued": "14", "NewQueueLength": "14", "NumTracksAdded": "1"}, "ts": "01:54:59.664Z"}
+{"action": "AVT/AddURIToQueue(uri)", "alive": true, "err": "804", "http": "200?", "len": 2000, "result": "", "ts": "01:55:59.795Z"}
+{"action": "AVT/AddURIToQueue(uri)", "alive": true, "err": "804", "http": "200?", "len": 2100, "result": "", "ts": "01:56:59.998Z"}
+{"action": "AVT/AddURIToQueue(uri)", "alive": true, "err": "804", "http": "200?", "len": 2200, "result": "", "ts": "01:58:00.141Z"}
+{"action": "AVT/AddURIToQueue(uri)", "alive": true, "err": "804", "http": "200?", "len": 3000, "result": "", "ts": "01:59:00.315Z"}
+{"action": "AVT/AddURIToQueue(uri)", "alive": true, "err": "804", "http": "200?", "len": 3800, "result": "", "ts": "02:00:00.553Z"}
+{"action": "AVT/CreateSavedQueue(title)", "alive": true, "err": "402", "http": "200?", "len": 500, "result": "", "ts": "02:01:00.684Z"}
+{"action": "AVT/CreateSavedQueue(title)", "alive": true, "err": "402", "http": "200?", "len": 1023, "result": "", "ts": "02:02:00.797Z"}
+{"action": "AVT/CreateSavedQueue(title)", "alive": true, "err": "402", "http": "200?", "len": 1024, "result": "", "ts": "02:03:00.959Z"}
+{"action": "AVT/CreateSavedQueue(title)", "alive": true, "err": "402", "http": "200?", "len": 2000, "result": "", "ts": "02:04:01.148Z"}
+{"action": "AVT/CreateSavedQueue(title)", "alive": true, "err": "402", "http": "200?", "len": 2100, "result": "", "ts": "02:05:01.317Z"}
+{"action": "AVT/CreateSavedQueue(title)", "alive": true, "err": "402", "http": "200?", "len": 2139, "result": "", "ts": "02:06:01.431Z"}
+{"action": "AVT/CreateSavedQueue(title)", "alive": true, "err": "402", "http": "200?", "len": 3000, "result": "", "ts": "02:07:01.613Z"}
+{"action": "CDS/CreateObject(FV:2,title)", "alive": true, "err": "402", "http": "200?", "len": 500, "result": "", "ts": "02:08:01.732Z"}
+{"action": "CDS/CreateObject(FV:2,title)", "alive": true, "err": "402", "http": "200?", "len": 1023, "result": "", "ts": "02:09:04.853Z"}
+{"action": "CDS/CreateObject(FV:2,title)", "alive": true, "err": "402", "http": "200?", "len": 1024, "result": "", "ts": "02:10:04.980Z"}
+{"action": "CDS/CreateObject(FV:2,title)", "alive": true, "err": "402", "http": "200?", "len": 2000, "result": "", "ts": "02:11:05.110Z"}
+{"action": "CDS/CreateObject(FV:2,title)", "alive": true, "err": "402", "http": "200?", "len": 2100, "result": "", "ts": "02:12:05.238Z"}
+{"action": "CDS/CreateObject(FV:2,title)", "alive": true, "err": "402", "http": "200?", "len": 2139, "result": "", "ts": "02:13:05.356Z"}
+{"action": "CDS/CreateObject(FV:2,title)", "alive": true, "err": "402", "http": "200?", "len": 3000, "result": "", "ts": "02:14:05.529Z"}
