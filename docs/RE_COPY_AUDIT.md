@@ -1224,3 +1224,29 @@ Reopen routes, final: (1) device reboot of `.84` (owner approval; cold sharelist
 guarantees the fallback window); (2) a music-services config change (cloud
 side); (3) deeper RE of the presentation-map sync handler for a LAN-reachable
 sub-path. All infrastructure and probe scripts committed and reusable.
+
+### 2026-10-27 night: S2 crash ladder results (bead 1w3, getaa vehicle)
+
+Ran the FileNameLength ladder on **.86** (S2 — whose getaa dials SMB2 directly,
+no HEAD gate) with the committed `nc0drop.py`:
+
+| configuration | declared FileNameLength | result |
+|---|---|---|
+| `--fndelta 45045` | 90100 | full chain ran; **worker pinned** (3 shots "closed without response"), daemon recovered |
+| `--pad 16384` (2-byte margin, 16KiB body) | 16286 | 200, survived |
+| `--pad 32768` | 32670 | 200, survived |
+| `--fndelta 60000` | 120020 | full chain; **worker pinned** (2 shots), recovered |
+
+The over-read demonstrably **runs 90–120 KB past the 64 KiB client buffer** on
+the live S2 daemon and the heap absorbs it — no fault through this vehicle yet.
+The pin is the documented pre-auth DoS; the crash needs the receive-buffer's
+heap neighborhood groomed so the walk hits an unmapped page (allocator
+feng-shui on the art worker — next root-shaped work item). Also confirmed:
+the S2 getaa SMB2 path has **no HEAD gate** (dials SMB2 directly, repeatable
+per request) — unlike .84 whose getaa is now HEAD-gated with a cached fallback.
+
+PresentationMap sync verdict (this round): the re-index scheduler is fed by
+`fcn.1007e150` ← `0x10128330` whose dispatcher matches
+`presentationMapVersion`/`presentationMapUri` argument names — a **cloud
+music-services config** event, not LAN-reachable. `SetZoneAttributes` probed
+(200) but carries different arguments.
