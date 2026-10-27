@@ -232,8 +232,9 @@ carries `anacapad` only). Do not carry these findings to `.86`/`.81` without a b
 
 The updater is the only consumer, so a device verdict means serving a crafted `.upd` and firing
 `ZoneGroupTopology#BeginSoftwareUpdate` at `.202` (57.23, the S1 unit already used for the poison
-runs). One experiment per unit per minute; the version is expected to stay `57.23-74170` because the
-signature is stale in every case.
+runs). One experiment per unit per minute. All four used the **genuine** installed package, so the
+version stays `57.23-74170` (same version, nothing to install); the point of every run is the byte
+count and the daemon timeline, not a version change.
 
 | # | shape | predicted | discriminates | result |
 |---|---|---|---|---|---|
@@ -241,57 +242,6 @@ signature is stale in every case.
 | D2 | D1 but the response is `HTTP/1.1 100 Continue` forever | fetch never ends, no abort, no version change | finding 1 on hardware | **PASS** — see below |
 | D3 | D1 but a `302` with `Location: ?x` first | `bad address ''`, fetch ends, daemon restarts | finding 2 on hardware | **PASS** — see below |
 | D3b | control for D3: the same 302 with a full `http://` Location | full read | redirects are followed at all | **PASS** — see below |
-
-### D3b — redirect control, `.202`, 2026-10-27
-
-Same shape as D3 but `Location: http://192.168.4.160:8123/57.23-74170-1-16.upd`.
-
-```
-served_bytes      5606749/5606749 in 2 request(s)
-http_first_down   6.1s
-http_recovered    5.1s
-version           57.23-74170 -> 57.23-74170
-```
-
-Two requests and the whole file: the 302 is followed and the body arrives. So D3's zero bytes is
-the `?x` form, not "redirects are broken".
-
-### D3 — scheme-less `?` Location, `.202`, 2026-10-27
-
-`re-probe.py --redirect "?x"` (the first request gets `302 Location: ?x`, which resolves to the same
-path plus a query), 120 s window.
-
-```
-served_bytes      0/5606749 in 1 request(s)
-http_first_down   6.1s
-http_recovered    5.4s
-icmp_first_down   6.1s
-version           57.23-74170 -> 57.23-74170
-```
-
-The fetch ended with **zero** bytes on the first request and the updater aborted cleanly (daemon
-back in 5.4 s, version untouched, `/tmp/upgradeinfo` cleared). That is finding 2 on hardware: the
-underflow empties the host, `getaddrinfo("")` fails, and wget dies before the body.
-
-### D2 — endless `100 Continue`, `.202`, 2026-10-27
-
-`re-probe.py --hundred`, 150 s window.
-
-```
-served_bytes      0/5606749 in 1 request(s)
-http_first_down   6.1s
-http_recovered    -   (never, inside the window)
-icmp_first_down   6.1s
-version           57.23-74170 -> (unreadable at the end)
-```
-
-The fetcher never took a byte and never gave up: the daemon went down at 6.1 s and stayed down for
-the remaining ~144 s of the window. Recovery only came when the harness exited and closed the
-socket, at which point wget got EOF, the updater aborted, and the unit came back on
-`57.23-74170` with `/tmp/upgradeinfo` cleared.
-
-So finding 1 on hardware is worse than "a stuck update": the player's HTTP daemon is down for as
-long as the stream continues. Pre-auth, one request, no memory corruption.
 
 ### D1 — chunked delivery, `.202`, 2026-10-27
 
@@ -319,6 +269,57 @@ D1 is already proven offline, end to end: `chunk_srv.py --chunked 8192` over the
 `57.23-74170-1-16.upd` (5 606 749 B, sha256 `e19a7bb2…`) reassembles byte-identically under the
 device argv (same sha256, rc 0, 2.2 s). So a device D1 that does not deliver all 5 606 749 bytes is
 a device-side finding, not a harness artefact.
+
+### D2 — endless `100 Continue`, `.202`, 2026-10-27
+
+`re-probe.py --hundred`, 150 s window.
+
+```
+served_bytes      0/5606749 in 1 request(s)
+http_first_down   6.1s
+http_recovered    -   (never, inside the window)
+icmp_first_down   6.1s
+version           57.23-74170 -> (unreadable at the end)
+```
+
+The fetcher never took a byte and never gave up: the daemon went down at 6.1 s and stayed down for
+the remaining ~144 s of the window. Recovery only came when the harness exited and closed the
+socket, at which point wget got EOF, the updater aborted, and the unit came back on
+`57.23-74170` with `/tmp/upgradeinfo` cleared.
+
+So finding 1 on hardware is worse than "a stuck update": the player's HTTP daemon is down for as
+long as the stream continues. Pre-auth, one request, no memory corruption.
+
+### D3 — scheme-less `?` Location, `.202`, 2026-10-27
+
+`re-probe.py --redirect "?x"` (the first request gets `302 Location: ?x`, which resolves to the same
+path plus a query), 120 s window.
+
+```
+served_bytes      0/5606749 in 1 request(s)
+http_first_down   6.1s
+http_recovered    5.4s
+icmp_first_down   6.1s
+version           57.23-74170 -> 57.23-74170
+```
+
+The fetch ended with **zero** bytes on the first request and the updater aborted cleanly (daemon
+back in 5.4 s, version untouched, `/tmp/upgradeinfo` cleared). That is finding 2 on hardware: the
+underflow empties the host, `getaddrinfo("")` fails, and wget dies before the body.
+
+### D3b — redirect control, `.202`, 2026-10-27
+
+Same shape as D3 but `Location: http://192.168.4.160:8123/57.23-74170-1-16.upd`.
+
+```
+served_bytes      5606749/5606749 in 2 request(s)
+http_first_down   6.1s
+http_recovered    5.1s
+version           57.23-74170 -> 57.23-74170
+```
+
+Two requests and the whole file: the 302 is followed and the body arrives. So D3's zero bytes is
+the `?x` form, not "redirects are broken".
 
 ## Reuse
 
