@@ -246,9 +246,19 @@ def gen_cases():
 
 
 def classify(rc, stderr):
-    """rc: negative = signal (as in bash), or qemu's 139 for SIGSEGV passthrough."""
+    """rc: negative = signal (as in bash), or qemu's 139 for SIGSEGV passthrough.
+
+    RC124 (timeout, measured on the mixed-case run 2026-10-27) is the
+    declared-size >> actual-data shape: busybox 1.24.2 wget waits for the
+    remaining bytes of an under-delivered chunk until timeout, having written
+    everything that arrived (out.bin holds all served body bytes, not a
+    corrupted prefix). It is a hang-on-short-body, not a fault; classified
+    separately so a real signal stands out.
+    """
     if rc in (0, 1, 4, 5):
         return 'CLEAN'   # wget's own error codes (1 = server err, 4/5 network fail)
+    if rc == 124:
+        return 'WAIT_SHORT_BODY'
     if rc in (139, -11):
         return 'SIGSEGV'
     if rc in (134, -6):
@@ -291,7 +301,7 @@ def run_case(host, name, resp, outdir):
     stderr = se.stdout.strip()
     cls = classify(rc, stderr)
     # keep the response bytes for any non-clean case
-    if cls != 'CLEAN':
+    if cls not in ("CLEAN", "WAIT_SHORT_BODY"):
         os.makedirs(outdir, exist_ok=True)
         with open(os.path.join(outdir, f'{name}.resp.bin'), 'wb') as fh:
             fh.write(resp)
