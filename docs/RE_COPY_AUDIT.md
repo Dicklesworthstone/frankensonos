@@ -1108,3 +1108,30 @@ Trigger candidates for the next session, in order of cheapness:
 Once any of these reopens the fetch window, the discriminator is a single
 served-abstract swap: mapped tail (`0x105464b0`) vs unmapped tail (`0x41414141`)
 at the saved-r31 window → crash delta → aimed `bctrl`.
+
+### 2026-10-27 evening: the HEAD probe gates EVERYTHING — dual-mode discovery
+
+Raw sniff resolved the day's contradictory observations. The `/getaa` art
+client **also** sends `HEAD /S HTTP/1.1` before any SMB — the HTTP probe is
+universal for `x-file-cifs` sources. Device behavior splits on the probe:
+
+| HEAD probe result | client behavior |
+|---|---|
+| **200** (any HTTP server) | pure-HTTP art fetch: `GET /S/f.jpg`, `GET /S/folder.jpg` — **no SMB2 at all** (observed: 4 shots, all HTTP) |
+| **fail/close** | this morning: SMB2 fallback ran once (full NEGOTIATE→READ chain). **Now:** client gives up in ~1 s, no SMB2 — the sharelist cache has since registered the source as probed |
+
+Consequences:
+1. The morning's "SMB2 chain via getaa" ran during the **first-ever contact**
+   with that host:port (cold sharelist). After registration, the HTTP probe
+   result is cached and the SMB2 fallback no longer engages.
+2. My crash ladder (`--fndelta 45045`, above the computed `buflen + 24576 =
+   90111` threshold from RE_CVES §7c — prior runs used 148/32788/16286/32670,
+   **all below it**) never reached the SMB2 QUERY_INFO parser because the
+   client never left HTTP mode.
+3. The dual HTTP+SMB server works (built and committed); it just can't help
+   while the client is in cached-HTTP mode.
+
+Reopen paths for the SMB2 fallback (in cost order): map the sharelist
+re-index trigger (`fcn.1007f868` recovery branch / what sets `obj+0x5110`); read
+indexer `fcn.100800b0` entry conditions; or reboot `.84` (owner approval —
+cold sharelist guarantees the morning's fallback window).
