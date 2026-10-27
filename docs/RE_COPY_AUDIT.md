@@ -932,3 +932,48 @@ Open unknowns, all cheap:
    encodable).
 3. Device confirmation: span-2139 run with name bytes 0x30..0x33 = unmapped vs
    mapped pointer → crash/behavior delta proves the redirected dispatch fires.
+
+## 2026-10-27 H14 device round 2: the setter path is HTTP, the chain is via `abstract`
+
+Raw-sniff of the setter's outbound connection (`x-file-cifs://host:port/S`):
+the client sends **`HEAD /S HTTP/1.1`** (User-Agent `Linux UPnP/1.0 Sonos/`) —
+anacapad's own "CIFS" client speaks **HTTP**, not SMB. Every earlier "1 s close
+with no SMB" observation was this HEAD probe. The libsmb2 client belongs to the
+`/getaa` art pipeline only; the two SMB stacks never mix.
+
+`fcn.101cbe80`'s iterator FILE comes from `FUN_1019fe30` → `snprintf(buf, 0x400,
+"%s/abstract", …)` → `fopen` — the client downloads **`<share>/abstract`** (HTTP)
+and iterates `{u32, u32}` records (`FUN_101a000c`: `fread(&local_18, 8, 1)`,
+`FUN_10072914(local_18)` → `FUN_103897b8(..., "x-file-cifs://" + …, 0x401)` per
+entry). So the whole chain is HTTP-downloadable content:
+
+```
+SetAVTransportURI x-file-cifs://host:port/SEG2139/x.mp3
+  → anacapad HTTP client: HEAD /SEG2139  (probe)
+  → GET /SEG2139/abstract                (record file)
+  → fcn.101cbe80: 0x101cbb38 stores the URI (span = len(SEG2139) — 2.1e's
+    measured span equals the raw share length; host:port validated on .84)
+  → 0x101a016c loop: per record, splitter 0x101cc878 copies obj+4212/4208
+    into a 2160-byte frame; the terminator NUL at sp+span+17 = sp+2139+17
+    zeroes saved-r31's low byte (the map's span-2139 slot)
+  → restored r31 = (sp+0x1520) & ~0xFF → vtable fetch from attacker-influenced
+    stack window (decoded host buffer 0x10c0..0x14C1 budget 0x401, or decoded
+    name 0x14d0..0x150F, or key 0x1510) → lwz/lwz/bctrl at 0x101a0224
+```
+
+Corrections this round:
+- The morning's "SetAVTransportURI 200 + full SMB chain" reading was wrong — that
+  chain in the impacket log was the concurrent `/getaa` fetch. The setter never
+  spoke SMB; "silent r31 zeroing" from 2.1e was inferred, not observed, and the
+  copy likely never ran (no `abstract` file existed on any probed share).
+- span == raw share-segment length (validated: 2136/2139/2100-char segments all
+  200 with port-in-URI; the URI parser accepts `host:port` and the client dials it).
+- The HTTP probe is `HEAD /<share>` — the share name is sent raw (2118-char share
+  accepted by impacket; the HEAD probe carries it as the path).
+
+Remaining unknown (single): the `abstract` record format (what `FUN_10072914`
+consumes — likely `{u32 offset-into-file, u32 len}` or NUL-terminated string
+pairs; readable from `FUN_10072914` / the writer side). Then the device test is:
+serve `HEAD` + `/abstract` with a record whose encoded entry URI span lands the
+NUL in the saved-r31 slot, tails mapped vs unmapped → crash delta = PC-control
+proof; iterate tail bytes toward a chosen `bctrl` target.
