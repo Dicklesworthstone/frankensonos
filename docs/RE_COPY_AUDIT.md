@@ -1135,3 +1135,27 @@ Reopen paths for the SMB2 fallback (in cost order): map the sharelist
 re-index trigger (`fcn.1007f868` recovery branch / what sets `obj+0x5110`); read
 indexer `fcn.100800b0` entry conditions; or reboot `.84` (owner approval —
 cold sharelist guarantees the morning's fallback window).
+
+### The sharelist indexer state machine decompiled (`fcn.100800b0`)
+
+Loop structure (per cycle): wait on flags (`param+0x4d09/0x4d0a/0x4ce4`) →
+"processing index" → validate each sharelist entry (`FUN_1007cc3c` parse +
+`FUN_1007be14` validate, entries at `param+0xa0`, stride **0x4c4**) →
+replication check → per-share indexing `FUN_1007d21c(obj+0x5110, …)` →
+`FUN_1007fef4` (fetch) inside → failed entries marked, "indexing reported
+err=%d for %s" → **`FUN_100725c8()` = the `/jffs/shadow2` cache reset runs at
+the END of every cycle** → `.version` state flags cleared.
+
+Consequences:
+1. `/jffs/shadow2/abstract` is **ephemeral** — wiped after each index cycle;
+   persistence across cycles needs the abstract to be re-downloaded each time
+   (fine — the fetch happens inside the same cycle before the reset).
+2. The sharelist entries (0x4c4-byte records at `param+0xa0`) are parsed from
+   **`/jffs/shadow/shares.xml`** (`FUN_1007cc3c`) — the device's own share
+   registrations. Setter-driven registrations feed this file.
+3. The per-share indexer `FUN_1007d21c` is the parent of the mode-0/1/2
+   download pump (`FUN_101e474c`) — the listing parse (rings → intern table)
+   and the abstract fetch both hang off it.
+4. The gate observed on the wire (no re-fetch after the first) = the indexer's
+   per-cycle dedup: shares already indexed in this cycle are skipped unless
+   the re-index flag (`param+0x4d07`/`0x4ce8/0x4ce9` dance) is set.
