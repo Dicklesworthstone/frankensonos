@@ -1332,3 +1332,18 @@ code; or trace the client's post-desync socket state via the device side.
 This is reply injection into the art worker's SMB client inside an
 established session — attacker-chosen message type, mids, and payload — the
 strongest primitive on this chain short of memory corruption.
+
+### 2026-10-27 night VI: payload injection fires per-READ — double-patch identified
+
+`--payload` flag added (payload file → `build_followup_read_reply` body).
+Wire result: injection fires on EVERY READ in the chain (f.jpg read mid 9→12,
+folder.jpg read mid 12→15) — the patch patches the folder.jpg READ too,
+producing TWO mid-12 frames (one from the f.jpg desync surplus, one patching
+the real folder.jpg READ). The art worker's HTTP response aborts
+(`IncompleteRead`) on all shots — the marker payload doesn't reach the HTTP
+layer because the worker's response dies in the double-injection confusion.
+
+Next refinement: single-shot injection per connection (patch only the FIRST
+READ; skip subsequent) so exactly one injected frame lands, answering the
+folder.jpg READ; then the art worker's flow may complete and deliver the
+marker payload to the HTTP layer.

