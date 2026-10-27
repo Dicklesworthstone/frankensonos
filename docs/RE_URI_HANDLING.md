@@ -84,3 +84,44 @@ accepts adds, so the 800 is the transport state, not the firmware.
   check.
 - `file:///` being 804 everywhere means the `Configure.dev` boot file still
   cannot be a playback source even if it exists.
+
+## Ghidra decompile of the x-file-cifs matcher (FUN_1007ad60, rea/ghidra 12.1.4, 2026-10-27)
+
+Full pseudo-code captured (evidence ev_c2d05827, digest 97315d6f). The
+overflow at 0x1007b2c4 is the tail reconstruction copy, and the decompile
+makes the unbounded span precise:
+
+```c
+if (-1 < iVar18) {
+  strcpy(acStack_10c0, acStack_cb0);           // best-match rebuild
+  ...
+  if (!bVar3) {                                // the x-file-cifs (non-URL) branch
+    pbVar8 = abStack_14d0;                     // 1040-byte stack buffer
+    memcpy(pbVar8, param_2, (size_t)local_64); // prefix: local_64 = distance to 2nd '/' in URI — UNBOUNDED vs param_2 length
+    if (pbVar21 == 0) abStack_14d0[(int)local_64] = 0;
+    else {
+      memcpy(auStack_480, pbVar20, (size_t)pbVar21);      // URI span again, unbounded
+      FUN_103897b8(auStack_480, pbVar8 + (int)local_64, 0x401 - (int)local_64);
+    }
+    pbVar21 = pbVar21 + (int)local_64;
+  }
+  FUN_1007ab78(local_58, pbVar8, pbVar21, acStack_10c0, local_5c + 1);
+}
+```
+
+The guard-free `memcpy(abStack_14d0, param_2, local_64)` with
+`abStack_14d0` a 1040-byte stack buffer and `local_64` derived solely from
+`strchr(param_2+0xe,'/')` distance is the stack write: a URI whose second
+slash sits >1040 bytes in overflows here before the clamped
+`FUN_103897b8(…, 0x401 - local_64)` (which itself underflows when
+`local_64 > 0x401`, passing a huge size_t). This matches the live .202
+measurement (404 up to N≈3900, 408/000 from N≈5300): the write happens on
+the 404 path. The span walk that computes `local_5c`/best-match also walks
+`pbVar21` from `strlen(pcVar7)` with no 1040 clamp before the
+`memcpy(abStack_14d0, pcVar7, pbVar21 - pcVar7)` at the match site — second
+unbounded copy, same buffer.
+
+Offsets for the reproducer: buffer `abStack_14d0` at frame -0x14d0;
+`acStack_10c0`/`acStack_cb0` (each 1040) follow; return path via
+`FUN_1007ab78` consumes the reconstructed string. S1-only (86.10 has no
+span copy per §11a).
