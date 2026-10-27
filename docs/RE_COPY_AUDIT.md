@@ -1285,3 +1285,27 @@ to shape the top chunk; (b) test at the exact threshold band (90111 ± small)
 where the walk ends just past a freshly-mmap'd region; (c) audit
 `FUN_101a3114`/the getaa handler's allocation order (the buffer's neighbors
 are deterministic given the request sequence).
+
+### 2026-10-27 night IV: READ reply injection — attacker PDU delivered past the desync boundary
+
+Upgraded `nc0drop.py --inject <frame>`: the READ reply's Buffer is padded to
+the client's requested 65535 bytes, then the crafted NetBIOS-framed PDU is
+appended, `DataLength = 65535 + len(frame)`. Per RE_GETAA_DATALENGTH's
+desync mechanics (`DataLength` returned as payload length with no comparison
+against the requested count; surplus stays in the socket; next parse starts
+mid-stream), the injected frame lands **exactly at the position where the
+client's parser resumes**.
+
+Wire result on `.86` (3 shots): the full SMB2 chain ran, 65629 bytes
+delivered, the art worker's HTTP response aborted mid-stream
+(`IncompleteRead`) — the desync happened on schedule with attacker bytes at
+the boundary. The client-side parse of the injected PDU is the next
+verification: the frame must carry the session's mid/sid/credits to be
+accepted (a valid second READ reply or an ECHO), after which **arbitrary
+SMB2 reply injection inside the established session** is proven — the
+strongest primitive short of memory corruption on this chain (reply
+injection into the art worker's SMB client, attacker-controlled message
+type and payload).
+
+Infra: injection frame builder at `/tmp/h14_inject_build.py` (committed
+next), `nc0drop.py --inject` flag committed.

