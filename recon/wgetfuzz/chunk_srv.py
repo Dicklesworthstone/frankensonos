@@ -23,7 +23,14 @@ def serve_one(s, body, a):
             break
         req += d
     print("REQ " + req.split(b"\r\n", 1)[0].decode("latin-1"), flush=True)
-    if a.repeat == 1:
+    if a.chunked:
+        c.sendall(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                  b"Content-Type: application/octet-stream\r\n\r\n")
+        for i in range(0, len(body), a.chunked):
+            part = body[i:i + a.chunked]
+            c.sendall(b"%x\r\n" % len(part) + part + b"\r\n")
+        c.sendall(b"0\r\n\r\n")
+    elif a.repeat == 1:
         c.sendall(body)
     else:
         n = 0
@@ -49,6 +56,8 @@ def main():
     ap.add_argument("--keep", action="store_true", help="do not close after the write")
     ap.add_argument("--serve", type=int, default=1,
                     help="accept this many connections, serving the same body each time")
+    ap.add_argument("--chunked", type=int, default=0,
+                    help="serve the file as a chunked body in chunks of this many bytes")
     ap.add_argument("--repeat", type=int, default=1,
                     help="send the file this many times (0 = until the client goes away)")
     a = ap.parse_args()

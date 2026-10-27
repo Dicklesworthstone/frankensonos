@@ -227,6 +227,11 @@ signature is stale in every case.
 D1 is the control that makes D2/D3 meaningful; without it a "hang" could be the stale-URL loop
 already documented in `ROOT_LANE_STATUS.md`.
 
+D1 is already proven offline, end to end: `chunk_srv.py --chunked 8192` over the genuine
+`57.23-74170-1-16.upd` (5 606 749 B, sha256 `e19a7bb2…`) reassembles byte-identically under the
+device argv (same sha256, rc 0, 2.2 s). So a device D1 that does not deliver all 5 606 749 bytes is
+a device-side finding, not a harness artefact.
+
 ## Reuse
 
 ```
