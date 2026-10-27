@@ -133,8 +133,8 @@ body is re-parsed as chunk-size lines (61 819 of 70 000 bytes emitted, then
 response line". A server that keeps answering `HTTP/1.1 100 Continue\r\n\r\n` keeps wget in that
 loop indefinitely.
 
-`-T` does not stop it. The alarm is armed once, around `connect`, and the handler only dies while
-`G.connecting` is set:
+`-T` does not stop it, for two independent reasons. First, the alarm is armed once, around
+`connect`, and the handler only dies while `G.connecting` is set:
 
 ```
 100105a0  bl alarm            ; alarm(G.timeout_seconds)
@@ -144,8 +144,15 @@ loop indefinitely.
 100105bc  stb 0,36(29)        ; G.connecting = 0
 ```
 
+Second, the read loop's own timeout is an **inactivity** counter, not a total one: `second_cnt` is
+reset to `G.timeout_seconds` after every successful `fread` (`lwz 27, 32(31)` at `0x10010d24`), and
+only a `safe_poll` timeout decrements it (`addic. 27, 27, -1` at `0x10010d78`, die at `0x10010d80`).
+An endless stream of complete responses is never inactive, so the counter never reaches zero.
+
 Measured: `-T 3` against a server streaming `HTTP/1.1 100 Continue\r\n\r\n` — still running at 8 s
-and at 20 s (`timeout(1)` rc 124 both times). Upstream fixed exactly this in 1.29.0
+and at 20 s (`timeout(1)` rc 124 both times). Control: a `Content-Length: 1000` body with 10 bytes
+delivered and the socket held open **does** die, `wget: download timed out`, at ~5 s. So the bug is
+specific to a stream that keeps producing responses. Upstream fixed exactly this in 1.29.0
 (`3459024bf404`) by re-arming the alarm on every line read (`set_alarm()` at the top of
 `fgets_trim_sanitize`).
 
