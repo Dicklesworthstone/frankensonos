@@ -1187,3 +1187,24 @@ Next concrete steps: (a) confirm the data path from a sharelist listing to
 `fcn.101a0b6c`'s `r4` argument (static, one decompile: `FUN_101a1c84`); (b)
 serve a listing whose file names carry a 1100-byte final segment; (c) browse
 the share via ContentDirectory; (d) observe the LR smash.
+
+### 2026-10-27 night: FUN_101a1c84 decompiled — the abstract-path stack copy is BOUNDED
+
+`FUN_101a1c84` (the "itplist" per-track processor) confirmed as the abstract
+consumer: bsearch over the abstract's offset table → track URI (param_3, my
+served bytes) → `sonosDecodePercentEncodedStr(uri, local_1070, 0x401, …)` →
+`FUN_101a0b6c(obj→+0xf4, decoded, …)` — the unbounded stack-copy function.
+
+**But the copy is bounded on this path**: the decoded URI is capped at 0x401
+(1025) bytes, the last-segment copy therefore ≤ ~1008 bytes, and the 0x450
+frame has 1048 bytes of runway before saved r24. The 9sd 4000-byte test that
+"landed on slack" was the SetAVTransportURI caller path (no 0x401 cap); the
+abstract path cannot exceed the decode cap. The LR smash via this specific
+route is **not reachable** — honest negative, the chain closes here.
+
+What remains un-audited on the abstract path: the mode-0/1 ring pumps (the
+listing bytes parsed during download — a different parser from the iterator),
+and the second `FUN_101a0b6c` call inside `FUN_101a1c84` uses the same bounded
+buffer. The unbounded-copy risk stays with the SetAVTransportURI-side callers
+of `fcn.101a0b6c` (0x101ccc04 region — the splitter family), where the
+2.1c/2.1e NUL primitive already lives.
