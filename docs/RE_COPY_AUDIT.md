@@ -989,3 +989,27 @@ client populates when it mounts/lists a share. The remaining work is
 mechanical: identify the intern keys the mount assigns (dump the table after a
 live mount — the guest qemu monitor can read `0x105480DC`), serve a matching
 `abstract`, and run the mapped-vs-unmapped tail discriminator.
+
+### `FUN_101e474c` decoded: `/abstract` is a DOWNLOAD, written to a local cache
+
+Decompiled the second `%s/abstract` user (`0x101e4a3c`, inside `fcn.101e474c`,
+called only from `fcn.101e4a84` ← `fcn.1007fef4` — the anacapad own-client fetch
+pipeline). It is a mode-dispatched stream pump:
+
+| mode | behavior |
+|---|---|
+| 0 | `FUN_10079f30(obj[0x2152], buf)` — push bytes into ring A (`0x1038ed9c`), flag at obj+0x1DAA |
+| 1 | `FUN_10079f58(obj[0x2152], buf)` — push bytes into ring B (obj+0x1040), same flag pattern |
+| 2 | `open(DAT_10545c38 + "/abstract", O_WRONLY\|O_CREAT, 0600)` + `write()` the received stream |
+
+All three receive via vtable `+8` (recv with a +5 s deadline) and size-check via
+vtable `+0x30`, in ≤0x19000-byte chunks (4-byte-aligned when `param_4` set).
+`DAT_10545c38` is the local cache directory global.
+
+Consequence: **the `abstract` file the iterator reads is downloaded verbatim from
+my server** (mode 2 saves exactly the bytes sent) — no on-device format
+transformation on the write path. The intern-key semantics live on the parse
+side (the ring consumer pump, one level deeper), but the DELIVERY half of the
+chain is now fully pinned: serve `HEAD`, serve `abstract` bytes; the device
+caches them locally and `FUN_101a000c` `fseek`/`fread`s the cache as
+`{u32,u32}` records.
