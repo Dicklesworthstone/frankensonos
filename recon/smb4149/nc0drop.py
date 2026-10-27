@@ -40,6 +40,32 @@ if "--pad" in sys.argv:
 
 _ORIG_QFI = SMB2Commands.smb2QueryInfo if hasattr(SMB2Commands, "smb2QueryInfo") else None
 
+# Phase 3b: READ DataLength surplus (RE_GETAA_DATALENGTH: >0x4000 => 9.4 s
+# worker pin with three retries). DLEN>0 sets DataLength = real + DLEN.
+DLEN = 0
+if "--dlen" in sys.argv:
+    DLEN = int(sys.argv[sys.argv.index("--dlen") + 1])
+
+_ORIG_RD = SMB2Commands.smb2Read
+
+
+def patched_rd(connId, smbServer, recvPacket):
+    res = _ORIG_RD(connId, smbServer, recvPacket)
+    if DLEN:
+        try:
+            resp = res[0][0]
+            real = len(resp['Buffer'])
+            if real:
+                resp['DataLength'] = real + DLEN
+                print('READ patch: real=%d declared=%d' % (real, real + DLEN), flush=True)
+        except Exception as e:
+            print('rd patch err %r' % e, flush=True)
+    return res
+
+
+if DLEN:
+    SMB2Commands.smb2Read = staticmethod(patched_rd)
+
 
 def patched_qfi(connId, smbServer, recvPacket):
     res = _ORIG_QFI(connId, smbServer, recvPacket)

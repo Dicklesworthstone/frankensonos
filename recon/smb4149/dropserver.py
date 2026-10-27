@@ -173,8 +173,14 @@ def negotiate_reply(profile: str, offered: list[int], mid: int, sid: int) -> byt
         struct.pack_into("<H", b, len(b) - 2, ctx_off)  # NegotiateContextOffset (tail)
         body = bytes(b)
     else:
-        body += secblob
-        body += struct.pack("<HH", 0, 0)
+        # impacket-canonical (the proven chain ran against impacket): secmode=1,
+        # empty security buffer (offset 128, len 0), no negotiate contexts.
+        body = struct.pack("<HHHH", 65, 1, chosen, 0)
+        body += GUID
+        body += struct.pack("<IIII", caps, 65536, 65536, 65536)
+        body += struct.pack("<Q", 0)                    # system time
+        body += struct.pack("<Q", 0)                    # server start time
+        body += struct.pack("<HHH", 64 + 64, 0, 0)      # secoff, seclen, ctxoff
     hdr[6:8] = struct.pack("<H", 1)
     return bytes(hdr) + body
 
@@ -272,6 +278,7 @@ class DropServer:
             # dialect list: StructureSize u16, DialectCount u16 at +2 of the
             # fixed part (request offset 64+2); dialects u16 each
             dcnt = struct.unpack("<H", pdu[66:68])[0]
+            log("neg fixed raw %s" % pdu[64:112].hex(), self.fh)
             offered = [struct.unpack("<H", pdu[68 + 2 * i:70 + 2 * i])[0]
                        for i in range(min(dcnt, 8))]
             log("offered dialects: %s" % [hex(d) for d in offered], self.fh)
