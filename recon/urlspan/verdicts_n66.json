@@ -1,0 +1,90 @@
+{
+ "host_primary": "192.168.4.84 (S1 Play:5, 57.23-74170, STOPPED, least-critical)",
+ "date": "2026-10-27",
+ "routes": {
+  "getaa_u_encoded": {
+   "gate": "N<=3950: 404 clean; N>=4000: rc56 instant 0.000s, daemon healthy",
+   "probes": [
+    1000,
+    3000,
+    5250,
+    5300,
+    5304,
+    5308,
+    5312,
+    5316,
+    5320,
+    5324,
+    5328,
+    5332,
+    5336,
+    5340,
+    5344,
+    5348,
+    5352
+   ],
+   "verdict": "404 to ~3950, rc56 from 4000; never reached the 5352 LR band"
+  },
+  "getaa_u_raw": {
+   "gate": "identical to bare path: 404 through 4016, 408+reset from 4017/4020",
+   "probes": [
+    4000,
+    4016,
+    4020,
+    4100,
+    4500,
+    5000,
+    5250,
+    5300,
+    5332,
+    5352,
+    5400,
+    5600
+   ],
+   "verdict": "404 at 4000(raw)/4016(bare), 408-with-reset above; gate is scheme-agnostic"
+  },
+  "bare_path": {
+   "gate": "404 through 4016, 408 from 4017 (byte-precise on .84)",
+   "probes": [
+    3950,
+    4000,
+    4010,
+    4011,
+    4012,
+    4013,
+    4014,
+    4015,
+    4016,
+    4017,
+    4018,
+    4019,
+    4020,
+    4100
+   ],
+   "verdict": "gate boundary 4016/4017"
+  },
+  "adduritoqueue_didl_s2_style": {
+   "gate": "x-file-cifs rejected 804 at ANY length on .84 current transport state (30 bytes -> 804); mp3radio control ACCEPTED",
+   "verdict": "x-file-cifs rejected 804 at ANY length on .84 (30 bytes -> 804); mp3radio control ACCEPTED"
+  },
+  "setavtransporturi_didl": {
+   "gate": "402 Invalid CurrentURI at every length",
+   "verdict": "transport-gated"
+  },
+  "adduritoqueue_on_202": {
+   "verdict": "800 at every length (30/2000/4000/5352) \u2014 transport state degraded per RE_URI_HANDLING"
+  }
+ },
+ "liveness": {
+  "method": "tight 50ms /status/zp poll for 12-21s after each probe",
+  "result": "1-2 dead polls per 12s window IDENTICAL with and without probes = bench noise; no restart gap attributable to any N",
+  "conclusion": "rc56 = daemon's own instant reset of over-gate URIs, NOT a crash"
+ },
+ "frame_map_check": {
+  "prologue_verified": "0x1007ad60 stwu -0x14e0; saved slots re-read from the binary (CR@0x1494, r18@0x14a8, r24@0x14c0, r26@0x14c8, r27@0x14cc, r28@0x14d0, r30@0x14d8, r31@0x14dc, LR@0x14e4)",
+  "predicted_LR_band": "span >= 5352 (dst offsets 5348..5351)",
+  "measured_gate": "4016/4017, scheme-agnostic, upstream of the splitter",
+  "delta": "gate < LR band by 1336 bytes"
+ },
+ "conclusion": "PC control via the 0x1007b2c4 span copy is NOT reachable on 57.23 through any measured wire route: a scheme-agnostic URI length gate at 4016/4017 bytes aborts (408 + connection reset) before the splitter runs, and the LR overwrite needs span 5352. The bead falsifier's spirit is confirmed: no N in 5250..5352 ever reached the copy; every verdict flips at the parser gate, not at the frame."
+}
