@@ -1065,3 +1065,23 @@ reboot is conditional (cache reset timing), not guaranteed. For the H14 chain
 persistence doesn't matter (single-shot SetAVTransportURI → fetch → iterate →
 NUL happens within one request), but for any future "persist a file on /jffs"
 lane the reset conditions need mapping.
+
+### Wire-confirmed end-to-end + the sharelist cache (2026-10-27, final round)
+
+Served `HEAD` + `GET /abstract` over HTTP on a fresh port; the device's setter
+path hit **both** (`HEAD /<SEG2139>`, `GET /<SEG2139>/abstract`), parsed the
+served bytes, and immediately fetched an **entry** (`/folder.jpg`) — the chain
+runs end-to-end from one unauthenticated `SetAVTransportURI` to attacker-fed
+record parsing. Follow-up probes on the same/fresh ports stayed silent: the
+pipeline runs on the **sharelist re-index cycle**, not per-setter; the cache
+(`shares.xml`, `.version` stamp, `/tmp/smb/spt_%d_%u` index files — strings at
+`0x1044f700`–`0x1044f8f0`) short-circuits repeat probes until re-index/recovery
+(`"Rejecting invalid sharelist"`, `"removing index before re-indexing"`).
+
+Remaining engineering to PC control (single unknown left: make the served
+abstract carry intern-table keys that resolve to attacker strings):
+1. Producer pump analysis (mode-0/1 ring consumers) OR qemu live dump of
+   `0x105480DC` after one real fetch — learn the key→string assignment.
+2. Serve an abstract whose records reference keys that decode to attacker
+   strings; entry URIs then carry controlled bytes through the splitter window.
+3. Mapped-vs-unmapped tail discriminator → crash delta → aimed `bctrl`.
