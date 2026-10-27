@@ -136,3 +136,26 @@ being driven through that exact sequence.
 
 40-segment bursts on device (2/2) stayed PLAYING 150 s with no restart, so the split there
 likely takes the suppressed branch. Device recipe still open.
+
+## Update 2026-10-27 — S2 SMB downgrade CONFIRMED on the wire (nc0 closed)
+
+`.86` (86.10-81100), one unauthenticated `/getaa?u=x-file-cifs://…` request against a
+malicious SMB2 server (`recon/smb4149/nc0drop.py`, impacket vehicle):
+
+- The client offers **4 dialects pre-auth** (`0x0202, 0x0210, 0x0300, 0x0302`,
+  SecurityMode=0, caps 0x44, `libsmb2-<pid>` ClientGuid). The shipped .so's ANY
+  table omits 3.1.1 — vendor drift from tag 2ef9bb7 (which offers 5).
+- **A forced 2.0.2 answer completes the full chain pre-auth** (SESSION_SETUP NTLMSSP →
+  TREE_CONNECT → CREATE → QUERY_INFO → READ): the SSA-2026-0001 downgrade premise
+  holds; the art caller does not pin `vers=`/`sign=`. 3.0.2 also completes; 2.1 is
+  accepted at the SMB layer but the art pipeline bails after the root query.
+- Through the downgraded 2.0.2 session, the proven **READ `DataLength` surplus**
+  (declared 16709 vs 325 real) reproduces the per-request worker pin (~9-20 s,
+  three round trips); the daemon self-recovers. This is a remote
+  **pre-auth worker-pin primitive**, not a crash.
+- The FileNameLength crash groom (RE_CVES §7c 6/6-wedge recipe) did **not** transfer
+  through impacket's allocator — allocation-specific. Honest negative.
+
+Bead `frankensonos-s2-cve-2026-4149-downgrade-nc0` closed with per-phase evidence
+(commits 0f5b277c, aec507ad, ba8b1b86). No write-class shape known in the
+downgraded parsers; RCE remains unproven.
