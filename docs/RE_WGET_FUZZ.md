@@ -50,6 +50,10 @@ writes `Server:`, `ServerIP:`, `Content-length:` into it (`0x10011114`, `0x10011
 it is not the stock `-C`/`--no-cache` flag. A harness that omits the report path is testing a
 different invocation.
 
+The report open is **fatal**: `-C /nonexistent/dir/x` answers `wget: can't open
+'/nonexistent/dir/x': No such file or directory` and no request is made. So an unwritable
+`/var/run` (full tmpfs) stops the fetch before it starts.
+
 ## Offline rig (css)
 
 `~/fsonos-s20/` holds the busybox + its own libs; `qemu-ppc` (10.2.1, Ubuntu on css) runs the
