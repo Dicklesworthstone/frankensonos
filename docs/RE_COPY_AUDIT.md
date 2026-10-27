@@ -1013,3 +1013,34 @@ side (the ring consumer pump, one level deeper), but the DELIVERY half of the
 chain is now fully pinned: serve `HEAD`, serve `abstract` bytes; the device
 caches them locally and `FUN_101a000c` `fseek`/`fread`s the cache as
 `{u32,u32}` records.
+
+### The `/abstract` file format decoded (iterator side)
+
+`FUN_1019feb8(itr)` (called at the top of `FUN_101a000c`) reveals the layout:
+
+```
+itr[0] = FILE*            (the locally cached <share>/abstract)
+itr[2] = record limit
+itr[3] = next entry index
+itr[4] = offset-table base (file offset)
+offsets[] = 0x400 × u32 at file offset itr[4]
+```
+
+Seek: `fseek(FILE, itr[4] + (itr[3] & 0x3ff) * 4, SEEK_SET)` → `fread` 4 bytes =
+the entry's file offset; remaining-records guard is `itr[2] - itr[3] ≤ 0x400`.
+`FUN_101a000c` then reads the 8-byte record at that offset: `{u32 a, u32 b}`,
+each passed to `FUN_10072914` → `0x101a2b3c(0x105480DC, key)` → pointer-table
+lookup → a string/intern object whose bytes `FUN_103897b8` copies into the
+entry URI buffer (`"x-file-cifs://" + host + "/" + name`, 0x401 cap).
+
+So `/abstract` = `[u32 table_offset][u32 limit][offset table…][records…]` (exact
+header order still to confirm from the producer side), records hold intern keys,
+and the intern table is populated by the mode-0/1 ring pumps fed from the same
+fetch (`FUN_101e474c` modes 0/1 → `FUN_10079f30/58` → `0x1038ed9c` byte rings on
+`obj[0x2152]` / `obj+0x1040`).
+
+Remaining: (a) which bytes the mode-0/1 pumps expect (string-blob section
+format) so the intern table gets OUR strings; (b) the pump that then assigns the
+keys and fills the iterator's offset table — the writer-side sibling of
+`fcn.1007fef4`. Both are static-readable from the fetch object's vtable
+(`0x10080000`: `bctrl` via `*(obj)+0xe4`, then `FUN_101e4468` / `FUN_101e4548`).
