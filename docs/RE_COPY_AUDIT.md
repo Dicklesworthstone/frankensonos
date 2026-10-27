@@ -885,3 +885,50 @@ Live on the coordinator: `SetAVTransportURI` with a 2 139-byte share (`x-file-ci
 span 2 139) answers **200** and the daemon survives (`zp` 200). So the copy runs with the span that
 zeroes the caller's `r31` — the corruption is silent rather than fatal, which is what a low-byte zeroing
 of a still-mapped pointer looks like.
+
+## 2026-10-27 H14 (bead frankensonos-1w3): the span-2139 NUL is a PC-control chain
+
+Caller of the splitter loop resolved: `0x101cbfe4` in `fcn.101cbe80` (frame 0x2560)
+constructs the iterator at **`sp+0x1520`** (`addi r29, r1, 0x1520` → `0x1019fda0`:
+`{0, r4, r5, 0}`, FILE* filled at +0 by `0x1019fe30`) and passes it as `param_3`
+(`r5`) to `0x101a016c`, which saves it as its `r31`.
+
+The dispatch after the splitter returns is confirmed at instruction level
+(`0x101a0224`): `lwz r9, 0(r31)` / `lwz r9, 0xc(r9)` / `bctrl`, re-dispatched every
+loop iteration (also `+0x10` at `0x101a01d4` and `+8` at `0x101a026c`). The span-2139
+NUL zeroes the low byte of that saved `r31`, so every later dispatch runs on
+`(sp+0x1520) & ~0xFF`.
+
+Frame map of `fcn.101cbe80` (all offsets from its own `sp`):
+
+| offset | content |
+|---|---|
+| +0x10 | URI object (setter `0x101cbb38` target, `r30`) |
+| +0x1090 | scratch (copied toward +0xe region) |
+| +0x10c0 | decoded host buffer (`r27`) |
+| +0x14d0 | decoded name buffer, 0x40 bytes (`sonosDecodePercentEncodedStr`, `r28`) |
+| +0x1500..0x150F | **name-buffer bytes 0x30..0x3F** |
+| +0x1510 | lookup key (16 B, `sth 0` at +0x1510) |
+| +0x1520 | **the iterator (`r31` of `0x101a016c`)** |
+| +0x2530/0x2534 | ints; +0x2548..0x255C saved regs |
+
+Consequence: `(sp+0x1520) & ~0xFF` = `sp+0x1500` exactly when `sp ≡ 0x00 (mod 0x100)`
+(otherwise `sp+0x1400..0x14F0`). At `sp+0x1500` the "vtable pointer" fetched by
+`lwz r9, 0(r31')` is **decoded-name bytes 0x30..0x33 — attacker bytes** (percent-decode
+output). The chain is then `lwz r9, 0xc(r9)` → `bctrl`: PC = `*(fake_vtable + 0xc)`,
+with `fake_vtable` itself pointing back into attacker-controlled stack bytes.
+
+So the full chain is: one unauthenticated `SetAVTransportURI` with a `x-file-cifs`
+URI whose share-path span is 2139 → NUL zeroing → fake vtable from decoded-name
+bytes → `bctrl` to a chosen address. No heap groom needed — the fake vtable and
+(if `fake_vtable` is aimed back into the name buffer) the final target are both
+the same 64-byte decoded buffer.
+
+Open unknowns, all cheap:
+1. `sp mod 0x100` at `fcn.101cbe80` (constant per call path; read once via a
+   crash-address or qemu).
+2. Whether `sonosDecodePercentEncodedStr` can emit `0x00` bytes (else the fake
+   vtable pointer can't contain a zero byte — affects which PLT addresses are
+   encodable).
+3. Device confirmation: span-2139 run with name bytes 0x30..0x33 = unmapped vs
+   mapped pointer → crash/behavior delta proves the redirected dispatch fires.
