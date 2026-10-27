@@ -1159,3 +1159,31 @@ Consequences:
 4. The gate observed on the wire (no re-fetch after the first) = the indexer's
    per-cycle dedup: shares already indexed in this cycle are skipped unless
    the re-index flag (`param+0x4d07`/`0x4ce8/0x4ce9` dance) is set.
+
+### 2026-10-27 night: the two lanes converge — fcn.101a0b6c stack copy
+
+`fcn.101a0b6c` (frame `0x450`) does `strrchr(path,'/')` → `memcpy(r1+0x10,
+lastslash+2, seg_len)` — **an unbounded path-segment copy into a stack frame
+whose saved r24–r31 sit at +0x428..0x450 and LR at +0x454**. A path segment
+longer than ~1040 bytes smashes the return address directly. This is the 9sd
+"stack copy not on the SetAVTransportURI path" — but its caller chain
+(`FUN_101a1c84` ← data `0x1046f8ac`, the ContentDirectory/browse area, sibling
+of the splitter chain `fcn.101a0b6c` ← same `0x1007ad60` CIFS-fetch family)
+is exactly where **sharelist-registered paths** flow.
+
+The 9sd live test drove it via SetAVTransportURI (wrong path → "no crash").
+The correct driver is the library/browse enumeration of a share whose LISTING
+came from my server — i.e. the H14 registration chain, then a browse.
+
+Root-shaped synthesis (all links individually proven):
+1. setter/getaa registers the CIFS source (proven)
+2. sharelist indexer fetches the listing/abstract from my HTTP server (proven)
+3. stored paths flow into the browse/library enumeration (fcn.101a1c84 family)
+4. `fcn.101a0b6c` copies the last path segment unbounded into a 0x450 frame →
+   **saved-LR control with attacker bytes** (static; length unbounded, no clamp
+   found by 9sd's sweep)
+
+Next concrete steps: (a) confirm the data path from a sharelist listing to
+`fcn.101a0b6c`'s `r4` argument (static, one decompile: `FUN_101a1c84`); (b)
+serve a listing whose file names carry a 1100-byte final segment; (c) browse
+the share via ContentDirectory; (d) observe the LR smash.
