@@ -158,6 +158,13 @@ the DER is exactly the target length (`captures/research/cve-lane/padcert.py`, `
 | B | `pss528` + 12-arc filler OID, 765 B | 25 | `0x40ae` | 765 | 5 606 749 / 5 606 749, 17 s | 23:30:48 → 23:31:15 (27 s) | 0 % loss | 57.23-74170 |
 | C | hand-built `pss512` (emLen 64 < hLen 64), 442 B | 0 | `0x764` | 442 | 5 606 749 / 5 606 749, 17 s | 23:28:30 → 23:28:56 (26 s) + second pass 23:29:05 (20 s) | 0 % loss | 57.23-74170 |
 
+**Correction 2026-10-27 (bead wbz):** "parsed before any signature check" is wrong, and the
+fixtures are inert twice over. The updater is a stage machine; the type-22 handler in the parse
+stage only *reads* the section, and the header parse plus its signature verify live in the
+write stage, which runs only after the type-17 signature verified. Separately,
+`MBEDTLS_X509_RSASSA_PSS_SUPPORT` is compiled out of the 57.23 build, so `rsassaPss` is
+rejected at the algorithm identifier before any verify. See `docs/RE_MBEDTLS_FUZZ.md`.
+
 Run class for all three: **full read, no abort**. Every byte of every variant was delivered and the bundle
 therefore parsed; the daemon restart after the transfer is the update path, not the abort point, so the
 bytes-served count is the only usable crash discriminator and it never truncated. `.202` came back on its

@@ -34,6 +34,7 @@ The signature/transport walls are settled in `UPDATE_FEED_AND_SIGNATURE.md` and
 | Devmode / S2 copies | 8h3, pfo, c4v, dlt | **live** | statement replay corpus hunt; mtmhhsetup handler |
 | Fresh CVE map | fy9, c25, qgv | **live** | component map + ranking in `RE_CVES.md` |
 | Write primitives | q57, gko, uboot, ijn | **live** | bit 22 / `/raw` / SSH-key gate |
+| mbedtls x509 (wbz) | wbz | **closed, negative** | offline harness on the device's own libmbedtls: PSS compiled out, DER surface is post-signature, no reproducible fault in 40k runs (`RE_MBEDTLS_FUZZ.md`) |
 
 ## Honest state at 2026-10-24 22:30Z
 
