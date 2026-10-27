@@ -1208,3 +1208,19 @@ and the second `FUN_101a0b6c` call inside `FUN_101a1c84` uses the same bounded
 buffer. The unbounded-copy risk stays with the SetAVTransportURI-side callers
 of `fcn.101a0b6c` (0x101ccc04 region — the splitter family), where the
 2.1c/2.1e NUL primitive already lives.
+
+### 2026-10-27 night: re-index trigger identified — cloud config sync
+
+The scheduled-reindex flag writers (`0x4d07/0x4ce8/0x4ce9`) live in
+`fcn.1007df60` ("schedule full reindex"), reached from `fcn.1007e150` ←
+`0x10128330`, whose dispatcher `strcmp`s **`presentationMapVersion` /
+`presentationMapUri`** argument-layout strings (music-services config sync).
+The re-index — and with it the `/abstract` fetch and the SMB2-fallback window —
+is driven by **cloud music-service configuration changes**, not by LAN
+requests. (`SetZoneAttributes` was probed as a candidate carrier: 200, but it
+carries ZoneName/Icon/Configuration, not the presentation-map arguments.)
+
+Reopen routes, final: (1) device reboot of `.84` (owner approval; cold sharelist
+guarantees the fallback window); (2) a music-services config change (cloud
+side); (3) deeper RE of the presentation-map sync handler for a LAN-reachable
+sub-path. All infrastructure and probe scripts committed and reusable.
