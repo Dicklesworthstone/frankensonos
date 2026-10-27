@@ -1309,3 +1309,26 @@ type and payload).
 
 Infra: injection frame builder at `/tmp/h14_inject_build.py` (committed
 next), `nc0drop.py --inject` flag committed.
+
+### 2026-10-27 night V: mid-following reply injection DELIVERED
+
+`nc0drop.py --inject --midoff N`: at each READ, the patch extracts the live
+request's `MessageID/SessionID/TreeID` from `recvPacket`, builds a complete
+second READ reply (`build_followup_read_reply(mid+N, sid, tid)`, payload =
+attacker bytes), pads the real payload to 65535, appends the frame, and sets
+`DataLength = 65625`. Wire result on `.86`, 3 shots: **65625 bytes delivered
+per request with the attacker frame at the desync boundary**; mids tracked
+per-request (9→12, 13→16, 17→20 with `--midoff 3`).
+
+Status: the injection is mechanically proven (attacker PDU delivered at the
+exact parse-resume position, correct session context). The client-side parse
+of the injected frame is not yet observable through the art handler (its HTTP
+response aborts at the desync — `IncompleteRead` — before any injected
+content would surface). Verification options: inject a valid JPEG-header
+payload and watch for it as the art response body on the recovery path;
+inject an ERROR-status reply with the client's mid and diff the getaa error
+code; or trace the client's post-desync socket state via the device side.
+
+This is reply injection into the art worker's SMB client inside an
+established session — attacker-chosen message type, mids, and payload — the
+strongest primitive on this chain short of memory corruption.

