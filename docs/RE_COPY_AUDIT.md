@@ -977,3 +977,15 @@ pairs; readable from `FUN_10072914` / the writer side). Then the device test is:
 serve `HEAD` + `/abstract` with a record whose encoded entry URI span lands the
 NUL in the saved-r31 slot, tails mapped vs unmapped → crash delta = PC-control
 proof; iterate tail bytes toward a chosen `bctrl` target.
+
+### `FUN_10072914` decoded: abstract records are keys into a 0x400-slot pointer table
+
+`FUN_10072914(key)` = `0x101a2b3c(0x105480DC, key)`: `key == 0x400` → fixed object
+`0x1054FDA8`; otherwise `ptr = *(0x105480DC + 4) + key*4` (a runtime pointer
+table, 0x400 slots, `*(tbl+4)` = array base). `FUN_10072940(key, 1)` →
+`0x101a2768(tbl, key, 1)` (getter with flag). So each 8-byte abstract record is
+`{u32 host_key, u32 name_key}` — indices into an interned-string table the CIFS
+client populates when it mounts/lists a share. The remaining work is
+mechanical: identify the intern keys the mount assigns (dump the table after a
+live mount — the guest qemu monitor can read `0x105480DC`), serve a matching
+`abstract`, and run the mapped-vs-unmapped tail discriminator.
