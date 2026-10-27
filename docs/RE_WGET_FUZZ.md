@@ -198,6 +198,12 @@ Measured: `Location: /x\x01y` produces the request line `GET /x^Ay HTTP/1.1` —
 forwarded verbatim. A `\x00` truncates the Location (the string ends there). `\x1b` and `\xff`
 survive into the path. No CRLF injection is possible because `\r`/`\n` are trimmed.
 
+## Scope: S1 only
+
+Everything here is the 57.23 model-16 (PPC) build. S2 (86.10, MIPS) is **unverified**: its rootfs
+lives inside the encrypted image and no `bin/busybox` is extracted from it (`captures/firmware/s2_overlay`
+carries `anacapad` only). Do not carry these findings to `.86`/`.81` without a binary.
+
 ## Not a bug here
 
 - `Content-Length` is validated (`< 0 || errno` → die) and cannot overflow the buffer.
