@@ -1,0 +1,97 @@
+{
+ "host": "192.168.4.84",
+ "route": "/getaa?u=",
+ "note": "every N in 5250..5352 answers curl rc56 (connection reset) instantly, 0.000 s; daemon alive after every probe; no 408 band observed on this unit",
+ "rows": [
+  [
+   "5250",
+   "0/rc56",
+   "conn-death (rc56, instant)",
+   ".84 getaa"
+  ],
+  [
+   "5300",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5304",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5308",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5312",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5316",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5320",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5324",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5328",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5332",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5336",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5340",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5344",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5348",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ],
+  [
+   "5352",
+   "0/rc56",
+   "conn-death",
+   ".84 getaa"
+  ]
+ ]
+}

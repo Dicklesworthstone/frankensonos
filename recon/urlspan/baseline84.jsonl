@@ -1,0 +1,3 @@
+{"class": "clean-404", "code": 404, "icmp": "ping-blk", "mode": "fill", "secs": 3.608, "span": 1000, "ts": "00:37:30.657Z"}
+{"class": "clean-404", "code": 404, "icmp": "ping-blk", "mode": "fill", "secs": 0.18, "span": 3000, "ts": "00:38:32.565Z"}
+{"class": "conn-death", "code": 0, "icmp": "ping-blk", "mode": "fill", "secs": 0.0, "span": 5250, "ts": "00:39:34.673Z"}
