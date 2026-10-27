@@ -1347,3 +1347,22 @@ Next refinement: single-shot injection per connection (patch only the FIRST
 READ; skip subsequent) so exactly one injected frame lands, answering the
 folder.jpg READ; then the art worker's flow may complete and deliver the
 marker payload to the HTTP layer.
+
+### 2026-10-27 night VII: MARKER — attacker payload delivered THROUGH the device
+
+`nc0drop.py` second-READ replacement mode: the reply to the folder.jpg READ
+(mid 13) is replaced with `PAYLOAD` (correct DataLength, no desync). Wire
+result on `.86`: **the getaa HTTP response body contained the injected
+payload** (`H14INJECTEDMARKER` found in the 200 response) — the device
+fetched my injected bytes via SMB2 and served them to the requesting HTTP
+client.
+
+Chain: unauthenticated `getaa` → SMB2 session to my server → second READ
+reply replaced with attacker payload → device delivers attacker content.
+
+Root significance: the art handler **decoded my served JPEG** (49-byte valid
+JPEG header+EOI with marker) — meaning the **JPEG decoder now processes
+fully attacker-controlled data from an unauthenticated request**. The JPEG
+decoder was the f4k lane's un-audited surface; it now has a live delivery
+primitive. Any decoder bug = pre-auth code execution candidate with a
+complete delivery chain.

