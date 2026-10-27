@@ -1264,3 +1264,24 @@ Practical consequence for the crash ladder: each ladder rung needs (a) a fresh
 source key (host:port variant) OR (b) a post-pin cooldown, and (c) a warm-up
 shot (the first shot after cooldown often 404s before the pool is warm —
 matches "2-3 shots per run" in the prior lane's recipe).
+
+### 2026-10-27 night III: pin is REPEATABLE on .86 (final ladder data)
+
+With the art-cache expired (`f.jpg` re-fetchable), the ladder at
+`--fndelta 60000` (declared 120020): **shot0 pinned** (connection closed, zp=0 —
+worker walked 120 KB past the buffer), shots 1–2 recovered to 200. The QINFO
+patch fired 4× (root + file queries across the shots). Also decoded the abort
+mode: requesting a NON-EXISTENT file name aborts the chain right after
+`Create` (the client never reaches the file's QUERY_INFO) — ladder shots must
+request files that exist on the share.
+
+Session total for the S2 crash lane: the over-read is **live, repeatable, and
+ controllable** (declared length fully attacker-chosen per request via the
+committed `nc0drop.py --fndelta/--pad`); the daemon survives via worker-pin +
+recovery. Converting pin → fault = heap grooming: control what the allocator
+places after the 64 KiB receive buffer so the 120 KB walk hits an unmapped
+page. Concrete next levers: (a) concurrently allocate/free large art buffers
+to shape the top chunk; (b) test at the exact threshold band (90111 ± small)
+where the walk ends just past a freshly-mmap'd region; (c) audit
+`FUN_101a3114`/the getaa handler's allocation order (the buffer's neighbors
+are deterministic given the request sequence).
