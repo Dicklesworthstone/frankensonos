@@ -1400,3 +1400,20 @@ State of the crash lane: a daemon restart WAS observed once today on .86
 (real fault), the leading recipe is the 8-concurrent over-read wave, but it
 is not yet repeatable. The cooldown/cache-marking behavior complicates the
 repeatability ladder (each wave needs fresh hostnames + cooldown).
+
+### 2026-10-27 night X: concurrency experiments — the restart trigger remains elusive
+
+Session-total: ONE daemon restart observed (SWGen 1→2), trigger run
+unidentified. Final concurrency experiments: 4×fndelta-60000 walks (360KB
+total over-read, no fault, one 200-completion at 30.7s, three 46s pin-drops);
+4×desync-65535 (3×60s timeouts = desync retry-loop pins, no READs reached —
+the chain aborted at the share-root query). The desync+concurrent+fresh-names
+alignment resisted the art-cache timing across 6 attempts.
+
+The restart's most probable recipe (from the day's evidence): the desync runs
+(--dlen 65535) were ACTIVE during the SWGen 1→2 transition — the desync's
+stream corruption (surplus bytes parsed as the next PDU) is the chaotic
+element the over-read walks lack. The next session's decisive experiment:
+desync + fndelta COMBINED on the same server (READ reply with BOTH surplus
+desync AND a padded FileNameLength over-read in the follow-up QueryInfo —
+the two primitives chained in one session), fresh names, 4-8 concurrent.
