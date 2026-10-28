@@ -1105,3 +1105,32 @@ mbed-tls.readthedocs.io security-advisories index (2026-03 and 2026-07 batches
 are the newest), sonos.com/en-us/security-advisory + SSA-2026-0001 page
 (fetched 2026-10-27), OpenCVE vendor=sonos (22 entries, newest
 CVE-2026-55832 tract, 2026-09 — Rust ML library, not in firmware).
+
+## 8. Window refresh 2026-09-28 … 2026-10-28 (CalmHawk, 2026-10-28)
+
+Full re-sweep of the last 30 days (NVD vendor=Sonos, TheHackerWire tracker, OpenCVE):
+
+- **No new Sonos-vendor CVEs in the window.** The newest vendor entries remain the tract
+  Rust CVEs (CVE-2026-75093 `Tensor::from_raw_dt_align`, CVE-2026-55832), published Aug/Sep
+  2026 — §"Recent-CVE check" above already settled both as unreachable on 57.23/86.10 (no
+  tract runtime in either build; re-check on any 97.x image).
+- **CVE-2026-4149 (ZDI-26-192, ZDI-CAN-28345, Era 300, CVSS 10.0, published 2026-04-10)** —
+  surfaced in this sweep because the tracker ranks it the fleet's only critical: an
+  unvalidated **`DataOffset` in SMB *responses***, memory access past the allocation,
+  leveraged to code execution **in kernel context**. Fixed in `83.1-61240` (2025-02-04 per
+  ZeroPath; ZDI says "fixed in 83.1-61240"), which is **below both of our builds**
+  (57.23-74170, 86.10-81100) — so it is a reproduction target at best, not a live bug.
+  Two things it does establish: (1) Sonos-class memory-corruption bugs concentrate in the
+  SMB reply parser — exactly where §7c's libsmb2 4.0.0 CVEs (110712/110713/110714/115505)
+  sit on our S2 builds; (2) on Era-300-class hardware the SMB handler runs in kernel
+  context, so the same bug class yields more than a userspace crash there. Our S2
+  libsmb2 is userspace-root (anacapad), and the QUERY_INFO over-read already gives a
+  deterministic restart primitive; the missing step on that lane is corruption → control.
+- Community prior art unchanged: NCC "Listen Up" (BH-USA 2024) and the Pwn2Own 2024
+  trio (§3) remain the only public Sonos exploit literature; no new public Sonos RE
+  releases in the window.
+
+Net for the campaign: the 0-day lanes (busybox wget chunked grammar, :1443 JSON parser,
+notify/setstring grammar, mbedtls x509, HLS ring, codec diffs) remain the only paths to a
+pre-auth corruption primitive on these builds; the freshest *named* bugs stay the four
+libsmb2 ones in §7c.
