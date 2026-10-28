@@ -1134,3 +1134,39 @@ Net for the campaign: the 0-day lanes (busybox wget chunked grammar, :1443 JSON 
 notify/setstring grammar, mbedtls x509, HLS ring, codec diffs) remain the only paths to a
 pre-auth corruption primitive on these builds; the freshest *named* bugs stay the four
 libsmb2 ones in §7c.
+
+## 16. Unpublished availability bug — pre-auth wedge of the updater fetcher (s20, 2026-10-27)
+
+Not a CVE and not in any window table: found by the s20 fuzz lane, fixed upstream in busybox
+1.29.0, still present in the 57.23 build. Recorded here because it is a pre-auth, one-request
+availability primitive on the update path.
+
+The updater fetcher is `/usr/bin/wget` (busybox 1.24.2) `execl`'d **as root, before any
+signature check**, against an attacker-chosen `BeginSoftwareUpdate` URL. Two properties of that
+build combine:
+
+- `read_response` treats status `0` and `100` as "eat the headers, read another status line", so a
+  server that keeps answering `HTTP/1.1 100 Continue` keeps wget in that loop forever.
+- `-T` does not bound it. The alarm is armed once around `connect` and the handler only dies while
+  `G.connecting` is set (`0x100105a0`–`0x100105bc`); the read loop's own timeout is an
+  **inactivity** counter reset by every successful `fread` (`0x10010d24`, decremented only on a
+  `safe_poll` timeout at `0x10010d78`). A stream that keeps producing complete responses is never
+  inactive.
+- The parent (`bin/upgrade`) waits with a bare blocking `waitpid(pid, &status, 0)` (`0x100090fc`)
+  and imports no `alarm`, so nothing else bounds the child.
+
+Measured on `.202` (57.23-74170, 2026-10-27, `re-probe.py --hundred`, 150 s window): 0 of
+5 606 749 bytes served, the HTTP daemon down at **6.1 s** and still down for the remaining ~144 s.
+Recovery came only when the harness closed the socket. One `BeginSoftwareUpdate` request, no
+memory corruption, no version change. Upstream fix `3459024bf404` (re-arms the alarm on every line
+read).
+
+Second, smaller item from the same lane: a redirect to a scheme-less `Location: ?x` writes one
+NUL byte **before** the `xstrdup`'d URL (`0x10010920`, `stb r0,-1(r29)`), i.e. into the low byte
+of the chunk size field — measured 0x11 → 0x00 under gdb. On the stock device the same store also
+empties the host, so the fetch dies at `bad address ''` before the corrupted chunk is freed (D3,
+clean abort, daemon back in 5.4 s). With `http_proxy` set the fetch survives to `free()` and
+glibc aborts the process (`free(): invalid pointer`, rc 134) after the body has been written. The
+device sets no `http_proxy`, so the crash is conditional today. Upstream fix `df45eb49acae`.
+
+Full corpus, harness and verdicts: `docs/RE_WGET_FUZZ.md`.
