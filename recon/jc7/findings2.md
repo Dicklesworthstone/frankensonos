@@ -212,3 +212,76 @@ Wire attempts with `0a010000`, `07010000`, `0a000000`, `0a020000` as a GET body,
 and `/websocket/api`, with and without `namespace:`/`x-sonos-namespace:`/`x-sonos-method:`
 headers, all still answer 400 — so either the body is not where the reader looks, or the
 400 is emitted before the reader runs. That is the open question for the next pass.
+
+## 5. The 400 is synchronous and precedes any upgrade — the frame reader is post-101
+
+Answer to the open question: **no upgrade completes before the 400.**
+
+The route layer is a tree walker, not a flat table. `/api` is a *node* whose handler
+(`0x47ab54`) builds a 40-byte route record (`0x4c3b48`) and calls the dispatcher
+`0x4c43e0`. The dispatcher:
+
+1. matches the prefix (`0x4c3b70`, `strncmp` + a `/`-or-end check) — failure emits **400**
+   via `0x4c3b14` (`li a1,400` at `0x4c443e`);
+2. resolves the version (`0x4c3c2c`): it wants `v<N>` in the remaining path and a matching
+   `version=` in the `Accept` header, and `api-version` optionally — failure emits **400**
+   (`0x4c4444`);
+3. calls the handler object's vtable slot 4 (`0x47aa98`) then slot 6 (`0x47a9b0`), then
+   re-enters the matcher (`0x4c41ac`) with whatever path is left; if the handler consumed
+   nothing, `0x4c43f8` emits **400** again.
+
+The handler object's vtable is `0x66a794` (slot 2 = next-segment `0x47a9c5`, slot 4 =
+prepare `0x47aa98`, slot 6 = handle `0x47a9b0`). Slot 4 calls
+`getBareProtocolVersionString` (`0x5f7a78`), which maps only **1 → "v1"** and **2 → "v2"**
+(table at `0x6ac2ac`) and returns `""` for anything else — so the `lechmere.N` subprotocol
+does not select the route version; the path does.
+
+Wire evidence that this is all pre-upgrade:
+
+- the 400 is returned in ~0.34 s with `Content-Type: text/plain`, `Content-Length: 0` and
+  **no `Sec-WebSocket-Accept`**;
+- a 200 KB request body does not change the timing (0.345 s vs 0.348 s), so the body is
+  never read;
+- `/api/v7` is the only versioned route that exists (`/api/v1`, `/api/v2`,
+  `/api/v1/topology` all 404); `/api/v7`, `/api/v7/`, `/api/v7/topology`, `/api/topology`
+  all 400;
+- every `Sec-WebSocket-Protocol` value (`lechmere.0/1/2/7/10`) gives a byte-identical 400.
+
+Consequence: the muse frame reader (`0x4a40b8`) cannot be what satisfies the gate. The
+gate is reached only after the route layer stops 400ing, and the missing piece is the
+*second* segment of the tree under `/api/v7` (the handler object carries 147 children at
+`+4`/`+8`, i.e. the namespace/command table), not a header and not a frame.
+
+## 6. `RAuthSplitToken` audit — clean on every malformed shape asked for
+
+`RAuthSplitToken(out, value, n)` at `0x5f8e88` (caller `0x4c3d24` passes
+`ap_request_get(req, "authorization")` and `n = 7168`):
+
+```
+5f8e9e  beqz a1, empty            ; NULL value
+5f8ea0  lb v0,0(a1); bnez v0,parse ; empty value
+5f8eb6  lb v0,0(s1); cmpi v0,32; btnez 5f8ec0; addiu s1,1; b 5f8eb6   ; skip spaces
+5f8ec2  strncasecmp(s1, "bearer ", 7) -> type 1, a1 = s1+7
+5f8ed4  strncasecmp(s1, "basic ", 6)  -> type 2, a1 = s1+6, else empty
+5f8ee4  skip spaces from a1
+5f8ef2  lbu a0,0(a2); li v0,33; neg; and; seb; beqz -> stop; addiu a2,1; b 5f8ef2
+5f8f02  cmp a2,a1; bteqz empty
+5f8f06  lw v0,80(sp)              ; n
+5f8f08  subu a2,a1                ; token length
+5f8f0a  sltu v0,a2; btnez empty   ; n < len -> empty
+5f8f0e  std::string::assign
+```
+
+| shape | result |
+|---|---|
+| NULL / empty value | empty result, no deref |
+| no scheme, or a scheme that is not `bearer `/`basic ` | empty result |
+| `bearer` with no trailing space | `strncasecmp(...,7)` fails on the NUL, so it is not treated as a scheme |
+| value exactly `bearer ` | `a1` lands on the NUL, the scan stops immediately, `cmp` equal → empty |
+| embedded NUL | the scan stops at it; the token is truncated, never overrun |
+| huge segment | bounded by `n` (7168) *before* the assign; over-long → empty |
+| missing dots | irrelevant here — this function only strips the scheme, it never splits on `.` |
+
+Both loops terminate on NUL (the space skip compares against 32, the token scan clears bit
+5 and stops on `0x00` or `0x20`), the destination is a heap `std::string`, and the only
+fixed number is a *rejection* bound. No copy/bounds bug.
