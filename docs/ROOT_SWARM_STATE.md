@@ -59,3 +59,23 @@ swarm has proven*, not protocol facts.
 No new Sonos-vendor CVEs in the last 30 days. CVE-2026-4149 (Era 300 SMB
 DataOffset OOB, CVSS 10.0, kernel context, fixed 83.1-61240) is below both our
 builds — reproduction target only. Details in `docs/RE_CVES.md` §8.
+
+## Update 2026-10-28 ~23:20Z
+
+- **frankensonos-13yv CLOSED** (omp_4 AzureCardinal): S2 3.6.6 ASan server
+  handshake — 3109+ cases, 0 findings; .86 device verdict 8/8 clean within an
+  approved window. Both falsifier arms satisfied. Commit 27e3dd9a, merged.
+- **frankensonos-81v offline verdict delivered** (omp_5 RusticIbis): 1.3.4→1.5.0
+  decode-path delta table (every fix attributed), 9 targeted triggers, 1300-case
+  sanitizer sweep — **no reachable memory-write bug**; two device-facing residues:
+  gap-fill CPU amplification (live in 1.3.4, oss-fuzz 47193 shape) and the
+  NULL-vc-entry consumer deref. Device verdicts approved on .84. Commit 055090e6,
+  merged.
+- **jc7 advanced to the route layer** (omp_2 DarkJaguar): the 400 is synchronous
+  and pre-upgrade; `/api/v7` is the only versioned route (api-version table maps
+  1→v1, 2→v2 — lechmere.N does not select version); the handler object carries
+  **147 children** (the namespace/command tree) — the missing second segment is
+  the next target. RAuthSplitToken audited clean. Commit 9c67482d.
+- New assignments: AzureCardinal → frankensonos-hd7l (MPEG-TS demuxer/ID3),
+  GoldenGull → frankensonos-v8z (setstring/notify grammar), TurquoiseForest →
+  frankensonos-1w3 (span-2139 PC-control chain) on top of s20 support.
