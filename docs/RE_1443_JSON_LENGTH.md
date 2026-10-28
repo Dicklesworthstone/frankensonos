@@ -32,31 +32,46 @@ sink with no validation anywhere on the way.
 
 ## The sink
 
-`RMuseController::execute(Header const*)` at **`0x4eb199`**. Two copies of parsed
-data with fixed sizes and no check:
+`RMuseController::execute(Header const*)` at **`0x4eb1a0`** (the `0x4eb199` in
+earlier notes is the `extend` prefix of the MIPS16 prologue).
+
+**Corrected 2026-10-28 (pane omp_2): the `0x2500`/`0x2800` copies do not exist.**
+Every `li` of a size register in the whole function (`0x4eb1a0..0x4ec400`) is one
+of `0, 1, 4, 37, 40, 16, 5, 4, 6, 255`, and `this+0x6b` is never addressed in it.
+The two fixed copies that are actually there:
 
 ```
-strlcpy(this + 0x6b, local_60[0], 0x2500)                       // decompiled
-memcpy(&local_144, <virtual call at *(this+0x424c)+0x20>, 0x2800)
+4eb530  lw   a0,16972(v0)       ; *(this+0x424c)
+4eb534  lw   v0,0(a0)           ; vtable
+4eb536  lw   v0,32(v0)          ; slot 8
+4eb538  jalr v0
+4eb53c  addiu a0,sp,9660        ; dest
+4eb542  move  a1,v0             ; src
+4eb54a  li    a2,40
+4eb54c  jalr  memcpy@plt
 ```
 
-Both destinations are small and both sizes are fixed, so the *content* length is
-what decides whether they fit:
+and, immediately before it, `RCorrelationInfo::operator=` at `0x59f394`
+(`li a2,37`). Both are fixed on both sides; the destination of the 40-byte copy is
+the 40-byte field at `+40` of the `RCorrelationInfo` at `sp+9620`.
 
-- `this` is a 34148-byte (`0x8564`) object, allocated on the caller's stack
-  (`li a1, 34148` at `0x48330a`, ctor `0x4e8458`, `execute` called at `0x48333c`).
-  `this+0x6b + 0x2500 = 0x256b`, inside the object.
-- `execute`'s own frame is `0x7fe8` (`save` with frame `0x7fe8` at `0x4eb199`).
-  `local_144 + 0x2800` is inside the frame.
+`*(this+0x424c)` is the controller ctor's `a3`, i.e. **`RMuseAuth const&`** — the
+MIPS16e save layout puts `a0-a3` in the argument home area at `80..92` of the
+ctor frame and the stack arguments at `96..108`, and the ctor's stores match that
+one for one (`sp+88 -> +0x4248`, `sp+92 -> +0x424c`; `sp+96/100/104/108` are the
+context, the `optional<reference_wrapper>`, the namespace factory and the
+`unsigned`). So the 40-byte copy is a virtual on the **auth** object, not on
+parsed JSON, and a JSON string length cannot drive it.
 
-So both fit at the fixed sizes, and the failure mode is a parsed string longer
-than the destination — which `strlcpy` truncates silently and `memcpy` does not.
+Consequence: the failure mode "a parsed string longer than a fixed destination"
+has no fixed destination to land in on this path. The u16 length is still
+unvalidated, but every consumer of it is a `std::string` (heap-backed), and the
+`Authorization` value is split into one as well (`RAuthSplitToken`, `0x5f8e88`,
+`std::string::assign`).
 
-## Caveat
+## Caveat (superseded)
 
-Ghidra renders the two constants as `0x250000` and `0x280000`. Only the shorter
-form is consistent with the measured frame (`0x7fe8`) and object (`0x8564`)
-sizes, so the constants are recorded here as `0x2500`/`0x2800`; the exact
-immediate should be confirmed from the instruction stream before either is called
-a bug. The `memcpy` is the one that matters: `strlcpy` is bounded by the source
-NUL, `memcpy` is not.
+Ghidra renders the two constants as `0x250000` and `0x280000`; the instruction
+stream has neither. See `recon/jc7/findings2.md` for the full instruction-level
+audit and for the handshake gate that still stands between the wire and this
+function.

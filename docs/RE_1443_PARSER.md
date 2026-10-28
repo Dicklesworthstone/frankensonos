@@ -347,3 +347,26 @@ non-zero**, both checked before anything else.
 
 So the 400 is `updateHeaderTargets` refusing before the protocol header is ever looked at: the
 missing piece is whatever makes that lookup succeed, not `lechmere`.
+### Correction (2026-10-28, pane omp_2): the gate is `state == 52`; `hasAuthToken` only gates token capture
+
+`updateHeaderTargets` returns 16 when the state is not 52 (`0x4e8d34`-`0x4e8d3e`), and
+`captureWebsocketCommandToken` jumps to `0x4e7e76` on either a bad state or a zero
+`+0x24f4` — where a state of 52 returns **0**. So `hasAuthToken() == 0` is not a refusal,
+it only skips the token capture. The refusal is the state.
+
+The state is produced by `RMuseHeaderHandler::checkIfValid` (`0x4e8318`): `out[0] = 52`,
+then `out[0] = 72` if any of the bindings at `+0xc4/+0xe8/+0x10c/+0x130/+0x154/+0x19c` is
+present. The handler's binding names are a literal table at `0x600c24` and bindings are 36
+bytes apart from a base of 16, so those six are `householdId`, `sessionId`, `playerId`,
+`deviceId`, `userId`, `locationId` — they must be **absent**. The table also puts
+`authorization` at `+0x1e4` (index 13), which is exactly the field `hasAuthToken` tests;
+its value is split by `RAuthSplitToken` (`0x5f8e88`) on `bearer `/`basic `.
+
+The names are lowercase and match the muse frame header vocabulary, not HTTP header casing.
+Read-only wire checks on `.86` (86.10-81100) all answer 400 with an empty body: no extra
+header, `Authorization: Bearer x`, `authorization: Bearer x`, the whole outgoing header set,
+`namespace: topology|zoneGroupTopology|household` + `apiVersion: 1`, and a pipelined 6-byte
+frame as a GET body. `Host: lechmere.1.ws.sonos.com` also 400s but from the *static* handler
+(`text/html` + CSP). So the block the bindings read is the frame, and the next read is the
+frame validator at `0x4a40b8` (8-byte prefix read, then version/type checks returning
+8/9/10). Details: `recon/jc7/findings2.md`.
