@@ -897,7 +897,8 @@ The dispatch after the splitter returns is confirmed at instruction level
 (`0x101a0224`): `lwz r9, 0(r31)` / `lwz r9, 0xc(r9)` / `bctrl`, re-dispatched every
 loop iteration (also `+0x10` at `0x101a01d4` and `+8` at `0x101a026c`). The span-2139
 NUL zeroes the low byte of that saved `r31`, so every later dispatch runs on
-`(sp+0x1520) & ~0xFF`.
+`(sp+0x1520) & ~0xFF`. *(Corrected 2026-10-28: it is the **MSB**, and the copy is
+unbounded — see the correction section at the end of this file.)*
 
 Frame map of `fcn.101cbe80` (all offsets from its own `sp`):
 
@@ -1451,3 +1452,88 @@ The device fetches the stream URL and decodes in-process. The decode path
 discipline + the custom AAC parser as the primary target (no public audit,
 proprietary code, highest bug density). FLAC/vorbis as secondary (statically
 linked, older lib versions, but 1.3.4/1.3.7 have most public bugs fixed).
+
+## 2026-10-28 H14 correction: the splitter is an UNBOUNDED stack copy — saved-LR control, not just a NUL
+
+The 2026-10-27 note's frame map is right (frame 2160, `stw r30,2152`, `stw r31,2156`,
+`stw r0,2164`), but its terminator arithmetic is off by three bytes and it understates the
+primitive: the copy itself has **no bound check against the frame**.
+
+Exact code, `0x101cca44`–`0x101cca68` (inside `0x101cc878`):
+
+```
+101cca44  subf  r29,r3,r27      ; span = strrchr(uri,'/') - strchr(uri+prefix_len,'/')
+101cca48  addi  r22,r1,16       ; dst = sp+16
+101cca50  addi  r5,r29,1        ; len = span+1
+101cca58  bl    memcpy
+101cca60  add   r9,r1,r29
+101cca64  li    r0,0
+101cca68  stb   r0,17(r9)       ; sp[span+17] = 0
+```
+
+`prefix_len` is `obj+4208`, set by `0x101cbb38` to `strchr(uri+14,'/') - uri + 1` — the offset of
+the first `/` after the scheme+host. So the copied bytes are the raw URI share path
+(`/` + share + `/`), attacker bytes, and the destination runs straight through the saved
+register block:
+
+| copy byte `i` lands at | saved slot | overwritten when |
+|---|---|---|
+| `sp+16+i` | — | — |
+| 2136..2139 | `r30` (2152..2155) | span ≥ 2139 |
+| 2140..2143 | `r31` (2156..2159) | span ≥ 2143 |
+| 2148..2151 | **saved LR** (2164..2167) | span ≥ 2148 |
+
+Consequences, and the corrections:
+
+1. **span 2139 zeroes the MSB of saved `r31`, not the LSB.** Big-endian: `sp+2156` is the top
+   byte. The 10-27 note's "low byte" is wrong. The LSB needs span **2142**.
+2. **The copy already writes attacker bytes into `r30` at span 2139** (last copied byte =
+   `sp+2155` = `r30` LSB), so the 2.1e run was not a pure NUL either.
+3. **span ≥ 2148 reaches the saved LR** (if the URI is not truncated first — see unknown 1),
+   and span 2151 overwrites all four LR bytes with URI bytes (the NUL then lands at `sp+2168`,
+   in the caller's frame). The epilogue restores `r0` from `sp+2164` and `mtlr r0; blr`
+   (`0x101cc8e4`), so the splitter returns straight to the attacker address. Share offsets
+   2147..2150 become the return address.
+4. That makes the primitive **direct saved-LR control**, not a NUL plus a vtable indirection:
+   the `0x101a0224` dispatch (`lwz r9,0(r31)/lwz r9,12(r9)/bctrl`) is a second, independent
+   route, and it is only taken when the splitter returns nonzero **and** the flag byte at
+   `sp+8` is set (`0x101a0210`/`0x101a0218` both branch past it otherwise).
+
+The 2.1e silent 200 at span 2139 is consistent with all of this: it touched `r30`'s LSB and
+`r31`'s MSB only, and a zeroed MSB is a no-op whenever the stack pointer is already below
+`0x01000000`.
+
+### Open unknowns, named (offline work first)
+
+1. **Which length cap binds — this gates everything above.** The handler builds a 4097-byte
+   string object (`li r5,4097` at `0x1039c98c`) while the raw-argument descriptor says 1025
+   (`0x1039c984`), and the setter is handed the buffer at `sp+16` (the 1025 one). If 1024 binds,
+   the share path is truncated around span 1000 and **none** of the saved-register slots are
+   reachable; the 2.1e silent 200 does not discriminate, because a NUL at `sp+1017` is also
+   silent. The parser does clamp to a descriptor max somewhere (`0x103ae660`–`0x103ae674`:
+   `lwz r24,4(r9)` / `cmpw r24,r27` / `ble` / `mr r24,r27`), which is evidence for 1025 binding —
+   in which case the saved-register route is **not** reachable through `SetAVTransportURI` and
+   the 2.1e NUL is a no-op inside the copy buffer. Settle it before any device run: serve one
+   URI of 1100 and one of 2200 chars and watch for a delta, or tie the clamp to the descriptor's
+   `+16` max field.
+2. **Whether the dispatch is reached** in the 2.1e shape (splitter return + flag at `sp+8`).
+   If it is not, only the LR route matters.
+3. **Stack ASLR on the device.** A fixed target address is only usable if the stack base is
+   deterministic across requests and reboots.
+
+### Closed offline (this round)
+
+- **The percent decoder emits `0x00`.** `sonosDecodePercentEncoded` (`libsonosutils.so.1`,
+  `0x51dc`) stores the decoded byte and continues the loop; the terminator is written only at
+  the end (`0x5150`). So `%00` is a usable byte in the decoded name buffer — the fake-vtable
+  pointer can contain zero bytes.
+- **The decoded name buffer is 64 bytes at `sp+0x14d0`, fully attacker-controlled.** The decode
+  call is `0x101cbf14`: `r3 = *(sp+0x10b0)` (name source from the splitter `0x10389c24`),
+  `r4 = sp+0x14d0`, `r5 = 64`. The vtable pointer read at `sp+0x1500` is name bytes 0x30..0x33,
+  inside that buffer.
+- **The alignment requirement is arithmetic, not luck.** `fcn.101cbe80` frame 0x2560 →
+  `sp ≡ caller_sp − 0x60`; caller `0x101ce2ac` frame 0x20 → `sp ≡ caller_sp − 0x80`; the
+  `0x101ce2ac` caller is the AVTransport URI setter `0x101ee058` (frame 0x20) reached from the
+  action handler `0x1039c930` (frame 0x1470) through the dispatcher `0x1039c864` (frame 0x1c20).
+  `(sp+0x1520) & ~0xFF == sp+0x1500` only when the SOAP-dispatch caller's `sp ≡ 0xA0 (mod 0x100)`.
+  One device crash address settles it.
