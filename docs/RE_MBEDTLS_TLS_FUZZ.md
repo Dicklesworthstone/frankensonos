@@ -132,3 +132,67 @@ succeed on the same interface; the corpus driver is unaffected (localhost).
 - 2.28.10 is post-LTS-EOL upstream; "no findings" matches the empty in-window
   CVE sweep (`RE_CVES.md` §15) — the surface is calm, the value of this lane
   is the negative proof plus the reusable rig.
+
+## §S2 — mbedtls 3.6.6 server handshake (bead frankensonos-13yv, 2026-10-28)
+
+The S2 arm of the same falsifier: 3.6.6 built from upstream (the device's own
+`libmbedtls.so.21`/3.6.6 is not extractable locally — see the
+`~/sonos-root-local` note in `RE_CVES.md` §9a), same corpus, same driver.
+
+### Harness deltas vs the 2.28.10 rig
+
+- Source: upstream `v3.6.6` tarball + the `mbedtls-framework` submodule
+  (main; the tarball has no `.git` so no submodule pin — the framework is
+  scripts/tests only and does not affect library code). CMake needs
+  `PYTHONPATH=framework/scripts` for `scripts/config.py` and
+  `-DMBEDTLS_FATAL_WARNINGS=OFF` (Apple clang deprecation `-Werror` on
+  `sprintf` in `programs/hash/generic_sum.c`). Built with the same ASan flags;
+  `libmbedtls.21.dylib` verified instrumented (3214 `__asan` symbols).
+- Driver: `MBEDTLS_VER=3.6.6` selects `mbedtls-3.6.6-src/build-asan` +
+  `keys366/` (own key/cert made by the 3.6.6 `gen_key`/`cert_write`).
+- Crash detection hardened for both rigs: a crash report found only in the
+  final flush (mac libc fully buffers the server's stdout to the log file) is
+  now caught by a re-scan after each case's server-exit and a final
+  whole-log scan (`FINAL-SCAN` row).
+- Corpus unchanged. The same 2.28-style hello (RSA suite + sig_algs) gets a
+  full ServerHello+Certificate flow out of 3.6.6 — no API-shape rework was
+  needed for the wire corpus.
+
+### Offline sweep
+
+`out366_v2.tsv`: 10/10 modules, 3109+ cases, **0 findings** — no ASan report,
+no server exit, nothing to minimize. (First pass `out366_full.tsv` + hardened
+re-run `out366_v2.tsv`; the 2.28.10 rig was re-run once with the same hardened
+detection for symmetry, also clean.)
+
+### Device verdict (`.86`, 86.10-81100, 2026-10-28 ~22:58Z)
+
+CalmHawk-approved window (Agent Mail thread 8908), ~1 minute wall, one TCP
+connect per shape, 3-5 s spacing, transport state untouched. Replay via `nc`
+(the Python raw-socket Errno-65 quirk to LAN hosts; curl/nc unaffected).
+
+| shape | `.86` reply | `/status/zp` after |
+|---|---|---|
+| control: valid TLS1.2 ClientHello | 7 B alert `15 03 03 00 02 …` | 200 |
+| sid declared 255 / 32 sent | 7 B alert | 200 |
+| ext-length overrun (declared 0x100) | 7 B alert | 200 |
+| record declared 0xFFFF / 100 B sent | 0 B, closed | 200 |
+| double ClientHello in one record | 7 B alert | 200 |
+| CCS before any handshake | 0 B, closed | 200 |
+| alert-only record | 0 B, closed | 200 |
+| byte-at-a-time hello (74 records) | 0 B, closed | 200 |
+
+8/8 clean. `/status/zp` 200 after every shape, `:1400` healthy, version
+unchanged, no restart. Behavioral note: the 3.6.6 device answers
+sid-overrun/double-hello with a protocol-level alert (7 B) where stock
+2.28.10 mostly closed the connection silently — a more talkative alert path,
+same benign outcome.
+
+### Falsifier status
+
+Both arms fired: 3000+ ASan cases clean on 3.6.6, seven worst shapes clean on
+`.86`. No pre-auth record/handshake parsing flaw found by this corpus on
+either line. Scope remains: mbedtls server handshake only — the muse
+websocket gate behind TLS is the jc7/`RE_1443_PARSER.md` surface, and S2's
+client-side surfaces (`/getaa` x-file-cifs, SSA-2026-0001 downgrade path) are
+separate lanes.
