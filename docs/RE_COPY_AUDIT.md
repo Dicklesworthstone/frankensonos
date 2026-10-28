@@ -1385,3 +1385,18 @@ attacker content), but the "JPEG decoder as pre-auth code-exec surface"
 thesis is dead for this path. The delivery primitive's value: attacker
 content served from the device's HTTP surface, and the art cache as a
 state container.
+
+### 2026-10-27 night IX: .86 daemon restart observed (SWGen 1→2) — trigger unidentified
+
+`.86` SWGen = 2 (one daemon restart during today's testing; `.84` = 1).
+The restart happened at some point during the ladder/concurrency runs; the
+exact trigger run is unidentified. Candidates: the 8-concurrent fndelta-60000
+wave (all 8 workers pinned simultaneously, zp=0 listener-wide), or the first
+solo 120020 walk. Repeatability attempts FAILED: the 8-concurrent wave re-run
+pins all workers but SWGen stays 2 (no restart); the desync concurrent wave
+didn't pin (all 200s fast — the art cache answered/aborted early).
+
+State of the crash lane: a daemon restart WAS observed once today on .86
+(real fault), the leading recipe is the 8-concurrent over-read wave, but it
+is not yet repeatable. The cooldown/cache-marking behavior complicates the
+repeatability ladder (each wave needs fresh hostnames + cooldown).
