@@ -1417,3 +1417,37 @@ element the over-read walks lack. The next session's decisive experiment:
 desync + fndelta COMBINED on the same server (READ reply with BOTH surplus
 desync AND a padded FileNameLength over-read in the follow-up QueryInfo —
 the two primitives chained in one session), fresh names, 4-8 concurrent.
+
+### 2026-10-27 night XI: audio codec attack surface — FLAC/Vorbis/AAC identified, delivery proven
+
+**Codec inventory (from anacapad binary strings):**
+- libFLAC 1.3.4 (20220220) — statically linked, `FLAC__STREAM_DECODER_*` symbols present
+- libVorbis (Xiph.Org 20200704 = 1.3.7) — `vorbis_packet_blocksize` etc.
+- Custom AAC parser — `(%d) corrupt file:` error string (Sonos's own code)
+- MPEG-TS demuxer — proven working via hls_det.py all day
+
+**Known CVE status:**
+- libFLAC 1.3.4: CVE-2020-22219 (bitwriter_grow_, ENCODER only — decode path unaffected).
+  All DECODER CVEs (2014-8962, 2014-9028, 2017-6888, 2020-0499) are fixed by 1.3.4.
+  No known DECODER CVEs against 1.3.4. BUT: OSS-Fuzz continues finding bugs in
+  1.3.x decode paths that never got CVEs. The 1.4.x changelog has decode-path
+  fixes that 1.3.4 lacks.
+- libVorbis 1.3.7: all listed CVEs (2007-2018) fixed by 1.3.7. No known vulns.
+- The custom AAC parser: Sonos proprietary, zero public audit. Highest bug-density target.
+
+**Delivery:** SetAVTransportURI + Play is unauthenticated and proven (hls_det.py).
+The device fetches the stream URL and decodes in-process. The decode path
+(flac/vorbis/aac) runs inside anacapad = pre-auth reachable.
+
+**Fuzz round 1 (HLS + malformed WAV in TS):**
+- `fuzz_wav_huge.ts` (WAV with 0x7FFFFFFF RIFF/data sizes): transport died at 12s
+  (DEAD state) — the device dropped the stream on the malformed content.
+  Not a daemon crash (SWGen unchanged), but the decode path hit an error.
+- `fuzz_audio_rand.ts` (random bytes): PLAYING, 0 segments fetched (art cache
+  blocked the source). Not a clean test.
+- Repeat attempts: blocked by the art cache negative marking (cooldown needed).
+
+**Next session:** sustained codec fuzz with the hls_det vehicle + cooldown
+discipline + the custom AAC parser as the primary target (no public audit,
+proprietary code, highest bug density). FLAC/vorbis as secondary (statically
+linked, older lib versions, but 1.3.4/1.3.7 have most public bugs fixed).
