@@ -91,3 +91,21 @@ The two device-facing residues, both DoS/CPU-class, consistent with CODEC_EXPOSU
 Device-verdict path (needs coordination per lane rules): serve `t6_vcnull.flac` and a
 `blocksize<16` gap-fill stream through the hls_det vehicle on the bench unit; verdict = SWGen
 unchanged + transport behavior, compared against the harness predictions above.
+
+## Device verdicts (2026-10-28, .84 Bathroom, approved window)
+
+Before-state: `/status/zp` 200, `57.23-74170`, **SWGen 1**, transport STOPPED. One shape at a time,
+`Stop` after each, urllib→curl shim per the RE_HLS_EXPLOIT harness note (Python `connect()` to
+`192.168.4.0/24` returns EHOSTUNREACH; the shim lives in the harness invocation, `curlshim.py`).
+
+| run | shape | device behavior | verdict |
+|---|---|---|---|
+| D1 | `t6_vcnull.flac` (58 B, the exact `499f85f9` NULL-entry trigger) as 3 HLS segments, PORT 8902 | SetAVTransportURI ok, Play ok, 1 segment fetched, transport STOPPED at 0.7 s and stable for 45 s; **SWGen 1→1**, version unchanged, `/status/zp` 200 throughout | **clean** — no daemon fault from the NULL-entry metadata shape; consumer-deref question answered negative at this shape |
+| D2 | 400-frame stream with blocksize 1…15 (`95064f9f` tiny-blocksize shape), PORT 8903, 90 s box | SetAVTransportURI ok, Play ok, transport STOPPED at 0.7 s, vehicle's liveness probe **DEAD at 21.3 s**; daemon self-recovered, **SWGen 1→1 (no restart)**, version unchanged | **transport death without daemon restart** — same signature as the h14 malformed-WAV run and the 20-fetch ceiling; no gap-fill amplification possible on 1.3.4 (machinery arrives in 1.4.0), matching the offline verdict |
+
+Both device-facing residues resolved **negative for memory safety at the delivered shapes**. No
+SWGen increment in either run → no controlled restart, no daemon crash, no hang beyond
+transport-level teardown. The falsifier branch ("sustained targeted fuzz produces no daemon crash
+and no transport death distinct from known behavior") is **met**: the only transport death observed
+is the known one, and the daemon never restarted. Lane outcome: diff table + 9 triggers + harnesses
++ these verdicts; no code-exec primitive, consistent with CODEC_EXPOSURE.md's honest read.
