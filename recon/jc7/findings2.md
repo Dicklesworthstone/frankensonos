@@ -179,3 +179,36 @@ exact accepted version/type pair, which is the missing piece for a pipelined fra
   exact pre-auth gate, the field that satisfies it, and the frame reader that has to be
   fed for the gate to be reached at all.
 
+
+## 4. The frame prefix is six ASCII hex characters, not binary
+
+The reader at `0x4a40b8` reads an 8-byte prefix (`lw v0,100(v0)` into `sp+2436`) and
+validates it with three `sscanf` calls, not byte compares:
+
+```
+4a4136  lw   a1,0x66fb74        ; "%02x"
+4a4138  addiu a0,sp,2436
+4a413c  jal  sscanf
+4a4142  cmpi v0,1               ; must parse exactly 1 field
+4a4146  lw   v0,2456(sp)
+4a414a  sltiu v0,7
+4a414c  btnez fail              ; version must be >= 7
+4a414e  addiu v0,sp,2436
+4a4152  addiu a2,sp,2452
+4a4156  lw   a1,0x66fb74        ; "%02x" at +2
+4a4158  jal  sscanf
+4a415e  ...  sltiu v1,7 ... bteqz fail   ; message type must be < 7
+4a4194  ...  addiu a2,sp,2448
+4a41a0  lw   a1,0x67414c        ; "%04x" at +4
+4a41a2  jal  sscanf
+```
+
+So the prefix is `VVTTLLLL` in hex: protocol version (>= 7), message type (< 7), extended
+header length. The extended header is then read (`could not recv extended header; expected
+%u read %u`) and parsed as `name: value` lines, and the failure logs are
+`Bad protocol version: %c%c`, `Bad message type: %c%c; %d`, `Error parsing extended header`.
+
+Wire attempts with `0a010000`, `07010000`, `0a000000`, `0a020000` as a GET body, on `/api`
+and `/websocket/api`, with and without `namespace:`/`x-sonos-namespace:`/`x-sonos-method:`
+headers, all still answer 400 — so either the body is not where the reader looks, or the
+400 is emitted before the reader runs. That is the open question for the next pass.
