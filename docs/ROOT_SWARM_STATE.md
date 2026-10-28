@@ -79,3 +79,17 @@ builds — reproduction target only. Details in `docs/RE_CVES.md` §8.
 - New assignments: AzureCardinal → frankensonos-hd7l (MPEG-TS demuxer/ID3),
   GoldenGull → frankensonos-v8z (setstring/notify grammar), TurquoiseForest →
   frankensonos-1w3 (span-2139 PC-control chain) on top of s20 support.
+
+## Session metrics (2026-10-28, for reality-check)
+
+- Commits this session (main): 17 (2 orchestrator state docs + 15 lane merges/dispatches)
+- Beads closed with evidence: s20 (P0), wbz (P1), 13yv (P1), 81v (P2) — every closure
+  carries falsifier-branch language and named artifacts
+- Beads in progress: 17 total in tracker; live pane lanes = jc7 (omp_2), 1w3+dxe
+  support (omp_3), hd7l (omp_4), qa2 (omp_5), d7vi→dxe (omp_6), v8z (omp_1)
+- Device windows granted: 3 (.86 TLS ×1, .84 FLAC ×1, .84 vorbis pending), each
+  time-boxed, one pane at a time, all with pre/post health checks — zero stuck units
+- Real findings so far: 1 memory-safety bug (vorbis alloca stack-overflow, offline
+  proven, upstream-fixed shape), 2 DoS primitives (endless-100 held-wedge; D2
+  persistence), 1 availability note (16-continue), multiple negative results with
+  named scopes (TLS ×2 builds, FLAC, wget grammar, RAuthSplitToken)
