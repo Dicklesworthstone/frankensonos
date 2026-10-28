@@ -1366,3 +1366,22 @@ fully attacker-controlled data from an unauthenticated request**. The JPEG
 decoder was the f4k lane's un-audited surface; it now has a live delivery
 primitive. Any decoder bug = pre-auth code execution candidate with a
 complete delivery chain.
+
+### 2026-10-27 night VIII: no on-device JPEG decode via getaa — raw serve + default art
+
+Systematic checks: valid PIL-generated JPEGs (826B red, 2074B blue, fresh
+names) → the device serves either the RAW file bytes (folder.jpg case:
+RAW-SERVE md5 match) or a **fixed 325B default art blob** (md5 3e8ea497,
+stable across all malformed/valid inputs). The apparent "transform"
+(d5dacb00) was a transient cache artifact, not reproducible. 17-case
+malformed-JPEG fuzz (truncations, marker corruption, dimension overflow,
+segment-length overflow, random mutations): **0 crashes**, all served the
+default. The w/h parameters do not change the output.
+
+Conclusion: `getaa` **serves art bytes raw** — there is no on-device JPEG
+decode in this flow (the decode happens on the requesting controller). The
+attackers-bytes-through-the-device delivery primitive stands (raw serve of
+attacker content), but the "JPEG decoder as pre-auth code-exec surface"
+thesis is dead for this path. The delivery primitive's value: attacker
+content served from the device's HTTP surface, and the art cache as a
+state container.
