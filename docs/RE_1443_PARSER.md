@@ -370,3 +370,32 @@ frame as a GET body. `Host: lechmere.1.ws.sonos.com` also 400s but from the *sta
 (`text/html` + CSP). So the block the bindings read is the frame, and the next read is the
 frame validator at `0x4a40b8` (8-byte prefix read, then version/type checks returning
 8/9/10). Details: `recon/jc7/findings2.md`.
+
+## The muse frame reader needs a plain-TCP muse channel, not the WS JSON channel (2026-10-28, orchestrator synthesis)
+
+Synthesis of omp_2's findings2.md with `docs/RE_1443_PARSER.md` §"The websocket handshake gate":
+
+- `prepareWebsocketHeader`'s chain (`updateHeaderTargets` → `captureWebsocketCommandToken` →
+  `activateNamespaceFromHeader`) gates on **`state == 52`** (a `checkIfValid`-produced state,
+  i.e. *no* explicit-target binding present) — the frame vocabulary the state machine consumes
+  (`x-sonos-method:`, `x-sonos-uri:`, `SOAPACTION:`, lowercase binding names) is **muse-frame
+  extended-header material, not HTTP headers**.
+- The frame validator `0x4a40b8` reads an **8-byte ASCII-hex prefix** `VVTTLLLL`
+  (version ≥ 7 via `%02x` + `sltiu 7`; type < 7; `%04x` extended-header length), then receives
+  the extended header and parses `name: value` lines. Wire attempts that put the frame in a GET
+  body all 400 — the reader is not fed from an HTTP body.
+- The 8-byte read goes through a vtable slot (`lw v0,100(v0); jalr`) on the *stream* object
+  (`this+0x10`, `RMuseController` ctor arg a1, `RReadWriteStream&`). The muse frame channel is
+  the **websocket payload stream after the 101 upgrade** — the JSON `[header,payload]` frames the
+  static-key channel speaks are one layer *above* it, and the raw muse framing is what a
+  `lechmere.N`-subprotocol control connection carries.
+
+Next concrete experiment (whoever picks this up): complete a `Sec-WebSocket-Protocol: lechmere.9`
+upgrade on :1443 (the `lechmere.%hhu%n` scanner caps the version at `%hhu`; try 7..13), then send
+`0a010000`-style 8-byte ASCII-hex prefixes **as websocket binary frames** (opcode 0x2, masked),
+followed by `LLLL` bytes of extended header (`namespace: topology\n`) — read the failure codes
+8/9/10 back from the connection (the validator's return codes) instead of the flat 400. The
+handshake-then-frame path has never been tried; every prior attempt stuffed the frame into HTTP.
+
+Harness: `captures/research/ws-hunt/ws.py` already does the static-key WSS dance — add a
+subprotocol parameter and a raw-binary-frame sender, keep the JSON layer out.
