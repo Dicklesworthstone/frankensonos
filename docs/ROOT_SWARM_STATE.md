@@ -93,3 +93,16 @@ builds — reproduction target only. Details in `docs/RE_CVES.md` §8.
   proven, upstream-fixed shape), 2 DoS primitives (endless-100 held-wedge; D2
   persistence), 1 availability note (16-continue), multiple negative results with
   named scopes (TLS ×2 builds, FLAC, wget grammar, RAuthSplitToken)
+
+## Update 2026-10-28 ~23:55Z — jc7 gate RESOLVED
+
+**The :1443 JSON API is pre-auth reachable.** omp_2 mechanically dumped the
+147-entry child table at 0x66a7b4 and wire-verified on .86: `X-Sonos-Api-Key`
+is a **presence check** (any value passes) on `/api/v1/players/{UDN}/...`;
+`/info` (1765 B discoveryInfo), `/settings/player`, `/time/relative` all
+answer 200 pre-auth. Bearer is a separate later gate on some routes only.
+Commits bb08bbf6 + 55e23269. The u16-length descriptor fuzzing (jc7's actual
+deliverable) is now unblocked on a live pre-auth surface. Open follow-up:
+whether the UPnP passthrough (`upnpDeviceProperties/call`) is reachable
+pre-auth through the JSON parser — that would tunnel the whole :1400 SOAP
+surface through the JSON binder.
