@@ -106,3 +106,13 @@ deliverable) is now unblocked on a live pre-auth surface. Open follow-up:
 whether the UPnP passthrough (`upnpDeviceProperties/call`) is reachable
 pre-auth through the JSON parser — that would tunnel the whole :1400 SOAP
 surface through the JSON binder.
+
+## Update 2026-10-29 ~00:10Z
+
+- **frankensonos-d7vi CLOSED** (omp_6 BrightDeer): T1 alloca stack-overflow
+  (`vorbis_book_init_decode`, upstream 28965ede) offline-proven — the codec
+  lanes' one real memory-safety finding; device verdict honest-negative (the
+  hls-radio vehicle never hands .ogg payloads to the vorbis decoder on 57.23 —
+  4 shots incl. valid control, SWGen unchanged). Commits 87ea1683 + 857f8479.
+- BrightDeer → frankensonos-dxe (P0, HLS slot-16 ring fault recipe, .84).
+- Closed-bead count this session: **5** (s20, wbz, 13yv, 81v, d7vi).
