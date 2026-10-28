@@ -285,3 +285,43 @@ gate is reached only after the route layer stops 400ing, and the missing piece i
 Both loops terminate on NUL (the space skip compares against 32, the token scan clears bit
 5 and stops on `0x00` or `0x20`), the destination is a heap `std::string`, and the only
 fixed number is a *rejection* bound. No copy/bounds bug.
+
+## 7. RESOLVED: the gate is `X-Sonos-Api-Key` presence, and the JSON API is reachable pre-auth
+
+Mechanical dump of the 147-entry child table at `0x66a7b4` (24-byte entries, count at
+`+8`; entry = `{path, flags, reserved}`) gives the whole muse v1 surface, e.g.
+`v1/players/{playerId}/info`, `.../settings/player`, `.../time/relative`,
+`v1/households/{householdId}/devices/registrations`. Flags are a method bitmask in the low
+byte: `0x01` GET, `0x02` POST, `0x04` PUT, `0x08` DELETE, `0x10` PATCH. So the second
+segment under `/api` is `v1` and the third is `players|households|users|devices`, not a
+namespace name — the earlier `/api/v7` shape was a dead end.
+
+With the real path shape the 400 changes from an empty body to a JSON error, which names
+the actual gate:
+
+```
+GET /api/v1/players/<UDN>/settings      -> 400 {"errorCode":"ERROR_API_KEY_VALIDATION_FAILED","reason":"Invalid api key"}
+GET ... + X-Sonos-Api-Key: x            -> 400 {"errorCode":"ERROR_MISSING_PARAMETERS","reason":"Missing play…"}
+GET ... with the real playerId + key    -> 401 {"errorCode":"ERROR_NOT_AUTHORIZED","wwwAuthenticate":"Bearer realm=\"service\"…"}
+```
+
+So: **`X-Sonos-Api-Key` is a presence check (any value passes)**; `Authorization: Bearer`
+is not the key (`Bearer x` still gives API_KEY_VALIDATION_FAILED); and the per-route
+Bearer requirement is a *separate*, later gate that only some routes apply.
+
+Confirmed pre-auth 200s on `.86` with `X-Sonos-Api-Key: x` and no Bearer:
+
+| path | status | body |
+|---|---|---|
+| `/api/v1/players/<UDN>/info` | **200** | 1765 B `discoveryInfo` (model, serial, capabilities, features) |
+| `/api/v1/players/<UDN>/settings/player` | **200** | `playerSettings` (volumeMode, volumeScaling…) |
+| `/api/v1/players/<UDN>/time/relative` | **200** | `relativeTimeStamp` |
+
+401 `ERROR_NOT_AUTHORIZED` (Bearer needed): `.../settings`, `.../effectiveSettings`,
+`.../update/status`, `.../networkTest/{id}`. 405 on `.../upnpDeviceProperties` (method).
+`/api/v1/households` 404 (no such entry; it is `v1/households/{householdId}/households`).
+
+Consequence for the bead: the `:1443` JSON binder is reachable pre-auth on a real route
+set, so the copy/bounds hunt can now be driven against a live parser instead of guessed
+paths. The `authorization` binding and `hasAuthToken` are on the *Bearer* path, not the
+entry gate.
