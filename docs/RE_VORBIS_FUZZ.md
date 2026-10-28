@@ -102,3 +102,42 @@ python3 recon/vorbisfuzz/run_corpus.py            # -> results.jsonl
 
 Device-verdict candidate file: `corpus/t1_alloca_e222.ogg` (94 bytes of setup,
 ~12-50 MB of alloca demand in `vorbis_synthesis_init`).
+
+## Device verdict, `.84` (2026-10-28 23:29-23:44Z, one approved window)
+
+Pre: SWGen=1, transport STOPPED, 57.23-74170. Post: identical (SWGen=1, unit
+healthy). Full log: `recon/vorbisfuzz/device_verdict_84.log`.
+
+Four `SetAVTransportURI`+`Play` shots through the hls-radio vehicle (segments
+served from `.160:8901`, content-type `audio/ogg`):
+
+| shot | payload | device fetches | transport | SWGen |
+|---|---|---|---|---|
+| 1 | `t1_alloca_e222.ogg` (headers-only, huge book) | 1 playlist, 0 seg | STOPPED/TRANSITIONING cycle | 1 |
+| 2 | same, `.ogg` segment names | 1 playlist, 1 seg | STOPPED | 1 |
+| 3 | `seed_valid.ogg` (valid, decodable — control) | 1 playlist, 1 seg | STOPPED | 1 |
+| 4 | `t1_hybrid.ogg` (valid audio + unreferenced 2^22-entry book) | 3 playlists, 1 seg | STOPPED | 1 |
+
+**Verdict: the hls-radio vehicle does NOT reach the Vorbis decode init on
+57.23.** The control behaves identically to the payload: one segment fetch,
+then a clean STOPPED — the HLS probe path rejects/sniffs out non-TS segment
+content before `vorbis_synthesis_init`, so the offline T1 alloca crash class
+remains **offline-proven, device-unconfirmed on this vehicle**. No daemon
+death, no SWGen change in any shot; the unit is healthy after.
+
+Note: python `socket.connect` to the LAN was broken for this whole session
+(`No route to host` from every Python, while curl worked); SOAP firing was
+done with curl and the segment server with a standalone Python HTTP server on
+`.160:8901` — the fetch counter confirms the device DID pull the playlist and
+segment bytes, so delivery is proven; the decode entry is the gap.
+
+Next vehicle candidate (not run — window closed): TS-wrapped Vorbis the way
+the h14 lane delivered WAV (`fuzz_wav_huge.ts` reached the codec parser and
+killed transport at 12 s). ffmpeg refuses to remux the corrupt-book stream, so
+the TS wrapper must be built manually (PES with the ogg bytes as a private
+stream or the vorbis-in-ts mapping).
+
+Device-verdict files: `recon/vorbisfuzz/t1_hybrid.ogg` (981 B: valid audio
+stream + unreferenced dim=1/2^22-entry codebook — crashes local ASan
+`vorbis_synthesis_init` at block.c:240 while parsing as a fully valid stream),
+`recon/vorbisfuzz/device_verdict_84.log`.
