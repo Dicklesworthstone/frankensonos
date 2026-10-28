@@ -399,3 +399,26 @@ handshake-then-frame path has never been tried; every prior attempt stuffed the 
 
 Harness: `captures/research/ws-hunt/ws.py` already does the static-key WSS dance — add a
 subprotocol parameter and a raw-binary-frame sender, keep the JSON layer out.
+
+### The 400 is synchronous and pre-upgrade (2026-10-28, pane omp_2)
+
+The route layer is a tree walker, not a flat table. `/api` is a node whose handler
+(`0x47ab54`) builds a route record and calls the dispatcher `0x4c43e0`, which emits **400**
+at three points: prefix mismatch (`0x4c443e`), version resolve failure (`0x4c4444`), and a
+handler that consumes none of the remaining path (`0x4c43f8`). The handler object's vtable
+is `0x66a794` (slot 2 next-segment `0x47a9c5`, slot 4 prepare `0x47aa98`, slot 6 handle
+`0x47a9b0`); slot 4 maps only protocol versions 1 and 2 (`0x5f7a78`, table `0x6ac2ac`), so
+the *path* selects the version, not `lechmere.N`.
+
+The 400 returns in constant time with `Content-Type: text/plain`, `Content-Length: 0` and
+**no `Sec-WebSocket-Accept`**; a 200 KB body does not change the timing, so the body is
+never read. `/api/v7` is the only versioned route that exists (`/api/v1`, `/api/v2` 404) and
+every subprotocol value gives a byte-identical 400. **No upgrade completes before the 400,
+so the muse frame reader (`0x4a40b8`) is strictly post-101** and cannot be what satisfies
+the gate. The missing piece is the second tree segment under `/api/v7` (the handler object
+carries 147 children at `+4`/`+8`).
+
+`RAuthSplitToken` (`0x5f8e88`) is clean on NULL, empty, missing scheme, scheme without a
+space, exactly `bearer `, embedded NUL and huge segments: both loops terminate on NUL, the
+only fixed number is a rejection bound (`n = 7168`) checked before the assign, and the
+destination is a heap `std::string`. Details: `recon/jc7/findings2.md` §5-6.
