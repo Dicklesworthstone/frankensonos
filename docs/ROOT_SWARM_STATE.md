@@ -26,15 +26,33 @@ swarm has proven*, not protocol facts.
 
 ## Proven by the swarm so far (evidence-cited)
 
-- **frankensonos-s20 closed 2026-10-28**: 2139-case chunked-grammar corpus clean
-  on the device busybox 1.24.2 under qemu-ppc (0 signals — falsifier branch (b)
-  satisfied); device verdicts D1/D2/D3 on .202; D2 persistence = ~2 min
-  self-recovering pre-auth outage. No code-exec primitive on this build;
-  documented, not claimed. Commits 6a23235e..e1323b67,
-  `docs/RE_WGET_FUZZ.md`, `recon/wgetfuzz/*`.
-- Stale-agent cleanup: beads s20/jc7/wbz/d7vi/v8z/81v reassigned from dead
-  session agents (PearlMink, SapphireIvy, IndigoStone, RusticBarn, PinkMill) to
-  live panes 2026-10-28 ~22:35Z.
+- **frankensonos-s20 CLOSED 2026-10-28** (omp_1 GoldenGull + omp_3 TurquoiseForest
+  + omp_4 support): 2139-case chunked-grammar corpus clean on busybox 1.24.2
+  (qemu-ppc) AND 2139 on 1.14.1 (qemu-mips; 0 SEGV/ABORT each). Two findings,
+  both fixed upstream in busybox 1.29.0: (1) endless-`100 Continue` held-wedge of
+  the root fetcher — pre-auth one-request, self-recovers ~90 s after socket
+  close, RE_CVES §16; (2) 1-byte heap underflow (URL chunk size field MSB,
+  PREV_INUSE cleared) → glibc `free()` abort **only when `http_proxy` is set**
+  (device sets none — latent). No code-exec primitive; falsifier branch (b)
+  satisfied. Commits b608d28b, 5f12f4e7, e1323b67, merged to main.
+- **frankensonos-wbz CLOSED 2026-10-28** (omp_4 AzureCardinal): pivot to live
+  :1443 TLS server accepted and executed — libmbedtls.so.14 pinned symbol-identical
+  to stock 2.28.10 (251/251 exports), ASan 2.28.10 harness (verified-real, 2825
+  __asan syms), 3109+ cases across record layer/ClientHello/extensions/kx/tickets:
+  **0 ASan findings, 0 server exits**; seven worst shapes replayed live on .202,
+  daemon healthy. `docs/RE_MBEDTLS_TLS_FUZZ.md` (19bc430e, merged). S2 3.6.6:
+  corpus reusable, new harness needed (device libs absent locally).
+- **frankensonos-jc7 IN_PROGRESS** (omp_2 DarkJaguar): 0x2500/0x2800 copy thesis
+  retired at instruction level (real copies 37/40 B, both fixed; 40-byte source is
+  a virtual on `RMuseAuth`, not parsed JSON). Gate resolved exactly: **`state ==
+  52`** (no explicit-target binding present); frame prefix is ASCII-hex
+  `VVTTLLLL` (version ≥ 7, type < 7, `%04x` ext length) read from the post-upgrade
+  stream — HTTP-body attempts 400 because the reader never sees them. Next:
+  lechmere.N upgrade + binary frames (orchestrator synthesis committed 733030c8).
+  Commits fe761bac, 26d83fd1.
+- **frankensonos-81v / -d7vi IN_PROGRESS** (omp_5 RusticIbis, omp_6 BrightDeer):
+  ASan libFLAC 1.3.4 / libVorbis 1.3.7 decode harnesses building; both lanes at
+  real-decoder stage with seed corpora.
 
 ## CVE sweep (2026-10-28)
 
