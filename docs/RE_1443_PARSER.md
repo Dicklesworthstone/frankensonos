@@ -422,3 +422,22 @@ carries 147 children at `+4`/`+8`).
 space, exactly `bearer `, embedded NUL and huge segments: both loops terminate on NUL, the
 only fixed number is a rejection bound (`n = 7168`) checked before the assign, and the
 destination is a heap `std::string`. Details: `recon/jc7/findings2.md` §5-6.
+
+### RESOLVED (2026-10-28, pane omp_2): the gate is `X-Sonos-Api-Key` presence
+
+The 147-entry child table at `0x66a7b4` (24-byte entries, count at `+8`, method bitmask in
+the low byte: `0x01` GET, `0x02` POST, `0x04` PUT, `0x08` DELETE, `0x10` PATCH) is the muse
+v1 surface. The second segment under `/api` is **`v1`**, the third is
+`players|households|users|devices` — not a namespace name, so `/api/v7` was a dead end.
+
+With the real shape the 400 carries a JSON error naming the gate:
+`ERROR_API_KEY_VALIDATION_FAILED` → any `X-Sonos-Api-Key` value passes →
+`ERROR_MISSING_PARAMETERS` → with a real playerId, `401 ERROR_NOT_AUTHORIZED`
+(`wwwAuthenticate: Bearer realm="service"`) on protected routes. `Authorization: Bearer` is
+**not** the key.
+
+Pre-auth 200s with `X-Sonos-Api-Key: x` and no Bearer: `players/<UDN>/info` (1765 B
+`discoveryInfo`), `players/<UDN>/settings/player`, `players/<UDN>/time/relative`. 401:
+`settings`, `effectiveSettings`, `update/status`, `networkTest/{id}`. The `authorization`
+binding and `hasAuthToken` sit on the Bearer path, not the entry gate. Details:
+`recon/jc7/findings2.md` §7.
