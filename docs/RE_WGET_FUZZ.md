@@ -340,3 +340,33 @@ python3 recon/wgetfuzz/chunk_fuzz.py --stream ...               # with the strea
 Prereq (one-time): copy `rootfs-extracted/bin/busybox` + the six `/lib` libs to
 `css:~/fsonos-s20/{bin,lib}` (or `~/wgetfuzz/root/{bin,lib}` for `chunk_fuzz.py`); qemu-ppc on css.
 `chunk_fuzz.py` uses the device argv with `-T 5` and a 5 s `timeout(1)` wrapper.
+
+## Close-out (2026-10-28) — lane complete
+
+**Positive outcome.** D1 (chunked delivery of the genuine 5 606 749 B package through a real
+BeginSoftwareUpdate URL, byte-exact reassembly, 5606749/5606749, normal update path) is the
+load-bearing control proving the attacker-served-package path end-to-end. The lane's substantive
+finding is **finding 1 device-side: a single pre-auth request remotely wedges the update path for
+as long as the attacker holds the 100/0 stream** — unbounded, attacker-controlled, renewable
+duration, root-privileging process, no memory corruption. Scope of the wedge, settled 2026-10-28:
+the outage lasts exactly as long as the attacker's connection; EOF unblocks the fetcher and the
+daemon returns within ~5–6 s, `/tmp/upgradeinfo` cleared, in every run (D1/D2/D3/D3b). It is a
+held-wedge DoS that self-heals on disconnect, **not** a persistent wedge.
+
+**Honest scope statement.** s20 found **no code-execution primitive**. The upstream chunk-length
+heap smash (`8e2174e9bd83`) is unreachable on this build (32-bit `off_t`, `strtol` clamp,
+`rdsz ≤ 4096`). The 1-byte NUL underflow (`0x10010920`, upstream `df45eb49acae`) was assessed for
+poison-null-byte reachability and rejected: the byte always lands in the URL chunk's own dlmalloc
+size-field MSB (BE), never on a neighbor's metadata, and the chunk is never freed on the reachable
+path (comment on the bead, 2026-10-28). Finding 2 is functional only; finding 3 (unsanitized server
+data) forwards control bytes into the request line but cannot inject CRLF. The offline corpus
+verdict stands: **2 139 cases, 0 SEGV, 0 ABORT** — the chunked decoder is robust on every axis
+probed; the RC124/hang class is data-starvation, verified as such (writes arrived bytes, waits out
+the undeclared remainder).
+
+**Bookkeeping.** The availability finding is recorded in RE_CVES.md §16 (unpublished,
+DoS-class). The argv correction is cross-posted to frankensonos-uwd (RE_WRITE_PRIMITIVES carried
+the wrong execl shape). The live ~128 KiB fetch abort is **not** in wget's parser — the gate is
+elsewhere in the updater chain; the question is filed as a comment on frankensonos-uwd (type-21
+lane, same chain). S2 (86.10, MIPS) is unverified — no busybox extracted from the encrypted S2
+rootfs; findings do not carry to `.86`/`.81`.

@@ -404,9 +404,18 @@ Chased the open question from the type-21 read. Four places checked, none caps:
   the record length against the remaining section length.
 - `FUN_1000760c` (type 21) `malloc(len - 0xf)` — allocation follows the declared length, so a large record is
   fine as long as memory allows.
-- The fetch is `execl("/usr/bin/wget", "wget", "-qC", "-T", "300", "-O", "-", <url>)` at `FUN_10008f54`
-  (strings `0x10018804` `-qC`, `0x10018808` `-T`, `0x1001880c` `300`, `0x10018810` `-O`, `0x10017b88` `-`) —
-  no size limit, no `--max-filesize`.
+- The fetch is `execl("/usr/bin/wget", "wget", "-qC", "/var/run/upgrade_report.txt", "-T", "300", "-O",
+  "-", <url>)` at `FUN_10008f54` (strings `0x10018804` `-qC`, `0x100187e0` `/var/run/upgrade_report.txt`,
+  `0x10018808` `-T`, `0x1001880c` `300`, `0x10018810` `-O`, `0x10017b88` `-`) — no size limit, no
+  `--max-filesize`.
+
+  **Correction (s20, 2026-10-27, commit 99fc60e7).** The argv was recorded here as `-qC -T 300 -O -`,
+  which reads `-C` as a flag. In this busybox `-C` is an option **with an argument** (getopt string
+  `csqO:P:Y:U:T:C:t:` at `0x10041614`), so that form makes `-T` the report path, `300` the URL and the
+  fetch goes to `0.0.1.44`. `-C` opens the report file and writes `Server:`/`ServerIP:`/`Content-length:`
+  into it; the open is **fatal**, so an unwritable `/var/run` stops the fetch before any request. The
+  full argument list is at `0x10009060` and is confirmed by the device D1 run (chunked delivery of the
+  real package, byte-identical reassembly). Details: `docs/RE_WGET_FUZZ.md`.
 
 So the 512 KiB abort is **not in this binary's parser**: it has to be the transport (wget/server) or the
 caller that feeds the stream. Combined with the type-21 finding (tokens compared in place, no copy), the

@@ -3,7 +3,10 @@
 
 Each case: start chunk_srv.py on a free port, run
 
-    qemu-ppc -L <root> ./bin/busybox wget -qC <log> -T 5 -O - http://127.0.0.1:<port>/x
+    <qemu> -L <root> ./bin/busybox wget -qC <log> -T 5 -O - http://127.0.0.1:<port>/x
+
+<qemu> is qemu-ppc for the 57.23 model-16 build and qemu-mips for the play1 1.14.1
+build (the play1 busybox is MIPS BE, not PPC).
 
 (the exact argv the updater's execl uses, with -T shortened), then classify.
 
@@ -51,7 +54,7 @@ def classify(rc, out, err):
     return "OK"
 
 
-def run_case(root, case, port, workdir, serve=1, stream=False):
+def run_case(root, case, port, workdir, serve=1, stream=False, qemu="qemu-ppc", timeout=TIMEOUT):
     log = os.path.join(workdir, "wget.log")
     if os.path.exists(log):
         os.unlink(log)
@@ -64,10 +67,10 @@ def run_case(root, case, port, workdir, serve=1, stream=False):
     t0 = time.monotonic()
     try:
         p = subprocess.run(
-            ["timeout", str(TIMEOUT), "qemu-ppc", "-L", root, "./bin/busybox",
+            ["timeout", str(timeout), qemu, "-L", root, "./bin/busybox",
              "wget", "-qC", log, "-T", "5", "-O", "-",
              "http://127.0.0.1:%d/x" % port],
-            cwd=root, capture_output=True, timeout=TIMEOUT + 8,
+            cwd=root, capture_output=True, timeout=timeout + 8,
         )
         rc, out, err = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired:
@@ -91,6 +94,8 @@ def main():
     ap.add_argument("--only", default="", help="substring filter on the case name")
     ap.add_argument("--serve", type=int, default=1, help="connections the server accepts")
     ap.add_argument("--stream", action="store_true", help="server repeats the body forever")
+    ap.add_argument("--qemu", default="qemu-ppc", help="qemu-user binary for the target arch")
+    ap.add_argument("--timeout", type=int, default=TIMEOUT, help="per-case wall clock (s)")
     a = ap.parse_args()
 
     cases = sorted(
@@ -105,7 +110,7 @@ def main():
     with open(a.out, "w") as sink:
         for case in cases:
             port = free_port()
-            rc, out, err, dt, logtxt = run_case(a.root, case, port, os.path.dirname(a.out), a.serve, a.stream)
+            rc, out, err, dt, logtxt = run_case(a.root, case, port, os.path.dirname(a.out), a.serve, a.stream, a.qemu, a.timeout)
             cls = classify(rc, out, err)
             counts[cls] = counts.get(cls, 0) + 1
             rec = {
