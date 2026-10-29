@@ -347,3 +347,97 @@ non-zero**, both checked before anything else.
 
 So the 400 is `updateHeaderTargets` refusing before the protocol header is ever looked at: the
 missing piece is whatever makes that lookup succeed, not `lechmere`.
+### Correction (2026-10-28, pane omp_2): the gate is `state == 52`; `hasAuthToken` only gates token capture
+
+`updateHeaderTargets` returns 16 when the state is not 52 (`0x4e8d34`-`0x4e8d3e`), and
+`captureWebsocketCommandToken` jumps to `0x4e7e76` on either a bad state or a zero
+`+0x24f4` — where a state of 52 returns **0**. So `hasAuthToken() == 0` is not a refusal,
+it only skips the token capture. The refusal is the state.
+
+The state is produced by `RMuseHeaderHandler::checkIfValid` (`0x4e8318`): `out[0] = 52`,
+then `out[0] = 72` if any of the bindings at `+0xc4/+0xe8/+0x10c/+0x130/+0x154/+0x19c` is
+present. The handler's binding names are a literal table at `0x600c24` and bindings are 36
+bytes apart from a base of 16, so those six are `householdId`, `sessionId`, `playerId`,
+`deviceId`, `userId`, `locationId` — they must be **absent**. The table also puts
+`authorization` at `+0x1e4` (index 13), which is exactly the field `hasAuthToken` tests;
+its value is split by `RAuthSplitToken` (`0x5f8e88`) on `bearer `/`basic `.
+
+The names are lowercase and match the muse frame header vocabulary, not HTTP header casing.
+Read-only wire checks on `.86` (86.10-81100) all answer 400 with an empty body: no extra
+header, `Authorization: Bearer x`, `authorization: Bearer x`, the whole outgoing header set,
+`namespace: topology|zoneGroupTopology|household` + `apiVersion: 1`, and a pipelined 6-byte
+frame as a GET body. `Host: lechmere.1.ws.sonos.com` also 400s but from the *static* handler
+(`text/html` + CSP). So the block the bindings read is the frame, and the next read is the
+frame validator at `0x4a40b8` (8-byte prefix read, then version/type checks returning
+8/9/10). Details: `recon/jc7/findings2.md`.
+
+## The muse frame reader needs a plain-TCP muse channel, not the WS JSON channel (2026-10-28, orchestrator synthesis)
+
+Synthesis of omp_2's findings2.md with `docs/RE_1443_PARSER.md` §"The websocket handshake gate":
+
+- `prepareWebsocketHeader`'s chain (`updateHeaderTargets` → `captureWebsocketCommandToken` →
+  `activateNamespaceFromHeader`) gates on **`state == 52`** (a `checkIfValid`-produced state,
+  i.e. *no* explicit-target binding present) — the frame vocabulary the state machine consumes
+  (`x-sonos-method:`, `x-sonos-uri:`, `SOAPACTION:`, lowercase binding names) is **muse-frame
+  extended-header material, not HTTP headers**.
+- The frame validator `0x4a40b8` reads an **8-byte ASCII-hex prefix** `VVTTLLLL`
+  (version ≥ 7 via `%02x` + `sltiu 7`; type < 7; `%04x` extended-header length), then receives
+  the extended header and parses `name: value` lines. Wire attempts that put the frame in a GET
+  body all 400 — the reader is not fed from an HTTP body.
+- The 8-byte read goes through a vtable slot (`lw v0,100(v0); jalr`) on the *stream* object
+  (`this+0x10`, `RMuseController` ctor arg a1, `RReadWriteStream&`). The muse frame channel is
+  the **websocket payload stream after the 101 upgrade** — the JSON `[header,payload]` frames the
+  static-key channel speaks are one layer *above* it, and the raw muse framing is what a
+  `lechmere.N`-subprotocol control connection carries.
+
+Next concrete experiment (whoever picks this up): complete a `Sec-WebSocket-Protocol: lechmere.9`
+upgrade on :1443 (the `lechmere.%hhu%n` scanner caps the version at `%hhu`; try 7..13), then send
+`0a010000`-style 8-byte ASCII-hex prefixes **as websocket binary frames** (opcode 0x2, masked),
+followed by `LLLL` bytes of extended header (`namespace: topology\n`) — read the failure codes
+8/9/10 back from the connection (the validator's return codes) instead of the flat 400. The
+handshake-then-frame path has never been tried; every prior attempt stuffed the frame into HTTP.
+
+Harness: `captures/research/ws-hunt/ws.py` already does the static-key WSS dance — add a
+subprotocol parameter and a raw-binary-frame sender, keep the JSON layer out.
+
+### The 400 is synchronous and pre-upgrade (2026-10-28, pane omp_2)
+
+The route layer is a tree walker, not a flat table. `/api` is a node whose handler
+(`0x47ab54`) builds a route record and calls the dispatcher `0x4c43e0`, which emits **400**
+at three points: prefix mismatch (`0x4c443e`), version resolve failure (`0x4c4444`), and a
+handler that consumes none of the remaining path (`0x4c43f8`). The handler object's vtable
+is `0x66a794` (slot 2 next-segment `0x47a9c5`, slot 4 prepare `0x47aa98`, slot 6 handle
+`0x47a9b0`); slot 4 maps only protocol versions 1 and 2 (`0x5f7a78`, table `0x6ac2ac`), so
+the *path* selects the version, not `lechmere.N`.
+
+The 400 returns in constant time with `Content-Type: text/plain`, `Content-Length: 0` and
+**no `Sec-WebSocket-Accept`**; a 200 KB body does not change the timing, so the body is
+never read. `/api/v7` is the only versioned route that exists (`/api/v1`, `/api/v2` 404) and
+every subprotocol value gives a byte-identical 400. **No upgrade completes before the 400,
+so the muse frame reader (`0x4a40b8`) is strictly post-101** and cannot be what satisfies
+the gate. The missing piece is the second tree segment under `/api/v7` (the handler object
+carries 147 children at `+4`/`+8`).
+
+`RAuthSplitToken` (`0x5f8e88`) is clean on NULL, empty, missing scheme, scheme without a
+space, exactly `bearer `, embedded NUL and huge segments: both loops terminate on NUL, the
+only fixed number is a rejection bound (`n = 7168`) checked before the assign, and the
+destination is a heap `std::string`. Details: `recon/jc7/findings2.md` §5-6.
+
+### RESOLVED (2026-10-28, pane omp_2): the gate is `X-Sonos-Api-Key` presence
+
+The 147-entry child table at `0x66a7b4` (24-byte entries, count at `+8`, method bitmask in
+the low byte: `0x01` GET, `0x02` POST, `0x04` PUT, `0x08` DELETE, `0x10` PATCH) is the muse
+v1 surface. The second segment under `/api` is **`v1`**, the third is
+`players|households|users|devices` — not a namespace name, so `/api/v7` was a dead end.
+
+With the real shape the 400 carries a JSON error naming the gate:
+`ERROR_API_KEY_VALIDATION_FAILED` → any `X-Sonos-Api-Key` value passes →
+`ERROR_MISSING_PARAMETERS` → with a real playerId, `401 ERROR_NOT_AUTHORIZED`
+(`wwwAuthenticate: Bearer realm="service"`) on protected routes. `Authorization: Bearer` is
+**not** the key.
+
+Pre-auth 200s with `X-Sonos-Api-Key: x` and no Bearer: `players/<UDN>/info` (1765 B
+`discoveryInfo`), `players/<UDN>/settings/player`, `players/<UDN>/time/relative`. 401:
+`settings`, `effectiveSettings`, `update/status`, `networkTest/{id}`. The `authorization`
+binding and `hasAuthToken` sit on the Bearer path, not the entry gate. Details:
+`recon/jc7/findings2.md` §7.
