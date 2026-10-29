@@ -490,3 +490,96 @@ The daemon never reads the file either: `upgradeinfo` occurs exactly once in `an
 512 KiB fetch gate lives entirely in the daemon, before `upgrade` exists, and `MinVersion` is
 parsed-then-ignored dead data on this build. A genuine 57.22-59130 does not become installable
 by arming the file; it would still have to pass the daemon's own gate.
+
+## Type-21 token vocabulary — fully decoded (2026-10-29, AzureCardinal)
+
+The compiled feature table lives in `.data` at **`0x1002a5f0`** (referenced by
+the type-21 handler tail: `addi 4,31,-23056` with `lis 31,0x1003` →
+`0x1002a5f0`; the count 4 comes from `.sdata` `0x1002be8c`... the handler
+passes it in `r6` — the walker at `0x10005a24` loops `cmplw` against it).
+Four entries of **0x10c bytes** (`name[0x81]`, `value[0x83]` at +0x81,
+flags u32 at +0x104, callback u32 at +0x108):
+
+| # | name | value | flags | callback |
+|---|---|---|---|---|
+| 0 | `2021_11_PATCHES` | *(empty)* | 0x6 | 0 |
+| 1 | `2023_01_PATCHES` | *(empty)* | 0x6 | 0 |
+| 2 | `2023_12_PATCHES` | *(empty)* | 0x6 | 0 |
+| 3 | `2024_12_PATCHES` | *(empty)* | 0x6 | 0 |
+
+That is the entire vocabulary: the four patch trains, all **critical**
+(`flags & 2`), all expecting an empty value, no per-token callbacks. These
+are the same four trains the genuine type-21 payload carries (stock payload
+68 B = the four `name:value` pairs).
+
+### Grammar and match semantics (three functions, all decoded)
+
+- **Lexer/matcher `0x100058d8`** (list-state `{ptr,count}` at `r3`, entry
+  name at `r4`, out-struct at `r5`, optional visit callback at `r6`): walks
+  the record's NUL-separated `name\0value\0` pairs; a leading **`!`**
+  (cmpwi 33 at `0x10005964`) sets a negation flag in the out-struct (byte
+  +8) and is skipped; the cursor advances `strlen+1` per field with the
+  `off+strlen+1 < len` bound from 5e99402. The token is compared **in
+  place** (`strcmp` via `0x1002bfac` in the table-scan variant) — no copy,
+  so an oversized token can only miss, never overflow.
+- **Entry scan `0x10005b78`**: strides the compiled table (`addi 31,31,268`
+  = 0x10c), `strcmp` token vs `entry+0`, count-bounded; on exhaust logs
+  `Critical UPD feature (%s: %s) not supported by player`
+  (`0x1001779c`) and clears the match byte.
+- **Verdict walker `0x10005a24`** (called from the handler at
+  `0x10007738`): for each of the 4 entries reads the presence byte; a
+  **missing** entry whose `flags & 2` is set → `syslog(3, "Critical player
+  feature (%s: %s) not supported by UPD", name, value)` and return
+  **error 10**. Present entries (or non-critical missing) are skipped. The
+  `0x10005b2c` wrapper returns `flags & 0xa` when a token is absent, 0 when
+  present — the same error-10 constant.
+
+**Value semantics:** the `value` field at +0x81 exists in the layout but
+none of these paths compares it — presence of the *name* is the only
+verdict. A record carrying `2023_01_PATCHES:anything` matches exactly as
+the stock one; a record missing any of the four names fails pass 1 with
+error 10.
+
+### Reachability (the deliverable question)
+
+**Yes — fully wire-reachable, pre-signature, by construction and by device
+evidence.** Type 21 is the first record in every image, plaintext, and
+parsed with hashing on before any key material is touched
+(`RE_UPDATER.md` "first record, plaintext, parsed before any key"); the
+section walk processes records in file order and the type-17 signature is
+last. The 2026-10-24 device mutation series is the wire proof: replacing
+the type-21 payload in place changes the fetch behavior on `.202`
+(every mutation class lands at the 524,288-byte abort, only the verbatim
+payload completes) — i.e. the parse verdict steers the wire-visible fetch.
+An attacker-chosen `BeginSoftwareUpdate` URL therefore controls the token
+list the verdict reads; the interesting wire actions are:
+
+1. **error-10 reject**: drop or rename any of the four train names (e.g.
+   `2021_11_PATCHX`) → deterministic early abort with the "Critical player
+   feature" syslog — a pre-auth, zero-memory-safety fetch-kill that
+   truncates the transfer at the first decision buffer. Cheapest DoS
+   primitive in the updater, already demonstrated device-side by the
+   mutation table (every non-verbatim payload landed there).
+2. **`!` negation**: the lexer supports it, but with all four entries
+   critical-and-unconditional, a negated token can only remove a
+   present-marking — it cannot turn a missing token into a present one, so
+   it adds no bypass.
+3. **No overflow**: compare-in-place plus the `off+strlen+1 < len` bound
+   close both directions; the 1/8/64 KB single-token fixtures all landed at
+   the same clean abort (RE_UPDATER table) — consistent.
+
+### The 512 KiB gate (cross-check promised by the briefing)
+
+The 5e99402 finding stands after this pass: no `lis rX,8` (0x80000
+materialization) exists in the 57.23 `upgrade` text; the only `0x80000`
+constants are unaligned `.rodata`/`.data` words. The gate is upstream of
+the parser — the daemon's streaming reassembly (524,288 = the send-buffer
+boundary, `RE_UPDATER.md` "daemon aborts the download at exactly 512 KiB").
+The freshly decrypted 86.10-80260 rootfs (`captures/firmware/
+86.10-80260-1-12/`) carries a **rewritten C++ `bin/upgrade`**
+(`std::iostream`, "Error buffering %s, will not write to report file") —
+the S2 line replaced this whole path, so a same-gate cross-check on S2
+means reading that binary; recorded as follow-up, not done here. The s20
+finding that the ~128 KiB live abort is *not* in wget fits the same
+picture: both aborts are daemon-side streaming decisions above the
+`upgrade` parser.
