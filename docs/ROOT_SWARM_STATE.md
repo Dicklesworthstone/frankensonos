@@ -230,3 +230,13 @@ Proven negatives (each with named reopen conditions):
 The honest score: no root RCE yet; the two live corruption candidates are the
 f4k getaa over-read (heap-grooming question) and the jc7 UPnP marshalling
 arguments through the JSON binder (u16-length mechanics now wire-reachable).
+
+## Update 2026-10-29 ~04:05Z — MEASUREMENT CORRECTION
+
+- **frankensonos-re-hls-kill-cnk CLOSED** (omp_4 AzureCardinal, commit 41f400d3):
+  the long-held "4-20s daemon kill (10/10)" was a **detector artifact** —
+  hls_det.py's 2s-timeout /status/zp probe read slow playlist reloads as death.
+  Independent 0.1s poller: max outage 0.14–0.23s across 9 runs, SWGen never
+  moved, no watchdog restart. The fleet doctrine now requires an independent
+  sub-second poller + SWGen check before any daemon-death claim. Session
+  closure count: **10**.
