@@ -176,3 +176,13 @@ argument marshalling (rc 402/401), not the JSON layer. One doc regression
 - setstring POST shape pinned (omp_1, bfc8036e): ≥200 B body, URL-encoded
   csrfToken; no-hang verdicts on .202/.86 with the tested keys — kill is
   key/state-dependent; the key hunt continues.
+
+## Update 2026-10-29 ~02:35Z
+
+- **frankensonos-dxe CLOSED** (omp_6 BrightDeer, commits 857f8479+a47d2e77):
+  offline ring simulator (195-line Python model of the append/compaction/split
+  triad) found the candidate configs; device falsifier 5/5 stable — recipe does
+  not transfer on 57.23; static root cause: the flag-setter tail call
+  (0x101908c8) is unreachable, pinning the C>16/C<0 configs out of playlist
+  reach. Session closure count: **8** (s20, wbz, 13yv, 81v, d7vi, hd7l, qa2, dxe).
+  All four codec beads + both TLS beads + the wget bead now closed with evidence.
