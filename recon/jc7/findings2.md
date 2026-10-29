@@ -371,3 +371,28 @@ oracle and they stay 200 throughout.
 
 Verdict: **no copy/bounds bug in the marshalling.** The under-request is real but latent
 behind the inline buffer; the missing escaping is a correctness issue, not memory safety.
+
+## 9. The passthrough works only for zero-argument actions
+
+Follow-up to §8. Every action that carries arguments returns **499 / UPnP 402 (Invalid
+Args)** through `upnp*Properties`, whatever the `args` shape:
+
+| request | result |
+|---|---|
+| `{"method":"GetZoneAttributes"}` (no args) | 200 |
+| `{"method":"GetZoneInfo"}` (no args) | 200 |
+| `{"method":"GetZoneGroupState"}` (no args) | 200 |
+| `{"method":"GetString","args":{"StringVariable":"ZoneName"}}` | 499 rc 402 |
+| same with `args` as `[{"name":…,"value":…}]` | 499 rc 402 |
+| same with the arg flattened next to `method` | 499 rc 402 |
+| `{"method":"SetZoneAttributes","args":{…all three current values…}}` | 499 rc 402 |
+| `{"method":"SetZoneAttributes","args":{"DesiredZoneName":"KC"}}` | 499 rc 402 |
+
+`GetZoneAttributes` returns the live values (`CurrentZoneName` "Kitchen Counter",
+`CurrentIcon`, `CurrentConfiguration` "1"), so the read side and the service selection are
+fine; replaying those exact values into `SetZoneAttributes` still 402s. The failure is in
+argument marshalling or in how the passthrough namespaces the action, not in the values.
+
+Consequence: the §8 escaping gap cannot be round-tripped until the argument path works, and
+the argument path is now the single highest-value target in this lane — a 402 on *every*
+arg-carrying action is a much bigger defect than the escaping.
