@@ -155,3 +155,13 @@ the u16-length descriptor mechanics (FUN_005f13c0, `d+0x18` halfword = copy
 length AND bound) need for a real corruption attempt. Next pass targets UPnP
 argument marshalling (rc 402/401), not the JSON layer. One doc regression
 (wiped synthesis section) caught and reverted same-tick (a06a978f).
+
+## Update 2026-10-29 ~01:45Z
+
+- **frankensonos-qa2 CLOSED** (omp_5 RusticIbis, commits e74113ce+b09a6b4a):
+  both arms — parse (ADTS/ID3 mapped, guard sound, 13/13 device clean) and
+  decode (custom decoder mapped end-to-end via driver aav.0x101b6dd0, channel
+  ≤0xc checked, 4 shapes clean). No OOB from header-controlled math.
+  Session closure count: **7**.
+- jc7 wire fuzz merged: UPnP passthrough pre-auth confirmed (ed0a1cdf);
+  75 malformed-JSON cases 0 faults; next = UPnP argument marshalling.
