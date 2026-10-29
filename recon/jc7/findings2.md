@@ -344,12 +344,14 @@ The `args` object is marshalled by a string builder at `0x509d4c`:
 
 Two things are worth naming:
 
-1. **The size request uses only the value length** (`2*len(value)+16`) while the write needs
-   `len(name) + len(value) + 8`. With `len(name) > len(value) + 8` the `snprintf` truncates,
-   and because the cursor is advanced by the *full* return value it lands past the end; the
-   next write then computes `end - cursor` on an underflowed unsigned and skips the grow.
-   In practice the builder carries a **34148-byte inline buffer** (`li v1,34148` at
-   `0x509c44`) and grows beyond it, so the slack absorbs the overrun.
+1. **The size request uses only the value length.** `addiu v0,8; sll a1,v0,1` requests
+   `2*len(value) + 16`, while the format `<%s>%s</%s>` needs `2*len(name) + len(value) + 6`
+   (two name copies, one value, five literal bytes, one NUL). Truncation therefore starts at
+   `2*len(name) > len(value) + 10`, i.e. any name more than about half the value length.
+   Because the cursor is then advanced by `snprintf`'s *full* return value it lands past the
+   end, and the next write computes `end - cursor` on an underflowed unsigned and skips the
+   grow. In practice the builder carries a **34148-byte inline buffer** (`li v1,34148` at
+   `0x509c44`) and grows beyond it, so the slack absorbs it.
 2. **No XML escaping.** The format is a literal `<%s>%s</%s>` with raw pointers, so a value
    containing `<`, `>`, `&` or `"` is emitted verbatim into the SOAP body.
 
