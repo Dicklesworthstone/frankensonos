@@ -359,3 +359,52 @@ issuer compare. So:
 `0x601ffc` is `0x6649d4` = `"/opt/conf/anacapa.conf"`, so id 25 is a config-path getter, not the
 issuer. The issuer's own getter is the slot-16 body on whatever class `ctx+4` holds — that class,
 not `0x51b9b4`, is the next read.
+
+### Call order confirmed under emulation, and one open point
+
+Running `FUN_006021e4` with a logging provider object confirms the three virtual calls in the
+order the disassembly shows — `RA=0x60221f` (slot 24), `RA=0x602263` (slot 16), `RA=0x602279`
+(slot 12) — all on the same `this`. So the mapping in the correction above is right.
+
+Open point, stated plainly: the caller passes `a1 = sp+32` of its own frame (`0x603c76`), and the
+policy builder `0x604fe8` was called on that same `sp+32` (`0x603c3e`), so the inspector's `ctx`
+and its `a3` policy are the same address. But `0x604fe8`'s first act is `0x5fef64(a0, 8, lit)`,
+which stores `{lit, 8}` at `{+0, +4}`, and the inspector then does `lw a1,4(s1)` / `lw v0,0(a1)` —
+i.e. it treats `+4` (= 8) as an object pointer and would read address 8. Emulating with a real
+built policy faults exactly there. So either the policy is not the ctx, or something rewrites
+`+4` between the build and the call. That is the next thing to read, and it gates the slot-16
+body.
+
+### Slot 16 of the actor vtable, read (2026-10-29)
+
+`0x66c038` index 16 (byte `0x40`) = **`0x47b6e9`**, and `0x47b6e8` is
+
+```
+47b6e8  jr   ra
+47b6ea  li   v0,0
+47b6ec  jrc  ra
+```
+
+— a **stub returning 0**, not a trampoline with an id. The neighbouring slots are the same stub
+(`idx 17`, `idx 18` are literal `0`; `idx 9`, `idx 13`, `idx 19`, `idx 23`, `idx 30`, `idx 33` are
+the same stub). So the settings-cache-id theory does not hold for this table.
+
+What the table *does* carry is **byte offsets into the object**, not ids. The non-stub slots are
+two families:
+
+- `0x47b6f4`, `0x47b704`, `0x47b714`, … — `save; addiu a1,4; jalx 0x5212e8; move s0,a0; move v0,s0;
+  restore; jrc ra`, i.e. `std::string::string(out, this+4)` — a copy-ctor accessor for the string
+  at `this+4`.
+- `0x47b799` (`a1=20`), `0x47b731` (`a1=28`), `0x47b725` (`a1=92`), `0x47b8a1` (`a1=20, a2=109`) —
+  `save; jalx 0x51b9b4; restore; jrc ra` where `0x51b9b4` is `free` (see the correction above), so
+  `a1` is the **size** argument and `a2` is unused.
+
+So the actor object is a struct of strings reached by fixed offset, and the vtable slots are
+per-field accessors. Two consequences:
+
+1. The `li a1,<id>` in the delay slot is an offset or a free-size, never a settings-cache key.
+2. The inspector calls byte offsets 12 / 16 / 24 (idx 3 / 4 / 6). On `0x66c038` those are
+   stub / **null** / free — idx 4 is `0`, and the inspector does not null-check before `jalr`. So
+   either `ctx+4` is not this object, or its vptr is one of the sub-tables at `0x66c050`,
+   `0x66c06c`, … (each has a free-trampoline at +24 but still a null at +16). That mismatch is
+   the next read, and it has to be settled before the slot-16 body can be named.
