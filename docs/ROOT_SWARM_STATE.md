@@ -279,3 +279,19 @@ arguments through the JSON binder (u16-length mechanics now wire-reachable).
 - Remaining open: xnf (Bearer forge — the hhid/kid derivation lane), f4k
   (omp_5, active), jc7 (omp_2, active), 9sd (omp_6, DIDL dc:title xref pass
   running), plus feature beads outside the root campaign.
+
+## Update 2026-10-29 ~06:30Z
+
+- **xnf premise CORRECTED** (omp_3 TurquoiseForest, commit 1d3f0c39): 0x51b9b4
+  is `free()`, not an id→string getter (jalx to an even target = MIPS32 callee;
+  the `li a1,<id>` in the delay slot is the size argument). The vtable byte-24
+  entry is a destructor. The inspector's real shape: slot24 free(sp+32) → flag
+  check → **slot 16 on ctx+4** writes sp+32 (read by BOTH the composer as luid
+  and the iss compare) → slot 12 on ctx+16 = network_hash. **iss and luid are
+  the same value.** The blocking unknown is now a single virtual call.
+- **q57 advanced** (omp_4, 467dbe29): the cloud predicate's binding table found
+  at 0x104f2d74 — `MinVersion: [<v>]` into /var/run/upgradeinfo, must be
+  non-zero to arm (sentinel 0x7fffffff). This is the upgradeinfo arming template
+  the campaign was missing.
+- **9sd H-003 modeled** (omp_6, b5d4a267): deferred queue-dc:title kill modeled
+  offline (8–60KB EnqueuedURIMetaData, state-dependent on a just-cleared queue).
