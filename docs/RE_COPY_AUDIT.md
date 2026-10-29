@@ -1574,3 +1574,38 @@ and the NUL lands at `sp+17` — inside the scratch buffer. Silent 200, as obser
 the saved-queue-record path — a title that reaches `0x101cc878` from `savedqueues.rsq` rather
 than from a capped SOAP URI. That path needs a >2139-char title stored via `CreateObject` and is
 the only one whose length source is not the 1024-byte URI copy.
+
+### Saved-queue record path: NO, a >2139-char title cannot reach `0x101cc878` (2026-10-28)
+
+Three independent reasons, each measured.
+
+**1. The saved-queue module never calls the splitter.** `0x101cc878`'s six callers are the PLS
+(`0x101ccd20`), HLS (`0x101cd320`), SMIL (`0x101ce6a4`), ASX (`0x101ce828`, two sites) parsers and
+the abstract iterator (`0x101a016c`). Nothing in `0x101d8xxx`–`0x101e1xxx` calls it.
+
+**2. The saved-queue module's setter calls pass a NULL URI.** `0x101cbb38` has five callers in that
+module (`0x101da6c8`, `0x101db304`, `0x101df714`, `0x101e06b4`, `0x101e0cdc`) and every one is
+preceded by `li r4,0`. The setter's `cmpwi cr7,r31,0` then skips the `strncasecmp` and the
+`obj+4208` store, so the prefix length the splitter copies stays 0.
+
+**3. Even where the splitter runs, its input buffer is 1024/1025 bytes.** `0x101a016c` has frame
+1072 with the entry URI at `r1+16`; the PLS path decodes with `li r6,1025` (`0x101ccd44`) and the
+HLS path with `li r6,1025` (`0x101cd840`). Span ≤ ~1000 in every path.
+
+**The `.rsq` format itself is not the limit.** It is
+`<SavedQueues LastUpdateDevice="…" Version="…" Next="…">` + `<Track URI="…" MD="…"/>` per track +
+`</SavedQueue></SavedQueues>` (writer `0x101d7e64`: `<Track URI="` at `0x104781e0`, `" MD="` at
+`0x104781f0`). The title has no field of its own — it lives inside the `MD` attribute as part of the
+DIDL. `CreateObject`'s handler `0x103a019c` extracts the DIDL through `0x103974a0` → `0x1037e370`,
+which reads in 4096-byte chunks in a loop with no total cap, and answers 402 when the extraction
+yields 0 — so the 402 is an extraction failure, not a length check, and a long title *could* be
+stored if `CreateObject` ever got past it.
+
+**No title-writing action exists.** There is no `SetSavedQueueTitle` string and no action named
+`*Title`. The only title-carrying action is `SaveQueue` (AVTransport table entry `0x104fc770`,
+handler `0x1039e6ec`), whose `Title` argument is a type-6 descriptor with **max 1024**
+(`li r5,1024` at `0x1039e734`) — so `SaveQueue` caps the title at 1023 too.
+
+Remaining thread, if the lane is reopened: the stored **res URI** rather than the title. It is
+written into the same `URI="…"` attribute and could be long if `CreateObject`'s DIDL is unbounded,
+but it would still have to survive the 1024-byte read side.
