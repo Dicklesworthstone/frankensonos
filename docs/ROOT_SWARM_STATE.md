@@ -240,3 +240,20 @@ arguments through the JSON binder (u16-length mechanics now wire-reachable).
   moved, no watchdog restart. The fleet doctrine now requires an independent
   sub-second poller + SWGen check before any daemon-death claim. Session
   closure count: **10**.
+
+## Update 2026-10-29 ~04:40Z
+
+- **jc7 marshalling audited** (omp_2, bffb865e): the UPnP args builder (0x509d4c)
+  is dynamic with a 34148-byte inline buffer — no copy/bounds bug — but two
+  latent weaknesses documented: (a) size under-request (requests 2·len(value)+16,
+  writes name+value+8; name longer than value+8 truncates, cursor advances by
+  snprintf's full return, next grow-check computes on an underflowed unsigned),
+  (b) **no XML escaping** — `<`, `>`, `&`, quotes emitted verbatim into the SOAP
+  body. 8 long-name wire shapes: all clean.
+- **c08 space closed** (omp_3, 39368ce0 + addendum): caller passes the RAW
+  header value (no transform — MIPS16 re-read); 4608 canonical forms over all
+  known client values, **9 app secrets not 2** (both Android APKs swept from
+  ~/Downloads: S2 90.01.9 xapk + S1 11.16.1 apk, 4.7M strings × 5 forms, 731
+  UUIDs × 360 forms) — no preimage in any shipped client. The allowlist
+  constants' preimages are per-client values not shipped anywhere we have.
+- **re-hls-kill-cnk closed as detector artifact** (see 04:05Z update).
