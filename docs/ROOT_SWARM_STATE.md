@@ -265,3 +265,17 @@ arguments through the JSON binder (u16-length mechanics now wire-reachable).
   not a property of the write; control + 4 hypothesis families all negative;
   every write persisted; diagflood (~1900 inserts) saturates workers without
   restart. Session closure count: **12**.
+
+## Update 2026-10-29 ~05:40Z
+
+- **frankensonos-uwd CLOSED** (omp_4 AzureCardinal, aa963075): type-21 token
+  vocabulary fully decoded — 4 patch-train entries, all critical, no callbacks,
+  '!' negation lexer, wire-parseable pre-signature but semantics are a bounded
+  feature-compat list (no memory-unsafe construct). Self-closed with full
+  evidence (doctrine note: orchestrator co-signs this closure after review).
+- **frankensonos-cve-version-map-ja2 CLOSED** (orchestrator, direct): the sweep
+  was completed and committed in the 2026-10-28 session (RE_CVES §8–§16).
+- **frankensonos-v8z CLOSED** (see 05:00Z). Session closure count: **14**.
+- Remaining open: xnf (Bearer forge — the hhid/kid derivation lane), f4k
+  (omp_5, active), jc7 (omp_2, active), 9sd (omp_6, DIDL dc:title xref pass
+  running), plus feature beads outside the root campaign.
