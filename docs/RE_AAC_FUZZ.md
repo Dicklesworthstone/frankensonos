@@ -88,3 +88,48 @@ fetch-count jitter, not a death. Static analysis found **no OOB write candidate*
 (buffer guard is sound: 13-bit length vs 0x8000 window with unsigned compare); the two residual
 candidates — unbounded ID3 accumulate (memory-growth DoS only) and the fixed-stack TITLE/ARTIST/ALBUM
 copy — are logged for a deeper pass but the first device round is negative.
+
+## Decode entry points (2026-10-28, round 2)
+
+The decode side is **Sonos-custom throughout — no upstream diff is possible**: the binary carries
+zero faad/fdk-aac/nero/libavcodec version strings; the only AAC library fingerprint is
+`[SUCCESS] DisableAacPlus StreamType=%d, aacPlusUpsamplingFactor=%d` (0x10473c3c, sole xref at
+0x101b737c via manual lis/addi scan). So the honest deliverable is the custom-decoder map plus
+triggers through the real chain, not an upstream diff.
+
+### The decode chain (static)
+
+| stage | site | notes |
+|---|---|---|
+| demux → decoder handoff | `fcn.10212778` vtable `+0x4c` at **0x10212e4c** | decoder object (r17) passed in as arg2; vtable fn +0x4c consumes one parsed frame |
+| decode/output driver | `aav.0x101b6dd0` (stack 0x6910) | vtable `+0x8` at 0x101b6f70 returns **StreamType** (≤5 gate at 0x101b6f78, `r11-6` remap); `+0xc` at 0x101b6f9c returns format (3/2/1 dispatch) |
+| channel count | `lhz 0x1a(r31)` → `cmplwi ≤0xc` at **0x101b6fd4** | table `0x10473430[ch]` indexed by ch*4 |
+| per-stream setup | `fcn.101b6c84` (own 0x2090 stack) | stores ch/samplerate into stream object |
+| PCM output loop | **0x101b71f0** | `mullw samples*ch`, `clrlwi 16` (16-bit truncation), `cmplw` vs remaining, `r4 = r18 + count*2` into the 0x4800-byte PCM buffer; short-count = under-consumption, not overflow |
+| aacPlus/SBR | 0x101b7350 `memset 0x2000` + `mullw factor*samples` at 0x101b73ac | upsampling multiplier applied post-decode |
+
+The `samples*ch` product is truncated to 16 bits (`clrlwi`) before the buffer-offset math — worst
+case (1024 samples × 12 ch) under-counts, which makes the consumer read **less** than produced;
+no write path exceeds the 0x4800 PCM window from header-controlled values (ADTS caps ch at 7; the
+≤0xc check covers the record path). **No decode-side OOB candidate from header-controlled fields.**
+
+### Decode-side device shapes (4 runs, .84, SWGen 1→1 every run, Stop+settle after each)
+
+| shape | attacks | verdict |
+|---|---|---|
+| `k2_decode_ch2` | baseline decode, 8 random-payload LC frames | ALIVE 20 s, SWGen 1 |
+| `k1_multiblock_ch7` | `number_of_raw_data_blocks=4` × ch=7 → PCM count 4×1024×7, near the 0x4800 window | ALIVE 20 s, SWGen 1 |
+| `k3_profile3` | profile=3 (reserved) | ALIVE 20 s, SWGen 1 |
+| `k4_freq5_ch7` | freq_idx 5 + ch 7 (table/mismatch edge) | ALIVE 20 s, SWGen 1 |
+
+Unit healthy after the full session (SWGen 1, 57.23-74170, 17 AAC runs + 13 FLAC runs today).
+
+### Scope statement for the bead
+
+Parse side: mapped + 13 shapes device-clean (round 1). Decode side: mapped end-to-end
+(demux→StreamType→channel table→PCM loop→SBR), **custom code, no upstream reference exists**;
+4 decode-shape device runs clean; static review of the header-controlled decode math (channel
+table index, PCM count truncation, SBR multiplier) found no write outside the 0x4800 PCM window.
+Residual (unchanged from round 1, both DoS/consumer-class): ID3 accumulate cap, metadata
+TITLE/ARTIST/ALBUM stack-copy bound. The bead's falsifier is met on both parse and decode sides;
+no PC-control primitive, no SWGen increment in 17 runs.
