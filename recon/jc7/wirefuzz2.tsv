@@ -1,0 +1,23 @@
+ts	case	status	bytes	errorCode	reason
+00:19:12	name-65535-then-field	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+00:19:15	name-65536-then-field	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+00:19:20	name-65537-then-field	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+00:19:23	name-70000-then-field	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+00:19:27	name-200000-then-field	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+00:19:30	huge-method	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 401
+00:19:34	huge-arg-key	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+00:19:37	two-huge	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+00:19:46	nest-32	200	446	-	-
+00:19:50	nest-256	200	446	-	-
+00:19:53	nest-1024	200	446	-	-
+00:19:57	nest-4096	200	446	-	-
+00:20:01	{"method":"GetZoneAttribut	200	446	-	-
+00:20:04	{"method":"GetZoneAttribut	200	446	-	-
+00:20:08	{"method":["GetZoneAttribu	400	104	ERROR_INVALID_PARAMETER	Parsing terminated:method
+00:20:11	{"method":1,"args":{}}	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 401
+00:20:15	{"method":null,"args":{}}	400	104	ERROR_INVALID_PARAMETER	Parsing terminated:method
+00:20:18	{"method":"GetZoneAttribut	200	446	-	-
+00:20:21	{"args":{}}	400	104	ERROR_INVALID_PARAMETER	Parsing terminated:method
+00:20:25	{"method":"GetZoneAttribut	200	446	-	-
+00:20:28	{"method":"GetZoneAttribut	200	446	-	-
+00:20:31	{"method":"GetZoneAttribut	200	446	-	-
