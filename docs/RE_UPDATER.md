@@ -624,3 +624,47 @@ Also closed this session (negative leads for the named-file write):
   (dropbear via `run_sshd.sh waitwhiletrue`), then
   `sh /jffs/system/Configure.dev` — note the S2 unlock test is `-e`, so a
   directory would satisfy the unlock check.
+
+### The LAN→arming loop closed (2026-10-29, later — AzureCardinal)
+
+Decompiled `FUN_102c691c` in full and traced the host: the request object
+zeroes a 0x41-byte **hostname buffer at `ctx+0x46`**; the fetch executor
+(`FUN_1035fb44` → `FUN_1035f8d0`, "openStream : %s%s") prefixes
+`https://` when `request+0x445` is set, i.e. **the cloud settings fetch is
+TLS to a fixed hostname with redirect-following disabled on this call**
+(`param_6 = 0`). The host strings in the binary: `system-api.sonos.com`
+and `system-api-pos.sonos.com` (prod / pre-prod). No
+`CURLOPT_PINNEDPUBLICKEY`-style pinning is referenced by `anacapad` (the
+`sha256//` string found in the S2 build is curl's own feature string);
+the TLS trust anchor is a **refreshable SSL server CA cert chain**
+(`refreshSslServerCACertChain` — the same `trusted_roots.rcb` cloud-bundle
+path `RE_MBEDTLS_FUZZ.md` flagged as the one route where attacker DER
+reaches `mbedtls_x509_crt_parse_der_nocopy` without a vendor signature).
+
+So the loop, end to end:
+
+1. **DNS**: the device resolves `system-api.sonos.com` via its LAN DNS
+   (udhcpc-managed `resolv.conf`) — a LAN attacker answering that name
+   receives the fetch.
+2. **TLS**: present a chain validating against the device's refreshable
+   server-CA set — the eMudhra forged-leaf chain (`EMUDHRA_AND_FIRMWARE.md`)
+   is the documented supplier.
+3. **Body**: `GET /product-settings/v3/settings` answered with the
+   downgrade-policy object (keys pinned above; `downgradeMinVersion`
+   non-zero + the restrictions object).
+4. **Arm**: `FUN_1029c34c` appends `MinVersion: [<v>]` to
+   `/var/run/upgradeinfo`; with `URL:` present (set by the same writer
+   family from the update job) `/bin/upgrade` runs **as root** and fetches
+   that URL, parsing the `.upd` **pre-signature** (type-21 verdict first —
+   uwd; the streaming gates; the type-17 verify last).
+
+What this does **not** close: the type-17 vendor signature (RSA key pinned
+in `libsonoscrypto`) still gates any *install* — the loop reaches
+root-context parsing of attacker bytes (the uwd/hd7l surfaces), not flash.
+That is exactly the "root fetcher pre-signature" adjacency the root lane
+has been mapping, now with its LAN-entry predicate fully specified.
+
+Tooling note for future lanes: Ghidra headless on this machine needs
+**JDK 25** (`/opt/homebrew/Cellar/openjdk@25/...`, saved via
+`LaunchSupport -jdk_home -save`) since brew upgraded ghidra to 12.2; the
+12.0.1 path in older docs no longer exists.
