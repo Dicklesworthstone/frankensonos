@@ -295,3 +295,21 @@ arguments through the JSON binder (u16-length mechanics now wire-reachable).
   the campaign was missing.
 - **9sd H-003 modeled** (omp_6, b5d4a267): deferred queue-dc:title kill modeled
   offline (8–60KB EnqueuedURIMetaData, state-dependent on a just-cleared queue).
+
+## Session roll-up (2026-10-29 ~07:00Z)
+
+56 commits, 14 beads closed with evidence, 0 stuck units, 2 provider-quota
+incidents (recovered), 1 agent crash (recovered with --continue), 1 measurement
+artifact overturned (the HLS "kill"), 1 campaign premise corrected (the token
+"getter" was free()).
+
+Live at roll-up: xnf (iss==luid discovery, one virtual call from a forged
+token), q57 (upgradeinfo arming template found), f4k (two-connection groom
+experiment pending), jc7 (UPnP marshalling verdict delivered), 9sd (H-003
+model built), v8z/1w3/dxe/uwd/c08/cve-map/hls-kill/qa2/d7vi/81v/13yv/wbz/s20
+all closed.
+
+The two corruption candidates that remain live for the root goal:
+1. f4k: libsmb2 QUERY_INFO over-read + two-connection heap grooming (.86).
+2. xnf: one virtual call away from a forged Bearer token (all other chain
+   links proven).
