@@ -1537,3 +1537,40 @@ The 2.1e silent 200 at span 2139 is consistent with all of this: it touched `r30
   action handler `0x1039c930` (frame 0x1470) through the dispatcher `0x1039c864` (frame 0x1c20).
   `(sp+0x1520) & ~0xFF == sp+0x1500` only when the SOAP-dispatch caller's `sp ≡ 0xA0 (mod 0x100)`.
   One device crash address settles it.
+
+### Cap question settled (2026-10-28): 1025 binds, and it is below both saved-slot bands
+
+The `SetAVTransportURI` path caps the URI itself. In the transport method `0x101ee058`, the
+non-playlist branch is:
+
+```
+101ee134  bl   0x100a7240        ; classify
+101ee138  mr   r4,r30            ; src = the URI
+101ee140  li   r5,1025
+101ee144  addi r3,r31,12         ; dst = obj+12
+101ee14c  bl   0x10318eb0        ; strlcpy(dst, uri, 1025)
+```
+
+`0x10318eb0` is a bounded strlcpy (`add r9,r3,r5; addi r5,r9,-1` then a byte loop that stops at
+`r3 == r5`), so the stored URI is at most **1024 bytes**. The 1025 SOAP descriptor at
+`0x1039c984` is the same number and is consistent with it.
+
+Reconciliation with the n66 device bisect: the 4016/4017 figure is a **request-parser** limit on
+the URI field of GET routes (`/getaa?u=`, bare paths); it is not the SOAP argument cap and it is
+not reached here. Both limits exist, and the smaller one wins on this path.
+
+Arithmetic against the two saved-slot bands:
+
+| route | limit | span needed | verdict |
+|---|---|---|---|
+| `0x101cc878` splitter (this lane) | 1024 URI → span ≈ 1000 | 2148 (LR), 2136 (r30) | **dead** |
+| `0x1007b2c4` URL-span (n66) | 4016/4017 gate → span ≈ 3990 | 5352 | **dead** |
+
+So the 2.1e span-2139 run was a no-op for a second reason: with the URI truncated at 1024 the
+last `/` is gone, `strrchr` and `strchr` return the same pointer, span = 0, the copy is one byte
+and the NUL lands at `sp+17` — inside the scratch buffer. Silent 200, as observed.
+
+**Verdict: the URL-span route is dead on 57.23 in both variants.** The remaining live question is
+the saved-queue-record path — a title that reaches `0x101cc878` from `savedqueues.rsq` rather
+than from a capped SOAP URI. That path needs a >2139-char title stored via `CreateObject` and is
+the only one whose length source is not the 1024-byte URI copy.
