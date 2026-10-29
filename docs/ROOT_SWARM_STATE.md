@@ -116,3 +116,18 @@ surface through the JSON binder.
   4 shots incl. valid control, SWGen unchanged). Commits 87ea1683 + 857f8479.
 - BrightDeer → frankensonos-dxe (P0, HLS slot-16 ring fault recipe, .84).
 - Closed-bead count this session: **5** (s20, wbz, 13yv, 81v, d7vi).
+
+## Update 2026-10-29 ~00:45Z
+
+- **frankensonos-1w3 verdict delivered** (omp_3 TurquoiseForest, commit 8880668a):
+  the 1025-byte `strlcpy` cap binds at `101ee140` — **both URL-span routes are
+  dead on 57.23** (span-2139 was a no-op because the truncated URI loses its
+  last `/`, span collapses to 0). The one live length source left on the PC-control
+  chain is the saved-queue-record path (`savedqueues.rsq` via CreateObject title).
+- **frankensonos-qa2 advanced** (omp_5 RusticIbis, commit e74113ce): custom AAC
+  parser fully mapped (ADTS demux `fcn.10212778`, ID3/private `fcn.10212454`),
+  buffer guard assessed sound, 13-shape corpus + device verdicts 13/13 clean.
+  Decode-side entry points are the remaining scope.
+- Two provider-quota incidents (omp_1, omp_4, DeepSeek) — both recovered after
+  retry nudge; zero lane work lost.
+- Pushes: all session work landed on origin/main (71b03009).
