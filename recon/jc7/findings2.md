@@ -344,12 +344,14 @@ The `args` object is marshalled by a string builder at `0x509d4c`:
 
 Two things are worth naming:
 
-1. **The size request uses only the value length** (`2*len(value)+16`) while the write needs
-   `len(name) + len(value) + 8`. With `len(name) > len(value) + 8` the `snprintf` truncates,
-   and because the cursor is advanced by the *full* return value it lands past the end; the
-   next write then computes `end - cursor` on an underflowed unsigned and skips the grow.
-   In practice the builder carries a **34148-byte inline buffer** (`li v1,34148` at
-   `0x509c44`) and grows beyond it, so the slack absorbs the overrun.
+1. **The size request uses only the value length.** `addiu v0,8; sll a1,v0,1` requests
+   `2*len(value) + 16`, while the format `<%s>%s</%s>` needs `2*len(name) + len(value) + 6`
+   (two name copies, one value, five literal bytes, one NUL). Truncation therefore starts at
+   `2*len(name) > len(value) + 10`, i.e. any name more than about half the value length.
+   Because the cursor is then advanced by `snprintf`'s *full* return value it lands past the
+   end, and the next write computes `end - cursor` on an underflowed unsigned and skips the
+   grow. In practice the builder carries a **34148-byte inline buffer** (`li v1,34148` at
+   `0x509c44`) and grows beyond it, so the slack absorbs it.
 2. **No XML escaping.** The format is a literal `<%s>%s</%s>` with raw pointers, so a value
    containing `<`, `>`, `&` or `"` is emitted verbatim into the SOAP body.
 
@@ -369,3 +371,28 @@ oracle and they stay 200 throughout.
 
 Verdict: **no copy/bounds bug in the marshalling.** The under-request is real but latent
 behind the inline buffer; the missing escaping is a correctness issue, not memory safety.
+
+## 9. The passthrough works only for zero-argument actions
+
+Follow-up to §8. Every action that carries arguments returns **499 / UPnP 402 (Invalid
+Args)** through `upnp*Properties`, whatever the `args` shape:
+
+| request | result |
+|---|---|
+| `{"method":"GetZoneAttributes"}` (no args) | 200 |
+| `{"method":"GetZoneInfo"}` (no args) | 200 |
+| `{"method":"GetZoneGroupState"}` (no args) | 200 |
+| `{"method":"GetString","args":{"StringVariable":"ZoneName"}}` | 499 rc 402 |
+| same with `args` as `[{"name":…,"value":…}]` | 499 rc 402 |
+| same with the arg flattened next to `method` | 499 rc 402 |
+| `{"method":"SetZoneAttributes","args":{…all three current values…}}` | 499 rc 402 |
+| `{"method":"SetZoneAttributes","args":{"DesiredZoneName":"KC"}}` | 499 rc 402 |
+
+`GetZoneAttributes` returns the live values (`CurrentZoneName` "Kitchen Counter",
+`CurrentIcon`, `CurrentConfiguration` "1"), so the read side and the service selection are
+fine; replaying those exact values into `SetZoneAttributes` still 402s. The failure is in
+argument marshalling or in how the passthrough namespaces the action, not in the values.
+
+Consequence: the §8 escaping gap cannot be round-tripped until the argument path works, and
+the argument path is now the single highest-value target in this lane — a 402 on *every*
+arg-carrying action is a much bigger defect than the escaping.
