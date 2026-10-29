@@ -165,3 +165,14 @@ argument marshalling (rc 402/401), not the JSON layer. One doc regression
   Session closure count: **7**.
 - jc7 wire fuzz merged: UPnP passthrough pre-auth confirmed (ed0a1cdf);
   75 malformed-JSON cases 0 faults; next = UPnP argument marshalling.
+
+## Update 2026-10-29 ~02:10Z
+
+- **f4k first experiment** (omp_5 RusticIbis, commit 502a645a): the desync+fndelta
+  combined recipe is **structurally incapable** of stacking the over-read
+  primitives in one worker (sequential CREATE→QUERY_INFO→READ chain; the walk
+  happens inside QUERY_INFO while a pinned worker blocks). SWGen 2→2, no restart.
+  The pin remains the primitive; multi-worker grooming is the next question.
+- setstring POST shape pinned (omp_1, bfc8036e): ≥200 B body, URL-encoded
+  csrfToken; no-hang verdicts on .202/.86 with the tested keys — kill is
+  key/state-dependent; the key hunt continues.
