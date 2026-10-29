@@ -1106,67 +1106,79 @@ are the newest), sonos.com/en-us/security-advisory + SSA-2026-0001 page
 (fetched 2026-10-27), OpenCVE vendor=sonos (22 entries, newest
 CVE-2026-55832 tract, 2026-09 — Rust ML library, not in firmware).
 
-## 8. Window refresh 2026-09-28 … 2026-10-28 (CalmHawk, 2026-10-28)
+### 15d. Unpublished availability finding: endless `100 Continue` wedges the 57.23 updater (s20, 2026-10-28)
 
-Full re-sweep of the last 30 days (NVD vendor=Sonos, TheHackerWire tracker, OpenCVE):
+Not a CVE candidate (no memory corruption, no version-matching published
+bug) — recorded here as an unpublished, DoS-class finding in the S1 57.23
+update path. The updater's fetcher is busybox 1.24.2 `wget` run as root via
+`execl`; its read-loop timeout is an **inactivity** counter reset on every
+successful read (`second_cnt`, `0x10010d24`/`0x10010d78`), and the `alarm`
+only covers connect — so a server that streams `HTTP/1.1 100 Continue`
+forever keeps the counter topped up and the fetch never ends or errors. The
+updater waits on the child with a bare blocking `waitpid`
+(`0x100090fc`), importing no `alarm` itself. Upstream fixed exactly this in
+1.29.0 (`3459024bf404`, re-arm the alarm on every line read).
 
-- **No new Sonos-vendor CVEs in the window.** The newest vendor entries remain the tract
-  Rust CVEs (CVE-2026-75093 `Tensor::from_raw_dt_align`, CVE-2026-55832), published Aug/Sep
-  2026 — §"Recent-CVE check" above already settled both as unreachable on 57.23/86.10 (no
-  tract runtime in either build; re-check on any 97.x image).
-- **CVE-2026-4149 (ZDI-26-192, ZDI-CAN-28345, Era 300, CVSS 10.0, published 2026-04-10)** —
-  surfaced in this sweep because the tracker ranks it the fleet's only critical: an
-  unvalidated **`DataOffset` in SMB *responses***, memory access past the allocation,
-  leveraged to code execution **in kernel context**. Fixed in `83.1-61240` (2025-02-04 per
-  ZeroPath; ZDI says "fixed in 83.1-61240"), which is **below both of our builds**
-  (57.23-74170, 86.10-81100) — so it is a reproduction target at best, not a live bug.
-  Two things it does establish: (1) Sonos-class memory-corruption bugs concentrate in the
-  SMB reply parser — exactly where §7c's libsmb2 4.0.0 CVEs (110712/110713/110714/115505)
-  sit on our S2 builds; (2) on Era-300-class hardware the SMB handler runs in kernel
-  context, so the same bug class yields more than a userspace crash there. Our S2
-  libsmb2 is userspace-root (anacapad), and the QUERY_INFO over-read already gives a
-  deterministic restart primitive; the missing step on that lane is corruption → control.
-- Community prior art unchanged: NCC "Listen Up" (BH-USA 2024) and the Pwn2Own 2024
-  trio (§3) remain the only public Sonos exploit literature; no new public Sonos RE
-  releases in the window.
+Device verdicts on `.202` (57.23-74170, genuine package, one fetch per
+minute per the runbook): D1 chunked control `PASS` (5 606 749/5 606 749
+bytes, one request, normal update path — proves the serving path), D2
+endless-100 `PASS` (0 bytes; `:1400` down at ~6 s and never back inside a
+150 s window), and the persistence check (2026-10-28 22:25Z, this window):
+after the harness exit closed the socket, the daemon was **still down two
+samples later (~65 s) and returned on its own ~90 s after socket close**
+(22:29:58 `200`), unit healthy on `57.23-74170`, `/tmp/upgradeinfo` empty,
+no restart-loop. So the wedge is a **pre-auth, one-request, self-recovering
+~2-minute outage of the update daemon plus a fetch that never completes**
+for as long as the stream continues — an availability wedge of the update
+path (a malicious LAN URL can pin the root fetcher indefinitely), not
+persistent-down and not code execution. Fixed upstream; 1.24.2 never gets
+the fix. Harness: `captures/research/re-probe.py --hundred` (git-ignored),
+analysis in `docs/RE_WGET_FUZZ.md` §Finding 1.
 
-Net for the campaign: the 0-day lanes (busybox wget chunked grammar, :1443 JSON parser,
-notify/setstring grammar, mbedtls x509, HLS ring, codec diffs) remain the only paths to a
-pre-auth corruption primitive on these builds; the freshest *named* bugs stay the four
-libsmb2 ones in §7c.
+### 16. hd7l: MPEG-TS/ID3 offline ASan sweep clean; S2 FFmpeg consumer located in the jffs app package (2026-10-28)
 
-## 16. Unpublished availability bug — pre-auth wedge of the updater fetcher (s20, 2026-10-27)
+**Consumer binary (resolves the §5 open item):** the only media-path
+executable S2 launches is `anacapad` itself — `inittab` respawns
+`/etc/runanacapa`, which execs `/opt/bin/anacapactl start-demo`, which runs
+`$INSTALL/bin/anacapad` with `INSTALL=/jffs/app/install` (falling back to
+`/opt/bin/update` if absent). The 86.10-80260-1-12 **base rootfs carries no
+`libav*` at all** (34 `.so` files in `/lib`, none FFmpeg; `opt/lib` empty;
+the overlay `bin/anacapad` has 21 NEEDED entries, none `libav*`, no
+`avformat`/`m3u8`/`mpegts` strings). So FFmpeg 5.0.3 (`libavformat.so.59`)
+ships inside the **jffs app-install package** (the live `.86` runs app
+86.10-81100 on top of base 80260) — same delivery channel as the daemon
+itself. The HLS demuxer demonstrably runs on the live unit (the §4 m3u8/TS
+fetch counts), so the app-package anacapad (or a helper it spawns) is the
+TS/ID3 consumer; "a separate consumer binary TBD" is resolved to "the jffs
+app package's anacapad".
 
-Not a CVE and not in any window table: found by the s20 fuzz lane, fixed upstream in busybox
-1.29.0, still present in the 57.23 build. Recorded here because it is a pre-auth, one-request
-availability primitive on the update path.
+**Rootfs evidence now on disk (git-ignored):** the model-12 legacy key was
+re-recovered (`captures/firmware/86.10-80260-1-12/model12-private.pem`,
+recipient `e35f7c21…`, from the plaintext 34.16-37101-1-12 `/bin/upgrade` in
+the Play:1 cramfs — extraction recipe: cramfsswap to LE + alpine `cramfsck`,
+the earlier QEMU-guest-only step is now repeatable on the host), and
+`86.10-80260-1-12.upd` sections 7/8/9 decrypted: preinstall script, MIPS
+kernel uImage, and the **rootfs squashfs
+(`21868738…27c1b`, matching the BookCatKid public release)** unpacked at
+`captures/firmware/86.10-80260-1-12/rootfs/`.
 
-The updater fetcher is `/usr/bin/wget` (busybox 1.24.2) `execl`'d **as root, before any
-signature check**, against an attacker-chosen `BeginSoftwareUpdate` URL. Two properties of that
-build combine:
+**Offline ID3/TS sweep (CVE-2025-1049 shape family):** FFmpeg 5.0.3 built
+from source with ASan (Apple clang; note homebrew LLVM 21's `clang_rt.asan`
+hangs in `FindDynamicShadowStart` on this machine — use
+`CC=/usr/bin/clang`). Harness `captures/research/ffmpeg-ts-fuzz/ts_fuzz.c`
+mirrors the device exposure: `avformat_open_input` →
+`ff_id3v2_read_dict` (unconditional pre-read_header in 5.0.3,
+`libavformat/demux.c:294` — runs before the TS demuxer's own header parse) →
+`av_read_frame` loop. Corpus: 3025 cases (targeted ID3v2 shapes — syncsafe
+tag-size abuse incl. the 1<<28 boundary, unsync 0xff-dense streams,
+compressed/encrypted frames, extended-header underflow, APIC/USLT/COMM
+arithmetic, plus 3000 seeded structural mutations of valid TS-with-ID3
+seeds). **0 ASan findings, 0 signals, 0 timeouts.**
 
-- `read_response` treats status `0` and `100` as "eat the headers, read another status line", so a
-  server that keeps answering `HTTP/1.1 100 Continue` keeps wget in that loop forever.
-- `-T` does not bound it. The alarm is armed once around `connect` and the handler only dies while
-  `G.connecting` is set (`0x100105a0`–`0x100105bc`); the read loop's own timeout is an
-  **inactivity** counter reset by every successful `fread` (`0x10010d24`, decremented only on a
-  `safe_poll` timeout at `0x10010d78`). A stream that keeps producing complete responses is never
-  inactive.
-- The parent (`bin/upgrade`) waits with a bare blocking `waitpid(pid, &status, 0)` (`0x100090fc`)
-  and imports no `alarm`, so nothing else bounds the child.
-
-Measured on `.202` (57.23-74170, 2026-10-27, `re-probe.py --hundred`, 150 s window): 0 of
-5 606 749 bytes served, the HTTP daemon down at **6.1 s** and still down for the remaining ~144 s.
-Recovery came only when the harness closed the socket. One `BeginSoftwareUpdate` request, no
-memory corruption, no version change. Upstream fix `3459024bf404` (re-arms the alarm on every line
-read).
-
-Second, smaller item from the same lane: a redirect to a scheme-less `Location: ?x` writes one
-NUL byte **before** the `xstrdup`'d URL (`0x10010920`, `stb r0,-1(r29)`), i.e. into the low byte
-of the chunk size field — measured 0x11 → 0x00 under gdb. On the stock device the same store also
-empties the host, so the fetch dies at `bad address ''` before the corrupted chunk is freed (D3,
-clean abort, daemon back in 5.4 s). With `http_proxy` set the fetch survives to `free()` and
-glibc aborts the process (`free(): invalid pointer`, rc 134) after the body has been written. The
-device sets no `http_proxy`, so the crash is conditional today. Upstream fix `df45eb49acae`.
-
-Full corpus, harness and verdicts: `docs/RE_WGET_FUZZ.md`.
+CVE-2025-1049 (ZDI-CAN-25601) is Sonos's own ID3-copy bug fixed in
+83.1-61240; every build we own is above the fix line, and the reproduction
+hunt against the stock 5.0.3 demux+ID3 path produced no fault — the shape
+lives in Sonos's modified ID3 handling (or a config where the copy lands),
+not in the stock parser paths the corpus exercises. Device verdict not
+taken: no offline fault to reproduce, and the bead's device arm is
+conditional on one.
