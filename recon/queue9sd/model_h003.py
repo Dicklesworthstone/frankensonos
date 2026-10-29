@@ -52,3 +52,46 @@ Why the async worker and not the inline parse: F1 answers 200 instantly and
 the death is minutes-scale periodic; the parse path was swept by 9sd (1534
 memcpy sites) with the queue-inline copies bounded.
 """
+
+## Static refinement (2026-10-29, post-model)
+
+- Queue-API record (type 0x98 in the descriptor table at 0x1044cc34, routes
+  `players/{playerId}/upnpQueue`): title capacity **629 bytes** (`li r6, 0x275`
+  at 0x102360e4, serializer family 0x10219464/0x10219cfc). This is the
+  measured SetAVTransportURI 629-byte title store.
+- TLV blob record: length word obj+0x448 (writer-guarded 0 < len <= 0x400 at
+  0x10224c44), buffer obj+0xe58 capacity 0x458; consumer 0x10219954 checks
+  the bound AFTER the copy and only logs — overrun up to ~0xF6 bytes past the
+  buffer (sum of 7 + title-len + blob-len vs 0x458). Known, log-only.
+- The .rsq file writer (fcn.101df010, `<Track URI=` / ` MD=` at 0x101df514/
+  0x101df87c) appends through a capacity-checked dynamic string
+  (0x1038d128 compares buf+0x10+len+1 vs buf+0xc; 0x1038c788 = strlen +
+  vtable+0x10 appender). **Write side bounded** — the .rsq file is not the
+  overflow.
+- Therefore H-003's multi-KB dc:title must reach a consumer that uses the
+  UNTRUNCATED length; the only such site is the async walk (browse prep /
+  maintenance). The device ladder (8K/30K/60K) discriminates: kill latency or
+  probability scaling with length => unbounded copy in the walk; binary
+  behavior => state flip in the walk.
+
+Device harness staged (pending window): `/tmp/h003_shot.sh` (AddURIToQueue via
+curl — python socket to LAN still broken this session — plus an independent
+0.1 s `/status/zp` SWGen poller per the new doctrine, 90 s max), queue-clear +
+settle + Stop between shots (`/tmp/h003_settle.sh`), track URI server on
+`.160:8903`.
+
+## Wire-test decision matrix (pre-computed, for the 8K/30K/60K ladder)
+
+| observation | mechanism | next |
+|---|---|---|
+| death at all 3 sizes, latency ~constant (~72-97s) | state flip in the walk (title length irrelevant beyond presence) | diff the walk trigger |
+| death probability/latency scales with length | unbounded copy in the walk (copy size <-> walk window race) | pin the copy: 9sd sweep
+  candidates 0x101a039c/0x101a04d4 or the 0x101cc878 path-B reader |
+| no death at any size (3/3 clean) | F2 generalizes: cleared-queue control required; the killed
+  sequence needs specific prior queue state | ladder the prior state: [short,item] vs
+  [item,short] vs [item,item] |
+| death only after Stop/requeue or second enqueue | the walk runs on queue-structure change,
+  not on a timer | instrument the walk trigger via the .rsq file mtime
+  (savedqueues.rsq write = walk ran) |
+SWGen is the crash oracle: any change 0->1 means the daemon died and the
+watchdog restarted it; the 0.1 s poller bounds the death time to +-0.1 s.
