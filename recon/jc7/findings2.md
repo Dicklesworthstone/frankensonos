@@ -325,3 +325,47 @@ Consequence for the bead: the `:1443` JSON binder is reachable pre-auth on a rea
 set, so the copy/bounds hunt can now be driven against a live parser instead of guessed
 paths. The `authorization` binding and `hasAuthToken` are on the *Bearer* path, not the
 entry gate.
+
+## 8. UPnP argument marshalling — dynamic builder, no fault; two latent weaknesses
+
+The `args` object is marshalled by a string builder at `0x509d4c`:
+
+```
+509d54  strlen(value)
+509d5a  addiu v0,8
+509d5c  sll a1,v0,1              ; request 2*len(value) + 16
+509d5e  jal 0x509c14             ; ensure capacity (grows via vtable+80)
+509d68  move a3,name
+509d34  lw v0,<"<%s>%s</%s>">
+509d38  jal __snprintf_chk       ; (dst=*cursor, maxlen=end-cursor+1, 1, -1, fmt, name, value, name)
+509d3e  lw v1,0(s0)
+509d40  addu v0,v1,v0            ; cursor += snprintf's FULL return
+```
+
+Two things are worth naming:
+
+1. **The size request uses only the value length** (`2*len(value)+16`) while the write needs
+   `len(name) + len(value) + 8`. With `len(name) > len(value) + 8` the `snprintf` truncates,
+   and because the cursor is advanced by the *full* return value it lands past the end; the
+   next write then computes `end - cursor` on an underflowed unsigned and skips the grow.
+   In practice the builder carries a **34148-byte inline buffer** (`li v1,34148` at
+   `0x509c44`) and grows beyond it, so the slack absorbs the overrun.
+2. **No XML escaping.** The format is a literal `<%s>%s</%s>` with raw pointers, so a value
+   containing `<`, `>`, `&` or `"` is emitted verbatim into the SOAP body.
+
+Wire attempts to make either one bite (all 200, liveness 200 after every batch, no fault):
+
+| shape | cases | result |
+|---|---|---|
+| arg name 20 / 200 / 70000 / 200000 with a 1-char value, then a second arg | 4 | 200 |
+| 70000-char name then 3 more args | 1 | 200 |
+| 50 × 2000-char names, 200 × 2000-char names, 50 × 20000-char names | 3 | 200 |
+| XML metacharacters in a value (`<`, `>`, `&`, `"`, `'`, CDATA, `]]>`, `&#0;`, `<a/>`, tab, newline) | 12 | 499 rc 402 (reaches UPnP, no fault) |
+
+`SetZoneAttributes` returns 402 for every argument shape tried (object, array of
+`{name,value}`, all four SCDP arguments with the device's own current values), so the
+setter path could not be round-tripped; the getters (`GetZoneAttributes`) are the usable
+oracle and they stay 200 throughout.
+
+Verdict: **no copy/bounds bug in the marshalling.** The under-request is real but latent
+behind the inline buffer; the missing escaping is a correctness issue, not memory safety.

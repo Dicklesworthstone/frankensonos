@@ -1,0 +1,21 @@
+ts	case	status	bytes	errorCode	reason
+01:11:46	xml:a<b	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:11:49	xml:a>b	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:11:53	xml:a&b	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:11:56	xml:a"b	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:11:59	xml:a'b	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:12:03	xml:<![CDATA[x]]>	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:12:06	xml:a]]>b	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:12:09	xml:&#0;	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:12:13	xml:&amp;	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:12:16	xml:<a/>	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:12:19	xml:a\tb	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:12:23	xml:a\nb	499	127	ERROR_COMMAND_FAILED	Upnp command failed with return code 402
+01:14:14	name20-val1-then-arg	200	446	-	-
+01:14:17	name200-val1-then-arg	200	446	-	-
+01:14:20	name70000-val1-then-arg	200	446	-	-
+01:14:24	name70000-then-3-args	200	446	-	-
+01:14:27	name200000-val1-then-arg	200	446	-	-
+01:14:40	args50x-name2000	200	446	-	-
+01:14:44	args200x-name2000	200	446	-	-
+01:14:59	args50x-name20000	000	446	-	-
