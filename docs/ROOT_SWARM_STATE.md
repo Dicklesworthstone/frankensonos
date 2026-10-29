@@ -204,3 +204,29 @@ argument marshalling (rc 402/401), not the JSON layer. One doc regression
   977cd9dd): three-part falsification — every length source into the span-2139
   NUL write is capped below the control bands on 57.23. The H14 PC-control lead
   is honestly closed as unreachable-on-this-build. Session closure count: **9**.
+
+## Reality-check one-pager (2026-10-29 ~03:45Z, through 9 closures)
+
+**Where the root campaign stands after this swarm session:**
+
+Proven positive capabilities:
+1. Pre-auth remote daemon-restart primitive on .86 (S2): libsmb2 4.0.0 QUERY_INFO
+   over-read, 16KiB groom, deterministic (RE_CVES §7c) — DoS-class, corruption→control open.
+2. Pre-auth held-wedge of the root update fetcher (both S1 units): endless-100
+   Continue (s20, RE_CVES §16) — attacker-controlled duration, self-heals on disconnect.
+3. :1443 JSON API is pre-auth reachable (X-Sonos-Api-Key presence) with the UPnP
+   passthrough live (jc7 ed0a1cdf) — the whole :1400 SOAP surface is tunneled
+   through a parser with mapped u16-length descriptor mechanics.
+4. One real memory-safety bug offline-proven (vorbis alloca stack overflow,
+   upstream-fixed shape; device vehicle limitation named).
+
+Proven negatives (each with named reopen conditions):
+- URL-span PC-control chain: all three length sources capped (1w3).
+- HLS ring compaction fault: flag-setter tail call unreachable (dxe).
+- Both mbedtls builds: 3109-case server-handshake sweeps clean (wbz, 13yv).
+- All four codec surfaces (FLAC/Vorbis/AAC/TS): no reachable memory-write bug.
+- busybox wget chunked grammar: 2139-case × 2 builds clean.
+
+The honest score: no root RCE yet; the two live corruption candidates are the
+f4k getaa over-read (heap-grooming question) and the jc7 UPnP marshalling
+arguments through the JSON binder (u16-length mechanics now wire-reachable).
