@@ -223,3 +223,38 @@ A restart lever was tried to get a cold daemon: the `/diaglevel` hash flood
 (`recon/setstring/diagflood.py`, ~1900 unique inserts) saturates the workers (transient
 `000`s) but did not restart the daemon (`SWGen` still 1). `/reboot` is 403 (devmode bit 22,
 no key). So a cold-daemon control needs a power cycle or a devmode unlock.
+
+### Value-copy path: the copy is bounded, the overrun is elsewhere (r2, 2026-10-29)
+
+The value copy is the percent/form decoder `0x1038a420`, reached from the parser core
+`0x1038a508` and its wrapper `0x1038a5d4`. The handler passes the caps at `0x1000b2f0`
+(`li r5, 0x80`, key) and `0x1000b2f8` (`li r7, 0x401`, value); the parser forwards them as
+the decoder's `r5`. The decoder's only bound check is
+
+```
+1038a4bc: cmplwi cr7, r28, 1      ; r28 = remaining cap
+1038a4c0: ble    cr7, 0x1038a4d4  ; cap <= 1 -> stop storing, set fail
+1038a4c4: stb    r31, 0(r29)      ; store
+1038a4c8: addi   r28, r28, -1
+1038a4cc: addi   r29, r29, 1
+...
+1038a4e4: li     r0, 0
+1038a4e8: stb    r0, 0(r29)       ; terminator at the un-advanced cursor
+```
+
+So it stores at most `cap-1` bytes and then writes the NUL at the current cursor: exactly
+`cap` bytes, no off-by-one. The value buffer is `0x401` at `r1+0x1150` and the cap is
+`0x401` — an exact fit; the key buffer is `0x80` at `r1+0x10d0` with cap `0x80`, and the
+value starts exactly at `0x1150`, so the key cannot touch it either.
+
+Device boundary, `.202` (write, then `SystemProperties#GetString`):
+
+| value length | POST | read back |
+|---|---|---|
+| 1024 | 200 | 1024 bytes, byte-exact |
+| 1025 | 200 | **empty** — the value decode fails, the parser returns 0, the handler proceeds with the still-empty value buffer and creates the key anyway |
+| 2000 | **400** | — the body exceeds the reader's `0x800` destination (`cmplw r3, r30` at `0x1038a9d8`), so the 2000-byte "reset" is the reader bound, not the value cap |
+
+Verdict: **the copy path is safe**; no overrun shape exists there. The overrun candidate
+remains the handler's use of the property struct past its frame (`+0x804`/`+0x808`/`+0x80C`,
+above), which the copy does not touch.
