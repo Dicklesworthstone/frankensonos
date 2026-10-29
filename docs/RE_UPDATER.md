@@ -583,3 +583,44 @@ means reading that binary; recorded as follow-up, not done here. The s20
 finding that the ~128 KiB live abort is *not* in wget fits the same
 picture: both aborts are daemon-side streaming decisions above the
 `upgrade` parser.
+
+## Cloud predicate keys found — the downgrade-policy binding table (2026-10-29, AzureCardinal)
+
+The FindImm sweep (334/264) plus a table dump pin the predicate fields. The
+`ctx` of `FUN_102c691c` is the **downgrade-policy settings object**; its
+JSON binding table sits at **`0x104f2d74`** (pointer table, entries
+`{type, char* key, ...}`):
+
+- `downgradeMinVersion` (string ptr `0x104f2ce0`, two binding entries) —
+  the **int at `ctx+0x108`**: the value written verbatim as
+  `MinVersion: [<v>]` into `/var/run/upgradeinfo`; must be **non-zero** to
+  arm (the "no record" sentinel is `0x7fffffff`).
+- `downgradeRestrictions` (`0x104f2cf4`) — the policy **object** whose
+  presence sets the byte at `ctx+0x14e`.
+- `allowDowngradeToPrevSWGen` (`0x104f2d0c`) — bool.
+- `denyDowngradeToPrevSwGenList` (`0x104f2d28`) — list of `swgen` members
+  (`"swgen"` key ptr `0x104ecdd8`; log string `Invalid swgen member
+  detected, swgen: %1` at `0x104f2d48`).
+
+So the cloud predicate = the `/product-settings/v3/settings` response
+carrying a **downgrade-restrictions object with a non-zero
+`downgradeMinVersion`**. That is the arming condition for
+`/var/run/upgradeinfo` — the writer `FUN_1029c34c` then appends
+`URL: <attacker>` + `MinVersion: [<v>]`, and `/bin/upgrade` (root) fetches
+that URL pre-signature. Remaining for the full forged response: the exact
+nesting (which object wraps these keys — one decompile of the parser's
+object-open callback, entry point `FUN_102eb254`/`FUN_102eb34c` are the
+setter family) and whether `allowDowngradeToPrevSWGen` must be true for the
+predicate flag (the flag may simply mean "restrictions object seen").
+
+Also closed this session (negative leads for the named-file write):
+- the diagnostics `%s.xml` / `%s.sha256` / `%s.xml.gz` strings
+  (`0x1046808ac` family, `FUN_004de65c` in the 81100 image) build **multipart
+  form-field names for an HTTP upload**, not local files;
+- `conf/%s_auth_offline_policy_%s.json` (`FUN_004b1700`, 81100) — both `%s`
+  are internal (`protocol version`, role enum `owner/guest`), a read path;
+- S2 86.10-80260 `/etc/Configure` confirms the q57 mechanism third time:
+  `-e /jffs/system/Configure.dev` → `touch /tmp/device_unlocked_flag`
+  (dropbear via `run_sshd.sh waitwhiletrue`), then
+  `sh /jffs/system/Configure.dev` — note the S2 unlock test is `-e`, so a
+  directory would satisfy the unlock check.
