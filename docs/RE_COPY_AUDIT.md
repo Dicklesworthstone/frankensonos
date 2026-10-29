@@ -1630,3 +1630,18 @@ Subsequent 16KiB walks all survived. The round-7 "6/6 wedged" state is an **aged
 that session's wedges came after hours of pin/recovery cycles. Deterministic-wedge recipe = DoS
 ladder (dozens of pin cycles) run BEFORE the fault ladder, matching round 7's provenance. The knob
 is reply-size × heap-age, not reply size alone.
+
+### 2026-10-29 (RusticIbis) III: aging experiment — the curve is flat in request-count; the axis is pin-cycles
+
+Ladder on .86: warmer = one plain full SMB chain per /getaa (stock reply, no over-read); walk =
+16KiB body + 2-byte margin (wire-confirmed). Walks at 0/50/150/350/850 cumulative warmers, 3 per
+rung: **zero wedges anywhere**, latencies flat at 0.17–0.25 s (the 150-rung 404s were art-cache
+negative marking on cycled names, self-recovered by 350), SWGen 2→2 throughout. No readable
+heap/request counters on either line (all /status pages empty XML, reconfirmed).
+
+Corrected model: **the aging variable is pin-cycle count, not request count.** Round 7's aged
+state came from hours of pin/recovery churn (each pin = a 120 KB walk allocation + worker stall);
+plain request volume does not age the heap into wedging. The deterministic-wedge recipe is
+reply-size × pin-cycle history; a "patient" exploit is schedule-able in hours via repeated pins
+(rate-limited by art-cache cooldowns), not in seconds. Round 8's "one unauthenticated request is a
+remote daemon-restart primitive" should read "one request **given an aged heap**".
