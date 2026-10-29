@@ -186,3 +186,14 @@ argument marshalling (rc 402/401), not the JSON layer. One doc regression
   (0x101908c8) is unreachable, pinning the C>16/C<0 configs out of playlist
   reach. Session closure count: **8** (s20, wbz, 13yv, 81v, d7vi, hd7l, qa2, dxe).
   All four codec beads + both TLS beads + the wget bead now closed with evidence.
+
+## Update 2026-10-29 ~03:00Z
+
+- **frankensonos-re-hls-kill-cnk reassigned** to AzureCardinal (P0; dxe proved
+  the ring is not the mechanism — the kill lives in the fetcher lifecycle, the
+  custom S1 decode pipeline, or the transport teardown).
+- omp_2 (DarkJaguar) crashed to zsh mid-session; relaunched with `--continue`
+  (session context preserved); confirmed back on the UPnP marshalling lane.
+- Live lane board: v8z key hunt (omp_1), jc7 UPnP marshalling (omp_2), 1w3
+  saved-queue reachability (omp_3), re-hls-kill-cnk characterization (omp_4),
+  f4k getaa corruption (omp_5), dxe closed → standby (omp_6).
