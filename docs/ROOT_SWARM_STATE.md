@@ -257,3 +257,11 @@ arguments through the JSON binder (u16-length mechanics now wire-reachable).
   UUIDs × 360 forms) — no preimage in any shipped client. The allowlist
   constants' preimages are per-client values not shipped anywhere we have.
 - **re-hls-kill-cnk closed as detector artifact** (see 04:05Z update).
+
+## Update 2026-10-29 ~05:00Z
+
+- **frankensonos-v8z CLOSED** (omp_1 GoldenGull, commits bfc8036e+3de0c89f):
+  30-write device sweep across .202/.86 — the /setstring kill is state-dependent,
+  not a property of the write; control + 4 hypothesis families all negative;
+  every write persisted; diagflood (~1900 inserts) saturates workers without
+  restart. Session closure count: **12**.
