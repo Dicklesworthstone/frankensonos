@@ -359,18 +359,3 @@ issuer compare. So:
 `0x601ffc` is `0x6649d4` = `"/opt/conf/anacapa.conf"`, so id 25 is a config-path getter, not the
 issuer. The issuer's own getter is the slot-16 body on whatever class `ctx+4` holds — that class,
 not `0x51b9b4`, is the next read.
-
-### Call order confirmed under emulation, and one open point
-
-Running `FUN_006021e4` with a logging provider object confirms the three virtual calls in the
-order the disassembly shows — `RA=0x60221f` (slot 24), `RA=0x602263` (slot 16), `RA=0x602279`
-(slot 12) — all on the same `this`. So the mapping in the correction above is right.
-
-Open point, stated plainly: the caller passes `a1 = sp+32` of its own frame (`0x603c76`), and the
-policy builder `0x604fe8` was called on that same `sp+32` (`0x603c3e`), so the inspector's `ctx`
-and its `a3` policy are the same address. But `0x604fe8`'s first act is `0x5fef64(a0, 8, lit)`,
-which stores `{lit, 8}` at `{+0, +4}`, and the inspector then does `lw a1,4(s1)` / `lw v0,0(a1)` —
-i.e. it treats `+4` (= 8) as an object pointer and would read address 8. Emulating with a real
-built policy faults exactly there. So either the policy is not the ctx, or something rewrites
-`+4` between the build and the call. That is the next thing to read, and it gates the slot-16
-body.
