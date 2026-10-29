@@ -311,3 +311,66 @@ to the starting assumptions.
 So the shape is: vtable slot → trampoline that calls the getter with a fixed id → shared body
 that returns the `string_view`. Whether the issuer is a constant or a settings/household string
 therefore lives in the getter's id table, which is the one thing still unread.
+
+## 2026-10-29 · CORRECTION: `0x51b9b4` is `free`, and the issuer getter is slot 16 on `ctx+4`
+
+The 2026-10-24 note ("`0x51b9b4` is the shared id→string getter") is wrong. Read as MIPS32 —
+`jalx` to an **even** target means the callee is MIPS32, which is why the MIPS16 decode was
+misaligned — `0x51b9b4` is eight bytes:
+
+```
+51b9b4  lui   t9,0x52
+51b9b8  addiu t9,t9,-17988      ; t9 = 0x51b9bc
+51b9bc  <_ZdlPvj>               ; gp setup, lw t9,-32724(gp), b 0x51bb04 -> jr t9
+```
+
+`_ZdlPvj` is a 0x18-byte PLT stub (dynsym `0051b9bc g DF .text 00000018 _ZdlPvj`); its chain
+`0x51bb04 -> 0x6db060 -> .rel.plt 0x6f6838` resolves to **`free`**. Emulating any of the
+trampolines (`0x47b799`, `0x47b731`, …) with a fake `this` calls exactly one PLT entry —
+`free(a0, a1)` — and writes **nothing** to `a0`. The `li a1,<id>` in the delay slot is the size
+argument, not an id.
+
+So the vtable slot at byte 24 (`0x66c050` = `0x47b799`) is a **destructor**, not the issuer getter.
+
+### What the inspector actually does (`FUN_006021e4`, 0x6021e4–0x602400)
+
+```
+602210  a0 = sp+32 ; a1 = *(s1+16) ; a2 = *(s0+12) ; call slot 24   ; free(sp+32)
+602248  lbu v0,56(sp)                                              ; flag at sp+56
+602256  a1 = *(s1+4) ; a0 = sp+32 ; call slot 16                   ; <-- ISSUER
+602262  a0 = s0+7 ; a1 = sp+80 ; call 0x51e434                     ; compare
+60226c  a0 = sp+128 ; a1 = *(s1+16) ; call slot 12                 ; network_hash
+602278  a0 = sp+192 ; a1 = sp+32 ; a2 = sp+128 ; call 0x6020f8     ; composer(out, luid, net)
+602400  a0 = sp+32 ; a1 = *(token+8) ; call std::operator==        ; iss == sp+32
+```
+
+`sp+32` is written only by the slot-16 call and read by the composer (as the **luid**) and by the
+issuer compare. So:
+
+- the issuer getter is **slot 16 on the object at `ctx+4`**, not slot 24 on `ctx+16`;
+- the token's `iss` must equal that getter's output, and the same value is the fingerprint's
+  `luid` — i.e. `iss` and `luid` are one value, and the pre-gate only additionally requires it to
+  start with `urn:dev:ops:44974-zp-`.
+
+### The id→string getter that does exist
+
+`0x5f7210(out, id, default)` is a real getter: it string-constructs from a literal and then
+`find`s the id in it (`0x5f6f1c` ctor, `0x5f71d4` find). The literal for the id-25 call at
+`0x601ffc` is `0x6649d4` = `"/opt/conf/anacapa.conf"`, so id 25 is a config-path getter, not the
+issuer. The issuer's own getter is the slot-16 body on whatever class `ctx+4` holds — that class,
+not `0x51b9b4`, is the next read.
+
+### Call order confirmed under emulation, and one open point
+
+Running `FUN_006021e4` with a logging provider object confirms the three virtual calls in the
+order the disassembly shows — `RA=0x60221f` (slot 24), `RA=0x602263` (slot 16), `RA=0x602279`
+(slot 12) — all on the same `this`. So the mapping in the correction above is right.
+
+Open point, stated plainly: the caller passes `a1 = sp+32` of its own frame (`0x603c76`), and the
+policy builder `0x604fe8` was called on that same `sp+32` (`0x603c3e`), so the inspector's `ctx`
+and its `a3` policy are the same address. But `0x604fe8`'s first act is `0x5fef64(a0, 8, lit)`,
+which stores `{lit, 8}` at `{+0, +4}`, and the inspector then does `lw a1,4(s1)` / `lw v0,0(a1)` —
+i.e. it treats `+4` (= 8) as an object pointer and would read address 8. Emulating with a real
+built policy faults exactly there. So either the policy is not the ctx, or something rewrites
+`+4` between the build and the call. That is the next thing to read, and it gates the slot-16
+body.
