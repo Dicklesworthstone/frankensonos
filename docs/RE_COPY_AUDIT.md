@@ -897,7 +897,8 @@ The dispatch after the splitter returns is confirmed at instruction level
 (`0x101a0224`): `lwz r9, 0(r31)` / `lwz r9, 0xc(r9)` / `bctrl`, re-dispatched every
 loop iteration (also `+0x10` at `0x101a01d4` and `+8` at `0x101a026c`). The span-2139
 NUL zeroes the low byte of that saved `r31`, so every later dispatch runs on
-`(sp+0x1520) & ~0xFF`.
+`(sp+0x1520) & ~0xFF`. *(Corrected 2026-10-28: it is the **MSB**, and the copy is
+unbounded — see the correction section at the end of this file.)*
 
 Frame map of `fcn.101cbe80` (all offsets from its own `sp`):
 
@@ -1452,36 +1453,162 @@ discipline + the custom AAC parser as the primary target (no public audit,
 proprietary code, highest bug density). FLAC/vorbis as secondary (statically
 linked, older lib versions, but 1.3.4/1.3.7 have most public bugs fixed).
 
-### 2026-10-29 (RusticIbis): the night-X decisive experiment run — desync+fndelta combined: negative, and structurally so
+## 2026-10-28 H14 correction: the splitter is an UNBOUNDED stack copy — saved-LR control, not just a NUL
 
-Executed the named experiment: `nc0drop.py --payload <marker> --fndelta 60000 --midoff 3`
-(desync-inject arm on non-second READs **and** QINFO FileNameLength declared 120014/120020),
-4 concurrent getaa triggers per shot, 3 shots with cooldowns, fresh `fx*.jpg` share files.
+The 2026-10-27 note's frame map is right (frame 2160, `stw r30,2152`, `stw r31,2156`,
+`stw r0,2164`), but its terminator arithmetic is off by three bytes and it understates the
+primitive: the copy itself has **no bound check against the frame**.
 
-| shot | outcome |
-|---|---|
-| 0 | 1×200 + 3×000 (worker pins); QINFO patches on the wire (120014/120020) |
-| final | 4×000; 1 QINFO patch logged; zp 200 after cooldown |
-| SWGen | **2 → 2 throughout** — no restart |
+Exact code, `0x101cca44`–`0x101cca68` (inside `0x101cc878`):
 
-Two mechanics learned:
+```
+101cca44  subf  r29,r3,r27      ; span = strrchr(uri,'/') - strchr(uri+prefix_len,'/')
+101cca48  addi  r22,r1,16       ; dst = sp+16
+101cca50  addi  r5,r29,1        ; len = span+1
+101cca58  bl    memcpy
+101cca60  add   r9,r1,r29
+101cca64  li    r0,0
+101cca68  stb   r0,17(r9)       ; sp[span+17] = 0
+```
 
-1. **The two primitives are strictly sequential inside one connection.** The SMB2 art chain is
-   CREATE → QUERY_INFO → READ. The over-read walk happens *inside* QUERY_INFO; a worker pinned
-   there never reaches its READ, so the desync arm (`readinj=0` in every server log) cannot fire
-   in the same session. Concurrent connections mix states (pinned walkers + one 200) but the
-   completing worker exits at the art-cache/abort layer without a READ.
-2. **The restart remains un-reproduced.** .86's SWGen is 2 (the old unidentified event). The
-   all-workers-pinned wave (the leading recipe) needs every concurrent request to reach
-   QUERY_INFO; the art cache/abort layer spares some, so full saturation was not achieved with
-   4 same-moment ports either.
+`prefix_len` is `obj+4208`, set by `0x101cbb38` to `strchr(uri+14,'/') - uri + 1` — the offset of
+the first `/` after the scheme+host. So the copied bytes are the raw URI share path
+(`/` + share + `/`), attacker bytes, and the destination runs straight through the saved
+register block:
 
-Verdict: the combined recipe is structurally incapable of stacking the primitives in one worker;
-the restart question narrows to full-pool saturation (needs >NumThreads concurrent
-QUERY_INFO-reaching requests against distinct source keys) or an environmental one-off. The
-worker pin (walk length = declared FileNameLength, attacker-chosen) remains the lane's
-deliverable primitive.
+| copy byte `i` lands at | saved slot | overwritten when |
+|---|---|---|
+| `sp+16+i` | — | — |
+| 2136..2139 | `r30` (2152..2155) | span ≥ 2139 |
+| 2140..2143 | `r31` (2156..2159) | span ≥ 2143 |
+| 2148..2151 | **saved LR** (2164..2167) | span ≥ 2148 |
 
+Consequences, and the corrections:
+
+1. **span 2139 zeroes the MSB of saved `r31`, not the LSB.** Big-endian: `sp+2156` is the top
+   byte. The 10-27 note's "low byte" is wrong. The LSB needs span **2142**.
+2. **The copy already writes attacker bytes into `r30` at span 2139** (last copied byte =
+   `sp+2155` = `r30` LSB), so the 2.1e run was not a pure NUL either.
+3. **span ≥ 2148 reaches the saved LR** (if the URI is not truncated first — see unknown 1),
+   and span 2151 overwrites all four LR bytes with URI bytes (the NUL then lands at `sp+2168`,
+   in the caller's frame). The epilogue restores `r0` from `sp+2164` and `mtlr r0; blr`
+   (`0x101cc8e4`), so the splitter returns straight to the attacker address. Share offsets
+   2147..2150 become the return address.
+4. That makes the primitive **direct saved-LR control**, not a NUL plus a vtable indirection:
+   the `0x101a0224` dispatch (`lwz r9,0(r31)/lwz r9,12(r9)/bctrl`) is a second, independent
+   route, and it is only taken when the splitter returns nonzero **and** the flag byte at
+   `sp+8` is set (`0x101a0210`/`0x101a0218` both branch past it otherwise).
+
+The 2.1e silent 200 at span 2139 is consistent with all of this: it touched `r30`'s LSB and
+`r31`'s MSB only, and a zeroed MSB is a no-op whenever the stack pointer is already below
+`0x01000000`.
+
+### Open unknowns, named (offline work first)
+
+1. **Which length cap binds — this gates everything above.** The handler builds a 4097-byte
+   string object (`li r5,4097` at `0x1039c98c`) while the raw-argument descriptor says 1025
+   (`0x1039c984`), and the setter is handed the buffer at `sp+16` (the 1025 one). If 1024 binds,
+   the share path is truncated around span 1000 and **none** of the saved-register slots are
+   reachable; the 2.1e silent 200 does not discriminate, because a NUL at `sp+1017` is also
+   silent. The parser does clamp to a descriptor max somewhere (`0x103ae660`–`0x103ae674`:
+   `lwz r24,4(r9)` / `cmpw r24,r27` / `ble` / `mr r24,r27`), which is evidence for 1025 binding —
+   in which case the saved-register route is **not** reachable through `SetAVTransportURI` and
+   the 2.1e NUL is a no-op inside the copy buffer. Settle it before any device run: serve one
+   URI of 1100 and one of 2200 chars and watch for a delta, or tie the clamp to the descriptor's
+   `+16` max field.
+2. **Whether the dispatch is reached** in the 2.1e shape (splitter return + flag at `sp+8`).
+   If it is not, only the LR route matters.
+3. **Stack ASLR on the device.** A fixed target address is only usable if the stack base is
+   deterministic across requests and reboots.
+
+### Closed offline (this round)
+
+- **The percent decoder emits `0x00`.** `sonosDecodePercentEncoded` (`libsonosutils.so.1`,
+  `0x51dc`) stores the decoded byte and continues the loop; the terminator is written only at
+  the end (`0x5150`). So `%00` is a usable byte in the decoded name buffer — the fake-vtable
+  pointer can contain zero bytes.
+- **The decoded name buffer is 64 bytes at `sp+0x14d0`, fully attacker-controlled.** The decode
+  call is `0x101cbf14`: `r3 = *(sp+0x10b0)` (name source from the splitter `0x10389c24`),
+  `r4 = sp+0x14d0`, `r5 = 64`. The vtable pointer read at `sp+0x1500` is name bytes 0x30..0x33,
+  inside that buffer.
+- **The alignment requirement is arithmetic, not luck.** `fcn.101cbe80` frame 0x2560 →
+  `sp ≡ caller_sp − 0x60`; caller `0x101ce2ac` frame 0x20 → `sp ≡ caller_sp − 0x80`; the
+  `0x101ce2ac` caller is the AVTransport URI setter `0x101ee058` (frame 0x20) reached from the
+  action handler `0x1039c930` (frame 0x1470) through the dispatcher `0x1039c864` (frame 0x1c20).
+  `(sp+0x1520) & ~0xFF == sp+0x1500` only when the SOAP-dispatch caller's `sp ≡ 0xA0 (mod 0x100)`.
+  One device crash address settles it.
+
+### Cap question settled (2026-10-28): 1025 binds, and it is below both saved-slot bands
+
+The `SetAVTransportURI` path caps the URI itself. In the transport method `0x101ee058`, the
+non-playlist branch is:
+
+```
+101ee134  bl   0x100a7240        ; classify
+101ee138  mr   r4,r30            ; src = the URI
+101ee140  li   r5,1025
+101ee144  addi r3,r31,12         ; dst = obj+12
+101ee14c  bl   0x10318eb0        ; strlcpy(dst, uri, 1025)
+```
+
+`0x10318eb0` is a bounded strlcpy (`add r9,r3,r5; addi r5,r9,-1` then a byte loop that stops at
+`r3 == r5`), so the stored URI is at most **1024 bytes**. The 1025 SOAP descriptor at
+`0x1039c984` is the same number and is consistent with it.
+
+Reconciliation with the n66 device bisect: the 4016/4017 figure is a **request-parser** limit on
+the URI field of GET routes (`/getaa?u=`, bare paths); it is not the SOAP argument cap and it is
+not reached here. Both limits exist, and the smaller one wins on this path.
+
+Arithmetic against the two saved-slot bands:
+
+| route | limit | span needed | verdict |
+|---|---|---|---|
+| `0x101cc878` splitter (this lane) | 1024 URI → span ≈ 1000 | 2148 (LR), 2136 (r30) | **dead** |
+| `0x1007b2c4` URL-span (n66) | 4016/4017 gate → span ≈ 3990 | 5352 | **dead** |
+
+So the 2.1e span-2139 run was a no-op for a second reason: with the URI truncated at 1024 the
+last `/` is gone, `strrchr` and `strchr` return the same pointer, span = 0, the copy is one byte
+and the NUL lands at `sp+17` — inside the scratch buffer. Silent 200, as observed.
+
+**Verdict: the URL-span route is dead on 57.23 in both variants.** The remaining live question is
+the saved-queue-record path — a title that reaches `0x101cc878` from `savedqueues.rsq` rather
+than from a capped SOAP URI. That path needs a >2139-char title stored via `CreateObject` and is
+the only one whose length source is not the 1024-byte URI copy.
+
+### Saved-queue record path: NO, a >2139-char title cannot reach `0x101cc878` (2026-10-28)
+
+Three independent reasons, each measured.
+
+**1. The saved-queue module never calls the splitter.** `0x101cc878`'s six callers are the PLS
+(`0x101ccd20`), HLS (`0x101cd320`), SMIL (`0x101ce6a4`), ASX (`0x101ce828`, two sites) parsers and
+the abstract iterator (`0x101a016c`). Nothing in `0x101d8xxx`–`0x101e1xxx` calls it.
+
+**2. The saved-queue module's setter calls pass a NULL URI.** `0x101cbb38` has five callers in that
+module (`0x101da6c8`, `0x101db304`, `0x101df714`, `0x101e06b4`, `0x101e0cdc`) and every one is
+preceded by `li r4,0`. The setter's `cmpwi cr7,r31,0` then skips the `strncasecmp` and the
+`obj+4208` store, so the prefix length the splitter copies stays 0.
+
+**3. Even where the splitter runs, its input buffer is 1024/1025 bytes.** `0x101a016c` has frame
+1072 with the entry URI at `r1+16`; the PLS path decodes with `li r6,1025` (`0x101ccd44`) and the
+HLS path with `li r6,1025` (`0x101cd840`). Span ≤ ~1000 in every path.
+
+**The `.rsq` format itself is not the limit.** It is
+`<SavedQueues LastUpdateDevice="…" Version="…" Next="…">` + `<Track URI="…" MD="…"/>` per track +
+`</SavedQueue></SavedQueues>` (writer `0x101d7e64`: `<Track URI="` at `0x104781e0`, `" MD="` at
+`0x104781f0`). The title has no field of its own — it lives inside the `MD` attribute as part of the
+DIDL. `CreateObject`'s handler `0x103a019c` extracts the DIDL through `0x103974a0` → `0x1037e370`,
+which reads in 4096-byte chunks in a loop with no total cap, and answers 402 when the extraction
+yields 0 — so the 402 is an extraction failure, not a length check, and a long title *could* be
+stored if `CreateObject` ever got past it.
+
+**No title-writing action exists.** There is no `SetSavedQueueTitle` string and no action named
+`*Title`. The only title-carrying action is `SaveQueue` (AVTransport table entry `0x104fc770`,
+handler `0x1039e6ec`), whose `Title` argument is a type-6 descriptor with **max 1024**
+(`li r5,1024` at `0x1039e734`) — so `SaveQueue` caps the title at 1023 too.
+
+Remaining thread, if the lane is reopened: the stored **res URI** rather than the title. It is
+written into the same `URI="…"` attribute and could be long if `CreateObject`'s DIDL is unbounded,
+but it would still have to survive the 1024-byte read side.
 ### 2026-10-29 (RusticIbis) II: heap-layout round — the name write is self-bounded; the wedge knob is reply-size × heap-age
 
 **Source-level model (upstream libsmb2 v4.0.0, allocation sequence per QUERY_INFO):** pdu calloc →
