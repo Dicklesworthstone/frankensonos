@@ -142,3 +142,16 @@ surface through the JSON binder.
 - Live lanes: jc7 wire-fuzz executing (omp_2), v8z setstring grammar (omp_1),
   qa2 AAC decode-side (omp_5), dxe HLS slot-16 (omp_6), 1w3 saved-queue path
   (omp_3, verdict delivered — next: saved-queue CreateObject route).
+
+## Update 2026-10-29 ~01:25Z — UPnP passthrough CONFIRMED pre-auth on :1443
+
+jc7's 75-case malformed-JSON wire fuzz (commit ed0a1cdf): **0 faults, 0 daemon
+deaths**, but the structurally important result is that the `upnpDeviceProperties`
+passthrough is **live pre-auth** on the :1443 JSON API —
+`{"method":"GetZoneAttributes"}` returns 200 with a real `upnpResponse`, and
+`SetZoneAttributes` with `args.DesiredZoneName` reaches the UPnP layer (402).
+`args.DesiredZoneName` is a genuinely **bound string field** — exactly the shape
+the u16-length descriptor mechanics (FUN_005f13c0, `d+0x18` halfword = copy
+length AND bound) need for a real corruption attempt. Next pass targets UPnP
+argument marshalling (rc 402/401), not the JSON layer. One doc regression
+(wiped synthesis section) caught and reverted same-tick (a06a978f).
