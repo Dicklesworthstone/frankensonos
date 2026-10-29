@@ -197,3 +197,10 @@ argument marshalling (rc 402/401), not the JSON layer. One doc regression
 - Live lane board: v8z key hunt (omp_1), jc7 UPnP marshalling (omp_2), 1w3
   saved-queue reachability (omp_3), re-hls-kill-cnk characterization (omp_4),
   f4k getaa corruption (omp_5), dxe closed → standby (omp_6).
+
+## Update 2026-10-29 ~03:25Z
+
+- **frankensonos-1w3 CLOSED** (omp_3 TurquoiseForest, commits 6686485f+8880668a+
+  977cd9dd): three-part falsification — every length source into the span-2139
+  NUL write is capped below the control bands on 57.23. The H14 PC-control lead
+  is honestly closed as unreachable-on-this-build. Session closure count: **9**.
