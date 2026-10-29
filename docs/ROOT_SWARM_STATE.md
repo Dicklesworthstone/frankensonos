@@ -131,3 +131,14 @@ surface through the JSON binder.
 - Two provider-quota incidents (omp_1, omp_4, DeepSeek) — both recovered after
   retry nudge; zero lane work lost.
 - Pushes: all session work landed on origin/main (71b03009).
+
+## Update 2026-10-29 ~01:05Z
+
+- **frankensonos-hd7l CLOSED** (omp_4 AzureCardinal, commit 33ef4b9d): 3025-case
+  FFmpeg 5.0.3 TS/ID3 ASan sweep clean; **resolved RE_CVES §5's open item** — the
+  S2 FFmpeg consumer is anacapad itself via `/jffs/app/install`; 86.10-80260 base
+  rootfs decrypted (model-12 legacy key re-recovered, sections 7/8/9 on disk).
+  Session closure count: **6** (s20, wbz, 13yv, 81v, d7vi, hd7l).
+- Live lanes: jc7 wire-fuzz executing (omp_2), v8z setstring grammar (omp_1),
+  qa2 AAC decode-side (omp_5), dxe HLS slot-16 (omp_6), 1w3 saved-queue path
+  (omp_3, verdict delivered — next: saved-queue CreateObject route).
