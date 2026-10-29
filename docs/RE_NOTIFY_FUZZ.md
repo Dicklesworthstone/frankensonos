@@ -196,3 +196,30 @@ not a property of every successful write; the static overrun above is still the 
 candidate for the mechanism, but the trigger key is an open question. Next device step: find
 the key that reproduces the kill (the earlier note used `BootSeq` after a benign key and got
 a restart loop), then watch the caller frame with a canary build.
+
+### Key hunt, 2026-10-28 — all hypotheses negative
+
+`recon/setstring/hunt.py` (one write with a fresh URL-encoded token, then a 2 s liveness
+watch) and `recon/setstring/keys.tsv` (one row per write). 30 writes, every one `200` and
+persisted (read back with `SystemProperties#GetString`), **no daemon down on either unit**:
+
+| # | hypothesis | shape | verdict |
+|---|---|---|---|
+| 0 | control: original two-step | `roomName=BenchTest`, 5 s, `BootSeq=1` | 200/200, up 80 s |
+| 0b | control with a *new* benign key | `huntb1=v`, 5 s, `BootSeq=1` | 200/200, up 80 s |
+| 1 | key count / full re-serialize | 6 new keys in a row, then observe | 200 each, up 80 s |
+| 1b | store growth | 11 new keys × 1000 B values | 200 each, up 80 s |
+| 2 | XML-special key | `key=a<b`, `key=roomName value=<&"x>` | 200, up 80 s |
+| 3 | long key | 900-char key (store cap is 0x80, so it truncates) | 200, up 80 s |
+| 4 | unicode key | `key=é日本` | 200, up 80 s |
+| 5 | BootSeq value change | `BootSeq=2` | 200, up 60 s |
+
+`SWGen` stayed 1 through all of it (no daemon restart). The store does grow and the values
+persist, so the write path is exercised; the ~25 s kill is not a property of the write
+itself on this unit in its current state. The doc's earlier note says the outage is specific
+to *creating a new key* — that did not hold here either.
+
+A restart lever was tried to get a cold daemon: the `/diaglevel` hash flood
+(`recon/setstring/diagflood.py`, ~1900 unique inserts) saturates the workers (transient
+`000`s) but did not restart the daemon (`SWGen` still 1). `/reboot` is 403 (devmode bit 22,
+no key). So a cold-daemon control needs a power cycle or a devmode unlock.
