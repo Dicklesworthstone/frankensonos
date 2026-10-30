@@ -128,6 +128,8 @@ fn arguments_remain_literal_and_output_preference_is_child_local() {
         program: "player".into(),
         arguments: vec!["--option".into(), "a b; $(not-a-shell) 🎵".into()],
         sink: "movie".into(),
+        #[cfg(unix)]
+        managed_mpv: false,
     };
     let command = launch.command();
     assert_eq!(command.get_program(), "player");
@@ -151,6 +153,8 @@ fn native_non_utf8_arguments_are_not_reencoded() {
         program: "player".into(),
         arguments: vec![argument.clone()],
         sink: "movie".into(),
+        #[cfg(unix)]
+        managed_mpv: false,
     };
     assert_eq!(
         launch.command().get_args().next(),
@@ -183,6 +187,8 @@ impl Receipt {
                 "--nocapture".into(),
             ],
             sink: "movie".into(),
+            #[cfg(unix)]
+            managed_mpv: false,
         };
         let mut command = launch.command();
         command.env("FSONOS_APP_TEST_ROLE", role);
@@ -225,6 +231,11 @@ fn child_fixture() {
     let Ok(role) = std::env::var("FSONOS_APP_TEST_ROLE") else {
         return;
     };
+    #[cfg(target_os = "linux")]
+    if role == "managed-supervisor" {
+        managed_signal_supervisor();
+        return;
+    }
     let path = std::env::var_os("FSONOS_APP_TEST_RECEIPT").unwrap();
     let mut input = Vec::new();
     std::io::stdin().read_to_end(&mut input).unwrap();
@@ -332,4 +343,86 @@ fn a_spawn_failure_leaves_the_stream_flag_unchanged() {
     );
     assert!(result.is_err());
     assert!(!stop.load(Ordering::Acquire));
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_mpv_survives_stream_cancellation_until_sync_cleanup_finishes() {
+    let receipt = Receipt::new();
+    let stop = AtomicBool::new(false);
+    let ipc = mpv::Ipc::new("movie").unwrap();
+    let path = ipc.path().to_owned();
+    let mut app = Application::from_managed_command(receipt.command("block"), ipc, &stop).unwrap();
+    receipt.read();
+    stop.store(true, Ordering::Release);
+    thread::sleep(Duration::from_millis(150));
+    app.ensure_running().unwrap();
+    assert!(app.mpv_endpoint().is_some());
+    // The supervisor reaches this only after the synchronization worker has
+    // finished ownership-checked delay restoration.
+    app.shutdown().unwrap();
+    assert!(app.reaped());
+    drop(app);
+    assert!(!path.parent().unwrap().exists());
+}
+
+#[cfg(target_os = "linux")]
+fn managed_signal_supervisor() {
+    let outer = std::env::var_os("FSONOS_APP_TEST_RECEIPT").unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&stop)).unwrap();
+    let receipt = Receipt::new();
+    let ipc = mpv::Ipc::new("movie").unwrap();
+    let mut app = Application::from_managed_command(receipt.command("block"), ipc, &stop).unwrap();
+    receipt.read();
+    std::fs::write(&outer, br#"{"ready":true}"#).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        stop.load(Ordering::Acquire),
+        "supervisor did not receive SIGINT"
+    );
+    let child_alive = app.ensure_running().is_ok();
+    app.shutdown().unwrap();
+    std::fs::write(
+        outer,
+        serde_json::to_vec(&serde_json::json!({
+            "ready": true,
+            "signal_received": true,
+            "child_alive_for_sync_cleanup": child_alive,
+            "reaped": app.reaped(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn terminal_group_sigint_leaves_managed_mpv_alive_until_explicit_cleanup() {
+    use std::os::unix::process::CommandExt as _;
+
+    let receipt = Receipt::new();
+    let mut command = receipt.command("managed-supervisor");
+    // Isolate the fixture's foreground group so this real signal cannot reach
+    // the test runner or any unrelated process.
+    command.process_group(0);
+    let mut supervisor =
+        Application::from_command(command, Arc::new(AtomicBool::new(false))).unwrap();
+    assert_eq!(receipt.read()["ready"], true);
+    let signal = Command::new("/bin/kill")
+        .args(["-s", "INT", "--", &format!("-{}", supervisor.id())])
+        .status();
+    // The fixture has its own deadline and drops its child on failure, too.
+    // Wait for that cleanup before asserting on the signal command's result.
+    wait_for_worker(&supervisor);
+    let completed = supervisor.shutdown();
+    assert!(signal.unwrap().success());
+    completed.unwrap();
+    let result = receipt.read();
+    assert_eq!(result["signal_received"], true);
+    assert_eq!(result["child_alive_for_sync_cleanup"], true);
+    assert_eq!(result["reaped"], true);
 }

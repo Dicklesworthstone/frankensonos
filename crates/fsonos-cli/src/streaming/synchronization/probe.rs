@@ -32,9 +32,12 @@ impl Config {
             "calibration probes require Linux --format pulse"
         );
         let matching_action = if synchronization {
-            args.sync.sync_mpv.is_some() && !args.sync.measure_latency
+            (args.sync.sync_mpv.is_some() || args.sync.sync_launched_mpv)
+                && !args.sync.measure_latency
         } else {
-            args.sync.measure_latency && args.sync.sync_mpv.is_none()
+            args.sync.measure_latency
+                && args.sync.sync_mpv.is_none()
+                && !args.sync.sync_launched_mpv
         };
         ensure!(
             args.sync.sync_microphone.is_some()

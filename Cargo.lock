@@ -1287,6 +1287,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook 0.4.5",
+ "socket2",
  "toml",
  "tracing",
  "tracing-subscriber",

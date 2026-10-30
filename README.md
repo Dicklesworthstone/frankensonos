@@ -151,14 +151,28 @@ audio service or cloud relay. `--daemon-url` is not supported for live capture:
 the computer running `stream` must reach the players and be reachable by them.
 
 **Video lip-sync is experimental:** Sonos buffers HTTP-radio playback by
-seconds, and the delay drifts. Plain `stream` is for listening, not for
-in-sync video audio. `--latency-wav` measures the delay from a time-aligned
-reference/microphone recording, and `--sync-mpv <socket> --sync-input <source>`
-keeps mpv's `audio-delay` corrected from a live paired reference/microphone
-source while streaming. Both need a capture setup described in
-[Acoustic calibration](docs/AUDIO_CALIBRATION.md) and are not yet qualified on
-real speakers; startup calibration chirps and automatic source pairing remain
-tracked in issue #2.
+seconds, and the delay drifts. `--latency-wav` measures the delay from a
+time-aligned reference/microphone recording, and
+`--sync-mpv <socket> --sync-input <source>` keeps an existing mpv player's
+`audio-delay` corrected while streaming. On Linux, launch mpv into a temporary
+output and use a room microphone for startup calibration and continuing
+correction in one command:
+
+```bash
+fsonos stream Kitchen --virtual-output movie --sync-launched-mpv \
+  --sync-microphone room_mic --sync-probe movie -- mpv movie.mkv
+```
+
+Replace `room_mic` with your Pulse microphone source. `--sync-probe movie`
+opts into audible calibration noise on that output; omit it to measure from
+the movie's own audio. Managed launch supplies a private IPC socket and Pulse
+routing, waits for that exact child to become ready, and uses the existing
+ownership-checked delay correction and cleanup. User configuration and automatically loaded user
+scripts are disabled. See [Application streaming](docs/STREAM_APPLICATION.md)
+for the launch contract and [Acoustic calibration](docs/AUDIO_CALIBRATION.md)
+for the capture setup. Physical Sonos routing and video timing still require
+installation-specific acceptance; simulator and process tests do not establish
+audible synchronization.
 
 ### Offline speech and WAV announcements
 

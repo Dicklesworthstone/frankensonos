@@ -49,8 +49,51 @@ rather than interactive terminal input.
 
 This mode requires `--virtual-output`. It is separate from `--latency-wav`,
 `--measure-latency`, and correction of an already running player through
-`--sync-mpv`. It does not start a microphone, emit a probe, or correct video
-latency. Ordinary `stream` and all existing calibration paths are unchanged.
+`--sync-mpv`. Without the additional opt-in below, it does not start a microphone,
+emit a probe, or correct video latency.
+
+## Launch and synchronize mpv in one command
+
+`--sync-launched-mpv` joins the temporary output, foreground mpv and existing
+acoustic synchronizer. On Linux PulseAudio or PipeWire's Pulse-compatible
+server, with the existing FFmpeg and virtual-output prerequisites:
+
+```sh
+fsonos --direct stream Kitchen --virtual-output movie \
+  --sync-launched-mpv --sync-microphone room_mic --sync-probe movie \
+  -- mpv movie.mkv
+```
+
+The trailing executable must be your locally installed mpv, with media to play.
+Replace `room_mic` with the intended microphone on the same local Pulse server.
+`--sync-probe movie` emits the bounded audible signal described in
+[Startup calibration](STARTUP_CALIBRATION.md); everyone whose audio is captured
+should know and agree. The movie runs while calibration gathers three windows.
+Omit `--sync-probe` to estimate from program audio only. A prepared paired source
+can use `--sync-input` instead of `--sync-microphone`, without a probe.
+`--sync-base-delay` keeps its existing uncorrected-offset meaning.
+
+This explicit mode supplies `--no-config`, disables automatic scripts and
+terminal input/output, selects `--audio-device=pulse/movie`, and supplies a fresh
+IPC socket in a private mode-0700 directory. `PULSE_SINK` stays child-local.
+Display, subtitle and media arguments remain literal. Options that override
+configuration, scripts, IPC, routing or lifecycle are rejected before speaker
+writes. Omit `--ao=pulse` here: the exact output is supplied for you. Use the
+existing `--sync-mpv` path to retain custom configuration or manage mpv yourself.
+
+After stream delivery begins, the child gets one 15-second startup budget for
+its socket, IPC replies, playback readiness and observer setup. Its IPC `pid`
+must match the child, its selected output must be the temporary sink, its actual
+driver must be Pulse, and playback must be active. Child exit, cancellation,
+wrong output, malformed replies or timeout abort startup through the existing
+speaker/output cleanup. No microphone or probe starts before admission. There
+is no player restart or IPC reconnection after admission.
+
+The player then uses the existing startup/passive loops, source/group checks,
+event invalidation, confidence and delay ownership rules. This does not unpause
+a paused player, adopt another movie, restart an audible probe after a seek, or
+establish physical lip sync. The private socket is removed after child cleanup;
+unconfirmed cleanup retains it for inspection.
 
 ## Finishing and cleanup
 
@@ -71,14 +114,25 @@ perform this cleanup. If direct-child cleanup cannot be confirmed, the output
 is deliberately left loaded and a warning requests manual inspection, rather
 than removing its destination and provoking an audio-server fallback.
 
+For managed mpv, synchronization first attempts ownership-checked delay
+restoration; then the supervisor stops and reaps mpv. Ctrl-C therefore keeps
+IPC alive until that cleanup finishes. Closing mpv yourself can make restoration
+unavailable; no replacement player is launched to restore an offset.
+
 Output disappearance, routing policies and competing applications are not an
 atomic transaction. The `PULSE_SINK` preference is not proof that the intended
 program is what the microphone or speakers hear. Physical routing and Sonos
 playback still require installation-specific verification.
 
 The Rust tests include command-line and command-construction cases plus real
-self-spawned process fixtures. They use no audio server, microphone or speaker.
+self-spawned process and Unix-socket fixtures. Managed-launch cases cover PID,
+output, deadlines, cancellation, correction/restoration and cleanup ordering.
+They use no audio server, microphone or speaker.
 Adding these tests does not establish that they have been executed; check the
 reported Rust/CI results separately. Protocol reference: PulseAudio's official
 FAQ, "What environment variables does PulseAudio care about?", documents that
 an application's explicitly selected sink takes precedence over `PULSE_SINK`.
+
+Managed mpv follows its official
+[options documentation](https://github.com/mpv-player/mpv/blob/master/DOCS/man/options.rst)
+and [IPC properties](https://github.com/mpv-player/mpv/blob/master/DOCS/man/input.rst).

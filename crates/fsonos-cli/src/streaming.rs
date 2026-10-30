@@ -43,7 +43,7 @@ pub struct StreamArgs {
     /// Linux Pulse: create a temporary output and capture only apps routed to it.
     #[arg(long, conflicts_with_all = ["input", "latency_wav"])]
     pub virtual_output: Option<String>,
-    /// After --, launch a foreground Pulse app into --virtual-output; Ctrl-C stops it.
+    /// After --, launch a foreground Pulse app into --virtual-output; --sync-launched-mpv adds mpv correction.
     #[arg(last = true, num_args = 1.., value_name = "COMMAND", requires = "virtual_output")]
     #[cfg_attr(unix, arg(conflicts_with_all = ["measure_latency", "sync_mpv"]))]
     pub application: Vec<std::ffi::OsString>,
@@ -303,6 +303,14 @@ fn stream_until_stopped(
     }
     *launched = launch
         .map(|launch| application::Application::start(launch, Arc::clone(stop)))
+        .transpose()?;
+    #[cfg(unix)]
+    let sync = sync
+        .map(|prepared| {
+            prepared.attach_launched(launched.as_ref(), stop, || {
+                stream.check().map_err(anyhow::Error::from)
+            })
+        })
         .transpose()?;
     eprintln!("fsonos stream: {room} listening; press Ctrl-C to stop");
     #[cfg(unix)]
