@@ -238,7 +238,7 @@ fn group_volume_limits_each_members_increase_and_records_the_clamp() {
                     SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
                     SimPlayerSpec::new("Office", SimModel::Play5Gen1),
                 ]),
-                _ => builder.s2([
+                Generation::S2 => builder.s2([
                     SimPlayerSpec::new("Kitchen", SimModel::One),
                     SimPlayerSpec::new("Office", SimModel::One),
                 ]),

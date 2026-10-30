@@ -389,7 +389,8 @@ impl Fader {
 
     /// Fade the group `coordinator` leads down to silence over `over`, pause
     /// it, then put every member room's volume back where it was, so the next
-    /// play is not silent. Nothing is paused if the fade is superseded.
+    /// play is not silent. A newer intent before the pause prevents it; a
+    /// newer level during recovery or restoration keeps that room's volume.
     pub fn fade_out_and_pause<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -405,13 +406,19 @@ impl Fader {
         let members = member_rooms(household, coordinator);
         let timing = Timing::new(over, self.interval);
         let claimed = self.claim(&members);
-        let before = members
+        let before = claimed
             .iter()
-            .map(|m| Ok((m.clone(), soap::get_volume(t, ip(households, m)?)?)))
+            .map(|(player, intent)| {
+                Ok((
+                    player.clone(),
+                    *intent,
+                    soap::get_volume(t, ip(households, player)?)?,
+                ))
+            })
             .collect::<Result<Vec<_>, CoreError>>()?;
-        // Whatever fails, the volumes go back: a group is never left silent
-        // for its next play.
-        let put_back = || crate::sleep::put_back(t, households, &before);
+        // Restore rooms this fade still owns, including after a failed step
+        // or pause. A newer volume must never be overwritten by old recovery.
+        let put_back = || self.restore(t, households, &before);
         let outcome = match self.stepped(t, households, &claimed, 0, timing) {
             Ok(outcome) => outcome,
             Err(e) => {
@@ -422,12 +429,51 @@ impl Fader {
         if outcome != FadeOutcome::Reached {
             return Ok(outcome);
         }
-        if let Err(e) = crate::control::pause(t, households, coordinator) {
-            let _ = put_back();
-            return Err(e);
+        // The last frame may finish on another room after a newer intent
+        // superseded an earlier member. Check all claims again, and serialize
+        // the pause with supersession just as each volume step is serialized.
+        // A stable order lets overlapping group fades take these locks safely.
+        let mut steps: Vec<_> = members.iter().map(|p| (p, self.step(p))).collect();
+        steps.sort_unstable_by(|(a, _), (b, _)| a.0.cmp(&b.0));
+        steps.dedup_by(|(a, _), (b, _)| a == b);
+        let writing: Vec<_> = steps
+            .iter()
+            .map(|(_, step)| step.lock().unwrap_or_else(PoisonError::into_inner))
+            .collect();
+        if claimed.iter().any(|(p, intent)| self.current(p) != *intent) {
+            return Ok(FadeOutcome::Superseded { at: 0 });
         }
-        put_back()?;
+        let paused = crate::control::pause(t, households, coordinator);
+        drop(writing);
+        let restored = put_back();
+        paused?;
+        restored?;
         Ok(FadeOutcome::Reached)
+    }
+
+    /// Recover every room still owned by this fade, reporting the first
+    /// failure after trying the rest. Supersession and each restore share the
+    /// step lock: a newer level either comes afterwards or prevents the write.
+    fn restore<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        before: &[(PlayerId, u64, u8)],
+    ) -> Result<(), CoreError> {
+        let mut first = Ok(());
+        for (room, intent, level) in before {
+            let step = self.step(room);
+            let _writing = step.lock().unwrap_or_else(PoisonError::into_inner);
+            if self.current(room) != *intent {
+                continue;
+            }
+            let done = ip(households, room)
+                .and_then(|host| soap::set_volume(t, host, *level).map_err(CoreError::from));
+            if first.is_ok() {
+                first = done;
+            }
+        }
+        first
     }
 }
 
@@ -464,6 +510,8 @@ mod tests {
     struct Held {
         inner: fsonos_sim::SimLan,
         action: &'static str,
+        host: Option<IpAddr>,
+        level: Option<u8>,
         holding: AtomicBool,
         entered: AtomicBool,
         release: AtomicBool,
@@ -474,6 +522,8 @@ mod tests {
             Self {
                 inner,
                 action,
+                host: None,
+                level: None,
                 holding: AtomicBool::new(true),
                 entered: AtomicBool::new(false),
                 release: AtomicBool::new(false),
@@ -491,7 +541,11 @@ mod tests {
         ) -> Result<String, ProtoError> {
             let held = action
                 .trim_matches('"')
-                .ends_with(&format!("#{}", self.action));
+                .ends_with(&format!("#{}", self.action))
+                && self.host.is_none_or(|target| target == host)
+                && self.level.is_none_or(|level| {
+                    body.contains(&format!("<DesiredVolume>{level}</DesiredVolume>"))
+                });
             if held && self.holding.swap(false, Ordering::AcqRel) {
                 self.entered.store(true, Ordering::Release);
                 while !self.release.load(Ordering::Acquire) {
@@ -582,6 +636,105 @@ mod tests {
             "the newer level stands"
         );
         sim.shutdown();
+    }
+
+    #[test]
+    fn a_level_set_during_a_fade_out_pause_survives_success_and_failure() {
+        for fail in [false, true] {
+            let (sim, host, player, houses) = kitchen_at_40();
+            crate::control::play_uri(
+                &sim.lan(),
+                &houses,
+                &player,
+                "x-rincon-mp3radio://stream.example.invalid/fade.mp3",
+                "",
+            )
+            .unwrap();
+            if fail {
+                sim.upnp_fault("Kitchen", "Pause", 500).unwrap();
+            }
+            let held = Held::new(sim.lan(), "Pause");
+            let fader = Fader::default();
+            let outcome = set_50_meanwhile(&fader, &held, &houses, &player, || {
+                fader.fade_out_and_pause(&held, &houses, &player, Duration::ZERO)
+            });
+            if fail {
+                assert!(matches!(
+                    outcome,
+                    Err(CoreError::Proto(ProtoError::SoapFault { code: 500, .. }))
+                ));
+            } else {
+                assert_eq!(outcome.unwrap(), FadeOutcome::Reached);
+            }
+            assert_eq!(
+                soap::get_volume(&sim.lan(), host).unwrap(),
+                50,
+                "pause success or failure must not restore over a newer level"
+            );
+        }
+    }
+
+    #[test]
+    fn a_newer_level_waits_out_a_fade_out_restore_already_on_its_way() {
+        let (sim, host, player, houses) = kitchen_at_40();
+        let mut held = Held::new(sim.lan(), "SetVolume");
+        held.level = Some(40);
+        let fader = Fader::default();
+        let outcome = set_50_meanwhile(&fader, &held, &houses, &player, || {
+            fader.fade_out_and_pause(&held, &houses, &player, Duration::ZERO)
+        });
+        assert_eq!(outcome.unwrap(), FadeOutcome::Reached);
+        assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 50);
+    }
+
+    #[test]
+    fn an_override_during_the_last_group_step_prevents_the_pause() {
+        use fsonos_sim::{SimHousehold, SimModel, SimPlayerSpec};
+        let sim = SimHousehold::builder()
+            .s2([
+                SimPlayerSpec::new("Kitchen", SimModel::One),
+                SimPlayerSpec::new("Office", SimModel::One),
+            ])
+            .spawn()
+            .unwrap();
+        let lan = sim.lan();
+        let host = sim.player("Kitchen").unwrap().ip;
+        let player = PlayerId(sim.player("Kitchen").unwrap().uuid.clone());
+        let office = PlayerId(sim.player("Office").unwrap().uuid.clone());
+        let mut house = HouseholdState::default();
+        house.apply_topology(&fsonos_proto::topology::get_zone_group_state(&lan, host).unwrap());
+        crate::control::join(&lan, &[house.clone()], &office, &player).unwrap();
+        house.apply_topology(&fsonos_proto::topology::get_zone_group_state(&lan, host).unwrap());
+        let houses = vec![house];
+        let members = member_rooms(&houses[0], &player);
+        assert_eq!(members.len(), 2);
+        let overridden = &members[0];
+        let held_host = ip(&houses, &members[1]).unwrap();
+        crate::control::play_uri(
+            &lan,
+            &houses,
+            &player,
+            "x-rincon-mp3radio://stream.example.invalid/fade.mp3",
+            "",
+        )
+        .unwrap();
+        let mut held = Held::new(lan.clone(), "SetVolume");
+        held.host = Some(held_host);
+        held.level = Some(0);
+        let fader = Fader::default();
+        let outcome = set_50_meanwhile(&fader, &held, &houses, overridden, || {
+            fader.fade_out_and_pause(&held, &houses, &player, Duration::ZERO)
+        });
+        assert_eq!(outcome.unwrap(), FadeOutcome::Superseded { at: 0 });
+        assert_eq!(
+            soap::get_volume(&lan, ip(&houses, overridden).unwrap()).unwrap(),
+            50
+        );
+        assert_eq!(
+            soap::get_transport_info(&lan, host).unwrap().state,
+            fsonos_types::TransportState::Playing
+        );
+        assert!(sim.soap_log().iter().all(|entry| entry.action != "Pause"));
     }
 
     #[test]
