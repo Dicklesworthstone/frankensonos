@@ -85,6 +85,7 @@ fn a_top_up_that_fails_says_why_in_the_status_until_a_command() {
     let (mut store, clock) = (MemStore::default(), SystemClock);
     let mut playback = PlayerPlayback::default();
     playback.transport = Some(TransportState::Playing);
+    playback.media_uri = Some(format!("x-rincon-queue:{}#0", den.0));
     playback.queue_position = Some(2);
     playback.queue_length = Some(2);
     dj.on_playback(at, &mut store, &playback, &clock);
@@ -125,6 +126,7 @@ fn a_start_with_nothing_to_play_leaves_no_feed_behind() {
     // Later playback in the room is the owner's, not the DJ's to top up.
     let mut playback = PlayerPlayback::default();
     playback.transport = Some(TransportState::Playing);
+    playback.media_uri = Some(format!("x-rincon-queue:{}#0", den.0));
     playback.queue_position = Some(1);
     playback.queue_length = Some(1);
     dj.on_playback(at, &mut store, &playback, &clock);

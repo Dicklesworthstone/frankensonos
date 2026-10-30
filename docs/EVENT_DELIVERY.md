@@ -32,6 +32,16 @@ a transport concern; this change does not promise immediate detection of a
 silent network partition. A wake already extracted by a publisher may finish
 concurrently with drop. No event delivery operation writes to a speaker.
 
+## Playback source transitions
+
+A `zone.state` event includes `source_changed: true` when accepted playback
+observations change the active AVTransport source, including clearing it.
+A temporary announcement and the retained DJ queue can share a current-track
+observation; the source transition still invalidates playback views. Read the
+current zone state again. The marker does not publish a source address, imply
+a track advance, or authorize a playback command. Existing consumers that
+refresh on `zone.state` receive these transitions through the same journal.
+
 ## Compatibility and limits
 
 SSE comments keep the existing 15-second heartbeat interval; HTTP long polls

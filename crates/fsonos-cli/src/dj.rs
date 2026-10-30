@@ -906,6 +906,14 @@ impl DjEngine for SpotifyDj {
         if !state.feeds.contains_key(at.coordinator) || state.held.contains(at.coordinator) {
             return;
         }
+        if !playback.is_queue_of(at.coordinator) {
+            if let Some(listening) = state.listening.get_mut(at.coordinator) {
+                listening.interrupt();
+            }
+            // A temporary source leaves the feed and retry state intact.
+            // Do this before backoff so its duration never counts as listening.
+            return;
+        }
         // Keep a failed rebuild pending even after consuming the library's
         // freshness notification. A repaired plan can unblock a failed feed.
         self.take_library_fresh(&mut state);

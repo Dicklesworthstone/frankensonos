@@ -544,7 +544,9 @@ impl QueueFeed {
         store: &mut S,
         playback: &PlayerPlayback,
     ) -> Result<usize, FeedError> {
-        if !self.active {
+        if !self.active || !playback.is_queue_of(at.coordinator) {
+            // Temporary announcements, radio and Connect retain the DJ set,
+            // but cannot move its cursor, record listens, trim or refill it.
             return Ok(0);
         }
         if !mode::maintain(self, at, playback)? {
@@ -1414,6 +1416,7 @@ mod tests {
     use crate::test_shelf::{MIDNIGHT, shelf_items, song_items, works_of};
 
     mod navigation;
+    mod source;
 
     const ROOM: &str = "Living Room";
 
@@ -1492,10 +1495,18 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
-            let sim = SimHousehold::builder()
-                .s2([SimPlayerSpec::new(ROOM, SimModel::One)])
-                .spawn()
-                .unwrap();
+            Self::generation(true)
+        }
+
+        fn generation(s2: bool) -> Self {
+            let builder = SimHousehold::builder();
+            let sim = if s2 {
+                builder.s2([SimPlayerSpec::new(ROOM, SimModel::One)])
+            } else {
+                builder.s1([SimPlayerSpec::new(ROOM, SimModel::Play5Gen1)])
+            }
+            .spawn()
+            .unwrap();
             let lan = sim.lan();
             let mut house = HouseholdState::default();
             house

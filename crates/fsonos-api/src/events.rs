@@ -13,7 +13,7 @@
 //!
 //! | `event:` | `data:` |
 //! |---|---|
-//! | `zone.state` | `{player, room, transport?, track?, volume?, mute?, group_volume?, queue_length?, metadata_changed?, shuffle?, repeat?, play_mode?}`: only what changed (`repeat`: `off`, `all` or `one`; `play_mode` as `set_play_mode` takes it) |
+//! | `zone.state` | `{player, room, transport?, track?, volume?, mute?, group_volume?, queue_length?, metadata_changed?, source_changed?, shuffle?, repeat?, play_mode?}`: only what changed (`repeat`: `off`, `all` or `one`; `play_mode` as `set_play_mode` takes it) |
 //! | `topology.changed` | `{households, rooms}` (read `GET /zones` for the new shape) |
 //! | `player.health` | `{player, room, health}`: `healthy`, `degraded` or `offline` |
 //! | `action.logged` | the action as `GET /actions` shows it |
@@ -23,6 +23,10 @@
 //! `metadata_changed: true` asks clients to reread the zone's track details,
 //! including for a radio song whose stream URI did not change. It does not
 //! mean the queue advanced or authorize playback or artwork from another host.
+//!
+//! `source_changed: true` asks clients to reread playback when the active
+//! AVTransport source changes, even if the current track and transport state
+//! do not. It does not expose the source URI or imply that a track advanced.
 //!
 //! While nothing happens the stream sends a `: heartbeat` comment every
 //! [`HEARTBEAT`], so proxies and clients can tell a quiet house from a dead
@@ -60,6 +64,8 @@ mod metadata_tests;
 mod polling;
 #[cfg(test)]
 mod resync_tests;
+#[cfg(test)]
+mod source_tests;
 mod wake;
 
 pub use delivery::EventStream;
@@ -382,6 +388,11 @@ impl EventBus {
                 }
                 if let Some((_, track)) = &changes.track {
                     data.insert("track".into(), json!(track));
+                }
+                if changes.media_uri.is_some() {
+                    // A retained queue and a temporary source can name the same
+                    // track. Invalidate views without exposing source addresses.
+                    data.insert("source_changed".into(), json!(true));
                 }
                 if changes.metadata_changed {
                     // Details belong to the current state, not an inferred
