@@ -261,8 +261,7 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
     {
         soap::join_group(t, ip(households, member)?, target)?;
     }
-    prepared.confirm_origin(t, households, &snap)?;
-    soap::stop(t, ip(households, coordinator)?)?;
+    prepared.release_origin(t, households, &snap)?;
     Ok(true)
 }
 
@@ -293,8 +292,7 @@ pub fn copy_playback<T: Transport + ?Sized>(
         return Ok(report);
     }
     prepared.apply(t, to.coordinator.ip, &to.coordinator.id)?;
-    prepared.confirm_origin(t, households, &snap)?;
-    soap::stop(t, from.coordinator.ip)?;
+    prepared.release_origin(t, households, &snap)?;
     report.method = MoveMethod::Copied;
     report.new_coordinator.clone_from(&to.coordinator.id);
     Ok(report)

@@ -17,6 +17,7 @@ use fsonos_types::{PlayMode, PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::Instant;
 
+mod direct;
 mod mode;
 mod owner;
 mod staging;
@@ -266,34 +267,41 @@ impl Prepared {
         host: IpAddr,
         target: &PlayerId,
     ) -> Result<(), MoveError> {
-        let position = match &self.source {
-            Source::Nothing => return Ok(()),
-            Source::Uri { item, position } => {
-                // A paused source must never start an audible Play/Pause
-                // round trip. Direct sources do not edit the queue.
-                soap::stop(t, host)?;
-                verify::transport(t, host, TransportState::Stopped)?;
-                soap::set_av_transport_uri(t, host, &item.uri, &item.metadata)?;
-                position.unwrap_or(0)
-            }
+        match &self.source {
+            Source::Nothing => Ok(()),
+            Source::Uri { .. } => direct::apply(t, host, target, self),
             Source::Queue { items, .. } => {
                 let (revision, owner) =
                     staging::replace(t, host, target, items, self.play_mode.is_some())?;
-                return staging::finish(t, host, target, self, revision, owner);
+                staging::finish(t, host, target, self, revision, owner)
             }
-        };
-        if position > 0 {
-            soap::seek_position(t, host, position)?;
         }
-        let started = Instant::now();
-        let state = if self.transport == TransportState::Playing {
-            soap::play(t, host)?;
-            TransportState::Playing
-        } else {
-            TransportState::Stopped
-        };
-        verify::transport(t, host, state)?;
-        verify::playback(t, host, target, self, None, started.elapsed())
+    }
+
+    /// Finish relocation only after the original playback is still proven
+    /// and its Stop is confirmed, without replaying an uncertain release.
+    pub(super) fn release_origin<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        snap: &ZoneSnapshot,
+    ) -> Result<(), MoveError> {
+        let positioned = matches!(
+            self.source,
+            Source::Queue { .. }
+                | Source::Uri {
+                    position: Some(_),
+                    ..
+                }
+        );
+        direct::release(
+            t,
+            ip(households, &snap.coordinator)?,
+            &snap.coordinator,
+            positioned,
+            self.play_mode.is_some(),
+            || self.confirm_origin(t, households, snap),
+        )
     }
 }
 
