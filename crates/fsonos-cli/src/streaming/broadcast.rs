@@ -20,16 +20,37 @@ const MAX_CLIENTS: usize = 8;
 const HEADER_LIMIT: usize = 8192;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(3);
 const IO_POLL: Duration = Duration::from_millis(100);
+// Silence still produces encoded frames. Ten seconds without a complete frame
+// means capture has stalled, even when FFmpeg and its pipe reader remain alive.
+const AUDIO_TIMEOUT: Duration = Duration::from_secs(10);
 const AUDIO_HEADERS: &[u8] =
     b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
 const NOT_FOUND: &[u8] =
     b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const UNAVAILABLE: &[u8] =
+    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 #[derive(Default)]
 struct State {
     frames: VecDeque<Arc<[u8]>>,
     next: u64,
     ended: bool,
+    last_frame: Option<Instant>,
+}
+
+impl State {
+    fn check_fresh(&self, now: Instant) -> io::Result<()> {
+        if self
+            .last_frame
+            .is_some_and(|last| now.saturating_duration_since(last) >= AUDIO_TIMEOUT)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "FFmpeg produced no complete MP3 frame for ten seconds; live capture stalled",
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -107,11 +128,19 @@ impl Audio {
             .ok_or_else(|| io::Error::other("live audio sequence exhausted"))?;
         state.frames.push_back(frame.into());
         state.next = next;
+        state.last_frame = Some(Instant::now());
         if state.frames.len() > MAX_FRAMES {
             let _ = state.frames.pop_front();
         }
         self.changed.notify_all();
         Ok(())
+    }
+
+    fn check_fresh(&self) -> io::Result<()> {
+        self.state
+            .lock()
+            .map_err(poisoned)?
+            .check_fresh(Instant::now())
     }
 
     fn finish(&self) -> io::Result<()> {
@@ -166,6 +195,7 @@ impl Audio {
                     "encoder stopped before live audio was ready",
                 ));
             }
+            state.check_fresh(Instant::now())?;
             if !state.frames.is_empty() {
                 return Ok(());
             }
@@ -184,12 +214,17 @@ impl Audio {
     }
 
     fn subscribe(&self) -> io::Result<u64> {
-        Ok(self.state.lock().map_err(poisoned)?.next.saturating_sub(1))
+        let state = self.state.lock().map_err(poisoned)?;
+        state.check_fresh(Instant::now())?;
+        Ok(state.next.saturating_sub(1))
     }
 
     fn next(&self, cursor: &mut u64, stop: &AtomicBool) -> io::Result<Option<Arc<[u8]>>> {
         let mut state = self.state.lock().map_err(poisoned)?;
         while !stop.load(Ordering::Acquire) {
+            // Do not replay an old tail or hold an HTTP stream open forever
+            // when capture is alive but no longer producing encoded audio.
+            state.check_fresh(Instant::now())?;
             let retained = u64::try_from(state.frames.len()).map_err(io::Error::other)?;
             let first = state.next - retained;
             if *cursor < first {
@@ -332,7 +367,13 @@ fn serve_peer(mut peer: TcpStream, path: &str, audio: &Audio, stop: &AtomicBool)
     {
         return peer.write_all(NOT_FOUND);
     }
-    let mut cursor = audio.subscribe()?;
+    let mut cursor = match audio.subscribe() {
+        Ok(cursor) => cursor,
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            return peer.write_all(UNAVAILABLE);
+        }
+        Err(error) => return Err(error),
+    };
     peer.write_all(AUDIO_HEADERS)?;
     if fields[0] == "HEAD" {
         return Ok(());
@@ -373,9 +414,7 @@ pub(super) fn serve(
                     }
                     if clients.len() >= MAX_CLIENTS {
                         let _ = peer.set_write_timeout(Some(IO_POLL));
-                        let _ = peer.write_all(
-                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        );
+                        let _ = peer.write_all(UNAVAILABLE);
                         continue;
                     }
                     let path = path.to_owned();
@@ -493,7 +532,7 @@ impl LiveStream {
                 "the local MP3 listener stopped unexpectedly",
             ));
         }
-        Ok(())
+        self.audio.check_fresh()
     }
 
     pub(super) fn wait_until_stopped(&mut self) -> io::Result<()> {

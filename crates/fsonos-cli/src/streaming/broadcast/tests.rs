@@ -1,4 +1,4 @@
-use super::{Audio, LiveStream, MAX_FRAMES, frame_len, frames, serve};
+use super::{AUDIO_TIMEOUT, Audio, LiveStream, MAX_FRAMES, State, frame_len, frames, serve};
 use std::io::{self, BufRead as _, BufReader, Cursor, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::process::{Child, Command, Stdio};
@@ -318,6 +318,10 @@ fn encoder_fixture() {
         return;
     }
     let mut stdout = io::stdout().lock();
+    if mode == "stall" {
+        stdout.write_all(&frame(42)).unwrap();
+        stdout.flush().unwrap();
+    }
     loop {
         if mode == "audio" {
             stdout.write_all(&frame(42)).unwrap();
@@ -444,4 +448,151 @@ fn cancellation_keeps_audio_available_until_playback_restoration_finishes() {
         thread::sleep(Duration::from_millis(10));
     }
     stream.shutdown().unwrap();
+}
+
+#[test]
+fn complete_audio_has_a_bounded_freshness_window() {
+    let start = Instant::now();
+    let state = State {
+        last_frame: Some(start),
+        ..State::default()
+    };
+    state.check_fresh(start).unwrap();
+    state
+        .check_fresh(start + AUDIO_TIMEOUT.checked_sub(Duration::from_nanos(1)).unwrap())
+        .unwrap();
+    for now in [start + AUDIO_TIMEOUT, start + AUDIO_TIMEOUT * 2] {
+        assert_eq!(
+            state.check_fresh(now).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+    // The separate startup deadline owns a producer that has never made a frame.
+    State::default().check_fresh(start + AUDIO_TIMEOUT).unwrap();
+}
+
+#[test]
+fn stale_audio_never_satisfies_startup_or_a_new_subscription() {
+    let audio = Audio::default();
+    let stop = AtomicBool::new(false);
+    audio.publish(frame(0)).unwrap();
+    audio.state.lock().unwrap().last_frame =
+        Some(Instant::now().checked_sub(AUDIO_TIMEOUT).unwrap());
+    assert_eq!(
+        audio.check_fresh().unwrap_err().kind(),
+        io::ErrorKind::TimedOut
+    );
+    assert_eq!(
+        audio.wait_ready(&stop, Duration::ZERO).unwrap_err().kind(),
+        io::ErrorKind::TimedOut
+    );
+    assert_eq!(
+        audio.subscribe().unwrap_err().kind(),
+        io::ErrorKind::TimedOut
+    );
+    assert_eq!(
+        audio.next(&mut 0, &stop).unwrap_err().kind(),
+        io::ErrorKind::TimedOut
+    );
+    // Any complete encoded frame, including silent audio, proves live capture.
+    audio.publish(frame(0)).unwrap();
+    audio.check_fresh().unwrap();
+    audio.wait_ready(&stop, Duration::ZERO).unwrap();
+    let mut cursor = audio.subscribe().unwrap();
+    assert_eq!(
+        audio.next(&mut cursor, &stop).unwrap().unwrap().as_ref(),
+        frame(0)
+    );
+}
+
+#[test]
+fn fragments_and_garbage_do_not_extend_the_live_audio_deadline() {
+    let audio = Audio::default();
+    audio.publish(frame(0)).unwrap();
+    let old = Instant::now().checked_sub(AUDIO_TIMEOUT).unwrap();
+    audio.state.lock().unwrap().last_frame = Some(old);
+    let mut pending = Vec::new();
+    frames(&mut pending, &[0; 1024], |value| audio.publish(value)).unwrap();
+    let encoded = frame(7);
+    frames(&mut pending, &encoded[..encoded.len() - 1], |value| {
+        audio.publish(value)
+    })
+    .unwrap();
+    assert_eq!(audio.state.lock().unwrap().last_frame, Some(old));
+    assert_eq!(
+        audio.check_fresh().unwrap_err().kind(),
+        io::ErrorKind::TimedOut
+    );
+    frames(&mut pending, &encoded[encoded.len() - 1..], |value| {
+        audio.publish(value)
+    })
+    .unwrap();
+    audio.check_fresh().unwrap();
+}
+
+#[test]
+fn stale_http_joins_get_unavailable_instead_of_replaying_old_audio() {
+    let server = Server::start();
+    server.audio.publish(frame(1)).unwrap();
+    server.audio.state.lock().unwrap().last_frame =
+        Some(Instant::now().checked_sub(AUDIO_TIMEOUT).unwrap());
+    for method in ["GET", "HEAD"] {
+        let mut peer = server.connect(method, "/stream/test.mp3");
+        let mut response = Vec::new();
+        peer.read_to_end(&mut response).unwrap();
+        assert_eq!(response, super::UNAVAILABLE);
+    }
+    assert_eq!(server.audio.readers.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn an_alive_but_stalled_encoder_ends_delivery_and_returns_control_to_cleanup() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut stream = LiveStream::start(
+        encoder("stall", Stdio::piped()),
+        listener,
+        "/stream/test.mp3".into(),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
+    stream.wait_ready(Duration::from_secs(3)).unwrap();
+    let mut client = TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    client
+        .write_all(b"GET /stream/test.mp3 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .unwrap();
+    let mut client = BufReader::new(client);
+    assert!(headers(&mut client).starts_with("HTTP/1.1 200 OK"));
+    receive_frame(&mut client, &frame(42));
+    stream.wait_for_reader(Duration::from_secs(3)).unwrap();
+    assert!(stream.encoder.try_wait().unwrap().is_none());
+    assert!(!stream.producer.as_ref().unwrap().is_finished());
+
+    // Advance only the capture evidence; the child and real HTTP reader stay
+    // alive, proving that process liveness cannot hide an expired frame stream.
+    stream.audio.state.lock().unwrap().last_frame =
+        Some(Instant::now().checked_sub(AUDIO_TIMEOUT).unwrap());
+    for error in [
+        stream.check().unwrap_err(),
+        stream.wait_for_reader(Duration::ZERO).unwrap_err(),
+        stream.wait_until_stopped().unwrap_err(),
+    ] {
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(error.to_string().contains("no complete MP3 frame"));
+    }
+    let mut tail = Vec::new();
+    client.read_to_end(&mut tail).unwrap();
+    assert!(tail.is_empty());
+    assert_eq!(stream.audio.readers.load(Ordering::Acquire), 0);
+    // Detection returns through the ordinary playback-restoration path; the
+    // supervisor, not a reader, owns stopping and reaping the capture process.
+    assert!(!stream.stop.load(Ordering::Acquire));
+    assert!(stream.encoder.try_wait().unwrap().is_none());
+    stream.shutdown().unwrap();
+    assert!(stream.encoder.try_wait().unwrap().is_some());
+    assert!(stream.producer.is_none());
+    assert!(stream.server.is_none());
 }
