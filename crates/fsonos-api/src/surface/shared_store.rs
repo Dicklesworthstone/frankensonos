@@ -11,8 +11,8 @@
 
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, CachedPlaylist,
-    DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, PlayName, PlayRecord, Store,
-    StoreError, StoredScene, StoredSchedule,
+    DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, PlayName, PlayRecord,
+    SpotifyLibraryOwner, Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, ZoneGroup};
@@ -135,6 +135,40 @@ impl Store for SharedStore<'_> {
 
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError> {
         self.lock().library()
+    }
+
+    fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError> {
+        self.lock().spotify_library_owner()
+    }
+
+    fn adopt_spotify_library_owner(
+        &mut self,
+        owner: &str,
+    ) -> Result<(SpotifyLibraryOwner, bool), StoreError> {
+        self.lock().adopt_spotify_library_owner(owner)
+    }
+
+    fn publish_spotify_library(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        entries: &[LibraryEntry],
+        playlists: Option<&[(String, String)]>,
+        contents: &[CachedPlaylist],
+        heard: Option<&[(String, i64)]>,
+    ) -> Result<bool, StoreError> {
+        self.lock()
+            .publish_spotify_library(owner, entries, playlists, contents, heard)
+    }
+
+    fn acknowledge_spotify_playlist(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        playlist_uri: &str,
+        expected: &str,
+        applied: &str,
+    ) -> Result<bool, StoreError> {
+        self.lock()
+            .acknowledge_spotify_playlist(owner, playlist_uri, expected, applied)
     }
 
     fn save_render_params(

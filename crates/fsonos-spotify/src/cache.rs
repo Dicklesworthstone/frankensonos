@@ -20,7 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use asupersync::Cx;
-use fsonos_core::store::{LibraryEntry, LibraryOrigin, Store};
+use fsonos_core::store::{
+    CachedPlaylist, LibraryEntry, LibraryOrigin, SpotifyLibraryOwner, Store, StoreError,
+};
 
 use crate::SpotifyError;
 use crate::classical::{CandidatePool, ClassicalTrack};
@@ -29,7 +31,7 @@ use crate::expand::{AlbumMisses, Expansion, complete_from_cache, complete_works}
 use crate::genres::{GenreRead, tag_genres};
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
-use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_taste};
+use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_taste_for_owner};
 
 mod playlists;
 use crate::works::{Work, group_works};
@@ -62,7 +64,7 @@ pub struct LibrarySyncDetailed {
 }
 
 /// Read the owner's whole library from Spotify, add and weigh what their
-/// other taste signals name ([`read_taste`], as far as the grant allows),
+/// other taste signals name ([`crate::taste::read_taste`], as far as the grant allows),
 /// tag it all with its artists' genres ([`tag_genres`], guessed where they
 /// have none: [`crate::genre_guess`]), and write it to the
 /// store. The taste and genre reads are best effort (a halted read resumes
@@ -81,15 +83,19 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     cx: &Cx,
     store: &mut S,
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
+    let owner = session.read_owner(cx).await?;
     let mut items = session.read_library(cx).await?;
+    // No ownership change, retirement or publication before the essential
+    // saved-library read succeeds. Adoption and retiring the prior owner's
+    // candidates are atomic, so a crash cannot label old music as the new
+    // owner's cache. An unowned legacy cache needs the same fresh proof.
+    let previous = store.library()?;
+    let (receipt, changed_owner) = store.adopt_spotify_library_owner(&owner)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    let (taste, mut read) = read_taste(session, cx, store, &items, now).await;
-    publish_playlists(store, &taste)?;
-    if let Some(heard) = &taste.heard {
-        store.save_spotify_heard(heard)?;
-    }
+    let (taste, mut read) =
+        read_taste_for_owner(session, cx, store, &items, now, Some(&owner)).await;
     items.extend(taste.tracks.iter().cloned());
     if read.incomplete() {
         // An unfinished read keeps what the last one found: every track's
@@ -135,8 +141,23 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     // the owner's playlists call them first.
     taste.name_genres(&mut items);
     crate::genre_guess::fill(&mut items);
-    let report = apply_library_read(store, &items)?;
-    acknowledge_playlists(store, &taste, &mut read.continuation)?;
+    let mut report = publish_library_read(store, &receipt, &items, &taste)?.ok_or_else(|| {
+        StoreError::Backend(
+            "the Spotify account changed during this library refresh; refresh again".into(),
+        )
+    })?;
+    if changed_owner {
+        // Adoption retires everything before the new read is published;
+        // report only prior candidates absent from this accepted library.
+        let accepted: HashSet<&str> = items.iter().map(|item| item.source_uri.as_str()).collect();
+        report.retired = previous
+            .iter()
+            .filter(|entry| {
+                entry.is_candidate() && !accepted.contains(entry.track.source_uri.as_str())
+            })
+            .count();
+    }
+    acknowledge_playlists(store, &receipt, &taste, &mut read.continuation)?;
     let works = group_works(pool_from_store(store)?.tracks());
     let albums = complete_library_works(session, cx, store, works, now).await;
     let notes = sync_notes(&read, &genres, &albums);
@@ -180,28 +201,28 @@ async fn complete_library_works<S: Store + ?Sized>(
 
 fn acknowledge_playlists<S: Store + ?Sized>(
     store: &mut S,
+    owner: &SpotifyLibraryOwner,
     taste: &Taste,
     continuation: &mut PlaylistContinuation,
 ) -> Result<(), SpotifyError> {
-    if let Some(owner) = &continuation.owner {
-        for observation in &taste.playlist_contents {
-            if !observation.failed {
-                let (complete, limited) =
-                    crate::taste::mark_playlist_applied(store, owner, &observation.contents)?;
-                continuation.pending = continuation
-                    .pending
-                    .saturating_sub(usize::from(complete || limited));
-                continuation.limited += usize::from(limited);
-            }
+    for observation in &taste.playlist_contents {
+        if !observation.failed {
+            let (complete, limited) =
+                crate::taste::mark_playlist_applied(store, owner, &observation.contents)?;
+            continuation.pending = continuation
+                .pending
+                .saturating_sub(usize::from(complete || limited));
+            continuation.limited += usize::from(limited);
         }
     }
     Ok(())
 }
 
-fn publish_playlists<S: Store + ?Sized>(store: &mut S, taste: &Taste) -> Result<(), SpotifyError> {
-    if let Some(playlists) = &taste.playlists {
-        store.save_playlists(playlists)?;
-    }
+fn playlist_publication<S: Store + ?Sized>(
+    store: &S,
+    taste: &Taste,
+) -> Result<Vec<CachedPlaylist>, SpotifyError> {
+    let mut contents = Vec::new();
     for observation in &taste.playlist_contents {
         // Private progress is snapshot fenced. Keep a complete observation
         // until its whole replacement is ready; a failed refresh likewise
@@ -212,9 +233,31 @@ fn publish_playlists<S: Store + ?Sized>(store: &mut S, taste: &Taste) -> Result<
         }) {
             continue;
         }
-        store.save_playlist_contents(&observation.contents)?;
+        contents.push(observation.contents.clone());
     }
-    Ok(())
+    Ok(contents)
+}
+
+/// All personal projections use the same adoption receipt. Reads and network
+/// requests may span another process's account switch; none of their prepared
+/// candidates, weights or observations may be published after that switch.
+fn publish_library_read<S: Store + ?Sized>(
+    store: &mut S,
+    owner: &SpotifyLibraryOwner,
+    items: &[LibraryItem],
+    taste: &Taste,
+) -> Result<Option<LibrarySync>, SpotifyError> {
+    let (entries, report) = library_projection(store, items)?;
+    let contents = playlist_publication(store, taste)?;
+    Ok(store
+        .publish_spotify_library(
+            owner,
+            &entries,
+            taste.playlists.as_deref(),
+            &contents,
+            taste.heard.as_deref(),
+        )?
+        .then_some(report))
 }
 
 /// What a sync's best-effort reads couldn't read, a sentence each: the
@@ -273,6 +316,15 @@ pub fn apply_library_read<S: Store + ?Sized>(
     store: &mut S,
     items: &[LibraryItem],
 ) -> Result<LibrarySync, SpotifyError> {
+    let (entries, report) = library_projection(store, items)?;
+    store.upsert_library(&entries)?;
+    Ok(report)
+}
+
+fn library_projection<S: Store + ?Sized>(
+    store: &S,
+    items: &[LibraryItem],
+) -> Result<(Vec<LibraryEntry>, LibrarySync), SpotifyError> {
     let items = merge_duplicates(items);
     let pool = CandidatePool::build(&items);
     let mut entries: Vec<LibraryEntry> = items
@@ -288,14 +340,16 @@ pub fn apply_library_read<S: Store + ?Sized>(
             retired += 1;
         }
     }
-    store.upsert_library(&entries)?;
     let clean = || pool.tracks().iter().filter(|t| !t.explicit);
-    Ok(LibrarySync {
-        tracks: items.len(),
-        candidates: clean().count(),
-        classical: clean().filter(|t| t.classical).count(),
-        retired,
-    })
+    Ok((
+        entries,
+        LibrarySync {
+            tracks: items.len(),
+            candidates: clean().count(),
+            classical: clean().filter(|t| t.classical).count(),
+            retired,
+        },
+    ))
 }
 
 /// The DJ's pool from the cache's candidate rows, in any genre. Which of

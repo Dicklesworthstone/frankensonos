@@ -100,12 +100,15 @@ fn opaque_cursors_are_compared_by_value_not_by_url_spelling() {
     }
 }
 
+type ResponseHook = (String, Box<dyn FnOnce() + Send>);
+
 #[derive(Default)]
 struct Script {
     pages: HashMap<String, Value>,
     refused: HashMap<String, u16>,
     calls: Vec<String>,
     base: String,
+    before_response: Option<ResponseHook>,
 }
 
 struct Server {
@@ -140,6 +143,14 @@ impl Server {
                                 return response(401, "{}");
                             }
                             let uri = req.uri.as_str();
+                            if state
+                                .before_response
+                                .as_ref()
+                                .is_some_and(|(route, _)| route == path(uri))
+                                && let Some((_, change)) = state.before_response.take()
+                            {
+                                change();
+                            }
                             if let Some(&status) = state.refused.get(path(uri)) {
                                 return response(status, "{}").with_header("Retry-After", "3600");
                             }
@@ -248,6 +259,8 @@ mod playlist_rotation;
 #[path = "playlist_progress_tests.rs"]
 mod playlist_progress;
 
+#[path = "account_ownership_tests.rs"]
+mod account_ownership;
 #[path = "playlist_continuation_tests.rs"]
 mod playlist_continuation;
 
@@ -305,6 +318,7 @@ fn exact_page_budget_completion_is_distinct_from_an_unfinished_read() {
                 session: &mut session,
                 cx: &cx,
                 read: &mut read,
+                owner: None,
             };
             let first = first.replace(API, &server.endpoints.api);
             assert_eq!(reader.page::<u32>(&first, "top tracks", 2).await, [1, 2]);
@@ -364,6 +378,7 @@ fn a_capped_playlist_directory_preserves_cache_until_a_complete_sync() {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, PLAYLIST_SCOPE);
         let mut store = MemStore::default();
+        store.adopt_spotify_library_owner("test-owner").unwrap();
         let cached = |uri: &str, origin| LibraryItem {
             source_uri: uri.into(),
             title: "Cached song".into(),
@@ -475,6 +490,7 @@ fn malformed_directory_coverage_preserves_cache_until_a_complete_retry() {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, PLAYLIST_SCOPE);
         let mut store = MemStore::default();
+        store.adopt_spotify_library_owner("test-owner").unwrap();
         let item = LibraryItem {
             source_uri: "spotify:track:Previous".into(),
             title: "Previous song".into(),

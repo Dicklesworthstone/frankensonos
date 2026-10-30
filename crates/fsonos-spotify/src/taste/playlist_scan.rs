@@ -7,7 +7,8 @@ use super::{MAX_PLAYLIST_REQUESTS, PlaylistObservation, Reader, valid_taste_trac
 use crate::client::{PAGE_LIMIT, PlaylistItem, SimplifiedPlaylist};
 use crate::library::{LibraryItem, Origin};
 use fsonos_core::store::{
-    CachedPlaylist, MAX_PLAYLIST_BYTES, MAX_PLAYLIST_ENTRIES, PlaylistTrack, Store, StoreError,
+    CachedPlaylist, MAX_PLAYLIST_BYTES, MAX_PLAYLIST_ENTRIES, PlaylistTrack, SpotifyLibraryOwner,
+    Store, StoreError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -201,12 +202,19 @@ pub(super) fn readiness<S: Store + ?Sized>(
 /// Returns whether this acknowledgement completes or caps the scan.
 pub(crate) fn mark_applied<S: Store + ?Sized>(
     store: &mut S,
-    owner: &str,
+    owner: &SpotifyLibraryOwner,
     contents: &CachedPlaylist,
 ) -> Result<(bool, bool), StoreError> {
-    let Some(mut progress) = load_progress(store, owner, &contents.playlist_uri)? else {
+    let Some(expected) = store.playlist_progress(&owner.owner_id, &contents.playlist_uri)? else {
         return Ok((false, false));
     };
+    let mut progress: Progress =
+        serde_json::from_str(&expected).map_err(|error| StoreError::Backend(error.to_string()))?;
+    if !progress.valid(&owner.owner_id, &contents.playlist_uri) {
+        return Err(StoreError::Backend(
+            "stored playlist progress is invalid".into(),
+        ));
+    }
     if progress.applied
         || progress.limited
         || progress.observation(contents.fetched_at) != *contents
@@ -216,7 +224,9 @@ pub(crate) fn mark_applied<S: Store + ?Sized>(
     progress.applied = true;
     let encoded =
         serde_json::to_string(&progress).map_err(|error| StoreError::Backend(error.to_string()))?;
-    store.save_playlist_progress(owner, &contents.playlist_uri, &encoded)?;
+    if !store.acknowledge_spotify_playlist(owner, &contents.playlist_uri, &expected, &encoded)? {
+        return Ok((false, false));
+    }
     Ok((
         progress.complete,
         !progress.complete && progress.examined >= MAX_PLAYLIST_ENTRIES,

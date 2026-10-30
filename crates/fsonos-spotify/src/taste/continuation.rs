@@ -61,6 +61,7 @@ pub(crate) async fn read_pending_playlists<S: Store + ?Sized>(
             session,
             cx,
             read: &mut read,
+            owner: None,
         };
         let (tracks, listed) = reader
             .playlist_tracks(
@@ -90,11 +91,18 @@ impl Reader<'_> {
         now: i64,
         scan: Scan<'_>,
     ) -> (Vec<LibraryItem>, Option<Vec<(String, String)>>) {
-        let Some(me) = self
-            .get::<Me>(&self.session.endpoints().me(), "the user")
-            .await
-        else {
-            return (Vec::new(), None);
+        let me = if let Some(owner) = self.owner {
+            Me {
+                id: owner.to_owned(),
+            }
+        } else {
+            let Some(me) = self
+                .get::<Me>(&self.session.endpoints().me(), "the user")
+                .await
+            else {
+                return (Vec::new(), None);
+            };
+            me
         };
         if me.id.trim().is_empty() || me.id.len() > 1_024 || me.id.chars().any(char::is_control) {
             self.read
