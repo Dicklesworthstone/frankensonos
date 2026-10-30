@@ -836,7 +836,7 @@ impl Policy {
         }
         let current: Vec<u8> = rooms.iter().map(|r| r.volume.min(100)).collect();
         let caps: Vec<(u8, String)> = rooms.iter().map(|r| self.cap(&r.room, now)).collect();
-        let step = rooms.iter().map(|r| self.step(&r.room)).min().unwrap_or(0);
+        let steps: Vec<u8> = rooms.iter().map(|r| self.step(&r.room)).collect();
         let level = group_level(&current);
         let target = match intent.change {
             VolumeChange::Set(v) => v.min(100),
@@ -847,6 +847,20 @@ impl Policy {
             members_at(&current, level, to)
                 .zip(&caps)
                 .position(|(member, (cap, _))| member > *cap)
+        };
+        // A group increase is proportional: a louder member can rise by
+        // more than the group's mean. Bound the actual increase in every
+        // room, including overrides on quieter or silent members.
+        let over_step = |to: u8| {
+            members_at(&current, level, to)
+                .zip(current.iter().zip(&steps))
+                .position(|(member, (before, step))| member.saturating_sub(*before) > *step)
+        };
+        let step_reason = |room: usize| {
+            format!(
+                "{} volume rises at most {} at a time (max_step)",
+                rooms[room].room, steps[room]
+            )
         };
         let allowed = |to: u8| match intent.change {
             VolumeChange::Set(_) => VolumeChange::Set(to),
@@ -872,22 +886,24 @@ impl Policy {
                 }
             };
         }
-        let ceiling = target.min(level.saturating_add(step));
-        match (level + 1..=ceiling).rev().find(|&l| over_cap(l).is_none()) {
+        match (level + 1..=target)
+            .rev()
+            .find(|&l| over_cap(l).is_none() && over_step(l).is_none())
+        {
             Some(to) if to == target => Decision::Allow,
-            Some(to) if to == ceiling => clamp(
-                to,
-                format!("volume rises at most {step} at a time (max_step)"),
-            ),
             Some(to) => {
-                let room = over_cap(to + 1).unwrap_or(0);
-                clamp(to, caps[room].1.clone())
+                let reason = over_cap(to + 1).map_or_else(
+                    || step_reason(over_step(to + 1).unwrap_or(0)),
+                    |room| caps[room].1.clone(),
+                );
+                clamp(to, reason)
             }
             None => {
-                let room = over_cap(level + 1).unwrap_or(0);
-                Decision::Deny {
-                    reason: format!("{}; it is already at {}", caps[room].1, rooms[room].volume),
-                }
+                let reason = over_cap(level + 1).map_or_else(
+                    || step_reason(over_step(level + 1).unwrap_or(0)),
+                    |room| format!("{}; it is already at {}", caps[room].1, rooms[room].volume),
+                );
+                Decision::Deny { reason }
             }
         }
     }
@@ -1359,6 +1375,93 @@ max_volume = 25
             at(NOON),
         );
         assert_eq!(allowed(&d), Some(VolumeChange::Set(20)));
+    }
+
+    #[test]
+    fn group_increases_respect_each_members_step_after_proportional_scaling() {
+        let policy = Policy::default();
+        let members = [("Kitchen", 20), ("Bedroom", 40)];
+        // The group starts at 30. A mean increase of 20 would raise Bedroom
+        // by 27 to 67, even though both rooms would remain below their caps.
+        // A mean of 45 instead leaves the rooms at 30 and 60: +10 and +20.
+        for (requested, expected) in [
+            (VolumeChange::Set(50), VolumeChange::Set(45)),
+            (VolumeChange::Adjust(20), VolumeChange::Adjust(15)),
+        ] {
+            let decision = policy.evaluate(&intent(requested, &members), &agent(), at(NOON));
+            assert_eq!(allowed(&decision), Some(expected));
+            assert!(matches!(decision, Decision::Clamp { reason, .. }
+                    if reason == "Bedroom volume rises at most 20 at a time (max_step)"));
+            assert_eq!(
+                policy.evaluate(&intent(expected, &members), &agent(), at(NOON)),
+                Decision::Allow
+            );
+        }
+    }
+
+    #[test]
+    fn a_quieter_rooms_step_limits_its_own_rise_instead_of_the_group_mean() {
+        let policy = Policy::from_toml("[rooms.Kitchen]\nmax_step = 2\n").unwrap();
+        let members = [("Kitchen", 10), ("Bedroom", 30)];
+        // At a group mean of 24 the rooms become 12 and 36. Kitchen's limit
+        // is satisfied even though the mean rises by more than two.
+        let decision =
+            policy.evaluate(&intent(VolumeChange::Set(25), &members), &agent(), at(NOON));
+        assert_eq!(allowed(&decision), Some(VolumeChange::Set(24)));
+        assert!(matches!(decision, Decision::Clamp { reason, .. } if reason.contains("Kitchen")));
+        assert_eq!(
+            policy.evaluate(
+                &intent(VolumeChange::Adjust(4), &members),
+                &agent(),
+                at(NOON)
+            ),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn zero_step_rooms_can_stay_silent_while_other_group_members_rise() {
+        let policy = Policy::from_toml("[rooms.Kitchen]\nmax_step = 0\n").unwrap();
+        // Proportional scaling leaves a silent member silent, so its zero
+        // allowance must not prevent a permitted increase in another room.
+        assert_eq!(
+            policy.evaluate(
+                &intent(VolumeChange::Set(30), &[("Kitchen", 0), ("Bedroom", 40)]),
+                &agent(),
+                at(NOON)
+            ),
+            Decision::Allow
+        );
+        // An entirely silent group moves equally: Kitchen would rise too.
+        let decision = policy.evaluate(
+            &intent(VolumeChange::Adjust(1), &[("Kitchen", 0), ("Bedroom", 0)]),
+            &agent(),
+            at(NOON),
+        );
+        assert!(matches!(decision, Decision::Deny { reason }
+            if reason == "Kitchen volume rises at most 0 at a time (max_step)"));
+    }
+
+    #[test]
+    fn member_steps_do_not_restrict_decreases_or_uncapped_cli_changes() {
+        let policy = Policy::from_toml("[defaults]\nmax_step = 0\n").unwrap();
+        let members = [("Kitchen", 20), ("Bedroom", 80)];
+        assert_eq!(
+            policy.evaluate(
+                &intent(VolumeChange::Adjust(-10), &members),
+                &agent(),
+                at(NOON)
+            ),
+            Decision::Allow
+        );
+        assert_eq!(
+            policy.evaluate(
+                &intent(VolumeChange::Set(100), &members),
+                &Client::Cli,
+                at(NOON)
+            ),
+            Decision::Allow
+        );
     }
 
     #[test]

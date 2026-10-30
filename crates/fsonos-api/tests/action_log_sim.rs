@@ -229,6 +229,68 @@ fn volume_req(zone: &str, volume: i64) -> VolumeRequest {
 }
 
 #[test]
+fn group_volume_limits_each_members_increase_and_records_the_clamp() {
+    for generation in [Generation::S1, Generation::S2] {
+        for relative in [false, true] {
+            let builder = SimHousehold::builder();
+            let sim = match generation {
+                Generation::S1 => builder.s1([
+                    SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+                    SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+                ]),
+                _ => builder.s2([
+                    SimPlayerSpec::new("Kitchen", SimModel::One),
+                    SimPlayerSpec::new("Office", SimModel::One),
+                ]),
+            }
+            .spawn()
+            .unwrap();
+            let s = surface(&sim);
+            s.control(&Client::Cli, "group", |h| {
+                plan_group(
+                    h,
+                    &GroupRequest {
+                        zone: "Office".into(),
+                        to: "Kitchen".into(),
+                    },
+                )
+            })
+            .unwrap();
+            let lan = sim.lan();
+            let houses = now(&sim);
+            let kitchen = id(&houses, "Kitchen");
+            let office = id(&houses, "Office");
+            control::set_volume(&lan, &houses, &kitchen, 20).unwrap();
+            control::set_volume(&lan, &houses, &office, 40).unwrap();
+            // Moving the mean from 30 to 50 would put Office at 67: below
+            // its volume cap, but a 27-point jump exceeds max_step = 20.
+            // Addressing the follower must still bound the whole group.
+            let request = VolumeRequest {
+                zone: "Office".into(),
+                volume: (!relative).then_some(50),
+                delta: relative.then_some(20),
+                group: true,
+            };
+            let outcome = s
+                .control(&agent(), "set_volume", |h| plan_volume(h, &request))
+                .unwrap();
+            assert_eq!(outcome.volume, Some(45), "{generation:?}: {outcome:?}");
+            assert_eq!(control::volume(&lan, &houses, &kitchen).unwrap(), 30);
+            assert_eq!(control::volume(&lan, &houses, &office).unwrap(), 60);
+            assert!(outcome.notes.iter().any(|note| {
+                note.code == NoteCode::VolumeClamped && note.detail.contains("max_step")
+            }));
+            let log = s
+                .recent_actions(&agent(), &ActionFilter::default())
+                .unwrap();
+            assert_eq!(log[0].action.client, agent().key());
+            assert!(log[0].action.decision.starts_with("clamp: "));
+            sim.shutdown();
+        }
+    }
+}
+
+#[test]
 fn clamped_volume_is_logged_with_its_note_and_undone() {
     let sim = sim();
     let lan = sim.lan();
