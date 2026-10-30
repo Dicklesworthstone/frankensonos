@@ -119,7 +119,7 @@ fn windows_survive_restarts_reordering_and_a_removed_cursor_without_losing_music
         store.close().unwrap();
 
         let mut store = SqliteStore::open(&path).unwrap();
-        sync(&server, &cx, &mut store).await;
+        let reconciled = sync(&server, &cx, &mut store).await;
         assert_eq!(
             attempted(&server, 50),
             expected((60..70).chain([5]).chain(10..24))
@@ -129,9 +129,16 @@ fn windows_survive_restarts_reordering_and_a_removed_cursor_without_losing_music
             assert!(observed(&store, n).complete);
             assert!(pool.get(&format!("spotify:track:TestTrack{n}")).is_some());
         }
-        // Each incomplete taste window retains earlier candidates, including
-        // the removed list's music; partial evidence cannot retire it.
-        assert_eq!(pool.len(), 61);
+        // Every current list now has a matching complete proof. Unvisited
+        // snapshots supply their music, so only the removed list is retired.
+        assert_eq!(reconciled.library.retired, 1);
+        assert!(
+            !reconciled
+                .notes
+                .iter()
+                .any(|note| note.contains("playlist budget"))
+        );
+        assert_eq!(pool.len(), 60);
         assert_eq!(server.item_calls().len(), 75);
         assert_eq!(server.calls("/v1/playlists/").len(), 150);
         store.close().unwrap();

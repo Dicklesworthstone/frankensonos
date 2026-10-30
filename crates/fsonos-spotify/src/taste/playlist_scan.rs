@@ -39,6 +39,9 @@ struct Progress {
     applied: bool,
     #[serde(default)]
     fetched_at: Option<i64>,
+    /// Next metadata window within an already complete, unchanged snapshot.
+    #[serde(default)]
+    refresh_offset: u32,
     /// A metadata bound is terminal for this snapshot, until Spotify changes it.
     #[serde(default)]
     limited: bool,
@@ -61,6 +64,7 @@ impl Progress {
             complete: false,
             applied: false,
             fetched_at: None,
+            refresh_offset: 0,
             limited: false,
             tracks: Vec::new(),
         }
@@ -73,6 +77,8 @@ impl Progress {
             || !version(&self.snapshot_id)
             || (self.limited && self.complete)
             || self.examined > MAX_PLAYLIST_ENTRIES
+            || (self.refresh_offset != 0
+                && (!self.complete || self.refresh_offset >= self.examined))
             || self.source_total.is_some_and(|total| {
                 self.examined > total || (self.complete && self.examined != total)
             })
@@ -289,8 +295,20 @@ impl Reader<'_> {
             // not another Spotify read or a fabricated new fetched-at time.
             return Some((ready.clone(), false));
         }
-        // Completed observations are refreshed on the next full-sync turn. An edit
-        // discards private progress, never the last complete published cache.
+        let previous = match previous {
+            Some(progress)
+                if progress.complete && !progress.limited && progress.snapshot_id == snapshot =>
+            {
+                // Membership is proved for this version. Refresh metadata inside
+                // that whole proof instead of turning a long complete list into
+                // a prefix and preventing authoritative library reconciliation.
+                return self
+                    .refresh_snapshot(store, progress, &list.id, pages, now)
+                    .await;
+            }
+            previous => previous,
+        };
+        // An edit discards private progress, never the last complete public cache.
         let mut progress = previous
             .filter(|state| !state.complete && state.snapshot_id == snapshot)
             .unwrap_or_else(|| Progress::new(owner, &uri, &snapshot));
@@ -318,6 +336,111 @@ impl Reader<'_> {
         progress.applied = false;
         progress.fetched_at = Some(now);
         self.accept_window(store, progress, failed, first).await
+    }
+
+    async fn refresh_snapshot<S: Store + ?Sized>(
+        &mut self,
+        store: &mut S,
+        mut progress: Progress,
+        id: &str,
+        pages: usize,
+        now: i64,
+    ) -> Option<(Progress, bool)> {
+        let first = progress.refresh_offset;
+        let url = self.session.endpoints().playlist_items(id, first);
+        let entries = self
+            .observe_window_from::<serde_json::Value>(
+                &url,
+                "playlist items",
+                pages,
+                Some(PAGE_LIMIT as usize),
+                (first, progress.source_total),
+                Some(MAX_PLAYLIST_ENTRIES),
+            )
+            .await;
+        if entries.failed {
+            return None;
+        }
+        if entries.examined > progress.examined
+            || (entries.complete && entries.examined != progress.examined)
+            || (!entries.complete && entries.examined >= progress.examined)
+            || entries
+                .source_total
+                .is_some_and(|total| total != progress.examined)
+        {
+            self.playlist_failed("unchanged playlist snapshot has different source coverage");
+            return None;
+        }
+        if self.playlist_snapshot(id).await? != progress.snapshot_id {
+            self.playlist_failed("playlist changed during its metadata refresh");
+            return None;
+        }
+        let mut window = Progress::new(
+            &progress.owner_id,
+            &progress.playlist_uri,
+            &progress.snapshot_id,
+        );
+        window.examined = first;
+        window.append(entries);
+        // Raw positions, including null/unavailable entries, define the replaced
+        // interval. A track disappearing within it must not survive from cache.
+        progress
+            .tracks
+            .retain(|entry| entry.position <= first || entry.position > window.examined);
+        progress.tracks.extend(window.tracks);
+        progress.tracks.sort_by_key(|entry| entry.position);
+        progress.refresh_offset = if window.complete { 0 } else { window.examined };
+        progress.source_total = window.source_total;
+        progress.fetched_at = Some(now);
+        progress.applied = false;
+        let encoded = match serde_json::to_string(&progress) {
+            Ok(encoded) if encoded.len() <= MAX_PLAYLIST_BYTES => encoded,
+            _ => {
+                self.playlist_failed("playlist metadata refresh exceeds its 16 MiB limit");
+                return None;
+            }
+        };
+        if let Err(error) =
+            store.save_playlist_progress(&progress.owner_id, &progress.playlist_uri, &encoded)
+        {
+            self.playlist_failed(error);
+            return None;
+        }
+        self.read.continuation.advanced = self
+            .read
+            .continuation
+            .advanced
+            .saturating_add(window.examined.saturating_sub(first));
+        Some((progress, false))
+    }
+
+    /// Unvisited full-sync lists may contribute their whole proved contents
+    /// only when today's directory explicitly confirms that same version.
+    pub(super) fn reuse_playlist<S: Store + ?Sized>(
+        &mut self,
+        store: &S,
+        owner: &str,
+        list: &SimplifiedPlaylist,
+        named: &mut HashMap<String, Vec<String>>,
+    ) -> Option<(Vec<LibraryItem>, PlaylistObservation)> {
+        let snapshot = list
+            .snapshot_id
+            .as_deref()
+            .filter(|snapshot| version(snapshot))?;
+        let uri = format!("spotify:playlist:{}", list.id);
+        let progress = match load_progress(store, owner, &uri) {
+            Ok(progress) => progress?,
+            Err(error) => {
+                self.playlist_failed(error);
+                return None;
+            }
+        };
+        if !progress.complete || progress.limited || progress.snapshot_id != snapshot {
+            return None;
+        }
+        let (tracks, observation) = project(progress, list, named, false);
+        self.read.playlist_tracks += tracks.len();
+        Some((tracks, observation))
     }
 
     async fn accept_window<S: Store + ?Sized>(
@@ -411,28 +534,38 @@ impl Reader<'_> {
         else {
             return (Vec::new(), None);
         };
-        let observation = PlaylistObservation {
-            contents: progress.observation(progress.fetched_at.unwrap_or(0)),
-            failed,
-        };
-        let stated = crate::genre_guess::from_name(&list.name);
-        let tracks = progress
-            .tracks
-            .into_iter()
-            .map(|entry| {
-                let item = entry.item;
-                if !stated.is_empty() {
-                    let genres = named.entry(item.source_uri.clone()).or_default();
-                    for genre in &stated {
-                        if !genres.contains(genre) {
-                            genres.push(genre.clone());
-                        }
-                    }
-                }
-                item
-            })
-            .collect::<Vec<_>>();
+        let (tracks, observation) = project(progress, list, named, failed);
         self.read.playlist_tracks += tracks.len();
         (tracks, Some(observation))
     }
+}
+
+fn project(
+    progress: Progress,
+    list: &SimplifiedPlaylist,
+    named: &mut HashMap<String, Vec<String>>,
+    failed: bool,
+) -> (Vec<LibraryItem>, PlaylistObservation) {
+    let observation = PlaylistObservation {
+        contents: progress.observation(progress.fetched_at.unwrap_or(0)),
+        failed,
+    };
+    let stated = crate::genre_guess::from_name(&list.name);
+    let tracks = progress
+        .tracks
+        .into_iter()
+        .map(|entry| {
+            let item = entry.item;
+            if !stated.is_empty() {
+                let genres = named.entry(item.source_uri.clone()).or_default();
+                for genre in &stated {
+                    if !genres.contains(genre) {
+                        genres.push(genre.clone());
+                    }
+                }
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    (tracks, observation)
 }

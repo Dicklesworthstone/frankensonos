@@ -225,3 +225,99 @@ fn a_background_check_releases_idle_admission_and_preserves_an_existing_worker()
     );
     sync.running().running = false;
 }
+
+#[test]
+fn completed_intake_requests_one_durable_full_reconciliation_after_server_cooldown() {
+    let dir = directory("reconcile");
+    let at = 1_790_000_000;
+    let waiting = Checkpoint::default().observed(&pending(3, 150), at);
+    let finished_at = waiting.retry_at;
+    let complete = PlaylistContinuation {
+        retry_after_secs: 3_600,
+        ..pending(0, 105)
+    };
+    let next = waiting.completed(&complete, finished_at, true);
+    assert!(next.reconcile);
+    assert!(!next.requires_refresh, "this is not an account change");
+    assert!(next.note().contains("reconcile the library"));
+    assert!(next.owner_due(i64::MAX).is_none());
+    write(&dir, Some(&full(at)), &next).unwrap();
+
+    let restarted = controller(dir.clone(), finished_at + 3_599);
+    assert_eq!(load(&dir), Some(next.clone()));
+    assert_eq!(restarted.last().unwrap().at, at);
+    assert!(!restarted.due(finished_at + 3_599));
+    assert!(restarted.due(finished_at + 3_600));
+
+    // A successful full read consumes the intent without postponing the
+    // original daily deadline on any of the preceding continuation passes.
+    let accepted = next.completed(&pending(0, 0), finished_at + 3_600, false);
+    assert!(!accepted.reconcile);
+    assert!(accepted.owner_due(i64::MAX).is_none());
+    write(&dir, Some(&full(finished_at + 3_600)), &accepted).unwrap();
+    let restarted = controller(dir, finished_at + 3_600);
+    assert!(!restarted.due(finished_at + 3_600));
+    let day = i64::try_from(MAX_AGE.as_secs()).unwrap();
+    assert!(restarted.due(finished_at + 3_600 + day));
+}
+
+#[test]
+fn failed_full_reconciliation_keeps_its_intent_and_last_success_after_restart() {
+    let dir = directory("reconcile-failure");
+    let at = 1_790_000_000;
+    let waiting = Checkpoint::default().observed(&pending(1, 150), at);
+    let complete = waiting.completed(&pending(0, 50), waiting.retry_at, true);
+    assert!(complete.reconcile);
+    write(&dir, Some(&full(at)), &complete).unwrap();
+
+    // No token is present, so the real full-refresh path fails before HTTP.
+    // Its admission and error persistence must keep the reconciliation due.
+    let sync = controller(dir.clone(), complete.retry_at);
+    assert!(sync.due(sync.now()));
+    assert_eq!(sync.run().unwrap_err().code, ErrorCode::SpotifyAuthRequired);
+    let saved = load(&dir).unwrap();
+    assert!(saved.reconcile);
+    assert_eq!(sync.last(), Some(full(at)));
+    assert!(!sync.status().running);
+    assert!(!sync.take_fresh());
+    assert!(saved.retry_at > complete.retry_at);
+    let restarted = controller(dir, saved.retry_at);
+    assert!(restarted.due(saved.retry_at));
+    assert!(saved.owner_due(i64::MAX).is_none());
+}
+
+#[test]
+fn incomplete_limited_and_changed_owner_passes_cannot_claim_reconciliation() {
+    let at = 1_790_000_000;
+    let waiting = Checkpoint::default().observed(&pending(3, 150), at);
+    let incomplete = pending(1, 150);
+    let limited = PlaylistContinuation {
+        limited: 1,
+        ..pending(0, 150)
+    };
+    let changed = PlaylistContinuation {
+        owner: Some("different-owner".into()),
+        requires_refresh: true,
+        ..pending(0, 150)
+    };
+    let unknown = PlaylistContinuation {
+        owner: None,
+        ..pending(0, 0)
+    };
+    for report in [incomplete, limited, changed, unknown] {
+        assert!(!waiting.completed(&report, at + 900, true).reconcile);
+    }
+    assert!(
+        !Checkpoint::default()
+            .completed(&pending(0, 0), at, true)
+            .reconcile
+    );
+    assert!(!waiting.completed(&pending(0, 0), at, false).reconcile);
+
+    // Stamps from before this field existed still retain their owner and
+    // cooldown without inventing a pending full reconciliation.
+    let mut legacy = serde_json::to_value(&waiting).unwrap();
+    legacy.as_object_mut().unwrap().remove("reconcile");
+    let decoded: Checkpoint = serde_json::from_value(legacy).unwrap();
+    assert_eq!(decoded, waiting);
+}

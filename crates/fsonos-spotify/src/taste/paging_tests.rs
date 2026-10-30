@@ -253,6 +253,8 @@ impl Server {
     }
 }
 
+#[path = "playlist_reconciliation_tests.rs"]
+mod playlist_reconciliation;
 #[path = "playlist_rotation_tests.rs"]
 mod playlist_rotation;
 

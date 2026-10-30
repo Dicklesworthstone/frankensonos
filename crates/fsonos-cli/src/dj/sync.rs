@@ -19,7 +19,8 @@
 //! kept in [`STAMP`] in the data directory. Unfinished playlist snapshots get
 //! separate bounded continuation passes at the next check, with persistent
 //! progress backoff and server cooldowns. They never reread saved albums/likes
-//! or postpone the next daily full refresh.
+//! or postpone the next daily full refresh. Completed intake schedules one full
+//! refresh to reconcile removed playlist music with the current taste signals.
 
 use asupersync::Cx;
 use asupersync::http::Client;
@@ -265,7 +266,7 @@ impl LibrarySync {
             if now < saved.not_before {
                 return false;
             }
-            if saved.requires_refresh && now >= saved.retry_at {
+            if (saved.requires_refresh || saved.reconcile) && now >= saved.retry_at {
                 return true;
             }
         }

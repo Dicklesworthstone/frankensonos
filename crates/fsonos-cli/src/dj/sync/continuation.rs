@@ -20,6 +20,10 @@ pub(super) struct Checkpoint {
     pub(super) retry_at: i64,
     pub(super) not_before: i64,
     pub(super) requires_refresh: bool,
+    /// Completed background intake needs one authoritative full refresh to
+    /// retire taste tracks that no current playlist or other signal supports.
+    #[serde(default)]
+    pub(super) reconcile: bool,
 }
 
 impl Checkpoint {
@@ -60,14 +64,32 @@ impl Checkpoint {
             retry_at: now.saturating_add(Self::wait(stalled)),
             not_before: self.not_before,
             requires_refresh: report.requires_refresh,
+            reconcile: false,
         };
         next.cooldown(now, report.retry_after_secs);
+        next
+    }
+
+    /// A completed playlist-only pass is additive. Once all pending snapshots
+    /// are proved, schedule one full read to reconcile their authoritative
+    /// union with saved music and the other taste signals. The intent survives
+    /// restart and failed full reads; a successful full pass consumes it.
+    fn completed(&self, report: &PlaylistContinuation, now: i64, continuation: bool) -> Self {
+        let mut next = self.observed(report, now);
+        next.reconcile = continuation
+            && !next.requires_refresh
+            && next.pending == 0
+            && next.limited == 0
+            && next.owner.is_some()
+            && next.owner == self.owner
+            && (self.pending > 0 || self.reconcile);
         next
     }
 
     fn owner_due(&self, now: i64) -> Option<String> {
         if self.pending == 0
             || self.requires_refresh
+            || self.reconcile
             || now < self.retry_at
             || now < self.not_before
         {
@@ -81,6 +103,11 @@ impl Checkpoint {
     fn note(&self) -> String {
         if self.requires_refresh {
             return format!("{NOTE}the Spotify account changed; a full refresh will run next");
+        }
+        if self.reconcile {
+            return format!(
+                "{NOTE}background intake is complete; a full refresh will reconcile the library next"
+            );
         }
         format!(
             "{NOTE}{} unfinished playlist(s), {} at a cache limit; {}",
@@ -241,7 +268,7 @@ impl LibrarySync {
         reserved.cooldown(at, retry_after);
         match result {
             Ok(read) => {
-                let mut next = checkpoint.observed(&read.playlists, at);
+                let mut next = checkpoint.completed(&read.playlists, at, owner.is_some());
                 next.cooldown(at, retry_after);
                 let mut synced = if owner.is_some() {
                     continued_result(

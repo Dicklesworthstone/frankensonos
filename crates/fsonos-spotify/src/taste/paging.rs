@@ -155,6 +155,24 @@ impl Reader<'_> {
         start: (u32, Option<u32>),
         max_entries: Option<u32>,
     ) -> Observation<T> {
+        let observation = self
+            .observe_window_from(url, what, pages, max_page_items, start, max_entries)
+            .await;
+        self.exhausted(!observation.complete && !observation.failed, what);
+        observation
+    }
+
+    /// A bounded window inside coverage the caller already proved complete.
+    /// Exhausting this request budget does not make that existing proof partial.
+    pub(super) async fn observe_window_from<T: serde::de::DeserializeOwned>(
+        &mut self,
+        url: &str,
+        what: &str,
+        pages: usize,
+        max_page_items: Option<usize>,
+        start: (u32, Option<u32>),
+        max_entries: Option<u32>,
+    ) -> Observation<T> {
         let mut items = Vec::new();
         let mut coverage = Coverage::resume(start.0, start.1);
         let mut chain = Chain::new(url, Progress::Offset(start.0));
@@ -196,7 +214,6 @@ impl Reader<'_> {
         let failed = self.read.failed.len() != failures || self.read.halted.is_some();
         let complete = !failed && next.is_none();
         let (examined, source_total) = coverage.observed();
-        self.exhausted(next.is_some(), what);
         Observation {
             items,
             examined,
