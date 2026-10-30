@@ -21,6 +21,9 @@
 //! progress backoff and server cooldowns. They never reread saved albums/likes
 //! or postpone the next daily full refresh. Completed intake schedules one full
 //! refresh to reconcile removed playlist music with the current taste signals.
+//! Missing whole-work album lists have their own bounded passes and durable
+//! page progress. They refresh the DJ pool without rereading personal music
+//! or changing the full-sync timestamp.
 
 use asupersync::Cx;
 use asupersync::http::Client;
@@ -30,7 +33,9 @@ use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
-use fsonos_spotify::cache::{LibrarySyncDetailed, continue_playlists, sync_library_detailed};
+use fsonos_spotify::cache::{
+    LibrarySyncDetailed, continue_albums, continue_playlists, sync_library_detailed,
+};
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
 use std::path::{Path, PathBuf};
@@ -43,6 +48,7 @@ use crate::config::{GlobalArgs, ServeArgs};
 use crate::remote::Daemon;
 
 mod continuation;
+use continuation::Pass;
 
 /// The last successful refresh, in the data directory.
 pub const STAMP: &str = "library-sync.json";
@@ -200,14 +206,14 @@ impl LibrarySync {
 
     /// Perform a full refresh whose slot was already claimed.
     fn run_claimed(&self) -> Result<SyncedDto, Failure> {
-        self.run_pass(None)
+        self.run_pass(Pass::Full)
     }
 
     /// Read Spotify into a store of its own. Keep the session's server
     /// cooldown even when the read fails before producing a library result.
     fn read(
         &self,
-        owner: Option<String>,
+        pass: Pass,
     ) -> Result<(Result<LibrarySyncDetailed, SpotifyError>, u64), Failure> {
         let (config, dir) = (self.config.clone(), self.data_dir.clone());
         thread::Builder::new()
@@ -226,11 +232,14 @@ impl LibrarySync {
                         return Err(SpotifyError::Auth("not signed in to Spotify".into()));
                     }
                     let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
-                    let result = match owner {
-                        Some(owner) => {
+                    let result = match pass {
+                        Pass::Full => sync_library_detailed(&mut session, &cx, &mut store).await,
+                        Pass::Playlists(owner) => {
                             continue_playlists(&mut session, &cx, &mut store, &owner).await
                         }
-                        None => sync_library_detailed(&mut session, &cx, &mut store).await,
+                        Pass::Albums(previous) => {
+                            continue_albums(&mut session, &cx, &mut store, previous.as_ref()).await
+                        }
                     };
                     Ok((result, session.retry_after_secs()))
                 })

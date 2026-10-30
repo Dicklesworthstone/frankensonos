@@ -1,15 +1,23 @@
-//! Durable scheduling for bounded playlist-only enrichment. The public stamp's
+//! Durable scheduling for bounded playlist and whole-work album enrichment. The public stamp's
 //! timestamp remains the last full sync, while private state survives restarts.
 
 use super::{
     CHECK, ErrorCode, Failure, LibrarySync, LibrarySyncDetailed, MAX_AGE, Path, STAMP, SyncedDto,
     failure, stalled,
 };
+use fsonos_spotify::cache::AlbumContinuation;
 use fsonos_spotify::taste::PlaylistContinuation;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
 const NOTE: &str = "Playlist continuation: ";
+const ALBUM_NOTE: &str = "Album completion: ";
+
+pub(super) enum Pass {
+    Full,
+    Playlists(String),
+    Albums(Option<AlbumContinuation>),
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Checkpoint {
@@ -24,6 +32,15 @@ pub(super) struct Checkpoint {
     /// retire taste tracks that no current playlist or other signal supports.
     #[serde(default)]
     pub(super) reconcile: bool,
+    /// Absent in old stamps: discover unfinished albums at the next check.
+    #[serde(default)]
+    albums: Option<AlbumContinuation>,
+    #[serde(default)]
+    album_stalled: usize,
+    #[serde(default)]
+    album_retry_at: i64,
+    #[serde(default)]
+    album_turn: bool,
 }
 
 impl Checkpoint {
@@ -38,6 +55,7 @@ impl Checkpoint {
         let until = now.saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX));
         self.not_before = self.not_before.max(until);
         self.retry_at = self.retry_at.max(self.not_before);
+        self.album_retry_at = self.album_retry_at.max(self.not_before);
     }
 
     fn reserve(&self, now: i64) -> Self {
@@ -65,6 +83,14 @@ impl Checkpoint {
             not_before: self.not_before,
             requires_refresh: report.requires_refresh,
             reconcile: false,
+            albums: self.albums.clone(),
+            album_stalled: self.album_stalled,
+            album_retry_at: if self.albums.is_none() {
+                now.saturating_add(Self::wait(0))
+            } else {
+                self.album_retry_at
+            },
+            album_turn: self.album_turn,
         };
         next.cooldown(now, report.retry_after_secs);
         next
@@ -98,6 +124,91 @@ impl Checkpoint {
         self.owner.clone().filter(|owner| {
             !owner.trim().is_empty() && owner.len() <= 1_024 && !owner.chars().any(char::is_control)
         })
+    }
+
+    fn album_due(&self, now: i64) -> bool {
+        !self.requires_refresh
+            && !self.reconcile
+            && now >= self.not_before
+            && now >= self.album_retry_at
+            && self.albums.as_ref().is_none_or(|albums| albums.pending > 0)
+    }
+
+    fn reserve_albums(&self, now: i64) -> Self {
+        let mut reserved = self.clone();
+        reserved.album_stalled = reserved.album_stalled.saturating_add(1);
+        reserved.album_retry_at = now
+            .saturating_add(Self::wait(reserved.album_stalled))
+            .max(reserved.not_before);
+        reserved
+    }
+
+    fn observed_albums(&mut self, report: &AlbumContinuation, now: i64, keep_pages: bool) {
+        if keep_pages
+            && report.completed == 0
+            && !report.requires_refresh
+            && let Some(previous) = &self.albums
+            && previous.pending > 0
+            && report.pending > 0
+            && previous.owner == report.owner
+            && previous.generation == report.generation
+        {
+            let mut albums = report.clone();
+            albums.inherit_progress(previous);
+            self.albums = Some(albums);
+            // A library observation must not keep postponing an album pass
+            // that is already due, or count as another failed album attempt.
+            self.cooldown(now, report.retry_after_secs);
+            return;
+        }
+        let progress = report.completed > 0
+            || report.advanced > 0
+            || self.albums.as_ref().is_none_or(|previous| {
+                report.pending < previous.pending
+                    || report.owner != previous.owner
+                    || report.generation != previous.generation
+            });
+        self.album_stalled = if progress || report.pending == 0 {
+            0
+        } else {
+            self.album_stalled.saturating_add(1)
+        };
+        self.album_retry_at = now.saturating_add(Self::wait(self.album_stalled));
+        let mut albums = report.clone();
+        if keep_pages && let Some(previous) = &self.albums {
+            albums.inherit_progress(previous);
+        }
+        if report.requires_refresh {
+            self.requires_refresh = true;
+            self.retry_at = self.album_retry_at;
+        }
+        self.albums = Some(albums);
+        self.cooldown(now, report.retry_after_secs);
+    }
+
+    fn album_note(&self) -> Option<String> {
+        let albums = self.albums.as_ref()?;
+        if albums.requires_refresh {
+            return Some(format!(
+                "{ALBUM_NOTE}the Spotify account needs a full library refresh"
+            ));
+        }
+        (albums.pending > 0 || albums.completed > 0).then(|| {
+            format!(
+                "{ALBUM_NOTE}{} album list(s) completed, {} unfinished; the next bounded pass follows the saved retry deadline",
+                albums.completed, albums.pending
+            )
+        })
+    }
+
+    fn background_pass(&self, now: i64) -> Option<Pass> {
+        let owner = self.owner_due(now);
+        let albums = self.album_due(now);
+        if albums && (self.album_turn || owner.is_none()) {
+            Some(Pass::Albums(self.albums.clone()))
+        } else {
+            owner.map(Pass::Playlists)
+        }
     }
 
     fn note(&self) -> String {
@@ -185,15 +296,24 @@ fn full_result(read: &LibrarySyncDetailed, at: i64) -> SyncedDto {
     }
 }
 
-fn continued_result(mut previous: SyncedDto, read: &LibrarySyncDetailed, at: i64) -> SyncedDto {
+fn continued_result(previous: SyncedDto, read: &LibrarySyncDetailed, at: i64) -> SyncedDto {
+    continued_result_with_note(previous, read, at, NOTE)
+}
+
+fn continued_result_with_note(
+    mut previous: SyncedDto,
+    read: &LibrarySyncDetailed,
+    at: i64,
+    prefix: &str,
+) -> SyncedDto {
     previous.tracks = read.library.tracks;
     previous.candidates = read.library.candidates;
     previous.classical = read.library.classical;
-    previous.notes.retain(|note| !note.starts_with(NOTE));
+    previous.notes.retain(|note| !note.starts_with(prefix));
     // These are observations from the latest continuation, not a new full sync.
     if !read.notes.is_empty() {
         previous.notes.push(format!(
-            "{NOTE}last pass at {at}: {}",
+            "{prefix}last pass at {at}: {}",
             read.notes.join("; ")
         ));
     }
@@ -212,31 +332,32 @@ impl LibrarySync {
         // A manual refresh cannot replace the saved owner or cooldown between
         // this selection and its admission. Preserve the last error if idle.
         let now = self.now();
-        let owner = if self.due(now) {
-            Some(None)
+        let pass = if self.due(now) {
+            Some(Pass::Full)
         } else {
             load(&self.data_dir)
-                .and_then(|saved| saved.owner_due(now))
-                .map(Some)
+                .unwrap_or_default()
+                .background_pass(now)
         };
-        let Some(owner) = owner else {
+        let Some(pass) = pass else {
             self.running().running = false;
             return None;
         };
         self.running().error = None;
-        Some(self.run_pass(owner))
+        Some(self.run_pass(pass))
     }
 
-    pub(super) fn run_pass(&self, owner: Option<String>) -> Result<SyncedDto, Failure> {
-        let result = self.perform_pass(owner);
+    pub(super) fn run_pass(&self, pass: Pass) -> Result<SyncedDto, Failure> {
+        let result = self.perform_pass(pass);
         let mut state = self.running();
         state.running = false;
         state.error = result.as_ref().err().map(|error| error.detail.clone());
         result
     }
 
-    #[allow(clippy::needless_pass_by_value)] // the continuation's owner handoff is in flight
-    fn perform_pass(&self, owner: Option<String>) -> Result<SyncedDto, Failure> {
+    fn perform_pass(&self, pass: Pass) -> Result<SyncedDto, Failure> {
+        let full = matches!(pass, Pass::Full);
+        let album_pass = matches!(pass, Pass::Albums(_));
         let before = self.last();
         let checkpoint = load(&self.data_dir).unwrap_or_default();
         let now = self.now();
@@ -249,17 +370,21 @@ impl LibrarySync {
                 ),
             ));
         }
-        if owner.is_some() && before.is_none() {
+        if !full && before.is_none() {
             return Err(Failure::new(
                 ErrorCode::NotReady,
-                "playlist continuation needs a successful full library refresh",
+                "library continuation needs a successful full library refresh",
             ));
         }
         // Persist admission before network I/O: interrupted processes retain
         // their unfinished work and cannot restart the retry clock at zero.
-        let mut reserved = checkpoint.reserve(now);
+        let mut reserved = if album_pass {
+            checkpoint.reserve_albums(now)
+        } else {
+            checkpoint.reserve(now)
+        };
         write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
-        let read = self.read(owner.clone());
+        let read = self.read(pass);
         let (result, retry_after) = match read {
             Ok((result, seconds)) => (result.map_err(failure), seconds),
             Err(error) => (Err(error), 0),
@@ -267,33 +392,9 @@ impl LibrarySync {
         let at = self.now();
         reserved.cooldown(at, retry_after);
         match result {
-            Ok(read) => {
-                let mut next = checkpoint.completed(&read.playlists, at, owner.is_some());
-                next.cooldown(at, retry_after);
-                let mut synced = if owner.is_some() {
-                    continued_result(
-                        before.ok_or_else(|| {
-                            Failure::new(
-                                ErrorCode::NotReady,
-                                "the full library refresh disappeared",
-                            )
-                        })?,
-                        &read,
-                        at,
-                    )
-                } else {
-                    let mut synced = full_result(&read, at);
-                    synced.genre_stalled = stalled(before.as_ref(), &synced);
-                    synced
-                };
-                if next.owner.is_some() {
-                    synced.notes.push(next.note());
-                }
-                if !read.playlists.requires_refresh {
-                    self.fresh.store(true, Ordering::Release);
-                }
-                write(&self.data_dir, Some(&synced), &next).map_err(store_failure)?;
-                Ok(synced)
+            Ok(mut read) => {
+                read.albums.retry_after_secs = read.albums.retry_after_secs.max(retry_after);
+                self.accepted(before, &checkpoint, &read, full, album_pass, at)
             }
             Err(error) => {
                 write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
@@ -301,7 +402,66 @@ impl LibrarySync {
             }
         }
     }
+
+    /// Publish one accepted read to the scheduler and notify active DJ feeds.
+    /// Shared by full reads and both continuation paths.
+    fn accepted(
+        &self,
+        before: Option<SyncedDto>,
+        checkpoint: &Checkpoint,
+        read: &LibrarySyncDetailed,
+        full: bool,
+        album_pass: bool,
+        at: i64,
+    ) -> Result<SyncedDto, Failure> {
+        let mut next = if album_pass {
+            checkpoint.clone()
+        } else {
+            checkpoint.completed(&read.playlists, at, !full)
+        };
+        next.observed_albums(&read.albums, at, !album_pass);
+        next.album_turn = !album_pass;
+        next.cooldown(at, read.albums.retry_after_secs);
+        let mut synced = if full {
+            let mut synced = full_result(read, at);
+            synced.genre_stalled = stalled(before.as_ref(), &synced);
+            synced
+        } else {
+            let before = before.ok_or_else(|| {
+                Failure::new(ErrorCode::NotReady, "the full library refresh disappeared")
+            })?;
+            if album_pass {
+                continued_result_with_note(before, read, at, ALBUM_NOTE)
+            } else {
+                continued_result(before, read, at)
+            }
+        };
+        if !album_pass {
+            synced.notes.retain(|note| !note.starts_with(ALBUM_NOTE));
+        }
+        synced.notes.extend(next.album_note());
+        if next.owner.is_some() && !album_pass {
+            synced.notes.push(next.note());
+        }
+        // A partial page cannot yet complete a work. A finished album
+        // publishes the same pool-refresh signal as a full sync.
+        let completed_since_checkpoint = checkpoint.albums.as_ref().is_some_and(|old| {
+            old.owner == read.albums.owner
+                && old.generation == read.albums.generation
+                && read.albums.pending < old.pending
+        });
+        if !next.requires_refresh
+            && (!album_pass || read.albums.completed > 0 || completed_since_checkpoint)
+        {
+            self.fresh.store(true, Ordering::Release);
+        }
+        write(&self.data_dir, Some(&synced), &next).map_err(store_failure)?;
+        Ok(synced)
+    }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod album_tests;

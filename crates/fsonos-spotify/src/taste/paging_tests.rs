@@ -263,6 +263,8 @@ mod playlist_progress;
 
 #[path = "account_ownership_tests.rs"]
 mod account_ownership;
+#[path = "album_continuation_tests.rs"]
+mod album_continuation;
 #[path = "playlist_continuation_tests.rs"]
 mod playlist_continuation;
 

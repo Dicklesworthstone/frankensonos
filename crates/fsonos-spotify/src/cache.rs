@@ -33,8 +33,10 @@ use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, sp
 use crate::session::Session;
 use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_taste_for_owner};
 
+mod albums;
 mod playlists;
 use crate::works::{Work, group_works};
+pub use albums::{ALBUM_PAGE_BUDGET, AlbumContinuation, continue_albums};
 pub use playlists::continue_playlists;
 
 /// What one sync did.
@@ -58,6 +60,8 @@ pub struct LibrarySyncDetailed {
     pub genres: GenreRead,
     /// Unfinished owner-scoped playlist work and the server's remaining cooldown.
     pub playlists: PlaylistContinuation,
+    /// Missing whole-work album lists for a separate bounded continuation.
+    pub albums: AlbumContinuation,
     /// What the best-effort reads couldn't read this time, a sentence each
     /// ([`sync_notes`]); empty when they read everything.
     pub notes: Vec<String>,
@@ -161,12 +165,15 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     let works = group_works(pool_from_store(store)?.tracks());
     let albums = complete_library_works(session, cx, store, works, now).await;
     let notes = sync_notes(&read, &genres, &albums);
+    let mut completion = albums::status(store, &receipt, now)?;
+    completion.completed = albums.fetched;
     let mut playlists = read.continuation;
     playlists.retry_after_secs = session.retry_after_secs();
     Ok(LibrarySyncDetailed {
         library: report,
         genres,
         playlists,
+        albums: completion,
         notes,
     })
 }

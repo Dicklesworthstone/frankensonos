@@ -67,12 +67,15 @@ pub async fn continue_playlists<S: Store + ?Sized>(
     let mut items = candidate_items(store)?;
     let mut library = summarize(&items);
     let mut albums = Expansion::default();
-    if let Some(receipt) = receipt.filter(|_| !read.continuation.requires_refresh) {
+    if let Some(receipt) = receipt
+        .as_ref()
+        .filter(|_| !read.continuation.requires_refresh)
+    {
         let incoming = incoming_items(store, &taste)?;
         items.extend(incoming);
-        if let Some(applied) = publish_library_read(store, &receipt, &items, &taste)? {
+        if let Some(applied) = publish_library_read(store, receipt, &items, &taste)? {
             library = applied;
-            acknowledge_playlists(store, &receipt, &taste, &mut read.continuation)?;
+            acknowledge_playlists(store, receipt, &taste, &mut read.continuation)?;
             // Complete only works touched by this pass, including movements
             // cached from an earlier window, within the usual read bounds.
             let observed: HashSet<&str> = taste
@@ -103,17 +106,23 @@ pub async fn continue_playlists<S: Store + ?Sized>(
     }
     let genres = GenreRead::default();
     let notes = sync_notes(&read, &genres, &albums);
+    let mut completion = match receipt {
+        Some(receipt) => super::albums::status(store, &receipt, now)?,
+        None => super::AlbumContinuation::refresh_required(),
+    };
+    completion.completed = albums.fetched;
     let mut playlists = read.continuation;
     playlists.retry_after_secs = session.retry_after_secs();
     Ok(LibrarySyncDetailed {
         library,
         genres,
         playlists,
+        albums: completion,
         notes,
     })
 }
 
-fn candidate_items<S: Store + ?Sized>(
+pub(super) fn candidate_items<S: Store + ?Sized>(
     store: &S,
 ) -> Result<Vec<crate::library::LibraryItem>, SpotifyError> {
     Ok(store
@@ -124,7 +133,7 @@ fn candidate_items<S: Store + ?Sized>(
         .collect())
 }
 
-fn summarize(items: &[crate::library::LibraryItem]) -> LibrarySync {
+pub(super) fn summarize(items: &[crate::library::LibraryItem]) -> LibrarySync {
     let pool = CandidatePool::build(items);
     let candidates = pool.tracks().iter().filter(|track| !track.explicit);
     LibrarySync {

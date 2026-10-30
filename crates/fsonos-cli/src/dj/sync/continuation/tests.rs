@@ -98,6 +98,7 @@ fn successful_continuation_updates_the_pool_without_postponing_daily_full_refres
         },
         genres: GenreRead::default(),
         playlists: pending(0, 105),
+        albums: AlbumContinuation::default(),
         notes: Vec::new(),
     };
     let latest = continued_result(full(at), &read, at + day - 60);
