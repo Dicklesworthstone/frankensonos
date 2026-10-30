@@ -291,19 +291,66 @@ impl Fader {
     ) -> Result<Vec<PlayerId>, CoreError> {
         let _running = self.running();
         let timing = Timing::new(over, self.interval);
-        // Claim before any state read: a newer intent during a slow read wins.
         let claimed: Vec<_> = targets
             .iter()
-            .map(|(player, _)| self.supersede(player))
+            .map(|(player, _)| (player.clone(), self.supersede(player)))
             .collect();
+        self.fade_each_timed(t, households, targets, &claimed, timing)
+    }
+
+    /// Continue intents reserved before a scene's grouping, silence and source
+    /// preparation. A newer level during those steps must not be reclaimed
+    /// merely because the ramp itself starts later.
+    pub(crate) fn fade_each_claimed<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        targets: &[(PlayerId, u8)],
+        claimed: &[(PlayerId, u64)],
+        over: Duration,
+    ) -> Result<Vec<PlayerId>, CoreError> {
+        let _running = self.running();
+        self.fade_each_timed(
+            t,
+            households,
+            targets,
+            claimed,
+            Timing::new(over, self.interval),
+        )
+    }
+
+    fn fade_each_timed<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        targets: &[(PlayerId, u8)],
+        claimed: &[(PlayerId, u64)],
+        timing: Timing,
+    ) -> Result<Vec<PlayerId>, CoreError> {
         let mut lanes = Vec::with_capacity(targets.len());
-        for ((player, to), intent) in targets.iter().zip(claimed) {
+        let mut left: Vec<PlayerId> = Vec::new();
+        for (player, to) in targets {
+            let intent = claimed
+                .iter()
+                .find_map(|(p, intent)| (p == player).then_some(*intent))
+                .ok_or_else(|| {
+                    ProtoError::Malformed(format!("no volume intent was reserved for {}", player.0))
+                })?;
+            if self.current(player) != intent {
+                left.push(player.clone());
+                continue;
+            }
             let host = ip(households, player)?;
-            let from = soap::get_volume(t, host)?;
+            let read = soap::get_volume(t, host);
+            // A superseded room no longer needs a state read to succeed.
+            if self.current(player) != intent {
+                left.push(player.clone());
+                continue;
+            }
+            let from = read?;
             lanes.push((player, host, intent, from, *to, from));
         }
-        let mut left: Vec<PlayerId> = Vec::new();
-        while left.len() < lanes.len() {
+        loop {
             let mut complete = true;
             for (player, host, intent, from, to, last) in &mut lanes {
                 if left.contains(player) {
