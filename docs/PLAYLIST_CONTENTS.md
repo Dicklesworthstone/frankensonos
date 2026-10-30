@@ -133,8 +133,14 @@ the 10,000-entry or 16 MiB limit. A changed directory version makes that playlis
 eligible again. When the directory omits a version, completed and capped
 observations wait for the next full refresh; unfinished windows still use
 their normal preflight version check. Newly accepted music enters the shared
-library cache and the DJ uses it on future picks. Continuation adds evidence;
-retiring unrelated library or taste music remains a full-sync operation.
+library cache and the DJ uses it on future picks. Newly observed classical
+movements also complete their works from the same recording's album track
+list before the DJ pool is refreshed, including movements found on later
+playlist pages. This uses the existing album cache, missing-album backoff and
+rate-limit handling; unrelated works do not trigger album reads. Failed album
+enrichment retains the accepted playlist music and reports the missing work
+in sync notes. Continuation adds evidence; retiring unrelated library or taste
+music remains a full-sync operation.
 
 Readiness, admission and retry deadlines survive daemon restarts in the local
 sync stamp. A pass that accepts no new source positions and finishes no

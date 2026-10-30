@@ -32,7 +32,7 @@ use crate::session::Session;
 use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_taste};
 
 mod playlists;
-use crate::works::group_works;
+use crate::works::{Work, group_works};
 pub use playlists::continue_playlists;
 
 /// What one sync did.
@@ -137,12 +137,32 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     crate::genre_guess::fill(&mut items);
     let report = apply_library_read(store, &items)?;
     acknowledge_playlists(store, &taste, &mut read.continuation)?;
-    // Read and cache the album track lists that complete partly-held works
-    // (a liked Adagietto), so the DJ plays them whole from the cache. Best
-    // effort, like the reads above: a halted run resumes next sync.
-    // An album that couldn't be had waits out its week across syncs and
-    // restarts; a store that can't say which just asks again.
     let works = group_works(pool_from_store(store)?.tracks());
+    let albums = complete_library_works(session, cx, store, works, now).await;
+    let notes = sync_notes(&read, &genres, &albums);
+    let mut playlists = read.continuation;
+    playlists.retry_after_secs = session.retry_after_secs();
+    Ok(LibrarySyncDetailed {
+        library: report,
+        genres,
+        playlists,
+        notes,
+    })
+}
+
+/// Both full sync and playlist continuation prepare the album cache before
+/// the daemon publishes a fresh DJ pool. Completion remains best effort:
+/// missing albums retain their week-long backoff and an outage halts reads.
+async fn complete_library_works<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    works: Vec<Work>,
+    now: i64,
+) -> Expansion {
+    if works.is_empty() {
+        return Expansion::default();
+    }
     let mut misses = AlbumMisses::load(&*store, now).unwrap_or_default();
     let (_, albums) = complete_works(
         session,
@@ -155,15 +175,7 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     )
     .await;
     let _ = misses.save(store, now);
-    let notes = sync_notes(&read, &genres, &albums);
-    let mut playlists = read.continuation;
-    playlists.retry_after_secs = session.retry_after_secs();
-    Ok(LibrarySyncDetailed {
-        library: report,
-        genres,
-        playlists,
-        notes,
-    })
+    albums
 }
 
 fn acknowledge_playlists<S: Store + ?Sized>(

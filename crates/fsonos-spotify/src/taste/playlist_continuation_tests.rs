@@ -1,7 +1,9 @@
 //! Playlist-only continuation through real HTTP and reopened SQLite caches.
 
 use super::*;
-use crate::cache::{LibrarySyncDetailed, continue_playlists, sync_library_detailed};
+use crate::cache::{
+    LibrarySyncDetailed, continue_playlists, sync_library_detailed, works_from_store,
+};
 use fsonos_core::store::{CachedPlaylist, MAX_PLAYLIST_ENTRIES, SqliteStore};
 
 const OWNER: &str = "test-owner";
@@ -359,4 +361,174 @@ fn proved_terminal_checkpoints_recover_failed_cache_projection_without_rereading
             assert_eq!(contents(&restarted), observed);
         }
     });
+}
+
+const WORK_ALBUM: &str = "spotify:album:LatePlaylistSuite";
+const WORK_TRACK: &str = "spotify:track:LateMovement2";
+const WORK_ROUTE: &str = "/v1/albums/LatePlaylistSuite/tracks";
+
+fn movement(number: u32) -> Value {
+    let name = match number {
+        1 => "I. Allegro",
+        2 => "II. Adagio",
+        _ => "III. Presto",
+    };
+    json!({
+        "id": format!("LateMovement{number}"),
+        "uri": format!("spotify:track:LateMovement{number}"),
+        "name": format!("Piano Sonata No. 14 in C-Sharp Minor, Op. 27 No. 2: {name}"),
+        "artists": [{ "name": "Ludwig van Beethoven" }, { "name": "Test pianist" }],
+        "album": {
+            "name": "Test sonata recording", "uri": WORK_ALBUM,
+            "artists": [{ "name": "Ludwig van Beethoven" }]
+        },
+        "duration_ms": 180_000, "is_playable": true,
+        "disc_number": 1, "track_number": number
+    })
+}
+
+fn late_work(server: &Server) {
+    populate(server, "classical-snapshot", 151, 0);
+    server.set(
+        &format!("/v1/playlists/{ID}/items?offset=150"),
+        json!({ "items": [{ "item": movement(2) }], "offset": 150, "total": 151,
+            "next": null }),
+    );
+    server.set(
+        WORK_ROUTE,
+        json!({ "items": (1..=3).map(movement).collect::<Vec<_>>(),
+            "offset": 0, "total": 3, "next": null }),
+    );
+}
+
+#[test]
+fn a_late_playlist_movement_reaches_the_dj_as_a_whole_work_after_restart() {
+    let server = Server::new();
+    late_work(&server);
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let file = server.data.join("playlist-works.db");
+        let mut store = SqliteStore::open(&file).unwrap();
+        let first = full(&server, &cx, &mut store).await;
+        assert_eq!(first.playlists.pending, 1);
+        assert!(server.calls(WORK_ROUTE).is_empty());
+        assert!(
+            works_from_store(&store)
+                .unwrap()
+                .work_of(WORK_TRACK)
+                .is_none()
+        );
+        store.close().unwrap();
+
+        let before = server.calls("/v1/").len();
+        let mut store = SqliteStore::open(&file).unwrap();
+        let continued = pending(&server, &cx, &mut store).await;
+        assert_eq!(continued.playlists.pending, 0);
+        assert_eq!(continued.library.tracks, 151);
+        assert_eq!(server.calls(WORK_ROUTE).len(), 1);
+        assert!(contents(&store).complete);
+        assert_eq!(
+            contents(&store).tracks.last().unwrap().source_uri,
+            WORK_TRACK
+        );
+        store.close().unwrap();
+
+        // This is the same cache-only pool construction used by the daemon.
+        let mut store = SqliteStore::open(&file).unwrap();
+        let pool = works_from_store(&store).unwrap();
+        let work = pool.work_of(WORK_TRACK).unwrap();
+        let uris: Vec<_> = work
+            .movements
+            .iter()
+            .map(|movement| movement.track.source_uri.as_str())
+            .collect();
+        assert_eq!(
+            uris,
+            [
+                "spotify:track:LateMovement1",
+                WORK_TRACK,
+                "spotify:track:LateMovement3"
+            ]
+        );
+        assert_eq!(work.completeness, crate::works::Completeness::Complete);
+        assert_eq!(
+            work.movements.iter().filter(|track| track.expanded).count(),
+            2
+        );
+        assert_eq!(
+            store
+                .album_tracks(WORK_ALBUM)
+                .unwrap()
+                .unwrap()
+                .tracks
+                .len(),
+            3
+        );
+        assert_eq!(
+            store.library().unwrap().len(),
+            151,
+            "expanded movements are not invented library saves"
+        );
+        assert!(
+            server.calls("/v1/")[before..].iter().all(|call| {
+                matches!(path(call), "/v1/me" | "/v1/me/playlists" | WORK_ROUTE)
+                    || path(call).starts_with("/v1/playlists/")
+            }),
+            "continuation reads only its playlists and the newly discovered work's album"
+        );
+        let reads = server.calls("/v1/").len();
+        pending(&server, &cx, &mut store).await;
+        assert!(
+            server.calls("/v1/")[reads..]
+                .iter()
+                .all(|call| { matches!(path(call), "/v1/me" | "/v1/me/playlists") }),
+            "completed intake does not repeat album or item requests"
+        );
+        store.close().unwrap();
+    });
+}
+
+#[test]
+fn a_failed_late_album_keeps_accepted_playlist_music_and_reports_the_missing_work() {
+    for status in [404, 429] {
+        let server = Server::new();
+        late_work(&server);
+        server
+            .state
+            .lock()
+            .unwrap()
+            .refused
+            .insert(WORK_ROUTE.into(), status);
+        runtime().block_on(async {
+            let cx = Cx::current().unwrap();
+            let mut store = MemStore::default();
+            full(&server, &cx, &mut store).await;
+            let continued = pending(&server, &cx, &mut store).await;
+            assert_eq!(continued.playlists.pending, 0);
+            assert_eq!(continued.library.tracks, 151);
+            assert!(contents(&store).complete);
+            let pool = works_from_store(&store).unwrap();
+            assert_eq!(pool.work_of(WORK_TRACK).unwrap().movements.len(), 1);
+            assert!(store.album_tracks(WORK_ALBUM).unwrap().is_none());
+            assert_eq!(server.calls(WORK_ROUTE).len(), 1);
+            if status == 404 {
+                assert!(
+                    continued
+                        .notes
+                        .iter()
+                        .any(|note| note.contains("1 album couldn't be read"))
+                );
+                assert_eq!(store.album_misses().unwrap().len(), 1);
+            } else {
+                assert!(
+                    continued
+                        .notes
+                        .iter()
+                        .any(|note| note.contains("album read stopped early"))
+                );
+                assert!(continued.playlists.retry_after_secs > 0);
+                assert!(store.album_misses().unwrap().is_empty());
+            }
+        });
+    }
 }
