@@ -1,6 +1,7 @@
 //! Bounded admission of one newly launched player, before acoustic capture.
 
 use std::io;
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
@@ -65,7 +66,7 @@ impl Client {
             let socket = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
             let remaining = budget.deadline.saturating_duration_since(Instant::now());
             match socket.connect_timeout(&address, remaining.min(POLL)) {
-                Ok(()) => break socket.into(),
+                Ok(()) => break UnixStream::from(OwnedFd::from(socket)),
                 Err(error)
                     if matches!(
                         error.kind(),
