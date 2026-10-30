@@ -13,7 +13,7 @@ use clap::Args;
 use fsonos_api::PlayRequest;
 use fsonos_core::snapshot::{self, ZoneSnapshot};
 use std::net::{SocketAddr, TcpListener};
-use std::process::{Child, Command as Process, Stdio};
+use std::process::{Child, Command as Process};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,6 +24,7 @@ use crate::direct::Direct;
 mod application;
 mod broadcast;
 mod calibration;
+mod encoder;
 mod latency;
 mod recovery;
 #[cfg(unix)]
@@ -98,18 +99,12 @@ fn encoder_args(args: &StreamArgs) -> Vec<String> {
 }
 
 fn launch_encoder(args: &StreamArgs) -> anyhow::Result<Child> {
-    Process::new(&args.ffmpeg)
-        .args(encoder_args(args))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "start {} (install FFmpeg and an MP3 encoder, or pass --ffmpeg)",
-                args.ffmpeg
-            )
-        })
+    encoder::spawn(Process::new(&args.ffmpeg).args(encoder_args(args))).with_context(|| {
+        format!(
+            "start {} (install FFmpeg and an MP3 encoder, or pass --ffmpeg)",
+            args.ffmpeg
+        )
+    })
 }
 
 /// Address the captured coordinator by identity, not a possibly renamed room.
