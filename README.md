@@ -226,8 +226,16 @@ The daemon is the only thing that leaves your LAN, and only onto your tailnet:
 fsonos serve            # API on loopback + every tailnet address, MCP on loopback; prints the URLs
 fsonos tailscale setup  # Serve: https://<mac>.<tailnet>.ts.net/ (API), :8443/mcp (MCP)
 FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos --json events  # live changes anywhere on the tailnet
+FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos doctor --only lan  # diagnose the daemon's LAN
 fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon answering, Serve in front
 ```
+
+`fsonos doctor --daemon` and `fsonos --daemon-url <url> doctor` run the checks
+on the selected daemon, including its LAN, Spotify account, store and listener
+settings. `--only <prefix>` filters the report and its exit status: 0 for passes,
+6 for warnings, 7 for failures. Text and `--json` have the same shape as local
+diagnosis. An unavailable or refusing daemon returns an error; an ordinary
+`fsonos doctor` or an explicit `--direct` diagnoses the local host.
 
 `fsonos events` follows a daemon URL over HTTP or certificate-validated HTTPS,
 using the same event journal as the local stream. `--since <id>` resumes after

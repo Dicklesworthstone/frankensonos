@@ -26,7 +26,9 @@
 //! favorites, and `fsonos dj start|skip|stop|steer` reach the DJ that keeps
 //! the group's queue going. Scenes, schedules and `fsonos policy show` read
 //! and change the daemon's, so they reach its store from another machine too.
-//! Commands with no route here (doctor, `policy check`, ...) run directly.
+//! `fsonos doctor` uses the daemon when --daemon or --daemon-url is explicit;
+//! otherwise it diagnoses the local host. Commands with no route here
+//! (`policy check`, ...) run directly.
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
