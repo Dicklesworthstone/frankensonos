@@ -1290,6 +1290,13 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
     ) -> Result<OutcomeDto, Failure> {
+        // Admission has resolved and authorized this command. Its newer
+        // intent wins over announcement continuation even if speaker I/O fails.
+        if let Some(sleep) = &self.sleep {
+            for coordinator in affected(households, command) {
+                sleep.playback_changing(&coordinator);
+            }
+        }
         let held = self.dj_hold(households, command);
         let result = self.execute(households, guard, command);
         if result.is_ok() {

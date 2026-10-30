@@ -26,7 +26,7 @@ use fsonos_core::schedule::{
     self as core_schedule, DEFAULT_GRACE, Schedule, ScheduleAction, ScheduleError, ScheduleSpec,
     Tick,
 };
-use fsonos_core::sleep::{BACKSTOP, FADE, SleepTimer, SleepTimers};
+use fsonos_core::sleep::{BACKSTOP, FADE, SleepResume, SleepTimer, SleepTimers};
 use fsonos_core::{CoreError, HouseholdState};
 use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
@@ -50,6 +50,8 @@ mod dispatch;
 mod recovery;
 mod sleep_dispatch;
 
+#[cfg(test)]
+mod announcement_tests;
 #[cfg(test)]
 mod direction_tests;
 #[cfg(test)]
@@ -708,6 +710,17 @@ impl Sleep {
         // Record the interruption before waiting out a Pause already in flight.
         // Even a failed Pause must then retire the sleep timer's own backstop.
         let interrupted = self.timers.interrupt(&self.fader, coordinator);
+        self.stop_room_fades(households, coordinator);
+        interrupted
+    }
+
+    /// Accepted playback and grouping changes retire only an announcement's
+    /// conditional continuation. A regular armed sleep timer keeps its intent.
+    pub(super) fn playback_changing(&self, coordinator: &PlayerId) {
+        self.timers.supersede_announcement(coordinator);
+    }
+
+    fn stop_room_fades(&self, households: &[HouseholdState], coordinator: &PlayerId) {
         self.fader.supersede(coordinator);
         for household in households {
             for room in household
@@ -718,7 +731,6 @@ impl Sleep {
                 self.fader.supersede(&room.primary);
             }
         }
-        interrupted
     }
 }
 
@@ -894,51 +906,47 @@ impl Surface {
         }
     }
 
-    /// [`Self::volumes_changing`] for an announcement, which puts the music
-    /// back when it is done: answers the groups whose sleep timer was fading,
-    /// for [`Self::sleep_again`] once the music is back.
-    pub(super) fn announcing(
-        &self,
-        households: &[HouseholdState],
-        players: &[PlayerId],
-    ) -> Vec<PlayerId> {
-        let Some(sleep) = &self.sleep else {
-            return Vec::new();
-        };
-        let mut sleeping = Vec::new();
-        for group in groups_of(households, players) {
-            if sleep.timers.get(&group).is_some_and(|t| t.fading) {
-                sleeping.push(group.clone());
-            }
-            sleep.volume_changed(households, &group);
-        }
-        sleeping
+    /// Interrupt the sleep of the fresh room observed after taking the
+    /// household's announcement turn. Its coordinator may have changed while
+    /// the request waited; the API's initial topology cannot choose its timer.
+    pub(super) fn announcing(&self, room: &fsonos_core::Room) -> Option<SleepResume> {
+        let sleep = self.sleep.as_ref()?;
+        let receipt = sleep
+            .timers
+            .interrupt_for_announcement(&sleep.fader, &room.coordinator);
+        // The timer's claims stop every room in its fade. An independent ramp
+        // on this target must also end before its announcement level is set.
+        sleep.fader.supersede(&room.primary);
+        receipt
     }
 
-    /// After an announcement ended their sleep timers' fades (see
-    /// [`Self::announcing`]): each of `groups` sleeps again, fading over the
-    /// usual time from the level the music came back at, then pausing.
-    pub(super) fn sleep_again(&self, households: &[HouseholdState], groups: &[PlayerId]) {
+    /// Resume only interrupted sleeps whose announcement still owns recovery.
+    /// Callers pass receipts only for groups whose music and levels were
+    /// restored; an external override must not acquire a fresh timer.
+    pub(super) fn sleep_again(&self, households: &[HouseholdState], receipts: &[SleepResume]) {
         let Some(sleep) = &self.sleep else {
             return;
         };
-        if groups.is_empty() {
+        if receipts.is_empty() {
             return;
         }
         let now = self.clock.now().to_utc();
         let t = &*self.transport;
-        let mut set: Vec<&PlayerId> = Vec::new();
-        for group in groups {
-            if set.contains(&group) {
-                continue;
-            }
-            set.push(group);
-            let _ = recovery::supersede(sleep, group);
-            if let Err(e) = sleep
+        for receipt in receipts {
+            match sleep
                 .timers
-                .start(t, households, &sleep.fader, group, FADE, now)
+                .resume_after_announcement(t, households, &sleep.fader, receipt, now)
             {
-                tracing::warn!("sleep timer in {}'s group not set again: {e}", group.0);
+                Ok(Some(_)) => {
+                    let _ = recovery::supersede(sleep, receipt.coordinator());
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "sleep timer in {}'s group not set again: {e}",
+                        receipt.coordinator().0
+                    );
+                }
             }
         }
         sleep.save();
@@ -2027,8 +2035,15 @@ mod tests {
         assert_eq!(sleep.timers.due(now + TimeDelta::minutes(10)).len(), 1);
         // An announcement comes to the Patio while its timer fades: the fade
         // ends where it is, and the group is named to sleep again.
-        let sleeping = s.announcing(&houses, &[patio.clone(), patio.clone()]);
-        assert_eq!(sleeping, std::slice::from_ref(&patio));
+        let room = houses
+            .iter()
+            .flat_map(|house| &house.rooms)
+            .find(|room| room.primary == patio)
+            .unwrap();
+        let sleeping: Vec<_> = s.announcing(room).into_iter().collect();
+        assert!(s.announcing(room).is_none());
+        assert_eq!(sleeping.len(), 1);
+        assert_eq!(sleeping[0].coordinator(), &patio);
         // Once the music is back it sleeps again, a fade's length from now.
         s.sleep_again(&houses, &sleeping);
         let timer = sleep.timers.get(&patio).expect("a timer again");

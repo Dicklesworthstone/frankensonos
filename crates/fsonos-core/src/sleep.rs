@@ -28,8 +28,10 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+mod announcement;
 mod dispatch;
 mod ownership;
+pub use announcement::SleepResume;
 pub use dispatch::SleepRun;
 use ownership::{Claims, Operations, Run};
 
@@ -93,6 +95,7 @@ struct Armed {
 pub struct SleepTimers {
     armed: Mutex<HashMap<PlayerId, Armed>>,
     operations: Operations,
+    resumes: announcement::Resumes,
     next_generation: Mutex<u64>,
     fade: Duration,
 }
@@ -127,6 +130,7 @@ impl SleepTimers {
         Self {
             armed: Mutex::new(HashMap::new()),
             operations: Operations::default(),
+            resumes: announcement::Resumes::default(),
             next_generation: Mutex::new(0),
             fade,
         }
@@ -192,18 +196,22 @@ impl SleepTimers {
             fading: false,
         };
         let generation = self.generation();
-        let old = self.lock().insert(
-            coordinator.clone(),
-            Armed {
-                timer: timer.clone(),
-                generation,
-                running: false,
-                fade_claims: None,
-                predecessors,
-                fade_deadline: None,
-                interrupted: false,
-            },
-        );
+        let old = {
+            let mut armed = self.lock();
+            self.resumes.supersede(coordinator);
+            armed.insert(
+                coordinator.clone(),
+                Armed {
+                    timer: timer.clone(),
+                    generation,
+                    running: false,
+                    fade_claims: None,
+                    predecessors,
+                    fade_deadline: None,
+                    interrupted: false,
+                },
+            )
+        };
         if let Some(old) = old {
             Self::stop_fade(&old, fader);
         }
@@ -227,6 +235,7 @@ impl SleepTimers {
         let generation = self.generation();
         let (timer, claims) = {
             let mut armed = self.lock();
+            self.resumes.supersede(coordinator);
             let Some(entry) = armed.get_mut(coordinator) else {
                 return Ok(None);
             };
@@ -258,7 +267,12 @@ impl SleepTimers {
     ) -> Result<bool, CoreError> {
         let operation = self.operations.get(coordinator);
         let _operation = operation.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(old) = self.lock().remove(coordinator) else {
+        let old = {
+            let mut armed = self.lock();
+            self.resumes.supersede(coordinator);
+            armed.remove(coordinator)
+        };
+        let Some(old) = old else {
             return Ok(false);
         };
         Self::stop_fade(&old, fader);
@@ -292,6 +306,13 @@ impl SleepTimers {
         let second = self.operations.get(second);
         let mut first_active = first.lock().unwrap_or_else(PoisonError::into_inner);
         let mut second_active = second.lock().unwrap_or_else(PoisonError::into_inner);
+        {
+            let _armed = self.lock();
+            // A move also retires an announcement's recovery after its old
+            // worker has already removed the timer itself.
+            self.resumes.supersede(old);
+            self.resumes.supersede(new);
+        }
         // A fade in flight starts over in the new group, once the run the
         // move stopped has put the volumes back.
         let ends = match self.lock().get(old) {
@@ -312,6 +333,8 @@ impl SleepTimers {
         let generation = self.generation();
         let (claims, replaced) = {
             let mut armed = self.lock();
+            self.resumes.supersede(old);
+            self.resumes.supersede(new);
             let Some(mut entry) = armed.remove(old) else {
                 // Retired meanwhile: restore the target's own timer as it was.
                 let had = armed.get(new).map(|a| a.timer.ends);
@@ -351,6 +374,7 @@ impl SleepTimers {
     pub fn interrupt(&self, fader: &Fader, coordinator: &PlayerId) -> bool {
         let claims = {
             let mut armed = self.lock();
+            self.resumes.supersede(coordinator);
             let Some(a) = armed
                 .get_mut(coordinator)
                 .filter(|a| a.timer.fading || a.fade_deadline.is_some())
@@ -380,6 +404,7 @@ impl SleepTimers {
         if armed.contains_key(&timer.coordinator) {
             return false;
         }
+        self.resumes.supersede(&timer.coordinator);
         armed.insert(
             timer.coordinator.clone(),
             Armed {

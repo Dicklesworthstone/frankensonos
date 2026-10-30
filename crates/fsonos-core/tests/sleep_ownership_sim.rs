@@ -577,3 +577,255 @@ fn moving_a_timer_waits_for_both_replaced_runs_across_further_rearming() {
         );
     }
 }
+
+#[test]
+fn an_announcement_receipt_resumes_once_and_waits_for_its_retired_worker() {
+    for s2 in [false, true] {
+        let h = House::new(s2);
+        let timers = SleepTimers::with_fade(Duration::from_millis(20));
+        let fader = Fader::default();
+        h.arm(&timers, &fader);
+        let (mut gate, entered, release) = Gate::new(&h.lan, h.kitchen_host, "GetVolume", "");
+        gate.after_read = true;
+        let receipt = std::thread::scope(|scope| {
+            let old = scope.spawn(|| timers.run(&gate, &h.houses, &fader, &h.kitchen));
+            entered.recv_timeout(WAIT).unwrap();
+            let receipt = timers
+                .interrupt_for_announcement(&fader, &h.kitchen)
+                .unwrap();
+            assert!(
+                timers
+                    .interrupt_for_announcement(&fader, &h.kitchen)
+                    .is_none(),
+                "another room in the same group cannot issue another receipt"
+            );
+            assert!(
+                SleepTimers::new()
+                    .resume_after_announcement(&h.lan, &h.houses, &fader, &receipt, now())
+                    .unwrap()
+                    .is_none(),
+                "a receipt belongs only to the timers that issued it"
+            );
+            let resumed = timers
+                .resume_after_announcement(&h.lan, &h.houses, &fader, &receipt, now())
+                .unwrap()
+                .unwrap();
+            assert_eq!(resumed.ends, now() + chrono::TimeDelta::milliseconds(20));
+            assert!(
+                timers.due(now()).is_empty(),
+                "announcement recovery retains the previous worker's fence"
+            );
+            release.send(()).unwrap();
+            assert_eq!(old.join().unwrap().unwrap(), SleepOutcome::Cancelled);
+            receipt
+        });
+        let before = h.sim.soap_log().len();
+        assert!(
+            timers
+                .resume_after_announcement(&h.lan, &h.houses, &fader, &receipt, now())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            h.sim.soap_log().len(),
+            before,
+            "a consumed receipt performs no I/O"
+        );
+        assert_eq!(timers.due(now()).len(), 1);
+        assert_eq!(
+            timers.run(&h.lan, &h.houses, &fader, &h.kitchen).unwrap(),
+            SleepOutcome::Paused
+        );
+        assert_eq!(h.levels(), (30, 20));
+        assert_eq!(h.backstop(), None);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DuringAnnouncement {
+    Cancel,
+    Extend,
+    Replace,
+    Volume,
+    Move,
+    Adopt,
+}
+
+#[test]
+fn explicit_changes_retire_announcement_recovery_even_after_the_old_timer_is_gone() {
+    for s2 in [false, true] {
+        for retired in [false, true] {
+            for change in [
+                DuringAnnouncement::Cancel,
+                DuringAnnouncement::Extend,
+                DuringAnnouncement::Replace,
+                DuringAnnouncement::Volume,
+                DuringAnnouncement::Move,
+                DuringAnnouncement::Adopt,
+            ] {
+                if !retired && matches!(change, DuringAnnouncement::Adopt) {
+                    continue; // Adoption leaves an existing timer alone.
+                }
+                let mut h = House::new(s2);
+                let office = resolve_room(&h.houses, "Office").unwrap().player.id.clone();
+                if matches!(change, DuringAnnouncement::Move) {
+                    control::leave(&h.lan, &h.houses, &office).unwrap();
+                    h.houses[0]
+                        .apply_topology(&get_zone_group_state(&h.lan, h.kitchen_host).unwrap());
+                }
+                let timers = SleepTimers::new();
+                let fader = Fader::default();
+                h.arm(&timers, &fader);
+                let receipt = timers
+                    .interrupt_for_announcement(&fader, &h.kitchen)
+                    .unwrap();
+                if retired {
+                    assert_eq!(
+                        timers.run(&h.lan, &h.houses, &fader, &h.kitchen).unwrap(),
+                        SleepOutcome::Interrupted
+                    );
+                    assert!(timers.get(&h.kitchen).is_none());
+                }
+                match change {
+                    DuringAnnouncement::Cancel => {
+                        assert_eq!(
+                            timers
+                                .cancel(&h.lan, &h.houses, &fader, &h.kitchen)
+                                .unwrap(),
+                            !retired
+                        );
+                    }
+                    DuringAnnouncement::Extend => {
+                        assert_eq!(
+                            timers
+                                .extend(
+                                    &h.lan,
+                                    &h.houses,
+                                    &fader,
+                                    &h.kitchen,
+                                    Duration::from_mins(10),
+                                    now()
+                                )
+                                .unwrap()
+                                .is_some(),
+                            !retired
+                        );
+                    }
+                    DuringAnnouncement::Replace => {
+                        timers
+                            .start(
+                                &h.lan,
+                                &h.houses,
+                                &fader,
+                                &h.kitchen,
+                                Duration::from_mins(10),
+                                now(),
+                            )
+                            .unwrap();
+                    }
+                    DuringAnnouncement::Volume => {
+                        assert_eq!(timers.interrupt(&fader, &h.kitchen), !retired);
+                        fader.set_volume(&h.lan, &h.houses, &h.kitchen, 50).unwrap();
+                    }
+                    DuringAnnouncement::Move => {
+                        assert_eq!(
+                            timers
+                                .rekey(&h.lan, &h.houses, &fader, &h.kitchen, &office, now())
+                                .unwrap(),
+                            !retired
+                        );
+                    }
+                    DuringAnnouncement::Adopt => {
+                        assert!(timers.adopt(fsonos_core::sleep::SleepTimer {
+                            coordinator: h.kitchen.clone(),
+                            room: "Kitchen".into(),
+                            ends: now() + chrono::TimeDelta::minutes(10),
+                            fading: false,
+                        }));
+                    }
+                }
+                let timers_before = timers.all();
+                let backstop_before = h.backstop();
+                let calls_before = h.sim.soap_log().len();
+                assert!(
+                    timers
+                        .resume_after_announcement(&h.lan, &h.houses, &fader, &receipt, now())
+                        .unwrap()
+                        .is_none(),
+                    "{change:?}, retired={retired}, s2={s2}"
+                );
+                assert_eq!(timers.all(), timers_before);
+                assert_eq!(h.sim.soap_log().len(), calls_before);
+                assert_eq!(h.backstop(), backstop_before);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_manual_volume_change_during_announcement_rearming_clears_its_backstop() {
+    for s2 in [false, true] {
+        let h = House::new(s2);
+        let timers = SleepTimers::new();
+        let fader = Fader::default();
+        h.arm(&timers, &fader);
+        let receipt = timers
+            .interrupt_for_announcement(&fader, &h.kitchen)
+            .unwrap();
+        assert_eq!(
+            timers.run(&h.lan, &h.houses, &fader, &h.kitchen).unwrap(),
+            SleepOutcome::Interrupted
+        );
+        let (gate, entered, release) = Gate::new(&h.lan, h.kitchen_host, "ConfigureSleepTimer", "");
+        std::thread::scope(|scope| {
+            let resumed = scope.spawn(|| {
+                timers.resume_after_announcement(&gate, &h.houses, &fader, &receipt, now())
+            });
+            entered.recv_timeout(WAIT).unwrap();
+            assert!(!timers.interrupt(&fader, &h.kitchen));
+            fader.set_volume(&h.lan, &h.houses, &h.kitchen, 50).unwrap();
+            release.send(()).unwrap();
+            assert!(resumed.join().unwrap().unwrap().is_none());
+        });
+        assert!(timers.get(&h.kitchen).is_none());
+        assert_eq!(h.backstop(), None);
+        assert_eq!(h.levels(), (50, 20));
+        h.sim.clock().advance(Duration::from_mins(10));
+        assert_eq!(h.transport(), TransportState::Playing);
+    }
+}
+
+#[test]
+fn a_manual_change_before_dispatch_interrupts_the_resumed_announcement_fade() {
+    for s2 in [false, true] {
+        let h = House::new(s2);
+        let timers = SleepTimers::new();
+        let fader = Fader::default();
+        h.arm(&timers, &fader);
+        let receipt = timers
+            .interrupt_for_announcement(&fader, &h.kitchen)
+            .unwrap();
+        assert_eq!(
+            timers.run(&h.lan, &h.houses, &fader, &h.kitchen).unwrap(),
+            SleepOutcome::Interrupted
+        );
+        assert!(
+            timers
+                .resume_after_announcement(&h.lan, &h.houses, &fader, &receipt, now())
+                .unwrap()
+                .is_some()
+        );
+        assert!(!timers.get(&h.kitchen).unwrap().fading);
+        assert!(timers.interrupt(&fader, &h.kitchen));
+        fader.set_volume(&h.lan, &h.houses, &h.kitchen, 50).unwrap();
+        assert_eq!(timers.due(now()).len(), 1);
+        assert_eq!(
+            timers.run(&h.lan, &h.houses, &fader, &h.kitchen).unwrap(),
+            SleepOutcome::Interrupted
+        );
+        assert_eq!(h.levels(), (50, 20));
+        assert_eq!(h.backstop(), None);
+        h.sim.clock().advance(Duration::from_mins(10));
+        assert_eq!(h.transport(), TransportState::Playing);
+    }
+}

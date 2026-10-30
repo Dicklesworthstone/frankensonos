@@ -16,7 +16,8 @@ use fsonos_core::announce::clip::{
     Chime, ClipError, ClipSource, MAX_WAV_BYTES, MediaStore, wav_info,
 };
 use fsonos_core::announce::{
-    AnnounceReport, Announcer, Clip, DEFAULT_VOLUME, Ending, HouseholdAnnouncement,
+    AnnounceReport, AnnouncementCallbacks, Announcer, Clip, DEFAULT_VOLUME, Ending,
+    HouseholdAnnouncement,
 };
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::{ControlTarget, ResolveContext, resolve_targets};
@@ -343,29 +344,46 @@ impl Surface {
         // back (see `announcing`).
         let sleeping = std::sync::Mutex::new(Vec::new());
         let cap = |room: &Room| {
-            for target in targets.iter().filter(|t| t.room.primary == room.primary) {
-                let ended = self.announcing(&households, std::slice::from_ref(&target.player.id));
+            if let Some(receipt) = self.announcing(room) {
                 sleeping
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .extend(ended);
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(receipt);
             }
             policy.max_volume(&room.name, client, now)
         };
+        let completed = |household: &HouseholdState, report: &HouseholdAnnouncement| {
+            // Each household completes while its announcement turn is still
+            // held. No later clip can start before its sleep recovery finishes.
+            let finished = {
+                let mut pending = sleeping.lock().unwrap_or_else(PoisonError::into_inner);
+                let (finished, remaining): (Vec<_>, Vec<_>) = pending
+                    .drain(..)
+                    .partition(|receipt| household.player(receipt.coordinator()).is_some());
+                *pending = remaining;
+                finished
+            };
+            let restored: Vec<_> = finished
+                .into_iter()
+                .filter(|receipt| restored_for_sleep(report, receipt.coordinator()))
+                .collect();
+            self.sleep_again(&households, &restored);
+        };
         let live = self.live();
-        let announced = with.announcer.announce_with_live(
-            &*self.transport,
-            &targets,
-            &clip,
-            volume,
-            &cap,
-            live.as_deref(),
-        );
-        let sleeping = sleeping
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.sleep_again(&households, &sleeping);
-        let report = announced.map_err(|e| Failure::invalid(e.to_string()))?;
+        let report = with
+            .announcer
+            .announce_with_callbacks(
+                &*self.transport,
+                &targets,
+                &clip,
+                volume,
+                live.as_deref(),
+                &AnnouncementCallbacks {
+                    cap: &cap,
+                    completed: &completed,
+                },
+            )
+            .map_err(|e| Failure::invalid(e.to_string()))?;
 
         let dto = AnnounceDto::from_report(&households, &report);
         let clamped: Vec<String> = dto
@@ -386,6 +404,17 @@ impl Surface {
         self.record(client, intent, decision, dto.done.clone(), None);
         Ok(dto)
     }
+}
+
+/// Only a fully restored original zone retains permission to resume its
+/// interrupted sleep. No report, failed recovery or a preserved manual change
+/// is evidence that the old timer should remain ended.
+fn restored_for_sleep(report: &HouseholdAnnouncement, coordinator: &PlayerId) -> bool {
+    report.restore_failed.is_empty()
+        && report
+            .restored
+            .iter()
+            .any(|(restored, result)| restored == coordinator && result.skipped.is_empty())
 }
 
 /// The rooms `names` resolve to (every room when there are none), each
