@@ -225,8 +225,17 @@ The daemon is the only thing that leaves your LAN, and only onto your tailnet:
 ```bash
 fsonos serve            # API on loopback + every tailnet address, MCP on loopback; prints the URLs
 fsonos tailscale setup  # Serve: https://<mac>.<tailnet>.ts.net/ (API), :8443/mcp (MCP)
+FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos --json events  # live changes anywhere on the tailnet
 fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon answering, Serve in front
 ```
+
+`fsonos events` follows a daemon URL over HTTP or certificate-validated HTTPS,
+using the same event journal as the local stream. `--since <id>` resumes after
+a previously printed event; `--count N` stops after N lines. Temporary read
+failures retry three times with backoff and retain the cursor. When the daemon
+reports lost journal history, an `events.reset` line comes before the available
+events, so consumers know to reread current state. Ctrl-C stops a
+waiting follower promptly.
 
 - `fsonos tailscale setup` maps HTTPS on 443 (API) and 8443 (MCP) to the
   daemon's loopback ports, refuses to run while Funnel is on for either port,

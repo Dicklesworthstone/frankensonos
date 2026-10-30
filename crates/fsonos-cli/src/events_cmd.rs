@@ -3,7 +3,8 @@
 //! per change in words (a room's volume or play state, a player going
 //! offline, a logged action, the DJ's picks), or with `--json` an object per
 //! line (`{id, event, data}`) for a script. `--since <id>` first replays what
-//! came after that event; `--count` stops after that many.
+//! came after that event; `--count` stops after that many. Daemon URLs, including
+//! Tailscale Serve HTTPS, use cursor-preserving long polls through the HTTP client.
 
 use clap::Args;
 use fsonos_api::events::HEARTBEAT;
@@ -16,6 +17,8 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use crate::config::GlobalArgs;
 use crate::direct;
 use crate::remote::Daemon;
+
+mod polling;
 
 #[derive(Debug, Args)]
 pub struct EventsArgs {
@@ -39,6 +42,19 @@ pub fn run(global: &GlobalArgs, args: &EventsArgs) -> anyhow::Result<()> {
         .with_hint("Drop --direct, with fsonos serve running.")
         .into());
     };
+    let mut output = Output {
+        writer: io::stdout().lock(),
+        json: global.json,
+        limit: args.count,
+        shown: 0,
+    };
+    if daemon.uses_url() {
+        return polling::run(
+            move |since, wait| daemon.events_after(since, wait),
+            args.since,
+            |event| output.show(&event),
+        );
+    }
     let path = args
         .since
         .map_or_else(|| "/events".to_owned(), |id| format!("/events?since={id}"));
@@ -51,8 +67,7 @@ pub fn run(global: &GlobalArgs, args: &EventsArgs) -> anyhow::Result<()> {
         Box::new(reader)
     };
     let mut parser = Parser::default();
-    let mut out = io::stdout().lock();
-    let (mut shown, mut last) = (0, args.since);
+    let mut last = args.since;
     let mut line = String::new();
     loop {
         line.clear();
@@ -65,22 +80,41 @@ pub fn run(global: &GlobalArgs, args: &EventsArgs) -> anyhow::Result<()> {
             continue;
         };
         last = event.id.or(last);
-        let text = if global.json {
-            format!("{}\n", event.json())
-        } else {
-            event_text(&event, &SystemClock.now().format("%H:%M:%S").to_string())
-        };
-        if let Err(e) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
-            // `fsonos events | head`: whoever read the events has left.
-            if e.kind() == io::ErrorKind::BrokenPipe {
-                return Ok(());
-            }
-            return Err(e.into());
-        }
-        shown += 1;
-        if args.count.is_some_and(|n| shown >= n) {
+        if !output.show(&event)? {
             return Ok(());
         }
+    }
+}
+
+/// SSE and URL polling print the same lines and count reset notices alike.
+struct Output<W> {
+    writer: W,
+    json: bool,
+    limit: Option<u64>,
+    shown: u64,
+}
+
+impl<W: Write> Output<W> {
+    fn show(&mut self, event: &Event) -> io::Result<bool> {
+        let text = if self.json {
+            format!("{}\n", event.json())
+        } else {
+            event_text(event, &SystemClock.now().format("%H:%M:%S").to_string())
+        };
+        if let Err(error) = self
+            .writer
+            .write_all(text.as_bytes())
+            .and_then(|()| self.writer.flush())
+        {
+            // A pipe reader such as head has left once it has enough events.
+            return if error.kind() == io::ErrorKind::BrokenPipe {
+                Ok(false)
+            } else {
+                Err(error)
+            };
+        }
+        self.shown += 1;
+        Ok(self.limit.is_none_or(|limit| self.shown < limit))
     }
 }
 
@@ -253,6 +287,9 @@ fn changes(d: &Value) -> String {
     if let Some(transport) = d.get("transport").and_then(Value::as_str) {
         said.push(transport.to_owned());
     }
+    if d.get("source_changed").and_then(Value::as_bool) == Some(true) {
+        said.push("source changed".to_owned());
+    }
     // The track's URI now: it moved on, or (null) the queue ran out.
     match d.get("track") {
         Some(Value::String(_)) => said.push("a new track".to_owned()),
@@ -311,6 +348,46 @@ fn dj(d: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_transports_share_json_output_count_and_broken_pipe_exit() {
+        let event = Event {
+            id: Some(8),
+            kind: "zone.state".into(),
+            data: json!({ "room": "Kitchen", "volume": 41 }),
+        };
+        let mut output = Output {
+            writer: Vec::new(),
+            json: true,
+            limit: Some(1),
+            shown: 0,
+        };
+        assert!(!output.show(&event).unwrap());
+        assert_eq!(output.shown, 1);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.writer).unwrap(),
+            event.json()
+        );
+
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = Output {
+            writer: Closed,
+            json: true,
+            limit: None,
+            shown: 0,
+        };
+        assert!(!output.show(&event).unwrap());
+        assert_eq!(output.shown, 0);
+    }
 
     /// `body` as one chunk per piece, then the last (empty) chunk.
     fn chunked(pieces: &[&str]) -> Vec<u8> {
@@ -408,6 +485,13 @@ mod tests {
         assert_eq!(
             text("events.reset", json!({ "oldest": 12 })),
             "21:04:05 events before #12 are gone: `fsonos zones` reads the house afresh\n"
+        );
+        assert_eq!(
+            text(
+                "zone.state",
+                json!({ "room": "Kitchen", "source_changed": true })
+            ),
+            "21:04:05 Kitchen: source changed\n"
         );
         let work = |composer: &str, title: &str| {
             json!({ "composer": composer, "title": title, "movements": 1,

@@ -314,6 +314,28 @@ impl Daemon {
         self.call("GET", path, None, CALL)
     }
 
+    /// A URL may be HTTPS behind Tailscale Serve. Its event follower uses
+    /// bounded JSON reads through the same validating HTTP client as commands.
+    #[must_use]
+    pub fn uses_url(&self) -> bool {
+        matches!(self.addr, Endpoint::Url(_))
+    }
+
+    /// Read the journal after one cursor, with a finite network deadline.
+    /// Every retry remains a GET; no control request is repeated.
+    pub fn events_after(
+        &self,
+        since: Option<u64>,
+        wait: Duration,
+    ) -> Result<fsonos_api::events::EventsDto, Failure> {
+        let wait = wait.min(fsonos_api::events::MAX_WAIT);
+        let mut path = format!("/events?wait={}", wait.as_secs());
+        if let Some(since) = since {
+            let _ = write!(path, "&since={since}");
+        }
+        self.call("GET", &path, None, wait + URL_PROBE)
+    }
+
     /// `DELETE path`: the answer as `T`, or the daemon's failure.
     pub fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
         self.call("DELETE", path, None, CALL)
