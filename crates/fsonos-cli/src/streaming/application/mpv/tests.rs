@@ -81,7 +81,7 @@ fn one_command_prepares_output_application_probe_and_sync_without_starting_them(
         vec!["--sync-probe", "movie"],
         vec!["--sync-base-delay", "0.2"],
     ] {
-        let mut argv = vec![
+        let mut command_line = vec![
             "stream",
             "Room",
             "--virtual-output",
@@ -90,9 +90,10 @@ fn one_command_prepares_output_application_probe_and_sync_without_starting_them(
             "--sync-microphone",
             "room_mic",
         ];
-        argv.extend(flags);
-        argv.extend(["--", "/definitely-not-present/mpv", "a movie.mkv"]);
-        let args = virtual_output::prepare(&Cli::try_parse_from(argv).unwrap().args).unwrap();
+        command_line.extend(flags);
+        command_line.extend(["--", "/definitely-not-present/mpv", "a movie.mkv"]);
+        let args =
+            virtual_output::prepare(&Cli::try_parse_from(command_line).unwrap().args).unwrap();
         let launch = Launch::prepare(&args).unwrap().unwrap();
         assert!(launch.managed_mpv);
         assert_eq!(launch.sink, "movie");

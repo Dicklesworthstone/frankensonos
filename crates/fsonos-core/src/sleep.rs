@@ -15,7 +15,7 @@
 //! plays under now ([`SleepTimers::rekey`]), and a room whose group joined
 //! another one since has only its own music stopped, by leaving that group.
 
-use crate::fade::{FadeOutcome, Fader};
+use crate::fade::Fader;
 use crate::snapshot::member_rooms;
 use crate::{CoreError, HouseholdState};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -25,11 +25,13 @@ use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 mod dispatch;
+mod ownership;
 pub use dispatch::SleepRun;
+use ownership::{Claims, Operations, Run};
 
 /// How long before the end the fade starts.
 pub const FADE: Duration = Duration::from_mins(2);
@@ -75,8 +77,10 @@ struct Armed {
     generation: u64,
     /// The worker has crossed into execution; it must never be requeued.
     running: bool,
-    /// The rooms a running fade is turning down.
-    fading_rooms: Vec<PlayerId>,
+    /// The worker's restoration ownership, including an explicit cancellation.
+    fade_claims: Option<Arc<Claims>>,
+    /// Earlier runs must finish restoration before this timer snapshots levels.
+    predecessors: Vec<Arc<Claims>>,
     /// Fixed when due: dispatch and state reads consume the remaining fade time.
     fade_deadline: Option<Instant>,
     /// A volume change came after the timer was due but before its run took
@@ -88,6 +92,7 @@ struct Armed {
 #[derive(Debug)]
 pub struct SleepTimers {
     armed: Mutex<HashMap<PlayerId, Armed>>,
+    operations: Operations,
     next_generation: Mutex<u64>,
     fade: Duration,
 }
@@ -121,6 +126,7 @@ impl SleepTimers {
     pub fn with_fade(fade: Duration) -> Self {
         Self {
             armed: Mutex::new(HashMap::new()),
+            operations: Operations::default(),
             next_generation: Mutex::new(0),
             fade,
         }
@@ -139,10 +145,11 @@ impl SleepTimers {
         self.armed.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Stop a fade in flight on `armed`, if any.
+    /// Stop a fade in flight, transferring its still-owned intents to the
+    /// old worker's restoration. A newer manual change is never reclaimed.
     fn stop_fade(armed: &Armed, fader: &Fader) {
-        for room in &armed.fading_rooms {
-            fader.supersede(room);
+        if let Some(claims) = &armed.fade_claims {
+            claims.stop(fader, true);
         }
     }
 
@@ -173,6 +180,9 @@ impl SleepTimers {
         after: Duration,
         now: DateTime<Utc>,
     ) -> Result<SleepTimer, CoreError> {
+        let operation = self.operations.get(coordinator);
+        let mut active = operation.lock().unwrap_or_else(PoisonError::into_inner);
+        let predecessors = active.remaining();
         let ends = now + delta(after);
         Self::backstop(t, households, coordinator, ends, now)?;
         let timer = SleepTimer {
@@ -182,17 +192,19 @@ impl SleepTimers {
             fading: false,
         };
         let generation = self.generation();
-        if let Some(old) = self.lock().insert(
+        let old = self.lock().insert(
             coordinator.clone(),
             Armed {
                 timer: timer.clone(),
                 generation,
                 running: false,
-                fading_rooms: Vec::new(),
+                fade_claims: None,
+                predecessors,
                 fade_deadline: None,
                 interrupted: false,
             },
-        ) {
+        );
+        if let Some(old) = old {
             Self::stop_fade(&old, fader);
         }
         Ok(timer)
@@ -209,22 +221,28 @@ impl SleepTimers {
         by: Duration,
         now: DateTime<Utc>,
     ) -> Result<Option<SleepTimer>, CoreError> {
+        let operation = self.operations.get(coordinator);
+        let mut active = operation.lock().unwrap_or_else(PoisonError::into_inner);
+        let predecessors = active.remaining();
         let generation = self.generation();
-        let timer = {
+        let (timer, claims) = {
             let mut armed = self.lock();
             let Some(entry) = armed.get_mut(coordinator) else {
                 return Ok(None);
             };
-            Self::stop_fade(entry, fader);
+            let claims = entry.fade_claims.take();
+            entry.predecessors = predecessors;
             entry.timer.ends = entry.timer.ends.max(now) + delta(by);
             entry.timer.fading = false;
             entry.generation = generation;
             entry.running = false;
             entry.interrupted = false;
-            entry.fading_rooms.clear();
             entry.fade_deadline = None;
-            entry.timer.clone()
+            (entry.timer.clone(), claims)
         };
+        if let Some(claims) = claims {
+            claims.stop(fader, true);
+        }
         Self::backstop(t, households, coordinator, timer.ends, now)?;
         Ok(Some(timer))
     }
@@ -238,6 +256,8 @@ impl SleepTimers {
         fader: &Fader,
         coordinator: &PlayerId,
     ) -> Result<bool, CoreError> {
+        let operation = self.operations.get(coordinator);
+        let _operation = operation.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(old) = self.lock().remove(coordinator) else {
             return Ok(false);
         };
@@ -262,6 +282,16 @@ impl SleepTimers {
         if old == new {
             return Ok(false);
         }
+        // Moves lock both coordinators in the same order as other moves.
+        let (first, second) = if old.0 < new.0 {
+            (old, new)
+        } else {
+            (new, old)
+        };
+        let first = self.operations.get(first);
+        let second = self.operations.get(second);
+        let mut first_active = first.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut second_active = second.lock().unwrap_or_else(PoisonError::into_inner);
         // A fade in flight starts over in the new group, once the run the
         // move stopped has put the volumes back.
         let ends = match self.lock().get(old) {
@@ -272,17 +302,25 @@ impl SleepTimers {
         // The new group's own timer first: if it can't be set, the timer
         // stays where it was.
         Self::backstop(t, households, new, ends, now)?;
+        let (old_active, new_active) = if old.0 < new.0 {
+            (&mut first_active, &mut second_active)
+        } else {
+            (&mut second_active, &mut first_active)
+        };
+        new_active.inherit(old_active);
+        let predecessors = new_active.remaining();
         let generation = self.generation();
-        {
+        let (claims, replaced) = {
             let mut armed = self.lock();
             let Some(mut entry) = armed.remove(old) else {
-                // Cancelled meanwhile: the new group's own timer as it was.
+                // Retired meanwhile: restore the target's own timer as it was.
                 let had = armed.get(new).map(|a| a.timer.ends);
                 drop(armed);
                 own_timer(t, households, new, had, now);
                 return Ok(false);
             };
-            Self::stop_fade(&entry, fader);
+            let claims = entry.fade_claims.take();
+            entry.predecessors = predecessors;
             entry.timer.coordinator = new.clone();
             entry.timer.room = room_name(households, new);
             entry.timer.ends = ends;
@@ -290,11 +328,14 @@ impl SleepTimers {
             entry.generation = generation;
             entry.running = false;
             entry.interrupted = false;
-            entry.fading_rooms.clear();
             entry.fade_deadline = None;
-            if let Some(replaced) = armed.insert(new.clone(), entry) {
-                Self::stop_fade(&replaced, fader);
-            }
+            (claims, armed.insert(new.clone(), entry))
+        };
+        if let Some(claims) = claims {
+            claims.stop(fader, true);
+        }
+        if let Some(replaced) = replaced {
+            Self::stop_fade(&replaced, fader);
         }
         // The room the music left must not pause later on its own timer.
         own_timer(t, households, old, None, now);
@@ -308,17 +349,22 @@ impl SleepTimers {
     /// the timer is marked, and the run ends it there. Does nothing for a
     /// timer that is not due. Returns whether the timer was due.
     pub fn interrupt(&self, fader: &Fader, coordinator: &PlayerId) -> bool {
-        let mut armed = self.lock();
-        match armed.get_mut(coordinator) {
-            Some(a) if a.timer.fading || a.fade_deadline.is_some() => {
-                // Before the run has taken up its rooms there is no fade to
-                // stop yet: the run ends the timer when it gets there.
-                a.interrupted |= a.fading_rooms.is_empty();
-                Self::stop_fade(a, fader);
-                true
-            }
-            _ => false,
+        let claims = {
+            let mut armed = self.lock();
+            let Some(a) = armed
+                .get_mut(coordinator)
+                .filter(|a| a.timer.fading || a.fade_deadline.is_some())
+            else {
+                return false;
+            };
+            // Before the run has taken up its rooms there is no fade to stop.
+            a.interrupted = true;
+            a.fade_claims.clone()
+        };
+        if let Some(claims) = claims {
+            claims.stop(fader, false);
         }
+        true
     }
 
     /// Arm `timer` as it was saved, leaving the player's own timer (its
@@ -326,6 +372,9 @@ impl SleepTimers {
     /// its timers. A group that already has a timer keeps it. Whether it was
     /// armed.
     pub fn adopt(&self, timer: SleepTimer) -> bool {
+        let operation = self.operations.get(&timer.coordinator);
+        let mut active = operation.lock().unwrap_or_else(PoisonError::into_inner);
+        let predecessors = active.remaining();
         let generation = self.generation();
         let mut armed = self.lock();
         if armed.contains_key(&timer.coordinator) {
@@ -340,7 +389,8 @@ impl SleepTimers {
                 },
                 generation,
                 running: false,
-                fading_rooms: Vec::new(),
+                fade_claims: None,
+                predecessors,
                 fade_deadline: None,
                 interrupted: false,
             },
@@ -396,28 +446,33 @@ impl SleepTimers {
         coordinator: &PlayerId,
         expected: Option<u64>,
     ) -> Result<SleepOutcome, CoreError> {
+        let operation = self.operations.get(coordinator);
+        let mut starting = operation.lock().unwrap_or_else(PoisonError::into_inner);
         let household = households.iter().find(|h| h.player(coordinator).is_some());
         let rooms = household.map_or_else(Vec::new, |h| member_rooms(h, coordinator));
         let joined = household
             .and_then(|h| h.coordinator_of(coordinator))
             .is_some_and(|lead| lead != coordinator);
-        let (generation, deadline, claimed) = {
+        let mut run = {
             let mut armed = self.lock();
             let Some(a) = armed.get_mut(coordinator).filter(|a| {
                 a.timer.fading && !a.running && expected.is_none_or(|g| g == a.generation)
             }) else {
                 return Ok(SleepOutcome::Gone);
             };
-            // Validate the ticket before even retiring an absent player: an
-            // obsolete worker must not consume a newly armed timer here.
+            // Preserve the original dispatch deadline if a predecessor was
+            // registered after selection. Admission can be retried, without
+            // waiting under an operation lock the old worker needs to finish.
+            if !starting.remaining().is_empty() {
+                a.timer.fading = false;
+                return Ok(SleepOutcome::Gone);
+            }
             if household.is_none() {
                 armed.remove(coordinator);
                 return Err(CoreError::UnknownPlayer(coordinator.0.clone()));
             }
             a.running = true;
             if a.interrupted {
-                // Someone set a volume before this run got going: the timer
-                // ends where it is, as it would during the fade.
                 armed.remove(coordinator);
                 drop(armed);
                 if !joined {
@@ -425,85 +480,36 @@ impl SleepTimers {
                 }
                 return Ok(SleepOutcome::Interrupted);
             }
-            a.fading_rooms.clone_from(&rooms);
-            // The fade's intents, taken under the lock a cancel or an extend
-            // stops it under: one in between stops it too.
-            (a.generation, a.fade_deadline, fader.claim(&rooms))
+            let run = Run::new(
+                coordinator,
+                joined,
+                a.generation,
+                a.fade_deadline,
+                fader.claim(&rooms),
+            );
+            a.fade_claims = Some(Arc::clone(&run.restoration));
+            starting.remember(&run.restoration);
+            run
         };
-        let before = match rooms
-            .iter()
-            .map(|r| Ok((r.clone(), soap::get_volume(t, ip(households, r)?)?)))
-            .collect::<Result<Vec<_>, CoreError>>()
-        {
-            Ok(before) => before,
-            Err(e) => {
-                self.forget(coordinator, generation);
-                return Err(e);
-            }
-        };
-        // Whatever fails, the volumes go back (every room, the first failure
-        // reported): a group is never left silent for its next play. The
-        // player's own timer, set past the end, pauses it if the daemon can't.
-        let restore = || put_back(t, households, &before);
-        let deadline = deadline.unwrap_or_else(Instant::now);
-        let outcome = match fader.fade_group_claimed_until(t, households, &claimed, 0, deadline) {
-            Ok(outcome) => outcome,
-            Err(e) => {
-                let _ = restore();
-                self.forget(coordinator, generation);
-                return Err(e);
-            }
-        };
-        let current = {
-            let mut armed = self.lock();
-            let current = armed.get(coordinator).map(|a| a.generation);
-            if current == Some(generation) {
-                armed.remove(coordinator);
-            }
-            current
-        };
-        if current != Some(generation) {
-            restore()?;
-            return Ok(SleepOutcome::Cancelled);
-        }
-        let host = ip(households, coordinator)?;
-        match outcome {
-            FadeOutcome::Reached => {
-                // Paused first, the levels back after; the player's own timer
-                // is cleared only once the pause has held.
-                let stopped = if joined {
-                    crate::control::leave(t, households, coordinator)
-                } else {
-                    crate::control::pause_at(t, host)
-                };
-                if let Err(e) = stopped {
-                    let _ = restore();
-                    return Err(e);
-                }
-                let restored = restore();
-                soap::configure_sleep_timer(t, host, None)?;
-                restored?;
-                Ok(SleepOutcome::Paused)
-            }
-            FadeOutcome::Superseded { .. } => {
-                if !joined {
-                    soap::configure_sleep_timer(t, host, None)?;
-                }
-                Ok(SleepOutcome::Interrupted)
-            }
-        }
+        drop(starting);
+        let outcome = run.fade(t, households, fader);
+        // Other groups and timer observations remain available during device
+        // I/O. This coordinator cannot be re-armed during its final stop/clear.
+        let _operation = operation.lock().unwrap_or_else(PoisonError::into_inner);
+        run.finish(self, t, households, fader, outcome)
     }
 
-    /// Drop `coordinator`'s timer if it is still the one a run took up as
-    /// `generation`: a run that failed must not leave it fading for good.
-    fn forget(&self, coordinator: &PlayerId, generation: u64) {
+    /// Retire only this generation, returning whether a manual interruption
+    /// arrived before retirement. Failed workers never remove a replacement.
+    fn forget(&self, coordinator: &PlayerId, generation: u64) -> bool {
         let mut armed = self.lock();
-        if armed
+        if !armed
             .get(coordinator)
             .is_some_and(|a| a.generation == generation)
         {
-            armed.remove(coordinator);
+            return false;
         }
+        armed.remove(coordinator).is_some_and(|a| a.interrupted)
     }
 }
 
@@ -532,24 +538,6 @@ fn room_name(households: &[HouseholdState], player: &PlayerId) -> String {
         .map_or_else(|| player.0.clone(), |r| r.name.clone())
 }
 
-/// Put each room back to its level in `before`: every room, even after one
-/// fails, and the first failure reported.
-pub(crate) fn put_back<T: Transport + ?Sized>(
-    t: &T,
-    households: &[HouseholdState],
-    before: &[(PlayerId, u8)],
-) -> Result<(), CoreError> {
-    let mut first = Ok(());
-    for (room, level) in before {
-        let done = ip(households, room)
-            .and_then(|host| soap::set_volume(t, host, *level).map_err(CoreError::from));
-        if first.is_ok() {
-            first = done;
-        }
-    }
-    first
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,7 +560,8 @@ mod tests {
                     },
                     generation: 0,
                     running: false,
-                    fading_rooms: Vec::new(),
+                    fade_claims: None,
+                    predecessors: Vec::new(),
                     fade_deadline: None,
                     interrupted: false,
                 },

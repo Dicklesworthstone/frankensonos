@@ -314,7 +314,7 @@ mod tests {
             input: Input::Paired {
                 format: "lavfi".into(),
                 source: format!(
-                    "{},asplit[dry][wet];[wet]adelay=400[late];\
+                    "{},aformat=channel_layouts=mono,asplit[dry][wet];[wet]adelay=400[late];\
                      [dry][late]join=inputs=2:channel_layout=stereo:map=0.0-FL|1.0-FR",
                     SIGNAL.trim()
                 ),

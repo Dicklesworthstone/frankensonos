@@ -158,6 +158,36 @@ impl Fader {
         self.next_intent(player)
     }
 
+    /// Retire an intent only if it still belongs to the caller. A cancelled
+    /// sleep fade can retain the returned claim for restoration without taking
+    /// ownership back from a newer manual level or another fade.
+    pub(crate) fn supersede_claimed(&self, player: &PlayerId, intent: u64) -> Option<u64> {
+        let step = self.step(player);
+        let _landed = step.lock().unwrap_or_else(PoisonError::into_inner);
+        (self.current(player) == intent).then(|| self.next_intent(player))
+    }
+
+    /// Run a final group action only while every room still has its original
+    /// intent. Sorted locks serialize it with manual changes and overlapping
+    /// group fades, without holding the intent-map lock during device I/O.
+    pub(crate) fn with_claimed<R>(
+        &self,
+        claimed: &[(PlayerId, u64)],
+        action: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let mut steps: Vec<_> = claimed.iter().map(|(p, _)| (p, self.step(p))).collect();
+        steps.sort_unstable_by(|(a, _), (b, _)| a.0.cmp(&b.0));
+        steps.dedup_by(|(a, _), (b, _)| a == b);
+        let _writing: Vec<_> = steps
+            .iter()
+            .map(|(_, step)| step.lock().unwrap_or_else(PoisonError::into_inner))
+            .collect();
+        claimed
+            .iter()
+            .all(|(p, intent)| self.current(p) == *intent)
+            .then(action)
+    }
+
     /// `player`'s next intent number; the caller holds its step lock.
     fn next_intent(&self, player: &PlayerId) -> u64 {
         let mut intents = self
@@ -429,22 +459,13 @@ impl Fader {
         if outcome != FadeOutcome::Reached {
             return Ok(outcome);
         }
-        // The last frame may finish on another room after a newer intent
-        // superseded an earlier member. Check all claims again, and serialize
-        // the pause with supersession just as each volume step is serialized.
-        // A stable order lets overlapping group fades take these locks safely.
-        let mut steps: Vec<_> = members.iter().map(|p| (p, self.step(p))).collect();
-        steps.sort_unstable_by(|(a, _), (b, _)| a.0.cmp(&b.0));
-        steps.dedup_by(|(a, _), (b, _)| a == b);
-        let writing: Vec<_> = steps
-            .iter()
-            .map(|(_, step)| step.lock().unwrap_or_else(PoisonError::into_inner))
-            .collect();
-        if claimed.iter().any(|(p, intent)| self.current(p) != *intent) {
+        // A newer intent on an earlier member can arrive while the last
+        // member finishes its final frame. Recheck every claim before pausing.
+        let Some(paused) = self.with_claimed(&claimed, || {
+            crate::control::pause(t, households, coordinator)
+        }) else {
             return Ok(FadeOutcome::Superseded { at: 0 });
-        }
-        let paused = crate::control::pause(t, households, coordinator);
-        drop(writing);
+        };
         let restored = put_back();
         paused?;
         restored?;
@@ -454,7 +475,7 @@ impl Fader {
     /// Recover every room still owned by this fade, reporting the first
     /// failure after trying the rest. Supersession and each restore share the
     /// step lock: a newer level either comes afterwards or prevents the write.
-    fn restore<T: Transport + ?Sized>(
+    pub(crate) fn restore<T: Transport + ?Sized>(
         &self,
         t: &T,
         households: &[HouseholdState],

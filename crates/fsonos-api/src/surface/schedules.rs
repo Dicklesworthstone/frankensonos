@@ -52,6 +52,8 @@ mod sleep_dispatch;
 
 #[cfg(test)]
 mod direction_tests;
+#[cfg(test)]
+mod ownership_tests;
 
 /// The longest sleep timer. The speaker's own timer, which backs the
 /// daemon's up five minutes later, counts down from just under a day.
@@ -703,6 +705,9 @@ impl Sleep {
     /// asked for with `--fade`), so the new level stands and the group is not
     /// paused. Returns whether a sleep fade was superseded.
     pub fn volume_changed(&self, households: &[HouseholdState], coordinator: &PlayerId) -> bool {
+        // Record the interruption before waiting out a Pause already in flight.
+        // Even a failed Pause must then retire the sleep timer's own backstop.
+        let interrupted = self.timers.interrupt(&self.fader, coordinator);
         self.fader.supersede(coordinator);
         for household in households {
             for room in household
@@ -713,7 +718,7 @@ impl Sleep {
                 self.fader.supersede(&room.primary);
             }
         }
-        self.timers.interrupt(&self.fader, coordinator)
+        interrupted
     }
 }
 
