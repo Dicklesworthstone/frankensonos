@@ -301,3 +301,89 @@ test('the production route map drives real localhost browse and reviewed queue H
     assert.deepEqual(JSON.parse(writes[0].body), { zone: 'Room@S2', source_uri: 'spotify:album:Item0', title: 'Title 0', next: false });
   } finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
 });
+
+function completedAlbum(query, revision = 'album-complete') {
+  const all = [
+    item(0, 'track', { source_uri: 'spotify:track:Repeated', title: 'Prelude', subtitle: '', explicit_known: false }),
+    item(1, 'track', { title: 'Scherzo', explicit: true }),
+    item(2, 'track', { title: 'Adagio', subtitle: '', explicit_known: false }),
+    item(0, 'track', { source_uri: 'spotify:track:Repeated', title: 'Finale', subtitle: '', explicit_known: false, disc_number: 2, track_number: 1 }),
+  ].map(row => ({ ...row, album_uri: query.album_uri }));
+  const filtered = all.filter(row => !query.q || row.title.toLowerCase().includes(query.q.toLowerCase()));
+  return page(query, { total: filtered.length, revision, next_offset: null,
+    album_observation: { coverage: 'complete', fetched_at: 100, cached_total: all.length },
+    items: filtered.slice(query.offset, query.offset + LIMIT) });
+}
+
+test('complete album observations expose expanded tracks, duplicate occurrences and unknown metadata', async () => {
+  const f = fixture(async (name, args) => name === 'libraryBrowse' && args.query.album_uri ? completedAlbum(args.query) : undefined);
+  await open(f); await f.control.browse('albums'); await f.control.openAlbum(0);
+  const p = f.control.state.page, hits = f.control.state.hits;
+  assert.equal(p.albumObservation.coverage, 'complete');
+  assert.equal(p.albumObservation.cached_total, 4);
+  assert.equal(p.albumObservation.fetched_at, 100);
+  assert.deepEqual(hits.map(hit => [hit.title, hit.disc, hit.track]), [
+    ['Prelude', 1, 1], ['Scherzo', 1, 2], ['Adagio', 1, 3], ['Finale', 2, 1],
+  ]);
+  assert.equal(hits[0].source, hits[3].source);
+  assert.equal(hits[0].subtitle, ''); assert.equal(hits[0].explicitKnown, false);
+  assert.equal(hits[1].explicitKnown, true); assert.equal(hits[1].explicit, true);
+  const description = require('../crates/fsonos-api/src/remote/library.js').albumCoverage(p);
+  assert.match(description, /Complete cached album: 4/); assert.match(description, /Read /);
+  assert.equal(f.writes().length, 0);
+  f.control.query('Finale'); assert.equal(await f.control.refresh(), true);
+  assert.equal(f.control.state.page.total, 1);
+  assert.equal(f.control.state.page.albumObservation.cached_total, 4);
+});
+
+for (const action of ['play', 'append', 'next']) test(`expanded album movement ${action} uses its exact occurrence and URI`, async () => {
+  const f = fixture(async (name, args) => name === 'libraryBrowse' && args.query.album_uri ? completedAlbum(args.query) : undefined);
+  await open(f, true); await f.control.browse('albums'); await f.control.openAlbum(0);
+  f.control.query('Finale'); await f.control.refresh();
+  assert.equal(f.control.choose(0, action), true);
+  assert.equal(f.control.state.pending.hit.disc, 2); assert.equal(f.control.state.pending.hit.track, 1);
+  assert.equal(await f.control.confirm(), true);
+  const [route, request] = f.writes()[0];
+  assert.equal(route, action === 'play' ? 'libraryPlay' : 'libraryAdd');
+  assert.equal(request.body.source_uri, 'spotify:track:Repeated');
+  assert.equal(request.body.title, 'Finale');
+  if (action !== 'play') assert.equal(request.body.next, action === 'next');
+  assert.equal(f.writes().length, 1);
+});
+
+test('a replaced album observation invalidates its reviewed occurrence', async () => {
+  let revision = 'album-before';
+  const f = fixture(async (name, args) => name === 'libraryBrowse' && args.query.album_uri ? completedAlbum(args.query, revision) : undefined);
+  await open(f, true); await f.control.browse('albums'); await f.control.openAlbum(0);
+  f.control.choose(3, 'next'); revision = 'album-after';
+  assert.equal(await f.control.confirm(), false);
+  assert.match(f.control.state.message, /cached album selection changed/);
+  assert.equal(f.writes().length, 0);
+});
+
+test('subset coverage remains distinct and malformed complete observations cannot authorize selection', async () => {
+  const f = fixture(async (name, args) => {
+    if (name !== 'libraryBrowse' || !args.query.album_uri) return;
+    const p = completedAlbum(args.query); p.items = [p.items[1]]; p.total = 1;
+    p.album_observation = { coverage: 'library_subset', fetched_at: null, cached_total: 1 }; return p;
+  });
+  await open(f); await f.control.browse('albums'); assert.equal(await f.control.openAlbum(0), true);
+  assert.match(require('../crates/fsonos-api/src/remote/library.js').albumCoverage(f.control.state.page), /Library subset: 1/);
+  for (const change of [
+    p => { p.album_observation.fetched_at = null; },
+    p => { p.album_observation.fetched_at = -1; },
+    p => { p.album_observation.cached_total = 1; },
+    p => { p.items[1].track_number = 1; },
+    p => { p.items[0].explicit = true; },
+    p => { p.items[0].explicit_known = null; },
+  ]) {
+    const bad = fixture(async (name, args) => {
+      if (name !== 'libraryBrowse' || !args.query.album_uri) return;
+      const p = completedAlbum(args.query); change(p); return p;
+    });
+    await open(bad, true); await bad.control.browse('albums');
+    assert.equal(await bad.control.openAlbum(0), false);
+    assert.equal(bad.control.choose(0, 'play'), false);
+    assert.equal(bad.writes().length, 0);
+  }
+});

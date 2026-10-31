@@ -474,3 +474,124 @@ private actor CatalogRig {
         model.stop()
     }
 }
+
+
+private func completeAlbumPage(_ request: LibraryBrowseRequest,
+                               mutate: (inout [String: Any]) -> Void = { _ in }) throws -> LibraryCatalogPage {
+    try catalogPage(request, total: 3) { value in
+        value["album_observation"] = ["coverage": "complete", "fetched_at": 1_700_000_000, "cached_total": 3]
+        var items = value["items"] as! [[String: Any]]
+        for index in items.indices {
+            items[index]["source_uri"] = "spotify:track:Repeated"
+            items[index]["explicit"] = false
+        }
+        items[1]["explicit_known"] = false
+        items[1]["subtitle"] = ""
+        items[2]["disc_number"] = 2
+        items[2]["track_number"] = 1
+        value["items"] = items
+        mutate(&value)
+    }
+}
+
+@Suite("Native completed album observations") struct CompletedAlbumCatalogTests {
+    @Test func completedAlbumKeepsRepeatedSourcesAsDistinctOrderedOccurrences() throws {
+        let request = try LibraryBrowseRequest(category: .tracks, albumUri: "spotify:album:fixture")
+        let page = try completeAlbumPage(request).validated(for: request)
+        #expect(page.coverage == "cached")
+        #expect(page.albumObservation?.coverage == "complete")
+        #expect(page.albumObservation?.fetchedAt == 1_700_000_000)
+        #expect(page.albumObservation?.cachedTotal == 3)
+        #expect(page.items.map(\.sourceUri) == Array(repeating: "spotify:track:Repeated", count: 3))
+        #expect(Set(page.items.map(\.id)).count == 3)
+        #expect(page.items.map(\.discNumber) == [1, 1, 2])
+        #expect(page.items.map(\.trackNumber) == [1, 2, 1])
+        #expect(page.items[0].explicitKnown)
+        #expect(!page.items[1].explicitKnown)
+        #expect(!page.items[1].explicit)
+        #expect(try page.validated(for: request) == page)
+    }
+
+    @Test func olderDaemonsRetainURIIdentityAndKnownExplicitness() throws {
+        let request = try LibraryBrowseRequest(category: .tracks, albumUri: "spotify:album:fixture")
+        let page = try catalogPage(request, total: 3).validated(for: request)
+        #expect(page.albumObservation == nil)
+        #expect(page.items.allSatisfy { $0.id == $0.sourceUri && $0.explicitKnown })
+        let subset = try catalogPage(request, total: 3) {
+            $0["album_observation"] = ["coverage": "library_subset", "cached_total": 3]
+        }.validated(for: request)
+        #expect(subset.albumObservation?.fetchedAt == nil)
+        #expect(subset.items.allSatisfy { $0.id == $0.sourceUri })
+        let duplicate = try catalogPage(request, total: 3) { value in
+            var items = value["items"] as! [[String: Any]]
+            items[1]["source_uri"] = items[0]["source_uri"]
+            value["items"] = items
+        }
+        #expect(throws: LibraryCatalogError.self) { try duplicate.validated(for: request) }
+    }
+
+    @Test func inconsistentCoverageAndUnknownExplicitClaimsAreRejected() throws {
+        let request = try LibraryBrowseRequest(category: .tracks, albumUri: "spotify:album:fixture")
+        let observations: [[String: Any]] = [
+            ["coverage": "complete", "cached_total": 3],
+            ["coverage": "complete", "fetched_at": -1, "cached_total": 3],
+            ["coverage": "complete", "fetched_at": 8_640_000_000_001 as Int64, "cached_total": 3],
+            ["coverage": "complete", "fetched_at": 1, "cached_total": 2],
+            ["coverage": "library_subset", "fetched_at": 1, "cached_total": 3],
+            ["coverage": "unknown", "cached_total": 3]
+        ]
+        for observation in observations {
+            let page = try completeAlbumPage(request) { $0["album_observation"] = observation }
+            #expect(throws: LibraryCatalogError.self) { try page.validated(for: request) }
+        }
+        let contradictory = try completeAlbumPage(request) { value in
+            var items = value["items"] as! [[String: Any]]
+            items[1]["explicit"] = true; value["items"] = items
+        }
+        #expect(throws: LibraryCatalogError.self) { try contradictory.validated(for: request) }
+        let unscoped = try LibraryBrowseRequest(category: .tracks)
+        let outsideAlbum = try catalogPage(unscoped, total: 1) {
+            $0["album_observation"] = ["coverage": "complete", "fetched_at": 1, "cached_total": 1]
+        }
+        #expect(throws: LibraryCatalogError.self) { try outsideAlbum.validated(for: unscoped) }
+    }
+
+    @Test func missingRepeatedAndReversedPositionsCannotBecomeSelections() throws {
+        let request = try LibraryBrowseRequest(category: .tracks, albumUri: "spotify:album:fixture")
+        for mutation in 0..<4 {
+            let page = try completeAlbumPage(request) { value in
+                var items = value["items"] as! [[String: Any]]
+                switch mutation {
+                case 0: items[1].removeValue(forKey: "track_number")
+                case 1: items[1]["disc_number"] = 0
+                case 2: items[1]["track_number"] = 1
+                default: items.reverse()
+                }
+                value["items"] = items
+            }
+            #expect(throws: LibraryCatalogError.self) { try page.validated(for: request) }
+        }
+    }
+
+    @Test @MainActor func repeatedOccurrencesUseExactSourcesAndExpireOnRefresh() async throws {
+        let model = LibraryCatalogModel(searchDelay: .zero, read: { request in
+            if request.albumUri != nil { return try completeAlbumPage(request) }
+            return try catalogPage(request, total: 1)
+        })
+        model.resume(); try await drain { !model.loading }
+        model.openAlbum(try #require(model.selection(for: "spotify:album:fixture0")))
+        try await drain { !model.loading }
+        let items = try #require(model.page?.items)
+        let first = try #require(model.selection(for: items[0].id))
+        let repeated = try #require(model.selection(for: items[1].id))
+        #expect(first != repeated)
+        #expect(try model.command(for: first, action: .playNow) == .playSource("spotify:track:Repeated"))
+        #expect(try model.command(for: repeated, action: .queueNext) == .queueAdd("spotify:track:Repeated", next: true))
+        #expect(model.selection(for: "spotify:track:Repeated") == nil)
+        model.refresh()
+        #expect(throws: LibraryCatalogError.self) { try model.command(for: repeated, action: .queueNext) }
+        try await drain { !model.loading }
+        #expect(throws: LibraryCatalogError.self) { try model.command(for: first, action: .playNow) }
+        model.stop()
+    }
+}

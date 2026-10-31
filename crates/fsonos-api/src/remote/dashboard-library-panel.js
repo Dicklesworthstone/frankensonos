@@ -78,17 +78,18 @@ const DashboardLibraryPanel = (() => {
       const parent = state.album || state.playlist;
       const heading = parent ? `Cached tracks in ${parent.title || 'Untitled collection'}` : `Cached ${state.kind}`;
       status.textContent = state.error || (state.loading ? 'Reading cached music…' : state.stale
-        ? 'Last observation only. Refresh to choose music.' : `${heading}: ${p?.total || 0} entries.${state.playlist && p ? ` ${L.playlistCoverage(p)}` : ''}`);
+        ? 'Last observation only. Refresh to choose music.' : `${heading}: ${p?.total || 0} entries.${state.playlist && p ? ` ${L.playlistCoverage(p)}` : state.album && p ? ` ${L.albumCoverage(p)}` : ''}`);
       const focus = rows.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
       const scroll = p === lastPage ? rows.scrollTop : 0; lastPage = p;
       rows.replaceChildren();
       for (const item of p?.items || []) {
         const name = item.title || `Untitled ${item.kind}`;
         const row = el('li', null, 'dashboard-library-item'), info = el('div');
-        info.append(el('strong', item.position ? `${item.position}. ${name}` : name), el('p', item.subtitle, 'small-note'));
+        info.append(el('strong', item.position ? `${item.position}. ${name}` : name), el('p', item.subtitle || (state.album ? 'Artist unavailable' : ''), 'small-note'));
         if (item.kind === 'album') info.append(el('p', `${item.cached_tracks} cached track(s); the full album may contain more.`, 'small-note'));
         if (item.album_uri) info.append(el('p', `Disc ${item.disc_number ?? '?'}, track ${item.track_number ?? '?'}`, 'small-note'));
-        if (item.explicit) info.append(el('span', 'Explicit', 'small-note'));
+        if (item.explicit_known === false) info.append(el('span', 'Explicit-content metadata unavailable', 'small-note'));
+        else if (item.explicit) info.append(el('span', 'Explicit', 'small-note'));
         const actions = el('div', null, 'dashboard-library-actions');
         if (item.kind === 'album' || item.kind === 'playlist') {
           const tracks = button('View cached tracks', () => {
@@ -98,8 +99,8 @@ const DashboardLibraryPanel = (() => {
           tracks.disabled = !usable; actions.append(tracks);
         }
         for (const [action, label] of [['play', 'Play now'], ['append', 'Add to end'], ['next', 'Queue next']]) {
-          const b = button(label, () => select(item, action, destination), `${action}:${item.source_uri}:${item.position ?? ''}`);
-          b.setAttribute('aria-label', `${label}: ${item.position ? `playlist position ${item.position}, ` : ''}${name}`);
+          const b = button(label, () => select(item, action, destination), `${action}:${item.source_uri}:${item.position ?? ''}:${item.disc_number ?? ''}:${item.track_number ?? ''}`);
+          b.setAttribute('aria-label', `${label}: ${item.position ? `playlist position ${item.position}, ` : state.album ? `disc ${item.disc_number ?? '?'}, track ${item.track_number ?? '?'}, ` : ''}${name}`);
           b.disabled = !usable || !destination || !controller.canControl() || !!session.state.pending;
           actions.append(b);
         }

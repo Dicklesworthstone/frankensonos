@@ -3,7 +3,7 @@
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::policy::Client;
-use fsonos_core::store::LibraryEntry;
+use fsonos_core::store::{CachedAlbum, LibraryEntry};
 use fsonos_types::text::normalize;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, hash_map::DefaultHasher};
@@ -15,6 +15,7 @@ use crate::failure::{ErrorCode, Failure};
 /// Response and query limit, independent of the size of the owner's library.
 pub const MAX_PAGE: usize = 50;
 
+mod albums;
 mod client;
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
@@ -43,9 +44,31 @@ pub struct BrowseItem {
     pub track_number: Option<u32>,
     pub duration_secs: Option<u32>,
     pub explicit: bool,
+    /// False when an album-only row has no verified explicit-content metadata.
+    /// Older responses omit this field and have the library's known value.
+    #[serde(default = "known_explicit", skip_serializing_if = "is_true")]
+    pub explicit_known: bool,
     /// For an album, how many distinct tracks are represented in this cache.
     /// It is not the complete catalog track count.
     pub cached_tracks: Option<usize>,
+}
+
+fn known_explicit() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// The observation supplying an explicitly opened album, before text filtering.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct AlbumObservation {
+    /// complete: the accepted album list; library_subset: only library rows.
+    pub coverage: String,
+    pub fetched_at: Option<i64>,
+    /// Playable cached occurrences before filtering and pagination.
+    pub cached_total: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -60,6 +83,8 @@ pub struct BrowsePage {
     pub revision: String,
     /// Always cached: entries may have been removed from Spotify since the last read.
     pub coverage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub album_observation: Option<AlbumObservation>,
     pub items: Vec<BrowseItem>,
 }
 
@@ -119,7 +144,7 @@ impl Surface {
             )
             .with_hint("Connect to fsonos serve and refresh its library first.")
         })?;
-        let (library, playlists) = {
+        let (library, playlists, album) = {
             let store = log.store.lock().map_err(|_| {
                 Failure::new(ErrorCode::Internal, "the library store is unavailable")
             })?;
@@ -129,12 +154,23 @@ impl Surface {
             // Only copy the category we need; sorting and filtering happen after
             // releasing the store lock. No lock is held across network I/O.
             if query.kind.as_deref() == Some("playlists") {
-                (Vec::new(), store.playlists().map_err(error)?)
+                (Vec::new(), store.playlists().map_err(error)?, None)
             } else {
-                (store.library().map_err(error)?, Vec::new())
+                // A drill-down reads exactly its one completed catalog list.
+                let album = query
+                    .album_uri
+                    .as_deref()
+                    .map(|uri| store.album_tracks(uri))
+                    .transpose()
+                    .map_err(error)?
+                    .flatten();
+                (store.library().map_err(error)?, Vec::new(), album)
             }
         };
-        browse(&library, &playlists, query)
+        match album {
+            Some(album) => browse_catalog(&library, &playlists, query, Some(&album)),
+            None => browse(&library, &playlists, query),
+        }
     }
 }
 
@@ -150,6 +186,7 @@ fn item(kind: &str, uri: &str, title: &str, subtitle: &str) -> BrowseItem {
         track_number: None,
         duration_secs: None,
         explicit: false,
+        explicit_known: true,
         cached_tracks: None,
     }
 }
@@ -215,6 +252,15 @@ fn browse(
     playlists: &[(String, String)],
     query: &BrowseQuery,
 ) -> Result<BrowsePage, Failure> {
+    browse_catalog(library, playlists, query, None)
+}
+
+fn browse_catalog(
+    library: &[LibraryEntry],
+    playlists: &[(String, String)],
+    query: &BrowseQuery,
+    album: Option<&CachedAlbum>,
+) -> Result<BrowsePage, Failure> {
     query.validate()?;
     let kind = query.kind.as_deref().unwrap_or("tracks");
     let mut entries = library
@@ -234,8 +280,28 @@ fn browse(
             }
             lists.into_values().collect()
         }
-        _ => track_items(entries, query.album_uri.as_deref()),
+        _ => match (query.album_uri.as_deref(), album) {
+            (Some(uri), Some(album)) => albums::items(&entries, uri, album),
+            _ => track_items(entries, query.album_uri.as_deref()),
+        },
     };
+    let album_observation = query.album_uri.as_ref().map(|_| AlbumObservation {
+        coverage: if album.is_some() {
+            "complete"
+        } else {
+            "library_subset"
+        }
+        .into(),
+        fetched_at: album.map(|album| album.fetched_at),
+        cached_total: items.len(),
+    });
+    // A complete observation identifies the entire sequence, even when this
+    // query hides the changed occurrence behind a filter or another page.
+    let album_revision = album.map(|_| {
+        let mut hash = DefaultHasher::new();
+        items.hash(&mut hash);
+        hash.finish()
+    });
     let q = normalize(query.q.as_deref().unwrap_or(""));
     items.retain(|item| {
         let haystack = normalize(&format!(
@@ -268,6 +334,8 @@ fn browse(
     query.album_uri.hash(&mut hash);
     q.hash(&mut hash);
     items.hash(&mut hash);
+    album_observation.hash(&mut hash);
+    album_revision.hash(&mut hash);
     let revision = format!("cache-{:016x}", hash.finish());
     let total = items.len();
     let offset = query.offset.unwrap_or_default();
@@ -287,6 +355,7 @@ fn browse(
         next_offset: (end < total).then_some(end),
         revision,
         coverage: "cached".into(),
+        album_observation,
         items,
     })
 }

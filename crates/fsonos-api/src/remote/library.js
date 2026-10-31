@@ -90,6 +90,27 @@ const LibraryRemote = (() => {
 
   const categories = Object.freeze({ tracks: 'track', albums: 'album', playlists: 'playlist' });
 
+  function albumObservationOf(value, albumUri, total) {
+    if (value == null) return null;
+    if (!albumUri || !['complete', 'library_subset'].includes(value.coverage)
+        || !number(value.cached_total) || value.cached_total < total
+        || (value.coverage === 'complete'
+          ? !Number.isSafeInteger(value.fetched_at) || value.fetched_at < 0 || value.fetched_at > 8640000000000
+          : value.fetched_at !== null)) {
+      throw new Error('The cached album observation is incomplete. Refresh the listing.');
+    }
+    return Object.freeze({ coverage: value.coverage, fetched_at: value.fetched_at, cached_total: value.cached_total });
+  }
+
+  function albumCoverage(page) {
+    const observation = page?.albumObservation;
+    if (!observation) return 'This cache may include older entries and incomplete albums.';
+    if (observation.coverage === 'library_subset') {
+      return `Library subset: ${observation.cached_total} cached track(s) before filtering. No complete album observation is available.`;
+    }
+    return `Complete cached album: ${observation.cached_total} playable occurrence(s) before filtering. Read ${new Date(observation.fetched_at * 1000).toLocaleString()} (this browser’s time). Spotify may have changed since.`;
+  }
+
   function pageOf(value, kind, offset, album) {
     const albumUri = album ? album.uri : null;
     if (!value || value.kind !== kind || value.offset !== offset || value.limit !== LIMIT
@@ -102,22 +123,34 @@ const LibraryRemote = (() => {
     const end = offset + value.items.length;
     const next = end < value.total ? end : null;
     if (value.next_offset !== next) throw new Error('The library page positions disagree. Refresh the listing.');
+    const albumObservation = albumObservationOf(value.album_observation, albumUri, value.total);
+    const complete = albumObservation?.coverage === 'complete';
     const seen = new Set();
+    let previous = null;
     const hits = hitsOf(value.items).map((hit, i) => {
       const raw = value.items[i];
-      if (hit.kind !== categories[kind] || !hit.source || seen.has(hit.source)
-          || typeof raw.explicit !== 'boolean'
+      const known = raw.explicit_known === undefined ? true : raw.explicit_known;
+      const identity = complete ? `${raw.disc_number}:${raw.track_number}` : hit.source;
+      if (hit.kind !== categories[kind] || !hit.source || seen.has(identity)
+          || typeof raw.explicit !== 'boolean' || typeof known !== 'boolean'
+          || (!known && (!complete || raw.explicit))
           || (album && raw.album_uri !== albumUri)
           || (kind === 'albums' && (!number(raw.cached_tracks) || raw.cached_tracks < 1))
           || [raw.disc_number, raw.track_number].some((n) => n != null && !number(n))) {
         throw new Error('The library page identities disagree. Refresh the listing.');
       }
-      seen.add(hit.source);
-      return Object.freeze({ ...hit, explicit: raw.explicit, cachedTracks: raw.cached_tracks,
+      if (complete && (!number(raw.disc_number) || !number(raw.track_number) || raw.disc_number === 0 || raw.track_number === 0
+          || (previous && (raw.disc_number < previous.disc
+            || (raw.disc_number === previous.disc && raw.track_number <= previous.track))))) {
+        throw new Error('The cached album positions disagree. Refresh the listing.');
+      }
+      seen.add(identity);
+      previous = { disc: raw.disc_number, track: raw.track_number };
+      return Object.freeze({ ...hit, explicit: raw.explicit, explicitKnown: known, cachedTracks: raw.cached_tracks,
         disc: raw.disc_number, track: raw.track_number });
     });
     return Object.freeze({ kind, offset, total: value.total, next, revision: value.revision,
-      hits: Object.freeze(hits) });
+      hits: Object.freeze(hits), albumObservation });
   }
 
   function playlistPageOf(value, query) {
@@ -311,6 +344,11 @@ const LibraryRemote = (() => {
         : { zone: zone.target, source_uri: hit.source, title: hit.title };
       if (action !== 'play') body.next = action === 'next';
       state.pending = Object.freeze({ hit, zone, action, version: epoch,
+        album: state.view === 'browse' ? state.browseAlbum : null,
+        albumRevision: state.browseAlbum ? state.page.revision : null,
+        albumQuery: state.view === 'browse' && state.browseAlbum ? Object.freeze({
+          kind: 'tracks', album_uri: state.browseAlbum.uri, offset: state.page.offset, limit: LIMIT,
+          ...(state.query.trim() ? { q: state.query.trim() } : {}) }) : null,
         playlistQuery: state.view === 'browse' && state.browsePlaylist ? P.queryOf({
           playlist_uri: state.browsePlaylist.uri, offset: state.page.offset, q: state.query,
           expected_revision: state.page.revision }) : null,
@@ -349,6 +387,15 @@ const LibraryRemote = (() => {
           state.zones = zones;
           state.target = '';
           throw new Error('The destination group changed. Choose it again and search again.');
+        }
+        if (pending.albumQuery) {
+          const value = await call('libraryBrowse', { query: pending.albumQuery });
+          if (!current(version)) return false;
+          const page = pageOf(value, 'tracks', pending.albumQuery.offset, pending.album);
+          if (page.revision !== pending.albumRevision
+              || !page.hits.some(hit => JSON.stringify(hit) === JSON.stringify(pending.hit))) {
+            throw new Error('The cached album selection changed. Read it again before choosing music.');
+          }
         }
         if (pending.playlistQuery) {
           const value = await call('libraryPlaylist', { query: P.parameters(pending.playlistQuery) });
@@ -486,6 +533,8 @@ const LibraryRemote = (() => {
           el('strong', { text: `${label}: ${pending.hit.title || 'Untitled'}` }),
           el('p', { text: `Destination: ${pending.zone.label}` }), el('p', { text: warning }),
           pending.hit.position ? el('p', { text: `Playlist position ${pending.hit.position}. Uses the selected track's exact source.` }) : null,
+          pending.hit.disc != null && pending.hit.track != null ? el('p', { text: `Disc ${pending.hit.disc}, track ${pending.hit.track}. Source: ${pending.hit.source}` }) : null,
+          pending.hit.explicitKnown === false ? el('p', { text: 'Artist or explicit-content metadata may be unavailable for this catalog track.' }) : null,
           pending.hit.favorite && pending.action !== 'play'
             ? el('p', { text: 'Only track, album and playlist favorites can be queued. The household favorite is checked again before sending; stations use Play now.' }) : null,
           pending.hit.playedAt !== undefined && pending.action === 'play'
@@ -497,7 +546,7 @@ const LibraryRemote = (() => {
         const collection = state.browseAlbum || state.browsePlaylist;
         const heading = state.view === 'browse'
           ? `${collection ? `Cached tracks in ${collection.title || 'Untitled collection'}` : `Cached ${state.browseKind}`}: ${count
-            ? `${state.page.offset + 1}–${state.page.offset + count} of ${state.page.total}` : 'no matching entries'}. ${state.page.playlist ? P.describe(state.page.playlist) : 'This cache may include older entries and incomplete albums.'}`
+            ? `${state.page.offset + 1}–${state.page.offset + count} of ${state.page.total}` : 'no matching entries'}. ${state.page.playlist ? P.describe(state.page.playlist) : albumCoverage(state.page)}`
           : state.view === 'history'
           ? count ? `${count} recent recorded play(s) for this group. Times are shown in this browser's local time.`
             : 'No recorded plays for this group yet.'
@@ -508,7 +557,7 @@ const LibraryRemote = (() => {
         state.hits.forEach((hit, index) => {
           const row = el('li', {}, el('div', { class: 'track' },
             el('strong', { text: `${hit.position ? `${hit.position}. ` : ''}${hit.title || 'Untitled'}` }),
-            el('div', { class: 'by', text: [hit.kind, hit.subtitle].filter(Boolean).join(' · ') })));
+            el('div', { class: 'by', text: [hit.kind, hit.subtitle || (state.browseAlbum ? 'Artist unavailable' : '')].filter(Boolean).join(' · ') })));
           if (hit.playedAt !== undefined) {
             const at = new Date(hit.playedAt * 1000);
             row.append(el('time', { datetime: at.toISOString(), text: at.toLocaleString() }));
@@ -525,7 +574,8 @@ const LibraryRemote = (() => {
             if (state.browseAlbum && (hit.disc != null || hit.track != null)) {
               row.append(el('p', { class: 'by', text: `Disc ${hit.disc ?? '?'}, track ${hit.track ?? '?'}` }));
             }
-            if (hit.explicit) row.append(el('span', { class: 'by', text: 'Explicit' }));
+            if (hit.explicitKnown === false) row.append(el('span', { class: 'by', text: 'Explicit-content metadata unavailable' }));
+            else if (hit.explicit) row.append(el('span', { class: 'by', text: 'Explicit' }));
           }
           const locked = state.loading || state.writing || !state.target;
           const select = (action) => {
@@ -555,7 +605,7 @@ const LibraryRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { model, panel, routes, LIMIT, MAX_QUERY, routineSourceOf };
+  return { model, panel, routes, LIMIT, MAX_QUERY, routineSourceOf, albumCoverage };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = LibraryRemote;

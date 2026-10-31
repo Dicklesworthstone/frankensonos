@@ -30,17 +30,40 @@ const DashboardLibrary = (() => {
     return `/library/browse?${params}`;
   }
 
+  function albumObservationOf(value, albumUri, total = 0) {
+    if (value == null) return null;
+    if (!albumUri || !['complete', 'library_subset'].includes(value.coverage)
+        || !uint(value.cached_total) || value.cached_total < total
+        || (value.coverage === 'complete'
+          ? !Number.isSafeInteger(value.fetched_at) || value.fetched_at < 0 || value.fetched_at > 8640000000000
+          : value.fetched_at !== null)) {
+      fail('The cached album observation is incomplete. Refresh the listing.');
+    }
+    return Object.freeze({ coverage: value.coverage, fetched_at: value.fetched_at, cached_total: value.cached_total });
+  }
+
+  function albumCoverage(page) {
+    const observation = page?.albumObservation;
+    if (!observation) return 'This cache may include older entries and incomplete albums.';
+    if (observation.coverage === 'library_subset') {
+      return `Library subset: ${observation.cached_total} cached track(s) before filtering. No complete album observation is available.`;
+    }
+    return `Complete cached album: ${observation.cached_total} playable occurrence(s) before filtering. Read ${new Date(observation.fetched_at * 1000).toLocaleString()} (this browser’s time). Spotify may have changed since.`;
+  }
+
   function itemOf(item, query) {
     if (query.playlist_uri) return P.itemOf(item);
     if (!item || item.kind !== KINDS[query.kind] || !uri(item.source_uri, item.kind)
         || !text(item.title) || !text(item.subtitle ?? '') || typeof item.explicit !== 'boolean'
+        || (item.explicit_known !== undefined && typeof item.explicit_known !== 'boolean')
+        || (item.explicit_known === false && (!query.album_uri || item.explicit))
         || (query.album_uri && item.album_uri !== query.album_uri)
         || (query.kind === 'albums' && (!uint(item.cached_tracks) || item.cached_tracks < 1))
         || [item.disc_number, item.track_number].some((n) => n != null && !uint(n))) {
       fail('A cached music entry is incomplete. Refresh the listing.');
     }
     return Object.freeze({ kind: item.kind, source_uri: item.source_uri, title: item.title,
-      subtitle: item.subtitle ?? '', explicit: item.explicit,
+      subtitle: item.subtitle ?? '', explicit: item.explicit, explicit_known: item.explicit_known ?? true,
       album_uri: query.album_uri, cached_tracks: query.kind === 'albums' ? item.cached_tracks : null,
       disc_number: item.disc_number ?? null, track_number: item.track_number ?? null });
   }
@@ -56,17 +79,32 @@ const DashboardLibrary = (() => {
     }
     const end = query.offset + value.items.length, next = end < value.total ? end : null;
     if (value.next_offset !== next) fail('The library page positions disagree. Refresh the listing.');
+    const albumObservation = albumObservationOf(value.album_observation, query.album_uri, value.total);
+    const complete = albumObservation?.coverage === 'complete';
     const items = value.items.map((item) => itemOf(item, query));
-    if (new Set(items.map((item) => item.source_uri)).size !== items.length) {
+    if (new Set(items.map((item) => complete ? `${item.disc_number}:${item.track_number}` : item.source_uri)).size !== items.length) {
       fail('The library page contains duplicate identities. Refresh the listing.');
     }
-    return Object.freeze({ query, total: value.total, next, revision: value.revision, items: Object.freeze(items) });
+    let previous = null;
+    for (const item of items) {
+      if (!item.explicit_known && !complete) fail('The album metadata has no complete observation. Refresh the listing.');
+      if (complete && (!uint(item.disc_number) || !uint(item.track_number) || item.disc_number === 0 || item.track_number === 0
+          || (previous && (item.disc_number < previous.disc_number
+            || (item.disc_number === previous.disc_number && item.track_number <= previous.track_number))))) {
+        fail('The cached album positions disagree. Refresh the listing.');
+      }
+      previous = item;
+    }
+    return Object.freeze({ query, total: value.total, next, revision: value.revision, albumObservation, items: Object.freeze(items) });
   }
 
   function choiceOf(value) {
     if (!value || !text(value.revision, 256) || !value.revision.trim()) fail('Choose music from a fresh library page.');
     const query = queryOf(value.query);
-    return Object.freeze({ query, revision: value.revision, item: itemOf(value.item, query) });
+    const albumObservation = albumObservationOf(value.albumObservation, query.album_uri);
+    const item = itemOf(value.item, query);
+    if (!item.explicit_known && albumObservation?.coverage !== 'complete') fail('Choose this track from a complete album observation.');
+    return Object.freeze({ query, revision: value.revision, albumObservation, item });
   }
 
   function model({ call, changed = () => {} }) {
@@ -134,7 +172,7 @@ const DashboardLibrary = (() => {
     }
     function choose(item) {
       if (!ready() || !state.page.items.includes(item)) return null;
-      return choiceOf({ query: state.page.query, revision: state.page.revision, item });
+      return choiceOf({ query: state.page.query, revision: state.page.revision, albumObservation: state.page.albumObservation, item });
     }
     function album(item) {
       if (!choose(item) || item.kind !== 'album') return Promise.resolve(false);
@@ -158,7 +196,7 @@ const DashboardLibrary = (() => {
       dispose() { disposed = true; state.open = false; invalidate(); },
     };
   }
-  return { LIMIT, KINDS, queryOf, urlOf, pageOf, choiceOf, model,
+  return { LIMIT, KINDS, queryOf, urlOf, pageOf, choiceOf, model, albumCoverage,
     playlistCoverage: (page) => P.describe(page) };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardLibrary;

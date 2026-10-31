@@ -100,10 +100,29 @@ fn check_page(
     if page.next_offset != (end < page.total).then_some(end) {
         return Err(inconsistent());
     }
+    let complete_album = match &page.album_observation {
+        Some(observation) => {
+            if query.album_uri.is_none()
+                || observation.cached_total < page.total
+                || !matches!(observation.coverage.as_str(), "complete" | "library_subset")
+                || (observation.coverage == "complete") != observation.fetched_at.is_some()
+                || observation
+                    .fetched_at
+                    .is_some_and(|at| !(0..=8_640_000_000_000).contains(&at))
+            {
+                return Err(inconsistent());
+            }
+            observation.coverage == "complete"
+        }
+        None => false,
+    };
     let mut seen = HashSet::new();
+    let mut positions = HashSet::new();
+    let mut previous = None;
     for item in &page.items {
         if item.kind != item_kind
-            || !seen.insert(&item.source_uri)
+            || (!complete_album && !seen.insert(&item.source_uri))
+            || (!item.explicit_known && (!complete_album || item.explicit))
             || !source(&item.source_uri, item_kind)
             || query
                 .album_uri
@@ -111,6 +130,20 @@ fn check_page(
                 .is_some_and(|uri| item.album_uri.as_ref() != Some(uri))
         {
             return Err(inconsistent());
+        }
+        if complete_album {
+            let position = item
+                .disc_number
+                .zip(item.track_number)
+                .ok_or_else(inconsistent)?;
+            if position.0 == 0
+                || position.1 == 0
+                || !positions.insert(position)
+                || previous.is_some_and(|last| position <= last)
+            {
+                return Err(inconsistent());
+            }
+            previous = Some(position);
         }
     }
     if expected_revision.is_some_and(|expected| expected != page.revision) {
@@ -135,13 +168,31 @@ fn page_text(page: &BrowsePage) -> String {
         page.total,
         page.offset,
     );
+    if let Some(observation) = &page.album_observation {
+        if let Some(at) = observation.fetched_at {
+            let when = chrono::DateTime::from_timestamp(at, 0)
+                .map(|time| time.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| format!("{at} Unix seconds"));
+            let _ = writeln!(
+                text,
+                "Complete cached album: {} playable occurrence(s) before filtering; read {when}.",
+                observation.cached_total,
+            );
+        } else {
+            let _ = writeln!(
+                text,
+                "Library subset: {} cached track(s) before filtering; no complete album observation.",
+                observation.cached_total,
+            );
+        }
+    }
     for item in &page.items {
-        let _ = writeln!(
-            text,
-            "{} — {}",
-            one_line(&item.title),
-            one_line(&item.subtitle)
-        );
+        let subtitle = if item.kind == "track" && item.subtitle.is_empty() {
+            "Artist unavailable"
+        } else {
+            &item.subtitle
+        };
+        let _ = writeln!(text, "{} — {}", one_line(&item.title), one_line(subtitle));
         let _ = writeln!(text, "  source_uri: {}", one_line(&item.source_uri));
         if let Some(count) = item.cached_tracks {
             let _ = writeln!(
@@ -157,7 +208,9 @@ fn page_text(page: &BrowsePage) -> String {
                 let _ = writeln!(text, "  Disc {disc}, track {track}");
             }
         }
-        if item.explicit {
+        if !item.explicit_known {
+            text.push_str("  Explicit-content metadata unavailable\n");
+        } else if item.explicit {
             text.push_str("  Explicit content\n");
         }
     }

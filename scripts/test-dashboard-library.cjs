@@ -176,3 +176,59 @@ test('real loopback HTTP uses the existing cached-library endpoint with exact qu
   assert.equal(seen.length,3); assert.ok(seen.every(r=>r.method==='GET'&&r.url.startsWith('/library/browse?')));
   assert.equal(queryFrom(seen[2].url).offset,50); assert.equal(queryFrom(seen[2].url).q,'A & B');
 });
+
+function completedAlbumPage(input, revision = 'album-complete') {
+  const q = L.queryOf(input);
+  const items = ['Prelude', 'Scherzo', 'Adagio', 'Finale'].map((title, index) => ({
+    kind: 'track', source_uri: `spotify:track:${id(index === 3 ? 1 : index + 1)}`,
+    title, subtitle: index === 1 ? 'Known performer' : '', explicit: index === 1,
+    ...(index === 1 ? {} : { explicit_known: false }),
+    album_uri: q.album_uri, disc_number: index === 3 ? 2 : 1, track_number: index === 3 ? 1 : index + 1,
+  }));
+  const filtered = items.filter(row => !q.q || row.title.toLowerCase().includes(q.q.toLowerCase()));
+  return { kind: 'tracks', offset: q.offset, limit: 50, album_uri: q.album_uri, coverage: 'cached',
+    total: filtered.length, revision, next_offset: null, items: filtered.slice(q.offset, q.offset + 50),
+    album_observation: { coverage: 'complete', fetched_at: 100, cached_total: 4 } };
+}
+
+test('completed album pages preserve ordered duplicate occurrences and per-track metadata provenance', () => {
+  const q = { kind: 'tracks', album_uri: `spotify:album:${id(7)}` };
+  const p = L.pageOf(completedAlbumPage(q), q);
+  assert.deepEqual(p.items.map(row => [row.disc_number, row.track_number]), [[1, 1], [1, 2], [1, 3], [2, 1]]);
+  assert.equal(p.items[0].source_uri, p.items[3].source_uri);
+  assert.equal(p.items[0].subtitle, ''); assert.equal(p.items[0].explicit_known, false);
+  assert.equal(p.items[1].explicit_known, true); assert.equal(p.items[1].explicit, true);
+  assert.equal(p.albumObservation.cached_total, 4); assert.equal(p.albumObservation.fetched_at, 100);
+  assert.match(L.albumCoverage(p), /Complete cached album: 4/); assert.match(L.albumCoverage(p), /Read /);
+  assert.throws(() => { p.albumObservation.coverage = 'library_subset'; }, TypeError);
+  const filtered = L.pageOf(completedAlbumPage({ ...q, q: 'finale' }), { ...q, q: 'finale' });
+  assert.equal(filtered.total, 1); assert.equal(filtered.albumObservation.cached_total, 4);
+  assert.equal(filtered.items[0].disc_number, 2);
+});
+
+test('complete album validation rejects invented known metadata and duplicate or missing positions', () => {
+  const q = { kind: 'tracks', album_uri: `spotify:album:${id(7)}` };
+  for (const change of [
+    p => { p.items[0].explicit = true; }, p => { p.items[0].explicit_known = null; },
+    p => { p.items[0].track_number = null; }, p => { p.items[0].disc_number = 0; },
+    p => { p.items[1].track_number = 1; }, p => { p.items.reverse(); },
+    p => { p.album_observation.fetched_at = null; }, p => { p.album_observation.fetched_at = -1; },
+    p => { p.album_observation.cached_total = 1; },
+  ]) {
+    const p = completedAlbumPage(q); change(p); assert.throws(() => L.pageOf(p, q));
+  }
+});
+
+test('album drill-down and filtering keep complete observation evidence in a selected occurrence', async () => {
+  const f = fixture(); await f.model.open();
+  f.hook(url => completedAlbumPage(queryFrom(url)));
+  assert.equal(await f.model.album(f.model.state.page.items[0]), true);
+  f.model.edit('Finale'); assert.equal(await f.model.refresh(), true);
+  const choice = f.model.choose(f.model.state.page.items[0]);
+  assert.equal(choice.albumObservation.coverage, 'complete');
+  assert.equal(choice.albumObservation.cached_total, 4);
+  assert.equal(choice.item.explicit_known, false);
+  assert.equal(choice.item.disc_number, 2); assert.equal(choice.item.track_number, 1);
+  assert.equal(choice.query.q, 'Finale');
+  assert.match(L.albumCoverage({ albumObservation: { coverage: 'library_subset', fetched_at: null, cached_total: 1 } }), /Library subset: 1/);
+});

@@ -70,11 +70,33 @@ public struct LibraryCatalogItem: Decodable, Equatable, Identifiable, Sendable {
     public let cachedTracks: UInt32?
     public let discNumber: UInt32?
     public let trackNumber: UInt32?
-    public var id: String { sourceUri }
+    private let explicitKnownValue: Bool?
+    fileprivate var occurrenceIdentity: String? = nil
+    public var explicitKnown: Bool { explicitKnownValue ?? true }
+    public var id: String { occurrenceIdentity ?? sourceUri }
+
+    private enum CodingKeys: String, CodingKey {
+        case sourceUri, title, kind, subtitle, explicit, albumUri, cachedTracks, discNumber, trackNumber
+        case explicitKnownValue = "explicitKnown"
+    }
+}
+
+/// A complete observation is the daemon's last fully fetched playable album,
+/// not a claim that the source is still available or that all metadata is known.
+public struct LibraryAlbumObservation: Decodable, Equatable, Sendable {
+    public let coverage: String
+    public let fetchedAt: Int64?
+    public let cachedTotal: UInt32
+
+    public var description: String {
+        coverage == "complete"
+            ? "Complete cached album: \(cachedTotal) playable track positions"
+            : "Saved-library subset: \(cachedTotal) cached tracks"
+    }
 }
 
 public struct LibraryCatalogPage: Decodable, Equatable, Sendable {
-    public let items: [LibraryCatalogItem]
+    public private(set) var items: [LibraryCatalogItem]
     public let total: UInt32
     public let offset: UInt32
     public let limit: UInt32
@@ -83,6 +105,7 @@ public struct LibraryCatalogPage: Decodable, Equatable, Sendable {
     public let albumUri: String?
     public let revision: String
     public let coverage: String
+    public let albumObservation: LibraryAlbumObservation?
 
     /// Never join pages across revisions or guess identities from titles.
     public func validated(for request: LibraryBrowseRequest) throws -> Self {
@@ -92,14 +115,44 @@ public struct LibraryCatalogPage: Decodable, Equatable, Sendable {
         guard kind == request.category, offset == request.offset,
               limit == LibraryBrowseRequest.pageSize, albumUri == request.albumUri,
               coverage == "cached", !revision.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              revision.utf8.count <= 256, items.count == Int(count), nextOffset == expectedNext,
-              Set(items.map(\.id)).count == items.count else { throw LibraryCatalogError.invalidPage }
-        for item in items {
+              revision.utf8.count <= 256, items.count == Int(count), nextOffset == expectedNext else {
+            throw LibraryCatalogError.invalidPage
+        }
+        let complete = albumObservation?.coverage == "complete"
+        if let observation = albumObservation {
+            guard request.albumUri != nil, observation.cachedTotal >= total,
+                  observation.coverage == "complete" || observation.coverage == "library_subset",
+                  complete ? observation.fetchedAt.map({ (0...8_640_000_000_000).contains($0) }) == true : observation.fetchedAt == nil else {
+                throw LibraryCatalogError.invalidPage
+            }
+        }
+        var result = self
+        var identities = Set<String>()
+        var previous: (UInt32, UInt32)?
+        result.items = try items.map { original in
+            var item = original
             guard item.kind == kind.itemKind, LibraryBrowseRequest.source(item.sourceUri, kind: item.kind),
                   request.albumUri == nil || item.albumUri == request.albumUri,
-                  kind != .albums || (item.cachedTracks ?? 0) > 0 else { throw LibraryCatalogError.invalidPage }
+                  kind != .albums || (item.cachedTracks ?? 0) > 0,
+                  item.explicitKnown || (complete && !item.explicit) else {
+                throw LibraryCatalogError.invalidPage
+            }
+            item.occurrenceIdentity = nil
+            if complete {
+                guard let album = request.albumUri, let disc = item.discNumber, disc > 0,
+                      let track = item.trackNumber, track > 0 else { throw LibraryCatalogError.invalidPage }
+                if let previous {
+                    guard disc > previous.0 || (disc == previous.0 && track > previous.1) else {
+                        throw LibraryCatalogError.invalidPage
+                    }
+                }
+                previous = (disc, track)
+                item.occurrenceIdentity = "\(album)#disc:\(disc):track:\(track)"
+            }
+            guard identities.insert(item.id).inserted else { throw LibraryCatalogError.invalidPage }
+            return item
         }
-        return self
+        return result
     }
 }
 

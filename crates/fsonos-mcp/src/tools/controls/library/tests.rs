@@ -575,3 +575,67 @@ fn playlist_stale_revisions_bad_pages_and_daemon_errors_are_terminal() {
         assert_eq!(daemon.calls.lock().unwrap().len(), 1);
     }
 }
+
+#[test]
+fn completed_album_metadata_and_occurrences_reach_agent_text_and_structured_content() {
+    let mut store = MemStore::default();
+    let tracks = (1..=3)
+        .map(|track_number| fsonos_core::store::AlbumTrack {
+            disc_number: 1,
+            track_number,
+            source_uri: "spotify:track:Repeated".into(),
+            title: format!("Movement {track_number}"),
+            duration_secs: Some(180),
+        })
+        .collect::<Vec<_>>();
+    store
+        .save_album_tracks("spotify:album:Completed", &tracks, 100)
+        .unwrap();
+    let surface = Surface::new(
+        Box::new(NoLan),
+        Box::new(|_| panic!("album browsing must not discover speakers")),
+        Policy::default(),
+        Box::new(SystemClock),
+    )
+    .with_action_log(Box::new(store), "mcp-test");
+    let backend = Backend::shared(Arc::new(surface), Client::McpStdio);
+    let query = BrowseQuery {
+        album_uri: Some("spotify:album:Completed".into()),
+        q: Some("movement".into()),
+        ..BrowseQuery::default()
+    };
+    let result = backend.browse_library(&query, None).unwrap();
+    let rendered = serde_json::to_string(&result).unwrap();
+    assert!(rendered.contains("Complete cached album: 3"));
+    assert!(rendered.contains("1970-01-01 00:01:40 UTC"));
+    assert!(rendered.contains("Explicit-content metadata unavailable"));
+    let page = data(result);
+    assert_eq!(page.total, 3);
+    assert_eq!(page.album_observation.as_ref().unwrap().cached_total, 3);
+    assert_eq!(
+        page.album_observation.as_ref().unwrap().coverage,
+        "complete"
+    );
+    assert_eq!(
+        page.items
+            .iter()
+            .map(|row| row.track_number)
+            .collect::<Vec<_>>(),
+        [Some(1), Some(2), Some(3)]
+    );
+    assert!(
+        page.items
+            .iter()
+            .all(|row| !row.explicit_known && row.subtitle.is_empty())
+    );
+    assert_eq!(page.items[0].source_uri, page.items[2].source_uri);
+    let global = data(
+        backend
+            .browse_library(&BrowseQuery::default(), None)
+            .unwrap(),
+    );
+    assert_eq!(
+        global.total, 0,
+        "catalog completion is not a personal-library write"
+    );
+}
