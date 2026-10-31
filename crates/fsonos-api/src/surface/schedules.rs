@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use super::announce::{AnnounceRequest, AnnouncementPermit};
 use super::{Surface, room_view};
 use crate::dj::DjDirectionDto;
 use crate::execute::OutcomeDto;
@@ -46,6 +47,7 @@ use crate::failure::{ErrorCode, Failure};
 use crate::plan::{self, TransportAction, resolve};
 use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, zone_name};
 
+mod announcements;
 mod dispatch;
 mod recovery;
 mod sleep_dispatch;
@@ -331,9 +333,9 @@ pub struct ScheduleRequest {
     /// Wall times are the house's local time.
     pub when: String,
     /// What it does: `dj_start` (zone), `pause` (zone, optional fade_secs),
-    /// `volume` (zone, volume) or `apply_scene` (scene).
+    /// `volume` (zone, volume), `apply_scene` (scene), or `announce` (announcement).
     pub action: String,
-    /// The room it acts on (every action but apply_scene).
+    /// The room it acts on (every action but apply_scene and announce).
     #[serde(default)]
     pub zone: Option<String>,
     /// apply_scene: the scene's name.
@@ -353,6 +355,10 @@ pub struct ScheduleRequest {
     /// pause: fade out over this many seconds first (at most 600).
     #[serde(default)]
     pub fade_secs: Option<u32>,
+    /// announce: a speech or chime recipe; WAV uploads are not scheduled.
+    /// Its rooms, voice and volume follow the immediate announcement request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announcement: Option<AnnounceRequest>,
 }
 
 impl ScheduleRequest {
@@ -409,7 +415,24 @@ impl ScheduleRequest {
             self.mood.is_some(),
         );
         let (volume_set, fade_set) = (self.volume.is_some(), self.fade_secs.is_some());
+        if kind != "announce" {
+            refuse(&[("announcement", self.announcement.is_some())])?;
+        }
         match kind.as_str() {
+            "announce" => {
+                refuse(&[
+                    ("zone", zone_set),
+                    ("scene", scene_set),
+                    ("mood", mood_set),
+                    ("direction", self.direction.is_some()),
+                    ("volume", volume_set),
+                    ("fade_secs", fade_set),
+                ])?;
+                let request = self.announcement.as_ref().ok_or_else(|| {
+                    Failure::invalid("an announce schedule needs an `announcement`")
+                })?;
+                announcements::action(request)
+            }
             "dj_start" => {
                 refuse(&[
                     ("scene", scene_set),
@@ -475,7 +498,7 @@ impl ScheduleRequest {
             }
             _ => Err(
                 Failure::invalid(format!("{:?} is not a schedule action", self.action))
-                    .with_hint("Use dj_start, pause, volume or apply_scene."),
+                    .with_hint("Use dj_start, pause, volume, apply_scene or announce."),
             ),
         }
     }
@@ -495,7 +518,7 @@ pub struct ScheduleDto {
     pub id: i64,
     /// When it runs, as stored: `weekdays 07:30`, or `once <RFC 3339>`.
     pub when: String,
-    /// `dj_start`, `pause`, `volume` or `apply_scene`.
+    /// `dj_start`, `pause`, `volume`, `apply_scene` or `announce`.
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
@@ -509,6 +532,8 @@ pub struct ScheduleDto {
     pub volume: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub announcement: Option<AnnounceRequest>,
     /// What it does, in words.
     pub summary: String,
     /// The client that added it: each run has that client's rights.
@@ -529,6 +554,7 @@ impl ScheduleDto {
         let (mut zone, mut scene, mut mood, mut volume, mut fade_secs) =
             (None, None, None, None, None);
         let mut direction = None;
+        let mut announcement = None;
         match &s.action {
             ScheduleAction::DjStart {
                 room,
@@ -548,6 +574,13 @@ impl ScheduleDto {
                 volume = Some(*level);
             }
             ScheduleAction::ApplyScene { name } => scene = Some(name.clone()),
+            ScheduleAction::Announce {
+                source,
+                rooms,
+                volume: level,
+            } => {
+                announcement = Some(announcements::request(source, rooms, *level));
+            }
         }
         Self {
             id: s.id,
@@ -559,6 +592,7 @@ impl ScheduleDto {
             direction,
             volume,
             fade_secs,
+            announcement,
             summary: summary(&s.action),
             creator: s.creator.clone(),
             enabled: s.enabled,
@@ -585,6 +619,7 @@ fn action_kind(action: &ScheduleAction) -> &'static str {
         ScheduleAction::Pause { .. } => "pause",
         ScheduleAction::Volume { .. } => "volume",
         ScheduleAction::ApplyScene { .. } => "apply_scene",
+        ScheduleAction::Announce { .. } => "announce",
     }
 }
 
@@ -625,6 +660,11 @@ pub fn summary(action: &ScheduleAction) -> String {
         ),
         ScheduleAction::Volume { room, level } => format!("set {room}'s volume to {level}"),
         ScheduleAction::ApplyScene { name } => format!("apply the scene {name}"),
+        ScheduleAction::Announce {
+            source,
+            rooms,
+            volume,
+        } => announcements::summary(source, rooms, *volume),
     }
 }
 
@@ -1407,6 +1447,12 @@ impl Surface {
         let now = self.clock.now();
         let spec = ScheduleSpec::parse(&req.when, now).map_err(|e| schedule_failure(&e))?;
         match &action {
+            ScheduleAction::Announce { rooms: names, .. } => {
+                let households = self.households()?;
+                let aliases = self.aliases();
+                let rooms = room_view(&households, aliases.as_ref(), client);
+                announcements::targets_ready(&rooms, names)?;
+            }
             // A saved scene (UNKNOWN_SCENE with the nearest names if not).
             ScheduleAction::ApplyScene { name } => {
                 self.scene(client, name)?;
@@ -1750,7 +1796,11 @@ impl Surface {
 
 /// Carry `schedule` out as its creator, through the surface's one control
 /// path; answers what was done.
-fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
+fn fire(
+    surface: &Surface,
+    schedule: &Schedule,
+    announcement: Option<AnnouncementPermit<'_>>,
+) -> Result<String, Failure> {
     let client = client_of(&schedule.creator);
     let zone = |room: &str| ZoneRequest { zone: room.into() };
     match &schedule.action {
@@ -1816,6 +1866,17 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
                 })
                 .map(|o| o.done)
         }
+        ScheduleAction::Announce {
+            source,
+            rooms,
+            volume,
+        } => surface
+            .announce_admitted(
+                &client,
+                &announcements::request(source, rooms, *volume),
+                announcement,
+            )
+            .map(|announced| announced.done),
         ScheduleAction::ApplyScene { name } => surface
             .apply_scene_fading(&client, name, policy_fade(surface))
             .map(|applied| {

@@ -103,6 +103,7 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
     public let scene: String?
     public let mood: String?
     public let direction: DJDirection?
+    public let announcement: SavedAnnouncement?
     public let volume: Int?
     public let fadeSecs: UInt32?
     public let summary: String
@@ -113,15 +114,17 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
 
     public init(id: Int64, when: String, action: String, zone: String?, scene: String?, mood: String?,
                 volume: Int?, fadeSecs: UInt32?, summary: String, creator: String, enabled: Bool,
-                next: String?, lastFired: String?, direction: DJDirection? = nil) {
+                next: String?, lastFired: String?, direction: DJDirection? = nil, announcement: SavedAnnouncement? = nil) {
         self.id = id; self.when = when; self.action = action; self.zone = zone; self.scene = scene
         self.mood = mood; self.direction = direction; self.volume = volume; self.fadeSecs = fadeSecs
         self.summary = summary; self.creator = creator; self.enabled = enabled
-        self.next = next; self.lastFired = lastFired
+        self.next = next; self.lastFired = lastFired; self.announcement = announcement
     }
 
     public var stateLabel: String { !enabled ? "Paused" : (next == nil ? "No next run reported" : "Enabled") }
-    public var targetLabel: String { scene.map { "Scene: " + $0 + " (house-wide)" } ?? zone ?? "Unspecified" }
+    public var targetLabel: String {
+        announcement?.targetLabel ?? scene.map { "Scene: " + $0 + " (house-wide)" } ?? zone ?? "Unspecified"
+    }
     public var djSummary: String? {
         guard action == "dj_start" else { return nil }
         return direction?.summary(mood: mood) ?? mood.map { "DJ mood: " + $0 } ?? "Start the DJ with its existing direction"
@@ -137,6 +140,10 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
             throw ContractError.invalid("A saved DJ direction is attached to another scheduled action.")
         }
         _ = try direction?.validated(mood: mood)
+        guard action == "announce" || announcement == nil else {
+            throw ContractError.invalid("An announcement recipe is attached to another scheduled action.")
+        }
+        _ = try announcement?.validated()
         let valid: Bool
         switch action {
         case "dj_start":
@@ -147,6 +154,8 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
             valid = zone.map(scheduleText) == true && scene == nil && mood == nil && fadeSecs == nil && volume.map({ (0...100).contains($0) }) == true
         case "apply_scene":
             valid = scene.map(scheduleText) == true && zone == nil && mood == nil && volume == nil && fadeSecs == nil
+        case "announce":
+            valid = announcement != nil && zone == nil && scene == nil && mood == nil && volume == nil && fadeSecs == nil
         default: valid = false
         }
         guard valid else { throw ContractError.invalid("The schedule action is incomplete or unsupported.") }
@@ -166,6 +175,7 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
         if let scene { fields["scene"] = .string(scene) }
         if let mood { fields["mood"] = .string(mood) }
         if let direction { fields["direction"] = .object(direction.fields) }
+        if let announcement { fields["announcement"] = .object(announcement.fields) }
         if let volume { fields["volume"] = .integer(Int64(volume)) }
         if let fadeSecs, fadeSecs > 0 { fields["fade_secs"] = .integer(Int64(fadeSecs)) }
         return fields
@@ -246,7 +256,7 @@ public enum ScheduleCommand: Equatable, Sendable {
         switch self {
         case .add(let draft): "\((try? draft.time.canonical()) ?? "Invalid time"): \(draft.action.description)"
         case .change(let schedule, _):
-            ["#\(schedule.id) • \(schedule.when)", schedule.summary, schedule.djSummary,
+            ["#\(schedule.id) • \(schedule.when)", schedule.summary, schedule.djSummary, schedule.announcement?.summary,
              schedule.targetLabel, "Runs as: \(schedule.creator)"].compactMap { $0 }.joined(separator: "\n")
         }
     }
@@ -311,7 +321,7 @@ public enum ScheduleCommand: Equatable, Sendable {
         let removed = if case .change(_, .remove) = self { true } else { false }
         let status = removed ? "This definition was removed; the response describes what it was." :
             actual.next.map { "Next run reported by the daemon: " + $0 } ?? actual.stateLabel
-        let detail = [actual.when, actual.summary, actual.djSummary, actual.targetLabel, "Runs as: " + actual.creator,
+        let detail = [actual.when, actual.summary, actual.djSummary, actual.announcement?.summary, actual.targetLabel, "Runs as: " + actual.creator,
                       status, "This confirms a schedule change, not successful playback. An already-started run may still finish."].compactMap { $0 }.joined(separator: "\n")
         return ScheduleReceipt(schedule: actual, title: title, detail: detail, removed: removed)
     }

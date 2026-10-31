@@ -63,7 +63,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/schedules",
                 "add_schedule",
                 SCHEDULES,
-                "Start the DJ, pause, or set a volume at a time, once or every week",
+                "Schedule the DJ, a scene, pause, volume, speech or a chime, once or every week",
             ),
             |s, c, req| answer(body::<ScheduleRequest>(req).and_then(|r| s.add_schedule(c, &r))),
         )
