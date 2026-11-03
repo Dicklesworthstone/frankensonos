@@ -484,3 +484,48 @@ policy+108 (`0x60228e`) → composed==policy+112 (`0x602294`) → exp string-for
 (`0x602494`, `__to_xstring 0x489364`) → rotation/invalid-expiry flags +164/+168 vs +128/+132 →
 issuer compare `0x602400` (`std::operator==` `0x48cb64`). Success log `Device token is valid.`
 (`0x6afa08`); issuer fail `Device token not minted by this device.` (`0x6af9e0`).
+
+## 2026-11-03 (b) · handler/ctx wiring re-read on the S2 86.10 image; one nuance on the iss compare
+
+Re-read of `0x603b68` (museinfoservices handler) and `0x6021e4` (inspector) on
+`captures/firmware/s2_overlay/bin/anacapad` (the image whose addresses the bead uses — `.text`
+0x466d80–0x6643f0, `.rodata` from 0x664950):
+
+- Handler ctx (`a1`) contract confirmed: null-checks `ctx+4`, `ctx+12`, `ctx+16`, then a
+  virtual call at vtable byte 8 (idx 2) on `*(ctx+4)` whose result must equal **2** before the
+  inspector runs (`0x603b74`–`0x603b8c`). The only class family in the image whose idx 2 is a
+  bare `li v0,2; jr ra` stub (`0x5a0da5`) is `sonos::logger::BackendConfig`
+  (`_ZTVN5sonos6logger19StderrBackendConfigE` at `0x6f2210`; NoFilter returns 1, Custom 0) —
+  so the type==2 gate is a backend/type tag on the ctx+4 object, not the actor itself.
+- Service tables confirmed as inline-name structs in `.rodata`:
+  `0x6afab0 = {0x601e85, 0x601e89, 0x603b69} + "museinfoservicesubject"`,
+  `0x6afb00 = {0x603d29, 0x603d6d, 0x6040a9} + "museinfoserviceobserver"`. No static
+  reference to `0x6afab0` exists anywhere in the image (no lui/addiu pair, GOT, .data or
+  jalx target) — the registrar receives the table address at runtime; the walk is data-driven.
+- Inspector args re-derived from the `save a0-a3,240` spill order:
+  `inspector(out, ctx, token=a2, policy=a3)` where the handler passes
+  `a2 = sp+516` (the parsed-token claims struct) and `a3 = sp+32`. Inside the inspector,
+  `248(sp)` = token, `252(sp)` = policy. The token-claims binder (`0x605810`/`0x605940`)
+  binds `iss, sub, aud, systemId, riat, rexp, scp, pinEpoch, jti` plus the numeric claim
+  slots; the JWT-header serializer (`0x604adc`, class vtable `0x6aff4c`) emits
+  `_objectType/x5c/alg/kid`, confirming `sp+516` is the full parsed JWT object.
+- Composer inputs re-read (`0x602256`–`0x602284`): `a1 = sp+32` is the result of virtual
+  **idx 4 (byte 16) on `*(ctx+4)`** — the actor device-description lookup `0x47bb01` — and
+  `a2 = sp+128` is validator slot 12 or the anacapa.conf literal. The final issuer compare
+  (`0x602400`) is `std::operator==` between **`sp+32` (the actor-description string, last
+  written by the idx-4 call) and `*(token+8)` (the `iss` claim)** — not directly the id-25
+  fallback. The id-25/anacapa.conf string is what the inspector stores into the *result*
+  struct (`s0+7`, `0x602238`) and feeds the composer's second input via `sp+128`.
+- Gate order, expiry path (`%llu` via `__to_xstring 0x489364`, the +164/+168 rotation flags,
+  the `+3600` slack on `*(ctx+12)` slot 40 at `0x6023ee`/`0x602442`) and the five log strings
+  (`Device token not minted in this HH.` / `Token is expired, security settings have changed`
+  / `Device token missing expiration time.` / `Device token has invalid expiration time.` /
+  `Device token expired.` / `Device token not minted by this device.` /
+  `Device token is valid.` at `0x6af900`–`0x6afa08`) all re-verified against clean
+  disassembly — no change to the documented gate order.
+- Live-test consequence: the iss compare target is **the actor device-description string for
+  the caller's UUID**, so the token's `iss` claim must byte-equal what `0x47bb01` returns from
+  the topology map (the `advert_desc`-derived description of the local player), *not* a
+  constant. The bare-`urn:dev:ops:44974-zp-` prediction holds only if that lookup misses and
+  the empty/fallback path is taken — worth one more live burn with `dmesg`/`muse_token_inspector`
+  log capture to disambiguate which of the two targets the compare actually used.
