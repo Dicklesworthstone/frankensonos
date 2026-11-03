@@ -373,3 +373,19 @@ LilacKnoll (%10, f4k), SageElm (%11, v8z). All six beads reassigned; lane
 orders carry the full inherited evidence base. Prior rootswarm2 findings all
 merged to main before the swap (through e9dc072c lineage + f6848ece notify
 kills + ca63c25f H-003 re-attribution).
+
+## Update 2026-11-03 (f) — /notify dispatch RESOLVED: wild vtable from a 1-byte arena block
+
+SageElm (v8z, d6b6e2d1): the `/notify` handler (`0x1028a5b8`) loads the
+singleton from `0x10545dc8` and calls `vt[0x2c](this, sid, seq, nts, nt)` — but
+the ONLY writer of that slot (`0x10222294`) bump-allocates a **1-byte block**
+and never stores a vtable. So `vt = *(singleton)` reads neighbouring arena
+allocations and `vt[0x2c]` is a **wild call into pool contents** — the
+variable 5.0–15.6s first-down (watchdog-window-shaped) matches a hang or slow
+wild path, not a clean SIGSEGV. Bonus find: the arena allocator (`0x10222778`)
+only succeeds for sizes that are NOT 8-aligned. This is a genuine
+uninitialized-dispatch primitive: the neighbouring allocations determine the
+landing site, and they are shapeable by prior traffic. DarkForest (q57,
+e6cee2a8) simultaneously measured the .202 trigger cycle and identified the
+DNS blocker (resolver = router via DHCP; owner decision: router DHCP scope
+flip). Both merged.
