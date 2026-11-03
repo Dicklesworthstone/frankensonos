@@ -84,7 +84,7 @@ can drive:
 | **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
 | **DJ** | `dj start` with optional mood, artists, genres, decades or other steering constraints in one request, `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords (which also match genres), work length or energy, and for classical music by composers and periods, any of them left out too (`--not-decade 80s`, `--not-genre pop`), for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj rehearse` plans the set it would play from any hour, with each pick's reasons and how varied each hour is, without playing anything; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays, or `--from dinner.toml` writes one out (a favorite, a stream, a Spotify link or the DJ with a mood and full direction per group). A captured DJ retains its added filters and remaining lifetime; [reusable directions](docs/DJ_DIRECTIONS.md) restart that lifetime on recall. A captured normal queue remembers its selected occurrence, position and known shuffle/repeat mode; [recall requires that original queue to remain unchanged](docs/SCENE_QUEUES.md). `scene apply dinner` sends only the steps the house needs, `--fade 20s` ramps the volumes there, and `fsonos undo` attempts to restore the prior state |
-| **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright` (the mood lasts until the time-of-day program changes, then the program takes over), or use the full DJ direction flags, such as `--genre jazz --artist 'Miles Davis' --for 2h`, to reapply those settings on each run; `--automatic` clears prior steering. Also schedule a pause, a volume, a scene (ramped over the policy's fade), or a [spoken reminder or chime](docs/SCHEDULED_ANNOUNCEMENTS.md), at times or after delays; runs with the rights of whoever added it; a restarted daemon picks its sleep timers up again |
+| **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright` (the mood lasts until the time-of-day program changes, then the program takes over), or use the full DJ direction flags, such as `--genre jazz --artist 'Miles Davis' --for 2h`, to reapply those settings on each run; `--automatic` clears prior steering. Also schedule a pause, a volume or a scene (ramped over the policy's fade), at times or after delays; runs with the rights of whoever added it; a restarted daemon picks its sleep timers up again |
 | **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` with offline Linux speech (FrankenTTS, espeak-ng or Piper) or macOS `say`; `chime bell`; `announce --file clip.wav`. Policy-capped playback restores the previous music and speaker state |
 | **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so (the local CLI runs uncapped by default); `fsonos log` / `undo`, `fsonos policy show` / `check` |
 | **Setup & diagnosis** | `fsonos setup` walks a first run (including your Spotify app and sign-in); `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon, the store's free disk space and the Tailscale chain, and names the fix for each problem |
@@ -112,8 +112,6 @@ fsonos dj rehearse "Living Room" --at 23:00       # what it would play at 23:00,
 fsonos scene save dinner && fsonos scene apply dinner
 fsonos sleep Bedroom 45m                          # fade out, then pause
 fsonos schedule add "weekdays 07:30" dj start Kitchen --mood bright
-fsonos schedule add "weekdays 08:15" say "Time to leave" --rooms Kitchen,Office --volume 25
-fsonos schedule add "daily 12:00" chime bell --rooms Office
 fsonos say "Dinner is ready" --rooms Kitchen,Office
 fsonos announce --file clip.wav --rooms Kitchen   # an existing 16-bit PCM WAV
 fsonos stream Kitchen --input alsa_output.example.monitor  # Linux desktop audio (Ctrl-C stops)
@@ -153,28 +151,14 @@ audio service or cloud relay. `--daemon-url` is not supported for live capture:
 the computer running `stream` must reach the players and be reachable by them.
 
 **Video lip-sync is experimental:** Sonos buffers HTTP-radio playback by
-seconds, and the delay drifts. `--latency-wav` measures the delay from a
-time-aligned reference/microphone recording, and
-`--sync-mpv <socket> --sync-input <source>` keeps an existing mpv player's
-`audio-delay` corrected while streaming. On Linux, launch mpv into a temporary
-output and use a room microphone for startup calibration and continuing
-correction in one command:
-
-```bash
-fsonos stream Kitchen --virtual-output movie --sync-launched-mpv \
-  --sync-microphone room_mic --sync-probe movie -- mpv movie.mkv
-```
-
-Replace `room_mic` with your Pulse microphone source. `--sync-probe movie`
-opts into audible calibration noise on that output; omit it to measure from
-the movie's own audio. Managed launch supplies a private IPC socket and Pulse
-routing, waits for that exact child to become ready, and uses the existing
-ownership-checked delay correction and cleanup. User configuration and automatically loaded user
-scripts are disabled. See [Application streaming](docs/STREAM_APPLICATION.md)
-for the launch contract and [Acoustic calibration](docs/AUDIO_CALIBRATION.md)
-for the capture setup. Physical Sonos routing and video timing still require
-installation-specific acceptance; simulator and process tests do not establish
-audible synchronization.
+seconds, and the delay drifts. Plain `stream` is for listening, not for
+in-sync video audio. `--latency-wav` measures the delay from a time-aligned
+reference/microphone recording, and `--sync-mpv <socket> --sync-input <source>`
+keeps mpv's `audio-delay` corrected from a live paired reference/microphone
+source while streaming. Both need a capture setup described in
+[Acoustic calibration](docs/AUDIO_CALIBRATION.md) and are not yet qualified on
+real speakers; startup calibration chirps and automatic source pairing remain
+tracked in issue #2.
 
 ### Offline speech and WAV announcements
 
@@ -227,25 +211,8 @@ The daemon is the only thing that leaves your LAN, and only onto your tailnet:
 ```bash
 fsonos serve            # API on loopback + every tailnet address, MCP on loopback; prints the URLs
 fsonos tailscale setup  # Serve: https://<mac>.<tailnet>.ts.net/ (API), :8443/mcp (MCP)
-FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos --json events  # live changes anywhere on the tailnet
-FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos doctor --only lan  # diagnose the daemon's LAN
 fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon answering, Serve in front
 ```
-
-`fsonos doctor --daemon` and `fsonos --daemon-url <url> doctor` run the checks
-on the selected daemon, including its LAN, Spotify account, store and listener
-settings. `--only <prefix>` filters the report and its exit status: 0 for passes,
-6 for warnings, 7 for failures. Text and `--json` have the same shape as local
-diagnosis. An unavailable or refusing daemon returns an error; an ordinary
-`fsonos doctor` or an explicit `--direct` diagnoses the local host.
-
-`fsonos events` follows a daemon URL over HTTP or certificate-validated HTTPS,
-using the same event journal as the local stream. `--since <id>` resumes after
-a previously printed event; `--count N` stops after N lines. Temporary read
-failures retry three times with backoff and retain the cursor. When the daemon
-reports lost journal history, an `events.reset` line comes before the available
-events, so consumers know to reread current state. Ctrl-C stops a
-waiting follower promptly.
 
 - `fsonos tailscale setup` maps HTTPS on 443 (API) and 8443 (MCP) to the
   daemon's loopback ports, refuses to run while Funnel is on for either port,

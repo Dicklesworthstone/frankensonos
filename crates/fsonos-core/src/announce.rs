@@ -201,17 +201,6 @@ impl HouseholdAnnouncement {
     }
 }
 
-/// Boundary work that belongs to one household's announcement turn.
-/// Both callbacks run while that turn is held; households remain independent.
-pub struct AnnouncementCallbacks<'a> {
-    /// The maximum level for each target room, before any playback changes.
-    pub cap: &'a (dyn Fn(&Room) -> u8 + Sync),
-    /// Called after restoration, including failed or partial restoration,
-    /// before another announcement can enter this household. May resume a
-    /// suspended timer only when the report confirms it is still appropriate.
-    pub completed: &'a (dyn Fn(&HouseholdState, &HouseholdAnnouncement) + Sync),
-}
-
 /// What an announcement did, per household.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnnounceReport {
@@ -357,31 +346,6 @@ impl Announcer {
         cap: &(dyn Fn(&Room) -> u8 + Sync),
         live: Option<&Live>,
     ) -> Result<AnnounceReport, AnnounceError> {
-        self.announce_with_callbacks(
-            t,
-            targets,
-            clip,
-            volume,
-            live,
-            &AnnouncementCallbacks {
-                cap,
-                completed: &|_, _| {},
-            },
-        )
-    }
-
-    /// Announce with boundary work that completes before each household's
-    /// turn ends. In a multi-household call, completion does not wait for the
-    /// other households; a queued clip cannot overtake recovery of its own.
-    pub fn announce_with_callbacks<T: Transport + Sync + ?Sized>(
-        &self,
-        t: &T,
-        targets: &[ControlTarget<'_>],
-        clip: &Clip,
-        volume: u8,
-        live: Option<&Live>,
-        callbacks: &AnnouncementCallbacks<'_>,
-    ) -> Result<AnnounceReport, AnnounceError> {
         let playback = Playback { clip, live };
         let mut by_household: Vec<(&HouseholdState, Vec<&Room>)> = Vec::new();
         for target in targets {
@@ -406,10 +370,7 @@ impl Announcer {
                 .map(|(household, rooms)| {
                     s.spawn(move || {
                         let _turn = self.turn(turn_key(household));
-                        let report =
-                            self.announce_in(t, household, rooms, &playback, volume, callbacks.cap);
-                        (callbacks.completed)(household, &report);
-                        report
+                        self.announce_in(t, household, rooms, &playback, volume, cap)
                     })
                 })
                 .collect();

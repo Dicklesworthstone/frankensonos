@@ -1645,3 +1645,34 @@ plain request volume does not age the heap into wedging. The deterministic-wedge
 reply-size × pin-cycle history; a "patient" exploit is schedule-able in hours via repeated pins
 (rate-limited by art-cache cooldowns), not in seconds. Round 8's "one unauthenticated request is a
 remote daemon-restart primitive" should read "one request **given an aged heap**".
+
+### 2026-11-03 (TurquoiseForest): pin-cycle aging ladder — 24 pin cycles, still zero wedges; round-7's aged state remains unreproduced in ~25 min of churn
+
+Device moved: the S2 line now answers on **192.168.4.x** (.86 = 192.168.4.86, 86.10-81100,
+SWGen 2; .137 is an S1 57.23 unit whose `x-file-cifs` fetcher does plain HTTP — HEAD/GET, no SMB —
+so the SMB lane is S2-only as before). Harness venv rebuilt: impacket 0.13.1 at
+`/tmp/impacket-fresh`, runner `recon/f4k_pin_ladder.py`, server `recon/smb4149/nc0drop.py`.
+
+Design per cycle: **PIN** = one `/getaa` against `nc0drop --fndelta 60000` (FileNameLength
+declared 120014/120016/120020 on the wire — the round-proven ~120 KB over-read allocation,
+wire-confirmed in every pin log), recovery poll; then **WALK** = one `/getaa` against
+`--pad 16384` (declared 16286 = 16 KiB body + 2-byte margin, wire-confirmed), recovery poll;
+SWGen before/after. Two batches of 12 cycles (~63 s each, ~25 min total churn).
+
+| batch | pins delivered | walks 200 | walk latency | wedges | SWGen |
+|---|---|---|---|---|---|
+| 1 (folder.jpg) | 10/12 (2 bind errors, port reuse) | 10/12 + 2×404 (art-cache negative marking) | 30.3–44.9 s, med 31.3 | **0** | 2→2 |
+| 2 (fresh faN.jpg names) | 10/12 (same 2 bind collisions) | 12/12 | 30.3–32.8 s, med 31.8 | **0** | 2→2 |
+
+24 pin cycles × 120 KB over-read + 22 walks: **zero wedges, zero restarts** (SWGen 2→2
+throughout; device healthy at end). The pin-cycle axis is ALSO flat at this scale — round 7's
+aged state required hours of pin/recovery churn, not dozens of cycles. The deterministic-wedge
+recipe stays "reply-size × heap-age", with the age axis measured in **hours** of pin churn;
+nothing in the reachable control surface shortens it.
+
+Two measurement caveats recorded honestly: (1) this session's baseline SMB chain latency is
+~30 s per request (vs 0.2 s in earlier sessions) — the impacket SMB1-fallback chain itself is
+slow now, so the pin and walk arms are not latency-distinguishable; wedge detection here rests
+on liveness + SWGen, which is the metric round 7 used. (2) `curlrc52` on pin arms = the device
+completing its 120 KB walk after curl's 45 s timeout — the over-read still fired (QINFO patch
+lines in every served pin log).

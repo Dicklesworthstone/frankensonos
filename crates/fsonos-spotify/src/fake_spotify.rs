@@ -213,8 +213,7 @@ fn taste(fake: &Fake, uri: &str) -> Option<Response> {
     if !taste_route {
         return None;
     }
-    // Identity remains available when only optional taste endpoints fail.
-    if fake.taste_down && uri != "/v1/me" {
+    if fake.taste_down {
         return Some(json(500, r#"{"error":{"status":500,"message":"down"}}"#));
     }
     let page = |items: serde_json::Value| {

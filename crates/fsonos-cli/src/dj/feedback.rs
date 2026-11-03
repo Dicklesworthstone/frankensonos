@@ -89,7 +89,7 @@ pub struct Listening {
 
 impl Listening {
     /// Lost ownership or unreadable identity is not a listener's preference.
-    pub(super) fn interrupt(&mut self) {
+    fn interrupt(&mut self) {
         self.advancing = false;
         self.prefix_complete = false;
         self.finished = None;
@@ -191,7 +191,7 @@ pub(super) fn implicit(
     elapsed: i64,
     now: i64,
 ) -> bool {
-    if !feed.is_active() || !playback.is_queue_of(&feed.coordinator()) {
+    if !feed.is_active() {
         listening.interrupt();
         return false;
     }
