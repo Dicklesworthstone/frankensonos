@@ -668,3 +668,48 @@ Tooling note for future lanes: Ghidra headless on this machine needs
 **JDK 25** (`/opt/homebrew/Cellar/openjdk@25/...`, saved via
 `LaunchSupport -jdk_home -save`) since brew upgraded ghidra to 12.2; the
 12.0.1 path in older docs no longer exists.
+
+## q57 wire kit — DNS override + HTTPS settings server, locally verified (2026-11-03, omp_4)
+
+Both halves of the LAN→arming loop's attacker side are built and proven locally; only the
+device window remains. Kit: `captures/research/rootbuild/q57_https_server.py` (committed) +
+`q57_dns.py` (committed). Running state on this Mac (192.168.4.28): HTTPS :8643, DNS :53
+bound to .28 specifically (another agent's forwarder holds .160:53 — untouched per swarm
+rules).
+
+**DNS**: `q57_dns.py 192.168.4.28 53 192.168.4.1` answers A for `system-api.sonos.com`,
+`system-api-pos.sonos.com`, `system-api.prod.sonos.com`, `update-firmware.sonos.com`,
+`update.sonos.com` → 192.168.4.28, forwards everything else upstream. Verified with dig
+(override + passthrough both work); queries logged to `/tmp/q57-serve/dns.log`.
+
+**Chain corrections (both matter, both are now in MINT_NOTES.md):**
+
+1. The 2026-10-23 `leaf.pem` (CN=sonos-probe) has **no SAN** — hostname verification against
+   `system-api.sonos.com` fails even though the chain verifies. A new leaf was minted:
+   CN=system-api.sonos.com, SAN = all five override hostnames, signed by the compromised
+   `EM DV TLS CA - G3B` (serial 0x3E9), key `leaf.key` reused.
+
+2. **G3B's issuer is `emSign Root TLS CA - G3`, not `emSign ECC Root CA - G3`.** The device
+   type-22 bundle (57.23-74170 .upd, byte-verified) contains **only** the emSign ECC Root
+   CA - G3 root — neither intermediate. The TLS handshake must present **three** certs:
+   `leaf ← EM DV TLS CA - G3B ← emSign Root TLS CA - G3` (`chain2.pem` is the third cert).
+   Verified: `openssl verify -CAfile emroot.pem -untrusted <chain2+G3B> san-leaf.pem` = OK,
+   and `s_client -verify_hostname system-api.sonos.com` returns 0 against the local server.
+
+**Body**: `/product-settings/v3/settings` answered with BOTH candidate nestings of the
+downgrade policy (the exact wrapper is still unresolved per the binding-table note above):
+
+```json
+{"downgradeRestrictions":{"downgradeMinVersion":"1","allowDowngradeToPrevSWGen":true,
+  "denyDowngradeToPrevSwGenList":[]},
+ "swupdate":{"downgradeRestrictions":{"downgradeMinVersion":"1","allowDowngradeToPrevSWGen":true}}}
+```
+
+**Device window (pending, needs coordination):** point .202's resolver at 192.168.4.28
+(DHCP scope or resolv.conf), trigger CheckForUpdate / BeginSoftwareUpdate (pre-auth), watch
+`/var/run/upgradeinfo`. The server logs every hit to `/tmp/q57-serve/requests.log` with
+timestamps, so arming evidence is visible from the attacker side too. If `MinVersion: [1]`
+arms, BeginSoftwareUpdate with the pwned-q57.upd URL is the next step — with the known
+`0x180000` streaming-abort caveat on that envelope (see the 2026-10-24 section: the
+clean-toolchain control proves the pipeline itself works on a stock tree, so the gate fight
+is expected after arming is proven).
