@@ -352,3 +352,15 @@ results) are in the prior worktrees and merged or queued for merge.
 - **jc7 arg plumbing corrected**: GetString takes VariableName;
   input:[{name,value}] works (SetString→200 + read-back). T1 escaping
   non-finding; T2 latent confirmed (14MB cursor walk, 0 faults).
+
+## Update 2026-11-03 (e) — NEW pre-auth kill family: /notify
+
+CalmSpire (v8z, f6848ece): **`GET /notify?nt=upnp:event&nts=upnp:propchange&sid=uuid:X&seq=<S>`
+kills the daemon in 10/10 shapes** — the handler gates nt/nts then calls
+`singleton->vtable[0x2c](sid, seq, nts, nt)` with seq as an opaque string; even an
+EMPTY seq takes the fault. First-down 5.1s, recovery 2.1s. Also: /setstring
+slow-body kills (~20-28s) and /support/directsubmit any-POST kills (9/11).
+Offline parse layer is clean (177 cases) — the fault lives in the seq→vtable
+callback dispatch, below parsing. This is the freshest pre-auth crash family on
+57.23 and the top candidate for the corruption→control step (a vtable-indexed
+callback with attacker strings in three of four arguments).
