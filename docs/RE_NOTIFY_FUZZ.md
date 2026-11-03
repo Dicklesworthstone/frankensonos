@@ -417,3 +417,60 @@ information gain: (a) fire `/notify` immediately after boot vs after heavy
 pool traffic (does first-down time or the 405-vs-000 split shift?); (b) if a
 shape ever returns non-405, the callback ran — that is the pool-grooming
  foothold.
+
+## 2026-11-03 (SageElm, fbkv) — arena map: the singleton's neighbours ARE request-path allocations
+
+### The owner arena
+
+The `/notify` singleton block lives in the **SocketManager session arena**:
+
+- Owner: SocketManager module session object — an inline 8296-byte arena
+  (`ctx+72 .. ctx+8368`; end marker at `ctx+8264`; bump pointer at `ctx+12`,
+  served by `0x10222778`/`0x10222314`/`0x10222444`, all bump-up, and the bump
+  is **never re-aligned** after the 1-byte alloc).
+- Boot sequence (module init `0x1021fb54`): block1 = **5368 B** at
+  `arena_base+0` (the session object itself, global `0x10545d78`,
+  `[+0]` = arena-ctx backlink), block2 = **1 B** at `arena_base+5368` (the
+  `/notify` singleton, global `0x10545dc8`). Bump rests at
+  `arena_base+5369` — unaligned.
+
+### The dispatch reads the next allocation
+
+```
+vt  = *(0x10545dc8)   → 4 bytes at arena_base+5369..5373  (unaligned)
+fn  = vt[0x2c]        → 4 bytes at arena_base+5401..5405
+call fn(this, sid, seq, nts, nt)          // handler 0x1028a5b8
+```
+
+Both the "vtable" pointer and the slot-0x2c target are **bytes of whatever the
+request path allocates next** through `ctx = [*(0x10545d78)]`.
+
+### Attacker reachability
+
+`0x1021ed78` — reached from the socket request loop (`0x1021f05c`/`0x1021f0cc`)
+— allocates from exactly that ctx via `0x10222314`, parses the block
+(`0x1022d3b0`), and strlcps parsed fields into the session (`+1748` cap 63,
+`+1811`, `+2322`). Those fields are **socket bytes from :1400, pre-auth**.
+Pre-traffic therefore places attacker-influenced bytes directly in the
+singleton's `vt`/`vt[0x2c]` neighbourhood. The other 18 `0x10222778` sites
+belong to other modules' arenas (AudioOut 23824 B, Streamer 123496 B, …) and
+do not touch this one.
+
+### Device differential (`.202`, 57.23-74170, this session — unit back online)
+
+| trial | pre-traffic | notify resp | first-down | recovered |
+|---|---|---|---|---|
+| A | none | 405 @0.06 s | **18.3 s** | yes |
+| B | 60 fresh-conn GETs (12.5 s) | 405 @0.05 s | **1.8 s** | yes |
+| C | 200 fresh-conn GETs (21.4 s) | 405 @0.08 s | **6.1 s** | yes |
+
+The kill latency varies **10×** with preceding socket traffic (18.3 → 1.8 s
+with only 60 requests; non-monotonic in count). The wild-call target — or the
+state it reaches — is a direct function of pre-traffic, which is the fbkv
+claim's mechanism signature. The falsifier ("no neighbour is
+attacker-shapeable") is not yet excluded: traffic-**dependence** is proven,
+byte-level **control** of the landing is not.
+
+Next: faulting-instruction capture (devmode console/qemu instrumentation) to
+read the actual `fn` value per trial; then choose shaping bytes that land a
+valid function pointer. Device stress so far: 3 `/notify` firings total.
