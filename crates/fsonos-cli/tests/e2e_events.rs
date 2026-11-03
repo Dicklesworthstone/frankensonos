@@ -188,7 +188,7 @@ fn events_stream_the_house_and_resume() {
     drop(events);
     let replayed = check_resume(&mut s, &api, first_id);
     if let Some(ids) = replayed {
-        check_cli(&mut s, first_id, ids);
+        check_cli(&mut s, &api, first_id, ids);
     }
     check_action_logged(&mut s, &api);
     check_long_poll(&mut s, &api, first_id);
@@ -230,7 +230,7 @@ fn check_resume(s: &mut Scenario, api: &str, first_id: u64) -> Option<(u64, u64)
 /// `fsonos events --since` replays the same changes through the daemon:
 /// with `--json` every event after `first_id` up to the second, an object
 /// per line, then stops (`--count`); without, the first in words.
-fn check_cli(s: &mut Scenario, first_id: u64, (a, b): (u64, u64)) {
+fn check_cli(s: &mut Scenario, api: &str, first_id: u64, (a, b): (u64, u64)) {
     let (since, count) = (first_id.to_string(), (b - first_id).to_string());
     let run = s.cli(
         "events-json",
@@ -259,6 +259,36 @@ fn check_cli(s: &mut Scenario, first_id: u64, (a, b): (u64, u64)) {
             && volume_of(b) == Some(43),
         format!("ids {ids:?}, want {}..={b}; {run:?}", first_id + 1),
     );
+    // The URL goes through asupersync's HTTP client, exactly as an HTTPS
+    // Tailscale Serve URL does after its TLS handshake. No local CLI token
+    // or direct-LAN fallback is available on this path.
+    let url = format!("http://{api}");
+    let remote = s.cli(
+        "events-url-json",
+        &[
+            "--daemon-url",
+            &url,
+            "--json",
+            "events",
+            "--since",
+            &since,
+            "--count",
+            &count,
+        ],
+    );
+    let remote_lines: Vec<Value> = remote
+        .stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    s.check(
+        "cli-events-url",
+        "cli",
+        "a daemon URL replays the same events and stops at the same count",
+        remote.code == Some(0) && remote_lines == lines,
+        format!("{remote:?}"),
+    );
+
     let since = (a - 1).to_string();
     let text = s.cli(
         "events-text",

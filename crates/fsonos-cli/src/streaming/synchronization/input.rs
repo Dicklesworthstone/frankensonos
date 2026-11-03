@@ -27,8 +27,18 @@ impl Input {
         let paired = args.sync.sync_input.as_deref();
         let microphone = args.sync.sync_microphone.as_deref();
         ensure!(
-            !(args.sync.measure_latency && args.sync.sync_mpv.is_some()),
+            !(args.sync.measure_latency
+                && (args.sync.sync_mpv.is_some() || args.sync.sync_launched_mpv)),
             "choose measurement-only or mpv correction, not both"
+        );
+        ensure!(
+            !args.sync.sync_launched_mpv
+                || (cfg!(target_os = "linux")
+                    && args.format == "pulse"
+                    && args.sync.sync_mpv.is_none()
+                    && args.virtual_output.is_some()
+                    && !args.application.is_empty()),
+            "--sync-launched-mpv requires Linux Pulse, --virtual-output and a trailing mpv command; it cannot use --sync-mpv"
         );
         ensure!(
             args.sync.measure_timeout.is_none_or(|seconds| {
@@ -42,14 +52,18 @@ impl Input {
         );
         if paired.is_none() && microphone.is_none() {
             ensure!(
-                args.sync.sync_mpv.is_none() && !args.sync.measure_latency,
+                args.sync.sync_mpv.is_none()
+                    && !args.sync.sync_launched_mpv
+                    && !args.sync.measure_latency,
                 "measurement or correction requires --sync-input or --sync-microphone"
             );
             return Ok(None);
         }
         ensure!(
-            args.sync.sync_mpv.is_some() || args.sync.measure_latency,
-            "capture requires --sync-mpv or --measure-latency"
+            args.sync.sync_mpv.is_some()
+                || args.sync.sync_launched_mpv
+                || args.sync.measure_latency,
+            "capture requires --sync-mpv, --sync-launched-mpv or --measure-latency"
         );
         ensure!(
             args.latency_wav.is_none(),
