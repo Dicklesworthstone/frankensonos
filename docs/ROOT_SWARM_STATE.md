@@ -334,3 +334,21 @@ All six lanes carry forward their prior evidence base; the last commits before
 the swap (fa0319f7 setstring bounded, 5473b76f xnf sp+32 conditional, 372baf77
 q57 LAN-to-arming loop closed, 6ef2866a f4k aging ladder, fe9ee820 9sd ladder
 results) are in the prior worktrees and merged or queued for merge.
+
+## Update 2026-11-03 (fresh swarm, first hours)
+
+- **xnf systemId CORRECTION** (SilentTrout, 22db3f5f): the claim set has NO mhhid
+  field — the +0x6c/+0x70 compare reads **systemId** (serializer FUN_00605230
+  labels it). Full claim layout mapped: +8 jti, +32 iss, +56 sub, +80 aud, +92
+  iat, +100 exp, +108 systemId, +136 riat, +164 rexp, +192 scp, +204 pinEpoch.
+- **Live burn** (both 86.10-81100 units, 6 shapes): bare-URN iss all
+  ERROR_NOT_AUTHORIZED — one-bit verdict persists; the log oracle is
+  devmode-gated (settings-root traversal is one level; /opt/log outside it).
+- **f4k pin-cycle aging ladder** (9e21300e): 24 pins + 22 walks, zero wedges —
+  age axis is HOURS not dozens of cycles; round-8 framing corrected.
+- **9sd carrier finding** (SwiftHorse): on 57.23 the queue record's dc:title is
+  DERIVED FROM THE URI PATH, never from EnqueuedURIMetaData dc:title — proven
+  across http/x-file-cifs/x-rincon-mp3radio. The H-003 carrier premise changes.
+- **jc7 arg plumbing corrected**: GetString takes VariableName;
+  input:[{name,value}] works (SetString→200 + read-back). T1 escaping
+  non-finding; T2 latent confirmed (14MB cursor walk, 0 faults).
