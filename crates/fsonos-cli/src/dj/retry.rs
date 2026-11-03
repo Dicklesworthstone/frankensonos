@@ -202,7 +202,6 @@ mod tests {
         };
         let mut store = MemStore::default();
         let mut playback = PlayerPlayback::default();
-        playback.media_uri = Some(format!("x-rincon-queue:{}#0", id.0));
         dj.on_playback(at, &mut store, &playback, &SystemClock);
         let (due, calls) = {
             let state = dj.state();

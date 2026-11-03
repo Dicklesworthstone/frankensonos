@@ -227,10 +227,7 @@ pub fn clip_id() -> io::Result<String> {
     }))
 }
 
-/// Validate speech text and a requested voice without discovering an engine,
-/// synthesizing audio, or creating files. Durable recipes use the same limits
-/// as immediate speech before they are saved.
-pub fn check_speech(text: &str, voice: Option<&str>) -> Result<(), ClipError> {
+pub(super) fn check_speech(text: &str, voice: Option<&str>) -> Result<(), ClipError> {
     if text.trim().is_empty() {
         return Err(ClipError::EmptySpeech);
     }
