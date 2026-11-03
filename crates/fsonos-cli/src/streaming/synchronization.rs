@@ -28,17 +28,25 @@ pub struct SyncArgs {
     /// Opt in to local microphone feedback and correction through this mpv Unix socket.
     #[arg(
         long,
-        group = "capture_action",
+        groups = ["capture_action", "mpv_correction"],
         requires = "sync_capture",
-        conflicts_with_all = ["measure_latency", "latency_wav"]
+        conflicts_with_all = ["measure_latency", "sync_launched_mpv", "latency_wav"]
     )]
     pub sync_mpv: Option<PathBuf>,
+    /// Linux Pulse: synchronize the trailing mpv command using private IPC and --virtual-output.
+    #[arg(
+        long,
+        groups = ["capture_action", "mpv_correction"],
+        requires_all = ["sync_capture", "virtual_output", "application"],
+        conflicts_with_all = ["sync_mpv", "measure_latency", "latency_wav"]
+    )]
+    pub sync_launched_mpv: bool,
     /// Measure live acoustic lag, then stop streaming and attempt playback restoration; no mpv writes.
     #[arg(
         long,
         group = "capture_action",
         requires = "sync_capture",
-        conflicts_with_all = ["sync_mpv", "latency_wav"]
+        conflicts_with_all = ["sync_mpv", "sync_launched_mpv", "latency_wav"]
     )]
     pub measure_latency: bool,
     /// Measurement phase deadline in seconds (default 180), excluding playback setup and restoration.
@@ -54,7 +62,7 @@ pub struct SyncArgs {
     /// Calibrate mpv once with bounded audible test noise into this Pulse sink, then track passively.
     #[arg(
         long,
-        requires_all = ["sync_mpv", "sync_microphone"],
+        requires_all = ["mpv_correction", "sync_microphone"],
         conflicts_with_all = ["measure_latency", "measure_probe", "sync_input", "latency_wav"]
     )]
     pub sync_probe: Option<String>,
@@ -78,7 +86,7 @@ pub struct SyncArgs {
     #[arg(
         long,
         default_value_t = 0.0,
-        requires = "sync_mpv",
+        requires = "mpv_correction",
         conflicts_with = "measure_latency",
         allow_negative_numbers = true
     )]
@@ -107,6 +115,8 @@ impl Stop {
 
 pub struct Prepared {
     controller: Option<mpv::Controller>,
+    launched: bool,
+    base_delay: f64,
     options: Options,
     measurement_timeout: Duration,
     probe: Option<probe::Config>,
@@ -119,6 +129,7 @@ impl Prepared {
         let Some(input) = input::Input::from_args(args)? else {
             return Ok(None);
         };
+        mpv::validate_base_delay(args.sync.sync_base_delay)?;
         let mut controller = args
             .sync
             .sync_mpv
@@ -137,6 +148,8 @@ impl Prepared {
         }
         Ok(Some(Self {
             controller,
+            launched: args.sync.sync_launched_mpv,
+            base_delay: args.sync.sync_base_delay,
             options: Options {
                 ffmpeg: args.ffmpeg.clone(),
                 input,
@@ -145,6 +158,41 @@ impl Prepared {
             measurement_timeout: Duration::from_secs(args.sync.measure_timeout.unwrap_or(180)),
             probe,
         }))
+    }
+
+    /// The managed child starts only after the stream has a live reader. Its
+    /// private IPC and actual Pulse output must be ready before capture starts.
+    pub(super) fn attach_launched(
+        mut self,
+        application: Option<&super::application::Application>,
+        stop: &Arc<AtomicBool>,
+        mut check_stream: impl FnMut() -> anyhow::Result<()>,
+    ) -> anyhow::Result<Self> {
+        if !self.launched {
+            return Ok(self);
+        }
+        let application = application.context("managed mpv application was not launched")?;
+        let (path, output) = application
+            .mpv_endpoint()
+            .context("managed mpv has no private IPC endpoint")?;
+        let client = mpv::Client::connect_launched(
+            path,
+            application.id(),
+            output,
+            Arc::clone(stop),
+            || {
+                check_stream()?;
+                application.ensure_running()
+            },
+        )?;
+        let mut controller = mpv::Controller::new(client, self.base_delay)?;
+        anyhow::ensure!(controller.ready()?, "launched mpv is not playing");
+        check_stream()?;
+        application.ensure_running()?;
+        controller.finish_launch(output)?;
+        self.controller = Some(controller);
+        self.launched = false;
+        Ok(self)
     }
 
     /// Start only after Sonos accepted playback; a failed Play never records.
@@ -238,6 +286,10 @@ pub fn wait(
     stop: Arc<AtomicBool>,
     mut verify: impl FnMut(bool) -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<Measurement>> {
+    anyhow::ensure!(
+        !prepared.as_ref().is_some_and(|prepared| prepared.launched),
+        "managed mpv must connect before acoustic capture"
+    );
     let prepared = match prepared {
         Some(prepared) if prepared.controller.is_none() => {
             let stop = Stop {

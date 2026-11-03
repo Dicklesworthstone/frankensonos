@@ -13,7 +13,7 @@ use clap::Args;
 use fsonos_api::PlayRequest;
 use fsonos_core::snapshot::{self, ZoneSnapshot};
 use std::net::{SocketAddr, TcpListener};
-use std::process::{Child, Command as Process, Stdio};
+use std::process::{Child, Command as Process};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,6 +24,7 @@ use crate::direct::Direct;
 mod application;
 mod broadcast;
 mod calibration;
+mod encoder;
 mod latency;
 mod recovery;
 #[cfg(unix)]
@@ -43,7 +44,7 @@ pub struct StreamArgs {
     /// Linux Pulse: create a temporary output and capture only apps routed to it.
     #[arg(long, conflicts_with_all = ["input", "latency_wav"])]
     pub virtual_output: Option<String>,
-    /// After --, launch a foreground Pulse app into --virtual-output; Ctrl-C stops it.
+    /// After --, launch a foreground Pulse app into --virtual-output; --sync-launched-mpv adds mpv correction.
     #[arg(last = true, num_args = 1.., value_name = "COMMAND", requires = "virtual_output")]
     #[cfg_attr(unix, arg(conflicts_with_all = ["measure_latency", "sync_mpv"]))]
     pub application: Vec<std::ffi::OsString>,
@@ -98,18 +99,12 @@ fn encoder_args(args: &StreamArgs) -> Vec<String> {
 }
 
 fn launch_encoder(args: &StreamArgs) -> anyhow::Result<Child> {
-    Process::new(&args.ffmpeg)
-        .args(encoder_args(args))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "start {} (install FFmpeg and an MP3 encoder, or pass --ffmpeg)",
-                args.ffmpeg
-            )
-        })
+    encoder::spawn(Process::new(&args.ffmpeg).args(encoder_args(args))).with_context(|| {
+        format!(
+            "start {} (install FFmpeg and an MP3 encoder, or pass --ffmpeg)",
+            args.ffmpeg
+        )
+    })
 }
 
 /// Address the captured coordinator by identity, not a possibly renamed room.
@@ -303,6 +298,14 @@ fn stream_until_stopped(
     }
     *launched = launch
         .map(|launch| application::Application::start(launch, Arc::clone(stop)))
+        .transpose()?;
+    #[cfg(unix)]
+    let sync = sync
+        .map(|prepared| {
+            prepared.attach_launched(launched.as_ref(), stop, || {
+                stream.check().map_err(anyhow::Error::from)
+            })
+        })
         .transpose()?;
     eprintln!("fsonos stream: {room} listening; press Ctrl-C to stop");
     #[cfg(unix)]

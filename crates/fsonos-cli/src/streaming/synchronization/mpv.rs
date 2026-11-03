@@ -10,6 +10,7 @@ use anyhow::{Context as _, bail, ensure};
 use serde_json::{Value, json};
 
 mod events;
+mod launch;
 
 use events::PlaybackEvents;
 
@@ -22,6 +23,7 @@ pub(super) struct Client {
     request_id: i64,
     timeout: Duration,
     events: PlaybackEvents,
+    startup: Option<launch::Budget>,
 }
 
 impl Client {
@@ -38,10 +40,19 @@ impl Client {
             request_id: 0,
             timeout: Duration::from_secs(2),
             events: PlaybackEvents::default(),
+            startup: None,
         })
     }
 
     fn request(&mut self, command: &Value) -> anyhow::Result<Value> {
+        self.request_with_unavailable(command, false)
+    }
+
+    fn request_with_unavailable(
+        &mut self,
+        command: &Value,
+        allow_unavailable: bool,
+    ) -> anyhow::Result<Value> {
         self.request_id = self
             .request_id
             .checked_add(1)
@@ -52,6 +63,7 @@ impl Client {
         let started = Instant::now();
         let mut sent = 0;
         while sent < request.len() {
+            self.check_startup()?;
             ensure!(
                 started.elapsed() < self.timeout,
                 "mpv write deadline exceeded; not replayed"
@@ -68,6 +80,7 @@ impl Client {
         }
         let mut received = self.pending.len();
         loop {
+            self.check_startup()?;
             ensure!(
                 started.elapsed() < self.timeout,
                 "mpv reply deadline exceeded; not replayed"
@@ -81,6 +94,12 @@ impl Client {
                     continue;
                 }
                 if response.get("request_id").and_then(Value::as_i64) == Some(id) {
+                    if allow_unavailable
+                        && response.get("error").and_then(Value::as_str)
+                            == Some("property unavailable")
+                    {
+                        return Ok(Value::Null);
+                    }
                     ensure!(
                         response.get("error").and_then(Value::as_str) == Some("success"),
                         "mpv rejected the command; not replayed"
@@ -120,6 +139,7 @@ impl Client {
         let started = Instant::now();
         let mut received = self.pending.len();
         loop {
+            self.check_startup()?;
             ensure!(
                 started.elapsed() < self.timeout,
                 "mpv event drain deadline exceeded"
@@ -231,10 +251,7 @@ pub(super) struct Controller {
 
 impl Controller {
     pub(super) fn new(mut client: Client, base_delay: f64) -> anyhow::Result<Self> {
-        ensure!(
-            base_delay.is_finite() && base_delay.abs() <= 10.0,
-            "--sync-base-delay must be finite and within -10..10 seconds"
-        );
+        validate_base_delay(base_delay)?;
         client.watch()?;
         let original = client.snapshot()?;
         client.events.seed(&original);
@@ -248,6 +265,18 @@ impl Controller {
             base_delay,
             relinquished: false,
         })
+    }
+
+    pub(super) fn finish_launch(&mut self, output: &str) -> anyhow::Result<()> {
+        self.client.check_startup()?;
+        ensure!(
+            self.original.output == output,
+            "launched mpv changed its temporary output during startup"
+        );
+        // Subsequent commands use the existing session lifetime and deadlines.
+        // Ctrl-C must still allow ownership-checked restoration during cleanup.
+        self.client.startup = None;
+        Ok(())
     }
 
     fn observed(&mut self) -> anyhow::Result<Snapshot> {
@@ -338,6 +367,14 @@ impl Controller {
         );
         Ok(())
     }
+}
+
+pub(super) fn validate_base_delay(base_delay: f64) -> anyhow::Result<()> {
+    ensure!(
+        base_delay.is_finite() && base_delay.abs() <= 10.0,
+        "--sync-base-delay must be finite and within -10..10 seconds"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
