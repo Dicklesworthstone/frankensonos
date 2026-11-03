@@ -41,9 +41,11 @@ the bitset family is `ZZ0018` (test).
 - `/status/ZPLocalSettingsFile/<name>` (`0x478fe0`, string `ZPLocalSettingsFile`
   at `0x666654`) percent-free path: it joins the settings root (`*(0x7004c4)`,
   default name `localsettings.txt`) with `<name>` (`0x4d4448`), opens and
-  returns the file. Verified live:
-  `GET /status/ZPLocalSettingsFile/../VERSION` → `86.10-81100`;
-  one level of `..` is honoured (`..` = `/jffs`), two levels 404.
+  returns the file. The commonly quoted live check
+  `GET /status/ZPLocalSettingsFile/../VERSION` → `86.10-81100` is a **curl
+  normalization artifact** (curl collapses it to `/status/VERSION`, its own
+  route); with `--path-as-is` the literal path is empty, as is every name
+  tried on 86.10-81100 — see `RE_TOKEN.md` §2026-11-03 (e).
 - The *only* callers of that path builder are three constant-name sites
   (`0x47a06c`, `0x47f70c`, `0x4ac18e`). `4d440c` (the default-name variant) has
   exactly one caller, the status reader above. So the name-taking path exists
