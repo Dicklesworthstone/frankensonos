@@ -352,3 +352,68 @@ slow-body, `/support/directsubmit` any-POST), each recovering via watchdog in
 2-25 s. The parse layer remains clean (177 offline cases); the faults live in
 the post-parse handler/callback layer that only the device exposes. The
 static overrun candidate (`/setstring` struct tail past frame) is unaffected.
+
+## 2026-11-03 (SageElm) — dispatch analysis: the `/notify` singleton chain, both builds
+
+### 57.23-74170 (the killing build) — full chain resolved
+
+- `/notify` handler `0x1028a5b8`: after the nt/nts gates it loads the singleton
+  pointer from **`0x10545dc8`** (`.sbss`), then `vt = *(singleton)`,
+  `fn = vt[0x2c]` and calls `fn(this, sid, seq, nts, nt)` — args confirmed:
+  `r4=sid, r5=seq, r6=nts, r7=nt` (`0x1028a6b4`–`0x1028a6dc`), five registers,
+  no request object on the stack in this build.
+- **The only non-null writer of `0x10545dc8` in the entire image is
+  `0x10222294`** (function `0x10222258`, reached only from `0x1021fbe8`): it
+  bump-allocates from the module arena (allocator `0x10222778`, bump pointer at
+  `ctx+12`, limit at `ctx+8264`) a block with **size 1**, memsets exactly
+  **1 byte** to 0, and stores the pointer. No vtable is ever stored through the
+  singleton slot itself.
+- So the handler's `vt = *(singleton)` and `vt[0x2c]` read the first word of a
+  1-byte arena block and 0x2c bytes past it — i.e. the *neighbouring arena
+  allocations*, not a class vtable. Whether the call lands on zeros (→ NULL
+  fetch fault) or on a neighbour's data (→ wild call into pool contents)
+  depends on what the module arena holds at that moment, which matches the
+  device signature: **first-down 5.0–15.6 s (variable, not instant)**, which is
+  watchdog-window-shaped (a hang or a slow wild path), not a clean immediate
+  SIGSEGV.
+- The other singleton nearby, `0x10545d78` (5368-byte block, `[+0]=ctx`,
+  `[+8]=0x1054dae8` static struct), is a *different* slot; the reset/shutdown
+  function `0x100098f8` vcalls slots `0x40`/`0x28` on `0x10545dc8` the same
+  unchecked way (exit path only).
+- The arena allocator quirk worth recording: `0x10222778` succeeds only for
+  sizes that are **not 8-aligned** (`r4 & 7 != 0` path does the bump alloc;
+  aligned sizes and 0 return `-1`). 596 (0x254), 5368 (0x14f8 → 0x14f8 & 7 = 0
+  … the big block is served by the `clrrwi+8` adjust), 1 — all consistent.
+
+### 86.10-81100 (`.81`/`.86`) — same pattern, different slot, NO kill
+
+- Binary: `captures/firmware/s2_overlay/bin/anacapad` (sha256
+  `1b598f11…` = the `/jffs/app/install/bin/anacapad` the device's own
+  `anacapad.sha256` names; the rootfs squashfs ships only the hash — the
+  binary comes from the overlay).
+- `/notify` handler **`0x4aa538`** (MIPS16): get_param of `nt/nts/
+  content-length/sid/seq`, gates `[req+0] == 10`, `strcmp(nt,"upnp:event")`,
+  `strcmp(nts,"upnp:propchange")`, then singleton from literal pool entry
+  `0x4aa5fc` → **`0x6fd7b0`**, and `vt[0x3c]` (slot **60**, not 0x2c) with
+  `(a0=sid, a1=seq, a2=nts, a3=nt, request on stack at +16(sp))`.
+- **Live shot (this session, `.81`)**: canonical shape
+  `nt=upnp:event&nts=upnp:propchange&sid=uuid:X&seq=1` → `405` in 0.06 s,
+  `/status/zp` 200 continuously for 40 s (crash-oracle poll at 200 ms);
+  empty-`seq` shape → `405`, daemon healthy after. **The 57.23 one-shot kill
+  does not reproduce on 86.10-81100.** The 405 is the handler's own method/
+  shape gate — the callback path is either not reached or benign on this
+  build.
+- The 57.23 device unit (`.202`) was offline (connection refused on :1400 and
+  :1443 from both the workstation and the LAN server) during this session, so
+  the 57.23 device dimension stands as recorded in the 10/10 table above.
+
+### What this means for the corruption→control step
+
+The wild call is `vt[0x2c]` (57.23) where `vt` is arena-neighbour data that the
+attacker does not directly control but that *pooled request state* influences —
+consistent with the variable first-down latency and with `/notify` being a
+one-request pre-auth DoS. Next probes on a live 57.23 unit, in order of
+information gain: (a) fire `/notify` immediately after boot vs after heavy
+pool traffic (does first-down time or the 405-vs-000 split shift?); (b) if a
+shape ever returns non-405, the callback ran — that is the pool-grooming
+ foothold.
