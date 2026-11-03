@@ -1676,3 +1676,76 @@ slow now, so the pin and walk arms are not latency-distinguishable; wedge detect
 on liveness + SWGen, which is the metric round 7 used. (2) `curlrc52` on pin arms = the device
 completing its 120 KB walk after curl's 45 s timeout — the over-read still fired (QINFO patch
 lines in every served pin log).
+### 2026-11-03 (LilacKnoll): allocation-lifetime analysis — WHY the age axis is hours
+
+Question from the pin-cycle ladder: 24 pins / 22 walks / ~25 min produced zero wedges, while
+round 7's 6/6-wedge state came from hours of churn. This section reads the allocator and the
+per-request allocation set to explain the timescale, not to re-run the ladder.
+
+**Allocators in play (both lines):**
+
+| build | libc | allocator | tuning |
+|---|---|---|---|
+| S2 86.10 (`/tmp/sq86` extract of `86.10-80260-1-12/rootfs.squashfs`) | glibc 2.23 (`GNU C Library … stable release version 2.23`, crosstool-NG 1.24.0) | ptmalloc2 | **none** — `anacapad` imports `malloc/calloc/realloc/free/mmap64/munmap` only; no `mallopt`, no `MALLOC_*` env strings, `malloc_trim` never called by the daemon |
+| S1 57.23 (`s1_rootfs`) | uClibc 0.9.26 | uClibc malloc | n/a (S1 line fetches art over plain HTTP — the SMB lane is S2-only) |
+
+glibc 2.23 defaults therefore govern: `M_TRIM_THRESHOLD` = 128 KiB, `M_MMAP_THRESHOLD` = 128 KiB
+(dynamic), main arena grows via `sbrk` (`__default_morecore` present in the shipped libc;
+`malloc_trim`/`madvise` exported but unused by the daemon). **Every allocation in the /getaa
+chain is < 128 KiB, so nothing ever takes the mmap path** — the whole chain lives on the
+contiguous sbrk heap, and the over-read can only fault at the *break* (the single unmapped
+boundary that exists).
+
+**Per-request allocation set (S2, upstream libsmb2 4.0.0 sequence + live measurements):**
+
+1. `calloc(pdu)` — per request, freed.
+2. fixed-part `malloc(len & 0xfffe)` — per request, freed.
+3. variable-part `malloc(len)` — the over-read buffer; `len` = SPL-declared reply =
+   **65535** (the QUERY_INFO request asks `OutputBufferLength=65535`, round-7 finding).
+4. `rep` malloc + `alloc_init(file_all_info)` — per request, freed.
+5. decode-time `str = malloc(utf8_len)` — self-bounded (writer/sizer walk identical units).
+
+Sizes: the 64 KiB reply buffer and everything else are < 128 KiB → sbrk. A pin (--fndelta 60000
+= declared FileNameLength +120000) does **not** allocate 120 KB — it makes the *walk* travel up
+to 120 KB past the buffer; the allocations themselves are unchanged. The 120 KB figure is walk
+distance, not allocation size.
+
+**The hours mechanism (systrim ratchet):**
+
+- `free()` in ptmalloc2 only returns the top chunk to the OS via `systrim` when the freed
+  tail merged into top exceeds `M_TRIM_THRESHOLD` (128 KiB). One freed 64 KiB reply buffer
+  adjacent to top does **not** trim; two adjacent/merged 64 KiB frees (> 128 KiB) do.
+- So the break moves up in ~64 KiB steps under our traffic, and shrinks only when ≥ 2
+  consecutive request buffers merge with top at free time. Each extend/trim cycle is one
+  chance for the *next* 16 KiB walk buffer to be served from a freshly-trimmed top — i.e. to
+  end exactly at the break, where the 2-byte over-read lands in the unmapped guard region.
+- The walk buffer is only at the top if no other thread's allocations (art-cache record
+  writes, HTTP response buffers, GENA traffic) sit above it at fault time. With 4 worker
+  threads (NumThreads 4) sharing one main arena, the top is heavily contested; the
+  probability the walk buffer is the top-most chunk at the moment of the over-read is small
+  per cycle.
+
+That gives a geometric waiting time in **cycles**, with per-cycle cost ~30 s (worker walk +
+recovery + art-cache cooldown between pins): dozens of cycles ≈ 25 min → still no wedge
+(matches TurquoiseForest's ladder); hundreds of cycles over hours → round 7's state. The age
+axis is hours because the cycle *cost* is ~30 s, not because the heap ages slowly — the heap
+state is fully reset by every successful trim; what accumulates is *attempts at the
+buffer-at-top coincidence*.
+
+**Untested size-band lever (prediction, falsifiable without the warmer):** the mmap
+threshold at 128 KiB is a mechanism switch. A QUERY_INFO reply declared > 128 KiB
+(`OutputBufferLength` > 131072 → `malloc` takes the mmap path; `munmap` on free punches a
+hole instead of ratcheting the break) changes the topology completely: the walk then ends at
+the mmap region's page boundary, which is *always* guard-adjacent, and the 2-byte over-read
+should fault without any aging — `name_len` clamps at u16 65535, but the *declared reply
+length* (`PADSIZE`) is unbounded, so `--pad 131072`-class bodies reach it. A second lever:
+the pin's walk distance (120 KB at fndelta 60000) is also < the 128 KiB trim threshold; a
+*fndelta ~70000* (declared +140 KB) makes the pin's own walk cross the boundary the moment
+the reply buffer ends near the break, coupling pin and walk in one request.
+
+**What this changes in the recipe:** the deterministic wedge may not need hours at all — it
+may need the reply buffer to cross the mmap threshold (one parameter change in `nc0drop.py
+--pad`), or the walk to span a trim boundary (fndelta retune). Both are single-session,
+cheaper than the warmer. Recommended order: (1) `--pad 131072..196608` sweep at the 2-byte
+margin; (2) fndelta 65536..80000 sweep; (3) only if both fail, the hours-scale warmer
+(coordinated with CalmHawk — mail sent 2026-11-03).
