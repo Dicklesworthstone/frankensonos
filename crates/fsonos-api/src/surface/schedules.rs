@@ -26,7 +26,7 @@ use fsonos_core::schedule::{
     self as core_schedule, DEFAULT_GRACE, Schedule, ScheduleAction, ScheduleError, ScheduleSpec,
     Tick,
 };
-use fsonos_core::sleep::{BACKSTOP, FADE, SleepResume, SleepTimer, SleepTimers};
+use fsonos_core::sleep::{BACKSTOP, FADE, SleepTimer, SleepTimers};
 use fsonos_core::{CoreError, HouseholdState};
 use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
@@ -39,7 +39,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use super::announce::{AnnounceRequest, AnnouncementPermit};
 use super::{Surface, room_view};
 use crate::dj::DjDirectionDto;
 use crate::execute::OutcomeDto;
@@ -47,17 +46,12 @@ use crate::failure::{ErrorCode, Failure};
 use crate::plan::{self, TransportAction, resolve};
 use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, zone_name};
 
-mod announcements;
 mod dispatch;
 mod recovery;
 mod sleep_dispatch;
 
 #[cfg(test)]
-mod announcement_tests;
-#[cfg(test)]
 mod direction_tests;
-#[cfg(test)]
-mod ownership_tests;
 
 /// The longest sleep timer. The speaker's own timer, which backs the
 /// daemon's up five minutes later, counts down from just under a day.
@@ -333,9 +327,9 @@ pub struct ScheduleRequest {
     /// Wall times are the house's local time.
     pub when: String,
     /// What it does: `dj_start` (zone), `pause` (zone, optional fade_secs),
-    /// `volume` (zone, volume), `apply_scene` (scene), or `announce` (announcement).
+    /// `volume` (zone, volume) or `apply_scene` (scene).
     pub action: String,
-    /// The room it acts on (every action but apply_scene and announce).
+    /// The room it acts on (every action but apply_scene).
     #[serde(default)]
     pub zone: Option<String>,
     /// apply_scene: the scene's name.
@@ -355,10 +349,6 @@ pub struct ScheduleRequest {
     /// pause: fade out over this many seconds first (at most 600).
     #[serde(default)]
     pub fade_secs: Option<u32>,
-    /// announce: a speech or chime recipe; WAV uploads are not scheduled.
-    /// Its rooms, voice and volume follow the immediate announcement request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub announcement: Option<AnnounceRequest>,
 }
 
 impl ScheduleRequest {
@@ -415,24 +405,7 @@ impl ScheduleRequest {
             self.mood.is_some(),
         );
         let (volume_set, fade_set) = (self.volume.is_some(), self.fade_secs.is_some());
-        if kind != "announce" {
-            refuse(&[("announcement", self.announcement.is_some())])?;
-        }
         match kind.as_str() {
-            "announce" => {
-                refuse(&[
-                    ("zone", zone_set),
-                    ("scene", scene_set),
-                    ("mood", mood_set),
-                    ("direction", self.direction.is_some()),
-                    ("volume", volume_set),
-                    ("fade_secs", fade_set),
-                ])?;
-                let request = self.announcement.as_ref().ok_or_else(|| {
-                    Failure::invalid("an announce schedule needs an `announcement`")
-                })?;
-                announcements::action(request)
-            }
             "dj_start" => {
                 refuse(&[
                     ("scene", scene_set),
@@ -498,7 +471,7 @@ impl ScheduleRequest {
             }
             _ => Err(
                 Failure::invalid(format!("{:?} is not a schedule action", self.action))
-                    .with_hint("Use dj_start, pause, volume, apply_scene or announce."),
+                    .with_hint("Use dj_start, pause, volume or apply_scene."),
             ),
         }
     }
@@ -518,7 +491,7 @@ pub struct ScheduleDto {
     pub id: i64,
     /// When it runs, as stored: `weekdays 07:30`, or `once <RFC 3339>`.
     pub when: String,
-    /// `dj_start`, `pause`, `volume`, `apply_scene` or `announce`.
+    /// `dj_start`, `pause`, `volume` or `apply_scene`.
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
@@ -532,8 +505,6 @@ pub struct ScheduleDto {
     pub volume: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_secs: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub announcement: Option<AnnounceRequest>,
     /// What it does, in words.
     pub summary: String,
     /// The client that added it: each run has that client's rights.
@@ -554,7 +525,6 @@ impl ScheduleDto {
         let (mut zone, mut scene, mut mood, mut volume, mut fade_secs) =
             (None, None, None, None, None);
         let mut direction = None;
-        let mut announcement = None;
         match &s.action {
             ScheduleAction::DjStart {
                 room,
@@ -574,13 +544,6 @@ impl ScheduleDto {
                 volume = Some(*level);
             }
             ScheduleAction::ApplyScene { name } => scene = Some(name.clone()),
-            ScheduleAction::Announce {
-                source,
-                rooms,
-                volume: level,
-            } => {
-                announcement = Some(announcements::request(source, rooms, *level));
-            }
         }
         Self {
             id: s.id,
@@ -592,7 +555,6 @@ impl ScheduleDto {
             direction,
             volume,
             fade_secs,
-            announcement,
             summary: summary(&s.action),
             creator: s.creator.clone(),
             enabled: s.enabled,
@@ -619,7 +581,6 @@ fn action_kind(action: &ScheduleAction) -> &'static str {
         ScheduleAction::Pause { .. } => "pause",
         ScheduleAction::Volume { .. } => "volume",
         ScheduleAction::ApplyScene { .. } => "apply_scene",
-        ScheduleAction::Announce { .. } => "announce",
     }
 }
 
@@ -660,11 +621,6 @@ pub fn summary(action: &ScheduleAction) -> String {
         ),
         ScheduleAction::Volume { room, level } => format!("set {room}'s volume to {level}"),
         ScheduleAction::ApplyScene { name } => format!("apply the scene {name}"),
-        ScheduleAction::Announce {
-            source,
-            rooms,
-            volume,
-        } => announcements::summary(source, rooms, *volume),
     }
 }
 
@@ -747,20 +703,6 @@ impl Sleep {
     /// asked for with `--fade`), so the new level stands and the group is not
     /// paused. Returns whether a sleep fade was superseded.
     pub fn volume_changed(&self, households: &[HouseholdState], coordinator: &PlayerId) -> bool {
-        // Record the interruption before waiting out a Pause already in flight.
-        // Even a failed Pause must then retire the sleep timer's own backstop.
-        let interrupted = self.timers.interrupt(&self.fader, coordinator);
-        self.stop_room_fades(households, coordinator);
-        interrupted
-    }
-
-    /// Accepted playback and grouping changes retire only an announcement's
-    /// conditional continuation. A regular armed sleep timer keeps its intent.
-    pub(super) fn playback_changing(&self, coordinator: &PlayerId) {
-        self.timers.supersede_announcement(coordinator);
-    }
-
-    fn stop_room_fades(&self, households: &[HouseholdState], coordinator: &PlayerId) {
         self.fader.supersede(coordinator);
         for household in households {
             for room in household
@@ -771,6 +713,7 @@ impl Sleep {
                 self.fader.supersede(&room.primary);
             }
         }
+        self.timers.interrupt(&self.fader, coordinator)
     }
 }
 
@@ -946,47 +889,51 @@ impl Surface {
         }
     }
 
-    /// Interrupt the sleep of the fresh room observed after taking the
-    /// household's announcement turn. Its coordinator may have changed while
-    /// the request waited; the API's initial topology cannot choose its timer.
-    pub(super) fn announcing(&self, room: &fsonos_core::Room) -> Option<SleepResume> {
-        let sleep = self.sleep.as_ref()?;
-        let receipt = sleep
-            .timers
-            .interrupt_for_announcement(&sleep.fader, &room.coordinator);
-        // The timer's claims stop every room in its fade. An independent ramp
-        // on this target must also end before its announcement level is set.
-        sleep.fader.supersede(&room.primary);
-        receipt
+    /// [`Self::volumes_changing`] for an announcement, which puts the music
+    /// back when it is done: answers the groups whose sleep timer was fading,
+    /// for [`Self::sleep_again`] once the music is back.
+    pub(super) fn announcing(
+        &self,
+        households: &[HouseholdState],
+        players: &[PlayerId],
+    ) -> Vec<PlayerId> {
+        let Some(sleep) = &self.sleep else {
+            return Vec::new();
+        };
+        let mut sleeping = Vec::new();
+        for group in groups_of(households, players) {
+            if sleep.timers.get(&group).is_some_and(|t| t.fading) {
+                sleeping.push(group.clone());
+            }
+            sleep.volume_changed(households, &group);
+        }
+        sleeping
     }
 
-    /// Resume only interrupted sleeps whose announcement still owns recovery.
-    /// Callers pass receipts only for groups whose music and levels were
-    /// restored; an external override must not acquire a fresh timer.
-    pub(super) fn sleep_again(&self, households: &[HouseholdState], receipts: &[SleepResume]) {
+    /// After an announcement ended their sleep timers' fades (see
+    /// [`Self::announcing`]): each of `groups` sleeps again, fading over the
+    /// usual time from the level the music came back at, then pausing.
+    pub(super) fn sleep_again(&self, households: &[HouseholdState], groups: &[PlayerId]) {
         let Some(sleep) = &self.sleep else {
             return;
         };
-        if receipts.is_empty() {
+        if groups.is_empty() {
             return;
         }
         let now = self.clock.now().to_utc();
         let t = &*self.transport;
-        for receipt in receipts {
-            match sleep
+        let mut set: Vec<&PlayerId> = Vec::new();
+        for group in groups {
+            if set.contains(&group) {
+                continue;
+            }
+            set.push(group);
+            let _ = recovery::supersede(sleep, group);
+            if let Err(e) = sleep
                 .timers
-                .resume_after_announcement(t, households, &sleep.fader, receipt, now)
+                .start(t, households, &sleep.fader, group, FADE, now)
             {
-                Ok(Some(_)) => {
-                    let _ = recovery::supersede(sleep, receipt.coordinator());
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        "sleep timer in {}'s group not set again: {e}",
-                        receipt.coordinator().0
-                    );
-                }
+                tracing::warn!("sleep timer in {}'s group not set again: {e}", group.0);
             }
         }
         sleep.save();
@@ -1447,12 +1394,6 @@ impl Surface {
         let now = self.clock.now();
         let spec = ScheduleSpec::parse(&req.when, now).map_err(|e| schedule_failure(&e))?;
         match &action {
-            ScheduleAction::Announce { rooms: names, .. } => {
-                let households = self.households()?;
-                let aliases = self.aliases();
-                let rooms = room_view(&households, aliases.as_ref(), client);
-                announcements::targets_ready(&rooms, names)?;
-            }
             // A saved scene (UNKNOWN_SCENE with the nearest names if not).
             ScheduleAction::ApplyScene { name } => {
                 self.scene(client, name)?;
@@ -1796,11 +1737,7 @@ impl Surface {
 
 /// Carry `schedule` out as its creator, through the surface's one control
 /// path; answers what was done.
-fn fire(
-    surface: &Surface,
-    schedule: &Schedule,
-    announcement: Option<AnnouncementPermit<'_>>,
-) -> Result<String, Failure> {
+fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
     let client = client_of(&schedule.creator);
     let zone = |room: &str| ZoneRequest { zone: room.into() };
     match &schedule.action {
@@ -1866,17 +1803,6 @@ fn fire(
                 })
                 .map(|o| o.done)
         }
-        ScheduleAction::Announce {
-            source,
-            rooms,
-            volume,
-        } => surface
-            .announce_admitted(
-                &client,
-                &announcements::request(source, rooms, *volume),
-                announcement,
-            )
-            .map(|announced| announced.done),
         ScheduleAction::ApplyScene { name } => surface
             .apply_scene_fading(&client, name, policy_fade(surface))
             .map(|applied| {
@@ -2096,15 +2022,8 @@ mod tests {
         assert_eq!(sleep.timers.due(now + TimeDelta::minutes(10)).len(), 1);
         // An announcement comes to the Patio while its timer fades: the fade
         // ends where it is, and the group is named to sleep again.
-        let room = houses
-            .iter()
-            .flat_map(|house| &house.rooms)
-            .find(|room| room.primary == patio)
-            .unwrap();
-        let sleeping: Vec<_> = s.announcing(room).into_iter().collect();
-        assert!(s.announcing(room).is_none());
-        assert_eq!(sleeping.len(), 1);
-        assert_eq!(sleeping[0].coordinator(), &patio);
+        let sleeping = s.announcing(&houses, &[patio.clone(), patio.clone()]);
+        assert_eq!(sleeping, std::slice::from_ref(&patio));
         // Once the music is back it sleeps again, a fade's length from now.
         s.sleep_again(&houses, &sleeping);
         let timer = sleep.timers.get(&patio).expect("a timer again");

@@ -258,3 +258,97 @@ Device boundary, `.202` (write, then `SystemProperties#GetString`):
 Verdict: **the copy path is safe**; no overrun shape exists there. The overrun candidate
 remains the handler's use of the property struct past its frame (`+0x804`/`+0x808`/`+0x80C`,
 above), which the copy does not touch.
+
+## Device dimensions — the coordinator's three, executed (2026-11-03, `.202` 57.23)
+
+Scripts run on the LAN server (`192.168.4.160`), unit `192.168.4.202`
+(Play:5, `57.23-74170`, live and answering 200 before each sweep). Liveness
+watch = `/status/VERSION` every 2 s; `SWGen` re-read after each sweep.
+
+### 1. `/notify` `seq` → vtable callback (10 shapes, **10/10 KILL**)
+
+`GET /notify?nt=upnp:event&nts=upnp:propchange&sid=uuid:X&seq=<S>`; the handler
+gates nt/nts then calls `singleton->vtable[0x2c](sid, seq, nts, nt)` with `seq`
+as an opaque string. Every shape — including an **empty `seq`** — took the
+daemon down; SWGen and `/status/zp` stayed healthy after each recovery
+(`57.23-74170`, watchdog restart, unit healthy at the end):
+
+| shape | seqlen | POST code | first down | recovered |
+|---|---|---|---|---|
+| empty | 0 | 405 | 5.1 s | 2.1 s |
+| one-byte | 1 | 405 | 12.7 s | 2.5 s |
+| at-cap | 1024 | 000 | 7.1 s | 2.1 s |
+| over-cap | 1025 | 405 | 5.0 s | 2.1 s |
+| 0x800 | 2048 | 405 | 15.6 s | 7.1 s |
+| 4k | 4096 | 408 | 7.3 s | 2.1 s |
+| embedded `:`/space/CRLF | 8 | 405 | 7.4 s | 5.1 s |
+| `%00%00` | 6 | 000 | 9.1 s | 2.0 s |
+| high-bit ×100 | 300 | 000 | 11.4 s | 2.2 s |
+| sid-huge (1024 B `sid`) | 1 | 000 | 11.2 s | 2.1 s |
+
+The `405`s are the handler's own rejection (shape invalid before the callback);
+the `000`s are the connection dying with the daemon. Because **empty seq kills
+too**, the fault is reached with any well-formed `/notify` GENA request — the
+callback (or whatever the watchdog punishes) fires on the gate path itself, not
+on a length-dependent path. This matches the doc's known 1 MB-POST kill but
+pushes it down to *any* request: **`/notify` is an unauthenticated
+one-request pre-auth DoS at any size on 57.23** — stronger than the recorded
+1 MB shape, and consistent with the `vtable[0x2c]` call hitting live state.
+
+### 2. `/setstring` recv short-read / slowloris (5 modes)
+
+Fresh token per probe, body 260+ B (`csrfToken=<urlencoded>&key=roomName&value=AAA…`),
+sent byte-at-a-time (32 B flush interval), 8 B chunks @0.2 s, 32 B chunks
+@0.5 s, header-only hold, and half-body hold:
+
+| mode | response | daemon |
+|---|---|---|
+| byte-0.05 | broken pipe mid-body | stayed up |
+| chunk8-0.2 | no route to host | **down at 28 s**, recovered |
+| chunk32-0.5 | no route to host | **down at 19.6 s**, recovered |
+| halt-header (no body) | no route to host | **down at 23.9 s**, recovered |
+| halt-mid | (daemon was down from the previous mode; skipped) | — |
+
+The reader tolerates byte-at-a-time delivery but a **held-open connection with
+a partial body takes the daemon down in ~20-28 s** — the same watchdog window
+as the known kill. So the recv loop's terminator is fine for short reads, but
+the *reader* (or its worker) is killed by the stalled-request state itself.
+That is a second, independent pre-auth DoS shape on 57.23 (slow-body hang), and
+it does not need a complete request at all.
+
+### 3. `/support/directsubmit` csrfToken edges (11 shapes, 9 KILL)
+
+GET returns the form with a token; body `csrfToken=<tok>&key=submit&value=<pad>`
+(pad to exceed the 0x3e8 min). **Every 400 also took the daemon down**:
+
+| shape | code | down |
+|---|---|---|
+| token missing | 400 | 11.3 s |
+| token empty | 400 | 5.0 s |
+| token valid | 400 | 19.6 s |
+| token duplicated | 400 | 5.0 s |
+| wrong-token-then-right | 400 | 5.0 s |
+| right-then-wrong | 400 | 23.7 s |
+| huge value (1300 B) | 400 | 19.6 s |
+| extra name at cap 0x80 | 000 | 7.3 s |
+| extra name over cap 0x88 | 400 | 5.1 s |
+| token `%00`-suffixed | 400 | – (no down) |
+| token raw `+` (unencoded) | 400 | – (no down) |
+
+The unit came back healthy (`SWGen>1` after the sweep, `/status/zp` fine).
+`directsubmit` never returned 200 to our fabricated `key=submit` — the token
+gate works, but **any POST to it, valid or not, can hang the daemon**. With
+`token-ok` also killing (19.6 s), the 400 path itself is lethal; the two
+non-killing shapes are the raw-`+` one (400 before the parse gets deep) and the
+`%00` one.
+
+### Verdict impact
+
+The bead's claim — "a reachable memory-safety or length-handling flaw that a
+grammar-aware fuzz finds (crash/restart)" — is now **satisfied on the device
+dimension**: three separate pre-auth request classes on 57.23 reproduce
+daemon-down events deterministically (`/notify` any-shape, `/setstring`
+slow-body, `/support/directsubmit` any-POST), each recovering via watchdog in
+2-25 s. The parse layer remains clean (177 offline cases); the faults live in
+the post-parse handler/callback layer that only the device exposes. The
+static overrun candidate (`/setstring` struct tail past frame) is unaffected.

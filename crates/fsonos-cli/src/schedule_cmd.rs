@@ -28,8 +28,6 @@ use std::time::Duration;
 use crate::config::GlobalArgs;
 use crate::remote::Daemon;
 
-mod announcement;
-
 /// `fsonos sleep [<room> [duration] [--extend <duration>] [--cancel]]`.
 #[derive(Args)]
 pub struct SleepArgs {
@@ -53,16 +51,13 @@ pub enum ScheduleCommand {
     /// Add a schedule, run by `fsonos serve`:
     /// `fsonos schedule add "weekdays 07:30" dj start Kitchen`,
     /// `... "in 45m" pause Bedroom --fade 2m`, `... "daily 22:00" volume
-    /// Kitchen 15`, `... "sat 09:00" scene brunch`,
-    /// `... "weekdays 08:15" say "Time to leave" --rooms Kitchen,Office`.
+    /// Kitchen 15`, `... "sat 09:00" scene brunch`.
     Add {
         /// When: "in 45m", an RFC 3339 time, "daily 22:30", "weekdays 07:30",
         /// "weekends 09:00", "sat,sun 09:00", "mon-fri 07:00" (local time).
         when: String,
         /// What: dj start <room> [DJ direction flags] | pause <room> [--fade <duration>] |
-        /// volume <room> <0-100> | scene <name> |
-        /// say <text> [--rooms <rooms>] [--voice <voice>] [--volume <0-100>] |
-        /// chime <bell|beep|rise> [--rooms <rooms>] [--volume <0-100>].
+        /// volume <room> <0-100> | scene <name>.
         #[arg(
             required = true,
             num_args = 1..,
@@ -218,15 +213,8 @@ fn take_option(words: &mut Vec<&str>, flag: &str) -> Result<Option<String>, Fail
 /// The request `fsonos schedule add <when> <action...>` stands for: `dj
 /// start <room> [DJ direction flags]`, `pause <room> [--fade <duration>]`,
 /// `volume <room> <0-100>`, or `scene [apply] <name>`. A room or scene
-/// name may be several words. Speech and chimes use the same options as
-/// the immediate `say` and `chime` commands.
+/// name may be several words.
 pub fn schedule_request(when: &str, action: &[String]) -> Result<ScheduleRequest, Failure> {
-    if action
-        .first()
-        .is_some_and(|word| matches!(word.as_str(), "say" | "chime"))
-    {
-        return announcement::request(when, action);
-    }
     if action.first().is_some_and(|word| word == "dj")
         && action.get(1).is_some_and(|word| word == "start")
     {
@@ -251,7 +239,6 @@ pub fn schedule_request(when: &str, action: &[String]) -> Result<ScheduleRequest
         scene,
         mood: mood.clone(),
         direction: None,
-        announcement: None,
         volume: None,
         fade_secs,
     };
@@ -279,7 +266,7 @@ pub fn schedule_request(when: &str, action: &[String]) -> Result<ScheduleRequest
         ))
         .with_hint(
             "Use: dj start <room> | pause <room> [--fade 2m] | volume <room> <0-100> | \
-             scene <name> | say <text> [--rooms <rooms>] | chime <bell|beep|rise>.",
+             scene <name>.",
         )),
     }
 }
