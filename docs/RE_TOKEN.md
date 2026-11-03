@@ -418,3 +418,69 @@ with the inspector dereferencing `+4` and `+16` for slot targets — the dispatc
 assembles the ctx from live service objects, and the "missing" vtable slots on 0x66c038 mean
 ctx+4 points at a different class than the actor singleton. SilentTrout's live thread: find the
 dispatcher's exact store into ctx+4.
+## 2026-11-03 · ctx+4 identified: the actor provider, not the 0x66c038 subobject; iss is the anacapa.conf id-25 string (fallback: the bare URN)
+
+The 2026-10-29 mismatch ("ctx+4 must be a different object or sub-table") is settled. All three
+providers come from the registration call at `0x481054` → `0x5fb654` → `setProviders 0x5fb608`
+(stores shared_ptrs at provider+0/+8/+16):
+
+| provider | shared_ptr contents |
+|---|---|
+| `getActorProvider` (ctx+4) | `{*(zone_service+22680), ctrl zone+22684}` |
+| `getTargetIdProvider` (ctx+8) | `{*(zone_service+21632), ctrl zone+21636}` |
+| `getTargetValidator` (ctx+16) | `{*(shared(zone+21648))+21644, ctrl}` |
+
+So the `0x66c038` vtable (offset-to-top `-21644` at `0x66c030`) belongs to the **target
+validator**, not the actor. Its slot words are all **thunks** (`this` adjust, then read the static
+base `+21764 = *(this+21712)`, set at `0x47f6ac`), which is why idx3/idx4 are `0` there — that is
+correct for that class, and the inspector's slot-12/16/24 calls hit `ctx+4` (actor) / `ctx+16`
+(validator), which are different objects entirely.
+
+### Actor slot 16 (idx 4) = `0x47bb01`
+
+The actor object's vtable is `0x66bc58`:
+`{0x480765, 0x480bdd, 0x480d49, 0x481d39, 0x47bb01, 0x47be45, 0x47c8a5, 0x481ab1}`.
+
+`0x47bb01` computes `this+39632` and calls `0x5117bc` (from `device_description.cxx`, log category
+`topology`): it takes the mutex at `this+792`, looks up the map at `this+1448` keyed by the actor
+UUID string at `this+39632`, and on a hit returns the client's description string pair built by
+`0x4946a4`/`0x494170` from the `advert_desc` literal plus event fields (`http`, `127.0.0.1`).
+A miss logs `Unexpected UUID provided for local upnp client initialization: %s`
+(`0x68ef84`) / `local load player desc. failed for %s` (`0x68efc8`).
+
+Consequence: the issuer compare target is a **runtime, per-device description string**, not a
+constant in the image.
+
+### The iss getter inside the inspector itself (`0x6021fa`)
+
+```
+6021f6  lw   v0,252(sp)        ; policy
+6021f8  addiu a1,v0,7           ; optional<string> at policy+4
+6021fa  jal  601ffc
+6021fe  addiu a1,25             ; id 25
+602200  assign sp+32 = result   ; the iss compare target
+```
+
+`0x601ffc` = `0x5f7210(out, id=25, default=*(0x7048e8))`. The `.bss` `std::string` at `0x7048e8`
+is static-init'd (stub `0x46fa10`–`0x46fa1c`) from literal `0x666b40` =
+**`urn:dev:ops:44974-zp-`**. `0x5f7210` is a settings-string getter whose literal-table entry is
+`/opt/conf/anacapa.conf` (`0x6649d4`): id 25 reads a value from `anacapa.conf`, falling back to
+the URN string. The shipped `anacapa.conf` (S1 rootfs copy) defines no such key, so on stock
+devices the iss compare target is the fallback **exactly**: `urn:dev:ops:44974-zp-` — 21 chars,
+bare, nothing appended.
+
+### Live-test prediction (the one untested shape)
+
+`iss = urn:dev:ops:44974-zp-` (bare), `mhhid` = the composed JSON fingerprint, self-consistent:
+the composer takes `network_hash` from the token's own claim set (`0x603940` reads the token
+context, not device state), so the mhhid gate is `composed == token.mhhid` with both sides derived
+from the token — any `network_hash` value works as long as the `mhhid` claim carries the same one.
+Earlier "bare URN" burns used a suffixed iss or an mhhid whose composed form could not match; the
+503-window burn of the empty-luid form never validated bare-URN + self-consistent JSON with the
+resolver up.
+
+Gate order re-verified from clean disassembly (`0x6021e4`–`0x602480`): mhhid present flag at
+policy+108 (`0x60228e`) → composed==policy+112 (`0x602294`) → exp string-form via `%llu`
+(`0x602494`, `__to_xstring 0x489364`) → rotation/invalid-expiry flags +164/+168 vs +128/+132 →
+issuer compare `0x602400` (`std::operator==` `0x48cb64`). Success log `Device token is valid.`
+(`0x6afa08`); issuer fail `Device token not minted by this device.` (`0x6af9e0`).
