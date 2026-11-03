@@ -580,3 +580,19 @@ a bump allocator, `__tls_get_addr` must return a mapped TLS block, `__cxa_alloca
 /`__cxa_begin_catch` are reached during ordinary string growth, and `vsnprintf` must format
 the integer argument. With those in place the composer gets past the writer prologue and
 still dies at `0x595358` (`__cxa_current_exception_type` path) with `v0` unmapped.
+
+## 2026-11-03 (e) · the `/status/ZPLocalSettingsFile` escape is a curl artifact; the reader is dead for names
+
+The "`../VERSION` works" claim in `RE_WRITE_PRIMITIVES` is **curl path normalization**, not device
+behaviour: curl collapses `/status/ZPLocalSettingsFile/../VERSION` to `/status/VERSION`, and
+`/status/VERSION` is its own route. With `--path-as-is` the literal request returns an empty
+`<ZPSupportInfo>`.
+
+Every name tried against the reader on `.86` (86.10-81100) returns empty, on the default root and
+after `GET /status/JFFSRoot//jffs` (200): `VERSION`, `./VERSION`, `../VERSION`, `netsettings_mod.txt`,
+`system/Configure.dev`, `debug/devmode.bin`. `JFFSRoot/<v>` itself answers 200 for any value
+(`/jffs`, `%2Fjffs`, `jffs`, `..`) and never errors, so it cannot be used to confirm the root either.
+
+Consequence for the devmode/log oracle: the `/jffs`-rooted reader is not a route to
+`/opt/log/player/muse_token_inspector` or `/tmp/memorylog/log.N` today — it returns nothing at all,
+so the disambiguation of the `iss` compare target still needs devmode or the MIPS-guest emulator.
