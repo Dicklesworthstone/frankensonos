@@ -1,0 +1,17 @@
+ts	case	sent_bytes	http	rc	rb_len	rb_tail	rb_head
+15:40:06	meta400	400	200	0	400	'/res></item></DIDL-Lite>'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|MARK'
+15:40:14	meta5000	5000	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:40:18	meta20000	20000	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:40:23	meta30000	30000	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:40:28	meta33000	33000	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:40:34	meta34100	34100	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:40:40	meta34140	34140	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:40:44	meta34148	34148	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:40:50	meta34150	34150	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:40:55	meta34200	34200	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:41:00	meta35000	35000	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:41:05	meta40000	40000	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:41:11	meta70000	70000	200	0	4095	'AAAAAAAAAAAAAAAAAAAAAAAA'	'<DIDL-Lite xmlns="urn:schemas-upnp-org:m|noMARK'
+15:41:16	after34148	34148	200	0	4095	cur='https://example.com/jc7.mp3'	mark=False
+15:41:21	after40000	40000	200	0	4095	cur='https://example.com/jc7.mp3'	mark=False
+15:41:24	BATCH_END	-	200	-	-	-	-
