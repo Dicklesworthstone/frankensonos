@@ -302,15 +302,14 @@ fn account_changes_and_deleted_playlists_cannot_reuse_another_read_checkpoint() 
         assert_eq!(checkpoint(&store, OWNER), first_owner);
         let second_owner = checkpoint(&store, "other-owner");
         server.set("/v1/me", json!({ "id": OWNER }));
-        // Returning to an account discards its old applied proof. A broken
-        // optional directory cannot label that discarded observation current.
+        // A broken directory cannot prove the playlist disappeared.
         server.set(
             "/v1/me/playlists",
             json!({ "items": [], "offset": 0, "total": 1,
             "next": format!("{API}/me/playlists?offset=1") }),
         );
         sync(&server, &cx, &mut store).await;
-        assert_eq!(store.playlist_progress(OWNER, URI).unwrap(), None);
+        assert_eq!(checkpoint(&store, OWNER), first_owner);
         server.set("/v1/me/playlists", page(Vec::new(), 0, None));
         sync(&server, &cx, &mut store).await;
         assert_eq!(store.playlist_progress(OWNER, URI).unwrap(), None);
@@ -363,7 +362,6 @@ fn the_raw_entry_limit_is_partial_and_never_fetches_past_its_bound() {
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut store = MemStore::default();
-        store.adopt_spotify_library_owner(OWNER).unwrap();
         store
             .save_playlist_progress(
                 OWNER,

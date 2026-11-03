@@ -74,8 +74,9 @@ fn sim(s2: bool) -> SimHandle {
 
 fn house(sim: &SimHandle) -> HouseholdState {
     let mut house = HouseholdState::default();
-    house
-        .apply_topology(&get_zone_group_state(&sim.lan(), sim.player("Room").unwrap().ip).unwrap());
+    house.apply_topology(
+        &get_zone_group_state(&sim.lan(), sim.player("Room").unwrap().ip).unwrap(),
+    );
     house
 }
 
@@ -197,7 +198,8 @@ fn a_ranked_library_track_uses_the_households_renderer_and_is_recorded() {
 
         surface.search_and_play(&Client::Cli, &req).unwrap();
 
-        let position = soap::get_position_info(&sim.lan(), sim.player("Room").unwrap().ip).unwrap();
+        let position =
+            soap::get_position_info(&sim.lan(), sim.player("Room").unwrap().ip).unwrap();
         assert_eq!(
             spotify_uri_from_renderer_uri(&position.uri).as_deref(),
             Some(TRACKS[1])
@@ -222,10 +224,7 @@ fn a_missing_rank_never_substitutes_the_best_match_or_changes_playback() {
     req.pick = Some(3);
     let before = writes(&sim);
     assert_eq!(
-        surface
-            .search_and_play(&Client::Cli, &req)
-            .unwrap_err()
-            .code,
+        surface.search_and_play(&Client::Cli, &req).unwrap_err().code,
         ErrorCode::NoMatch
     );
     assert_eq!(writes(&sim), before);
@@ -247,11 +246,7 @@ fn search_play_preserves_group_caps_and_undo_for_a_member_request() {
             sim.player("Peer").unwrap().ip,
         ];
         let houses = [house(&sim)];
-        let coordinator = resolve_room(&houses, "Room")
-            .unwrap()
-            .coordinator
-            .id
-            .clone();
+        let coordinator = resolve_room(&houses, "Room").unwrap().coordinator.id.clone();
         soap::set_av_transport_uri(
             &sim.lan(),
             hosts[1],
@@ -384,10 +379,7 @@ fn malformed_requests_fail_without_discovery_or_speaker_io() {
         },
     ] {
         assert_eq!(
-            surface
-                .search_and_play(&Client::Cli, &req)
-                .unwrap_err()
-                .code,
+            surface.search_and_play(&Client::Cli, &req).unwrap_err().code,
             ErrorCode::InvalidArgument
         );
     }

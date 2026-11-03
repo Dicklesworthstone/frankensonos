@@ -233,7 +233,6 @@ fn top_tracks_stay_preferred_when_available_and_fill_three_playable_distinct_slo
             session: &mut session,
             cx: &cx,
             read: &mut read,
-            owner: None,
         };
         let (tracks, unread) = reader.artist_tracks(&[&artist]).await;
         assert_eq!(tracks.len(), 3);

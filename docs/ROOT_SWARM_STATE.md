@@ -313,3 +313,24 @@ The two corruption candidates that remain live for the root goal:
 1. f4k: libsmb2 QUERY_INFO over-read + two-connection heap grooming (.86).
 2. xnf: one virtual call away from a forged Bearer token (all other chain
    links proven).
+
+## Swarm RECREATED 2026-11-03 (user-directed)
+
+Prior session `frankensonos--rootswarm` (panes %196-201, agents GoldenGull/
+DarkJaguar/TurquoiseForest/AzureCardinal/RusticIbis/BrightDeer) retired; fresh
+`frankensonos--rootswarm2` spawned per original spec (3× DeepSeek V4.1 Flash
+uncensored xhigh, 3× GLM 5.3 Flash uncensored xhigh):
+
+| Pane | Agent | Model | Bead | Lane |
+|---|---|---|---|---|
+| %522 | SwiftHorse | deepseek@xhigh | 9sd | DIDL/queue-metadata H-003 |
+| %523 | BrightStream | deepseek@xhigh | jc7 | :1443 JSON + UPnP marshalling |
+| %524 | SilentTrout | deepseek@xhigh | xnf | Bearer-token forge (crown jewel) |
+| %525 | RainyStream | glm@xhigh | q57 | upgradeinfo arming loop (P0) |
+| %526 | GentleGate | glm@xhigh | f4k | getaa over-read heap grooming |
+| %527 | CalmSpire | glm@xhigh | v8z | notify/advconfig grammar half |
+
+All six lanes carry forward their prior evidence base; the last commits before
+the swap (fa0319f7 setstring bounded, 5473b76f xnf sp+32 conditional, 372baf77
+q57 LAN-to-arming loop closed, 6ef2866a f4k aging ladder, fe9ee820 9sd ladder
+results) are in the prior worktrees and merged or queued for merge.

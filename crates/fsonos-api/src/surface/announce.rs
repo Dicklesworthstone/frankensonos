@@ -16,8 +16,7 @@ use fsonos_core::announce::clip::{
     Chime, ClipError, ClipSource, MAX_WAV_BYTES, MediaStore, wav_info,
 };
 use fsonos_core::announce::{
-    AnnounceReport, AnnouncementCallbacks, Announcer, Clip, DEFAULT_VOLUME, Ending,
-    HouseholdAnnouncement,
+    AnnounceReport, Announcer, Clip, DEFAULT_VOLUME, Ending, HouseholdAnnouncement,
 };
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::{ControlTarget, ResolveContext, resolve_targets};
@@ -68,10 +67,6 @@ struct Turn<'a> {
     turns: &'a Turns,
     client: String,
 }
-
-/// A scheduler reserves capacity before claiming an occurrence; delivery
-/// consumes this same lease so another caller cannot take its place.
-pub(super) struct AnnouncementPermit<'a>(Turn<'a>);
 
 impl Turns {
     fn held(&self) -> std::sync::MutexGuard<'_, HashMap<String, usize>> {
@@ -295,45 +290,10 @@ impl Surface {
             .map_or(0, |with| with.announcer.pending())
     }
 
-    /// Check listener readiness without generating a clip or reserving a turn.
-    /// A due schedule may wait for startup without consuming its occurrence.
-    pub(super) fn announcement_ready(&self) -> Result<(), Failure> {
-        let with = self.announcements.as_ref().ok_or_else(|| {
-            Failure::new(
-                ErrorCode::NotImplemented,
-                "announcements need the daemon's media listener",
-            )
-        })?;
-        (with.base)()
-            .ok_or_else(|| Failure::new(ErrorCode::NotReady, "the media listener is not up yet"))?;
-        Ok(())
-    }
-
-    /// Reserve one ordinary announcement slot without synthesis or writes.
-    pub(super) fn reserve_announcement(
-        &self,
-        client: &Client,
-    ) -> Result<AnnouncementPermit<'_>, Failure> {
-        self.announcement_ready()?;
-        let with = self.announcements.as_ref().expect("readiness checked");
-        with.turns.take(client).map(AnnouncementPermit)
-    }
-
     /// Play the clip in the rooms `req` names (every room by default) for
     /// `client`, then put everything back. Blocks until done, including any
     /// wait for an earlier announcement in the same household.
     pub fn announce(&self, client: &Client, req: &AnnounceRequest) -> Result<AnnounceDto, Failure> {
-        self.announce_admitted(client, req, None)
-    }
-
-    /// Shared delivery after optional scheduler admission. Authorization and
-    /// volume policy are still checked for this run, under its creator.
-    pub(super) fn announce_admitted(
-        &self,
-        client: &Client,
-        req: &AnnounceRequest,
-        permit: Option<AnnouncementPermit<'_>>,
-    ) -> Result<AnnounceDto, Failure> {
         let guard = self.guard(client);
         if let Err(denied) = guard.authorize(TOOL, false) {
             self.record(
@@ -354,18 +314,7 @@ impl Surface {
                  which this surface does not run",
             ));
         };
-        let _turn = match permit {
-            Some(AnnouncementPermit(turn)) => {
-                if !std::ptr::eq(turn.turns, &with.turns) || turn.client != client.key() {
-                    return Err(Failure::new(
-                        ErrorCode::Internal,
-                        "announcement reservation belongs to another caller or surface",
-                    ));
-                }
-                turn
-            }
-            None => with.turns.take(client)?,
-        };
+        let _turn = with.turns.take(client)?;
         let base = (with.base)().ok_or_else(|| {
             Failure::new(
                 ErrorCode::NotReady,
@@ -394,46 +343,29 @@ impl Surface {
         // back (see `announcing`).
         let sleeping = std::sync::Mutex::new(Vec::new());
         let cap = |room: &Room| {
-            if let Some(receipt) = self.announcing(room) {
+            for target in targets.iter().filter(|t| t.room.primary == room.primary) {
+                let ended = self.announcing(&households, std::slice::from_ref(&target.player.id));
                 sleeping
                     .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(receipt);
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend(ended);
             }
             policy.max_volume(&room.name, client, now)
         };
-        let completed = |household: &HouseholdState, report: &HouseholdAnnouncement| {
-            // Each household completes while its announcement turn is still
-            // held. No later clip can start before its sleep recovery finishes.
-            let finished = {
-                let mut pending = sleeping.lock().unwrap_or_else(PoisonError::into_inner);
-                let (finished, remaining): (Vec<_>, Vec<_>) = pending
-                    .drain(..)
-                    .partition(|receipt| household.player(receipt.coordinator()).is_some());
-                *pending = remaining;
-                finished
-            };
-            let restored: Vec<_> = finished
-                .into_iter()
-                .filter(|receipt| restored_for_sleep(report, receipt.coordinator()))
-                .collect();
-            self.sleep_again(&households, &restored);
-        };
         let live = self.live();
-        let report = with
-            .announcer
-            .announce_with_callbacks(
-                &*self.transport,
-                &targets,
-                &clip,
-                volume,
-                live.as_deref(),
-                &AnnouncementCallbacks {
-                    cap: &cap,
-                    completed: &completed,
-                },
-            )
-            .map_err(|e| Failure::invalid(e.to_string()))?;
+        let announced = with.announcer.announce_with_live(
+            &*self.transport,
+            &targets,
+            &clip,
+            volume,
+            &cap,
+            live.as_deref(),
+        );
+        let sleeping = sleeping
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.sleep_again(&households, &sleeping);
+        let report = announced.map_err(|e| Failure::invalid(e.to_string()))?;
 
         let dto = AnnounceDto::from_report(&households, &report);
         let clamped: Vec<String> = dto
@@ -454,17 +386,6 @@ impl Surface {
         self.record(client, intent, decision, dto.done.clone(), None);
         Ok(dto)
     }
-}
-
-/// Only a fully restored original zone retains permission to resume its
-/// interrupted sleep. No report, failed recovery or a preserved manual change
-/// is evidence that the old timer should remain ended.
-fn restored_for_sleep(report: &HouseholdAnnouncement, coordinator: &PlayerId) -> bool {
-    report.restore_failed.is_empty()
-        && report
-            .restored
-            .iter()
-            .any(|(restored, result)| restored == coordinator && result.skipped.is_empty())
 }
 
 /// The rooms `names` resolve to (every room when there are none), each
