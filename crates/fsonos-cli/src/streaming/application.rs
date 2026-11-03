@@ -12,16 +12,26 @@ use anyhow::{Context as _, ensure};
 
 use super::StreamArgs;
 
+#[cfg(unix)]
+mod mpv;
+
 pub(super) struct Launch {
     program: OsString,
     arguments: Vec<OsString>,
     sink: String,
+    #[cfg(unix)]
+    managed_mpv: bool,
 }
 
 impl Launch {
     /// Validation only. In particular, do not execute the application to probe it.
     pub(super) fn prepare(args: &StreamArgs) -> anyhow::Result<Option<Self>> {
         let Some((program, arguments)) = args.application.split_first() else {
+            #[cfg(unix)]
+            ensure!(
+                !args.sync.sync_launched_mpv,
+                "--sync-launched-mpv requires a trailing mpv command after --"
+            );
             return Ok(None);
         };
         ensure!(
@@ -51,24 +61,34 @@ impl Launch {
                 .all(|arg| !arg.as_encoded_bytes().contains(&0)),
             "application executable and arguments must not contain NUL"
         );
+        #[cfg(unix)]
+        if args.sync.sync_launched_mpv {
+            mpv::validate(arguments)?;
+        }
         Ok(Some(Self {
             program: program.clone(),
             arguments: arguments.to_vec(),
             sink: sink.clone(),
+            #[cfg(unix)]
+            managed_mpv: args.sync.sync_launched_mpv,
         }))
     }
 
     fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command.args(&self.arguments).env("PULSE_SINK", &self.sink);
-        // The controller owns the terminal and stdout (including --json).
-        // GUI controls still work; the child cannot consume controller input.
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
+        configure_stdio(&mut command);
         command
     }
+}
+
+fn configure_stdio(command: &mut Command) {
+    // The controller owns the terminal and stdout (including --json).
+    // GUI controls still work; the child cannot consume controller input.
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
 }
 
 struct Process {
@@ -136,16 +156,51 @@ impl Drop for Process {
 }
 
 pub(super) struct Application {
+    #[cfg(unix)]
+    pid: u32,
     stop: Arc<AtomicBool>,
     reaped: Arc<AtomicBool>,
     worker: Option<JoinHandle<anyhow::Result<()>>>,
+    #[cfg(unix)]
+    ipc: Option<mpv::Ipc>,
 }
 
 impl Application {
     /// Called only after output read-back, encoder readiness and accepted Play.
     /// No application is relaunched on failure, child exit, or stream recovery.
     pub(super) fn start(launch: &Launch, stream_stop: Arc<AtomicBool>) -> anyhow::Result<Self> {
+        #[cfg(unix)]
+        if launch.managed_mpv {
+            let ipc = mpv::Ipc::new(&launch.sink)?;
+            return Self::from_managed_command(ipc.command(launch), ipc, &stream_stop);
+        }
         Self::from_command(launch.command(), stream_stop)
+    }
+
+    #[cfg(unix)]
+    fn from_managed_command(
+        mut command: Command,
+        ipc: mpv::Ipc,
+        stream_stop: &AtomicBool,
+    ) -> anyhow::Result<Self> {
+        use std::os::unix::process::CommandExt as _;
+
+        ensure!(
+            !stream_stop.load(Ordering::Acquire),
+            "stream cancelled before mpv launch"
+        );
+        // Terminal Ctrl-C must reach the supervisor, not close mpv's IPC
+        // before synchronization restores its owned delay.
+        command.process_group(0);
+        // The supervisor explicitly calls shutdown after synchronization,
+        // on both normal completion and every error.
+        let mut application = Self::from_command(command, Arc::new(AtomicBool::new(false)))?;
+        application.ipc = Some(ipc);
+        ensure!(
+            !stream_stop.load(Ordering::Acquire),
+            "stream cancelled during mpv launch"
+        );
+        Ok(application)
     }
 
     fn from_command(mut command: Command, stream_stop: Arc<AtomicBool>) -> anyhow::Result<Self> {
@@ -164,6 +219,8 @@ impl Application {
             !stream_stop.load(Ordering::Acquire),
             "stream cancelled during application launch"
         );
+        #[cfg(unix)]
+        let pid = process.child.id();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
         // Process owns cleanup even if thread creation fails or the worker panics.
@@ -180,9 +237,13 @@ impl Application {
                 result
             })?;
         Ok(Self {
+            #[cfg(unix)]
+            pid,
             stop,
             reaped,
             worker: Some(worker),
+            #[cfg(unix)]
+            ipc: None,
         })
     }
 
@@ -193,6 +254,29 @@ impl Application {
                 .join()
                 .map_err(|_| anyhow::anyhow!("foreground application worker panicked"))??;
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub(super) fn mpv_endpoint(&self) -> Option<(&std::path::Path, &str)> {
+        self.ipc.as_ref().map(|ipc| (ipc.path(), ipc.output()))
+    }
+
+    #[cfg(unix)]
+    pub(super) fn id(&self) -> u32 {
+        self.pid
+    }
+
+    #[cfg(unix)]
+    pub(super) fn ensure_running(&self) -> anyhow::Result<()> {
+        ensure!(
+            !self.reaped()
+                && self
+                    .worker
+                    .as_ref()
+                    .is_some_and(|worker| !worker.is_finished()),
+            "launched mpv exited before synchronization was ready"
+        );
         Ok(())
     }
 
@@ -207,6 +291,12 @@ impl Drop for Application {
     fn drop(&mut self) {
         if let Err(error) = self.shutdown() {
             eprintln!("fsonos stream: application cleanup was not confirmed: {error:#}");
+        }
+        #[cfg(unix)]
+        if !self.reaped()
+            && let Some(ipc) = &mut self.ipc
+        {
+            ipc.retain();
         }
     }
 }

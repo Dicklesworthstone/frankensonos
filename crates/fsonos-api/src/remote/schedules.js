@@ -29,13 +29,13 @@ const SchedulesRemote = (() => {
     }
     const fields = {
       dj_start: ['zone', 'mood', 'direction'], pause: ['zone', 'fade_secs'],
-      volume: ['zone', 'volume'], apply_scene: ['scene'],
+      volume: ['zone', 'volume'], apply_scene: ['scene'], announce: ['announcement'],
     };
     if (!Object.hasOwn(fields, value.action)) throw new Error('This schedule action is not supported by this remote.');
-    for (const field of ['zone', 'mood', 'direction', 'scene', 'volume', 'fade_secs']) {
+    for (const field of ['zone', 'mood', 'direction', 'scene', 'volume', 'fade_secs', 'announcement']) {
       if (!fields[value.action].includes(field) && value[field] != null) throw new Error('The schedule action has conflicting fields.');
     }
-    if (value.action === 'apply_scene' ? !text(value.scene, 512) : !text(value.zone, 512)) {
+    if (value.action !== 'announce' && (value.action === 'apply_scene' ? !text(value.scene, 512) : !text(value.zone, 512))) {
       throw new Error('The schedule target is missing.');
     }
     if ((value.mood != null && !text(value.mood, 128))
@@ -46,6 +46,7 @@ const SchedulesRemote = (() => {
     return Object.freeze({ id: value.id, when: value.when, action: value.action,
       zone: value.zone ?? null, scene: value.scene ?? null, mood: value.mood ?? null,
       ...(value.direction != null ? { direction: directionApi().read(value.direction, value.mood) } : {}),
+      ...(value.action === 'announce' ? { announcement: announcementOf(value.announcement) } : {}),
       volume: value.volume ?? null, fade_secs: value.fade_secs ?? null,
       summary: value.summary, creator: value.creator, enabled: value.enabled,
       next: value.next ?? null, last_fired: value.last_fired ?? null });
@@ -66,15 +67,18 @@ const SchedulesRemote = (() => {
   function definition(row) {
     return JSON.stringify([row.id, row.when, row.action, row.zone, row.scene,
       row.mood, row.volume, row.fade_secs, row.summary, row.creator,
-      row.direction == null ? null : directionApi().signature(row.direction, row.mood)]);
+      row.direction == null ? null : directionApi().signature(row.direction, row.mood),
+      announcementSignature(row.announcement)]);
   }
 
   const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-  const ACTIONS = { dj_start: 'Start the DJ', apply_scene: 'Apply a scene', volume: 'Set room volume', pause: 'Pause a group' };
+  const ACTIONS = { dj_start: 'Start the DJ', apply_scene: 'Apply a scene', volume: 'Set room volume', pause: 'Pause a group', announce: 'Make an announcement' };
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const draftOf = (action) => ({ action, cadence: 'weekdays', time: '07:30', days: [],
     delay: '45m', at: '', zone: '', scene: '', mood: '', volume: '20', fade_secs: '0',
-    ...(action === 'dj_start' ? { direction: directionApi().draft() } : {}) });
+    ...(action === 'dj_start' ? { direction: directionApi().draft() } : {}),
+    ...(action === 'announce' ? { announcement_source: 'text', announcement_text: '',
+      announcement_chime: 'bell', announcement_voice: '', announcement_rooms: [], announcement_volume: '35' } : {}) });
 
   function stamp(value) {
     const canonical = (v, depth) => {
@@ -85,6 +89,74 @@ const SchedulesRemote = (() => {
     const result = JSON.stringify(canonical(value, 0));
     if (result.length > 128000) throw new Error('The saved definition is too large to review.');
     return result;
+  }
+
+
+  function announcementOf(value) {
+    const fail = () => { throw new Error('The scheduled announcement needs text or a chime, valid rooms, and a volume from 0 to 100.'); };
+    if (!object(value) || Object.keys(value).some((key) => !['text', 'chime', 'wav_base64', 'voice', 'rooms', 'volume'].includes(key))
+        || value.wav_base64 != null || Number(value.text != null) + Number(value.chime != null) !== 1) fail();
+    const recipe = {};
+    if (value.text != null) {
+      if (typeof value.text !== 'string' || !value.text.trim() || [...value.text.trim()].length > 1000) fail();
+      recipe.text = value.text.trim();
+      if (value.voice != null) {
+        if (typeof value.voice !== 'string') fail();
+        const voice = value.voice.trim();
+        if (!voice || voice.startsWith('-') || /[\u0000-\u001f\u007f-\u009f]/u.test(voice)
+            || new TextEncoder().encode(voice).length > 4096) fail();
+        recipe.voice = voice;
+      }
+    } else {
+      if (typeof value.chime !== 'string' || value.voice != null) fail();
+      const chime = value.chime.trim().toLowerCase();
+      if (!['bell', 'beep', 'rise'].includes(chime)) fail();
+      recipe.chime = chime;
+    }
+    const rooms = value.rooms === undefined ? [] : value.rooms;
+    if (!Array.isArray(rooms) || !rooms.every((room) => typeof room === 'string'
+        && room.trim() && [...room.trim()].length <= 128)) fail();
+    recipe.rooms = Object.freeze(rooms.map((room) => room.trim()));
+    if (value.volume != null) {
+      if (!integer(value.volume, 0, 100)) fail();
+      recipe.volume = value.volume;
+    }
+    return Object.freeze(recipe);
+  }
+
+  function announcementSignature(value) {
+    if (value == null) return null;
+    const recipe = announcementOf(value);
+    return JSON.stringify([recipe.text ?? null, recipe.chime ?? null, recipe.voice ?? null,
+      [...recipe.rooms].sort(), recipe.volume ?? null]);
+  }
+
+  function announcementDescription(recipe) {
+    const source = recipe.text != null ? `Say “${recipe.text}”${recipe.voice ? ` with voice ${recipe.voice}` : ''}`
+      : `Play the ${recipe.chime} chime`;
+    return `${source}; ${recipe.rooms.length ? recipe.rooms.join(', ') : 'every room'}; volume ${recipe.volume ?? 35} (house limits apply)`;
+  }
+
+  function announcementDestination(options, targets) {
+    if (!Array.isArray(targets) || !targets.length || new Set(targets).size !== targets.length) {
+      throw new Error('Choose at least one room for the announcement.');
+    }
+    const selected = targets.map((target) => options.rooms.find((room) => room.target === target));
+    if (selected.some((room) => !room)) throw new Error('Choose announcement rooms from the current list.');
+    return Object.freeze({ signature: stamp(selected.map((room) => [room.target, room.signature])),
+      label: selected.map((room) => room.roomLabel).join(', ') });
+  }
+
+  function announcementDraft(draft) {
+    if (!['text', 'chime'].includes(draft.announcement_source)
+        || typeof draft.announcement_volume !== 'string' || !/^\d+$/.test(draft.announcement_volume)) {
+      throw new Error('Choose speech or a chime and an announcement volume from 0 to 100.');
+    }
+    return announcementOf({
+      ...(draft.announcement_source === 'text' ? { text: draft.announcement_text,
+        ...(draft.announcement_voice ? { voice: draft.announcement_voice } : {}) } : { chime: draft.announcement_chime }),
+      rooms: draft.announcement_rooms, volume: Number(draft.announcement_volume),
+    });
   }
 
   function roomsOf(value) {
@@ -149,7 +221,7 @@ const SchedulesRemote = (() => {
     if (action === 'apply_scene') return { scenes: scenesOf(await call('scheduleScenes')), rooms: [], moods: [] };
     const rooms = roomsOf(await call('scheduleZones'));
     const moods = action === 'dj_start' ? moodsOf(await call('scheduleMoods')) : [];
-    return { rooms: action === 'volume' ? rooms : rooms.filter((r) => r.lead), moods, scenes: [] };
+    return { rooms: ['volume', 'announce'].includes(action) ? rooms : rooms.filter((r) => r.lead), moods, scenes: [] };
   }
 
   function timeOf(draft) {
@@ -192,10 +264,12 @@ const SchedulesRemote = (() => {
     const timing = timeOf(draft);
     const body = { when: timing.when, action: draft.action };
     const destination = draft.action === 'apply_scene' ? options.scenes.find((s) => s.name === draft.scene)
-      : options.rooms.find((r) => r.target === draft.zone);
+      : draft.action === 'announce' ? announcementDestination(options, draft.announcement_rooms)
+        : options.rooms.find((r) => r.target === draft.zone);
     if (!destination) throw new Error('Choose an explicit destination from the current list.');
     let mood = null;
     if (draft.action === 'apply_scene') body.scene = destination.name;
+    else if (draft.action === 'announce') body.announcement = announcementDraft(draft);
     else body.zone = destination.target;
     if (draft.action === 'dj_start' && draft.mood) {
       mood = options.moods.find((m) => m.name === draft.mood);
@@ -211,6 +285,7 @@ const SchedulesRemote = (() => {
       body[field] = Number(draft[field]);
     }
     const label = draft.action === 'apply_scene' ? `scene “${destination.name}”`
+      : draft.action === 'announce' ? announcementDescription(body.announcement)
       : draft.action === 'volume' ? `${destination.roomLabel} to ${body.volume}`
         : draft.action === 'dj_start' ? `${destination.label}; ${directionApi().describe(body.direction, body.mood)}`
           : `${destination.label}, fade ${body.fade_secs}s`;
@@ -223,6 +298,7 @@ const SchedulesRemote = (() => {
       && row.mood === (body.mood ?? null)
       && directionApi().signature(row.direction, row.mood) === directionApi().signature(body.direction, body.mood)
       && row.volume === (body.volume ?? null)
+      && announcementSignature(row.announcement) === announcementSignature(body.announcement)
       && (row.action !== 'pause' || (row.fade_secs ?? 0) === (body.fade_secs ?? 0));
   }
 
@@ -299,8 +375,9 @@ const SchedulesRemote = (() => {
       if (disposed || !state.open || !state.loaded || state.loading || state.writing || !state.draft
           || field === 'action' || field === 'direction' || !Object.hasOwn(state.draft, field)
           || (field === 'days' ? !Array.isArray(value) || !value.every((v) => DAYS.includes(v))
-            : typeof value !== 'string' || value.length > 512)) return false;
-      state.draft = { ...state.draft, [field]: field === 'days' ? [...value] : value };
+            : field === 'announcement_rooms' ? !Array.isArray(value) || !value.every((v) => typeof v === 'string' && [...v].length <= 128)
+              : typeof value !== 'string' || value.length > (field === 'announcement_text' ? 2000 : field === 'announcement_voice' ? 4096 : 512))) return false;
+      state.draft = { ...state.draft, [field]: Array.isArray(value) ? [...value] : value };
       state.pending = null;
       state.message = '';
       publish();
@@ -388,7 +465,8 @@ const SchedulesRemote = (() => {
           if (!current(version)) return false;
           const destination = reviewed.body.action === 'apply_scene'
             ? options.scenes.find((s) => s.name === reviewed.body.scene)
-            : options.rooms.find((r) => r.target === reviewed.body.zone);
+            : reviewed.body.action === 'announce' ? announcementDestination(options, reviewed.body.announcement.rooms)
+              : options.rooms.find((r) => r.target === reviewed.body.zone);
           const mood = reviewed.mood && options.moods.find((m) => m.name === reviewed.mood.name);
           if (!destination || destination.signature !== reviewed.destination.signature
               || (reviewed.mood && mood?.signature !== reviewed.mood.signature)) {
@@ -482,6 +560,23 @@ const SchedulesRemote = (() => {
       if (d.action === 'apply_scene') form.append(select('Scene', 'scene', [['', 'Choose a saved scene…'],
         ...(options?.scenes || []).map((v) => [v.name, v.name])]),
         el('p', { text: 'This schedules the scene by name, not a frozen copy. Later edits to that scene change what future runs do.' }));
+      else if (d.action === 'announce') {
+        form.append(select('Announcement sound', 'announcement_source', [['text', 'Speak a message'], ['chime', 'Play a chime']]));
+        if (d.announcement_source === 'text') form.append(
+          el('label', {}, 'Message (maximum 1000 characters)', el('textarea', { value: d.announcement_text, maxlength: 2000,
+            rows: 3, 'aria-label': 'Announcement message', 'data-schedule-focus': 'announcement_text', disabled: busy,
+            oninput: (e) => control.edit('announcement_text', e.target.value) })),
+          field('Voice (optional; uses the configured voice when blank)', 'announcement_voice', { maxlength: 4096 }));
+        else form.append(select('Chime', 'announcement_chime', [['bell', 'Bell'], ['beep', 'Beep'], ['rise', 'Rise']]));
+        const targets = el('fieldset', { class: 'schedule-days', disabled: busy }, el('legend', { text: 'Announcement rooms' }));
+        for (const room of options?.rooms || []) targets.append(el('label', {},
+          el('input', { type: 'checkbox', checked: d.announcement_rooms.includes(room.target), disabled: busy,
+            'aria-label': room.roomLabel, 'data-schedule-focus': `announcement-room-${room.target}`,
+            onchange: (e) => control.edit('announcement_rooms', e.target.checked
+              ? [...d.announcement_rooms, room.target] : d.announcement_rooms.filter((target) => target !== room.target)) }), room.roomLabel));
+        form.append(targets, field('Announcement volume (0–100)', 'announcement_volume', { type: 'number', min: 0, max: 100, step: 1 }),
+          el('p', { text: 'Each run announces in the selected rooms and restores their music. House volume limits apply when it runs. Speech uses the daemon host’s configured local speech engine.' }));
+      }
       else form.append(select(d.action === 'volume' ? 'Room' : 'Group', 'zone', [['', 'Choose a destination…'],
         ...(options?.rooms || []).map((v) => [v.target, d.action === 'volume' ? v.roomLabel : v.label])]),
         el('p', { text: d.action === 'volume' ? 'Changes only the selected room’s volume, subject to house limits.'
@@ -533,6 +628,7 @@ const SchedulesRemote = (() => {
         content.append(el('section', { class: 'schedule-review', 'aria-label': 'Review schedule change' },
           el('h3', { text: `${p.action === 'remove' ? 'Remove' : p.action === 'pause' ? 'Pause' : 'Resume'} schedule #${p.row.id}?` }),
           el('p', { text: `${p.row.when}: ${p.row.summary}` }),
+          ...(p.row.announcement ? [el('p', { text: announcementDescription(p.row.announcement) })] : []),
           el('p', { text: p.action === 'remove' ? 'This permanently removes the saved routine, not the music or scene. A run already in progress is not cancelled. Speaker undo does not restore schedules.'
             : p.action === 'pause' ? 'Prevent future runs; this does not pause music or cancel a run already in progress.'
               : 'Enable future runs. Missed runs are not made up; the daemon decides the next eligible time.' }),
@@ -546,6 +642,7 @@ const SchedulesRemote = (() => {
         content.append(el('article', { class: 'schedule-card' },
           el('h3', { text: `#${row.id} · ${row.enabled ? row.next ? 'Enabled' : 'Enabled; no next run' : 'Paused'}` }),
           el('p', { text: row.when }), el('p', { text: row.summary }),
+          ...(row.announcement ? [el('p', { text: announcementDescription(row.announcement) })] : []),
           el('p', { text: `Creator: ${row.creator}` }),
           el('p', { text: `Next: ${displayTime(row.next)}` }),
           el('p', { text: `Last run or skipped occurrence: ${displayTime(row.last_fired)}` }),
@@ -566,7 +663,7 @@ const SchedulesRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { routes, scheduleOf, schedulesOf, definition, roomsOf, scenesOf, moodsOf, timeOf, creation, model, panel };
+  return { routes, scheduleOf, schedulesOf, definition, announcementOf, roomsOf, scenesOf, moodsOf, timeOf, creation, model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SchedulesRemote;
