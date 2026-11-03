@@ -408,3 +408,13 @@ per-field accessors. Two consequences:
    either `ctx+4` is not this object, or its vptr is one of the sub-tables at `0x66c050`,
    `0x66c06c`, … (each has a free-trampoline at +24 but still a null at +16). That mismatch is
    the next read, and it has to be settled before the slot-16 body can be named.
+
+## 2026-10-29 · Why the ctx layout is still unresolved (from 5473b76f, re-merged)
+
+The `0x600f08` call that builds a string at `sp+32` is **conditional**: `0x603c0e` branches
+past it on some paths, so the `sp+32` buffer is never written by that path, and the ctx the
+inspector receives must be built by the framework before the handler runs. That is consistent
+with the inspector dereferencing `+4` and `+16` for slot targets — the dispatcher (`FUN_0047ad64`)
+assembles the ctx from live service objects, and the "missing" vtable slots on 0x66c038 mean
+ctx+4 points at a different class than the actor singleton. SilentTrout's live thread: find the
+dispatcher's exact store into ctx+4.
