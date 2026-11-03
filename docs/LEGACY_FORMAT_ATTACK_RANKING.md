@@ -182,3 +182,71 @@ reference's failure paths to locate the parser; (c) craft minimal-bug PoCs
 from the reference's own fuzz-history; (d) fire via hls_det /
 SetAVTransportURI with the new-poller doctrine; (e) record device verdicts in
 this doc.
+
+---
+
+## Reference-decoder mapping + known bug classes (researched 2026-11-03)
+
+### #1 MP4/ALAC (Sonos hand-rolled demuxer)
+**Reference:** ffmpeg `libavformat/mov.c` (the reference ISO-BMFF demuxer).
+Compare mov.c's hardened failure paths against the binary's 8 corrupt-file
+sites. **Known bug classes to replicate:** box-size lies (size < 8, size 0
+to-EOF, size 0xFFFFFFFF), nested `moov` recursion, `esds` TLV-in-TLV depth,
+`stsd` ALAC cookie truncation, `stsz`/`stsc` sample-table arithmetic.
+**Live analogues from the last 6 months (all GPAC/MP4Box, the same bug
+family):** CVE-2025-55652 (VP config), CVE-2025-55648 (Opus header from
+corrupted `stsz`), CVE-2025-55664 (m2ts demux), CVE-2025-55640 (`stbl_AddSize`
+on corrupted sample metadata) — every one is "crafted size/count field vs
+allocation". **ALAC decode reference:** ffmpeg `libavcodec/alac.c` — its CVE
+history (2013-0855 samples-per-frame integer overflow, 2013-0856
+lpc_prediction, 2015-6823 allocate_buffers) maps to the three checks to test:
+`S1 system only supports 16bit ALAC format` in the binary suggests a
+bit-depth dispatch worth poking.
+
+### #2 WMA/ASF + MMS
+**Reference:** ffmpeg `libavformat/asfdec_f.c`/`asfdec_o.c` (two demuxer
+generations, both with CVE histories incl. CVE-2018-1999011 heap overflow in
+asf_o) + `libavformat/mms.c`. **Live analogue:** CVE-2026-19389 (GStreamer
+asfdemux, Aug 2026): "multiple integer overflow and underflow when parsing
+header objects from crafted ASF/WMV/WMA" — the exact class. The ASF header is
+a guid+size object list; the data packets carry a multiple-payload count
+nibble; the MMS client adds its own header translate layer. Sonos's MMS
+client (`sonos.com-mms:` scheme) is in-binary and unexplored.
+
+### #3 Audible .aa/.aax
+**Reference:** ffmpeg `libavformat/aadec.c` (header parsing borrowed from
+jteeuwen/audible) — the .aa format is a TOC of (offset, length) pairs +
+activation/codec blobs. Error taxonomy in the binary
+(BAD_CODEC/DRM/ZP_MISSING/WMP_NO_LICENSE) shows the parse order: container →
+codec selection → DRM/license → decode. Each gate is a parser.
+
+### #4 MP3 via mpg123 — VERSION BRACKETED
+The rootfs `libmpg123.so.0` exports `mpg123_safe_buffer` (added 1.32.0) and
+102 exported symbols → **1.32.0–1.32.7**. The shipped "Frankenstein" resync
+strings match the **1.32.8 fix window** (oss-security 2024-10-30: buffer
+overflow in versions BEFORE 1.32.8 in the Frankenstein resync path — exactly
+the "Big change (MPEG version, layer, rate). Frankenstein stream?" machinery
+in the shipped lib). **If the lib predates 1.32.8 this is a LIVE, KNOWN,
+PATCHED-UPSTREAM bug in the device.** Reference code: mpg123
+`src/libmpg123/parse.c` (the resync loop) + `layer3.c`. Older classics:
+CVE-2017-12797 (INT123_parse_new_id3 integer overflow — ID3v2 is parsed from
+the same feed), GLSA-200501-14 (MP2/MP3 crafted-file overflow).
+**First experiment: determine the exact minor version (compare more symbols),
+then craft the Frankenstein resync PoC from the 1.32.8 fix commit.**
+
+### #5-8
+AIFF: ffmpeg `aiffdec.c` (COMM size, SSND offset past EOF, AIFC compression
+dispatch). WAV/RIFF: ffmpeg `wavdec.c` (huge-RIFF already showed the
+transport error path). SBC: `libsbc.so.1` (BT-transport only, low priority).
+Playlists: ASX (XML → expat-adjacent) + SCPLS + M3U.
+
+## Delivery vehicles per format (all proven pre-auth)
+
+| Format | URI scheme / protocolInfo | Vehicle |
+|---|---|---|
+| MP4/M4A/ALAC | `http-get:*:audio/mp4:*`, `audio/x-m4a` | SetAVTransportURI + Play |
+| WMA/ASF | `sonos.com-mms:*:audio/x-ms-wma:*`, `audio/wma` | SetAVTransportURI (MMS client in-binary) |
+| Audible | `audio/audible`, `application/audible` | SetAVTransportURI |
+| MP3 | `audio/mp3`/`audio/mpeg` | SetAVTransportURI + hls-radio |
+| AIFF | `sonos.com-http:*:audio/aiff:*` | SetAVTransportURI |
+| WAV | `audio/wav`/`audio/x-wav` | SetAVTransportURI (+ hls-radio TS wrap proven) |
