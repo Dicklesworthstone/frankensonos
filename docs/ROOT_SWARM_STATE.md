@@ -389,3 +389,26 @@ landing site, and they are shapeable by prior traffic. DarkForest (q57,
 e6cee2a8) simultaneously measured the .202 trigger cycle and identified the
 DNS blocker (resolver = router via DHCP; owner decision: router DHCP scope
 flip). Both merged.
+
+## Update 2026-11-03 (g) — rootswarm3 first results + one owner decision pending
+
+- **q57 BLOCKER (owner decision needed)**: DarkForest staged the full arming
+  rig on 192.168.4.28 (HTTPS :8643 with the downgrade-policy body + chain
+  verified against the device bundle; DNS :53 answering the five Sonos names).
+  .202's BSU fired 4x (wedge+recover, expected EV-25 class) but **never
+  queried the responder** — .202's resolver is the router (192.168.4.1) via
+  DHCP, zero udp/53 reached .28 across 3 tcpdump windows. **The Eero router's
+  DHCP scope needs its DNS entry flipped to 192.168.4.28** (or the unit's
+  static DNS set) for the arming proof to run. That is a router-admin action
+  for Jeffrey.
+- **jc7 wall fired** (SwiftMarsh, c195eb59): the marshaller under-request is
+  instruction-level verified (sltu grow-check at 0x509c28; element writer
+  requests 2·len(value)+8 for a 2·len(name)+len(value)+6 format) — real, only
+  reachable through argument NAMES, latent behind the 2047B property cap.
+- **9sd store bounded, serializer not** (RedThrush, 4fab7500): the deferred
+  record write is bounded (strlcpy 65 + 1024-guarded blob) but the SERIALIZER
+  copy is unchecked — the H-003 fault moved off the store.
+- **fbkv plan approved** (SageElm): all 19 allocator call sites → arena map →
+  neighbour shaping, offline r2 first.
+- **f4k/.86 reserved** for LilacKnoll's hours-scale aging work; fbkv/f4k may
+  converge (same module arena hosts the /notify wild-dispatch neighbours).
