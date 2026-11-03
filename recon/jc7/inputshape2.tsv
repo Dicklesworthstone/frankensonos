@@ -1,0 +1,10 @@
+ts	shape	status	bytes	body
+17:27:48	setstring-pair	200	57	{"_objectType":"upnpResponse","parameters":[],"result":0}
+17:27:52	getstring-pair2	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:27:55	reversed	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:27:59	withtype	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:02	extra-field	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:06	inputempty	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:09	cmd-call	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 401","result":401}
+17:28:12	action-command	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:16	tunnel	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}

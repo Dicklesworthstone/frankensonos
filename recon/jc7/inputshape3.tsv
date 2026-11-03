@@ -1,0 +1,8 @@
+ts	shape	route	status	bytes	body
+17:28:33	setstring-noinput	upnpSystemProperties	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:36	setstring-bogus	upnpSystemProperties	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:40	setstring-onearg	upnpSystemProperties	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:43	getstring-jc7probe	upnpSystemProperties	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:47	getstring-zoneName	upnpSystemProperties	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:51	setzoneattr-3args	upnpDeviceProperties	000	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:28:55	getzoneattr-0args	upnpDeviceProperties	200	446	{"_objectType":"upnpResponse","parameters":[{"_objectType":"upnpParameter","secure":false,"name":"CurrentZoneName","value":"Kitchen Counter"},{"_objectType":"up

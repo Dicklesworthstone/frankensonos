@@ -1,0 +1,25 @@
+ts	batch	case	status	rc	readback
+17:30:11	T1	value="plain"	200	0	200/plain
+17:30:15	T1	value="<x>"	200	0	200/<x>
+17:30:20	T1	value="a&b"	200	0	200/a&b
+17:30:24	T1	value="a&b;c"	200	0	200/a&b;c
+17:30:28	T1	value="\"q\""	200	0	200/"q"
+17:30:32	T1	value="'q'"	200	0	200/'q'
+17:30:36	T1	value="<a/>"	200	0	200/<a/>
+17:30:40	T1	value="]]>"	200	0	200/]]>
+17:30:44	T1	value="&#0;"	200	0	200/&#0;
+17:30:48	T1	value="<"	200	0	200/<
+17:30:52	T1	value="a<b>c&d\"e"	200	0	200/a<b>c&d"e
+17:30:56	T1	value="a\tb"	200	0	200/a b
+17:30:59	T1	BATCH_END	200	-	alive
+17:30:59	T2	name70000-value1-x1	499	402	
+17:31:03	T2	name70000-value1-x2	499	402	
+17:31:06	T2	name70000-value1-x3	499	402	
+17:31:10	T2	name70000-value1-x5	499	402	
+17:31:14	T2	name70000-value1-x10	499	402	
+17:31:18	T2	control-shortname-x1	499	402	
+17:31:21	T2	control-shortname-x5	499	402	
+17:31:26	T2	name200000-value1-x5	499	402	
+17:31:26	T2	BATCH_END	200	-	alive
+17:31:29	POST	roundtrip	200	0	200/ok
+17:31:29	POST	BATCH_END	200	-	alive

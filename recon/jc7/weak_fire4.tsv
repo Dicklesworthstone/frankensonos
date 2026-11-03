@@ -1,0 +1,5 @@
+ts	case	status	stored_len	head	tail
+17:34:12	k=jc7a ch=a n=70000	200	2047	'aaaaaaaaaaaa'	'aaaaaaaaaaaa'
+17:34:17	k=jc7b ch=< n=70000	200	2047	'<<<<<<<<<<<<'	'<<<<<<<<<<<<'
+17:34:21	k=jc7c ch=< n=200000	200	2047	'<<<<<<<<<<<<'	'<<<<<<<<<<<<'
+17:34:24	BATCH_END	200	-	-	alive

@@ -1,0 +1,6 @@
+ts	shape	status	bytes	body
+17:26:54	input-pair	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:26:57	input-pair-typed	400	108	{"_objectType":"globalError","errorCode":"ERROR_INVALID_PARAMETER","reason":"Parsing terminated:input.name"}
+17:27:01	input-obj	400	108	{"_objectType":"globalError","errorCode":"ERROR_INVALID_PARAMETER","reason":"Parsing terminated:input.name"}
+17:27:04	input-single	400	98	{"_objectType":"globalError","errorCode":"ERROR_INVALID_PARAMETER","reason":"Parsing terminated:"}
+17:27:07	params-map	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}

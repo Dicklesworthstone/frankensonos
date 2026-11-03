@@ -1,0 +1,13 @@
+ts	shape	status	bytes	body
+17:25:13	baseline	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:17	arguments	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:22	arg	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:27	parameters	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:31	params	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:35	flattened	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:39	args-singleobj-arr	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:44	args-pairarray	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:47	args-namevalue	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:52	args-typed	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:25:56	args-string	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
+17:26:00	unknownkey	499	127	{"_objectType":"upnpError","errorCode":"ERROR_COMMAND_FAILED","reason":"Upnp command failed with return code 402","result":402}
