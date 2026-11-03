@@ -122,4 +122,31 @@ min with port 1400 closed). Queue arms for contrast: blob carriers all clean at
 overrun), [long, short] and [long] clean.
 
 Harness: recon/queue9sd/h003_arms.py, log logs/h003_arms_20261103.log.
+
+## Record write read (2026-11-03, static, 57.23-74170-1-16 = bea55150…)
+
+The transport-record store (deferred pass 0x10224254, rec = *(this+23580)):
+
+  +0     name,  strlcpy(rec, src, 65)        -> 64 B cap        (0x10224c2c)
+  +0x44  tag word                                              (0x10224c60)
+  +0x48  blob,  memcpy(rec+72, src+60, len)                    (0x10224c68)
+  +0x448 blob length, clamped 0 < len <= 1024 BEFORE the copy    (0x10224c38-c50)
+
+len > 1024 does not truncate, it SKIPS the store (and the length word) silently.
+
+The unchecked copy is the serializer 0x10219848 into the shared .bss record text
+0x1048D5D0: it stores an 8-bit length ((u8)strlen, 0x102198e8), memcpy's that
+many name bytes, then memcpy's the blob with bloblen and NO pre-copy check
+(0x10219954); the capacity compare (cmplwi 1112, 0x10219960) runs AFTER both
+copies and only logs. Reachable worst case 255+7+1024 = 1286 vs 1112 = 174 B of
+silent overrun into the adjacent scratch globals (next object 0x1048D9D0). With
+the writer's 64 B name cap the real max is 1095, so the 1112 sizing is safe only
+because of a cap enforced at a different call site.
+
+Fetch-failure branch 0x10203254 is stack-bounded (1025/3072/64 buffers), so the
+kill is not a stack overflow in the fetch. Controllability is total: the blob is
+the caller's CurrentURIMetaData, accepted to at least 10 382 B (200), and the
+read-back truncates hard at 4173 B for titles >= 4000 (fixed 274 B prefix). A
+404 body does NOT count as a failed fetch (5 shots, no death) - only connect
+timeout/refusal does.
 """
