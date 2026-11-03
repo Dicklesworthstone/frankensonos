@@ -431,3 +431,29 @@ The live corruption-to-control candidates, ranked:
 Campaign-negative results (all evidence-cited): TLS both builds, all four
 codecs, wget grammar both builds, URL-span PC-control, HLS ring, setstring
 write-side, RAuthSplitToken, x5c-based token shapes.
+
+## User directive 2026-11-03: LEGACY FORMATS are the media-payload priority
+
+The user is right: the modern codecs (FLAC 1.3.4, Vorbis 1.3.7) came back
+clean because Sonos backported fixes. The unexplored surface is the LEGACY
+formats that are still wired into the same pre-auth SetAVTransportURI path:
+
+From the 57.23 anacapad binary (format registry, all pre-auth reachable):
+- **WMA / x-ms-wma** — `sonos.com-mms:*:audio/x-ms-wma:*` — the MMS protocol
+  handler exists IN-BINARY (`SASF` marker, ASF header parse, WM/WMADRCAverage*
+  metadata tags). ASF header parsing is a classic 0-day farm (objects-as-
+  lengths, hand-rolled index readers, WMAv2/V3 codec paths).
+- **Audible** — `audio/audible`, `application/audible`, `ERROR_AUDIBLE_BAD_CODEC`,
+  `ERROR_AUDIBLE_DRM`, `ERROR_AUDIBLE_ZP_MISSING` — a proprietary container with
+  an in-binary DRM/codec layer, rarely fuzzed by anyone ever.
+- **AIFF** — `sonos.com-http:*:audio/aiff:*`, `.aiff` — ancient chunked format.
+- **MP4/M4A (ftyp box parsing)** — `audio/mp4`, `audio/x-m4a` — box-walk
+  parsers are overrun farms when hand-rolled; check whether Sonos's is.
+- **WAV/RIFF** — already shown to error the transport (fuzz round 1 huge-RIFF);
+  the RIFF chunk walker deserves the same treatment.
+- **WAV/RIFF + MPEG-TS private-stream** — the h14 lane's WAV-in-TS already
+  reached codec parsing (12s transport death on malformed RIFF).
+
+The dead-modern-codec verdicts (FLAC/Vorbis clean; Vorbis not even delivered
+by hls-radio) redirect all codec-lane effort HERE. The transport-record
+carrier (metadata + unfetchable URI, F10) remains the parallel lane.
