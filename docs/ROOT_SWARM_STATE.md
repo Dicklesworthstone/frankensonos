@@ -412,3 +412,22 @@ flip). Both merged.
   neighbour shaping, offline r2 first.
 - **f4k/.86 reserved** for LilacKnoll's hours-scale aging work; fbkv/f4k may
   converge (same module arena hosts the /notify wild-dispatch neighbours).
+
+## Reality-check refresh (2026-11-03, rootswarm3)
+
+The live corruption-to-control candidates, ranked:
+1. **/notify wild dispatch (fbkv, SageElm)** — a vtable[0x2c] call through a
+   1-byte arena block whose neighbours are shapeable by prior traffic; the
+   non-8-aligned allocator quirk is a grooming lever. Arena map in progress.
+2. **Bearer-token forge (xnf, GoldMeadow)** — chain complete except the
+   systemId claim value; REST authorizeDevice harness landed; header object
+   compare reads x5c[0] (mechanically bisectable).
+3. **H-003 transport-record serializer** (9sd, RedThrush) — store bounded but
+   the serializer copy is not; the deferred kill reproduced and re-attributed.
+4. **Marshaller grow-underflow** (jc7, SwiftMarsh) — instruction-level proven,
+   only reachable through argument NAMES >34148B (property cap masks today).
+5. **q57 root chain** (DarkForest) — one wire-proof from arming; blocked on
+   the router DHCP DNS flip (owner decision).
+Campaign-negative results (all evidence-cited): TLS both builds, all four
+codecs, wget grammar both builds, URL-span PC-control, HLS ring, setstring
+write-side, RAuthSplitToken, x5c-based token shapes.
