@@ -1,0 +1,186 @@
+=== arm blob-single 17:28:35.113Z ===
+  add uri_len=22 title_len=61440 http=200 err=None
+  queue=1 watching 120.0s
+  17:30:06.400Z browse@+90s code=200 0.07s
+  arm done deaths=0 samples=511
+=== arm blob-short-big 17:31:36.489Z ===
+  add uri_len=22 title_len=8 http=200 err=None
+  add uri_len=22 title_len=61440 http=200 err=None
+  queue=2 watching 120.0s
+  17:33:11.019Z browse@+90s code=200 0.20s
+=== arm blob-big-short 17:33:47.939Z ===
+  add uri_len=22 title_len=61440 http=200 err=None
+  add uri_len=22 title_len=8 http=200 err=None
+  queue=2 watching 120.0s
+  17:35:19.691Z browse@+90s code=200 0.61s
+  arm done deaths=0 samples=457
+=== arm uri-single 17:36:49.063Z ===
+  add uri_len=3017 title_len=1 http=200 err=None
+  queue=1 watching 120.0s
+  17:38:21.387Z browse@+90s code=200 0.23s
+  arm done deaths=0 samples=284
+=== arm uri-short-long 17:39:51.020Z ===
+  add uri_len=22 title_len=1 http=200 err=None
+  add uri_len=3017 title_len=1 http=200 err=None
+  queue=2 watching 120.0s
+  17:40:46.314Z daemon GONE at +50.3s
+  17:41:26.427Z browse@+90s code=200 0.24s
+  17:41:32.894Z daemon GONE at +96.9s
+  arm done deaths=2 samples=70
+=== arm uri-long-short 17:43:18.126Z ===
+  add uri_len=3017 title_len=1 http=200 err=None
+  add uri_len=22 title_len=1 http=200 err=None
+  queue=2 watching 120.0s
+  17:44:53.077Z browse@+90s code=200 0.86s
+  arm done deaths=0 samples=250
+final queue=2 updateid=2 swgen=1
+=== arm uri-short-long 17:46:35.447Z ===
+  add uri_len=22 title_len=1 http=200 err=None
+  add uri_len=3017 title_len=1 http=200 err=None
+  queue=2 watching 150.0s
+  17:48:06.573Z browse@+90s code=200 0.08s
+  arm done deaths=0 samples=568
+final queue=2 updateid=5 swgen=1
+=== arm uri-short-long 17:50:38.000Z ===
+  add uri_len=22 title_len=1 http=200 err=None
+  add uri_len=3017 title_len=1 http=200 err=None
+  queue=2 watching 150.0s
+  17:52:10.657Z browse@+90s code=200 0.23s
+  arm done deaths=0 samples=501
+final queue=2 updateid=8 swgen=1
+=== arm uri-short-long 17:54:59.703Z ===
+  add uri_len=22 title_len=1 http=200 err=None
+  add uri_len=3017 title_len=1 http=200 err=None
+  queue=2 watching 150.0s
+  17:56:36.065Z browse@+90s code=200 0.28s
+  arm done deaths=0 samples=399
+final queue=2 updateid=11 swgen=1
+=== arm uri-short-long 17:59:06.546Z ===
+  add uri_len=22 title_len=1 http=200 err=None
+  add uri_len=3017 title_len=1 http=200 err=None
+  queue=2 watching 150.0s
+  18:00:45.228Z browse@+90s code=200 1.00s
+  arm done deaths=0 samples=254
+final queue=2 updateid=14 swgen=1
+=== arm uri-short-long 18:03:14.090Z ===
+  add uri_len=22 title_len=1 http=200 err=None
+  add uri_len=3017 title_len=1 http=200 err=None
+  queue=2 watching 150.0s
+  18:04:46.315Z browse@+90s code=200 0.79s
+  arm done deaths=0 samples=352
+final queue=2 updateid=17 swgen=1
+=== arm uri-short-long 18:07:16.286Z ===
+  add uri_len=22 title_len=1 http=200 err=None
+  add uri_len=3017 title_len=1 http=200 err=None
+  queue=2 watching 150.0s
+  18:08:53.046Z browse@+90s code=200 1.81s
+  arm done deaths=0 samples=321
+final queue=2 updateid=20 swgen=1
+=== watch-only current-short-long queue=2 updateid=20 swgen=1 ===
+  18:13:05.036Z browse@+90s code=200 0.09s
+final queue=2 updateid=20 swgen=1
+=== arm uri-single 18:22:49.445Z ===
+  add uri_len=3008 title_len=1 http=200 err=None
+  queue=1 watching 150.0s
+  18:24:22.806Z browse@+90s code=200 1.00s
+  arm done deaths=0 samples=283
+=== arm uri-short-long 18:26:22.086Z ===
+  add uri_len=22 title_len=1 http=200 err=None
+  add uri_len=3008 title_len=1 http=200 err=None
+  queue=2 watching 150.0s
+  18:28:04.524Z browse@+90s code=200 2.09s
+  arm done deaths=0 samples=260
+final queue=2 updateid=25 swgen=1
+=== arm avt-8k 18:30:14.597Z ===
+  SetAVTransportURI title_len=8192 http=200 err=None
+  18:31:47.490Z daemon GONE at +92.1s
+  18:31:49.997Z browse@+90s code=200 0.11s
+  arm done deaths=1 samples=247
+=== arm avt-30k 18:33:45.944Z ===
+  SetAVTransportURI title_len=30720 http=200 err=None
+  18:35:16.939Z browse@+90s code=200 0.16s
+  arm done deaths=0 samples=223
+final queue=0 updateid=26 swgen=1
+=== arm avt-8k 18:37:29.683Z ===
+  SetAVTransportURI title_len=8192 http=000 err=None
+=== arm avt-8k 18:38:59.812Z ===
+  clear FAILED
+=== arm avt-30k 18:40:10.097Z ===
+  SetAVTransportURI title_len=30720 http=200 err=None
+  18:41:41.711Z browse@+90s code=200 0.07s
+  arm done deaths=0 samples=248
+final queue=None updateid=None swgen=None
+=== arm avt-8k 18:48:05.922Z ===
+  SetAVTransportURI title_len=8192 http=000 err=None
+=== arm avt-8k 18:49:36.380Z ===
+  clear FAILED
+=== arm avt-30k 18:50:46.440Z ===
+  clear FAILED
+final queue=None updateid=None swgen=None
+=== arm avt-8k 18:54:25.425Z ===
+  clear FAILED
+=== arm avt-8k 18:55:35.655Z ===
+  clear FAILED
+=== arm avt-30k 18:56:45.864Z ===
+  SetAVTransportURI title_len=30720 http=200 err=None
+  18:57:39.701Z daemon GONE at +20.7s
+  18:58:09.007Z daemon GONE at +50.0s
+  18:59:53.496Z daemon GONE at +154.5s
+  arm done deaths=3 samples=29
+final queue=0 updateid=26 swgen=None
+=== arm avt-short 19:01:05.857Z ===
+  SetAVTransportURI title_len=100 http=000 err=None
+=== arm avt-8k 19:02:39.006Z ===
+  clear FAILED
+final queue=None updateid=None swgen=1
+=== arm avt-short 19:04:06.844Z ===
+  clear retry 0
+  clear retry 1
+  setavt retry 0 (daemon down)
+  setavt retry 1 (daemon down)
+  SetAVTransportURI title_len=100 http=200 err=None
+  19:05:59.504Z daemon GONE at +16.5s
+  19:06:30.650Z daemon GONE at +47.6s
+  19:07:49.926Z browse@+90s code=000 35.77s
+  arm done deaths=2 samples=257
+=== arm avt-8k 19:10:43.510Z ===
+  setavt retry 0 (daemon down)
+  setavt retry 0 (daemon down)
+  SetAVTransportURI title_len=8192 http=200 err=None
+  19:12:28.819Z daemon GONE at +36.6s
+  19:13:22.912Z browse@+90s code=200 0.12s
+  19:14:59.002Z daemon GONE at +186.8s
+  19:15:07.233Z daemon GONE at +195.0s
+  arm done deaths=3 samples=293
+final queue=0 updateid=26 swgen=1
+=== arm avt-live-short 19:17:02.972Z ===
+  setavt retry 0 (daemon down)
+  SetAVTransportURI title_len=100 http=200 err=None
+  19:19:10.512Z browse@+90s code=200 0.12s
+  arm done deaths=0 samples=511
+=== arm avt-dead-empty 19:22:38.871Z ===
+  setavt retry 0 (daemon down)
+  SetAVTransportURI title_len=0 http=200 err=None
+  19:24:45.299Z browse@+90s code=200 0.21s
+  arm done deaths=0 samples=447
+final queue=0 updateid=26 swgen=None
+=== arm avt-live-short 19:28:26.876Z ===
+  setavt retry 0 (daemon down)
+  SetAVTransportURI title_len=100 http=200 err=None
+  19:30:34.663Z browse@+90s code=200 0.10s
+  arm done deaths=0 samples=396
+=== arm avt-short 19:34:03.269Z ===
+  SetAVTransportURI title_len=100 http=200 err=None
+  19:35:42.348Z browse@+90s code=200 0.06s
+  19:36:18.513Z daemon GONE at +128.5s
+  19:36:51.869Z daemon GONE at +161.9s
+  19:37:50.939Z daemon GONE at +220.9s
+  arm done deaths=3 samples=430
+final queue=None updateid=None swgen=None
+=== arm avt-refused 19:39:37.328Z ===
+  setavt retry 0 (daemon down)
+  SetAVTransportURI title_len=100 http=200 err=None
+  19:40:46.347Z daemon GONE at +32.7s
+  19:41:45.105Z browse@+90s code=200 1.41s
+  arm done deaths=1 samples=407
+final queue=None updateid=None swgen=1

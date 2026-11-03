@@ -51,7 +51,6 @@ Device discriminator (cheap, one window, coordinator .84):
 Why the async worker and not the inline parse: F1 answers 200 instantly and
 the death is minutes-scale periodic; the parse path was swept by 9sd (1534
 memcpy sites) with the queue-inline copies bounded.
-"""
 
 ## Static refinement (2026-10-29, post-model)
 
@@ -95,3 +94,32 @@ settle + Stop between shots (`/tmp/h003_settle.sh`), track URI server on
   (savedqueues.rsq write = walk ran) |
 SWGen is the crash oracle: any change 0->1 means the daemon died and the
 watchdog restarted it; the 0.1 s poller bounds the death time to +-0.1 s.
+
+## RESULTS 2026-11-03 (.84) — the model is re-attributed, not confirmed
+
+Read-back first: the queue record's dc:title is DERIVED FROM THE URI PATH on
+57.23 (http / x-file-cifs / x-rincon-mp3radio, reachable and unreachable, with
+and without desc). The enqueued dc:title is dropped, a 61 KB-title item browses
+in 0.07-0.22 s, AddURI rejects URIs >= ~3-4 KB with 804 and the read-back title
+truncates at ~1007 B. So the queue path can carry at most ~1023 B of title and
+F1's 8-60 KB never reached the record.
+
+Transport record instead: SetAVTransportURI DOES keep the title (2000 B round
+trips in GetMediaInfo CurrentURIMetaData) and kills at 100 B, 8 KB and 30 KB —
+but only when the URI is UNFETCHABLE:
+
+  dead host + 100 B title      kill 2/2   (+16.5/+47.6 s, +128.5/+161.9/+220.9 s)
+  dead host + 8 KB title       kill 2/2   (+36.6, +92.1, +186.8, +195.0 s)
+  dead host + 30 KB title      kill 1/2   (+20.7, +50.0, +154.5 s; other arm died at +155 s)
+  refused port + 100 B title   kill 1/1   (+32.7 s)
+  dead host + NO metadata      clean 1/1  (240 s)
+  live host + 100 B title      clean 2/2  (240 s)
+
+Title length is not the trigger. Stored metadata plus a fetch that cannot
+complete is. The record re-kills across watchdog restarts (one stretch of >12
+min with port 1400 closed). Queue arms for contrast: blob carriers all clean at
+61 KB; the derived-title [short, long] order killed 1/8 (weak, ~1000 B max
+overrun), [long, short] and [long] clean.
+
+Harness: recon/queue9sd/h003_arms.py, log logs/h003_arms_20261103.log.
+"""
