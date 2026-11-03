@@ -164,3 +164,28 @@ test('standalone session embeds still load without the optional catalog bundle',
   const session=standalone.model({call:async()=>[],controller:{canControl:()=>true,selected:()=>null}});
   assert.equal(session.reviewLibrary({},'play',{}),null);
 });
+
+for (const action of ['play', 'append', 'next']) test(`completed-album ${action} rechecks the chosen occurrence and dispatches its exact URI`, async () => {
+  const f = await fixture();
+  f.hook(url => {
+    if (!url.startsWith('/library/browse') || !url.includes('album_uri=')) return;
+    const p = listing(url);
+    p.album_observation = { coverage: 'complete', fetched_at: 100, cached_total: 2 };
+    p.total = 2;
+    const movement = { ...p.items[0], title: 'Expanded movement', subtitle: '', explicit_known: false };
+    p.items = [movement, { ...movement, title: 'Repeated finale', disc_number: 2, track_number: 1 }];
+    return p;
+  });
+  await f.library.album(f.library.state.page.items[0]);
+  const chosen = f.library.choose(f.library.state.page.items[1]);
+  const r = f.session.reviewLibrary(chosen, action, f.destination());
+  assert.ok(r); assert.match(r.detail, /Disc 2, track 1/);
+  assert.match(r.detail, /Complete cached album: 2/);
+  assert.match(r.detail, /Explicit-content metadata unavailable/);
+  assert.equal(await f.session.confirm(r), true);
+  assert.equal(f.writes().length, 1);
+  assert.equal(f.writes()[0].body.source_uri, `spotify:track:${id(1)}`);
+  assert.equal(f.writes()[0].body.title, 'Repeated finale');
+  assert.equal(f.writes()[0].url, action === 'play' ? '/play' : '/queue');
+  if (action !== 'play') assert.equal(f.writes()[0].body.next, action === 'next');
+});

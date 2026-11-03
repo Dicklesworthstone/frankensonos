@@ -62,6 +62,11 @@ impl Running {
         sample.queue_position = Some(live.position.track);
         sample.track_uri = Some(live.position.uri);
         sample.transport = Some(live.transport.state);
+        sample.media_uri = Some(
+            fsonos_proto::control::get_media_info(&self.rig.lan, self.rig.host())
+                .unwrap()
+                .uri,
+        );
         sample.queue_length = Some(u32::try_from(self.rig.queue().len()).unwrap());
         sample
     }

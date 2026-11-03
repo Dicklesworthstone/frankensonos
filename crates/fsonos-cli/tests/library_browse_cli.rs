@@ -409,3 +409,51 @@ fn invalid_playlist_continuation_fails_before_daemon_discovery() {
         "invalid continuation must not probe the daemon"
     );
 }
+
+#[test]
+fn cli_completed_album_preserves_occurrences_coverage_and_unknown_metadata() {
+    let album = json!({
+        "kind": "tracks", "album_uri": "spotify:album:TestAlbum",
+        "offset": 0, "limit": 3, "total": 3, "next_offset": null,
+        "revision": "album-complete", "coverage": "cached",
+        "album_observation": {"coverage": "complete", "fetched_at": 100, "cached_total": 3},
+        "items": (1..=3).map(|number| json!({
+            "kind": "track", "source_uri": "spotify:track:Repeated",
+            "title": format!("Movement {number}"), "subtitle": "",
+            "album": "Recording", "album_uri": "spotify:album:TestAlbum",
+            "disc_number": 1, "track_number": number, "duration_secs": 180,
+            "explicit": false, "explicit_known": false, "cached_tracks": null
+        })).collect::<Vec<_>>()
+    });
+    let args = [
+        "--json",
+        "dj",
+        "browse",
+        "tracks",
+        "--album-uri",
+        "spotify:album:TestAlbum",
+        "--limit",
+        "3",
+    ];
+    let (output, paths) = through_daemon(&args, 200, &album);
+    assert!(output.status.success(), "{}", error_text(&output));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        album
+    );
+    assert!(paths[1].contains("album_uri=spotify%3Aalbum%3ATestAlbum"));
+    let (output, _) = through_daemon(&args[1..], 200, &album);
+    assert!(output.status.success(), "{}", error_text(&output));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Complete cached album: 3"));
+    assert!(text.contains("1970-01-01 00:01:40 UTC"));
+    assert!(text.contains("Explicit-content metadata unavailable"));
+    assert!(text.contains("Artist unavailable"));
+    assert_eq!(
+        text.matches("source_uri: spotify:track:Repeated").count(),
+        3
+    );
+    for number in 1..=3 {
+        assert!(text.contains(&format!("Disc 1, track {number}")));
+    }
+}

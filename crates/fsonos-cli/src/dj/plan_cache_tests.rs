@@ -270,6 +270,7 @@ fn automatic_top_up_uses_external_preferences_without_replacing_queued_music() {
     let position = control::get_position_info(&lan, host).unwrap();
     let mut playback = PlayerPlayback::default();
     playback.transport = Some(TransportState::Playing);
+    playback.media_uri = Some(control::get_media_info(&lan, host).unwrap().uri);
     playback.queue_position = Some(position.track);
     playback.track_uri = Some(position.uri);
     playback.queue_length = Some(2);

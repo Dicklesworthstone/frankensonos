@@ -335,6 +335,7 @@ fn proved_terminal_checkpoints_recover_failed_cache_projection_without_rereading
             proof["examined"] = json!(if capped { MAX_PLAYLIST_ENTRIES } else { 3 });
             proof["source_total"] = json!(if capped { MAX_PLAYLIST_ENTRIES + 1 } else { 3 });
             let mut restarted = MemStore::default();
+            restarted.adopt_spotify_library_owner(OWNER).unwrap();
             restarted
                 .save_playlist_progress(OWNER, URI, &proof.to_string())
                 .unwrap();
