@@ -713,3 +713,41 @@ arms, BeginSoftwareUpdate with the pwned-q57.upd URL is the next step — with t
 `0x180000` streaming-abort caveat on that envelope (see the 2026-10-24 section: the
 clean-toolchain control proves the pipeline itself works on a stock tree, so the gate fight
 is expected after arming is proven).
+
+## q57 device window, attempt 1 — .202 facts, trigger behaviour, DNS blocker (2026-11-03, DarkForest, omp_4)
+
+Target identified: **.202 = Play:5, "Jeff's Office (R)", 57.23-74170, SWGen 1, model 16**
+(`/status/zp`: `RINCON_000E585D8C1001400`, serial `00-0E-58-5D-8C-10:E`) — the same unit the
+2026-10-24 fetch experiments ran on. Household
+`Sonos_qN6HO0xAXMwSPMImQAkGRcPhpq.48I_PDDjAnfYQUrZSNIQ`.
+
+Responders relaunched and pre-flighted on 192.168.4.28: HTTPS :8643 answers the settings
+body with the 3-cert chain (`s_client` shows leaf CN=system-api.sonos.com ← G3B ← emSign
+Root TLS CA - G3; `openssl verify -CAfile emroot.pem -untrusted <G3B+chain2> san-leaf.pem`
+= OK, emroot.pem being the ECC root the device bundle carries). DNS :53 answers the five
+override names → .28, forwards the rest to 192.168.4.1.
+
+**Trigger behaviour (4 × `BeginSoftwareUpdate`, `UpdateURL=http://192.168.4.28:9/none.upd`,
+Flags 0 and 1, `ExtraOptions system_version=0.0-0&Force: [1]`):** every call returns 200 and
+wedges the TCP/1400 daemon for ~60–100 s (ICMP stays up), then it recovers with
+`/status/zp` unchanged at 57.23-74170 and `/status/upgradeinfo` empty. This matches the
+EV-25 pre-auth crash class — the daemon restart cycle is expected on this build.
+
+**DNS blocker, measured:** `tcpdump` on en1 (the interface that routes to .202) captured
+**zero** packets from .202 to udp/53 or to 192.168.4.28 across three trigger windows,
+including 45 s of passive watching after the daemon restart. Our responder's dns.log shows
+only 127.0.0.1 and 192.168.4.28 as sources — .202 never queries it. This Mac's DHCP packet
+(`ipconfig getpacket en0`) shows `domain_name_server {192.168.4.1}`: **.202's resolver is
+the router via DHCP**, and it does no shell (port 22 refused), so a resolv.conf push is not
+available. Also measured: no settings fetch during the BSU windows themselves — consistent
+with the writer being a timed job that only runs on the deferred-shutdown path
+(`FUN_1029c55c` → vtable+8 → `0x1029c34c`), i.e. *after* the update job schedules a reboot,
+not synchronously with the SOAP call.
+
+**Owner decision (2026-11-03, in-session):** use the **router DHCP scope** change — flip
+DHCP DNS to 192.168.4.28, let .202 renew, run the proof, revert. ARP redirection was offered
+and declined (LAN footprint concerns). Resumption recipe: responders are already running;
+watcher `/tmp/q57_serve_watch.sh` tails dns.log for `from 192.168.4.202`; once .202's
+queries appear, fire `CheckForUpdate` then `BeginSoftwareUpdate` (Flags=1), then poll
+`GET /status/upgradeinfo` on .202 — `URL:` + `MinVersion: [1]` appearing there is the arming
+proof; afterwards the router DHCP DNS goes back to 192.168.4.1.
