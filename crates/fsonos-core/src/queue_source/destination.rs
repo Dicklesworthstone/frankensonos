@@ -90,6 +90,17 @@ impl Destination {
         Ok(())
     }
 
+    /// A source transition cannot change the intended audience or reboot.
+    pub(crate) fn same_group(&self, other: &Self) -> bool {
+        self.members == other.members && self.boot_seq == other.boot_seq
+    }
+
+    /// Prove the requested renderer source, retaining account metadata when
+    /// supplied. A track id alone cannot prove another household's envelope.
+    pub(crate) fn has_source(&self, uri: &str, metadata: &str) -> bool {
+        self.uri == uri && (metadata.trim().is_empty() || self.metadata.trim() == metadata.trim())
+    }
+
     /// The only source change authorized by loading this player's queue.
     /// Group membership and boot identity remain the original evidence.
     pub(crate) fn for_queue(&self, coordinator: &PlayerId) -> Self {

@@ -468,6 +468,15 @@ pub struct ActionFilter {
     pub limit: usize,
 }
 
+/// A durable receipt for one adoption of a verified Spotify account.
+/// A returning account receives a new generation, so delayed writes from its
+/// previous adoption cannot publish or acknowledge another refresh's evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpotifyLibraryOwner {
+    pub owner_id: String,
+    pub generation: u64,
+}
+
 /// Persisted state the daemon reads/writes across restarts.
 pub trait Store {
     /// Append a play of `source_uri` in `zone` at `played_at`.
@@ -529,6 +538,48 @@ pub trait Store {
 
     /// The whole library cache, ordered by `added` then `source_uri`.
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError>;
+
+    /// The Spotify account whose library and personal taste this cache holds.
+    /// A legacy cache has no proved owner until its first complete library read.
+    fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError>;
+
+    /// Adopt a verified account only after its essential library read succeeds.
+    /// On a different or previously unknown owner, atomically retire candidates,
+    /// remove prior taste weights and personal playlist/listening observations,
+    /// reset this owner's private playlist proofs, and record a new generation.
+    /// Catalog caches, local play history and manual preferences are retained.
+    /// Returns the durable receipt and whether ownership changed. Adopting the
+    /// same owner preserves its generation and changes nothing.
+    fn adopt_spotify_library_owner(
+        &mut self,
+        owner_id: &str,
+    ) -> Result<(SpotifyLibraryOwner, bool), StoreError>;
+
+    /// Publish a prepared library and its personal evidence in one transaction,
+    /// only while the receipt still names the current owner and generation.
+    /// `None` preserves the directory/heard cache; `Some(&[])` clears it.
+    /// Returns false without writes when any intervening adoption invalidated
+    /// the receipt, even when the current account has the same ID again.
+    fn publish_spotify_library(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        entries: &[LibraryEntry],
+        playlists: Option<&[(String, String)]>,
+        contents: &[CachedPlaylist],
+        heard: Option<&[(String, i64)]>,
+    ) -> Result<bool, StoreError>;
+
+    /// Acknowledge an already published observation only if both its adoption
+    /// receipt and exact private checkpoint remain unchanged. The generation
+    /// fence prevents an older refresh from acknowledging a returning owner's
+    /// new, not-yet-published proof. A mismatch returns false without writes.
+    fn acknowledge_spotify_playlist(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        playlist_uri: &str,
+        expected: &str,
+        applied: &str,
+    ) -> Result<bool, StoreError>;
 
     /// Remember the Spotify render parameters learned for `household`.
     fn save_render_params(
@@ -756,6 +807,17 @@ pub enum StoreError {
 /// An album's tracks keyed by (disc, track), so iteration is in album order.
 type TracksByPosition = BTreeMap<(u32, u32), AlbumTrack>;
 
+/// Reject an empty, oversized or control-bearing Spotify account identity.
+pub(crate) fn validate_spotify_owner(owner_id: &str) -> Result<(), StoreError> {
+    if owner_id.trim().is_empty()
+        || owner_id.len() > 1_024
+        || owner_id.chars().any(char::is_control)
+    {
+        return Err(StoreError::Backend("invalid Spotify library owner".into()));
+    }
+    Ok(())
+}
+
 /// Each track's latest play in `plays`, oldest first (by time, then URI).
 pub(crate) fn latest_plays(plays: &[(String, i64)]) -> Vec<(String, i64)> {
     let mut latest: BTreeMap<&str, i64> = BTreeMap::new();
@@ -779,6 +841,7 @@ pub struct MemStore {
     players: BTreeMap<(String, String), CachedPlayer>,
     groups: BTreeMap<String, Vec<ZoneGroup>>,
     library: BTreeMap<String, LibraryEntry>,
+    spotify_library_owner: Option<SpotifyLibraryOwner>,
     render_params: BTreeMap<String, (SpotifyRenderParams, i64)>,
     auth: BTreeMap<String, AuthEntry>,
     dj_sessions: BTreeMap<String, DjSession>,
@@ -894,6 +957,95 @@ impl Store for MemStore {
         let mut all: Vec<LibraryEntry> = self.library.values().cloned().collect();
         all.sort_by(|a, b| (a.added, &a.track.source_uri).cmp(&(b.added, &b.track.source_uri)));
         Ok(all)
+    }
+
+    fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError> {
+        Ok(self.spotify_library_owner.clone())
+    }
+
+    fn adopt_spotify_library_owner(
+        &mut self,
+        owner_id: &str,
+    ) -> Result<(SpotifyLibraryOwner, bool), StoreError> {
+        validate_spotify_owner(owner_id)?;
+        if let Some(owner) = &self.spotify_library_owner
+            && owner.owner_id == owner_id
+        {
+            return Ok((owner.clone(), false));
+        }
+        let generation = self
+            .spotify_library_owner
+            .as_ref()
+            .map_or(0, |owner| owner.generation)
+            .checked_add(1)
+            .filter(|generation| i64::try_from(*generation).is_ok())
+            .ok_or_else(|| StoreError::Backend("Spotify owner generation exhausted".into()))?;
+        let owner = SpotifyLibraryOwner {
+            owner_id: owner_id.to_owned(),
+            generation,
+        };
+        for entry in self.library.values_mut() {
+            entry.candidate = Some(false);
+            entry.taste_weight = None;
+        }
+        self.playlists.clear();
+        self.playlist_contents.clear();
+        self.spotify_heard.clear();
+        // These proofs may have been published under a previous adoption of
+        // this account; that public cache has just been discarded.
+        self.playlist_progress
+            .retain(|(previous, _), _| previous != owner_id);
+        self.spotify_library_owner = Some(owner.clone());
+        Ok((owner, true))
+    }
+
+    fn publish_spotify_library(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        entries: &[LibraryEntry],
+        playlists: Option<&[(String, String)]>,
+        contents: &[CachedPlaylist],
+        heard: Option<&[(String, i64)]>,
+    ) -> Result<bool, StoreError> {
+        // Validate the entire batch before mutating any personal projection.
+        for observation in contents {
+            observation.validate()?;
+        }
+        if self.spotify_library_owner.as_ref() != Some(owner) {
+            return Ok(false);
+        }
+        self.upsert_library(entries)?;
+        if let Some(playlists) = playlists {
+            self.save_playlists(playlists)?;
+        }
+        for observation in contents {
+            self.playlist_contents
+                .insert(observation.playlist_uri.clone(), observation.clone());
+        }
+        if let Some(heard) = heard {
+            self.spotify_heard = latest_plays(heard);
+        }
+        Ok(true)
+    }
+
+    fn acknowledge_spotify_playlist(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        playlist_uri: &str,
+        expected: &str,
+        applied: &str,
+    ) -> Result<bool, StoreError> {
+        if expected.len() > MAX_PLAYLIST_BYTES || applied.len() > MAX_PLAYLIST_BYTES {
+            return Err(StoreError::Backend("playlist progress is too large".into()));
+        }
+        let key = (owner.owner_id.clone(), playlist_uri.to_owned());
+        if self.spotify_library_owner.as_ref() != Some(owner)
+            || self.playlist_progress.get(&key).map(String::as_str) != Some(expected)
+        {
+            return Ok(false);
+        }
+        self.playlist_progress.insert(key, applied.to_owned());
+        Ok(true)
     }
 
     fn save_render_params(

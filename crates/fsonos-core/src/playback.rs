@@ -22,6 +22,8 @@ mod metadata_tests;
 mod observation;
 #[cfg(test)]
 mod position_tests;
+#[cfg(test)]
+mod source_tests;
 mod stamp;
 pub use observation::PlaybackObservation;
 pub(crate) use stamp::Stamp;
@@ -63,6 +65,9 @@ impl NowPlaying {
 pub struct PlayerPlayback {
     pub transport: Option<TransportState>,
     pub track_uri: Option<String>,
+    /// Current AVTransport source: a queue, stream, line-in or Connect session.
+    /// A track URI alone cannot establish which source is playing it.
+    pub media_uri: Option<String>,
     pub now_playing: Option<NowPlaying>,
     pub duration_secs: Option<u32>,
     /// Queue position of the current track (1-based).
@@ -80,12 +85,23 @@ pub struct PlayerPlayback {
 }
 
 impl PlayerPlayback {
+    /// Whether the accepted source renders this coordinator's own queue.
+    /// Unknown sources and a different group's queue never authorize feeding.
+    #[must_use]
+    pub fn is_queue_of(&self, coordinator: &PlayerId) -> bool {
+        self.media_uri
+            .as_deref()
+            .and_then(|uri| uri.strip_prefix("x-rincon-queue:"))
+            .and_then(|queue| queue.strip_suffix("#0"))
+            .is_some_and(|id| id == coordinator.0)
+    }
+
     /// One read-back is needed after a transport observation, including a
     /// seek whose URI and transport state are unchanged. The live worker
     /// coalesces these requests; this flag never performs I/O itself.
     pub(crate) fn needs_position_sample(&self) -> bool {
         self.position_requested
-            && self.track_uri.is_some()
+            && (self.track_uri.is_some() || self.media_uri.is_some())
             && matches!(
                 self.transport,
                 Some(TransportState::Playing | TransportState::Paused | TransportState::Stopped)
@@ -119,6 +135,8 @@ pub struct Changes {
     pub transport: Option<(Option<TransportState>, TransportState)>,
     /// The track URI moved on (a new track started, or the queue ended).
     pub track: Option<(Option<String>, Option<String>)>,
+    /// The AVTransport source changed, even if its current track did not.
+    pub media_uri: Option<(Option<String>, Option<String>)>,
     pub volume: Option<u8>,
     pub mute: Option<bool>,
     pub group_volume: Option<u8>,
@@ -280,6 +298,18 @@ fn apply_av_transport(
     now: Instant,
     changes: &mut Changes,
 ) -> Result<(), ProtoError> {
+    if let Some(uri) = lc.get("AVTransportURI") {
+        let uri = match uri.trim() {
+            "" | "NOT_IMPLEMENTED" => None,
+            uri => Some(uri.to_owned()),
+        };
+        if state.media_uri != uri {
+            changes.media_uri = Some((state.media_uri.clone(), uri.clone()));
+            state.media_uri = uri;
+            // A new source cannot inherit the old source's playback clock.
+            state.position = None;
+        }
+    }
     if let Some(t) = lc.transport_state()
         && state.transport != Some(t)
     {
@@ -344,14 +374,19 @@ fn apply_av_transport(
             .as_ref()
             .map(NowPlaying::from_didl);
     }
-    if ["TransportState", "CurrentTrackURI", "CurrentTrack"]
-        .iter()
-        .any(|field| lc.get(field).is_some())
+    if [
+        "TransportState",
+        "CurrentTrackURI",
+        "CurrentTrack",
+        "AVTransportURI",
+    ]
+    .iter()
+    .any(|field| lc.get(field).is_some())
     {
         // LastChange does not carry RelTime. Even an otherwise identical
         // accepted event may mean the owner sought within this same track.
         // Preserve the display estimate until a complete read replaces it.
-        state.position_requested = state.track_uri.is_some();
+        state.position_requested = state.track_uri.is_some() || state.media_uri.is_some();
     }
     Ok(())
 }

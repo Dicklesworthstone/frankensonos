@@ -1036,16 +1036,22 @@ impl Surface {
         &self,
         households: &[HouseholdState],
         plan: &ScenePlan,
+        fading: bool,
         f: impl FnOnce(&Fader) -> R,
     ) -> R {
-        let set: Vec<PlayerId> = plan
-            .ops
-            .iter()
-            .filter_map(|op| match op {
-                SceneOp::Volume { player, .. } => Some(player.clone()),
-                _ => None,
-            })
-            .collect();
+        let set: Vec<PlayerId> = if fading {
+            // Implicit fade-ins have the same volume intent as declared levels,
+            // including a sleep fade whose pause is already in flight.
+            scenes::fade_players(households, plan)
+        } else {
+            plan.ops
+                .iter()
+                .filter_map(|op| match op {
+                    SceneOp::Volume { player, .. } => Some(player.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
         self.volumes_changing(households, &set);
         self.with_fader(f)
     }
@@ -1099,7 +1105,7 @@ impl Surface {
             self.scene_store(|store| Ok(actions::capture_sessions(store, &dj_zones)?))?
         };
         let hooks = SceneDj::new(self, &households, client);
-        let report = self.fader_for(&households, &plan, |fader| {
+        let report = self.fader_for(&households, &plan, fade.is_some(), |fader| {
             scenes::apply(
                 &*self.transport,
                 &households,

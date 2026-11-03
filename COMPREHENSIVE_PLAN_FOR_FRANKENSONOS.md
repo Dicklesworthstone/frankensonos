@@ -549,6 +549,12 @@ from a genre the DJ was built around.
   track by track.
 - A liked single movement is completed into its whole work by reading the
   album's track list (`GET /v1/albums/{id}/tracks`, read-only) and caching it.
+  Unfinished album reads have their own bounded background continuation:
+  validated pages and retry deadlines survive daemon restarts, malformed
+  albums yield to other pending albums, and accepted complete lists refresh
+  the DJ's next selections. Album enrichment leaves the last full library-sync
+  timestamp intact and shares Spotify's server-requested cooldown with other
+  background reads.
 - Works longer than `max_work_minutes` (default 75: most complete operas
   and Passions) are left out unless the mood allows them. A parsed work is never
   split; titles that don't parse fall back to single-track units.

@@ -200,9 +200,12 @@ const DashboardSession = (() => {
         : source.kind === 'track' ? 'Replaces the current source.' : 'Replaces current playback and the group’s queue.';
       const coverage = source.kind === 'album' ? `Uses the full album source, not just its ${source.cached_tracks} cached tracks.`
         : source.kind === 'playlist' ? 'Uses the playlist source; its live contents may differ from the cache.' : 'Uses this exact track source.';
+      const albumDetail = catalog.query.album_uri
+        ? `Disc ${source.disc_number ?? '?'}, track ${source.track_number ?? '?'}. ${L.albumCoverage(catalog)} ${source.explicit_known === false ? 'Explicit-content metadata unavailable. ' : ''}`
+        : '';
       ++intent; state.result = null; state.error = '';
       state.pending = freeze({ kind: 'library', target, label: item.zone.members.join(' + '),
-        title: `${label}: ${name}`, detail: `${source.subtitle ? `${source.subtitle}. ` : ''}${source.position ? `Playlist position ${source.position}. ` : ''}${effect} ${coverage} Source: ${source.source_uri}. The daemon’s policy and service availability still apply.`,
+        title: `${label}: ${name}`, detail: `${source.subtitle ? `${source.subtitle}. ` : ''}${source.position ? `Playlist position ${source.position}. ` : ''}${effect} ${coverage} ${albumDetail}Source: ${source.source_uri}. The daemon’s policy and service availability still apply.`,
         playback: playbackIdentity(item), catalog, libraryAction: action,
         url: action === 'play' ? '/play' : '/queue',
         body: { zone: target, source_uri: source.source_uri, title: name, ...(action === 'play' ? {} : { next: action === 'next' }) } });

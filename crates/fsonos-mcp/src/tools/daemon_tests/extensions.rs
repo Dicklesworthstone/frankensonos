@@ -38,6 +38,21 @@ fn schedule(enabled: bool) -> Value {
     })
 }
 
+fn announcement_recipe() -> Value {
+    json!({
+        "text": "Time to leave — bring your coat", "chime": null, "wav_base64": null,
+        "voice": "Voice Name", "rooms": ["Kitchen@S2", "Office@S1"], "volume": 25
+    })
+}
+
+fn announcement_schedule() -> Value {
+    json!({
+        "id": 18, "when": "weekdays 08:15", "action": "announce",
+        "announcement": announcement_recipe(), "summary": "speak in Kitchen and Office",
+        "creator": "mcp-stdio", "enabled": true
+    })
+}
+
 fn tone() -> Value {
     json!({"room": ROOM, "bass": 3, "treble": -1, "loudness": false})
 }
@@ -97,7 +112,7 @@ fn reads() -> Vec<Case> {
             method: "GET",
             path: "/schedules",
             body: None,
-            answer: json!([schedule(true)]),
+            answer: json!([schedule(true), announcement_schedule()]),
             envelope: Some("schedules"),
         },
     ]
@@ -138,6 +153,18 @@ fn writes() -> Vec<Case> {
                 "zone": null, "mood": null, "volume": null, "fade_secs": null
             })),
             answer: schedule(true),
+            envelope: None,
+        },
+        Case {
+            tool: "add_schedule",
+            method: "POST",
+            path: "/schedules",
+            body: Some(json!({
+                "when": "weekdays 08:15", "action": "announce",
+                "announcement": announcement_recipe(),
+                "zone": null, "scene": null, "mood": null, "volume": null, "fade_secs": null
+            })),
+            answer: announcement_schedule(),
             envelope: None,
         },
         Case {
@@ -268,6 +295,28 @@ fn a_malformed_or_empty_explicit_scene_is_rejected_before_any_daemon_save() {
     ] {
         let (backend, reply) = fixture(Some(Ok(scene())));
         let error = backend.save_scene_from(NAME, &definition).unwrap_err();
+        assert!(error.message.contains("INVALID_ARGUMENT"), "{error:?}");
+        assert!(reply.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn invalid_scheduled_announcements_never_reach_the_selected_daemon() {
+    for recipe in [
+        json!({"text":"hello", "chime":"bell"}),
+        json!({"wav_base64":"UklGRg=="}),
+        json!({"chime":"unknown"}),
+        json!({"text":"   "}),
+        json!({"text":"hello", "volume":101}),
+        json!({"chime":"bell", "voice":"Voice Name"}),
+        json!({"chime":"bell", "rooms":[""]}),
+    ] {
+        let request = serde_json::from_value(json!({
+            "when":"daily 12:00", "action":"announce", "announcement":recipe
+        }))
+        .unwrap();
+        let (backend, reply) = fixture(Some(Ok(announcement_schedule())));
+        let error = backend.add_schedule(&request).unwrap_err();
         assert!(error.message.contains("INVALID_ARGUMENT"), "{error:?}");
         assert!(reply.calls.lock().unwrap().is_empty());
     }
