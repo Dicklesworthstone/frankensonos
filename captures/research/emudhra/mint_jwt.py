@@ -11,6 +11,8 @@ ALG = os.environ.get("ALG", "RS256")
 LEAF = "leaf.pem" if ALG == "ES256" else "rleaf.pem"
 x5c = [base64.b64encode(der(os.path.join(D, p))).decode()
        for p in (LEAF, "EM-DV-TLS-CA-G3B.crt.pem", "chain2.pem", "emroot.pem")]
+if os.environ.get("X5C0"):          # replace the leaf slot (exercise header.x5c[0])
+    x5c[0] = os.environ["X5C0"]
 now = int(time.time())
 claims = {"jti": "p1", "iss": "Sonos", "aud": "Sonos", "sub": "probe", "iat": now,
           "exp": now + 86400, "systemId": "5CAAFD21D470", "riat": now,
