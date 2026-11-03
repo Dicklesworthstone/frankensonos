@@ -364,3 +364,12 @@ Offline parse layer is clean (177 cases) — the fault lives in the seq→vtable
 callback dispatch, below parsing. This is the freshest pre-auth crash family on
 57.23 and the top candidate for the corruption→control step (a vtable-indexed
 callback with attacker strings in three of four arguments).
+
+## Swarm recreated AGAIN 2026-11-03 (second recreation, user-directed)
+
+`frankensonos--rootswarm3` live (panes %6-%11): DeepSeek×3 = RedThrush (%6, 9sd),
+SwiftMarsh (%7, jc7), GoldMeadow (%8, xnf); GLM×3 = DarkForest (%9, q57),
+LilacKnoll (%10, f4k), SageElm (%11, v8z). All six beads reassigned; lane
+orders carry the full inherited evidence base. Prior rootswarm2 findings all
+merged to main before the swap (through e9dc072c lineage + f6848ece notify
+kills + ca63c25f H-003 re-attribution).
