@@ -37,6 +37,7 @@ impl SleepTimers {
             .values_mut()
             .filter(|a| {
                 !a.timer.fading
+                    && a.predecessors.iter().all(|claims| claims.finished())
                     && now
                         >= a.timer
                             .ends
@@ -56,6 +57,7 @@ impl SleepTimers {
             .map(|a| {
                 a.timer.fading = true;
                 a.running = false;
+                a.predecessors.clear();
                 // Every dispatch gets a fresh identity, including redispatch of
                 // an unchanged timer. A late release cannot undo the next worker.
                 a.generation = self.generation();

@@ -35,10 +35,11 @@ async function reviewed(f, action = 'pause', id = 7) {
   return f.control.state.pending;
 }
 
-test('all four schedule actions decode without borrowing unrelated fields', () => {
+test('all five schedule actions decode without borrowing unrelated fields', () => {
   for (const value of [row(), row({ action: 'pause', mood: null, fade_secs: 600 }),
     row({ action: 'volume', mood: null, volume: 0 }),
-    row({ action: 'apply_scene', zone: null, mood: null, scene: 'Evening' })]) {
+    row({ action: 'apply_scene', zone: null, mood: null, scene: 'Evening' }),
+    row({ action: 'announce', zone: null, mood: null, announcement: { chime: 'bell', rooms: ['Studio@S2'] } })]) {
     const decoded = Schedules.scheduleOf(value);
     assert.equal(decoded.id, 7);
     assert.equal(Object.isFrozen(decoded), true);
@@ -728,7 +729,7 @@ test('real localhost creation dispatch preserves the exact reviewed fields for e
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => new Promise((r) => server.close(r)));
-  for (const action of ['dj_start', 'pause', 'volume', 'apply_scene']) {
+  for (const action of ['dj_start', 'pause', 'volume', 'apply_scene', 'announce']) {
     const control = Schedules.model({ call: async (name, { body } = {}) => {
       const [method, path] = Schedules.routes[name];
       const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, { method,
@@ -737,11 +738,15 @@ test('real localhost creation dispatch preserves the exact reviewed fields for e
     } });
     await control.refresh(); await control.beginCreate(action);
     control.edit(action === 'apply_scene' ? 'scene' : 'zone', action === 'apply_scene' ? 'Evening & quiet' : 'Studio@S2');
+    if (action === 'announce') {
+      control.edit('announcement_source', 'chime'); control.edit('announcement_chime', 'bell');
+      control.edit('announcement_rooms', ['Studio@S2', 'Studio@S1']); control.edit('announcement_volume', '25');
+    }
     control.reviewCreate(); const pending = control.state.pending;
     assert.equal(await control.confirm(pending), true);
     assert.deepEqual(requests.at(-1), ['POST', '/schedules', JSON.stringify(pending.body), 'application/json']);
   }
-  assert.equal(requests.filter((r) => r[0] === 'POST').length, 4);
+  assert.equal(requests.filter((r) => r[0] === 'POST').length, 5);
 });
 
 // A small DOM fixture runs the real element helper and both components without
@@ -827,4 +832,169 @@ test('the schedule DOM exposes full direction controls, preserves typing and sen
     constraints: { include_artists: ['Earth, Wind & Fire', 'Miles Davis'], energy_bias: -1, allow_long_works: true }, for_secs: 5400,
   } }]);
   assert.match(panel.node.textContent, /Created schedule #99/);
+});
+
+
+const announcementRow = (announcement, extra = {}) => row({
+  action: 'announce', zone: null, mood: null, announcement, summary: 'Scheduled announcement', ...extra,
+});
+
+test('saved speech and chimes decode full normalized recipes and nullable wire fields', () => {
+  const value = announcementRow({ text: ' Time to leave 🚪 ', chime: null, wav_base64: null,
+    voice: ' Voice Name ', rooms: [' Den@S2 ', 'Studio@S1'], volume: 0 });
+  const decoded = Schedules.scheduleOf(value);
+  assert.deepEqual(decoded.announcement, { text: 'Time to leave 🚪', voice: 'Voice Name',
+    rooms: ['Den@S2', 'Studio@S1'], volume: 0 });
+  assert.equal(Object.isFrozen(decoded.announcement), true);
+  assert.equal(Object.isFrozen(decoded.announcement.rooms), true);
+  assert.deepEqual(Schedules.scheduleOf(announcementRow({ chime: ' BELL ', rooms: [] })).announcement,
+    { chime: 'bell', rooms: [] });
+  assert.equal(Schedules.schedulesOf([row({ id: 8 }), value]).length, 2);
+  for (const announcement of [{}, { wav_base64: 'UklGRg==' }, { text: 'Hi', chime: 'bell' },
+    { chime: 'bell', voice: 'Voice Name' }, { text: 'Hi', volume: 101 }, { chime: 'other' },
+    { text: 'a'.repeat(1001) }, { text: 'Hi', rooms: [''] }, { text: 'Hi', voice: '-bad' }]) {
+    assert.throws(() => Schedules.scheduleOf(announcementRow(announcement)));
+  }
+  assert.equal(Schedules.announcementOf({ text: '🎶'.repeat(1000), rooms: [] }).text.length, 2000);
+  assert.throws(() => Schedules.scheduleOf(row({ announcement: { chime: 'bell' } })));
+});
+
+async function announcementDraft(f, source = 'text') {
+  await draft(f, 'announce');
+  assert.deepEqual(f.control.state.options.rooms.map((room) => room.target), ['Studio@S2', 'Den@S2', 'Studio@S1']);
+  f.control.edit('announcement_source', source);
+  f.control.edit('announcement_rooms', ['Den@S2', 'Studio@S1']);
+  f.control.edit('announcement_volume', '25');
+  if (source === 'text') {
+    f.control.edit('announcement_text', 'Time to leave — bring your coat');
+    f.control.edit('announcement_voice', 'Voice Name');
+  } else f.control.edit('announcement_chime', 'bell');
+}
+
+test('speech and chime routines review and create only their complete nested recipe', async () => {
+  for (const source of ['text', 'chime']) {
+    const f = builderFixture();
+    await announcementDraft(f, source);
+    assert.equal(f.control.reviewCreate(), true);
+    const pending = f.control.state.pending;
+    assert.deepEqual(pending.body, { when: 'weekdays 07:30', action: 'announce', announcement: {
+      ...(source === 'text' ? { text: 'Time to leave — bring your coat', voice: 'Voice Name' } : { chime: 'bell' }),
+      rooms: ['Den@S2', 'Studio@S1'], volume: 25,
+    } });
+    assert.match(pending.summary, /Den@S2, Studio@S1/);
+    assert.match(pending.summary, source === 'text' ? /Time to leave — bring your coat.*Voice Name/ : /bell chime/);
+    assert.deepEqual(f.writes, []);
+    assert.equal(await f.control.confirm(pending), true);
+    assert.deepEqual(f.writes, [pending.body]);
+    assert.equal(f.control.state.rows[0].announcement.volume, 25);
+  }
+});
+
+test('announcement creation requires selected rooms and valid speech before review', async () => {
+  const f = builderFixture(); await draft(f, 'announce');
+  assert.equal(f.control.reviewCreate(), false);
+  assert.match(f.control.state.message, /at least one room/);
+  f.control.edit('announcement_rooms', ['Den@S2']);
+  assert.equal(f.control.reviewCreate(), false);
+  f.control.edit('announcement_text', '🎶'.repeat(1000));
+  assert.equal(f.control.reviewCreate(), true);
+  for (const [field, value] of [['announcement_volume', '101'], ['announcement_volume', '1.5'],
+    ['announcement_rooms', ['Missing@S2']], ['announcement_voice', '-bad']]) {
+    const invalid = builderFixture(); await announcementDraft(invalid);
+    invalid.control.edit(field, value);
+    assert.equal(invalid.control.reviewCreate(), false, field);
+    assert.deepEqual(invalid.writes, []);
+  }
+});
+
+test('every announcement edit consumes its old review and all selected rooms are rechecked', async () => {
+  for (const [field, value] of [['announcement_text', 'Different words'], ['announcement_voice', 'Other Voice'],
+    ['announcement_volume', '0'], ['announcement_rooms', ['Studio@S2']], ['announcement_source', 'chime']]) {
+    const f = builderFixture(); await announcementDraft(f);
+    assert.equal(f.control.reviewCreate(), true);
+    const old = f.control.state.pending;
+    assert.equal(f.control.edit(field, value), true);
+    assert.equal(f.control.state.pending, null);
+    assert.equal(await f.control.confirm(old), false);
+    assert.deepEqual(f.writes, []);
+  }
+  const f = builderFixture(); await announcementDraft(f);
+  f.control.reviewCreate(); const pending = f.control.state.pending;
+  f.data.groups[1].members.push('Other Room');
+  assert.equal(await f.control.confirm(pending), false);
+  assert.match(f.control.state.message, /target group/);
+  assert.deepEqual(f.writes, []);
+});
+
+test('announcement recipes participate in duplicate detection and management definition checks', async () => {
+  const f = builderFixture(); await announcementDraft(f);
+  f.control.reviewCreate(); const recipe = f.control.state.pending.body.announcement;
+  f.data.rows = [announcementRow(recipe)];
+  assert.equal(await f.control.confirm(f.control.state.pending), false);
+  assert.match(f.control.state.message, /equivalent schedule #7/);
+  assert.deepEqual(f.writes, []);
+  for (const changed of [{ ...recipe, text: 'Different words' }, { ...recipe, volume: 0 },
+    { ...recipe, voice: 'Other Voice' }, { ...recipe, rooms: ['Studio@S2'] },
+    { chime: 'bell', rooms: recipe.rooms, volume: 25 }]) {
+    const manager = fixture([announcementRow(recipe)]);
+    const pending = await reviewed(manager);
+    manager.set([announcementRow(changed)]);
+    assert.equal(await manager.control.confirm(pending), false);
+    assert.deepEqual(manager.writes, []);
+  }
+});
+
+test('nullable server recipes acknowledge accurately and a changed announcement reply remains uncertain', async () => {
+  for (const changed of [false, true]) {
+    const f = builderFixture(); await announcementDraft(f);
+    f.control.reviewCreate(); const pending = f.control.state.pending;
+    f.reply((body) => ({ id: 99, ...body,
+      announcement: { text: null, chime: null, wav_base64: null, voice: null, ...body.announcement,
+        ...(changed ? { text: 'Different message' } : {}) },
+      summary: 'Saved announcement', creator: 'test-client', enabled: true, next: '2030-01-15T07:30:00Z' }));
+    assert.equal(await f.control.confirm(pending), !changed);
+    assert.equal(f.writes.length, 1);
+    if (changed) assert.match(f.control.state.message, /may already be saved/);
+    assert.equal(await f.control.confirm(pending), false);
+    assert.equal(f.writes.length, 1);
+  }
+});
+
+test('the schedule DOM creates multi-room speech and displays the complete saved message', async (t) => {
+  const prior = global.document;
+  const dom = domFixture(); global.document = dom.document;
+  t.after(() => { if (prior === undefined) delete global.document; else global.document = prior; });
+  const f = builderFixture();
+  const panel = Schedules.panel({ call: f.call, el: dom.el });
+  t.after(() => panel.dispose());
+  const control = (key) => {
+    const found = panel.node.querySelectorAll('[data-schedule-focus]').find((node) => node.getAttribute('data-schedule-focus') === key);
+    assert.ok(found, `missing control ${key}`); return found;
+  };
+  panel.node.open = true; await panel.node.dispatch('toggle'); await new Promise(setImmediate);
+  await control('new-create').dispatch('click');
+  control('action').value = 'announce'; await control('action').dispatch('change');
+  const message = control('announcement_text');
+  message.value = 'Time to leave — bring your coat'; message.selectionStart = 12; message.focus();
+  await message.dispatch('input');
+  assert.equal(dom.document.activeElement, control('announcement_text'));
+  assert.equal(dom.document.activeElement.selectionStart, 12);
+  control('announcement_voice').value = 'Voice Name'; await control('announcement_voice').dispatch('input');
+  control('announcement_volume').value = '0'; await control('announcement_volume').dispatch('input');
+  for (const target of ['Den@S2', 'Studio@S1']) {
+    control(`announcement-room-${target}`).checked = true; await control(`announcement-room-${target}`).dispatch('change');
+  }
+  await control('review-create').dispatch('click');
+  assert.match(panel.node.textContent, /Time to leave — bring your coat/);
+  assert.match(panel.node.textContent, /Voice Name/);
+  assert.match(panel.node.textContent, /volume 0/);
+  assert.deepEqual(f.writes, []);
+  await control('confirm').dispatch('click');
+  assert.deepEqual(f.writes, [{ when: 'weekdays 07:30', action: 'announce', announcement: {
+    text: 'Time to leave — bring your coat', voice: 'Voice Name', rooms: ['Den@S2', 'Studio@S1'], volume: 0,
+  } }]);
+  await control('refresh').dispatch('click');
+  assert.match(panel.node.textContent, /Time to leave — bring your coat/);
+  assert.match(panel.node.textContent, /Creator: test-client/);
+  assert.equal(control('toggle-99').disabled, false);
 });
