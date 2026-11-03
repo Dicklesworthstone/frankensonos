@@ -568,3 +568,15 @@ action) or the MIPS-guest emulator route — the static read stands as documente
 
 Burn scripts: `/tmp/xnf_burn3.py`, `/tmp/xnf_burn4.py` on `192.168.4.160` (transient, not
 committed); kit unchanged.
+
+## 2026-11-03 (d) · emulator stub requirements found today (from e9dc072c)
+
+Harness fixes already proven necessary (all in the 86.10 image, so anyone continuing
+starts here): the `.MIPS.stubs` block `0x6643f0`–`0x664910` is MIPS32 and must be patched
+to `jr ra; nop` (`03e00008 00000000`) and hooked by symbol (`st_value` → `.dynsym` name),
+not left to the lazy binder — the GOT slots the stubs load are zero because the binary's
+PLT symbols carry `st_value` pointing back at the stub. `_Znwj`/`_Znaj` must be served from
+a bump allocator, `__tls_get_addr` must return a mapped TLS block, `__cxa_allocate_exception`
+/`__cxa_begin_catch` are reached during ordinary string growth, and `vsnprintf` must format
+the integer argument. With those in place the composer gets past the writer prologue and
+still dies at `0x595358` (`__cxa_current_exception_type` path) with `v0` unmapped.
