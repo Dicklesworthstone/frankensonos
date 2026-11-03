@@ -529,3 +529,42 @@ Re-read of `0x603b68` (museinfoservices handler) and `0x6021e4` (inspector) on
   constant. The bare-`urn:dev:ops:44974-zp-` prediction holds only if that lookup misses and
   the empty/fallback path is taken — worth one more live burn with `dmesg`/`muse_token_inspector`
   log capture to disambiguate which of the two targets the compare actually used.
+
+## 2026-11-03 (c) · live burn on both 86.10-81100 units — bare-URN iss rejected; log oracle gated
+
+Both S2 units are live on the LAN (`192.168.4.81` Play:1 `RINCON_000E58CADE9401400`,
+`192.168.4.86` S12 `RINCON_7828CA9221DC01400`, both `86.10-81100`, household
+`Sonos_wI8BAkz9WLbe5jdUaRXQSQMJW8.T7aLjgf696_0Ij2e5ZDB`, location `lc_3ee386abdf5745068202801414f1a14a`).
+Run over the `wss://:1443/websocket/api` commander (`[header, payload]`, `playerId` in the
+header, `grantType urn:ietf:params:oauth:grant-type:jwt-bearer`), JWT minted by
+`captures/research/emudhra/mint_jwt.py` (RS256, eMudhra G3B chain — verifies against the device
+bundle). Six shapes burned, **all `ERROR_NOT_AUTHORIZED "Unauthorized."`** (one-bit verdict, same
+as every prior shape):
+
+| shape | iss | mhhid | header hhid |
+|---|---|---|---|
+| 1 | bare URN | composed JSON | short hhid |
+| 2 | bare URN | composed JSON | full hhid (`Sonos_….T7aLjgf696_0Ij2e5ZDB`) |
+| 3 | bare URN | full mhhid string | full hhid |
+| 4 | bare URN | dotted (`hhid.luid_net`) | full hhid |
+| 5 | UDN / URN+UDN | composed JSON | full hhid |
+| 6 | UDN (+`kid=UDN`) | composed JSON | full hhid |
+
+The WS `authorization.resolveToken` still answers `success:true`/`statusReason:UNKNOWN`
+(no code); REST `authorizeDevice` on :1443 answers the blanket 403
+`ERROR_NO_PERMISSION` (no bearer channel differentiation).
+
+**Log-capture oracle is devmode-gated on this build.** The inspector's messages go to the
+`muse_token_inspector` category → `/opt/log/player/<cat>` and `/tmp/memorylog/log.N`
+(literals `0x6652a8`/`0x667308`, player prefix `0x6bb854`). Neither is reachable:
+`/status/ZPLocalSettingsFile/<name>` joins the runtime root `*(0x7004c4)` (= `/jffs`, proven by
+`../VERSION` → `86.10-81100` on both units; `../../` is stripped, so exactly one level up is the
+ceiling) and `/opt/log`, `/tmp/memorylog` are outside it. `/logger`, `/diagmsg`, `/diaglevel`,
+`/jobs`, `/raw` are all 403 on 86.10; `diagnostics.getDiagnostics`/`getLog` are
+`ERROR_UNSUPPORTED_COMMAND`; `submitDiagnostics` succeeds but returns only a `submissionId`
+(uploaded to the cloud, no local fetch). So distinguishing the iss-compare target
+(actor-description vs id-25 fallback) needs either the devmode unlock (portal statement, owner
+action) or the MIPS-guest emulator route — the static read stands as documented in (b).
+
+Burn scripts: `/tmp/xnf_burn3.py`, `/tmp/xnf_burn4.py` on `192.168.4.160` (transient, not
+committed); kit unchanged.
