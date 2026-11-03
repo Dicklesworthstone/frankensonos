@@ -1,5 +1,5 @@
-//! Schedules: apply a scene, start the DJ, pause, or set a volume at set
-//! times, once or every week.
+//! Schedules: apply a scene, start the DJ, pause, set a volume, or announce
+//! speech or a chime at set times, once or every week.
 //!
 //! The daemon owns scheduling because Sonos's own alarms can neither start
 //! the DJ nor a scene, and differ between S1 and S2. This module is the pure
@@ -318,6 +318,21 @@ pub fn tick<Tz: TimeZone>(
     })
 }
 
+/// A durable announcement recipe. Clips are generated at each run, so a
+/// schedule never depends on an expiring media URL or a file on the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ScheduledAnnouncementSource {
+    Speech {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        voice: Option<String>,
+    },
+    Chime {
+        name: String,
+    },
+}
+
 /// What a schedule does when it runs. Rooms and scenes are by name, as
 /// people say them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,6 +360,15 @@ pub enum ScheduleAction {
     Volume {
         room: String,
         level: u8,
+    },
+    /// Interrupt music briefly, then restore it through the announcement
+    /// engine. An empty room list means every room, as for an immediate call.
+    Announce {
+        source: ScheduledAnnouncementSource,
+        #[serde(default)]
+        rooms: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        volume: Option<u8>,
     },
 }
 

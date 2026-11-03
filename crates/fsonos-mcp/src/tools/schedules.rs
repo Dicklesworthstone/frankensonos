@@ -6,6 +6,7 @@
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::dj::DjDirectionDto;
+use fsonos_api::surface::announce::AnnounceRequest;
 use fsonos_api::surface::schedules::{
     FadePauseRequest, FadeVolumeRequest, ScheduleDto, ScheduleRequest, SleepRequest, SleepTimerDto,
 };
@@ -239,7 +240,7 @@ async fn list_schedules(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallT
 }
 
 #[tool(
-    description = "Schedule something, once or every week; the daemon runs it with your rights. `when`: 'in 45m', an RFC 3339 time, 'daily 22:30', 'weekdays 07:30', 'weekends 09:00', 'sat,sun 09:00', 'mon-fri 07:00' (house local time). `action`: 'dj_start' (zone; optional mood and direction), 'pause' (zone; optional fade_secs up to 600 to fade out first), 'volume' (zone and volume 0-100), or 'apply_scene' (scene). For dj_start, direction is {constraints: {include_artists: [names], exclude_artists: [names], include_genres: [genres], exclude_genres: [genres], decades: [1960], exclude_decades: [1980], include_keywords: [words], exclude_keywords: [words], include_composers: [names], exclude_composers: [names], periods: [periods], exclude_periods: [periods], min_work_minutes: 1, max_work_minutes: 60, energy_bias: -2..2, allow_long_works: false}, for_secs: 7200}; all fields are optional. Duration starts afresh at each run and requires a mood or constraint. An explicit empty direction with no mood clears prior steering to the automatic program. Omit direction for legacy mood-only behavior. A run missed by more than 10 minutes is skipped."
+    description = "Schedule something, once or every week; the daemon runs it with your rights. `when`: 'in 45m', an RFC 3339 time, 'daily 22:30', 'weekdays 07:30', 'weekends 09:00', 'sat,sun 09:00', 'mon-fri 07:00' (house local time). `action`: 'dj_start' (zone; optional mood and direction), 'pause' (zone; optional fade_secs up to 600 to fade out first), 'volume' (zone and volume 0-100), 'apply_scene' (scene), or 'announce' (announcement). For announce, give announcement: {text: 'Time to leave', rooms: ['Kitchen', 'Office'], volume: 25, voice: 'optional voice'} or {chime: 'bell', rooms: ['Office'], volume: 25}. Give exactly one of text (at most 1000 characters) or chime (bell, beep, rise); voice is for text only, rooms defaults to all rooms and volume defaults to 35. Uploaded WAVs cannot be scheduled. Announcement fields go inside announcement, with no top-level zone, volume, mood, direction, scene or fade_secs. Each run speaks or chimes and restores the music through the usual capped announcement path. For dj_start, direction is {constraints: {include_artists: [names], exclude_artists: [names], include_genres: [genres], exclude_genres: [genres], decades: [1960], exclude_decades: [1980], include_keywords: [words], exclude_keywords: [words], include_composers: [names], exclude_composers: [names], periods: [periods], exclude_periods: [periods], min_work_minutes: 1, max_work_minutes: 60, energy_bias: -2..2, allow_long_works: false}, for_secs: 7200}; all fields are optional. Duration starts afresh at each run and requires a mood or constraint. An explicit empty direction with no mood clears prior steering to the automatic program. Omit direction for legacy mood-only behavior. A run missed by more than 10 minutes is skipped."
 )]
 #[allow(clippy::too_many_arguments)] // one optional field per action
 async fn add_schedule(
@@ -250,6 +251,7 @@ async fn add_schedule(
     scene: Option<String>,
     mood: Option<String>,
     direction: Option<serde_json::Value>,
+    announcement: Option<serde_json::Value>,
     volume: Option<i64>,
     fade_secs: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -261,6 +263,14 @@ async fn add_schedule(
                 "invalid DJ direction: {error}",
             )))
         })?;
+    let announcement = announcement
+        .map(serde_json::from_value::<AnnounceRequest>)
+        .transpose()
+        .map_err(|error| {
+            crate::tool_error(&fsonos_api::Failure::invalid(format!(
+                "invalid scheduled announcement: {error}",
+            )))
+        })?;
     let req = ScheduleRequest {
         when,
         action,
@@ -268,6 +278,7 @@ async fn add_schedule(
         scene,
         mood,
         direction,
+        announcement,
         volume,
         fade_secs,
     };

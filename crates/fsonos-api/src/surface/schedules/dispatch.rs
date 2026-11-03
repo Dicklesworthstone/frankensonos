@@ -7,8 +7,8 @@
 //! unacknowledged speaker mutation.
 
 use super::{
-    Ran, Schedule, ScheduleAction, Scheduler, Surface, Tick, client_of, core_schedule, fire,
-    room_view, span, summary,
+    Ran, Schedule, ScheduleAction, Scheduler, Surface, Tick, announcements, client_of,
+    core_schedule, fire, room_view, span, summary,
 };
 use crate::failure::{ErrorCode, Failure};
 use crate::plan;
@@ -169,6 +169,10 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<(), Failure> {
     let aliases = surface.aliases();
     let rooms = room_view(&households, aliases.as_ref(), &client);
     match &schedule.action {
+        ScheduleAction::Announce { rooms: names, .. } => {
+            surface.announcement_ready()?;
+            announcements::targets_ready(&rooms, names)
+        }
         ScheduleAction::ApplyScene { name } => {
             let scene = surface
                 .with_store(|store| Ok(scenes::load(store, name)))?
@@ -220,7 +224,11 @@ fn alias_member_ready(households: &[HouseholdState], name: &str) -> Result<(), F
     }
 }
 
-fn targets_ready(rooms: &plan::Rooms<'_>, name: &str, single: bool) -> Result<(), Failure> {
+pub(super) fn targets_ready(
+    rooms: &plan::Rooms<'_>,
+    name: &str,
+    single: bool,
+) -> Result<(), Failure> {
     if single {
         plan::resolve(rooms, name)?;
     } else {
@@ -290,6 +298,25 @@ fn launch(
             tracing::debug!("schedule #{id} awaits its targets: {}", failure.detail);
             return;
         }
+        // A due announcement needs its normal caller slot before it can be
+        // claimed. Carry the lease into delivery: checking occupancy alone
+        // races immediate calls and can consume a reminder without playing it.
+        let announcement = if admission() == Admission::Run
+            && matches!(&schedule.action, ScheduleAction::Announce { .. })
+        {
+            match surface.reserve_announcement(&client_of(&schedule.creator)) {
+                Ok(permit) => Some(permit),
+                Err(failure) => {
+                    tracing::debug!(
+                        "schedule #{id} awaits announcement capacity: {}",
+                        failure.detail
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         // Readiness can take time, so recheck the grace period, shutdown and
         // current definition immediately before the irreversible claim.
         let result = claim_current(&surface, &schedule, at, admission);
@@ -305,7 +332,7 @@ fn launch(
                 return;
             }
         }
-        match fire(&surface, &schedule) {
+        match fire(&surface, &schedule, announcement) {
             Ok(done) => tracing::info!("schedule #{id} ({}): {done}", summary(&schedule.action)),
             Err(failure) => tracing::warn!(
                 "schedule #{id} ({}): {}",

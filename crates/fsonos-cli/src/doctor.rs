@@ -42,6 +42,7 @@ use std::time::Duration;
 use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::direct::Direct;
 
+mod remote;
 pub mod selftest_last;
 pub mod service;
 pub mod sign_in;
@@ -53,7 +54,8 @@ pub mod warnings;
 pub struct DoctorArgs {
     /// The daemon settings to check (the same flags and env as `serve`).
     /// While a daemon serves this data directory and answers, the settings
-    /// it runs with are checked instead.
+    /// it runs with are checked instead. With --daemon or --daemon-url,
+    /// all checks run on that daemon using its own settings.
     #[command(flatten)]
     pub serve: ServeArgs,
     /// Only checks whose id starts with this (e.g. `spotify`, `daemon.`).
@@ -478,6 +480,14 @@ fn serving_with(
 
 /// Run `fsonos doctor` and print the report; the exit code is the report's.
 pub fn run(global: &GlobalArgs, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
+    if let Some(report) = remote::fetch(global, args.only.as_deref())? {
+        if global.json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print!("{}", report.render_table());
+        }
+        return Ok(ExitCode::from(report.exit_code()));
+    }
     let direct = Direct::open(global, Some(checks(global, args.serve.clone())?))?;
     let report = only(direct.doctor(&Client::Cli)?, args.only.as_deref());
     if global.json {
