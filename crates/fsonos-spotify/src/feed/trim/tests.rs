@@ -597,6 +597,7 @@ fn playback_keeps_feeding_and_recording_once_after_a_confirmed_lost_trim_reply()
             let position = soap::get_position_info(&f.sim.lan(), f.host).unwrap();
             let mut state = PlayerPlayback::default();
             state.transport = Some(TransportState::Playing);
+            state.media_uri = Some(soap::get_media_info(&f.sim.lan(), f.host).unwrap().uri);
             state.track_uri = Some(position.uri);
             state.queue_position = Some(position.track);
             state.queue_length = Some(u32::try_from(f.queue().len()).unwrap());

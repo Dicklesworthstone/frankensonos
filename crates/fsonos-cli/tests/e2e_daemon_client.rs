@@ -169,6 +169,43 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
     let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
     check_the_daemon_file(&mut s, &daemon, live.is_some());
 
+    let diagnosis = s.cli(
+        "doctor-daemon",
+        &[
+            "--daemon",
+            "--seeds",
+            &no_seeds,
+            "--json",
+            "doctor",
+            "--only",
+            "daemon.bind",
+        ],
+    );
+    let report = json(&diagnosis.stdout);
+    s.check(
+        "doctor-daemon",
+        "cli",
+        "explicit daemon diagnosis reads the daemon's checks without local seeds",
+        diagnosis.code == Some(0)
+            && report["checks"]
+                .as_array()
+                .is_some_and(|checks| checks.len() == 1 && checks[0]["id"] == "daemon.bind")
+            && report["counts"]["pass"] == 1
+            && report["exit_code"] == 0,
+        format!("{diagnosis:?}"),
+    );
+    let local_diagnosis = s.cli(
+        "doctor-local",
+        &["--seeds", &no_seeds, "doctor", "--only", "daemon.bind"],
+    );
+    s.check(
+        "doctor-local",
+        "cli",
+        "ordinary doctor still diagnoses this host when a daemon is running",
+        !local_diagnosis.ok() && local_diagnosis.stderr.contains(&no_seeds),
+        format!("{local_diagnosis:?}"),
+    );
+
     let zones = s.cli(
         "zones-daemon",
         &["--daemon", "--seeds", &no_seeds, "--json", "zones"],
@@ -428,6 +465,103 @@ fn a_daemon_url_reaches_the_daemon_from_elsewhere() {
                 .is_some_and(|z| !z.is_empty()),
         format!("{zones:?}"),
     );
+    let no_seeds = s
+        .dir()
+        .join("no-such-remote-seeds.toml")
+        .display()
+        .to_string();
+    let diagnosis = s.cli_env(
+        "doctor-by-url",
+        &[
+            "--daemon-url",
+            &url,
+            "--seeds",
+            &no_seeds,
+            "--json",
+            "doctor",
+            "--only",
+            "daemon.bind",
+        ],
+        &env,
+        &unset,
+    );
+    let report = json(&diagnosis.stdout);
+    s.check(
+        "doctor-by-url",
+        "cli",
+        "URL diagnosis reports the daemon's selected checks and filtered exit status",
+        diagnosis.code == Some(0)
+            && report["checks"]
+                .as_array()
+                .is_some_and(|checks| checks.len() == 1 && checks[0]["id"] == "daemon.bind")
+            && report["counts"]["pass"] == 1
+            && report["exit_code"] == 0,
+        format!("{diagnosis:?}"),
+    );
+    let text = s.cli_env(
+        "doctor-by-url-text",
+        &[
+            "--daemon-url",
+            &url,
+            "--seeds",
+            &no_seeds,
+            "doctor",
+            "--http",
+            "0.0.0.0:8099",
+            "--only",
+            "daemon.bind",
+        ],
+        &env,
+        &unset,
+    );
+    s.check(
+        "doctor-by-url-text",
+        "cli",
+        "the remote human report uses the daemon's running settings",
+        text.code == Some(0)
+            && text.stdout.contains("✓ Listener addresses")
+            && text
+                .stdout
+                .contains("1 checks: 1 passed, 0 warned, 0 failed, 0 skipped")
+            && !text.stdout.contains("0.0.0.0"),
+        format!("{text:?}"),
+    );
+    let direct = s.cli_env(
+        "doctor-direct-overrides-url",
+        &[
+            "--direct",
+            "--daemon-url",
+            "ftp://unused",
+            "--seeds",
+            &no_seeds,
+            "doctor",
+        ],
+        &env,
+        &unset,
+    );
+    s.check(
+        "doctor-direct-overrides-url",
+        "cli",
+        "explicit direct diagnosis ignores a daemon URL and reads local seeds",
+        !direct.ok() && direct.stderr.contains(&no_seeds),
+        format!("{direct:?}"),
+    );
+    let bad_diagnosis = s.cli_env(
+        "doctor-bad-url",
+        &["--daemon-url", "ftp://nowhere", "doctor"],
+        &env,
+        &unset,
+    );
+    s.check(
+        "doctor-bad-url",
+        "cli",
+        "an invalid doctor URL is refused without a local diagnosis",
+        bad_diagnosis.code == Some(2)
+            && bad_diagnosis.stderr.contains("--daemon-url")
+            && bad_diagnosis.stdout.is_empty(),
+        format!("{bad_diagnosis:?}"),
+    );
+
     let bad = s.cli_env(
         "bad-url",
         &["--daemon-url", "ftp://nowhere", "zones"],
@@ -455,6 +589,16 @@ fn daemon_and_direct_say_what_they_mean() {
         "--daemon with no daemon is NOT_READY (exit 4)",
         required.code == Some(4) && required.stderr.contains("NOT_READY"),
         &required.stderr,
+    );
+    let diagnosis = s.cli("doctor-daemon-required", &["--daemon", "--json", "doctor"]);
+    s.check(
+        "doctor-daemon-required",
+        "cli",
+        "explicit daemon diagnosis with no daemon is NOT_READY, without local fallback",
+        diagnosis.code == Some(4)
+            && diagnosis.stderr.contains("NOT_READY")
+            && diagnosis.stdout.is_empty(),
+        format!("{diagnosis:?}"),
     );
     let both = s.cli("both-flags", &["--daemon", "--direct", "zones"]);
     s.check(

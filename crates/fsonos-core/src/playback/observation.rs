@@ -31,7 +31,7 @@ impl Playback {
     /// changes no playback value and never sends a command to the renderer.
     pub(crate) fn request_position_sample(&mut self, player: &PlayerId) {
         if let Some(state) = self.players.get_mut(player) {
-            state.position_requested = state.track_uri.is_some();
+            state.position_requested = state.track_uri.is_some() || state.media_uri.is_some();
         }
     }
 
@@ -46,18 +46,31 @@ impl Playback {
         now: Instant,
     ) -> Changes {
         let before = self.players.get(player).cloned().unwrap_or_default();
+        let media_uri = match observation.media.uri.trim() {
+            "" | "NOT_IMPLEMENTED" => None,
+            uri => Some(uri.to_owned()),
+        };
+        let source_changed = before.media_uri != media_uri;
+        if source_changed && let Some(state) = self.players.get_mut(player) {
+            state.position = None;
+        }
         self.apply_position(player, &observation.position, now);
         let state = self.players.entry(player.clone()).or_default();
         let moved = before.track_uri != state.track_uri
             || before.queue_position.filter(|&n| n > 0) != state.queue_position;
         let transport = observation.transport.state;
         let changed_transport = before.transport != Some(transport);
-        if changed_transport && !moved && observation.position.position_secs.is_none() {
+        if changed_transport
+            && !moved
+            && !source_changed
+            && observation.position.position_secs.is_none()
+        {
             // Freeze/resume an existing clock only for this same identity.
             // Never manufacture timing for a new or absent track.
             state.position = before.position_at(now).map(|position| (position, now));
         }
         state.transport = Some(transport);
+        state.media_uri = media_uri;
         let tracks = observation.media.tracks;
         state.queue_length = Some(tracks);
         let metadata_changed =
@@ -66,6 +79,7 @@ impl Playback {
             metadata_changed,
             transport: changed_transport.then_some((before.transport, transport)),
             track: moved.then(|| (before.track_uri, state.track_uri.clone())),
+            media_uri: source_changed.then(|| (before.media_uri, state.media_uri.clone())),
             queue_length: (before.queue_length != Some(tracks)).then_some(tracks),
             ..Changes::default()
         }
@@ -81,6 +95,7 @@ impl PlayerPlayback {
     pub(crate) fn same_transport_observation(&self, before: &Self) -> bool {
         self.transport == before.transport
             && self.track_uri == before.track_uri
+            && self.media_uri == before.media_uri
             && self.now_playing == before.now_playing
             && self.duration_secs == before.duration_secs
             && self.queue_position == before.queue_position

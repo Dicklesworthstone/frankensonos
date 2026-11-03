@@ -115,7 +115,7 @@ import FrankenSonosKit
                     .frame(maxWidth: .infinity, minHeight: 180).accessibilityLabel("Loading library")
             }
 
-            Text("Showing the daemon’s cached music, which can include retired or taste-derived items. Album track counts may be incomplete. Manage Spotify and sync in House → Spotify & library.")
+            Text("Showing the daemon’s cached music, which can include retired or taste-derived items. Album listings show saved-library counts; open an album to see whether its full playable track list has been cached. Manage Spotify and sync in House → Spotify & library.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -162,8 +162,19 @@ import FrankenSonosKit
                 HStack(spacing: 12) { albumActions }
                 VStack(alignment: .leading, spacing: 12) { albumActions }
             }
-            Text("Play album and Queue album use the full album source. The tracks below are cached in disc/track order and may include only some movements or part of the recording.")
+            Text("Play album and Queue album use the full album source. The tracks below follow cached disc/track order.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let observation = catalog.page?.albumObservation {
+                Text(observation.description).font(.callout).foregroundStyle(.secondary)
+                if let fetchedAt = observation.fetchedAt {
+                    Text("Album cached " + Date(timeIntervalSince1970: TimeInterval(fetchedAt))
+                        .formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Only the saved-library subset is known; some movements or tracks may be missing.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }.remoteCard()
     }
 
@@ -200,7 +211,7 @@ import FrankenSonosKit
     }
 
     private func countLabel(_ page: LibraryCatalogPage) -> some View {
-        Text("\(page.total) \(page.kind.title.lowercased())\(catalog.request.query.isEmpty ? " in your library" : " found")")
+        Text("\(page.total) \(page.kind.title.lowercased())\(catalog.request.query.isEmpty ? (page.albumUri == nil ? " in your library" : " on this album") : " found")")
             .font(.subheadline.weight(.medium)).accessibilityAddTraits(.isHeader)
     }
 
@@ -276,6 +287,9 @@ import FrankenSonosKit
                             Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
                         }
                         if item.explicit { explicitBadge }
+                        if !item.explicitKnown {
+                            Text("Explicitness unknown").font(.caption).foregroundStyle(.secondary)
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading).multilineTextAlignment(.leading)
                     Image(systemName: "play.fill").font(.caption).foregroundStyle(RemoteStyle.accent)
                         .accessibilityHidden(true)

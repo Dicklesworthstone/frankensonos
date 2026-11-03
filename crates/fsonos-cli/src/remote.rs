@@ -26,7 +26,9 @@
 //! favorites, and `fsonos dj start|skip|stop|steer` reach the DJ that keeps
 //! the group's queue going. Scenes, schedules and `fsonos policy show` read
 //! and change the daemon's, so they reach its store from another machine too.
-//! Commands with no route here (doctor, `policy check`, ...) run directly.
+//! `fsonos doctor` uses the daemon when --daemon or --daemon-url is explicit;
+//! otherwise it diagnoses the local host. Commands with no route here
+//! (`policy check`, ...) run directly.
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
@@ -312,6 +314,28 @@ impl Daemon {
     /// `GET path`: the answer as `T`, or the daemon's failure.
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
         self.call("GET", path, None, CALL)
+    }
+
+    /// A URL may be HTTPS behind Tailscale Serve. Its event follower uses
+    /// bounded JSON reads through the same validating HTTP client as commands.
+    #[must_use]
+    pub fn uses_url(&self) -> bool {
+        matches!(self.addr, Endpoint::Url(_))
+    }
+
+    /// Read the journal after one cursor, with a finite network deadline.
+    /// Every retry remains a GET; no control request is repeated.
+    pub fn events_after(
+        &self,
+        since: Option<u64>,
+        wait: Duration,
+    ) -> Result<fsonos_api::events::EventsDto, Failure> {
+        let wait = wait.min(fsonos_api::events::MAX_WAIT);
+        let mut path = format!("/events?wait={}", wait.as_secs());
+        if let Some(since) = since {
+            let _ = write!(path, "&since={since}");
+        }
+        self.call("GET", &path, None, wait + URL_PROBE)
     }
 
     /// `DELETE path`: the answer as `T`, or the daemon's failure.

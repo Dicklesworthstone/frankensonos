@@ -35,6 +35,8 @@ asupersync = { workspace = true }
 fastapi = { workspace = true }
 # `fsonos serve` and `fsonos sim` stop cleanly on SIGINT / SIGTERM.
 signal-hook = { workspace = true }
+# Bounded Unix IPC connection setup for an explicitly launched mpv process.
+socket2 = { workspace = true }
 # `fsonos sim` (feature `sim`, on by default).
 fsonos-sim = { workspace = true, optional = true }
 
