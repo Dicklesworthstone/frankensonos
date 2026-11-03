@@ -107,9 +107,13 @@ can be published as partial only after its final version check succeeds. A
 clean budget-limited window advances the checkpoint. Partial observations can
 grow across turns when no complete observation exists; **an existing complete
 observation stays available with its original revision until the new version
-has been read completely**. Completed scans begin a fresh observation on their
-next full-sync turn, so track metadata can also refresh when playlist membership is
-unchanged.
+has been read completely**. A complete unchanged snapshot keeps its whole coverage during later full-sync
+visits. Each visit refreshes the next bounded metadata window, replaces exactly
+those raw positions (including newly unavailable entries), and preserves the
+untouched positions. The metadata offset survives restarts and wraps to zero
+at the end. A changed version still starts ordinary partial intake; a failed
+window, inconsistent total, or failed final version check keeps the previous
+complete observation and metadata offset.
 
 Each playlist is bounded to 10,000 raw source entries and 16 MiB of accumulated
 metadata. Unsupported entries count toward the raw bound. A playlist that
@@ -118,6 +122,22 @@ observation in place; sync notes explain the limit or continuing position.
 Repeated explicit syncs advance long playlists within the same per-sync budget.
 The final complete window supplies all accumulated tracks to the library and
 DJ pool, including music from the earlier windows.
+
+### Full refreshes reconcile every current playlist
+
+The 25-playlist request budget limits network work, not the authoritative taste
+projection. A full refresh also includes unvisited playlists whose complete
+private checkpoints match the explicit versions in the current, fully read
+directory. Their existing ordered observations and metadata supply the music
+without another item request. This lets a library with more than 25 playlists
+retire music from deleted playlists and replaced snapshots once all current
+snapshots are complete.
+
+A missing directory version, changed snapshot, incomplete or capped checkpoint,
+or failed read does not establish absence. The sync preserves prior taste
+candidates until the full set of granted signals is authoritative. Saved and
+liked music, top/recent tracks and unread-artist retention continue through
+the same full-library projection; playlist evidence alone cannot retire them.
 
 ### The daemon completes unfinished reads in the background
 
@@ -140,7 +160,14 @@ playlist pages. This uses the existing album cache, missing-album backoff and
 rate-limit handling; unrelated works do not trigger album reads. Failed album
 enrichment retains the accepted playlist music and reports the missing work
 in sync notes. Continuation adds evidence; retiring unrelated library or taste
-music remains a full-sync operation.
+music remains a full-sync operation. When background intake finishes all
+previously pending snapshots without hitting a cache limit, the daemon
+schedules that full reconciliation at its next eligible check. The request
+survives restarts and respects the server cooldown. Complete snapshot reuse
+keeps this follow-up from reopening long playlists as unfinished prefixes.
+The follow-up requests one full refresh. Once its essential saved-library read
+succeeds, the request is consumed; failures in optional signals preserve prior
+candidates and retry on the normal refresh schedule.
 
 Readiness, admission and retry deadlines survive daemon restarts in the local
 sync stamp. A pass that accepts no new source positions and finishes no
@@ -153,10 +180,11 @@ the new account contributes music.
 Continuation never changes the timestamp of the last full library refresh or
 postpones the daily full read. `dj sync` still requests one full bounded pass;
 the daemon follows with eligible background work. Sync status notes report
-unfinished and limit-bound playlists. The existing complete cached observation
-keeps its revision until a full replacement is proved, and a capped snapshot
-keeps its last published observation rather than replacing it with empty
-contents.
+unfinished and limit-bound playlists. An unchanged complete snapshot
+stays complete while its metadata windows refresh. When the snapshot changes,
+the existing complete cached observation keeps its revision until the whole
+replacement is proved. A capped snapshot keeps its last published observation
+rather than replacing it with empty contents.
 
 The URI/name listing can still contain playlists whose contents are not eligible
 or have not had a turn;

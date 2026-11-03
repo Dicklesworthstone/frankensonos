@@ -232,6 +232,24 @@ impl Session {
         })
     }
 
+    /// Prove which account this session reads, including library-only grants.
+    /// Identity is required before a completed read may replace personal cache
+    /// data. Do not cache this across syncs or a later sign-in on the session.
+    pub(crate) async fn read_owner(&mut self, cx: &Cx) -> Result<String, SpotifyError> {
+        let url = self.endpoints.me();
+        let body = self.get_brief(cx, &url).await?;
+        let owner: crate::client::Me = crate::client::decode(&body, "the user")?;
+        if owner.id.trim().is_empty()
+            || owner.id.len() > 1_024
+            || owner.id.chars().any(char::is_control)
+        {
+            return Err(SpotifyError::Decode(
+                "invalid Spotify owner identity".into(),
+            ));
+        }
+        Ok(owner.id)
+    }
+
     /// Read the owner's whole library: every saved album's tracks and every
     /// liked track (read-only).
     pub async fn read_library(&mut self, cx: &Cx) -> Result<Vec<LibraryItem>, SpotifyError> {

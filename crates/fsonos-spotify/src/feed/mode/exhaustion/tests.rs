@@ -120,6 +120,7 @@ impl Rig {
         let position = soap::get_position_info(&self.lan, self.host).unwrap();
         let mut event = PlayerPlayback::default();
         event.transport = Some(TransportState::Stopped);
+        event.media_uri = Some(soap::get_media_info(&self.lan, self.host).unwrap().uri);
         event.queue_position = Some(position.track);
         event.queue_length = Some(
             u32::try_from(

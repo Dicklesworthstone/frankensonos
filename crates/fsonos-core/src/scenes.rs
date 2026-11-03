@@ -573,6 +573,78 @@ pub fn apply<T: Transport + ?Sized>(
     execution::apply(t, households, plan, options)
 }
 
+/// Known rooms whose volumes an opted-in scene fade may change. Resolve the
+/// intended membership before any grouping I/O, so the same rooms can retain
+/// their intents throughout slow group confirmation and source preparation.
+/// Execution still filters these candidates against the confirmed ready plan.
+#[must_use]
+pub fn fade_players(households: &[HouseholdState], plan: &ScenePlan) -> Vec<PlayerId> {
+    let starts: Vec<_> = plan
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            SceneOp::Favorite {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::Uri {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::Queue {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::QueueBackup {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::Dj { coordinator, .. }
+            | SceneOp::Play { coordinator } => Some(coordinator),
+            _ => None,
+        })
+        .collect();
+    let mut players = Vec::new();
+    for room in households.iter().flat_map(|h| &h.rooms) {
+        let explicit = plan.ops.iter().any(|op| {
+            matches!(
+                op,
+                SceneOp::Volume { player, .. }
+                    | SceneOp::Mute { player, mute: false, .. }
+                    if *player == room.primary
+            )
+        });
+        let leader = leader_after(room, households, plan);
+        if (explicit || starts.contains(&&leader)) && !players.contains(&room.primary) {
+            players.push(room.primary.clone());
+        }
+    }
+    players
+}
+
+/// The room that leads this room once the plan has regrouped.
+fn leader_after(room: &Room, households: &[HouseholdState], plan: &ScenePlan) -> PlayerId {
+    let moved = plan.ops.iter().rev().find_map(|op| match op {
+        SceneOp::Join {
+            player,
+            coordinator,
+            ..
+        } if *player == room.primary => Some(coordinator.clone()),
+        SceneOp::Leave { player, .. } if *player == room.primary => Some(player.clone()),
+        _ => None,
+    });
+    let lead = moved.unwrap_or_else(|| room.coordinator.clone());
+    households
+        .iter()
+        .flat_map(|h| &h.rooms)
+        .find(|r| r.players.contains(&lead))
+        .map_or_else(|| lead.clone(), |r| r.primary.clone())
+}
+
 /// Before a faded scene's sources start: silence the rooms whose sound
 /// starts with it, so they fade in rather than start at their full level.
 /// Those are the rooms of a group the plan starts (a Play, or a source for a
@@ -584,6 +656,7 @@ fn silence_starting<T: Transport + ?Sized>(
     households: &[HouseholdState],
     plan: &ScenePlan,
     fader: &Fader,
+    claimed: &[(PlayerId, u64)],
 ) -> Vec<(PlayerId, u8)> {
     let rooms = || households.iter().flat_map(|h| &h.rooms);
     let mut starts: Vec<&PlayerId> = Vec::new();
@@ -620,22 +693,6 @@ fn silence_starting<T: Transport + ?Sized>(
             _ => {}
         }
     }
-    // The room that leads `room` once the plan has regrouped.
-    let leader = |room: &Room| -> PlayerId {
-        let moved = plan.ops.iter().rev().find_map(|op| match op {
-            SceneOp::Join {
-                player,
-                coordinator,
-                ..
-            } if *player == room.primary => Some(coordinator.clone()),
-            SceneOp::Leave { player, .. } if *player == room.primary => Some(player.clone()),
-            _ => None,
-        });
-        let lead = moved.unwrap_or_else(|| room.coordinator.clone());
-        rooms()
-            .find(|r| r.players.contains(&lead))
-            .map_or_else(|| lead.clone(), |r| r.primary.clone())
-    };
     let wanted = |player: &PlayerId| {
         plan.ops.iter().find_map(|op| match op {
             SceneOp::Volume {
@@ -651,17 +708,25 @@ fn silence_starting<T: Transport + ?Sized>(
     };
     let mut ins = Vec::new();
     for room in rooms() {
-        if !starts.contains(&&leader(room)) && !unmuted(&room.primary) {
+        if !starts.contains(&&leader_after(room, households, plan)) && !unmuted(&room.primary) {
             continue;
         }
+        // A room discovered only after grouping was not part of this scene's
+        // volume intent. It must not be silenced by an older request.
+        let Some(claim) = claimed.iter().find(|(player, _)| *player == room.primary) else {
+            continue;
+        };
         let level =
             wanted(&room.primary).or_else(|| control::volume(t, households, &room.primary).ok());
         let Some(to) = level else {
             continue;
         };
-        if to > 0 && fader.set_volume(t, households, &room.primary, 0).is_ok() {
-            ins.push((room.primary.clone(), to));
-        }
+        // Retain the recovery target even when the silence reply is lost:
+        // the write may have landed. Every later write uses this same claim.
+        ins.push((room.primary.clone(), to));
+        let _ = fader.with_claimed(std::slice::from_ref(claim), || {
+            control::set_volume(t, households, &room.primary, 0)
+        });
     }
     ins
 }
@@ -675,6 +740,7 @@ fn fade_volumes<T: Transport + ?Sized>(
     households: &[HouseholdState],
     plan: &ScenePlan,
     ins: &[(PlayerId, u8)],
+    claimed: &[(PlayerId, u64)],
     (fader, over): (&Fader, Duration),
     report: &mut SceneReport,
 ) {
@@ -700,7 +766,7 @@ fn fade_volumes<T: Transport + ?Sized>(
     if targets.is_empty() {
         return;
     }
-    match fader.fade_each(t, households, &targets, over) {
+    match fader.fade_each_claimed(t, households, &targets, claimed, over) {
         Ok(left) => {
             report.faded = targets.len().saturating_sub(left.len());
             report.done.extend(ops.into_iter().cloned());
@@ -717,15 +783,31 @@ fn fade_volumes<T: Transport + ?Sized>(
         }
         Err(_) => {
             for (player, to) in &targets {
-                let set = control::set_volume(t, households, player, *to);
                 let op = ops
                     .iter()
                     .find(|op| matches!(op, SceneOp::Volume { player: p, .. } if p == player));
+                let Some(claim) = claimed.iter().find(|(p, _)| p == player) else {
+                    if let Some(op) = op {
+                        report.failed.push((
+                            SceneOp::clone(op),
+                            "volume not changed: this room was not known before the scene started"
+                                .into(),
+                        ));
+                    }
+                    continue;
+                };
+                // A failed room does not acquire another room's newer intent.
+                // Hold only this room's step lock across its fallback write.
+                let set = fader.with_claimed(std::slice::from_ref(claim), || {
+                    control::set_volume(t, households, player, *to)
+                });
                 match (op, set) {
-                    (Some(op), Ok(_)) => report.done.push(SceneOp::clone(op)),
-                    (Some(op), Err(e)) => report.failed.push((SceneOp::clone(op), e.to_string())),
+                    (Some(op), Some(Ok(_))) => report.done.push(SceneOp::clone(op)),
+                    (Some(op), Some(Err(e))) => {
+                        report.failed.push((SceneOp::clone(op), e.to_string()))
+                    }
                     // A room silenced to fade in, still silent: say so.
-                    (None, Err(e)) => {
+                    (None, Some(Err(e))) => {
                         let room = households
                             .iter()
                             .flat_map(|h| &h.rooms)
@@ -735,7 +817,17 @@ fn fade_volumes<T: Transport + ?Sized>(
                             "{room} was silenced for the fade and couldn't be put back: {e}"
                         ));
                     }
-                    (None, Ok(_)) => {}
+                    (_, None) => {
+                        let room = households
+                            .iter()
+                            .flat_map(|h| &h.rooms)
+                            .find(|r| r.players.contains(player))
+                            .map_or(player.0.as_str(), |r| r.name.as_str());
+                        report.notes.push(format!(
+                            "{room}'s fade stopped where its volume was changed meanwhile"
+                        ));
+                    }
+                    (None, Some(Ok(_))) => {}
                 }
             }
         }

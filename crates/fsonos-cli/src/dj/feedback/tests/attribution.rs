@@ -64,6 +64,7 @@ fn queued(work: &Work, start: u32) -> QueuedWork {
 fn playback(queued: &QueuedWork, index: usize) -> PlayerPlayback {
     let mut playback = PlayerPlayback::default();
     playback.transport = PLAYING;
+    playback.media_uri = Some("x-rincon-queue:test-coordinator#0".into());
     playback.queue_position = queued.movements[index].position;
     playback.track_uri = Some(format!(
         "x-sonos-spotify:{}?sid=9",
@@ -385,4 +386,66 @@ fn repeated_track_uris_in_one_recording_still_have_distinct_movement_positions()
         listening.on_change(540, Some(TransportState::Stopped), None),
         Some((work.work_key, Signal::FullListen))
     );
+}
+
+#[test]
+fn temporary_sources_do_not_count_as_listens_even_when_the_track_identity_matches() {
+    let work = work("A");
+    let queue = queued(&work, 1);
+    let feed = feed(queue.clone());
+    let pool = WorkPool::from_works(vec![work.clone()]);
+    for source in [
+        None,
+        Some("http://example.invalid/announcement.wav"),
+        Some("x-sonos-vli:test-coordinator:2,spotify:test-session"),
+        Some("x-rincon-queue:another-coordinator#0"),
+    ] {
+        let mut listening = Listening {
+            current: Some((sample(&work, 2), 0)),
+            prefix_complete: true,
+            observed_at: Some(0),
+            advancing: true,
+            ..Listening::default()
+        };
+        let mut state = playback(&queue, 2);
+        state.media_uri = source.map(str::to_owned);
+        let mut store = MemStore::default();
+        assert!(!implicit(
+            &mut listening,
+            &feed,
+            &pool,
+            &mut store,
+            &state,
+            20,
+            1000
+        ));
+        assert!(!listening.advancing);
+        assert!(!listening.prefix_complete);
+        assert_eq!(listening.current.as_ref().unwrap().1, 0);
+
+        // Return to the same movement after a long clip. The gap cannot
+        // manufacture a complete work or an early-skip dislike.
+        state = playback(&queue, 2);
+        assert!(!implicit(
+            &mut listening,
+            &feed,
+            &pool,
+            &mut store,
+            &state,
+            300,
+            1300
+        ));
+        assert_eq!(listening.current.as_ref().unwrap().1, 0);
+        state.transport = Some(TransportState::Stopped);
+        assert!(!implicit(
+            &mut listening,
+            &feed,
+            &pool,
+            &mut store,
+            &state,
+            310,
+            1310
+        ));
+        assert!(store.feedback_between(0..2000).unwrap().is_empty());
+    }
 }

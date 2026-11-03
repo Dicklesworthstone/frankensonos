@@ -61,6 +61,7 @@ pub(crate) async fn read_pending_playlists<S: Store + ?Sized>(
             session,
             cx,
             read: &mut read,
+            owner: None,
         };
         let (tracks, listed) = reader
             .playlist_tracks(
@@ -90,11 +91,18 @@ impl Reader<'_> {
         now: i64,
         scan: Scan<'_>,
     ) -> (Vec<LibraryItem>, Option<Vec<(String, String)>>) {
-        let Some(me) = self
-            .get::<Me>(&self.session.endpoints().me(), "the user")
-            .await
-        else {
-            return (Vec::new(), None);
+        let me = if let Some(owner) = self.owner {
+            Me {
+                id: owner.to_owned(),
+            }
+        } else {
+            let Some(me) = self
+                .get::<Me>(&self.session.endpoints().me(), "the user")
+                .await
+            else {
+                return (Vec::new(), None);
+            };
+            me
         };
         if me.id.trim().is_empty() || me.id.len() > 1_024 || me.id.chars().any(char::is_control) {
             self.read
@@ -204,6 +212,7 @@ impl Reader<'_> {
             % readable.len();
         readable.rotate_left(start);
         let mut attempted = 0;
+        let mut budget_limited = false;
         for list in &readable {
             if self.read.halted.is_some() {
                 break;
@@ -213,12 +222,16 @@ impl Reader<'_> {
                 continue;
             }
             if attempted == MAX_PLAYLISTS {
-                self.read.failed.push((
-                    "playlist items".into(),
-                    "taste playlist budget reached before every readable playlist was visited"
-                        .into(),
-                ));
-                break;
+                if matches!(scan, Scan::Refresh)
+                    && let Some((items, observation)) =
+                        self.reuse_playlist(store, owner, list, named)
+                {
+                    tracks.extend(items);
+                    observations.push(observation);
+                } else {
+                    budget_limited = true;
+                }
+                continue;
             }
             // Advance before I/O: a failed playlist yields to later IDs even
             // across restarts. Skipped complete/capped lists spend no request.
@@ -254,6 +267,13 @@ impl Reader<'_> {
                 .limited
                 .saturating_sub(usize::from(before == Readiness::Limited))
                 .saturating_add(usize::from(after == Readiness::Limited));
+        }
+        if budget_limited {
+            self.read.failed.push((
+                "playlist items".into(),
+                "taste playlist budget reached before every readable playlist had a complete snapshot"
+                    .into(),
+            ));
         }
         tracks
     }

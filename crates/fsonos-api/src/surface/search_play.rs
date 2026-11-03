@@ -93,7 +93,9 @@ impl Surface {
                         .find(|house| house.player(&player).is_some())
                         .and_then(|house| house.id.as_ref());
                     if current.player.generation != generation
-                        || household.as_ref().is_some_and(|id| Some(id) != current_household)
+                        || household
+                            .as_ref()
+                            .is_some_and(|id| Some(id) != current_household)
                     {
                         return Err(Failure::new(
                             ErrorCode::NotReady,

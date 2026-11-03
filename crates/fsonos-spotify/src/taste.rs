@@ -208,9 +208,27 @@ pub async fn read_taste<S: Store + ?Sized>(
     saved: &[LibraryItem],
     now: i64,
 ) -> (Taste, TasteRead) {
+    read_taste_for_owner(session, cx, store, saved, now, None).await
+}
+
+/// A full sync has already proved its account before reading saved music.
+/// Reuse that identity for playlist admission instead of making an optional
+/// second identity read decide which account's candidates may be retained.
+pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    saved: &[LibraryItem],
+    now: i64,
+    owner: Option<&str>,
+) -> (Taste, TasteRead) {
     let mut taste = Taste::default();
     let mut read = TasteRead {
         missing_scopes: session.missing_taste_scopes(),
+        continuation: PlaylistContinuation {
+            owner: owner.map(str::to_owned),
+            ..PlaylistContinuation::default()
+        },
         ..TasteRead::default()
     };
     let granted =
@@ -225,6 +243,7 @@ pub async fn read_taste<S: Store + ?Sized>(
         session,
         cx,
         read: &mut read,
+        owner,
     };
     // The followed and top artists, for their tracks below.
     let mut artists: Vec<Artist> = Vec::new();
@@ -339,6 +358,8 @@ struct Reader<'a> {
     session: &'a mut Session,
     cx: &'a Cx,
     read: &'a mut TasteRead,
+    /// Required proof from a full sync; standalone/continuation reads verify it.
+    owner: Option<&'a str>,
 }
 
 impl Reader<'_> {

@@ -2,8 +2,8 @@
 //! whose reply was lost; topology is the authority for whether it happened.
 
 use super::{
-    ApplyOptions, HouseholdState, Room, SceneOp, ScenePlan, SceneReport, fade_volumes, leads, run,
-    silence_starting,
+    ApplyOptions, HouseholdState, Room, SceneOp, ScenePlan, SceneReport, fade_players,
+    fade_volumes, leads, run, silence_starting,
 };
 use fsonos_proto::Transport;
 use fsonos_proto::topology::get_zone_group_state;
@@ -21,6 +21,11 @@ pub(super) fn apply<T: Transport + ?Sized>(
     plan: &ScenePlan,
     options: &ApplyOptions<'_>,
 ) -> SceneReport {
+    // Reserve before the first operation: a manual change during grouping,
+    // confirmation or source loading must win over every later volume write.
+    let claimed = options
+        .fade
+        .map_or_default(|(fader, _)| fader.claim(&fade_players(households, plan)));
     let mut live = households.to_vec();
     let mut dependencies = Dependencies::new(households, &plan.ops);
     let mut report = SceneReport {
@@ -85,7 +90,7 @@ pub(super) fn apply<T: Transport + ?Sized>(
     // no speculative regrouping; silence_starting reads the actual layout.
     let ins = options
         .fade
-        .map_or_default(|(fader, _)| silence_starting(t, &live, &ready, fader));
+        .map_or_default(|(fader, _)| silence_starting(t, &live, &ready, fader, &claimed));
     let mut failed_sources = HashSet::new();
     for op in &ready.ops {
         if options.fade.is_some() && matches!(op, SceneOp::Volume { .. }) {
@@ -110,7 +115,7 @@ pub(super) fn apply<T: Transport + ?Sized>(
         }
     }
     if let Some(fade) = options.fade {
-        fade_volumes(t, &live, &ready, &ins, fade, &mut report);
+        fade_volumes(t, &live, &ready, &ins, &claimed, fade, &mut report);
     }
     report
 }

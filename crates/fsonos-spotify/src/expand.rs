@@ -38,8 +38,8 @@ mod recording;
 pub const MISS_RETRY_SECS: i64 = 7 * 86_400;
 
 // Album reads must remain finite even when a server invents new page URLs.
-const MAX_ALBUM_PAGES: usize = 2_000;
-const MAX_ALBUM_ENTRIES: usize = 100_000;
+pub(crate) const MAX_ALBUM_PAGES: usize = 2_000;
+pub(crate) const MAX_ALBUM_ENTRIES: usize = 100_000;
 
 /// What [`complete_works`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -76,11 +76,11 @@ pub struct AlbumMisses {
 }
 
 impl AlbumMisses {
-    fn waiting(&self, album_uri: &str, now: i64) -> bool {
+    pub(crate) fn waiting(&self, album_uri: &str, now: i64) -> bool {
         self.retry_at.get(album_uri).is_some_and(|&at| now < at)
     }
 
-    fn record(&mut self, album_uri: &str, now: i64) {
+    pub(crate) fn record(&mut self, album_uri: &str, now: i64) {
         self.retry_at
             .insert(album_uri.to_owned(), now + MISS_RETRY_SECS);
     }
@@ -327,7 +327,7 @@ pub async fn fetch_album_tracks(
 }
 
 /// One album-page track as an album-track cache row.
-fn album_track(t: &SimplifiedTrack) -> Option<AlbumTrack> {
+pub(crate) fn album_track(t: &SimplifiedTrack) -> Option<AlbumTrack> {
     renderable(&t.uri, t.is_local, t.is_playable).then(|| AlbumTrack {
         disc_number: t.disc_number.max(1),
         track_number: t.track_number,
