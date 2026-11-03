@@ -148,12 +148,12 @@ right channel answers 800 to every queue action.
   slowly; the trigger is the title length at all.
 - Not falsified: deferred work against a stored record. It is the *transport*
   record that stores the metadata, and a 100-byte title is enough.
-- Leading static story (not proven): the deferred pass resolves the transport
-  item (art / playback prep), the fetch fails, and the failure path copies
-  through a buffer that the stored title+blob already overran — the 1100-byte
-  serializer record (title at `obj+3672`, length at `obj+4768`, template copy at
-  `0x1021a41c`) and the 2.1c copy `0x101cc878` → `0x101ccc9c` are the two shapes
-  to read.
+- Leading static story (superseded by "The record write and its bounds"): the
+  deferred pass resolves the transport item (art / playback prep), the fetch
+  fails, and the failure path copies through a buffer that the stored
+  title+blob already overran — the 1100-byte serializer record (title at
+  `obj+3672`, length at `obj+4768`, template copy at `0x1021a41c`) and the 2.1c
+  copy `0x101cc878` → `0x101ccc9c` are the two shapes to read.
 
 ## Pre-auth DoS shape (new)
 
@@ -173,13 +173,95 @@ SOAPACTION: "urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"
 degraded for minutes. 100 bytes of title is enough; the URI must be
 unfetchable.
 
+## The record write and its bounds (2026-11-03, static on 57.23-74170-1-16)
+
+Follow-up demanded by the re-attribution: read the record write itself and the
+fetch-failure branch, and say whether the carrier is controllable. Build
+`bea55150…` (`opt/bin/anacapad`, PPC). Addresses are vaddrs; the file's own
+`st_value`-based PLT stubs are named from `.dynsym`.
+
+**Record shape** (rec = `*(this+23580)` in the deferred pass `0x10224254`):
+
+| offset | field |
+|---|---|
+| `+0` | name, written with `strlcpy(rec, src, 65)` → **64 B cap** (`0x10224c2c`) |
+| `+0x44` | tag word (`0x10224c60`) |
+| `+0x48` | blob, `memcpy(rec+72, src+60, len)` (`0x10224c68`) |
+| `+0x448` | blob length, guarded `0 < len ≤ 1024` **before** the copy (`0x10224c38`–`0x10224c50`) |
+
+The guard does not truncate: `len > 1024` skips the length store **and** the
+copy (`0x10224c4c`), so a metadata blob above 1 KB is dropped from the record
+without a log. The blob field is therefore exactly 1024 bytes and the record
+ends at `+0x44C`.
+
+**The serializer is where the copy is unchecked.** `0x10219848` renders a record
+to its wire text in the shared `.bss` record text at `0x1048D5D0`:
+
+```
+102198d8  stb  0,-10800(11)   ; 'I'
+102198dc  bl   strlen(name)
+102198e8  stb  3,1(30)        ; LENGTH BYTE = (u8)strlen  <-- 8-bit, truncates
+102198f0  lbz  5,1(30)
+102198f4  bl   memcpy         ; memcpy(out+2, name, (u8)strlen)
+10219904  stbx 0,29,30        ; 'P', tag, 'Q', two length bytes
+10219950  add  3,29,30
+10219954  bl   memcpy         ; memcpy(out+len+7, blob, bloblen(rec+0x12A0))
+10219958  lwz  0,1096(31)
+10219960  cmplwi 7,0,1112     ; capacity check AFTER the copy
+10219968  bf   29, …          ; over 1112 only logs (0x102194a0 → line 417)
+```
+
+So there is **no pre-copy capacity check**; the only one runs after both copies
+and merely logs. Worst case of the reachable arithmetic is `255 + 7 + 1024 =
+1286` against an 1112-byte destination — 174 bytes of overrun — but that needs
+the name to exceed 64, which the writer above prevents. With the writer's cap
+the real maximum is `64 + 7 + 1024 = 1095`, i.e. **the 1112 sizing is safe only
+because of a cap enforced at a different call site**. The destination's
+neighbourhood is the same scratch arena: the next object starts at
+`0x1048D9D0` (base `+0x400`) and the serializer itself keeps its log context at
+`0x1048D9D0`/`0x1048DBD8`/`0x1048DA0C`, so an overrun here is silent state
+corruption, not an immediate fault — which is what a 16–195 s deferral looks
+like.
+
+**Fetch-failure branch** (`0x10203254`, `int start(handle, …, const char *host,
+const char *path, …)`): the request and `http://%s%s` are formatted into a
+3072-byte frame buffer (`0x10203440`, `snprintf`), sent via `0x1035f2ac`; the
+first failure logs `Fast start failed: 0x%x: http://%s%s` (`0x1047B79C`). The
+retry path calls the ICY-length probe `0x10203168` (needs ≥ 2 bytes, reads the
+`0xHH` hex length), `0x102030c8` (consumes the pending skip from
+`this+0x8538/+0x853C`), loops while the attempt counter `sp+16` is below
+`sp+4380` (1, raised to 2 on a clean first attempt), then logs
+`Normal start failed too 0x%x: http://%s%s` (`0x1047B938`) and reports through
+vtable `+44`. Everything on that branch is stack-bounded (1025/3072/64), so the
+kill is **not** a stack overflow in the fetch; the record and its state are the
+carrier.
+
+### Controllability (measured, `.84`, 2026-11-03 15:44Z, fetchable host)
+
+The metadata blob is the carrier and it is fully attacker-controlled
+pre-auth: a 10 382-byte `CurrentURIMetaData` is accepted (200) and the read-back
+still carries the head of a 10 000-byte `dc:title`. The **read** side truncates
+hard at 4173 bytes (fixed prefix 274, title cut mid-string with no closing
+tags) for every title ≥ 4000 — a readout cap, not a store cap. Blob length only
+moves the record's own 1 KB guard, not the kill rate (F11).
+
+Also measured: `http://<host>:8903/t.mp3` now answers **404**, and five
+`SetAVTransportURI` shots against it left the daemon alive ≥ 60 s. A 404 with a
+body is not a failure for this path (the stream opens); only connect
+timeout/refusal is.
+
 ## Next
 
 1. Pin the faulting copy: does the pass reach the 1100-byte serializer record
    (`0x1021a41c`) or the 2.1c copy (`0x101cc878` → `0x101ccc9c`)? Instrument the
    fetch-failure branch, not the success branch.
-2. Size/shape sweep: does a 404 on a reachable host also kill? Does a DNS
-   failure? A `x-file-cifs://` transport record?
-3. S2: repeat the transport arm on the One (86.10) — its record layout is its
+   *(partly done: the serializer copy above is `0x10219854`, reached from
+   `0x10219f60`/`0x1021a0fc`; the 2.1c copy is still unread.)*
+2. Read the pass state machine (`0x10224d64` tag dispatch, state bytes at
+   `this+8`/`+16`/`+17`, states 0–8): does a failed start leave the record
+   armed so the next tick re-enters the serializer with a stale length?
+3. Size/shape sweep: does a 404 on a reachable host also kill (open above)? A
+   DNS failure? A `x-file-cifs://` transport record?
+4. S2: repeat the transport arm on the One (86.10) — its record layout is its
    own RE task.
-4. Revisit the queue ordering result only after the transport path is pinned.
+5. Revisit the queue ordering result only after the transport path is pinned.
