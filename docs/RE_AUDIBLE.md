@@ -365,3 +365,33 @@ target fn) followed by `/notify` = controlled PC in the root daemon.
 Device confirmation of the *kill-shape* prediction is already on file
 (bisection: any /notify kills, N-independent). The control-shot needs the
 arena-base leak — queued as the next step.
+
+### 2026-11-04 (SageElm, mgs7) — race attempt + unit-state discovery: the /notify kill is state-gated
+
+Fresh-arena race attempt on `.84` (57.23): shaped-request spam during watchdog
+recovery + `/notify` → **405, alive** (also plain curl: 405 + alive, 3×).
+Same on `.202`: today the 10/10-kill shape (identical GET) answers **405 +
+healthy** — the kill that fired repeatedly on 2026-11-03 does not reproduce.
+
+**The /notify kill is unit-state-gated.** The 405 paths in the handler
+(`li r9,0x195` at 0x1028a64c/0x1028a668) fire before the singleton dispatch
+when a request-object field ([r31+0] compared against 9) or a param
+null-check fails. The kill-day requests were byte-identical — so the state
+delta is on the daemon side (notification-subsystem init state after
+multiple watchdog cycles, or the singleton cell being NULL on today's boot,
+which would skip the vcall and fall to 405).
+
+Consequences for the race:
+- The fresh-arena race (C-kill → shaped spam → /notify) cannot proceed until
+  the kill reproduces — the dispatch itself is what's state-gated.
+- The arena model + shaped-request layout stand (committed,
+  `arena_dispatch_model.py`); the missing inputs are now (a) the arena base
+  AND (b) the state gate that re-arms the dispatch.
+- The state gate is observable via the emulator: run the handler
+  0x1028a5b8 head under Unicorn with today's request and check which 405
+  branch fires — but it needs the parsed-request object shape, which is
+  transport-layer state.
+
+Next session: root-cause the 405 state gate (compare a kill-day /notify vs
+today's on the emulator, or re-arm via GENA subscription — subscribe a
+control point to the unit's UPnP events, then retry /notify).
