@@ -175,3 +175,43 @@ So the dispatch does not gate playback, and no bit-depth value tried reaches a f
   `0xFFFFFFFF` counts are never fully walked); (b) a fragmented file with a real `moof`/`trun`
   (the `bad moof` branch was never reached — the base is non-fragmented); (c) 24/32-bit ALAC
   *payload* with a 16-bit cookie, to hit the decoder rather than the demuxer.
+
+## 8. 57.23 on-device round (GoldMeadow) — the classes on the build that HAS the demuxer
+
+§0's caveat is now addressed: `.84` (Play:5, `57.23-74170`, zone `X`, coordinator) **is** reachable
+when the files are served from `192.168.4.160:8791`, so the esds / ALAC-cookie / stsd-entry classes
+were fired on the firmware that actually contains the mapped walker at `0x101b1000`-`0x101baa60`,
+not just behaviourally on S2.
+
+57.23's REST `upnpAVTransport` returns **empty `parameters`** (only `result`), so TrackDuration and
+transport state have to come from SOAP on `:1400/MediaRenderer/AVTransport/Control`.
+Harness `run_5723_soap.py` (same per-case protocol as §3: Stop, Set, Play, two samples, Stop,
+per-case `:1400/status/VERSION` liveness poll, access-log fetch count). Raw verdicts:
+`verdicts_5723.tsv`.
+
+| case | S2 (§4) | 57.23 |
+|---|---|---|
+| `BASE-base` | parsed/playing | **playing** |
+| `cookie_bitdepth_{20,24,32}` | parsed/playing | parsed |
+| `cookie_bitdepth_zero` | playing-no-clock | playing |
+| `cookie_channels_{zero,ff}` | parsed | playing |
+| `cookie_frame_length_{zero,max}` | playing | playing |
+| `cookie_size_{zero,ones}` | playing | playing |
+| `cookie_truncated_24` | parsed | parsed |
+| `esds_{minimal,length_zero,length_ffff,deep_nesting,tag_only}` | parsed | parsed |
+| `stsd_entry_size_{zero,ones}` | playing / parsed | playing / parsed |
+| `stsd_entry_count_ffff` | rejected | rejected |
+| `stsd_entry_count_zero` | playing | **rejected** |
+
+Result: **no memory-safety failure, no daemon restart, no hang** (21/21 fetched, `alive=200` on
+every case, `BATCH_END 200`, transport restored). The weak-acceptance boundary from §5 reproduces
+unchanged on the real demuxer: entry size 0 / `0xFFFFFFFF`, frame length 0 / `0xFFFFFFFF`, channel
+0 / `0xFF`, bit depth 0 and truncated cookies are all handed to the codec instead of being
+rejected at parse time.
+
+One **stricter** delta and it is the interesting one: `stsd_entry_count_zero` (entry count 0 with
+one entry present) is accepted and played by 86.10 but **rejected** by 57.23 — the S2 rewrite
+dropped a count cross-check the S1 walker still has. Everything else is identical acceptance.
+
+Still not reached, unchanged from §7: the `bad moof` branch (needs a real fragmented file) and the
+`stsz`/`stsc`/`stco` arithmetic against a `mdat` large enough to actually walk `0xFFFFFFFF` counts.

@@ -1,0 +1,23 @@
+ts	case	set_http	play_http	states	durs	rel	fetched	alive	verdict
+21:23:35	BASE-base	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:01/0:00:04	2	200	playing
+21:23:44	cookie_bitdepth_20	200	200	STO21:25:56	cookie_bitdepth_24	None	000	0	200	/	/	/	47	200	rejected
+4	cookie_bitdepth_24	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:24:02	cookie_bitdepth_32	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:24:09	cookie_bitdepth_zero	200	200	TRANSITIONING/PLAYING	0:00:10/0:00:10	0:00:00/0:00:01	2	200	playing
+21:24:16	cookie_channels_ff	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:01/0:00:04	2	200	playing
+21:24:23	cookie_channels_zero	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:01/0:00:04	2	200	playing
+21:24:30	cookie_frame_length_max	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:01/0:00:04	2	200	playing
+21:24:37	cookie_frame_length_zero	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:01/0:00:04	2	200	playing
+21:24:45	cookie_size_ones	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:01/0:00:04	2	200	playing
+21:24:53	cookie_size_zero	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:01/0:00:04	2	200	playing
+21:25:00	cookie_truncated_24	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:25:08	esds_deep_nesting	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:25:15	esds_length_ffff	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:25:22	esds_length_zero	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:25:30	esds_minimal	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:25:36	esds_tag_only	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:25:52	stsd_entry_count_ffff	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:26:07	stsd_entry_count_zero	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:26:16	stsd_entry_size_ones	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:26:23	stsd_entry_size_zero	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:02/0:00:04	2	200	playing
+21:26:25	BATCH_END	-	-	-	-	-	200	-
