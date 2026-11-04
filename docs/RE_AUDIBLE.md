@@ -435,3 +435,37 @@ strcpy needs the node built to a terminating state (real session seeding).
 4. the next state-change notify (`0x101e3aa0` ← `0x101e3d60` ← the +12
    notifier at 0x101060b8) loads the poisoned pointer and bctrls through
    the fake vtable → PC control, r3 = fake object, root context.
+
+### 2026-11-04 (SageElm, mgs7 re-arm) — guard trace result: 0x101152f8 is a RESUMABLE parse; the strcpy needs caller-driven r22
+
+Guard-set trace executed (`recon/tnzm_audible/guard_trace.py`, STRCPY_REACH.aa):
+
+- **(a) 0x10115478 does NOT execute** in the single-invocation emulation.
+- **(b)** n/a — the call is never reached.
+- **(c) First diverging guard: `0x1011546C`** — `cmpwi cr4,r22,0; beq cr4,0x1011564C`
+  takes the branch because **r22 == 0** at the first invocation (raw encoding
+  verified: `2e160000 419201e0` — beq, not bne; CalmHawk's condition 4
+  "r22 == 0 (always)" is correct for the first iteration but the strcpy path
+  requires **r22 != 0**).
+- Conditions 2 (r28 == 0) and 3 ([r26] == 0) are satisfied at every guard;
+  condition 1 (flag8880) is written to 1 pre-loop (0x10115404, write traced)
+  and read back 0 at the guards — the value lives in the caller-restored
+  frame too.
+
+**The state machine decoded:** `0x101152f8` is a **resumable parse**. The
+`r22 == 0` path at 0x1011564C decrements the counter (+30028), runs one node
+op, restores all callee-saved regs from the frame (r22 from [r1+19816]) and
+**returns to the caller** — which re-invokes 0x101152f8 for the next entry.
+The `r22 != 0` values that gate the unchecked strcpy come from a **prior
+invocation's register save** (caller-driven resumption loop), not from wire
+bytes in a single request. The 0x101156B0 FAR path ([r26] != 0) loops back
+to the guards via `bne 0x10115464` after a stream check (0x100a5578).
+
+**Consequence for the RCE:** the overflow primitive needs the caller's
+resumption loop to drive 0x101152f8 to an invocation where the saved r22 != 0
+AND the node string is the attacker payload. The caller is the audible
+session setup loop (0x10116454 `bl 0x101152f8` seen inside 0x10116440's
+frame, which then resets +6380/+7405/+16626/+17651 byte-flags). Mapping that
+caller loop's iteration count and r22 lifecycle is the remaining step — the
+wire-format requirements (node string ≥ 23,632 B with the fake observer cell
+at offset 23,620) are unchanged and now have their exact preconditions.
