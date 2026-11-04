@@ -539,3 +539,54 @@ Device sweep on .135 with the 24KB payload + observer cell: types 9-15 all
 SetAV=200, NO crash (files S2TYPE_{9..15}_24000.aa). Combined with the 1-8 sweep:
 the ENTIRE S2 type space 1-15 is swept — no single-entry type triggers the
 unchecked copy. The gate is parse state (resumption), matching the PPC finding.
+
+## 2026-11-04 (SwiftMarsh) — the +28012 chain decoded: timestamps, not strings; the real file sink is +24024
+
+Answering the re-arm: full chain for `0x101037a0/b0/b4 → 0x10103244`, and the sinks.
+
+**1. `0x101037a0/b0/b4` are init lines, and the fields are not strings.** In the ctor
+`0x1010379c`-`0x101037d4` the values are `li r26,0` / `li r27,0` (`0x101036f0`/`0x101036f8`), i.e.
+three 4-byte slots at `+0x6d6c`, `+0x6d74`, `+0x6d78` zeroed, with 1-byte presence flags at
+`+0x6d70`/`+0x6d71` (and a 2-byte `sth` at `+0x6d6a`). The second setup site
+`0x10103b98`-`0x10103bd4` re-zeroes the same set.
+
+**2. They are `time_t` timestamps.** Writer `0x10106cd8`-`0x10106cf8`: `bl time`, `stw r3,
+0x6d6c(r31)`, adds a duration, stores again, then sets the flags (`stb 1,0x6d70/0x6d71`).
+
+**3. `0x10103244` is an elapsed-time formatter.** `0x101031dc` turns `(later - earlier)` into
+hours/min/sec bytes (magic-divide by 3600/60, `stb` into the out buffer); `0x10103244` wraps it in
+an ostringstream (`0x103535bc`), extracts the string (`0x10353704`) and assigns it (`0x10389168`).
+49 callers, all inside `0x10105xxx`-`0x1011axxx`, and they immediately append literals such as
+`Event (%s - %s)`. **The +28012 trio therefore feeds log text only.**
+
+**4. The module has no other sink.** Scanning `0x10103000`-`0x10126000` for calls to the PLT
+stubs: `fopen`/`fopen64`/`open`/`opendir`/`system`/`execve`/`connect`/`socket`/`send`/`recv` — all
+absent. The only four sinks are `unlink` (`0x1010b378`, `0x1010baa4`, `0x1010bbd0`, `0x1010f978`).
+
+**5. The file sink that *is* in the overflow range is `+24024` (`0x5dd8`).** Two of the `unlink`
+sites build the path from it:
+
+```
+1010ba90  lwz   r5, 0x5dd8(r28)      ; attacker-reachable directory string
+1010ba9c  bl    sprintf              ; "%s/%s" (0x1043de24-formatted family), r6 = obj+0x37b4
+1010baa4  bl    unlink
+```
+
+and the same shape at `0x1010f954`-`0x1010f978`. `+0x5dd8` is a heap `char*` built by the setter
+`0x10007c08`-`0x10007c4c` (`snprintf "%s/<name>"` from the format family at `0x1043de24`
+`%s/shadow2`, `0x1043de3c` `%s/localsettings.txt`, `0x1043de40` `%s/settings`), and the setter
+does `lwz r3,0x5dd8; bl free; strdup; stw` (`0x10007c3c`-`0x10007c4c`).
+
+Consequences of overwriting `+24024`:
+* `unlink("<attacker dword>/<name>")` as root — **file deletion, daemon-initiated**;
+* the next setter call does `free(<attacker dword>)` — **free of an attacker-controlled pointer**.
+
+**Reachability without another request:** `0x1010f86c` (containing the second unlink) has exactly
+one caller, `0x100c522c`, inside the message dispatcher (`r30` = the stream object) right after a
+completion log — so it runs on message/stream teardown by the daemon itself. `0x1010b998`
+(containing the first) has **no** direct caller, i.e. it is a vtable method, likewise
+daemon-invoked.
+
+**Correction to the map line:** `+28012/28020/28024` are "timestamps + presence flags consumed by
+a log formatter", not "strings read into URL/log assembly". The root-delivery sink inside the
+overflow range is `+24024` (`0x5dd8`) via `unlink`/`free`, not `+28012`.
