@@ -1,0 +1,20 @@
+ts	case	set_http	play_http	states	durs	rel	fetched	alive	verdict
+21:28:04	BASE-poc2	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:28:19	drop_mfhd	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:28:34	drop_mfra	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:28:50	drop_traf	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:29:04	drop_trun	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:29:19	frag_base	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:29:34	frag_mdat_first	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	3	200	rejected
+21:29:49	moof_size_ones	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	4	200	rejected
+21:30:04	moof_size_seven	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:30:19	moof_size_zero	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	4	200	rejected
+21:30:34	moof_type_bad	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	3	200	rejected
+21:30:40	stco_offset_past_eof	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	5	200	parsed
+21:30:47	stsz_count_max_bigmdat	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:30:53	stsz_size_max_bigmdat	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:31:08	trun_data_offset_max	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:31:23	trun_data_offset_zero	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:31:38	trun_sample_count_max	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:31:53	trun_sample_count_zero	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:31:54	BATCH_END	-	-	-	-	-	200	-

@@ -1,0 +1,4 @@
+ts	case	set_http	play_http	states	durs	rel	fetched	alive	verdict
+21:32:11	BASE-m4a_poc	200	200	PLAYING/PLAYING	0:00:10/0:00:10	0:00:01/0:00:04	2	200	playing
+21:32:28	frag3	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	6	200	rejected
+21:32:30	BATCH_END	-	-	-	-	-	200	-

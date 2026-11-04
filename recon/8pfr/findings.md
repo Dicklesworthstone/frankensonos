@@ -215,3 +215,25 @@ dropped a count cross-check the S1 walker still has. Everything else is identica
 
 Still not reached, unchanged from §7: the `bad moof` branch (needs a real fragmented file) and the
 `stsz`/`stsc`/`stco` arithmetic against a `mdat` large enough to actually walk `0xFFFFFFFF` counts.
+
+## 9. The two leftover levers, closed out (GoldMeadow)
+
+**(b) fragmented file / `bad moof` branch.** A fragmented base was built with
+`-movflags frag_keyframe+empty_moov` and a 10 s multi-`moof` one with
+`+default_base_moof -frag_duration 1000000`, then the `moof` structure was mutated (size 0 / 7 /
+`0xFFFFFFFF`, box type `mOof`, `traf` dropped, `trun` dropped, `mfhd` dropped, `mfra` dropped,
+`mdat` moved in front of `moof`). All 18 cases were **rejected** — including the two unmodified
+fragmented bases — with `alive=200` throughout and no hang. `ffprobe` accepts both of those bases,
+so this is a *capability* gap, not corruption handling: 57.23 (and 86.10, cross-checked with the
+multi-`moof` file: TRANSITIONING → STOPPED, RelTime 0) refuse fragmented MP4 outright. The
+`bad moof` branch is therefore reached and is strictly rejecting; it is not a crash surface with
+these shapes.
+
+**(a) sample-table arithmetic past EOF.** With `mdat` padded by 1 MiB, `stsz sample_count =
+0xFFFFFFFF`, `stsz sample_size = 0xFFFFFFFF` and an `stco` chunk offset beyond the end of the
+file: all three are **accepted/parsed** (no crash), and `stco_offset_past_eof` drew 5 fetches —
+the walker really did index outward. Combined with §5, the arithmetic is the strong part of this
+walker; only the `stsd`/cookie *validation* is loose.
+
+State after both rounds: transport restored, daemon healthy, no restart, no hang, no
+memory-safety failure across 39 more cases (21 + 18) on the build that owns the demuxer.
