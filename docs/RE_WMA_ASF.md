@@ -135,3 +135,49 @@ bounds checks hold on these shapes.
    base64 ASF blob lands in the same walker.
 4. Local-file (`x-file-cifs`) WMA via the music library share — the same parsers, a
    second delivery channel that does not need our HTTP server.
+
+## Round 2 (2026-11-04, DarkForest, omp_4)
+
+Delivery notes confirmed live: `SetAVTransportURI` must go to the **group coordinator**
+(`RINCON_000E5852906E` @ 192.168.5.164) — sending to the stereo-pair member `.202`
+yields UPnP 402/1023 regardless of payload; and `mms://` URIs fetch only after an
+explicit `Play` (Set alone does not connect).
+
+### Header-extension walker identified
+
+`FUN_101fd2e0` runs on the **header-extension object** (`5FBF03B5…`, memcmp
+`DAT_1047b200` in `FUN_102008d0`): body = reserved u16 + datasize u32 + sub-objects,
+each sub-object = GUID + u64 size + body; `remaining` (u32) decremented by each
+sub-object size — the wrap target.
+
+| PoC | shape | verdict |
+|---|---|---|
+| poc_I1_he_wrap | header-ext sub-object with u64 size `0xFFFF…FFF0` (wrap) | fetched, STOPPED, up |
+| poc_I2_he_over | datasize claims 1 sub-object, 3 present | fetched, STOPPED, up |
+| poc_J1/J2/J3 | min-packet-size 0x40 / 0x4000 / 0x800 + scramble u24 `0xFFFFFF`/`0x400000` (the `FUN_101fdbe8` windowed-read layout control) | fetched, STOPPED, up — probe reached, no fault |
+| rtsp variants A/B/C | DESCRIBE → SDP with `a=pgmpu` base64 ASF header (orders: control-before/after `b=AS`, `b=AS` first) | DESCRIBE reaches the device (`WMPlayer/11.0.5721.5145` UA), SDP body delivered with exact Content-Length; **no SETUP ever sent, connection held open** — the device blocks after DESCRIBE |
+
+Round-2 denominator: 5 new ASF PoCs + 3 RTSP SDP variants, all STOPPED/up, zero crashes.
+
+### RTSP static findings (for the next attempt)
+
+- `FUN_101d65fc` sends `DESCRIBE %s RTSP/1.0` CSeq 1; `FUN_101d610c` = connect+send+
+  `FUN_101d55f0` (read-loop with 10 s timeout), header callbacks table `0x1047688c`
+  = {`FUN_101d52b4` (Content-Length → `+0x4c58`), `FUN_101d5350` (`rtspSetupResp`:
+  Session/timeout)}.
+- `readResponseHeaders` requires the status line to `strncmp` `RTSP/1.0 200` (404 is
+  special-cased to `0x80000024`), terminates on the first empty line.
+- `processSDPResponse` (`FUN_101d58a8`) consumes exactly **Content-Length** bytes
+  (`+0x4c58` quota) and requires all three flags: `a=control:rtsp://` (iVar12),
+  the `a=control:` data capture **after a `b=AS:` line** (iVar11, gated on
+  `uVar9 < uVar10` where `uVar10` = 0x40 set by `b=AS`), and the `a=pgmpu:…base64,`
+  line at exactly char 0x35 followed by streamed base64 (iVar15). Order
+  `m=audio 0 RTP/AVP 96` → `b=AS:` → `a=control:rtsp://…` → `a=pgmpu…` is the
+  parser-accepted shape; all three orders were tried live.
+- The post-DESCRIBE stall (no SETUP, connection held) reproduced across 5 SDP shapes
+  and with/without body padding and SHUT_WR. Next lever: the SETUP sender is
+  `FUN_101d68a8` (called from `FUN_10201580` at 0x10201ba4/0x10201c7c and from
+  `FUN_101bbfd4`) — read what precondition gates it (likely the parse verdict or a
+  field the SDP parser must fill: control URL at `+0x811`, `b=AS` bitrate at
+  `+0x40`-ish). Device-side logs (`rtspSetupResp`, `processSDPResponse: didn't see
+  %d/%d/%d`) are devmode-gated on 57.23 — same oracle wall as the token lane.
