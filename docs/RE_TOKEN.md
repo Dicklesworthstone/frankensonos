@@ -596,3 +596,24 @@ after `GET /status/JFFSRoot//jffs` (200): `VERSION`, `./VERSION`, `../VERSION`, 
 Consequence for the devmode/log oracle: the `/jffs`-rooted reader is not a route to
 `/opt/log/player/muse_token_inspector` or `/tmp/memorylog/log.N` today — it returns nothing at all,
 so the disambiguation of the `iss` compare target still needs devmode or the MIPS-guest emulator.
+
+## 2026-11-04 (h) · inspector under Unicorn: harness state
+
+`captures/research/inspector_emu.py` drives `0x6021e4` with stub providers (ctx slot 12/16/24 →
+hooked stubs at `0x21000000`, a synthetic 232-byte policy with a present `systemId`, and a
+72-byte header object whose `+8` vector holds one sentinel string) and hooks `0x602400` to print
+both compare operands, which is the open `x5c[0]`-vs-claim question.
+
+Progress past the previously recorded blockers:
+- `.MIPS.stubs` (`0x6643f0`–`0x664910`) is patched `jr ra; nop` and registered by dynsym name, so
+  `hhid_emu`'s PLT servicing resolves them (that was the first dead end, now gone).
+- `0x800000`–`0x900000` is mapped with `li v0,0; jr ra; nop` so any direct non-PLT call into a
+  runtime libc address (e.g. the `jal 0x863118` at `0x55835a`) returns instead of fetching
+  unmapped.
+
+Current stopping point, for whoever picks it up: execution now dies earlier than the inspector's
+first virtual call (no stub call is ever logged) with an unaligned read in the C++ runtime path
+around `0x55835c`, entered from `0x5570c0`; `a0 = 0x432b2b00`, `a2 = 0x51bc88` (a `.text`
+address) at the fault, i.e. a struct in the `__cxa_*` region is being walked with values our fake
+objects do not supply. Next: make the getter at `0x601ffc` succeed first (it takes `policy+7`, so
+the fake policy's `+4`/`+7` optional layout is what to model), and only then widen to the compare.
