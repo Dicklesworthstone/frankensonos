@@ -508,3 +508,14 @@ recovery 0.2s** — distinct signature from C's >2min unit loss. Two kill
 classes in one format, both pre-auth, both from the 8-PoC set. The C/F
 distinction (unit-loss vs daemon-restart) is itself a locator: different
 fault sites in the activation vs TOC parse paths.
+
+## Update 2026-11-04 (c) — Audible kill MECHANISM bisected and anchored
+
+6b4f9928 (SageElm): one-field bisection on .84 proves the kill signature =
+**valid-offset + length-overshoot-EOF read** (unclamped overshoot). Every
+variant removing the overshoot → clean. Kill window 13.9–36.2s, fast
+recovery. SOAP verdict is binary (accepted or not); the ERROR_AUDIBLE_* codes
+are async-only. Parse site anchored to the chain
+`0x10123f84 → 0x10118ad8 → 0x10130a24`. The remaining step to
+corruption-to-control: the overshoot read's DESTINATION and the neighboring
+allocation it lands in — i.e. how many attacker bytes land where.
