@@ -529,3 +529,13 @@ frame, which then resets +6380/+7405/+16626/+17651 byte-flags). Mapping that
 caller loop's iteration count and r22 lifecycle is the remaining step — the
 wire-format requirements (node string ≥ 23,632 B with the fake observer cell
 at offset 23,620) are unchanged and now have their exact preconditions.
+
+### S2/MIPS type-switch located + extended sweep (2026-11-04)
+
+S2 TOC type-switch found at 0x59c060-0x59c100 (binary base 0x400000): compares
+r9 against constants 3,6,8,9,10,11,13,14,15 — the S2 parser supports MORE types
+than the .aa spec's 1-3. Stride advances: type 13 → r22=r4+2; type 14 → r22=r4+9.
+Device sweep on .135 with the 24KB payload + observer cell: types 9-15 all
+SetAV=200, NO crash (files S2TYPE_{9..15}_24000.aa). Combined with the 1-8 sweep:
+the ENTIRE S2 type space 1-15 is swept — no single-entry type triggers the
+unchecked copy. The gate is parse state (resumption), matching the PPC finding.
