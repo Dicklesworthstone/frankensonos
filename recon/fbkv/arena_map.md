@@ -166,3 +166,48 @@ not an ASCII-derived one, provided the request shape reaches a stride-4 field at
    at offset 0 — then `vt+0x2c` needs one readable dword.
 3. Device: one shot with the shaped predecessor request + the /notify trigger, plus a
    faulting-instruction capture to read `fn` per trial (SageElm's half).
+
+## 5. The two numbers the crafting sequence needs
+
+### 5.1 Bytes consumed per request-path allocation
+
+`0x10222314` rounds the size **before** it touches the bump:
+
+```
+1022231c  addi  r4, r4, 7
+10222324  rlwinm r4, r4, 0, 0, 0x1c        ; r4 = (size + 7) & ~7
+...
+102223d8  lwz   r11, 0x204c(r3)            ; per-arena allocation counter
+102223e0  cmplwi cr7, r11, 7   -> abort "too many" above 7   (so at most 8 allocations)
+10222338  cmplw cr7, r4, r10               ; r10 = ctx+0x2048 - bump (remaining)
+1022233c  ble   fits
+1022241c  add   r9, r8, r4                 ; bump += r4
+10222424  stw   r9, 0x2048(r3)
+```
+
+so the current record consumes exactly
+
+`((L + 0x27 + 7) & ~7)` bytes, where `L` is the received record length — 0x28 (40 B) for `L = 0`,
+0x30 for `L = 2`, 0x40 for `L = 17`, and so on; every 8 non-aligned size costs up to 7 bytes of
+slack and the bump never re-aligns.
+
+**Asymmetry that matters:** the singleton is *not* allocated through this function — it goes
+through `0x10222778`, whose rounding differs (sizes below 8 are **not** rounded: `andi. r4,7`
+skips, and `r9 = size & ~7` skips the `+8`). The 1-byte singleton therefore consumes exactly
+**1** byte and leaves the bump at `base+5369`, which is why field 1 of the next block lands
+3 bytes before the 8-byte boundary.
+
+### 5.2 What puts a pointer at `base+5369`
+
+The block at `base+5369` is the *current request's record*, and offset 0 is descriptor field 1
+(§3a) — the indirect slot. The pointer is emitted by the marshaller from the request object's
+field 1 and the parse path validates it against the buffer end (`cmpw r7, r29` at `0x1022bc00`,
+fault text at `0x1022bc0c`):
+
+* field 1 empty / absent -> the slot stays 0 -> `vt = 0` -> `fn = *(0x2c)`, fixed unmapped read;
+* field 1 present -> the slot holds the array address, which the **daemon** chooses, so `vt` is
+  not directly choosable; our control is over the bytes *at* `vt + 0x2c`.
+
+=> The shape requirement is therefore: a record whose field-1 array is non-empty and reaches
+offset `44 + 4` (record length >= 48), with a **stride-4** element at 44 so the four bytes are a
+chosen 32-bit value (§3d). Then `fn` is our number.
