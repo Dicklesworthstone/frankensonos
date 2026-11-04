@@ -230,3 +230,19 @@ points at the /notify handler's object, not at a command string. To get
 system("our command"), we need the object's first bytes to be our command.
 The session object layout determines where the overflow bytes land relative
 to the object start.
+
+## RESTART LOOP CONFIRMED (2026-11-04, CalmHawk): the overflow corrupts persistent state
+
+The GOT overflow exploit on .135 caused the daemon to enter a **sustained
+restart loop**: SWGen flip-flopping 1→2→1→2 every 0.2-4 seconds for over 90
+seconds. The stored transport record (from SetAVTransportURI with the overflow
+.aa) re-triggers the audible parse on every daemon boot, causing the overflow
+to fire again — a self-sustaining crash loop.
+
+**This is the exploitation chain WORKING**: the overflow corrupts state that
+persists across daemon restarts. The next step is to replace the crash payload
+with a persistence payload: instead of crashing, make the overflow write
+Configure.dev to /jffs/system/ during the brief up-window.
+
+The unit can be recovered by: (1) sending a Stop + SetAVTransportURI with a
+valid URI to clear the poisoned transport record, or (2) a power cycle.
