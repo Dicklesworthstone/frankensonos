@@ -478,3 +478,20 @@ The loader call (0x101e3b1c) passes r6 = r1+0x5590 (21904-byte stack buffer) as 
 CRUX REDUCED TO ONE INTEGER: the session-object address. Everything else is
 attacker bytes at fixed offsets. The handoff's "+6100/slot 8/26" layout is
 OBSOLETE — use this one.
+
+## Static .data chain scan: ZERO (measurement correction, 2026-11-04)
+
+LOAD2 (0x1053c600): filesz 0x9618 (initialized .data ends 0x10545C18);
+memsz 0x1118cc — everything past that is BSS, runtime-populated.
+system@GOT 0x105464B0 and execve@GOT 0x10546420 are in the BSS range —
+their "static" file bytes are NOT the runtime values (the handoff's
+"RWE data segment at 0x1053c600 with 10+ vtable chains" claim was measured
+against BSS-as-file bytes: a measurement artifact). Zero static 3-deref
+chains exist in initialized .data.
+
+CONSEQUENCES:
+- All vtables/GOT values are RUNTIME-CONSTRUCTED. Static pointer-chain scans
+  on the file image are meaningless past 0x10545C18.
+- The one-integer crux (session heap address) now also implies GOT values
+  (system@plt resolution) must come from runtime observation (emu with the
+  real loader, or a device leak), not from the file image.
