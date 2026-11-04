@@ -481,3 +481,22 @@ Plus the standing lanes: 9sd transport-record kill (re-attributed,
 reproduced), f4k aging (systrim-ratchet mechanism identified), xnf
 (systemId claim + REST harness), q57 (blocked on router DHCP flip — owner
 decision), fbkv (/notify arena map).
+
+## Update 2026-11-04 — AUDIBLE ACTIVATION-MISMATCH WEDGE (strongest media-payload result)
+
+SageElm (tnzm, 5946955a): the Audible lane's static map (dispatcher
+`0x10123f84` → handler `0x10118ad8`, ~105KB stack frame, error table
+`0x10543600` codes 25/26/27/29) + 8-class PoC generator produced the
+campaign's strongest device signal:
+
+**PoC C (activation mismatch): ACCEPT → daemon down, unit off-air >2 min
+(no :1400, no ping)** — a wedge/reboot far beyond the watchdog's 2–25s
+window. H/D/A/B verdicts: ACCEPT + healthy (parse layers survived). E/F/G
+queued when the unit returned.
+
+This is the first media-payload PoC class that wedges the whole unit, not
+just the daemon. Next: (1) reproduce C with the 200ms oracle to time
+wedge-vs-reboot; (2) locate the activation-parse site (branch oracle: 1023
+vs ERROR_AUDIBLE_* codes; candidates = the three session string fields
++17928/+19488/+21048); (3) second-unit confirmation on .86's coordinator.
+All artifacts: recon/tnzm_audible/ (8 PoCs + make_pocs.py).
