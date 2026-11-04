@@ -1749,3 +1749,49 @@ may need the reply buffer to cross the mmap threshold (one parameter change in `
 cheaper than the warmer. Recommended order: (1) `--pad 131072..196608` sweep at the 2-byte
 margin; (2) fndelta 65536..80000 sweep; (3) only if both fail, the hours-scale warmer
 (coordinated with CalmHawk — mail sent 2026-11-03).
+### 2026-11-04 (LilacKnoll): mmap-threshold predictions TESTED — both disprove the simple form; one new deterministic abort signature
+
+Follow-up to the 2026-11-03 allocation-lifetime analysis. Ran the two single-session levers on
+.86 (86.10-81100, SWGen 2 throughout, harness `recon/f4k_pad_sweep.py` + a new `--rpad` mode in
+`recon/smb4149/nc0drop.py` that pads the READ reply *buffer* — SPL-declared, so it sizes the
+client's variable-part recv malloc — with wire-confirmed `READ rpad: real=N padded=M` lines).
+
+**Environment lesson first:** the Mac's LAN IP moved overnight (192.168.4.46 → 192.168.4.200);
+every shot during the stale-IP window returned `404:9.4s` with **zero SMB contact** (no
+NEGOTIATE in the server log). That 404-at-9.4-s-with-no-dial signature = the device cannot reach
+the declared source host, distinct from art-cache marking (which shows NEGOTIATE then stops).
+Runner now takes `F4K_HOST` env.
+
+| lever | sizes tried | result |
+|---|---|---|
+| QINFO pad > 128 KiB (`--pad 131072/147456/163840/196608`) | declared 130974–196510, wire-confirmed | **repeatable 404 @ 15.2 s**: NEGOTIATE → QINFO(130974) fires → chain dies before the second-stage CREATE/READ; daemon survives (SWGen 2, instant recovery) |
+| READ rpad > 128 KiB (`--rpad 131072/196608`) | recv buffer mmap'd | **200 at ~30 s, full chain, no fault** |
+| fndelta 65536/70000/75000/80000 (walk 131–160 KB, > 128 KiB trim threshold) | declared 131082–160020 | **200, full chain, no fault** (75000 404'd once, 200 on repeat) |
+| 6-concurrent 140 KB walks | 7 QINFO rounds, ~840 KB of walk allocations | all 200, no fault |
+
+**Interpretation.** The naive form of the mmap-threshold prediction is wrong on this build:
+(1) an mmap'd READ receive buffer does not put its guard page in the QINFO walk's path (the
+walk reads past its *own* sbrk buffer, and the mmap region is a separate mapping — the walk
+would have to reach it through the heap, which it does not); (2) walks of 131–160 KB past the
+64 KiB reply buffer survive because the sbrk break keeps ≥ ~160 KB of slack above the newest
+allocation (glibc extends by request + TOP_PAD dynamics), so a single large walk cannot
+outrun the mapping. The walk also stops at the first NUL halfword — inside the 'A'-padded
+region there are none, so full-distance walks really happened (wire-confirmed declared lengths).
+
+**New primitive (side effect):** `--pad ≥ 131072` is a *deterministic chain-abort*: the first
+QINFO round completes, every later stage of that connection is dropped, 404 at ~15.2 s, no
+restart, repeatable across fresh ports/names. Distinct signature from the 9.4 s pin (which
+reaches READ) and from unreachable-host 404s (no NEGOTIATE at all). The 128 KiB boundary
+exactly matches the glibc mmap threshold — the likely mechanism is the utf8 name malloc
+(`str = malloc(utf8_len)`, ~65 KB for 130974 declared units) landing in a fresh mmap'd region
+whose subsequent free/unmap poisons the client's session state, or an allocation-failure path
+inside the decode. Worth one follow-up: bisect the exact pad boundary (pad 65536..131072 in
+16 KiB steps) to confirm the threshold is at 128 KiB and not at the name-buffer size.
+
+**Where the hours model stands:** the trim-ratchet explanation survives — single walks can't
+outrun the slack; only the *statistical* alignment of walk-buffer-at-top with a ≥ walk-distance
+slack deficit wedges, which needs the accumulate-and-trim cycles of the hours-scale warmer
+(CalmHawk coordination stands). The levers tested here narrow the warmer's useful shape: pin
+cycles must interleave *different* allocation sizes (64 KiB reply + walk allocations of varying
+length) so that a trim actually cuts the slack under a live walk buffer; uniform-size cycles
+keep the top self-similar and never wedge (matches TurquoiseForest's flat 24-cycle ladder).
