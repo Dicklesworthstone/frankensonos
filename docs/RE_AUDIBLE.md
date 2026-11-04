@@ -458,3 +458,23 @@ parse 0x101152f8 with our .aa as input, tracing whether 0x10115478 executes.
 - 0x10103244 consumer: 49 callers — a log/trace helper, not a root sink. The
   +28012 strings feed logging, not fetch/exec. The root-delivery sink question
   shifts to: what the state-change loader path does (0x101e3b1c/0x101e3ebc context).
+
+## Dispatcher chain CORRECTED (2026-11-04, full decode)
+
+0x102bf778 (dispatcher): saves r3-r7; calls 0x10403b38 (lock, arg=[r1+16] local);
+calls 0x102bdedc(r3=object). 0x102bdedc: returns 0 if [obj+6404]==0 else [[obj+6404]+8].
+Back in dispatcher: r9 = that return; vtable=[r9]; FN=[vtable+28] (slot 7, NOT +0x2c);
+FN(r3 = [ [obj+6404]+8 ], r4..r7 = notify context). ALSO a second dispatcher at
+0x102bf81c (same shape, stmw r30).
+
+CORRECTED PC-CONTROL LAYOUT (3 derefs):
+  A = [obj+6404]  (24 bytes past the +6380 strcpy dst)
+  B = [A+8]
+  FN = [B+28]
+  call FN(r3=B, r4..r7=notify ctx)
+With FN=system: system(B) — B must be the ADDRESS OF THE COMMAND STRING.
+The loader call (0x101e3b1c) passes r6 = r1+0x5590 (21904-byte stack buffer) as ctx.
+
+CRUX REDUCED TO ONE INTEGER: the session-object address. Everything else is
+attacker bytes at fixed offsets. The handoff's "+6100/slot 8/26" layout is
+OBSOLETE — use this one.
