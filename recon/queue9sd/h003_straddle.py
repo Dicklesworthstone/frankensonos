@@ -83,12 +83,21 @@ def swgen(host):
     return int(m.group(1)) if m else None
 
 
+def play(host):
+    soap(host, "Play", "<InstanceID>0</InstanceID><Speed>1</Speed>")
+
+
 def main(argv):
     host, uri, blob = argv[1], argv[2], int(argv[3])
     watch = int(argv[4]) if len(argv) > 4 else 210
     base = swgen(host)
     size, status = set_record(host, uri, blob)
     print("blob=%d didl=%d set=%s swgen0=%s" % (blob, size, status, base))
+    if "--play" in argv:
+        import time as _t
+        _t.sleep(0.5)
+        play(host)
+        print("played")
     t0 = time.time()
     deaths = 0
     while time.time() - t0 < watch:
