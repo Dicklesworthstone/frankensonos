@@ -258,3 +258,56 @@ IO (`recon/tnzm_audible/parse_drive.py`):
   (a valid first entry so the recursive parse terminates) — the harness,
   hooks and instrumentation for that run are all in place in
   `parse_drive.py`.
+
+## 2026-11-04 (SageElm, mgs7) — session map past +21748; observer cell = the PC-control candidate; reach-PoC falsifies naive far-write
+
+### Field map (audible session, verified via accessor cross-refs)
+
+| offset | content | accessors |
+|---|---|---|
+| +12 | notifier object ptr — vcall `[ [sess+12]+12 ]` on every state change | 0x101060b8, 0x1011a050 |
+| +6380 | URI string (1025 B) → strlcpy'd to +16626 | 0x10104e5c |
+| +7405 | source string (4097 B) → strlcpy'd to +17651 | 0x10104e5c |
+| +17651 | **content buffer (4097 B) — overflow start**; cap ends +21748 | 0x10104e5c |
+| +21748 | state flag (`== 1` checks) | 0x10118b58, 0x1011a000 |
+| +21752..25815 | no direct-imm accesses (pointer-reached data) | — |
+| +25816..25860 | 10-field block (0x1010dcb4-e30) — sibling object, not audible | — |
+| +28012/28020/28024 | strings stored at stream-start, read into URL/log assembly | 0x101037a0/b0/b4 → 0x10103244 |
+| +28016 | byte flag | 0x1011a91c |
+| +29476/+29584/+29605/+29734 | state fields | 0x10105474/0x10118bc0/0x10105478/0x101037d0 |
+| +29992/+29996 | byte flag / `0x7FFFFFFF` limit constant | 0x101037d4/0x101037c8 |
+| **+30000** | **observer cell {+0: handler pointer (ctor 0x101e394c), +4: generation, +8: changed bool}** | ctor 0x101e394c; loader **0x101e3a44** `lwz r3,0(r3)`; consumer **0x102bf778** |
+| +30012/30013/30014/30020/30024/30028/30032 | state-machine scalars / parse counter | 0x10104ebc ff., 0x1011537c |
+
+### The PC-control chain (mgs7's function pointer)
+
+`[session+30000]` is the **observer/handler pointer**:
+
+```
+0x101e3a44:  lwz  r3,0(r3)        ; load observer ptr from the cell
+             bl   0x102bf778      ; pass as OBJECT
+0x102bf778:  ... r9 = [obj+6100] / derived handlers ...
+0x102bf890:  lwz  r9,0(r9)        ; vtable
+             lwz  r9,0x20(r9)     ; slot 8
+             mtctr ; bctrl        ← PC control, r3 = fake object
+0x102bf914:  lwz  r9,0x68(r9)     ; slot 26; bctrl          ← second vcall
+```
+
+Overflow reach: from +17651 with TOC-supplied length L (bisection-proven
+untrusted), **L ≈ 12349** lands on +30000..+3000B — and the overflow bytes
+themselves can be the fake object + fake vtable (attacker-controlled pointer
+pointing back into the same overflow = self-contained fake-object setup).
+
+### Reach-PoC result (falsifies the naive far-write)
+
+`M_reach_30000.aa` (activation entry, length 12400, marker pattern with
+`0xBAADC0DE` at the computed +30000 landing): **ACCEPT, no down, daemon
+healthy**. A large TOC length alone does **not** linearly overwrite the
+session — the length-driven reads are chunked (128 B) into the parse-frame
+buffer, and the session write is the capped strlcpy. The C/F kill mechanism
+is therefore the **short-read/long-expect mismatch** (bisection-proven), not
+a far linear overwrite. Reaching +30000 needs an entry type whose handler
+writes length-driven into the session (the per-type handlers
+`0x10105xxx`/`0x10106xxx` — next mapping step), or a cap-bypass shape.
+
+Device stress: one `SetAVTransportURI` shot; unit healthy after.
