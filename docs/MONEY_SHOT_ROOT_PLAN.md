@@ -274,3 +274,36 @@ The chain: overflow → corrupt in-memory URL → root fetcher downloads our roo
 Configure.dev executed at next boot → telnetd/dropbear → ROOT SHELL.
 
 The swarm is mapping the session struct to find the corruptible URL/path field.
+
+## State of knowledge (2026-11-04 end-of-session) — CORRECTED CHAIN
+
+### Proven on device
+- Pre-auth delivery: crafted .aa via SetAVTransportURI (musicTrack MIME + DIDL REQUIRED;
+  bare SOAP = 500; audible MIME = 714 except .135). Content sniffs to the audible parser.
+- 24KB payload accepted (SetAV=200) on .84 (PPC) and .135 (MIPS).
+- One 8.0s kill observed on .135 (not reproduced since — device state saturates;
+  all subsequent shots: SetAV=200 + no crash, even byte-exact replays + fresh URLs
+  + C-kill resets).
+
+### Decoded static (PPC 57.23 anacapad)
+- Guard algebra at 0x10115440-84: strcpy(session+6380, [r1+19776]) at 0x10115478
+  gated by [r1+8880]!=0 (prev iteration r21), r28==0 (read-loop return), [r26]==0,
+  r22!=0. r22==0 on every standard entry (+34 zeroes it) → the gate is the
+  RESUMPTION state machine (0x101152f8 is resumable; caller loop 0x10116454
+  re-invokes per TOC entry; epilogue 0x10115680 reloads r22 from [r1+19816]).
+- Dispatcher chain (CORRECTS the old +6100/slots 8/26 model):
+  A=[obj+6404] → B=[A+8] → FN=[B+28] → FN(r3=B, r4..r7=notify ctx).
+  A = overflow byte 24. Loader call passes r6 = 21904B stack ctx.
+- Observer ctor 0x101e394c writes {handler from [r28+6352], gen, changed} → +30000
+  at session setup (2 callers). Overflow overwrites +30000 AFTER setup; loader
+  fires on the next state change. Chain coherent.
+- .data/BSS: initialized .data ends 0x10545C18. system@GOT/execve@GOT/vtables are
+  BSS (runtime-constructed). Static chain scans past that are invalid.
+
+### The two remaining unknowns (both with a concrete experiment in flight)
+1. The r22 resume-token mechanism (hypothesis: node buffer r1+8896 overlaps frame
+   slot [r1+19816] at node offset 10920 → a ≥10,921B node value plants the token).
+   SageElm emu test in flight (two-entry .aa: 11KB token planter + 24KB payload).
+2. The session heap address (one integer) — needed to aim A/B at attacker bytes
+   for system(B). Oracle: SageElm's arena allocation model (proven control=YES)
+   cross-checked by device differential shots.
