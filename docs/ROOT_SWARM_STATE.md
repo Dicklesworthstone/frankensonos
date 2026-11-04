@@ -623,3 +623,18 @@ of the attacker's data.
 
 The descriptor entry #1 (flags 0x0205 = indirect + array) tells the parser to follow
 the wire pointer. The stride-4 element at position 11 = a chosen 32-bit value for fn.
+
+## 2026-11-04 orchestrator session (heap-sweep + branch decode)
+
+- Parallel heap sweep across 5 units falsified: SetAV=500 on bare SOAP (DIDL required);
+  audible MIME 714 on all but .135; musicTrack + .aa content sniffs correctly.
+- Type sweep (all 8 TOC types × 24000B, byte-exact proven layout): NO crash on any.
+  Entry-type byte does NOT gate the unchecked strcpy.
+- 0x10115478 branch algebra DECODED by hand (ppc_decode_10115478.py): strcpy gated by
+  cross-iteration state — flag[r1+8880] = previous iteration's r21; read-loop return
+  r28==0; byte[r26]==0. The 0x400-capped path and the far-target path are the alternatives.
+- Emu harness diagnosis: handler entry 0x10118ad8 spins in the transport buffer-level
+  wait (0x10408c00 region) — 3.7M insns without reaching the container parse.
+  Session-4 infra drives it further; decode sent to SageElm with the 4 exact conditions.
+- Root path unchanged: overflow → corrupt in-memory URL/state → root fetcher → rootfs.
+  The decisive unknown is now purely: which parse state combination reaches 0x10115478.
