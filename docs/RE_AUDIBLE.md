@@ -197,3 +197,31 @@ that returns success, and drive `0x10104360`'s probe chain + the subsequent
 TOC/activation parse against a fake stream object whose vtable slots are
 Python-served reads from POC (0x55000000). That bypasses the transport
 construction entirely and lands the overshoot-read destination address.
+
+### Emulation session 3 — bypass-open run + two load-bearing findings
+
+With `--bypass-open` (transport classifier `0x102b263c` → `li r3,1`, open
+`0x10104df0` → `li r3,1`) the handler `0x10118ad8` runs to **clean return:
+16,283 PLT calls**. Read-region instrumentation shows zero reads from the
+PoC page and zero from heap — the stream-consume phase never runs: it lives
+downstream in the session state machine (`0x1011d2e8` family), gated on a
+real opened-stream object, not reachable by stubbing the open alone.
+
+**Finding 1 — no magic gate in the Sonos audible path.** `D_trunc_magic.aa`
+(3-byte magic) was ACCEPTED on-device, and the demuxer probe chain
+(`0x10104360`) contains HTTP-header sniffers (`strncmp
+"nos-Playback-Id"`), i.e. the Sonos audible probe does **not** require the
+ffmpeg `57 90 75 36` magic. TOC entries are parsed from the stream without a
+magic precondition — which is why every TOC-shaped PoC was accepted.
+
+**Finding 2 — overshoot destination (device-logic + emulation-logic).** The
+overshoot bytes land in the **demuxer input buffer** allocated by the
+accepted-open path (heap), not at a fixed .bss address: the parse reads
+TOC-driven ranges from the stream object into that buffer, and the
+overshoot read consumes the buffer tail + neighboring heap. The exact
+buffer address is per-boot; the *mechanism* (TOC length trusted over actual
+stream bytes, valid-offset + overshoot-length read) is the bisection-proven
+signature. Byte-exact destination requires the fake-stream harness step:
+build a stream object whose vtable read/seek slots serve PoC bytes, then
+`0x10104df0`'s real code runs and the demuxer buffer + overshoot
+destination become observable in the Unicorn map.
