@@ -139,3 +139,26 @@ per-element callback through `blrl` (0x1022be14) — a second jump primitive.
 - Remaining steps: (1) craft a request whose descriptor places a stride-4
   element at position 11, (2) set the element value to a useful address
   (system() @ PLT, or a ROP gadget), (3) device shot to confirm
+
+## BREAKTHROUGH 2 (2026-11-04, SageElm 897dde4c): the PC-control chain is COMPLETE
+
+The audible session map found the exploitation target:
+- **session+30000 = observer cell {handler ptr, generation, changed bool}**
+- Loaded by `0x101e3a44` (`lwz r3,0(r3)`), passed to `0x102bf778` as an object
+- `0x102bf778` does **TWO VCALLS** (slot 8 at +0x20, slot 26 at +0x68) via `mtctr/bctrl`
+- **Overflow from +17651 with TOC-supplied length ≈ 12349 reaches +30000**
+- The overflow bytes themselves can be the fake object + fake vtable (self-contained — the pointer points back into the same overflow)
+- The call passes **r3 = session+30000 = the overflow content** — if the first bytes are a command string, the called function gets it as its argument
+
+**The complete root RCE chain:**
+crafted .aa file → SetAVTransportURI pre-auth → TOC length 12349 →
+overflow fills +17651..+30000+ with attacker bytes → fake vtable at a
+known overflow offset → observer ptr = fake vtable → bctrl = **root code
+execution with attacker-controlled r3**
+
+**Binary is non-PIE (Type: EXEC) — all addresses are fixed.**
+
+**What's left:** craft the PoC .aa with the fake vtable at the right overflow
+offset, put the target function at [fake_vt+0x20], fire on device. The
+activation-mismatch PoC (C) already proves the reach — the payload shaping
+is the last step.
