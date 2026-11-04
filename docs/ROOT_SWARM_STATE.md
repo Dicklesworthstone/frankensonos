@@ -519,3 +519,22 @@ are async-only. Parse site anchored to the chain
 `0x10123f84 → 0x10118ad8 → 0x10130a24`. The remaining step to
 corruption-to-control: the overshoot read's DESTINATION and the neighboring
 allocation it lands in — i.e. how many attacker bytes land where.
+
+## Update 2026-11-03 late — legacy lanes round 1 verdicts
+
+- **MP3/mpg123** (GoldMeadow, 2e75167e → docs/RE_MP3.md): version pinned
+  1.32.0–1.32.7 (CVE-2024-10573 Frankenstein resync window); the fault
+  **reproduces under ASan on a locally built 1.32.7** and is clean on 1.32.8
+  — but the device's anacapad consumer **does not reach the bug** (never
+  scans/seeks, Frankenstein handling appears disabled in its feed config).
+  Honest: known upstream bug present in the shipped lib, unreachable via the
+  device's call pattern.
+- **WMA/ASF/MMS** (DarkForest, 803e761f → docs/RE_WMA_ASF.md): the full stack
+  mapped — `sonos.com-mms`/`mms://`/HTTP all funnel to the same client
+  (FUN_102008d0); ASF header/payload parse mapped. Fuzzing next.
+- **MP4/ALAC** (SwiftMarsh, eb6d9747): box-name literal table found
+  (0x104734e0, 8-byte stride); 42 ISO-BMFF PoCs fired — device verdicts
+  exercise the S2 implementation (behavioural). PoC set + verdicts in
+  recon/8pfr/.
+- **Audible** (SageElm): mechanism bisected (unclamped overshoot reads,
+  6b4f9928); destination analysis in progress (0x10130c58→0x10130a24 chain).
