@@ -500,3 +500,11 @@ wedge-vs-reboot; (2) locate the activation-parse site (branch oracle: 1023
 vs ERROR_AUDIBLE_* codes; candidates = the three session string fields
 +17928/+19488/+21048); (3) second-unit confirmation on .86's coordinator.
 All artifacts: recon/tnzm_audible/ (8 PoCs + make_pocs.py).
+
+## Update 2026-11-04 (b) — SECOND Audible kill class: F TOC-self-overlap
+
+bbf448ac: **F TOC self-overlap = ACCEPT → daemon down at 20.1s, watchdog
+recovery 0.2s** — distinct signature from C's >2min unit loss. Two kill
+classes in one format, both pre-auth, both from the 8-PoC set. The C/F
+distinction (unit-loss vs daemon-restart) is itself a locator: different
+fault sites in the activation vs TOC parse paths.
