@@ -560,3 +560,22 @@ Both allocators share the bump pointer: the request record from
 `0x1021edb8` (socket request loop) is what lands at the singleton's
 `vt`/`vt[0x2c]` offsets. The descriptor entry #1 (flags 0x0205, indirect +
 array) writes a pointer at record offset 0 — that pointer IS `vt`.
+
+## Update 2026-11-04 (d) — Audible emulation session 3: bypass-open + two load-bearing findings
+
+fdf5bc07 (SageElm): with `--bypass-open` the handler runs to **clean return
+(16,283 PLT calls)**. Three findings:
+1. **No magic gate** — the Sonos audible probe does NOT require the ffmpeg
+   `57 90 75 36` magic; TOC entries parse from the stream without it. This
+   is why every TOC-shaped PoC was accepted.
+2. **Overshoot destination = demuxer input buffer** (heap, per-boot address)
+   — the TOC length is trusted over actual stream bytes; the overshoot read
+   consumes buffer tail + neighboring heap. NOT a fixed .bss address.
+3. **Next: fake-stream harness** — build a stream object whose read/seek
+   vtable slots serve PoC bytes, then the demuxer buffer + overshoot
+   destination become byte-observable in the Unicorn map.
+
+Combined with the device differential (18.3→1.8→6.1s shaping proof) and the
+emulation proof of controlled fn, the Audible lane is the closest to a
+complete root chain: trigger (proven) + mechanism (proven) + destination
+(mapped, byte-exact pending) + control (proven in emulation).

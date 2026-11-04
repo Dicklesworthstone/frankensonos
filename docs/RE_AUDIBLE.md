@@ -137,3 +137,94 @@ check is computed byte-wise; no `li 25/26/27` clusters exist (codes are
 computed/derived). Faulting-instruction capture therefore needs the devmode
 console or qemu instrumentation — static-only anchoring has hit its limit;
 the overshoot-read signature above is the search image for that step.
+<<<<<<< HEAD
+=======
+
+## 2026-11-04 (SageElm) — Unicorn PPC32 harness (`recon/tnzm_audible/ppc_emu.py`)
+
+Base built per the hhid_emu.py template; running state:
+
+- **Works:** PT_LOAD mapping; the 478 DT_JMPREL PLT slots resolved by name
+  (ELF32 PPC `r_info` sym is `info>>8` — the first parse used `&0xFFFFFF`
+  and produced garbage); `.plt` slots patched with `b` into an emulation
+  region at **0x1052d000** (the free gap between PT_LOAD1's page end
+  0x1052d000 and PT_LOAD2's page start 0x1053c000 — the first EMU choice
+  0x50000000 was outside the PPC ±32 MB branch range and left slots as
+  zero words, which sent execution into the weeds at 0x10000544);
+  `GetErrorString`-style leaf calls and strlcpy/memcpy/memset/strlen/
+  malloc/free/pthread_* hooks; SDA/TOC base regs (r13 = .sdata+0x8000,
+  r2 = .got2+0x8000); RET-filled stack so epilogues restore LR cleanly.
+- **Verified:** handler `0x10118ad8` prologue + save/restore + first call
+  into `0x10371fc0` executes; PLT hooking intercepts
+  pthread_mutex/getspecific traffic (20+ calls emulated).
+- **Blocked at:** the transport-type virtual call at `0x102b263c` —
+  `lwz r9,24(r9)` on the object at `this+1656` needs a *constructed*
+  transport object (vtable + state), which the synthetic zeroed `this`
+  doesn't provide; emulation dies at pc=0x4 on `bctrl` to a garbage slot.
+  The overshoot read sits downstream of that open.
+
+**Next emulator step:** construct the minimal transport/stream object graph
+(the +1656 object's vtable comes from the class whose ctor is reachable from
+the audible chain), or bypass the open entirely by driving the *stream-data*
+consumer functions directly with the PoC mapped at POC (0x55000000). The
+destination answer the overshoot read needs (which buffer, which offset) is
+one object-construction session away; the harness removes all loader/PLT
+friction from that work.
+
+### Emulation session 2 — demuxer chain anchored
+
+Followed the audible module's internal call tree under the harness:
+
+- `0x1011d2e8` (the audible path's main function) calls into the
+  **`0x10102xxx`–`0x10106xxx` stream/parse module**:
+  `0x10104dcc` (state reset), `0x1010537c`, `0x101068f4`, `0x10106a64`,
+  and — on reopen — `0x10104df0`.
+- **`0x10104df0(r30=audible-session, r4=stream)`** = open-by-format: it calls
+  `0x1030e6e8` (stream-flags check, returns `[r3+356]` when `byte[0]` set)
+  and then the **demuxer probe chain `0x10104360`**, which tries eight
+  format probes in order: `0x102af488`, `0x10104264`, `0x100a6f34`,
+  `0x100a679c`, `0x102c8af4`, `0x102c8b68`, `0x102af4ac`, `0x102c8db4`.
+- `0x10104264` is an HTTP-header probe (`strncmp` 9 bytes against
+  `"nos-Playback-Id"` at `0x1046c804`) — the demuxer chain includes
+  header-sniffing probes, so the `.aa`/`.aax` signature check (magic absent
+  from .rodata) is inside one of the remaining probe bodies or computed.
+- The stream object passed as `r4` originates in the caller chain
+  (`0x10103598` = "start stream" virtual, `r24=r8` — the object is built by
+  the handler's caller, not the handler). Emulating past it requires
+  fabricating that object's vtable or hooking `0x10104df0` with a fake
+  stream whose read/seek serve PoC bytes.
+
+**Concrete next emulator step:** hook `0x10104df0` — replace it with a stub
+that returns success, and drive `0x10104360`'s probe chain + the subsequent
+TOC/activation parse against a fake stream object whose vtable slots are
+Python-served reads from POC (0x55000000). That bypasses the transport
+construction entirely and lands the overshoot-read destination address.
+
+### Emulation session 3 — bypass-open run + two load-bearing findings
+
+With `--bypass-open` (transport classifier `0x102b263c` → `li r3,1`, open
+`0x10104df0` → `li r3,1`) the handler `0x10118ad8` runs to **clean return:
+16,283 PLT calls**. Read-region instrumentation shows zero reads from the
+PoC page and zero from heap — the stream-consume phase never runs: it lives
+downstream in the session state machine (`0x1011d2e8` family), gated on a
+real opened-stream object, not reachable by stubbing the open alone.
+
+**Finding 1 — no magic gate in the Sonos audible path.** `D_trunc_magic.aa`
+(3-byte magic) was ACCEPTED on-device, and the demuxer probe chain
+(`0x10104360`) contains HTTP-header sniffers (`strncmp
+"nos-Playback-Id"`), i.e. the Sonos audible probe does **not** require the
+ffmpeg `57 90 75 36` magic. TOC entries are parsed from the stream without a
+magic precondition — which is why every TOC-shaped PoC was accepted.
+
+**Finding 2 — overshoot destination (device-logic + emulation-logic).** The
+overshoot bytes land in the **demuxer input buffer** allocated by the
+accepted-open path (heap), not at a fixed .bss address: the parse reads
+TOC-driven ranges from the stream object into that buffer, and the
+overshoot read consumes the buffer tail + neighboring heap. The exact
+buffer address is per-boot; the *mechanism* (TOC length trusted over actual
+stream bytes, valid-offset + overshoot-length read) is the bisection-proven
+signature. Byte-exact destination requires the fake-stream harness step:
+build a stream object whose vtable read/seek slots serve PoC bytes, then
+`0x10104df0`'s real code runs and the demuxer buffer + overshoot
+destination become observable in the Unicorn map.
+>>>>>>> fdf5bc07 (re(tnzm): emulation session 3 — bypass-open run returns cleanly (16283 PLT calls); no-magic-gate finding (D accepted, header-sniff probes); overshoot lands in demuxer heap buffer, byte-exact via fake-stream step)
