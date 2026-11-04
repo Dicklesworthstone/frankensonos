@@ -400,3 +400,18 @@ Next session: root-cause the 405 state gate (compare a kill-day /notify vs
 today's on the emulator, or re-arm via GENA subscription — subscribe a
 control point to the unit's UPnP events, then retry /notify).
 >>>>>>> 43e19d61 (re(mgs7): race attempt + discovery — /notify kill is unit-state-gated (405+alive today on both 57.23 units; kill-day shape byte-identical); fresh-arena race blocked until the state gate is root-caused)
+
+## Type-sweep falsifications (2026-11-04, device .135)
+
+- Bare SOAP (no CurrentURIMetaData) → SetAV=500: audible parser never runs. DIDL is REQUIRED.
+- .aa data offset: TOC says 0x25=37 but proven ROOT_RCE_OVERFLOW.aa packs data at 36
+  (codec "acelp" ends at 36, activation begins immediately). Byte-exact copy of the
+  proven file re-fires clean: SetAV=200, no crash, SWGen stays 2.
+- All 8 TOC type bytes (1-8) with 24000B activation: SetAV=200, NO crash, SWGen=2 stable.
+  The entry-type byte alone does NOT gate the 0x10115478 strcpy path on a state-saturated device.
+- C-kill state reset + fresh fire of the exact proven file: SetAV=200, no crash.
+  The original 8.0s kill did NOT reproduce on fresh daemon → the crash variable is
+  NOT (device state) and NOT (type byte). Remaining variable: pre-traffic arena shaping
+  at fire time, or the crash was the deferring Play-against-half-init'd-session path.
+- CONSEQUENCE: brute-force device shots are saturated. The 0x10115478 reach conditions
+  (r28≠0, r22=0, [r26]=0) must come from register-exact emulation (mgs7 task), not sweeps.

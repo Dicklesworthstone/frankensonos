@@ -246,3 +246,31 @@ Configure.dev to /jffs/system/ during the brief up-window.
 
 The unit can be recovered by: (1) sending a Stop + SetAVTransportURI with a
 valid URI to clear the poisoned transport record, or (2) a power cycle.
+
+## UNIT RECOVERED (2026-11-04): the restart loop was broken via Stop + valid SetAVTransportURI
+
+The poisoned transport record was cleared by sending Stop (200) + SetAVTransportURI
+with a valid .aa during an up-window. SWGen stabilized at 2. The unit is healthy.
+
+**The restart loop is itself evidence of the exploitation chain working:**
+the overflow corrupts session state that persists across daemon restarts,
+causing the audible parser to re-trigger the overflow on every boot. This
+persistence mechanism is exactly what we need for the root chain — replace
+the crash payload with a Configure.dev write payload and the unit roots
+itself on the next boot.
+
+## THE ROOT PATH (2026-11-04): overflow → corrupt in-memory URL → root fetcher → rootfs
+
+The overflow gives us 24000 bytes of controlled data written to session+6380..+30380.
+The session struct contains URL fields, path fields, and state that the daemon uses
+for subsequent operations. If ANY of those fields is used as a URL for the update
+fetcher, or as a path for a file write, we corrupt it and redirect the operation
+to our server.
+
+The update fetcher runs as root and downloads .upd files. The pwned-q57.upd
+(with Configure.dev = telnetd + dropbear + unlock) is ALREADY BUILT.
+
+The chain: overflow → corrupt in-memory URL → root fetcher downloads our rootfs →
+Configure.dev executed at next boot → telnetd/dropbear → ROOT SHELL.
+
+The swarm is mapping the session struct to find the corruptible URL/path field.
