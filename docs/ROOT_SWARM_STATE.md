@@ -638,3 +638,19 @@ the wire pointer. The stride-4 element at position 11 = a chosen 32-bit value fo
   Session-4 infra drives it further; decode sent to SageElm with the 4 exact conditions.
 - Root path unchanged: overflow → corrupt in-memory URL/state → root fetcher → rootfs.
   The decisive unknown is now purely: which parse state combination reaches 0x10115478.
+
+### Correction set (later 2026-11-04)
+
+- Dispatcher 0x102bf778 FULLY DECODED: resolver 0x102bdedc = `if [obj+6404]==0 return 0
+  else return [[obj+6404]+8]`; FN = [vtable+28] (slot 7); FN(r3=[[obj+6404]+8], r4..r7).
+  The old "+6100/slots 8/26" layout is obsolete. A=[obj+6404] is overflow byte 24.
+- .data/BSS correction: initialized .data ends 0x10545C18; system@GOT (0x105464B0)
+  and all vtables are RUNTIME-CONSTRUCTED (BSS). Static chain scans past that are
+  invalid; the earlier "10+ static vtable chains" claim was a BSS-as-file artifact.
+- Observer setup decoded: both session-type ctors (0x101037d8/0x10103bd4) write
+  {handler_from_[r28+6352], gen, changed} to +30000 via 0x101e394c. Overflow lands
+  AFTER setup, loader fires on later state change: chain coherent.
+- 0x10103244 (the +28012 URL consumer) = log/trace helper, 49 callers. Not a root sink.
+- All device shots today state-saturated: SetAV=200 + no crash even for byte-exact
+  copies of previously-crashing files + fresh URLs + C-kill resets. The emu/model
+  is the only live oracle for (a) the strcpy gate conditions, (b) the session address.
