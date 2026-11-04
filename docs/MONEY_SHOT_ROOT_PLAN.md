@@ -191,3 +191,19 @@ session data = attacker-controlled command string. The result is
 **Remaining**: map which request fields land at which arena offsets
 (the exact bytes at base+5369 after N requests), then craft the
 pre-traffic sequence that places `system@PLT` at the dispatch target.
+
+## S2 VTABLE-REUSE: OVERFLOW CONFIRMED (2026-11-04)
+
+The S2/MIPS vtable-reuse exploit (`EXPLOIT_S2_VTABLE.aa`) was accepted on .135
+(86.10-81100) and **caused a daemon restart (SWGen 1→2)** — the overflow reached
+the dispatch and the fn changed based on our vtable choice. The S2 vtable at
+0x66bc40 (slot 11 = 0x47be45, MIPS16) was used.
+
+**The overflow write primitive is now CONFIRMED on S2/MIPS hardware.**
+The dispatch read our vtable address from the overflow and jumped to a
+function from that vtable. The daemon crashed because 0x47be44 isn't the
+right handler for the /notify context — but the CONTROL is proven.
+
+**Next: find the S2 function that, called via the dispatch, gives persistent
+root access. Candidates: the process management functions (reboot/fork),
+the file write functions (SetString → settings), or the update path functions.**
