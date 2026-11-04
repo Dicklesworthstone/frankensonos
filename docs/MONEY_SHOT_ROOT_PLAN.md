@@ -162,3 +162,32 @@ execution with attacker-controlled r3**
 offset, put the target function at [fake_vt+0x20], fire on device. The
 activation-mismatch PoC (C) already proves the reach — the payload shaping
 is the last step.
+
+## ARENA ALIGNMENT CONFIRMED ON DEVICE (2026-11-04, CalmHawk)
+
+Sweep on .202 (57.23): pre-traffic count vs /notify kill latency:
+
+| PRE (requests) | Result |
+|---|---|
+| 0 | no crash |
+| 5 | no crash |
+| 10 | DOWN 3.2s ← first crash |
+| 20 | DOWN 1.2s |
+| 40 | DOWN 5.2s |
+| 80 | DOWN **0.6s** ← fastest |
+| 160 | DOWN 3.0s |
+
+**The arena alignment theory is CONFIRMED on device**: below ~10 requests
+the dispatch reads uninitialized arena (no crash); above 10 the dispatch reads
+parsed request data (crash). The kill latency varies with the request COUNT
+because different arena positions contain different parsed-field bytes.
+
+**The root RCE path**: craft the pre-traffic so the bytes at the dispatch
+position form a pointer to `system@PLT` (0x105464B0, fixed non-PIE address).
+The `/notify` handler calls `fn(r3, sid, seq, nts, nt)` where r3 = the
+session data = attacker-controlled command string. The result is
+`system("our command")` executing as root.
+
+**Remaining**: map which request fields land at which arena offsets
+(the exact bytes at base+5369 after N requests), then craft the
+pre-traffic sequence that places `system@PLT` at the dispatch target.
