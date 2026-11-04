@@ -1,0 +1,5 @@
+ts	case	set_http	play_http	states	durs	rel	fetched	alive	verdict
+21:33:51	BASE-poc2	200	200	STOPPED/STOPPED	0:00:00/0:00:00	0:00:00/0:00:00	2	200	rejected
+21:33:59	alac24_payload_16cookie	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:34:07	alac24_payload_24cookie	200	200	STOPPED/STOPPED	0:00:10/0:00:10	0:00:00/0:00:00	3	200	parsed
+21:34:08	BATCH_END	-	-	-	-	-	200	-

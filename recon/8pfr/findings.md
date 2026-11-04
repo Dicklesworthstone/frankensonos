@@ -237,3 +237,19 @@ walker; only the `stsd`/cookie *validation* is loose.
 
 State after both rounds: transport restored, daemon healthy, no restart, no hang, no
 memory-safety failure across 39 more cases (21 + 18) on the build that owns the demuxer.
+
+## 10. Lever (c): 24-bit payload under a 16-bit cookie
+
+`alac24_payload_16cookie` is a faststart 24-bit ALAC encode (`-sample_fmt s32p`, ffprobe
+`bits_per_raw_sample=24`, identical box offsets to the base) with the cookie's bitDepth byte at
+`0x1f6` rewritten to `0x10`; the unpatched 24-bit file is the control. Both **parse** (duration
+0:00:10) and both sit at RelTime 0 — the mismatch changes nothing, because the unit refuses 24-bit
+ALAC at *decode*, not at parse. §6's "16bit only" is therefore enforced by the decoder, while the
+cookie is only read for metadata (and never validated against the payload's real depth).
+
+So the bit-depth lever is flat: no value or mismatch reaches a fault, and 24-bit content does not
+play even when the cookie agrees.
+
+Final state on the demuxer-owning build: 41 cases, no memory-safety failure, no restart, no hang.
+The walker's size/box/arithmetic handling is solid; its validation is loose exactly where §5 says
+(`stsd` entry fields, ALAC cookie field ranges) and those loose values are all tolerated downstream.
