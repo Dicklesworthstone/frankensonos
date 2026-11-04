@@ -457,3 +457,27 @@ From the 57.23 anacapad binary (format registry, all pre-auth reachable):
 The dead-modern-codec verdicts (FLAC/Vorbis clean; Vorbis not even delivered
 by hls-radio) redirect all codec-lane effort HERE. The transport-record
 carrier (metadata + unfetchable URI, F10) remains the parallel lane.
+
+## Update 2026-11-03 (h) — LEGACY FORMATS campaign launched (user directive)
+
+Four new beads filed and dispatched, ranked in
+`docs/LEGACY_FORMAT_ATTACK_RANKING.md` (researched: reference decoders, live
+bug analogues, delivery vehicles):
+
+- **frankensonos-8pfr (P0)** MP4/ALAC hand-rolled demuxer → SwiftMarsh (%7).
+  8 corrupt-file bounds messages = the branch map; ALAC bit-depth dispatch.
+  Reference: ffmpeg mov.c/alac.c; live family CVE-2025-55640/48/52/64.
+- **frankensonos-w78i (P0)** MP3/mpg123 → GoldMeadow (%8). **Version bracketed
+  1.32.0–1.32.7** — inside the 1.32.8 Frankenstein-resync fix window
+  (oss-security 2024-10-30). If confirmed, a known patched-upstream bug is
+  live in the device.
+- **frankensonos-63c6 (P1)** WMA/ASF + MMS → DarkForest (%9, alongside q57).
+  In-binary ASF parser + MMS client (sonos.com-mms scheme); live analogue
+  CVE-2026-19389.
+- **frankensonos-tnzm (P1)** Audible .aa/.aax → SageElm (%11, alongside fbkv).
+  TOC-of-offsets container + DRM gate chain; reference ffmpeg aadec.c.
+
+Plus the standing lanes: 9sd transport-record kill (re-attributed,
+reproduced), f4k aging (systrim-ratchet mechanism identified), xnf
+(systemId claim + REST harness), q57 (blocked on router DHCP flip — owner
+decision), fbkv (/notify arena map).
