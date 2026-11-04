@@ -119,3 +119,23 @@ devmode-console crash dump).
 the emulation proves control is possible, the device shot confirms
 reachability. The last 20% is the faulting-instruction address — which
 tells us if fn landed in .text (code exec) or unmapped (crash only).
+
+## BREAKTHROUGH (2026-11-04, SwiftMarsh 43d518d1): the /notify primitive is a CONTROLLED 32-BIT JUMP
+
+The element store width is **descriptor-driven**: stride 4 → `lwz`/`stw` (32-bit),
+stride 8 → 64-bit pair, else 1-byte. The value comes from the **parse buffer**,
+not from wire text. `vt + 0x2c` is 44 bytes into the element array = **element 11
+in a stride-4 layout**.
+
+**`fn` can be an arbitrary 32-bit value we choose** — the primitive is a
+controllable jump, not an ASCII-derived one, provided the request shape reaches
+a stride-4 field at that position. The element loop then calls an optional
+per-element callback through `blrl` (0x1022be14) — a second jump primitive.
+
+**What this means for the root chain:**
+- Attacker controls: a 32-bit jump target (`fn`) + four attacker strings in
+  r4-r7 (sid, seq, nts, nt) at call time
+- Target process: anacapad, running as root, pre-auth on :1400
+- Remaining steps: (1) craft a request whose descriptor places a stride-4
+  element at position 11, (2) set the element value to a useful address
+  (system() @ PLT, or a ROP gadget), (3) device shot to confirm

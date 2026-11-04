@@ -99,10 +99,38 @@ pointer as `vt`. That re-frames the shaping question: it is not "put text at off
 "which pointer does the parser write at offset 0 for a /notify-shaped record, and is its `+0x2c`
 readable".
 
+## 3d. Element width is descriptor-driven — binary slots exist, and they are the landing
+
+The element store picks the width from the **descriptor stride** `lhz r9, 6(desc)` (`0x1022bda8`):
+
+```
+1022bdb4  cmpwi r9, 4   -> lwz r0,4(r15); stw r0,0(r27)   ; 32-bit element
+1022bdc8  cmpwi r9, 8   -> stw r30,0(r27); stw r31,4(r27) ; 64-bit element
+1022bddc  cmpwi r9, 2   -> sth
+1022bdf0  (else)        -> stb                            ; 1-byte element
+```
+
+with the value taken from the parse buffer (`r15`), not from the wire text. A stride-4 element is
+therefore a **binary 32-bit slot the request controls** (type-2 elements are sign-extended
+integers, `0x1022bd4c`), and the element loop then calls an optional per-element callback through
+`blrl` (`0x1022be14`).
+
+`vt + 0x2c` is 44 bytes into the element array. With a stride-4 element layout that is element 11,
+so **`fn` can be an arbitrary 32-bit value we choose** — i.e. the primitive is a controllable jump,
+not an ASCII-derived one, provided the request shape reaches a stride-4 field at that position.
+
 ## 4. Open, handed over
 
+<<<<<<< HEAD
 1. Which parser writes the `+0x1a0` host's offset-0 field (entry #1, flags 0x0205) on the /notify
    path, and what pointer lands there — the record walker at `0x1022c484` only marshals it.
+=======
+1. Which parser writes record field 1 (entry #1, the `0x0205` indirect slot) on the /notify path —
+   the setters are the *getter/setter* table for the request struct at `session+0xb48`.
+2. Which element occupies array offset `0x2c` for each request shape, and whether it is a
+   stride-4 (32-bit) element — §3d shows the width is descriptor-driven, so the answer decides
+   whether `fn` is attacker-chosen binary or ASCII.
+>>>>>>> 43d518d1 (re(fbkv): element width is descriptor-driven — stride 4 gives a controllable 32-bit jump target)
 2. Whether a parser-output pointer (e.g. a per-request heap/arena pointer) can be made to land
    at offset 0 — then `vt+0x2c` needs one readable dword.
 3. Device: one shot with the shaped predecessor request + the /notify trigger, plus a
