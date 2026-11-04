@@ -538,3 +538,25 @@ allocation it lands in — i.e. how many attacker bytes land where.
   recon/8pfr/.
 - **Audible** (SageElm): mechanism bisected (unclamped overshoot reads,
   6b4f9928); destination analysis in progress (0x10130c58→0x10130a24 chain).
+
+## Update 2026-11-03 late — fbkv SHAPING LEVER PROVEN ON DEVICE
+
+SageElm (2d4c9263): the /notify singleton's arena neighbours are **pre-auth
+:1400 socket request-path allocations** (strlcps of parsed fields into session
++1748/+1811/+2322). The device differential on .202 PROVES the lever:
+
+| trial | pre-traffic | first-down |
+|---|---|---|
+| A (none) | — | 18.3s |
+| B (60 GETs) | 12.5s of traffic | **1.8s** |
+| C (200 GETs) | 21.4s of traffic | **6.1s** |
+
+Kill latency varies **10×** with preceding socket traffic. Traffic-dependence
+= proven; byte-level control of the landing = the remaining step
+(faulting-instruction capture to read `fn` per trial). The falsifier is NOT
+excluded — this is exactly the "mechanism signature" the bead asked for.
+
+Both allocators share the bump pointer: the request record from
+`0x1021edb8` (socket request loop) is what lands at the singleton's
+`vt`/`vt[0x2c]` offsets. The descriptor entry #1 (flags 0x0205, indirect +
+array) writes a pointer at record offset 0 — that pointer IS `vt`.
