@@ -148,12 +148,12 @@ right channel answers 800 to every queue action.
   slowly; the trigger is the title length at all.
 - Not falsified: deferred work against a stored record. It is the *transport*
   record that stores the metadata, and a 100-byte title is enough.
-- Leading static story (superseded by "The record write and its bounds"): the
-  deferred pass resolves the transport item (art / playback prep), the fetch
-  fails, and the failure path copies through a buffer that the stored
-  title+blob already overran — the 1100-byte serializer record (title at
-  `obj+3672`, length at `obj+4768`, template copy at `0x1021a41c`) and the 2.1c
-  copy `0x101cc878` → `0x101ccc9c` are the two shapes to read.
+- **Narrowed 2026-11-03**: the "failure path copies through a buffer the stored
+  title+blob already overran" story is right about the *carelessness* (the
+  serializer copy has no pre-copy bound and checks only afterwards, log-only)
+  but wrong about the arithmetic — the store caps a blob at 1024 and a name at
+  64, so the reachable render is ≤ 1095 against a 1112-byte buffer. Size cannot
+  be the trigger; the kill rides on state. See "The pass state machine".
 
 ## Pre-auth DoS shape (new)
 
@@ -250,6 +250,52 @@ Also measured: `http://<host>:8903/t.mp3` now answers **404**, and five
 body is not a failure for this path (the stream opens); only connect
 timeout/refusal is.
 
+## The pass state machine, and what survives a failure (2026-11-03, same build)
+
+The pass is a wire **reader**: states are a byte at `this+8`, set only through
+`0x10223d7c(this, state)` (`stb 4, 8(3)`), and each record is a 7-byte header
+read into `sp+80` by `0x10223878` followed by a `malloc(1084)` body
+(`0x10224ae4`) parsed by `0x102438f8` (kind 172 only, `0x10224b44`).
+
+Transition set (all call sites in `0x10224254`):
+
+| from | to | site |
+|---|---|---|
+| — | 7 | `0x102244b4` (re-arm, `r27 = 0`) |
+| — | 4 | `0x10224674` |
+| — | 5 | `0x10224810` |
+| — | 3 | `0x10224870` |
+| — | 6 | `0x10224ad4` (record body) |
+| 6 | 7 | `0x10224c74` (immediately **after** the store) |
+| 7 | 8 | `0x10224d88` |
+| 8 | 9 | `0x10224fc0` |
+| 9/– | 7 | `0x10224fec` |
+
+Teardown is `0x10223e6c(this, err)`: it logs the state and the error, releases
+the source (`*(this+4)` → `0x10226284`, `0x10223ed4`), sets **state 0**
+unconditionally (`0x10223ee8`) and the walk ends at `0x10224064`. The *record*
+is not touched: `23572` (deferred value), `23576` (fallback record) and `23580`
+(the record) are cleared only by wire case `0x10225520`–`0x1022552c`.
+
+So, answering the question directly: **a failed or aborted walk leaves the last
+record armed**; the next walk re-enters the store and `strlcpy(rec, src, 65)`
+always replaces the name, while `rec+0x48`/`rec+0x448` are replaced *only* when
+the new stream carries a blob with `0 < len ≤ 1024`. A walk that carries a name
+but no storable blob therefore pairs the **new name with the previous blob and
+length**. That is the state carry the failure mode rides on.
+
+### Consequence: the 1112 copy is latent, not the trigger
+
+Put together, the reachable render size is bounded by the *store*, not by the
+request: `bloblen ≤ 1024` always (a bigger blob is skipped, leaving an older
+one), name `≤ 64`. Max total `64 + 7 + 1024 = 1095 < 1112`, so the serializer
+cannot be overrun by title or blob size at all. The `(u8)strlen` truncation and
+the `255 + 7 + 1024 = 1286` worst case would only bite if the name field were
+ever written past 81 bytes without the 65-byte cap. That matches F11 exactly:
+size is not the trigger. The unchecked copy stays a real hazard (no pre-copy
+check, log-only detection, shared `.bss` destination) but it is not what kills
+this build.
+
 ## Next
 
 1. Pin the faulting copy: does the pass reach the 1100-byte serializer record
@@ -257,11 +303,17 @@ timeout/refusal is.
    fetch-failure branch, not the success branch.
    *(partly done: the serializer copy above is `0x10219854`, reached from
    `0x10219f60`/`0x1021a0fc`; the 2.1c copy is still unread.)*
-2. Read the pass state machine (`0x10224d64` tag dispatch, state bytes at
-   `this+8`/`+16`/`+17`, states 0–8): does a failed start leave the record
-   armed so the next tick re-enters the serializer with a stale length?
-3. Size/shape sweep: does a 404 on a reachable host also kill (open above)? A
-   DNS failure? A `x-file-cifs://` transport record?
+2. ~~Read the pass state machine: does a failed start leave the record armed?~~
+   **Answered above**: yes — the error teardown resets the *source* and state
+   only; record fields survive, so a blob-less walk pairs a new name with the
+   previous blob. Consequence: answer the *remaining* half — what does the
+   consumer of that pair do, i.e. follow `0x1024215c`'s callers for the
+   blob-carrying record (`0x102249e4`–`0x10224a3c`, cases of `0x102254xx`) and
+   the retry path that re-enters the pass on `-102`/`-36`.
+3. Size/shape sweep: ~~does a 404 on a reachable host also kill~~ (answered: no,
+   404 is clean). Still open: a DNS failure? A `x-file-cifs://` transport
+   record? And the blob *straddle* at 1024 (1024 vs 1025 bytes) on an
+   unfetchable URI, since > 1024 is skipped rather than stored.
 4. S2: repeat the transport arm on the One (86.10) — its record layout is its
    own RE task.
 5. Revisit the queue ordering result only after the transport path is pinned.
