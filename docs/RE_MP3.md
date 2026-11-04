@@ -129,6 +129,7 @@ decoded frame after the seek needs 4608 bytes of a 1551-byte buffer.
 | POC (839 B) | fetched twice, transport never leaves `STOPPED`, RelTime 0:00:00, daemon alive |
 | POC long (Info frame repeated, 2718 B) | same: two GETs, `STOPPED`, daemon alive |
 | plain Frankenstein stream (MPEG2.5 L3 8 kHz mono → MPEG1 L3 44.1 kHz stereo) | `PLAYING` to RelTime 0:00:03, then `STOPPED` — exactly at the switch |
+| bitrate-only switch (128 → 320 kb/s, same version/layer/rate) | plays through the switch, RelTime to 0:00:09 — same-family changes are fine |
 
 ### Why the device does not trip it
 
@@ -140,9 +141,38 @@ decoded frame after the seek needs 4608 bytes of a 1551-byte buffer.
 4608-byte-buffer styles, chunks 1–full) runs the POC and all format-switch
 variants without a report on the vulnerable build.
 
-The third row above also shows the device stopping *at* a format change, which
-is what `MPG123_NO_FRANKENSTEIN` does (and is the advisory's own workaround).
+### The consumer's exact configuration (read from the wrapper)
 
-So: **the library is vulnerable and provably crashes; the shipped consumer is
-not reachable with a stream-only PoC.** Anything that scans/seeks — the mpg123
-CLI with `--index`/`--skip`, or a future consumer path that seeks — is exposed.
+The decoder wrapper sits at `0x101bc640`–`0x101bcbb0`. It sets three parameters,
+on two duplicate construction paths (`0x101bc6b0`… and `0x101bc768`…):
+
+| call | meaning |
+|---|---|
+| `mpg123_param(h, 13 /* REMOVE_FLAGS */, 0x40 /* GAPLESS */)` | gapless **off** |
+| `mpg123_param(h, 2 /* ADD_FLAGS */, 0x20 /* QUIET */)` | quiet |
+| `mpg123_param(h, 2 /* ADD_FLAGS */, 0x80000 /* STORE_RAW_ID3 */)` | keep raw ID3 |
+
+`MPG123_NO_FRANKENSTEIN` (`0x1000000`) is **not** among them, so the earlier
+"looks like the flag" inference was wrong: the library is asked to accept
+Frankenstein streams, and the wrapper does handle `MPG123_NEW_FORMAT` (it
+compares the return code against −11 and re-reads the format). The stop at a
+version/rate/layer switch is the app's own behaviour after that, not the flag —
+a bitrate-only switch (128 → 320 kb/s, same version/layer/rate) plays straight
+through past the switch point, which is the control for this.
+
+All three `mpg123_decode` sites pass a **hard 4608-byte** output buffer
+(`li 7, 4608` at `0x101bc960`, `0x101bca80`, `0x101bcb88`) — 1152 samples × 2
+channels × 2 bytes, i.e. exactly the fixed-maximum-buffer configuration the
+advisory calls immune.
+
+### 86.10 (S2) ships no mpg123
+
+`captures/firmware/s2_overlay/bin/anacapad` has no `mpg123` import, no `NEEDED`
+entry and no mpg123 string; the S2 lib directory has no `libmpg123`. The lane is
+S1-only by construction.
+
+So: **the library is vulnerable and provably crashes; no device path reaches
+it.** Three independent reasons, all measured: no scan/seek API is imported, the
+output buffer is the advisory's immune fixed maximum, and the only in-process
+consumer is the S1 daemon. Anything that scans or seeks — the mpg123 CLI with
+`--index`/`--skip`, or a future consumer path that seeks — is exposed.
