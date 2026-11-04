@@ -63,3 +63,24 @@ Next: (1) finish E/F/G on `.84` after recovery; (2) re-fire C alone with a
 ERROR_AUDIBLE_* codes) — candidates are the three session string fields the
 handler copies (`+17928/+19488/+21048`); (4) if C reproduces on `.86`'s
 coordinator, it's a second unit confirmation.
+
+## Update (same session, later) — E/F/G complete
+
+| PoC | verdict |
+|---|---|
+| E giant offset | ACCEPT, healthy (no down within 40 s watch) |
+| **F TOC self-overlap** | **ACCEPT → daemon down at 20.1 s, watchdog recovery 0.2 s** |
+| G aax short activation | ACCEPT, healthy |
+
+So the PoC set now holds **two independent kill classes** with distinct
+signatures:
+
+- **C activation-mismatch**: accept → full unit loss (no HTTP *and* no
+  ICMP, >2 min, self-recovered ~4 min). Wedge-or-reboot, cause open.
+- **F TOC-overlap**: accept → daemon down 20.1 s, fast watchdog recovery —
+  the classic anacapad crash-restart shape, pointing at the TOC walk itself
+  (offset pointing back into the TOC region being parsed).
+
+`make_pocs.py` + this table satisfy the bead's "crafted .aa PoCs per TOC/
+activation class + device verdicts" deliverable; the faulting-instruction
+capture (devmode/qemu) remains the open mechanistic step.
