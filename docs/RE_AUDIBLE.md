@@ -415,3 +415,27 @@ control point to the unit's UPnP events, then retry /notify).
   at fire time, or the crash was the deferring Play-against-half-init'd-session path.
 - CONSEQUENCE: brute-force device shots are saturated. The 0x10115478 reach conditions
   (r28≠0, r22=0, [r26]=0) must come from register-exact emulation (mgs7 task), not sweeps.
+
+## PPC branch algebra at 0x10115440-84 (decoded 2026-11-04)
+
+Full decode in `recon/tnzm_audible/ppc_decode_10115478.py`. Control flow:
+
+- +44 `beq cr7` → r24==0 target 0x10115494: the CAPPED path (strlen@0x10546848,
+  `cmplwi r3,0x400` cap check at +a8, capped copy 0x101194b8 at +cc).
+- +4c/+64: r28 (read-loop return at +0c, `bl 0x101049f4` → `or r28,r3,r3`) == 0
+  is REQUIRED for the +6380 strcpy; r28!=0 → r28=402 → cr4 path skips.
+- +60 `bne cr7` ([r26]!=0) → far target 0x101156b0 (validate/log, no copy).
+- +6c `beq cr4` (r22==0, r22 zeroed at +34 and callee-saved) → 0x1011564c (epilogue,
+  `lwz r9,30028(r31)` = session+30028 counter).
+- +74 `bne cr4` → skip strcpy if r28!=0.
+- +78: `lwz r4,19776(r1)` (node str ptr) `mr r3,r30` (session+6380) `bl 0x10546f18` (strcpy@plt).
+
+REACH CONDITIONS (corrected): flag[r1+8880]!=0 (r21 stored from PREVIOUS iteration —
+cross-iteration state machine), read-loop return r28==0, byte[r26]==0, r22==0 (always).
+The [r26]==0 and r21!=0 conditions are ENTRY-SEQUENCE dependent, not single-entry.
+
+Device falsifications (all on .135, byte-exact proven layout, fresh URLs):
+zero-first-byte payload, all 8 type bytes, C-kill reset + refire — SetAV=200, NO crash.
+The strcpy path is gated by cross-iteration parse state that static single-entry
+analysis cannot determine. DECISIVE TOOL: Unicorn PPC emulation of the container
+parse 0x101152f8 with our .aa as input, tracing whether 0x10115478 executes.
