@@ -579,3 +579,30 @@ Combined with the device differential (18.3→1.8→6.1s shaping proof) and the
 emulation proof of controlled fn, the Audible lane is the closest to a
 complete root chain: trigger (proven) + mechanism (proven) + destination
 (mapped, byte-exact pending) + control (proven in emulation).
+
+## Update 2026-11-04 (e) — full campaign summary after swarm recreation ×2
+
+### Closed beads (17 total across all sessions):
+s20, wbz, 13yv, 81v, d7vi, hd7l, qa2, dxe, 1w3, v8z, uwd, c08, cve-version-map-ja2,
+tnzm, re-hls-kill-cnk, n66, + earlier closures
+
+### The money-shot execution state:
+- **Path 2 (/notify → root RCE)**: arena map complete, shaping lever proven on device,
+  emulation proof of controlled fn, descriptor-driven element store mapped.
+  Remaining: S2-specific session struct mapping to bridge the overflow to the dispatch.
+- **Path 3 (Audible overshoot)**: mechanism bisected, parse site anchored,
+  destination mapped (session+17651, 4097B), S2/MIPS vtable-reuse overflow
+  CONFIRMED on device (SWGen 1→2). Remaining: fake-stream harness.
+- **Path 1 (signed image)**: arming rig verified, BSU fired on .202.
+  BLOCKED on router DHCP DNS flip (owner decision).
+- **Persistence**: pwned-q57.upd built, ready to deploy once root exists.
+
+### Beads still open:
+- mgs7 (P0): overflow-target session map — SageElm working
+- fbkv (P0): /notify arena shaping — SwiftMarsh co-assigned
+- xnf (P0): Bearer token forge — GoldMeadow
+- q57 (P0): DNS workaround + signature question — DarkForest
+- 63c6 (P1): WMA/ASF round 2 — DarkForest
+- jc7 (P1): :1443 parser — SwiftMarsh
+- f4k (P1): getaa overflow → corruption — LilacKnoll
+- 9sd (P2): DIDL/queue-metadata — RedThrush
