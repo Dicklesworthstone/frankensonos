@@ -617,3 +617,20 @@ around `0x55835c`, entered from `0x5570c0`; `a0 = 0x432b2b00`, `a2 = 0x51bc88` (
 address) at the fault, i.e. a struct in the `__cxa_*` region is being walked with values our fake
 objects do not supply. Next: make the getter at `0x601ffc` succeed first (it takes `policy+7`, so
 the fake policy's `+4`/`+7` optional layout is what to model), and only then widen to the compare.
+
+### Cloud validate endpoint — located, still gated (2026-11-04)
+
+The resolver the device calls is literal `0x678e90` = `/auth/oauth/v2/validate?access_token=%s`
+(adjacent strings: `Access token's user does not match registered user`, `Access token does not
+have a …`, `Could not resolve token`, `Response code: %d`). Host strings in the same binary:
+`sslauth.sonos.com` and the template `https://%s-%s.lower-sslauth.sonos.com%s`
+(`lechmere.%s.ws.sonos.com` is the commander side). `sslauth.sonos.com` itself does not resolve.
+
+A live probe from the LAN finds the path on `api.ws.sonos.com`: `GET /v1/oauth/v2/validate` answers
+**403** where every other host/path combination is 404, but the body is a CloudFront "Request
+blocked" page for the control-API key, a bearer, the device UA and an `X-Sonos-Client-Id` alike.
+So the endpoint is real and belongs to the two-part `*-*.lower-sslauth` host family; getting a 200
+needs the exact host prefix the firmware computes (the two `%s` values), which is the next thing to
+read (the sprintf site for `https://%s-%s.lower-sslauth.sonos.com%s`). Once it answers, its body is
+a per-gate oracle — `access_token` is a query parameter, so a forged token can be scored against
+the cloud from outside the device, without the one-bit `Unauthorized.` wall.
