@@ -439,3 +439,22 @@ zero-first-byte payload, all 8 type bytes, C-kill reset + refire — SetAV=200, 
 The strcpy path is gated by cross-iteration parse state that static single-entry
 analysis cannot determine. DECISIVE TOOL: Unicorn PPC emulation of the container
 parse 0x101152f8 with our .aa as input, tracing whether 0x10115478 executes.
+
+## Observer-cell setup decoded (2026-11-04, PPC)
+
+- 0x101037a0-0x101037dc and 0x10103ba0-0x10103bd4 (two session types) run the SAME
+  initialization: strings +28012/28020/28024 → 0x1032da38 (log/format);
+  r4 = [r28+6352] (handler field, 28B BEFORE the +6380 overflow dst — not corruptible);
+  r3 = r28+30000 → bl 0x101e394c (observer CTOR writes {handler, gen, changed}).
+- Observer ctor: exactly 2 callers (both setup sites). Loader 0x101e3a44: 2 callers
+  (0x101e3b1c, 0x101e3ebc — notify machinery).
+- Post-observer fields: +30012/13/14 flags, +30016/+30020 strings, +30036 byte,
+  +30040 ptr, +30101 string.
+- CHAIN COHERENCE CONFIRMED: ctor writes a REAL handler ptr (from +6352) at setup;
+  the per-entry strcpy overflow overwrites +30000 AFTERWARD; the loader fires on
+  any later state change → loads attacker ptr → vcalls through attacker vtable.
+  The only missing link remains reaching +30000 via the strcpy (4-condition gate,
+  SageElm emu trace in flight).
+- 0x10103244 consumer: 49 callers — a log/trace helper, not a root sink. The
+  +28012 strings feed logging, not fetch/exec. The root-delivery sink question
+  shifts to: what the state-change loader path does (0x101e3b1c/0x101e3ebc context).
