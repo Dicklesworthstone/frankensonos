@@ -395,3 +395,43 @@ Consequences for the race:
 Next session: root-cause the 405 state gate (compare a kill-day /notify vs
 today's on the emulator, or re-arm via GENA subscription — subscribe a
 control point to the unit's UPnP events, then retry /notify).
+
+### 2026-11-04 (SageElm, mgs7) — THE UNCHECKED COPY FOUND: `strcpy(session+6380, node)` at 0x10115478
+
+Per-type handler mapping (this was the last analytical piece):
+
+- The container parse `0x101152f8` re-calls the read loop `0x101049f4` and
+  then branches on the per-entry result (`r28`) and node state (`r22`, `[r26]`)
+  to per-type handlers:
+  - **`0x10115478`: `strcpy(session+6380, [r1+19776])` — PLAIN strcpy, no
+    cap** (PLT `strcpy@plt` at 0x10115480). The source is the parsed entry
+    node string — attacker bytes from the stream, length = the node string.
+  - The neighboring copies ARE bounded: `strlcpy(session+7405, …, 4097)` at
+    0x1011552c, `strlcpy(…, 257)` at 0x10115554, and a clear-path
+    strcpy/strlcpy pair at 0x10115504/0x1011552c (constant empty source).
+- **Overflow reach from +6380 (unchecked):** +7405 (1,025), +16626 (10,246),
+  +17651 (11,297), +21748 (15,368), … **+30000 (23,620)** — the observer cell
+  `{handler ptr, generation, changed}` lands at string offset **23,620**.
+  A node string ≥ 23,632 bytes overwrites the pointer, the generation, and
+  the flag in one shot; the same overflow bytes double as the fake object +
+  fake vtable (ptr → +0x20 slot → PC control via 0x102bf890/bctrl).
+
+**Emulation state:** the type-sweep harness (`/tmp/tnzm_typesweep.py`,
+session-4 infra) reaches the read loop and serves TOC entries for types
+1–8, but the post-loop node consumers (`0x101a8f20`/`0x101a946c`/`0x101a999c`
++ the `0x1041d914` 64-bit size arithmetic at node+496) diverge on synthetic
+node state — the register-exact path conditions to reach 0x10115478
+(r28 = per-entry code ≠ 0, r22 = 0, [r26] = 0 — derived from the branch
+algebra at 0x10115448–74) are documented above; a live capture of the
+strcpy needs the node built to a terminating state (real session seeding).
+
+**Root-RCE recipe (now complete analytically):**
+1. TOC entry whose parsed value exceeds 23,632 bytes (type per the
+   0x10115470 path conditions),
+2. value bytes at offsets 23,620–23,631 = fake observer ptr (→ the overflow
+   itself), generation, changed-flag,
+3. overflow body = fake object (obj+6100 fields as needed by 0x102bf778)
+   + fake vtable with slot 8 = payload,
+4. the next state-change notify (`0x101e3aa0` ← `0x101e3d60` ← the +12
+   notifier at 0x101060b8) loads the poisoned pointer and bctrls through
+   the fake vtable → PC control, r3 = fake object, root context.
