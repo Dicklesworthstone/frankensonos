@@ -103,3 +103,19 @@ Once root exists on a unit (any path):
 (signature question).** Paths 2+3 are pure software on live hardware, need
 no vendor keys, and their remaining steps are concrete (arena map +
 destination buffer). Path 1 is the backup if both stall.
+
+## Device shot (2026-11-04, CalmHawk): the shaped chain fires
+
+100 × 64-char URL pre-traffic + `/notify` on .202 → **daemon down at 14.6s,
+recovered 0.2s later** (fast fault, watchdog restart, SWGen unchanged). The
+kill is reproducible with shaped pre-traffic and the timing matches the wild
+dispatch's expected behaviour (deferred, not instant). The emulation proof
+(docs/RE_NOTIFY_DISPATCH_PROOF.md) shows the fn value is attacker-shapable —
+the remaining gap is confirming WHICH bytes the device actually used as fn
+(needs the Unicorn trace to match against the device timing, or a
+devmode-console crash dump).
+
+**The money shot is 80% done:** the kill is proven, the mechanism is mapped,
+the emulation proves control is possible, the device shot confirms
+reachability. The last 20% is the faulting-instruction address — which
+tells us if fn landed in .text (code exec) or unmapped (crash only).
