@@ -168,3 +168,32 @@ consumer functions directly with the PoC mapped at POC (0x55000000). The
 destination answer the overshoot read needs (which buffer, which offset) is
 one object-construction session away; the harness removes all loader/PLT
 friction from that work.
+
+### Emulation session 2 — demuxer chain anchored
+
+Followed the audible module's internal call tree under the harness:
+
+- `0x1011d2e8` (the audible path's main function) calls into the
+  **`0x10102xxx`–`0x10106xxx` stream/parse module**:
+  `0x10104dcc` (state reset), `0x1010537c`, `0x101068f4`, `0x10106a64`,
+  and — on reopen — `0x10104df0`.
+- **`0x10104df0(r30=audible-session, r4=stream)`** = open-by-format: it calls
+  `0x1030e6e8` (stream-flags check, returns `[r3+356]` when `byte[0]` set)
+  and then the **demuxer probe chain `0x10104360`**, which tries eight
+  format probes in order: `0x102af488`, `0x10104264`, `0x100a6f34`,
+  `0x100a679c`, `0x102c8af4`, `0x102c8b68`, `0x102af4ac`, `0x102c8db4`.
+- `0x10104264` is an HTTP-header probe (`strncmp` 9 bytes against
+  `"nos-Playback-Id"` at `0x1046c804`) — the demuxer chain includes
+  header-sniffing probes, so the `.aa`/`.aax` signature check (magic absent
+  from .rodata) is inside one of the remaining probe bodies or computed.
+- The stream object passed as `r4` originates in the caller chain
+  (`0x10103598` = "start stream" virtual, `r24=r8` — the object is built by
+  the handler's caller, not the handler). Emulating past it requires
+  fabricating that object's vtable or hooking `0x10104df0` with a fake
+  stream whose read/seek serve PoC bytes.
+
+**Concrete next emulator step:** hook `0x10104df0` — replace it with a stub
+that returns success, and drive `0x10104360`'s probe chain + the subsequent
+TOC/activation parse against a fake stream object whose vtable slots are
+Python-served reads from POC (0x55000000). That bypasses the transport
+construction entirely and lands the overshoot-read destination address.
