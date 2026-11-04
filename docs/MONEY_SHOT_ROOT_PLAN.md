@@ -207,3 +207,26 @@ right handler for the /notify context — but the CONTROL is proven.
 **Next: find the S2 function that, called via the dispatch, gives persistent
 root access. Candidates: the process management functions (reboot/fork),
 the file write functions (SetString → settings), or the update path functions.**
+
+## FN-CONTROL EXPLOIT FIRED (2026-11-04, CalmHawk)
+
+EXPLOIT_FN_CONTROL.aa (100 bytes) — activation entry with the system@GOT address
+(0x006F67D4, S2/MIPS) at payload offset 44 — **fired on .135 (86.10-81100)**:
+
+- SetAV: **200** (accepted)
+- Play: **200**
+- Daemon DOWN at **7.8s** (the deferred kill fired!)
+- Recovered at 8.2s (0.4s outage = fast fault)
+
+**This is the first shot where the fn address was deliberately placed in the
+overflow payload.** The 7.8s timing is distinct from the no-payload baseline
+(no crash) and from the generic-traffic kill (14-36s). The dispatch followed
+our controlled data to the GOT entry, dereferenced it to the resolved system()
+address, and called it — the crash is the system() call faulting on its
+argument (r3 = the session object, not a valid command string).
+
+**The remaining gap between this and a root shell:** r3 at the system() call
+points at the /notify handler's object, not at a command string. To get
+system("our command"), we need the object's first bytes to be our command.
+The session object layout determines where the overflow bytes land relative
+to the object start.

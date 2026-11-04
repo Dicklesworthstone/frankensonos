@@ -606,3 +606,20 @@ tnzm, re-hls-kill-cnk, n66, + earlier closures
 - jc7 (P1): :1443 parser — SwiftMarsh
 - f4k (P1): getaa overflow → corruption — LilacKnoll
 - 9sd (P2): DIDL/queue-metadata — RedThrush
+
+## BREAKTHROUGH: the /notify dispatch follows attacker wire data (acca51c3)
+
+SwiftMarsh confirmed: the parse walker at 0x1022bc88 does `lwz r27, 0(r27)` —
+**the pointer is taken FROM the wire record**. The parser dereferences attacker-controlled
+data. `vt` points at arena bytes containing attacker text, and `vt+0x2c` is the 44th byte
+of the attacker's data.
+
+**The complete root RCE recipe:**
+1. Send a :1400 request whose wire record contains a pointer at the field-1 position
+2. That pointer targets attacker-controlled memory (the parsed string data)
+3. At string offset 44 (0x2c): place the system@GOT resolved address
+4. Fire /notify → dispatch reads vt = the string pointer → fn = *(vt+0x2c) = system()
+5. system(r3) where r3 = the /notify handler's object = contains our session data
+
+The descriptor entry #1 (flags 0x0205 = indirect + array) tells the parser to follow
+the wire pointer. The stride-4 element at position 11 = a chosen 32-bit value for fn.

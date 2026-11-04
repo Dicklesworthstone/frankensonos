@@ -313,3 +313,90 @@ writes length-driven into the session (the per-type handlers
 `0x10105xxx`/`0x10106xxx` — next mapping step), or a cap-bypass shape.
 
 Device stress: one `SetAVTransportURI` shot; unit healthy after.
+<<<<<<< HEAD
+=======
+
+### 2026-11-04 (SageElm, mgs7) — RCE shot fired; correction to the reach claim
+
+`R_root_rce.aa` (activation len 12400, fake observer ptr `0xBAADC0DE` +
+generation/flag markers at the computed +30000 landing, per the user's
+fake-vtable model): **ACCEPT, no down, daemon healthy** — same as
+`M_reach_30000.aa`. Two independent reach-PoCs now falsify the far-write
+model.
+
+**Correction to my earlier reach claim:** the "L ≈ 12349 lands on +30000"
+arithmetic conflated the *read* length (parse-frame, 128-B chunks via
+`0x10346d1c`) with the *session write*. The session write is
+`strlcpy(+17651, +7405, 4097)` — hard-capped; last written byte = session
+**+21747** (the NUL). **The activation overflow reaches no pointer field**:
++21748 (the state flag) itself is one byte past the NUL. mgs7's falsifier
+branch fires for the +30000 cell via this path.
+
+What remains true and useful:
+- The observer cell +30000 and its two bctrl vcalls (slots 8/26 via
+  0x102bf778) are real and remain the in-object PC-control candidate — but
+  reaching it needs a different write primitive: an entry type whose handler
+  copies TOC-length bytes into session fields (per-type handlers
+  `0x10105xxx`/`0x10106xxx`, unmapped), or the +28012/28020/28024 string
+  fields if any is length-filled (current evidence: scalar inits).
+- The C/F kill mechanism (short-read/long-expect mismatch in the chunked
+  reader) stands, bisection-proven.
+
+Device stress this session: 1 shot (`R_root_rce`); unit healthy after.
+
+## 2026-11-04 (SageElm, mgs7) — /notify dispatch emulation: N-independent, shaped by the FIRST request allocation
+
+Emulated the arena-allocation arithmetic (`0x10222778` bump, no re-align;
+`0x10222314` aligned) plus the `/notify` dispatch
+(`vt = *(singleton); fn = *(vt+0x2c)`) —
+`recon/tnzm_audible/arena_dispatch_model.py`.
+
+**Result: the dispatch is N-independent.** The SocketManager arena is
+bump-only; the singleton's `vt`/`fn` are read from arena+5369 **forever** —
+only the **FIRST post-boot request-path allocation** shapes them:
+
+| scenario | vt | fn | outcome |
+|---|---|---|---|
+| generic HTTP requests (any N ≥ 1) | `'GET '` = 0x47455420 | wild (read at 0x4745544C) | the device's 14–36 s kill signature — the model reproduces it |
+| shaped FIRST request (attacker bytes; self-referential fake vtable inside the same allocation) | fake-vtable ptr | attacker-chosen (model: 0x101e3990 `li r3,1; blr`) | **CONTROL=YES at every N** |
+
+The shaped request needs **one known address**: the arena base
+(deterministic per boot — early allocations; recover via info leak, boot
+replay in the emulator, or low-bits brute). With it, one shaped socket
+request (bytes 0–3 = fake-vtable ptr, bytes 0x20–0x24 of the vtable region =
+target fn) followed by `/notify` = controlled PC in the root daemon.
+
+Device confirmation of the *kill-shape* prediction is already on file
+(bisection: any /notify kills, N-independent). The control-shot needs the
+arena-base leak — queued as the next step.
+
+### 2026-11-04 (SageElm, mgs7) — race attempt + unit-state discovery: the /notify kill is state-gated
+
+Fresh-arena race attempt on `.84` (57.23): shaped-request spam during watchdog
+recovery + `/notify` → **405, alive** (also plain curl: 405 + alive, 3×).
+Same on `.202`: today the 10/10-kill shape (identical GET) answers **405 +
+healthy** — the kill that fired repeatedly on 2026-11-03 does not reproduce.
+
+**The /notify kill is unit-state-gated.** The 405 paths in the handler
+(`li r9,0x195` at 0x1028a64c/0x1028a668) fire before the singleton dispatch
+when a request-object field ([r31+0] compared against 9) or a param
+null-check fails. The kill-day requests were byte-identical — so the state
+delta is on the daemon side (notification-subsystem init state after
+multiple watchdog cycles, or the singleton cell being NULL on today's boot,
+which would skip the vcall and fall to 405).
+
+Consequences for the race:
+- The fresh-arena race (C-kill → shaped spam → /notify) cannot proceed until
+  the kill reproduces — the dispatch itself is what's state-gated.
+- The arena model + shaped-request layout stand (committed,
+  `arena_dispatch_model.py`); the missing inputs are now (a) the arena base
+  AND (b) the state gate that re-arms the dispatch.
+- The state gate is observable via the emulator: run the handler
+  0x1028a5b8 head under Unicorn with today's request and check which 405
+  branch fires — but it needs the parsed-request object shape, which is
+  transport-layer state.
+
+Next session: root-cause the 405 state gate (compare a kill-day /notify vs
+today's on the emulator, or re-arm via GENA subscription — subscribe a
+control point to the unit's UPnP events, then retry /notify).
+>>>>>>> 43e19d61 (re(mgs7): race attempt + discovery — /notify kill is unit-state-gated (405+alive today on both 57.23 units; kill-day shape byte-identical); fresh-arena race blocked until the state gate is root-caused)
