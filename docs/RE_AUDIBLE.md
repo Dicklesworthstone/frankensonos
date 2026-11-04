@@ -339,3 +339,29 @@ What remains true and useful:
   reader) stands, bisection-proven.
 
 Device stress this session: 1 shot (`R_root_rce`); unit healthy after.
+
+## 2026-11-04 (SageElm, mgs7) — /notify dispatch emulation: N-independent, shaped by the FIRST request allocation
+
+Emulated the arena-allocation arithmetic (`0x10222778` bump, no re-align;
+`0x10222314` aligned) plus the `/notify` dispatch
+(`vt = *(singleton); fn = *(vt+0x2c)`) —
+`recon/tnzm_audible/arena_dispatch_model.py`.
+
+**Result: the dispatch is N-independent.** The SocketManager arena is
+bump-only; the singleton's `vt`/`fn` are read from arena+5369 **forever** —
+only the **FIRST post-boot request-path allocation** shapes them:
+
+| scenario | vt | fn | outcome |
+|---|---|---|---|
+| generic HTTP requests (any N ≥ 1) | `'GET '` = 0x47455420 | wild (read at 0x4745544C) | the device's 14–36 s kill signature — the model reproduces it |
+| shaped FIRST request (attacker bytes; self-referential fake vtable inside the same allocation) | fake-vtable ptr | attacker-chosen (model: 0x101e3990 `li r3,1; blr`) | **CONTROL=YES at every N** |
+
+The shaped request needs **one known address**: the arena base
+(deterministic per boot — early allocations; recover via info leak, boot
+replay in the emulator, or low-bits brute). With it, one shaped socket
+request (bytes 0–3 = fake-vtable ptr, bytes 0x20–0x24 of the vtable region =
+target fn) followed by `/notify` = controlled PC in the root daemon.
+
+Device confirmation of the *kill-shape* prediction is already on file
+(bisection: any /notify kills, N-independent). The control-shot needs the
+arena-base leak — queued as the next step.
