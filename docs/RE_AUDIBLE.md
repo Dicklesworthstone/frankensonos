@@ -84,3 +84,56 @@ signatures:
 `make_pocs.py` + this table satisfy the bead's "crafted .aa PoCs per TOC/
 activation class + device verdicts" deliverable; the faulting-instruction
 capture (devmode/qemu) remains the open mechanistic step.
+
+## 2026-11-04 (SageElm) — one-field bisection: the kill signature is unclamped overshoot reads
+
+15 variants fired on `.84` (order: F-variants first, then C-variants; all
+healthy before each shot; unit healthy at the end):
+
+| variant | change from baseline | verdict | down |
+|---|---|---|---|
+| F_base | off=1, len=1 | ACCEPT | **18.4 s** |
+| f1 | off=0 (reads magic) | ACCEPT | no down |
+| f2 | off=5 (reads own TOC entry) | ACCEPT | **29.3 s** |
+| f3 | len=4096 | ACCEPT | **36.2 s** |
+| f4 | off=100 (small overshoot) | ACCEPT | **13.9 s** |
+| C_base | act off=82, len=64, 3 B present | ACCEPT | **17.9 s** |
+| v1 | act len exact (3) | ACCEPT | no down |
+| v2 | act len 0 | ACCEPT | no down |
+| v3 | act off 82→83 | ACCEPT | no down |
+| v4 | act off 200 (past EOF) | ACCEPT | no down |
+| v5 | act len 0xFFFFFFFF | ACCEPT | no down |
+| v6 | full 64 B activation | ACCEPT | no down |
+| v7 | no activation entry | ACCEPT | no down |
+| v9 | codec = zeros | ACCEPT | no down |
+| v10 | codec = `mp3` | ACCEPT | no down |
+
+**The mechanism, bisection-proven:** the kill requires an activation/TOC read
+at an offset that is **valid (inside the file)** whose declared length
+**overshoots EOF**. Every variant that removes the overshoot (exact length,
+zero length, offset past EOF, no activation) parses clean; every variant that
+keeps a valid-offset + overshooting-length combination kills (F 13.9–36.2 s,
+C 17.9 s). Length magnitude barely matters (f3: 4096 → 36 s); the offset being
+in-file is what gates it.
+
+**Oracle finding:** the SOAP `SetAVTransportURI` verdict is binary
+(ACCEPT/REJ-1023) — the `ERROR_AUDIBLE_*` codes (25/26/27/29) are **not**
+returned synchronously; they surface on the async transport-error path, which
+is not observable without GENA event subscription. The device-observable
+oracles are: accept/reject + the down/recovery timing signature.
+
+**C-class reproducibility note:** today `C_base` killed at 17.9 s with instant
+watchdog recovery — same signature as F, *not* the >2 min unit loss from the
+earlier session. The wedge severity is state-dependent (earlier run followed
+five prior PoC acceptances). The overshoot-read mechanism stands either way.
+
+**Parse-site status (r2):** the audible chain is
+dispatcher `0x10123f84` → handler `0x10118ad8` (sub-object at `this+6340`;
+string fields `+17928/+19488/+21048`) → transport open `0x10130c58` →
+`0x10130a24` (transport-type switch; kind from vtable slot 24 via
+`0x102b263c`). The magic `57 90 75 36` does **not** appear in the binary
+(nor in any rootfs .so; 86.10 anacapad has no audible at all), so the header
+check is computed byte-wise; no `li 25/26/27` clusters exist (codes are
+computed/derived). Faulting-instruction capture therefore needs the devmode
+console or qemu instrumentation — static-only anchoring has hit its limit;
+the overshoot-read signature above is the search image for that step.
