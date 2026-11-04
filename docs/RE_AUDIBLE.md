@@ -590,3 +590,38 @@ daemon-invoked.
 **Correction to the map line:** `+28012/28020/28024` are "timestamps + presence flags consumed by
 a log formatter", not "strings read into URL/log assembly". The root-delivery sink inside the
 overflow range is `+24024` (`0x5dd8`) via `unlink`/`free`, not `+28012`.
+
+### 2026-11-04 (SageElm, mgs7) — r22 lifecycle MAPPED: stream+6088 interface pointer; two-stage fire
+
+The caller of 0x101152f8 is **0x10115e44** (22032-B frame); its call at
+0x10116454 passes r4=r1+56, r5=r1+1096, r6=r1+14080. The parse's cross-
+invocation gate r22 has exactly two definitions inside the caller:
+
+- `0x10115f78`: `lwz r22,6088(r9)` where `r9 = [session+6336]` (the stream
+  object) — **r22 = the stream's +6088 interface pointer**.
+- `0x10116274`: frame reload (+14168).
+
+`[stream+6088]` is written by the transport core (0x10067d50, 0x100a0570, …)
+with **interface/handler pointers** — it is **0 while the transport is
+unbound** and non-zero once the audible stream opens.
+
+**Lifecycle:** parse invocations while the transport is unbound take the
+r22==0 path (0x1011564C: counter decrement, node op, callee-saved restore,
+return). After the transport binds, r22 != 0 and subsequent invocations
+reach the guard tree where the 4 conditions decide the unchecked strcpy.
+
+**Two-stage fire (the wire recipe):**
+1. `SetAVTransportURI` a benign `.aa` → transport binds → r22 != 0 for all
+   later parses.
+2. `SetAVTransportURI` the overflow `.aa` (node string ≥ 23,632 B with the
+   fake observer cell at node-offset 23,620) → the unchecked
+   `strcpy(session+6380, node)` at 0x10115478 smashes the observer cell →
+   the next state-change notify loads the fake pointer and bctrls through
+   the fake vtable (slots 8/26) → PC control.
+
+`TWO_STAGE_REACH.aa` committed: STRCPY_REACH.aa with the fake observer cell
+(`0x55000000` placeholder + generation/flag) at node-offset 23,620 (file
+offset 23,657). **Open item:** the fake pointer needs a real address —
+either a heap-address leak or the deterministic-base guess sweep (wrong
+guess = the familiar 14–36 s hang; right guess = clean/benign — a usable
+oracle per candidate).
