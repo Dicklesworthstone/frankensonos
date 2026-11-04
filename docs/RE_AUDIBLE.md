@@ -225,3 +225,36 @@ signature. Byte-exact destination requires the fake-stream harness step:
 build a stream object whose vtable read/seek slots serve PoC bytes, then
 `0x10104df0`'s real code runs and the demuxer buffer + overshoot
 destination become observable in the Unicorn map.
+
+### Emulation session 4 — the parse loop executed; destination captured for the codec class
+
+Driving `0x101152f8` (the container parse, 19856-B frame) directly with fake
+IO (`recon/tnzm_audible/parse_drive.py`):
+
+- **Structure decoded:** `0x101152f8` → read-loop `0x101049f4(session,
+  &stream, buf, 32, out, &out2, 257, &flag)`:
+  - `0x100149a8(stream, buf, …)` reads a **12-byte TOC entry** into the
+    caller frame (buf at r1+64);
+  - `0x1038237c`/`0x1036e044` extract fields; `0x10341b00` builds a node;
+  - **`0x10346d1c` = the entry DATA read** — args observed live:
+    `r4=0x602f9788` (**destination = parse-frame buffer at r1-0x6878**),
+    `r6=0x80` (128-B chunk cap), `r10=0x101`; return code compared against
+    **1045 / 1042** (`xori` at `0x10104c14`/`0x10104c20`) — the audible
+    error codes are returned by this reader, confirming the taxonomy;
+  - one entry per `0x101049f4` call; `0x101152f8` re-calls it bounded by a
+    counter at session+30028 (max 2 observed).
+- **Session inline buffers confirmed as activation/content stores:**
+  `0x10104e5c` strlcps `+6380 → +16626` (cap 1025) and `+7405 → +17651`
+  (cap 4097); the parse consumer is `0x10115d6c` → `0x101152f8(r4=+16626,
+  r5=+17651)`. **Overshoot destination for the activation class = the
+  `+17651` (4097 B) inline buffer** — a TOC length larger than the blob
+  reads past the activation bytes into the adjacent 4097-B content buffer
+  (same object, in-bounds of the object, out-of-bounds of the logical blob);
+  much larger lengths run past the object into the heap (the C-class wedge).
+- **Emulation blocker (honest):** with synthetic session data the recursive
+  node parser (`0x10340640`/`0x1041d914` family, 64-bit size arithmetic at
+  +496) diverges and exhausts the 4 MB stack at `0x1041d930`; capturing the
+  activation-entry overshoot read live needs real session-state seeding
+  (a valid first entry so the recursive parse terminates) — the harness,
+  hooks and instrumentation for that run are all in place in
+  `parse_drive.py`.

@@ -136,6 +136,11 @@ def main():
     from unicorn import UC_HOOK_MEM_READ_UNMAPPED, UC_HOOK_MEM_WRITE_UNMAPPED, UC_HOOK_MEM_FETCH_UNMAPPED
     uc.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED, dbg_mem)
     uc.hook_add(UC_HOOK_CODE, hook)
+    if '--bypass-open' in sys.argv:
+        # transport-type classifier 0x102b263c -> li r3,1; blr  (file-ish, skips the +1656 vcall)
+        uc.mem_write(0x102b263c, struct.pack('>II', 0x38600001, 0x4e800020))
+        # open-by-format 0x10104df0 -> li r3,1; blr  (pretend the demuxer accepted the stream)
+        uc.mem_write(0x10104df0, struct.pack('>II', 0x38600001, 0x4e800020))
     try:
         uc.reg_write(UC_PPC_REG_3, THIS)
         uc.reg_write(UC_PPC_REG_4, SCRATCH)
