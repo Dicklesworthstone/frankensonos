@@ -250,6 +250,26 @@ Also measured: `http://<host>:8903/t.mp3` now answers **404**, and five
 body is not a failure for this path (the stream opens); only connect
 timeout/refusal is.
 
+### Straddle matrix, correct oracle (`.84`, 2026-11-04, `Play` each, 240 s)
+
+| blob | DIDL | deaths | latency |
+|---|---|---|---|
+| 100 | 376 | 0 | — |
+| 800 | 790 | 1 | +107.2 s (back after 0.2 s) |
+| 1400 | 1390 | 0 | — |
+
+No size signal, which is what the arithmetic predicts; the rate is noisy and the
+dead window here was **0.2 s**, so a 0.2 s poll is at the counting limit and
+every count is a lower bound. `0/1/0` is not "size does nothing" evidence, it is
+three samples of a low-probability event.
+
+Also worth knowing for anyone continuing: in this module **nearly all dispatch
+is virtual**, so the drain (`0x10207488`), its caller, and the stream
+constructor (`0x10208844`) have no `bl` callers and no address materialised in
+`.text` or `.rodata`. They have to be reached from the objects, not from xrefs;
+`0x1048DAF8` (the three-pointer descriptor the engine seeds at `+8`) is a dead
+end for that.
+
 ## The pass state machine, and what survives a failure (2026-11-03, same build)
 
 The pass is a wire **reader**: states are a byte at `this+8`, set only through
