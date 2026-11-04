@@ -311,3 +311,31 @@ writes length-driven into the session (the per-type handlers
 `0x10105xxx`/`0x10106xxx` — next mapping step), or a cap-bypass shape.
 
 Device stress: one `SetAVTransportURI` shot; unit healthy after.
+
+### 2026-11-04 (SageElm, mgs7) — RCE shot fired; correction to the reach claim
+
+`R_root_rce.aa` (activation len 12400, fake observer ptr `0xBAADC0DE` +
+generation/flag markers at the computed +30000 landing, per the user's
+fake-vtable model): **ACCEPT, no down, daemon healthy** — same as
+`M_reach_30000.aa`. Two independent reach-PoCs now falsify the far-write
+model.
+
+**Correction to my earlier reach claim:** the "L ≈ 12349 lands on +30000"
+arithmetic conflated the *read* length (parse-frame, 128-B chunks via
+`0x10346d1c`) with the *session write*. The session write is
+`strlcpy(+17651, +7405, 4097)` — hard-capped; last written byte = session
+**+21747** (the NUL). **The activation overflow reaches no pointer field**:
++21748 (the state flag) itself is one byte past the NUL. mgs7's falsifier
+branch fires for the +30000 cell via this path.
+
+What remains true and useful:
+- The observer cell +30000 and its two bctrl vcalls (slots 8/26 via
+  0x102bf778) are real and remain the in-object PC-control candidate — but
+  reaching it needs a different write primitive: an entry type whose handler
+  copies TOC-length bytes into session fields (per-type handlers
+  `0x10105xxx`/`0x10106xxx`, unmapped), or the +28012/28020/28024 string
+  fields if any is length-filled (current evidence: scalar inits).
+- The C/F kill mechanism (short-read/long-expect mismatch in the chunked
+  reader) stands, bisection-proven.
+
+Device stress this session: 1 shot (`R_root_rce`); unit healthy after.
