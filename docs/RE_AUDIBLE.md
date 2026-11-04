@@ -137,3 +137,34 @@ check is computed byte-wise; no `li 25/26/27` clusters exist (codes are
 computed/derived). Faulting-instruction capture therefore needs the devmode
 console or qemu instrumentation — static-only anchoring has hit its limit;
 the overshoot-read signature above is the search image for that step.
+
+## 2026-11-04 (SageElm) — Unicorn PPC32 harness (`recon/tnzm_audible/ppc_emu.py`)
+
+Base built per the hhid_emu.py template; running state:
+
+- **Works:** PT_LOAD mapping; the 478 DT_JMPREL PLT slots resolved by name
+  (ELF32 PPC `r_info` sym is `info>>8` — the first parse used `&0xFFFFFF`
+  and produced garbage); `.plt` slots patched with `b` into an emulation
+  region at **0x1052d000** (the free gap between PT_LOAD1's page end
+  0x1052d000 and PT_LOAD2's page start 0x1053c000 — the first EMU choice
+  0x50000000 was outside the PPC ±32 MB branch range and left slots as
+  zero words, which sent execution into the weeds at 0x10000544);
+  `GetErrorString`-style leaf calls and strlcpy/memcpy/memset/strlen/
+  malloc/free/pthread_* hooks; SDA/TOC base regs (r13 = .sdata+0x8000,
+  r2 = .got2+0x8000); RET-filled stack so epilogues restore LR cleanly.
+- **Verified:** handler `0x10118ad8` prologue + save/restore + first call
+  into `0x10371fc0` executes; PLT hooking intercepts
+  pthread_mutex/getspecific traffic (20+ calls emulated).
+- **Blocked at:** the transport-type virtual call at `0x102b263c` —
+  `lwz r9,24(r9)` on the object at `this+1656` needs a *constructed*
+  transport object (vtable + state), which the synthetic zeroed `this`
+  doesn't provide; emulation dies at pc=0x4 on `bctrl` to a garbage slot.
+  The overshoot read sits downstream of that open.
+
+**Next emulator step:** construct the minimal transport/stream object graph
+(the +1656 object's vtable comes from the class whose ctor is reachable from
+the audible chain), or bypass the open entirely by driving the *stream-data*
+consumer functions directly with the PoC mapped at POC (0x55000000). The
+destination answer the overshoot read needs (which buffer, which offset) is
+one object-construction session away; the harness removes all loader/PLT
+friction from that work.
