@@ -896,3 +896,20 @@ design was built on this misidentified function; the flip falsification is
 void (the wrong function was called, so no conclusion about rmtShell).
 The rmtShell key itself (0x1049875c) remains real — its registry setter is
 still unfound. The registry-write hunt continues with the correct target.
+
+### 2026-11-05 (audit 2): the S band SHIFTS after every successful reboot
+
+The verify experiment (the proven V5+/sbin/reboot combo at S=0x106CDD00,
+post-reboot) produced NO reboot signature — only 1 ping loss. The
+calibration was measured in the PREVIOUS daemon lifetime; the gadget's own
+reboot re-seeded the heap (uClibc brk), shifting the session address.
+
+THE CORRECT PROTOCOL (next session):
+1. After any reboot, RE-CALIBRATE: sweep the canary discriminator
+   (FN=0x51000000, 1.0s crash = chain live) across the band at 0x400 steps.
+2. The shift is likely a FIXED delta (deterministic boot allocations):
+   measure old-band → new-band once, then apply the delta forever.
+3. Then re-fire the V5/reboot combo at the shifted S.
+
+This also explains the earlier calibration variance (the 8-candidate calib
+ran across an unrecorded reboot boundary).
