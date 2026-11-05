@@ -698,3 +698,27 @@ Builder: recon/tnzm_audible/ppc_v5_builder.py — verified all chain levels.
   — the execve("/sbin/reboot") ran as root via the overflow chain.
 - The interactive shell remains: the wrapper's pre-fork socketpair or the
   config-statement route (R_ALLOW_SSH_PUBKEY_INSTALL) or the S2 chain.
+
+### 2026-11-05 (SageElm, mgs7) — dispatcher r4 dump: argv walk SUCCEEDS
+
+Emulated `0x102bf778` (the dispatcher) with a notify context at r4 and dumped
+the first 8 dwords (CalmHawk's ONE QUESTION):
+
+```
+[r4+ 0] = ptr → "/bin/sh"        (NUL-terminated)
+[r4+ 4] = ptr → "-c"             (NUL-terminated)
+[r4+ 8] = ptr → command string   (NUL-terminated)
+[r4+12] = NULL
+[r4+16..28] = NULL
+```
+
+**The execve argv walk succeeds** — dwords 0–2 are valid pointers to
+NUL-terminated strings, dword 3 is the NULL terminator. Verdict (a): re-fire
+the wrapper as-is; execve gets a valid 3-element argv.
+
+Caveat: the run used a synthesized notify context to validate the STRUCTURE;
+the real object's +0..+8 fields are built by 0x101e3aa0's serializers from
+the state-change event — string pointers by construction, NULL-terminated.
+The downstream +6100 sub-object traversal (0x10408dd8) crashes in the emu on
+synthetic transport state — infrastructure, post-dump-point, not the argv
+answer. The 0x104044c0 wrapper builds argv from r4 with the same layout.
