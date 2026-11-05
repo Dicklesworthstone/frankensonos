@@ -679,3 +679,22 @@ not a string at r3):
   For ROOT: path = any executable (e.g. a fetched script) with argv=r4 caveat.
 
 Builder: recon/tnzm_audible/ppc_v5_builder.py — verified all chain levels.
+
+### 2026-11-05: V5 execve wrapper + the reboot proof (final session sections)
+
+- The fork/execve wrapper at 0x104044C0 (frame -1104): r3 = arg struct,
+  reads ONLY [struct+0] = the path pointer; fork → execve(path, r4, static_envp).
+  Zero static callers (runtime vtable) — callable directly as the dispatcher FN.
+- The V5 layout: [F+6404]=A, [A+8]=B, [B]=V, FN=[V+28]=0x104044C0, path string
+  AT V — [B]=V serves as BOTH the dispatcher's vtable pointer AND the wrapper's
+  path pointer (self-consistent single dword).
+- r3 resolution: system@plt via r3=B is structurally dead on PPC (leading 0x00
+  byte in every mapped address → empty command). The execve wrapper bypasses it
+  (path is a POINTER, not an inline string).
+- S computation (SageElm): S = 0x106CE100 ± 0x1000 (boot floor 0x106BEA50 +
+  SetAV-path sequence; cross-checked +6380/+30000/+30028).
+- DEVICE PROOF: FN execution confirmed by 4 reboot signatures (0x106CDD00
+  49.4s, 0x106CE500 38.2s, 0x106CED00 49.6s, 0x106CF100 37.4s ping-loss spans)
+  — the execve("/sbin/reboot") ran as root via the overflow chain.
+- The interactive shell remains: the wrapper's pre-fork socketpair or the
+  config-statement route (R_ALLOW_SSH_PUBKEY_INSTALL) or the S2 chain.
