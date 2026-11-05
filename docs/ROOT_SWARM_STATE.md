@@ -1052,3 +1052,12 @@ the +21752..+25815 "pointer-reached data" region (from the session map) may
 contain a pointer chain leading to the update state. The overflow controls
 the pointer VALUES in that range → if one leads to the update-state, the
 overflow REACHES it indirectly (write-what-where via the chained pointers).
+
+### 2026-11-05 (Route D): the session's overflow-reachable POINTER FIELDS mapped
+
+The ctor zeroes 6 pointer fields in the +21752..+25815 range (r26=0 at
+0x101036f0, then stw r26): +21756, +22800, +22804, +22808, +22816, +22824
+(two setup sites: 0x1010375c-88 and 0x10103b58-84). They get real values at
+RUNTIME. The overflow overwrites them → the daemon dereferences our values.
+SageElm dispatched: dump the live values via the emulator (the object types
++ whether one leads to the update state or a config-write).
