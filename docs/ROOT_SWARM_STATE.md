@@ -842,3 +842,23 @@ THE NEXT-SESSION PLAN (unchanged, plus one):
 3. The daemon-env probe: fire the wrapper with path=/bin/sh and a SEPARATE
    observer to determine whether /bin/sh even executes (the errno distinction
    between ENOENT and EFAULT is visible in the crash timing).
+
+### 2026-11-05 (late): the rmtShell LEAD — a native remote-shell setting
+
+The daemon's settings table at 0x10498754-0x104987a8 contains: devmode,
+rmtShell, unlockedBld, confdev, console — the DEV-MODE FLAGS. "/jffs/system/
+Configure.dev" is referenced in the same cluster (0x10498791).
+The rmtShell key handler (config-dump side): 0x102b21e8 (frame -5344,
+xref at 0x102b2518). The ACTION side (what spawns when rmtShell=1) is not
+yet located — the registry uses numeric IDs internally; the string→ID
+mapping needs the registration function (0x103725bc/0x103728bc callers).
+
+THE HYPOTHESIS: rmtShell=1 in the daemon's settings registry enables a
+remote-shell listener natively (no execve needed). If the overflow can
+WRITE the registry entry (the settings-save path reaches the +6380..+30380
+range?) or if the confdev/Configure.dev boot path can be armed, the shell
+opens WITHOUT the execve-argv problem.
+
+NEXT: map the settings registry ID for rmtShell (the registration walk),
+find the value-consumer function, and check whether the +24024 free()/unlink
+primitives (or a settings-save path) can flip it.
