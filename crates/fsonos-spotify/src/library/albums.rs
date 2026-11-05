@@ -72,7 +72,7 @@ mod tests {
             "name": format!("Movement {number}"),
             "artists": [{ "name": "Test Performer" }],
             "disc_number": 1, "track_number": number,
-            "duration_ms": 120_000, "is_playable": number != 2
+            "duration_ms": 120_000, "is_playable": number != 2, "explicit": false
         })
     }
 
@@ -122,6 +122,62 @@ mod tests {
             assert_eq!(item.genres, ["chamber music"]);
             assert_eq!(item.label.as_deref(), Some("Test Label"));
             assert_eq!(item.duration_secs, Some(120));
+        }
+    }
+
+    #[test]
+    fn album_content_flags_must_be_booleans_before_a_page_is_accepted() {
+        for explicit in [
+            None,
+            Some(Value::Null),
+            Some(json!(false)),
+            Some(json!(true)),
+        ] {
+            for embedded in [true, false] {
+                let mut read = LibraryRead::default();
+                if !embedded {
+                    ingest(&mut read, &saved(None));
+                    liked(&mut read);
+                }
+                let outstanding = read.next_url().unwrap().to_owned();
+                let before = read.items.clone();
+                let pages = read.pages_read();
+                let mut tracks = page(&[1, 2, 3], 0, None);
+                if let Some(value) = &explicit {
+                    tracks["items"][0]["explicit"] = value.clone();
+                } else {
+                    tracks["items"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("explicit");
+                }
+                let body = if embedded {
+                    saved(Some(tracks))
+                } else {
+                    tracks
+                };
+                let result = read.ingest(&serde_json::to_vec(&body).unwrap());
+                if let Some(explicit) = explicit.as_ref().and_then(Value::as_bool) {
+                    result.unwrap();
+                    if embedded {
+                        liked(&mut read);
+                    }
+                    assert_eq!(read.into_items()[0].explicit, explicit);
+                } else {
+                    assert!(matches!(result, Err(SpotifyError::Decode(_))));
+                    assert_eq!(read.items, before);
+                    assert_eq!(read.pages_read(), pages);
+                    assert_eq!(read.next_url(), Some(outstanding.as_str()));
+                    let corrected = page(&[1, 2, 3], 0, None);
+                    if embedded {
+                        ingest(&mut read, &saved(Some(corrected)));
+                        liked(&mut read);
+                    } else {
+                        ingest(&mut read, &corrected);
+                    }
+                    assert_recovered(read);
+                }
+            }
         }
     }
 

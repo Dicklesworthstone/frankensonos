@@ -391,7 +391,7 @@ fn album_tracks(uri: &str, rewrite: impl Fn(&[u8]) -> String) -> Response {
         json(
             200,
             r#"{"items":[{"artists":[{"name":"Frédéric Chopin"}],"duration_ms":330000,
-                "id":"FakeTrack0000000000008","is_playable":true,
+                "id":"FakeTrack0000000000008","is_playable":true,"explicit":false,
                 "name":"Nocturnes, Op. 48: No. 1 in C Minor",
                 "uri":"spotify:track:FakeTrack0000000000008"}],
                 "next":null,"offset":2,"limit":50,"total":3}"#,
@@ -402,6 +402,7 @@ fn album_tracks(uri: &str, rewrite: impl Fn(&[u8]) -> String) -> Response {
             serde_json::json!({
                 "artists": [{ "name": "Claude Debussy" }], "duration_ms": 240_000,
                 "disc_number": 1, "track_number": n, "id": id, "is_playable": true,
+                "explicit": false,
                 "name": format!("Suite bergamasque, L. 75: {name}"),
                 "uri": format!("spotify:track:{id}"),
             })
@@ -423,7 +424,7 @@ fn album_tracks(uri: &str, rewrite: impl Fn(&[u8]) -> String) -> Response {
         json(
             200,
             r#"{"items":[{"artists":[{"name":"Gustav Mahler"}],"duration_ms":604000,
-                "id":"FakeUnplayable00000002","is_playable":false,
+                "id":"FakeUnplayable00000002","is_playable":false,"explicit":false,
                 "name":"Symphony No. 5 in C-Sharp Minor: V. Rondo-Finale",
                 "uri":"spotify:track:FakeUnplayable00000002"}],
                 "next":null,"offset":0,"limit":50,"total":1}"#,

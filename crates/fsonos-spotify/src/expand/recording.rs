@@ -44,11 +44,12 @@ pub(super) fn expand(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
                 restored.disc_number = Some(track.disc_number);
                 restored.track_number = Some(track.track_number);
                 restored.track.duration_secs = restored.track.duration_secs.or(track.duration_secs);
-                restored
+                restored.explicit |= track.explicit.unwrap_or(false);
+                Some(restored)
             }
             None => super::filled_in(template, track),
         })
-        .collect();
+        .collect::<Option<_>>()?;
     let ordered: Vec<&ClassicalTrack> = movements.iter().collect();
     let mut full = build(&ordered);
     if full.completeness == Completeness::Unknown {

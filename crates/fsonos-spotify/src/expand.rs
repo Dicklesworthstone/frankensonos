@@ -194,8 +194,12 @@ async fn album_list<S: Store + ?Sized>(
     report: &mut Expansion,
 ) -> Option<Vec<AlbumTrack>> {
     match store.album_tracks(album_uri) {
-        Ok(Some(cached)) => return Some(cached.tracks),
-        Ok(None) => {}
+        Ok(Some(cached)) if cached.tracks.iter().all(|track| track.explicit.is_some()) => {
+            return Some(cached.tracks);
+        }
+        // Legacy rows have no explicit-content metadata. Refetch rather than
+        // treating their missing flag as permission to add a movement.
+        Ok(_) => {}
         Err(e) => {
             report.fail(album_uri, SpotifyError::from(e));
             return None;
@@ -334,6 +338,7 @@ pub(crate) fn album_track(t: &SimplifiedTrack) -> Option<AlbumTrack> {
         source_uri: t.uri.clone(),
         title: t.name.clone(),
         duration_secs: secs(t.duration_ms),
+        explicit: Some(t.explicit),
     })
 }
 
@@ -347,10 +352,11 @@ pub fn expand_work(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
 
 /// A missing movement, shaped like the work's held one: same composer,
 /// work, album and performers; its own title, position and energy.
-fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> ClassicalTrack {
+fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> Option<ClassicalTrack> {
+    let explicit = t.explicit?;
     let parts = split_title(&t.title);
     let (energy, energy_basis) = energy_from_title(parts.movement, parts.work);
-    ClassicalTrack {
+    Some(ClassicalTrack {
         track: Track {
             title: t.title.clone(),
             artist: template.track.artist.clone(),
@@ -365,7 +371,7 @@ fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> ClassicalTrack {
         classical: template.classical,
         period: template.period,
         genres: template.genres.clone(),
-        explicit: false,
+        explicit,
         year: template.year,
         taste_pm: 1000,
         work: template.work.clone(),
@@ -380,7 +386,7 @@ fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> ClassicalTrack {
         // Neutral: from the album, not the owner's own saving or liking.
         origin: Origin::SavedAlbum,
         expanded: true,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -582,6 +588,7 @@ mod tests {
             source_uri: format!("spotify:track:FakeSuite{n:013}"),
             title: format!("Suite in G: {movement}"),
             duration_secs: Some(120),
+            explicit: Some(false),
         };
         let album = [
             suite(1, "Prelude"),
@@ -796,6 +803,51 @@ mod tests {
             "off reads nothing"
         );
 
+        spotify.stop();
+        std::fs::remove_dir_all(&data_dir).unwrap();
+    }
+
+    #[test]
+    fn a_normal_album_read_refreshes_legacy_content_flags() {
+        let (spotify, cache, data_dir) = authorized("expand-legacy-content-flags");
+        spotify.state.lock().unwrap().rate_limit_albums = 0;
+        let endpoints = spotify.endpoints();
+        let state = Arc::clone(&spotify.state);
+        runtime().block_on(async move {
+            let cx = Cx::current().unwrap();
+            let http = Client::default_for_runtime(&cx);
+            let mut session = Session::open(config(), cache, http)
+                .unwrap()
+                .with_endpoints(endpoints);
+            let mut store = MemStore::default();
+            let mut legacy = fixture_album();
+            for track in &mut legacy {
+                track.explicit = None;
+            }
+            store.save_album_tracks(ALBUM, &legacy, NOW - 1).unwrap();
+            let (works, report) = complete_works(
+                &mut session,
+                &cx,
+                &mut store,
+                works_of(&[liked(ADAGIETTO, ALBUM)]),
+                &DjConfig::default(),
+                NOW,
+                &mut AlbumMisses::default(),
+            )
+            .await;
+            assert_eq!((report.completed, report.fetched), (1, 1));
+            assert_eq!(requests(&state, "/v1/albums/"), 2);
+            assert_eq!(works[0].movements.len(), 5);
+            assert!(
+                store
+                    .album_tracks(ALBUM)
+                    .unwrap()
+                    .unwrap()
+                    .tracks
+                    .iter()
+                    .all(|track| track.explicit == Some(false))
+            );
+        });
         spotify.stop();
         std::fs::remove_dir_all(&data_dir).unwrap();
     }

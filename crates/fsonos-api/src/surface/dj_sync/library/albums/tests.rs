@@ -55,6 +55,11 @@ fn recording() -> Vec<AlbumTrack> {
         source_uri: format!("spotify:track:{id}"),
         title: title.into(),
         duration_secs: Some(180),
+        explicit: match title {
+            "Prelude" => None,
+            "Scherzo" => Some(true),
+            _ => Some(false),
+        },
     })
     .collect()
 }
@@ -125,6 +130,8 @@ fn exercise(store: Box<dyn Store + Send>) {
     );
     assert!(!missing.explicit_known);
     assert!(!missing.explicit);
+    assert!(complete.items[1].explicit_known && complete.items[1].explicit);
+    assert!(complete.items[3].explicit_known && !complete.items[3].explicit);
     let known = &complete.items[2];
     assert_eq!(known.subtitle, "Known performer");
     assert!(known.explicit_known && known.explicit);
@@ -218,6 +225,17 @@ fn exercise(store: Box<dyn Store + Send>) {
     assert_ne!(
         before_hidden_change.revision, after_hidden_change.revision,
         "a changed hidden occurrence still replaces the album observation"
+    );
+    changed[0].explicit = Some(true);
+    log.store
+        .lock()
+        .unwrap()
+        .save_album_tracks(ALBUM, &changed, 101)
+        .unwrap();
+    assert_ne!(
+        after_hidden_change.revision,
+        read(&surface, &narrow).revision,
+        "new explicit-content evidence changes the album observation too"
     );
 }
 

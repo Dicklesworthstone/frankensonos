@@ -426,6 +426,11 @@ fn track(disc: u32, number: u32, title: &str) -> AlbumTrack {
         source_uri: format!("spotify:track:{disc}-{number}"),
         title: title.into(),
         duration_secs: (number != 3).then_some(600 + number),
+        explicit: match number {
+            1 => Some(false),
+            2 => Some(true),
+            _ => None,
+        },
     }
 }
 
@@ -457,6 +462,11 @@ fn album_tracks(s: &mut dyn Store) {
             ],
             fetched_at: 1_000,
         })
+    );
+    assert_eq!(
+        s.album_tracks_many(&[album]).unwrap(),
+        [(album.to_owned(), s.album_tracks(album).unwrap().unwrap())],
+        "batch reads preserve clean, explicit and unknown content flags too"
     );
     // A refetch replaces the whole list.
     s.save_album_tracks(album, &[track(1, 1, "I.")], 2_000)
@@ -888,7 +898,9 @@ fn sqlite_in_memory_conforms() {
     suite(&mut s);
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+        ]
     );
     s.close().unwrap();
 }
@@ -1018,7 +1030,9 @@ fn sqlite_file_survives_close_and_reopen() {
     let s = SqliteStore::open(&path).unwrap();
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+        ]
     );
     assert_eq!(
         s.playlist_scan_cursor("owner-a").unwrap().as_deref(),

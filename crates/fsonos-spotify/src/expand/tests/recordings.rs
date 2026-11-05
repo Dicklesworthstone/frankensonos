@@ -21,6 +21,7 @@ fn sections() -> Vec<AlbumTrack> {
         source_uri: format!("spotify:track:Section{number}"),
         title: format!("Requiem in D Minor, K. 626: {movement}"),
         duration_secs: Some(120),
+        explicit: Some(false),
     })
     .collect()
 }
@@ -209,6 +210,56 @@ fn recovered_positions_keep_a_liked_section_in_order_and_preserve_its_metadata()
         assert_eq!(full.total_secs, 960);
         assert!(expand_work(&full, &album).is_none());
     }
+}
+
+#[test]
+fn expanded_content_flags_obey_default_preferences_and_explicit_opt_in() {
+    use crate::dj::{PickContext, Rng, WorkPool, pick_next};
+    use crate::prefs::Preferences;
+    use crate::steer::Moods;
+
+    let mut album = sections();
+    let held = one(&album[3]);
+    album[0].explicit = Some(true);
+    let full = expand_work(&held, &album).unwrap();
+    assert!(full.movements[0].expanded && full.movements[0].explicit);
+    assert!(!full.movements[3].explicit);
+
+    let pool = WorkPool::from_works(vec![full]);
+    let config = DjConfig::default();
+    let context = PickContext::default();
+    assert!(pick_next(&pool, &context, &config, &mut Rng::new(1)).is_none());
+    let allowed = pool.with_preferences(
+        Preferences {
+            explicit: true,
+            ..Preferences::default()
+        },
+        &Moods::default(),
+    );
+    assert!(pick_next(&allowed, &context, &config, &mut Rng::new(1)).is_some());
+
+    // A newer catalog flag also cannot be erased by a clean held copy.
+    album[3].explicit = Some(true);
+    let full = expand_work(&held, &album).unwrap();
+    assert!(full.movements[3].explicit);
+    assert!(full.movements[3].origin.is_liked());
+}
+
+#[test]
+fn unknown_cached_content_flags_cannot_authorize_new_movements() {
+    let mut album = sections();
+    let held = one(&album[3]);
+    album[0].explicit = None;
+    assert!(expand_work(&held, &album).is_none());
+    let mut store = MemStore::default();
+    store.save_album_tracks(ALBUM, &album, NOW).unwrap();
+    assert_eq!(
+        complete_from_cache(&store, vec![held.clone()]).unwrap(),
+        [held.clone()],
+        "startup keeps the known held work until the legacy cache is refreshed"
+    );
+    album[0].explicit = Some(false);
+    assert_eq!(expand_work(&held, &album).unwrap().movements.len(), 8);
 }
 
 #[test]

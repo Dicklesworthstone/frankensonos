@@ -151,6 +151,70 @@ fn incomplete_albums_neither_poison_the_cache_nor_wait_a_week_for_a_corrected_re
 }
 
 #[test]
+fn absent_or_null_content_flags_cannot_replace_prior_album_metadata() {
+    let (spotify, cache, _) = authorized("expand-required-content-flags");
+    serve(&spotify, 0, &first_page());
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = Session::open(config(), cache, Client::default_for_runtime(&cx))
+            .unwrap()
+            .with_endpoints(spotify.endpoints());
+        let mut store = MemStore::default();
+        let mut prior = fixture_album();
+        prior[0].explicit = Some(true);
+        prior[1].explicit = None;
+        store.save_album_tracks(ALBUM, &prior, NOW - 1).unwrap();
+        let before = store.album_tracks(ALBUM).unwrap();
+        let items = [liked(ADAGIETTO, ALBUM)];
+        for explicit in [None, Some(Value::Null)] {
+            let mut bad = last_page();
+            if let Some(value) = explicit {
+                bad["items"][0]["explicit"] = value;
+            } else {
+                bad["items"][0].as_object_mut().unwrap().remove("explicit");
+            }
+            serve(&spotify, 3, &bad);
+            let mut misses = AlbumMisses::default();
+            let (works, report) = complete_works(
+                &mut session,
+                &cx,
+                &mut store,
+                works_of(&items),
+                &DjConfig::default(),
+                NOW,
+                &mut misses,
+            )
+            .await;
+            assert_eq!((report.completed, report.fetched), (0, 0));
+            assert_eq!(report.failed.len(), 1);
+            assert!(report.halted.is_none() && misses.is_empty());
+            assert_eq!(works[0].movements.len(), 1);
+            assert_eq!(store.album_tracks(ALBUM).unwrap(), before);
+        }
+
+        let mut corrected = last_page();
+        corrected["items"][0]["explicit"] = json!(true);
+        serve(&spotify, 3, &corrected);
+        let (works, report) = complete_works(
+            &mut session,
+            &cx,
+            &mut store,
+            works_of(&items),
+            &DjConfig::default(),
+            NOW,
+            &mut AlbumMisses::default(),
+        )
+        .await;
+        assert_eq!((report.completed, report.fetched), (1, 1));
+        let refreshed = store.album_tracks(ALBUM).unwrap().unwrap();
+        assert_eq!(refreshed.tracks[0].explicit, Some(false));
+        assert_eq!(refreshed.tracks[3].explicit, Some(true));
+        assert!(works[0].movements[3].explicit);
+    });
+    spotify.stop();
+}
+
+#[test]
 fn album_continuations_cannot_skip_repeat_or_switch_collections() {
     let (spotify, cache, _) = authorized("expand-coverage-links");
     let endpoints = spotify.endpoints();

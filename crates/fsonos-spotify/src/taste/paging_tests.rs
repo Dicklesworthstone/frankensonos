@@ -296,7 +296,7 @@ fn playlist(n: usize, owned: bool) -> Value {
 fn track(n: usize) -> Value {
     json!({ "uri": format!("spotify:track:TestTrack{n}"), "name": format!("Test song {n}"),
         "artists": [{ "name": "Test performer" }], "album": { "name": "Test album" },
-        "duration_ms": 180_000, "is_playable": true })
+        "duration_ms": 180_000, "is_playable": true, "explicit": false })
 }
 
 #[test]

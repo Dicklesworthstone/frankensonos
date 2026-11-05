@@ -72,10 +72,13 @@ impl AlbumContinuation {
             let start = order.partition_point(|uri| uri <= cursor);
             order.rotate_left(start);
         }
-        self.partial = self
-            .partial
-            .take()
-            .filter(|part| part.bounded() && albums.contains(&part.uri));
+        // Old checkpoints predate explicit-content metadata. Their tracks
+        // cannot be published as clean; restart the album instead.
+        self.partial = self.partial.take().filter(|part| {
+            part.bounded()
+                && part.tracks.iter().all(|track| track.explicit.is_some())
+                && albums.contains(&part.uri)
+        });
         if let Some(part) = &self.partial
             && let Some(index) = order.iter().position(|uri| uri == &part.uri)
         {
@@ -114,6 +117,8 @@ struct PartialTrack {
     source_uri: String,
     title: String,
     duration_secs: Option<u32>,
+    #[serde(default)]
+    explicit: Option<bool>,
 }
 
 impl From<AlbumTrack> for PartialTrack {
@@ -124,6 +129,7 @@ impl From<AlbumTrack> for PartialTrack {
             source_uri: track.source_uri,
             title: track.title,
             duration_secs: track.duration_secs,
+            explicit: track.explicit,
         }
     }
 }
@@ -136,6 +142,7 @@ impl From<PartialTrack> for AlbumTrack {
             source_uri: track.source_uri,
             title: track.title,
             duration_secs: track.duration_secs,
+            explicit: track.explicit,
         }
     }
 }
@@ -227,6 +234,7 @@ fn missing<S: Store + ?Sized>(store: &S, at: i64) -> Result<Vec<String>, Spotify
     let cached: HashSet<String> = store
         .album_tracks_many(&albums.iter().map(String::as_str).collect::<Vec<_>>())?
         .into_iter()
+        .filter(|(_, album)| album.tracks.iter().all(|track| track.explicit.is_some()))
         .map(|(uri, _)| uri)
         .collect();
     let misses = AlbumMisses::load(store, at)?;
@@ -327,11 +335,11 @@ async fn read_pages<S: Store + ?Sized>(
     notes: &mut Vec<String>,
 ) -> Result<(), SpotifyError> {
     let at = now();
+    let order = state.order(albums);
     let before = state
         .partial
         .as_ref()
         .map(|part| (part.uri.clone(), part.offset));
-    let order = state.order(albums);
     let mut misses = AlbumMisses::load(store, at)?;
     let mut requests = 0;
     'albums: for uri in order {

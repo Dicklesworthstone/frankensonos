@@ -12,6 +12,11 @@ fn track(n: u32) -> AlbumTrack {
         source_uri: format!("spotify:track:FakeTrack{n:013}"),
         title: format!("Movement {n}"),
         duration_secs: Some(100 + n),
+        explicit: match n % 3 {
+            0 => None,
+            1 => Some(false),
+            _ => Some(true),
+        },
     }
 }
 

@@ -383,7 +383,7 @@ fn movement(number: u32) -> Value {
             "name": "Test sonata recording", "uri": WORK_ALBUM,
             "artists": [{ "name": "Ludwig van Beethoven" }]
         },
-        "duration_ms": 180_000, "is_playable": true,
+        "duration_ms": 180_000, "is_playable": true, "explicit": false,
         "disc_number": 1, "track_number": number
     })
 }

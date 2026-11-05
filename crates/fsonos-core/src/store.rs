@@ -416,6 +416,9 @@ pub struct AlbumTrack {
     pub source_uri: String,
     pub title: String,
     pub duration_secs: Option<u32>,
+    /// Spotify's content flag. Older cache rows did not retain it; `None`
+    /// must be refreshed before this track can become an expanded movement.
+    pub explicit: Option<bool>,
 }
 
 /// An album's cached track list.

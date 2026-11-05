@@ -465,6 +465,7 @@ mod tests {
                 "duration_ms": 330_000,
                 "id": "FakeTrack0000000000008",
                 "is_playable": true,
+                "explicit": false,
                 "name": "Nocturnes, Op. 48: No. 1 in C Minor",
                 "uri": "spotify:track:FakeTrack0000000000008"
             }],

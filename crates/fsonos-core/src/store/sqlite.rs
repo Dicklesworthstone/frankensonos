@@ -216,6 +216,13 @@ const MIGRATIONS: &[Migration] = &[
             generation INTEGER NOT NULL);
     ",
     },
+    Migration {
+        version: 18,
+        name: "explicit-content metadata for expanded album movements",
+        sql: "
+        ALTER TABLE album_tracks ADD COLUMN explicit INTEGER;
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -1276,6 +1283,7 @@ impl Store for SqliteStore {
                     t.title.as_str().into(),
                     opt_value(t.duration_secs.map(i64::from)),
                     fetched_at.into(),
+                    opt_value(t.explicit.map(i64::from)),
                 ]
             })
             .collect();
@@ -1290,7 +1298,7 @@ impl Store for SqliteStore {
             c.execute_many_with_params_in_transaction_sync(
                 "INSERT OR REPLACE INTO album_tracks \
                  (album_uri, disc_number, track_number, source_uri, title, duration_secs, \
-                  fetched_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                  fetched_at, explicit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 &rows,
             )
             .map(drop)
@@ -1299,7 +1307,7 @@ impl Store for SqliteStore {
 
     fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError> {
         let rows = self.query(
-            "SELECT disc_number, track_number, source_uri, title, duration_secs, fetched_at \
+            "SELECT disc_number, track_number, source_uri, title, duration_secs, fetched_at, explicit \
              FROM album_tracks WHERE album_uri = ?1 ORDER BY disc_number, track_number",
             &[album_uri.into()],
         )?;
@@ -1318,6 +1326,7 @@ impl Store for SqliteStore {
                     duration_secs: opt_int(r, 4)?
                         .map(|d| u32_of(d, "duration_secs"))
                         .transpose()?,
+                    explicit: opt_int(r, 6)?.map(|value| value != 0),
                 })
             })
             .collect::<Result<_, StoreError>>()?;
@@ -1341,7 +1350,7 @@ impl Store for SqliteStore {
                 .join(", ");
             let sql = format!(
                 "SELECT album_uri, disc_number, track_number, source_uri, title, \
-                 duration_secs, fetched_at FROM album_tracks \
+                 duration_secs, fetched_at, explicit FROM album_tracks \
                  WHERE album_uri IN ({placeholders}) \
                  ORDER BY album_uri, disc_number, track_number"
             );
@@ -1356,6 +1365,7 @@ impl Store for SqliteStore {
                     duration_secs: opt_int(&row, 5)?
                         .map(|d| u32_of(d, "duration_secs"))
                         .transpose()?,
+                    explicit: opt_int(&row, 7)?.map(|value| value != 0),
                 };
                 let fetched_at = int(&row, 6)?;
                 match out.last_mut() {
@@ -1974,6 +1984,46 @@ mod tests {
     }
 
     #[test]
+    fn legacy_album_content_flags_stay_unknown_until_refreshed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("legacy-albums.db")
+            .to_string_lossy()
+            .into_owned();
+        let album_uri = "spotify:album:LegacyCatalog";
+        let old = SqliteStore::open_migrated(&path, &MIGRATIONS[..17]).unwrap();
+        old.execute(
+            "INSERT INTO album_tracks \
+             (album_uri, disc_number, track_number, source_uri, title, duration_secs, fetched_at) \
+             VALUES (?1, 1, 1, ?2, 'I. Allegro', 180, 10)",
+            &[album_uri.into(), "spotify:track:LegacyMovement".into()],
+        )
+        .unwrap();
+        old.close().unwrap();
+
+        let mut store = SqliteStore::open(Path::new(&path)).unwrap();
+        let mut album = store.album_tracks(album_uri).unwrap().unwrap();
+        assert_eq!(album.tracks[0].explicit, None);
+        assert_eq!(album.fetched_at, 10);
+        assert_eq!(
+            store.album_tracks_many(&[album_uri]).unwrap(),
+            [(album_uri.to_owned(), album.clone())]
+        );
+        album.tracks[0].explicit = Some(true);
+        store
+            .save_album_tracks(album_uri, &album.tracks, 20)
+            .unwrap();
+        store.close().unwrap();
+
+        let store = SqliteStore::open(Path::new(&path)).unwrap();
+        let refreshed = store.album_tracks(album_uri).unwrap().unwrap();
+        assert_eq!(refreshed.tracks[0].explicit, Some(true));
+        assert_eq!(refreshed.fetched_at, 20);
+        store.close().unwrap();
+    }
+
+    #[test]
     fn v1_database_upgrades_in_place() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fsonos.db").to_string_lossy().into_owned();
@@ -1993,7 +2043,9 @@ mod tests {
         let store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -2034,7 +2086,9 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -2091,7 +2145,9 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            [
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");

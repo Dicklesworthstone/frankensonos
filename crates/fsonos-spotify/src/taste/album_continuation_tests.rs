@@ -22,7 +22,7 @@ fn movement(album: &str, number: u32) -> Value {
             "name": "Test sonata recording", "uri": format!("spotify:album:{album}"),
             "artists": [{ "name": "Ludwig van Beethoven" }]
         },
-        "duration_ms": 180_000, "is_playable": true,
+        "duration_ms": 180_000, "is_playable": true, "explicit": false,
         "disc_number": 1, "track_number": number
     })
 }
@@ -130,6 +130,20 @@ fn a_long_album_resumes_its_validated_pages_after_restart_before_any_cache_publi
     let server = Server::new();
     let count = u32::try_from(ALBUM_PAGE_BUDGET + 2).unwrap();
     album_pages(&server, ALBUM, count);
+    // One explicit track before the checkpoint, one on a later page.
+    for number in [1, count] {
+        let mut track = movement(ALBUM, number);
+        track["explicit"] = json!(true);
+        server.set(
+            &format!("{ROUTE}?offset={}", number - 1),
+            json!({
+                "items": [track], "offset": number - 1, "total": count,
+                "next": (number < count).then(|| {
+                    format!("{API}/albums/{ALBUM}/tracks?offset={number}")
+                })
+            }),
+        );
+    }
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let file = server.data.join("background-albums.db");
@@ -175,6 +189,9 @@ fn a_long_album_resumes_its_validated_pages_after_restart_before_any_cache_publi
             .unwrap()
             .unwrap();
         assert_eq!(album.tracks.len(), count as usize);
+        assert_eq!(album.tracks[0].explicit, Some(true));
+        assert_eq!(album.tracks[1].explicit, Some(false));
+        assert_eq!(album.tracks[count as usize - 1].explicit, Some(true));
         assert_eq!(
             works_from_store(&store)
                 .unwrap()
@@ -193,6 +210,86 @@ fn a_long_album_resumes_its_validated_pages_after_restart_before_any_cache_publi
             "completed work stays quiet"
         );
         store.close().unwrap();
+    });
+}
+
+#[test]
+fn legacy_album_caches_and_checkpoints_are_refreshed_before_expansion() {
+    use crate::client::SimplifiedTrack;
+    use crate::expand::album_track;
+
+    let server = Server::new();
+    let count = u32::try_from(ALBUM_PAGE_BUDGET + 2).unwrap();
+    album_pages(&server, ALBUM, count);
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut store = MemStore::default();
+        store.adopt_spotify_library_owner(OWNER).unwrap();
+        apply_library_read(&mut store, &[held(ALBUM)]).unwrap();
+        let uri = format!("spotify:album:{ALBUM}");
+        let legacy = (1..=count)
+            .map(|number| {
+                let track: SimplifiedTrack =
+                    serde_json::from_value(movement(ALBUM, number)).unwrap();
+                let mut track = album_track(&track).unwrap();
+                track.explicit = None;
+                track
+            })
+            .collect::<Vec<_>>();
+        store.save_album_tracks(&uri, &legacy, 10).unwrap();
+        assert_eq!(
+            works_from_store(&store)
+                .unwrap()
+                .work_of(&held(ALBUM).source_uri)
+                .unwrap()
+                .movements
+                .len(),
+            1,
+            "unknown flags never become clean expanded movements at startup"
+        );
+
+        let first = continue_with(&server, &cx, &mut store, None).await;
+        assert_eq!(first.albums.pending, 1);
+        assert_eq!(first.albums.advanced, ALBUM_PAGE_BUDGET);
+        assert_eq!(server.calls(ROUTE).len(), ALBUM_PAGE_BUDGET);
+        assert_eq!(store.album_tracks(&uri).unwrap().unwrap().tracks, legacy);
+
+        let mut saved = serde_json::to_value(&first.albums).unwrap();
+        for track in saved["partial"]["tracks"].as_array_mut().unwrap() {
+            track.as_object_mut().unwrap().remove("explicit");
+        }
+        let previous: AlbumContinuation = serde_json::from_value(saved).unwrap();
+        let restarted = continue_with(&server, &cx, &mut store, Some(&previous)).await;
+        assert_eq!(restarted.albums.advanced, ALBUM_PAGE_BUDGET);
+        let calls = server.calls(ROUTE);
+        assert_eq!(calls.len(), 2 * ALBUM_PAGE_BUDGET);
+        assert!(calls[ALBUM_PAGE_BUDGET].contains("offset=0"));
+        assert_eq!(store.album_tracks(&uri).unwrap().unwrap().tracks, legacy);
+
+        let done = continue_with(&server, &cx, &mut store, Some(&restarted.albums)).await;
+        assert_eq!((done.albums.completed, done.albums.pending), (1, 0));
+        assert_eq!(
+            server.calls(ROUTE).len(),
+            ALBUM_PAGE_BUDGET + count as usize
+        );
+        assert!(
+            store
+                .album_tracks(&uri)
+                .unwrap()
+                .unwrap()
+                .tracks
+                .iter()
+                .all(|track| track.explicit == Some(false))
+        );
+        assert_eq!(
+            works_from_store(&store)
+                .unwrap()
+                .work_of(&held(ALBUM).source_uri)
+                .unwrap()
+                .movements
+                .len(),
+            count as usize
+        );
     });
 }
 

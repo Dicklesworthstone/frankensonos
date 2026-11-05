@@ -116,7 +116,7 @@ mod tests {
             "name": format!("Song {number}"),
             "artists": [{ "name": "Test Artist" }],
             "album": { "name": "Test Album" },
-            "is_playable": true
+            "is_playable": true, "explicit": false
         })
     }
 

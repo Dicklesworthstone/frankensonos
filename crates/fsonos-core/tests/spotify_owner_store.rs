@@ -50,6 +50,7 @@ fn seed(store: &mut dyn Store) {
                 source_uri: TRACK.into(),
                 title: "Catalog song".into(),
                 duration_secs: Some(180),
+                explicit: Some(false),
             }],
             10,
         )

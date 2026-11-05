@@ -39,8 +39,9 @@ pub(super) fn items(
             row.disc_number = Some(track.disc_number);
             row.track_number = Some(track.track_number);
             row.duration_secs = track.duration_secs;
-            row.explicit = saved.is_some_and(|entry| entry.explicit);
-            row.explicit_known = saved.is_some();
+            row.explicit =
+                saved.is_some_and(|entry| entry.explicit) || track.explicit == Some(true);
+            row.explicit_known = saved.is_some() || track.explicit.is_some();
             row
         })
         .collect::<Vec<_>>();

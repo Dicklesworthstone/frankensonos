@@ -848,7 +848,8 @@ pub struct SimplifiedTrack {
     pub disc_number: u32,
     #[serde(default)]
     pub track_number: u32,
-    #[serde(default)]
+    /// Required evidence for saved albums and whole-work expansion; missing
+    /// metadata cannot be interpreted as a clean track.
     pub explicit: bool,
     #[serde(default)]
     pub is_local: bool,

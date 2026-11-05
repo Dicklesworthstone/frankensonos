@@ -583,9 +583,18 @@ fn completed_album_metadata_and_occurrences_reach_agent_text_and_structured_cont
         .map(|track_number| fsonos_core::store::AlbumTrack {
             disc_number: 1,
             track_number,
-            source_uri: "spotify:track:Repeated".into(),
+            source_uri: if track_number == 2 {
+                "spotify:track:Explicit".into()
+            } else {
+                "spotify:track:Repeated".into()
+            },
             title: format!("Movement {track_number}"),
             duration_secs: Some(180),
+            explicit: match track_number {
+                1 => None,
+                2 => Some(true),
+                _ => Some(false),
+            },
         })
         .collect::<Vec<_>>();
     store
@@ -623,11 +632,10 @@ fn completed_album_metadata_and_occurrences_reach_agent_text_and_structured_cont
             .collect::<Vec<_>>(),
         [Some(1), Some(2), Some(3)]
     );
-    assert!(
-        page.items
-            .iter()
-            .all(|row| !row.explicit_known && row.subtitle.is_empty())
-    );
+    assert!(!page.items[0].explicit_known && !page.items[0].explicit);
+    assert!(page.items[1].explicit_known && page.items[1].explicit);
+    assert!(page.items[2].explicit_known && !page.items[2].explicit);
+    assert!(page.items.iter().all(|row| row.subtitle.is_empty()));
     assert_eq!(page.items[0].source_uri, page.items[2].source_uri);
     let global = data(
         backend

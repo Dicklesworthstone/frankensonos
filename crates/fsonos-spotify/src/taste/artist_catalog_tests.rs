@@ -30,7 +30,7 @@ fn song(number: usize, artist_id: &str, artist_name: &str) -> Value {
         "name": format!("Song {number}"),
         "artists": [{ "id": artist_id, "name": artist_name }],
         "duration_ms": 210_000, "disc_number": 1, "track_number": number,
-        "is_playable": true
+        "is_playable": true, "explicit": false
     })
 }
 
