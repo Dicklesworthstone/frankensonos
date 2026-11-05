@@ -875,3 +875,15 @@ in our buffer) + the value in r5 could FLIP the setting to 1 without any
 execve. The setting's consumer (the native shell spawner) is then the
 persisted action.
 GoldMeadow has the dispatch (the registry-ID mapping + this setter decode).
+
+### 2026-11-05 08:30: the flip+reboot combo — no listener; session closed
+
+The V6 config-flip (FN=0x100F7BC8, addi r3,r3,8 + config-set, key="rmtShell",
+value="1") fired clean at the live band — no crash, the setter executed. The
+flip+reboot combo (flip ×2 + the reboot gadget, 8-min poll): no listener.
+Either the setter's value (the notify r4 as a string) stored empty, or
+rmtShell doesn't spawn a listener on 57.23.
+
+SESSION FINAL: FN-execution proven (5 reboots + 51.8s confirmation); the
+interactive shell needs device-side visibility OR the S2 decode OR the
+config-write primitive — all dispatched, all documented. Devices healthy.
