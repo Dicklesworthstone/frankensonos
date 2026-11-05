@@ -797,3 +797,26 @@ THE NEXT-SESSION PLAN (in order):
    file can be written via ANY primitive (the overflow's free()/unlink are
    root-powered), the daemon processes it at next boot.
 3. The S2/MIPS chain for .135 — the 0x4xxxxx binary decode (lanes).
+
+### 2026-11-05 06:45: the telnetd argv analysis (final for tonight)
+
+/usr/sbin/telnetd = a STANDALONE ELF (not busybox), getopt string
+"HSaf::t::d::s::c::m::l::p::n::v::w::" (11 opts with optional args).
+With garbage argv, getopt hits unknown options → exits before binding.
+run_sshd.sh execs telnetd WITHOUT "$@" — clean argv — but the execve of the
+SCRIPT passes the garbage argv to /bin/sh, which passes "$0" + nothing to
+telnetd... wait: `exec /usr/sbin/telnetd` in the script = telnetd gets the
+SCRIPT's argv minus the script name? NO — `exec cmd` in sh runs cmd with the
+CURRENT shell's "$1 $2..." as args ONLY if written as `exec cmd "$@"`.
+Written as `exec /usr/sbin/telnetd` (no "$@") = telnetd gets NO arguments —
+argv = ["/usr/sbin/telnetd"] ONLY. THE SCRIPT SOLVES THE ARGV PROBLEM!
+So the sshd-script fire SHOULD have worked... the execve of the SCRIPT needs
+the kernel to honor the shebang (#!/bin/sh) — the kernel loads /bin/sh with
+argv=[sh, script_path, garbage-args...]. The SCRIPT ignores positional params
+("$@" is never referenced!) → sh execs telnetd with a CLEAN argv. 
+=> the chain SHOULD work. The remaining variable: the access(X_OK) check on
+the device (the file IS r-xr-xr-x in the rootfs — should pass), OR the notify
+fire didn't happen in those two runs (the state variance — 4/8 candidates
+produced reboots; the SSH fires used cdd00 which DID reboot earlier).
+The next-session probe: fire run_sshd.sh TWICE (the double-fire pattern that
+triggered the notify in the extended fire) + poll port 23 for 5 min.
