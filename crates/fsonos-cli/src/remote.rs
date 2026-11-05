@@ -423,25 +423,17 @@ impl Daemon {
     ) -> Result<T, Failure> {
         let response = self.exchange(method, path, body, timeout);
         let (status, text) = response.map_err(|e| {
-            // A dropped response does not mean playback stopped. Mark its
-            // unknown outcome non-retryable; never replay it in direct mode.
-            let (code, hint) = if method == "POST" && path == "/announce" {
-                (
-                    ErrorCode::Internal,
-                    "The announcement may still be running. Check playback before sending it again.",
-                )
-            } else {
-                (ErrorCode::NotReady, "Retry, or run the command with --direct.")
-            };
             let detail = format!(
                 "the daemon at {} did not answer {method} {path}: {e}",
                 self.addr
             );
-            Failure::new(code, detail).with_hint(hint)
+            unconfirmed(method, path, ErrorCode::NotReady, detail)
         })?;
         if (200..300).contains(&status) {
             return serde_json::from_str(&text).map_err(|e| {
-                Failure::new(
+                unconfirmed(
+                    method,
+                    path,
                     ErrorCode::Internal,
                     format!("the daemon's answer to {method} {path} is unreadable: {e}"),
                 )
@@ -587,7 +579,8 @@ fn exchange_url(
             .map_err(|e| io::Error::other(e.to_string()))?;
         Ok((
             response.status,
-            String::from_utf8_lossy(&response.body).into_owned(),
+            String::from_utf8(response.body)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
         ))
     })
 }
@@ -603,10 +596,31 @@ fn refused(method: &str, path: &str, status: u16, text: &str) -> Failure {
             failure.upnp_code = api.upnp_code;
             failure
         }
-        Err(_) => Failure::new(
+        Err(_) => unconfirmed(
+            method,
+            path,
             ErrorCode::Internal,
             format!("the daemon answered {method} {path} with {status}: {text}"),
         ),
+    }
+}
+
+/// A missing or unreadable result cannot establish whether a mutation ran.
+/// This includes untyped proxy errors: an upstream timeout can arrive after
+/// the daemon committed a change. Only a complete typed refusal is authoritative.
+fn unconfirmed(method: &str, path: &str, read_code: ErrorCode, detail: String) -> Failure {
+    if matches!(method, "POST" | "PUT" | "DELETE") {
+        let hint = if method == "POST" && path == "/announce" {
+            "The announcement may still be running. Check playback and the action log before sending it again."
+        } else {
+            "The command may have completed or may still be running. Check the current state and action log before another action; do not automatically replay it or switch to --direct."
+        };
+        Failure::new(ErrorCode::OutcomeUncertain, detail).with_hint(hint)
+    } else if read_code == ErrorCode::NotReady {
+        Failure::new(read_code, detail)
+            .with_hint("Check that fsonos serve is reachable, then retry the read.")
+    } else {
+        Failure::new(read_code, detail)
     }
 }
 
@@ -664,7 +678,28 @@ fn parse_response(raw: &[u8]) -> io::Result<(u16, String)> {
     let mut rest = &raw[split + 4..];
     let (status, chunked) = parse_head(&head).ok_or_else(|| bad("no status line"))?;
     if !chunked {
-        return Ok((status, String::from_utf8_lossy(rest).into_owned()));
+        let mut length = None;
+        for line in head.lines().skip(1) {
+            if let Some((name, value)) = line.split_once(':')
+                && name.trim().eq_ignore_ascii_case("content-length")
+            {
+                let value = value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| bad("invalid Content-Length"))?;
+                if length
+                    .replace(value)
+                    .is_some_and(|previous| previous != value)
+                {
+                    return Err(bad("conflicting Content-Length headers"));
+                }
+            }
+        }
+        if length.is_some_and(|length| length != rest.len()) {
+            return Err(bad("incomplete or overlong response body"));
+        }
+        let body = std::str::from_utf8(rest).map_err(|_| bad("response body is not UTF-8"))?;
+        return Ok((status, body.to_owned()));
     }
     let mut body = Vec::new();
     loop {
@@ -683,13 +718,22 @@ fn parse_response(raw: &[u8]) -> io::Result<(u16, String)> {
         .map_err(|_| bad("bad chunk size"))?;
         rest = &rest[end + 2..];
         if size == 0 {
+            // The terminating chunk is followed by trailers and a final
+            // empty line. A lost terminator is not a complete acknowledgement.
+            if rest != b"\r\n" && !rest.ends_with(b"\r\n\r\n") {
+                return Err(bad("truncated chunk trailers"));
+            }
             break;
         }
         let chunk = rest.get(..size).ok_or_else(|| bad("truncated chunk"))?;
         body.extend_from_slice(chunk);
-        rest = rest.get(size + 2..).unwrap_or_default();
+        rest = rest
+            .get(size..)
+            .and_then(|after| after.strip_prefix(b"\r\n"))
+            .ok_or_else(|| bad("missing chunk delimiter"))?;
     }
-    Ok((status, String::from_utf8_lossy(&body).into_owned()))
+    let body = String::from_utf8(body).map_err(|_| bad("response body is not UTF-8"))?;
+    Ok((status, body))
 }
 
 /// Percent-encode a path segment or query value.
@@ -1174,9 +1218,120 @@ mod tests {
             })
             .unwrap_err();
         worker.join().unwrap();
+        assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
         assert!(!failure.retryable());
         assert!(failure.hint.contains("may still be running"));
         assert!(!failure.hint.contains("--direct"));
+    }
+
+    /// Receive the complete request, then answer once (or drop its reply).
+    /// Retain the listener so a second queued request cannot go unnoticed.
+    fn daemon_reply(method: &str, response: &[u8]) -> Result<serde_json::Value, Failure> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let daemon = Daemon {
+            addr: Endpoint::Socket(listener.local_addr().unwrap()),
+            token: None,
+            claim: None,
+        };
+        let response = response.to_vec();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).unwrap();
+            stream.write_all(&response).unwrap();
+            (listener, first)
+        });
+        let result = daemon.call(method, "/example", Some("{}"), Duration::from_secs(5));
+        let (listener, first) = worker.join().unwrap();
+        assert!(first.starts_with(&format!("{method} /example ")), "{first}");
+        listener.set_nonblocking(true).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "a command must be sent only once"
+        );
+        result
+    }
+
+    fn json_response(status: u16, body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn unconfirmed_mutations_are_not_retryable_after_lost_or_unreadable_replies() {
+        let replies = [
+            Vec::new(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{}".to_vec(),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n\"\xff\"".to_vec(),
+            json_response(200, "{\"incomplete\":"),
+            json_response(502, "upstream connection closed"),
+        ];
+        for method in ["POST", "PUT", "DELETE"] {
+            for reply in &replies {
+                let failure = daemon_reply(method, reply).unwrap_err();
+                assert_eq!(
+                    failure.code,
+                    ErrorCode::OutcomeUncertain,
+                    "{method}: {failure}"
+                );
+                assert!(!failure.retryable(), "{method}: {failure}");
+                assert!(failure.hint.contains("action log"), "{method}: {failure}");
+                assert!(!failure.hint.starts_with("Retry"), "{method}: {failure}");
+            }
+        }
+    }
+
+    #[test]
+    fn reads_keep_their_failure_classification_and_typed_refusals_are_preserved() {
+        assert_eq!(
+            daemon_reply("GET", &[]).unwrap_err().code,
+            ErrorCode::NotReady
+        );
+        assert!(daemon_reply("GET", &[]).unwrap_err().retryable());
+        assert_eq!(
+            daemon_reply("GET", &json_response(200, "{"))
+                .unwrap_err()
+                .code,
+            ErrorCode::Internal
+        );
+        for (code, status) in [(ErrorCode::PolicyDenied, 403), (ErrorCode::NotReady, 503)] {
+            let body = serde_json::json!({
+                "code": code, "detail": "request refused before dispatch", "hint": "daemon hint",
+                "suggestions": [], "upnp_code": null, "retryable": code.retryable(),
+            })
+            .to_string();
+            for method in ["GET", "POST", "PUT", "DELETE"] {
+                let failure = daemon_reply(method, &json_response(status, &body)).unwrap_err();
+                assert_eq!(failure.code, code, "{method}: {failure}");
+                assert_eq!(failure.hint, "daemon hint");
+                assert_eq!(failure.retryable(), code.retryable());
+                assert_eq!(
+                    daemon_reply(method, &json_response(200, "{}")),
+                    Ok(serde_json::json!({}))
+                );
+            }
+        }
     }
 
     /// What a daemon at a fresh listener receives for `forward(method, ...)`:
@@ -1210,7 +1365,9 @@ mod tests {
                 String::from_utf8(sent).unwrap(),
             )
         });
-        let _ = daemon.forward(method, "/scenes/evening", body);
+        let failure = daemon.forward(method, "/scenes/evening", body).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
+        assert!(!failure.retryable());
         worker.join().unwrap()
     }
 
@@ -1304,6 +1461,27 @@ mod tests {
             (404, "{\"a\":1}".to_string())
         );
         assert!(parse_response(b"HTTP/1.1 200 OK\r\n").is_err());
+    }
+
+    #[test]
+    fn responses_require_complete_and_consistent_http_framing() {
+        for raw in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n[]",
+            "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\n[]",
+            "HTTP/1.1 200 OK\r\nContent-Length: invalid\r\n\r\n[]",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 3\r\n\r\n[]",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]xx0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n",
+        ] {
+            assert!(parse_response(raw.as_bytes()).is_err(), "{raw:?}");
+        }
+        for raw in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\ncontent-length: 2\r\n\r\n[]",
+            "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n[]",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\nTrailer: value\r\n\r\n",
+        ] {
+            assert_eq!(parse_response(raw.as_bytes()).unwrap(), (200, "[]".into()));
+        }
     }
 
     #[test]

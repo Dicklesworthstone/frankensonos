@@ -686,8 +686,14 @@ fn from_daemon<T: DeserializeOwned>(
     path: &str,
 ) -> Result<T, Failure> {
     serde_json::from_value(answer?).map_err(|e| {
+        // The bridge decoded JSON, but a malformed receipt cannot confirm a write.
+        let code = if matches!(method, "POST" | "PUT" | "DELETE") {
+            ErrorCode::OutcomeUncertain
+        } else {
+            ErrorCode::Internal
+        };
         Failure::new(
-            ErrorCode::Internal,
+            code,
             format!("the daemon's answer to {method} {path} is unreadable: {e}"),
         )
     })

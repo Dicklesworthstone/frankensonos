@@ -131,9 +131,50 @@ fn every_control_error_and_malformed_success_is_terminal() {
     ] {
         for (path, body) in writes() {
             let (backend, reply) = fixture(Some(answer.clone()));
-            assert!(control(&backend, path, body).is_err(), "{path}");
+            let error = control(&backend, path, body).unwrap_err();
+            let data = error.data.as_ref().unwrap();
+            let code = answer
+                .as_ref()
+                .err()
+                .map_or(ErrorCode::OutcomeUncertain, |failure| failure.code);
+            assert_eq!(data["code"], code.as_str(), "{path}");
+            assert_eq!(data["retryable"], code.retryable(), "{path}");
+            if let Err(failure) = &answer {
+                assert_eq!(data["hint"], failure.hint, "{path}");
+            } else {
+                assert_eq!(data["hint"], code.default_hint(), "{path}");
+                assert!(!error.message.contains("Retry once"), "{path}");
+            }
             assert_eq!(reply.calls.lock().unwrap().len(), 1, "{path}");
         }
+    }
+}
+
+#[test]
+fn malformed_daemon_receipts_distinguish_mutations_from_reads() {
+    for (method, code) in [
+        ("POST", ErrorCode::OutcomeUncertain),
+        ("PUT", ErrorCode::OutcomeUncertain),
+        ("DELETE", ErrorCode::OutcomeUncertain),
+        ("GET", ErrorCode::Internal),
+    ] {
+        let failure =
+            from_daemon::<OutcomeDto>(Ok(json!({"not_an_outcome":true})), method, "/test")
+                .unwrap_err();
+        assert_eq!(failure.code, code, "{method}");
+        assert_eq!(failure.hint, code.default_hint(), "{method}");
+        assert!(!failure.retryable(), "{method}");
+    }
+}
+
+#[test]
+fn typed_daemon_refusals_preserve_their_retry_contract() {
+    let refusal = Failure::new(ErrorCode::NotReady, "the daemon is discovering")
+        .with_hint("Wait for discovery to finish, then retry.");
+    for method in ["POST", "PUT", "DELETE", "GET"] {
+        let failure = from_daemon::<OutcomeDto>(Err(refusal.clone()), method, "/test").unwrap_err();
+        assert_eq!(failure, refusal, "{method}");
+        assert!(failure.retryable(), "{method}");
     }
 }
 

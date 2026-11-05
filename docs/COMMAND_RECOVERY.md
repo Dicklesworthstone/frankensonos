@@ -34,6 +34,28 @@ one shared recovery budget, positive coordinator/address recovery, and
 read-back completion after an accepted write loses its acknowledgement.
 Physical-speaker acceptance is separate.
 
+## A lost daemon reply does not authorize another write
+
+The CLI and its forwarded stdio MCP tools report `OUTCOME_UNCERTAIN` when a
+POST, PUT, or DELETE loses its reply, returns an incomplete HTTP body, or
+supplies an unreadable result. This includes untyped proxy errors: the daemon
+may already have applied the action before a proxy times out. A valid JSON
+reply that does not match an MCP tool's expected result also leaves the action
+unconfirmed.
+
+These failures are not retryable. Inspect the current playback, queue, saved
+configuration, and action log before deciding on another action. Replaying a
+queue addition, a skip, a relative volume change, or a schedule creation could
+apply it twice; switching to direct mode does not recover the first result.
+Ordinary GET failures retain their read-only retry behavior. A complete typed
+daemon refusal preserves its original code, hint, and retryability, including
+a `NOT_READY` response that refused admission before execution.
+
+Loopback regressions in `fsonos-cli`'s `remote::tests` cover lost replies,
+malformed JSON, incomplete length/chunk framing, proxy errors, typed refusals,
+and a single dispatched request. `fsonos-mcp`'s daemon forwarding tests cover
+malformed mutation results and preserve authoritative daemon failures.
+
 ## A volume retry keeps its first allowance
 
 For absolute room and group volumes, the shared recovery path remembers the
