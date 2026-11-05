@@ -47,6 +47,21 @@ test('playlist pages preserve duplicate identities, original gaps and partial co
   assert.throws(() => { page.items[1].position = 2; }, TypeError);
 });
 
+test('playlist choices retain known explicit metadata without album coverage', () => {
+  const query = { kind: 'tracks', playlist_uri: playlistUri };
+  const page = L.pageOf(contents(), query);
+  for (const [index, explicit] of [false, true].entries()) {
+    const choice = L.choiceOf({ query, revision: page.revision, item: page.items[index] });
+    assert.equal(choice.item.explicit, explicit);
+    assert.equal(choice.item.explicit_known, true);
+    assert.equal(choice.albumObservation, null);
+    assert.equal(choice.item.position, 2 * index + 1);
+  }
+  for (const explicit of [undefined, null, 'false', 0]) {
+    assert.throws(() => P.itemOf({ ...contents().items[0], explicit }));
+  }
+});
+
 test('an unread playlist is distinct from an observed empty one', () => {
   const empty = { ...contents(), coverage: 'complete', source_total: 0, examined: 0, cached_total: 0,
     total: 0, next_offset: null, items: [] };

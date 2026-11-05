@@ -219,6 +219,16 @@ test('complete album validation rejects invented known metadata and duplicate or
   }
 });
 
+test('unknown album metadata still requires a complete observation when choosing a track', () => {
+  const query = { kind: 'tracks', album_uri: `spotify:album:${id(7)}` };
+  const raw = completedAlbumPage(query);
+  const choice = { query, revision: raw.revision, item: raw.items[0] };
+  assert.throws(() => L.choiceOf(choice), /complete album observation/);
+  assert.throws(() => L.choiceOf({ ...choice, albumObservation: {
+    coverage: 'library_subset', fetched_at: null, cached_total: 4,
+  } }), /complete album observation/);
+});
+
 test('album drill-down and filtering keep complete observation evidence in a selected occurrence', async () => {
   const f = fixture(); await f.model.open();
   f.hook(url => completedAlbumPage(queryFrom(url)));

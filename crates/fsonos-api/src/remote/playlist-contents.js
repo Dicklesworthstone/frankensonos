@@ -28,8 +28,9 @@ const PlaylistContents = (() => {
         || (raw.album != null && !text(raw.album))
         || (raw.album_uri != null && !uri(raw.album_uri, 'album'))
         || [raw.disc_number, raw.track_number, raw.duration_secs].some(v => v != null && !uint(v))) fail();
+    // Playlist reads require explicit metadata, unlike expanded album tracks.
     return Object.freeze({ kind: 'track', position: raw.position, source_uri: raw.source_uri,
-      title: raw.title, subtitle: raw.subtitle, explicit: raw.explicit, album: raw.album ?? null,
+      title: raw.title, subtitle: raw.subtitle, explicit: raw.explicit, explicit_known: true, album: raw.album ?? null,
       album_uri: raw.album_uri ?? null, disc_number: raw.disc_number ?? null,
       track_number: raw.track_number ?? null, duration_secs: raw.duration_secs ?? null, cached_tracks: null });
   }
