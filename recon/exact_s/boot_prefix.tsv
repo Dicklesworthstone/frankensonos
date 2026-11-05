@@ -1,0 +1,28 @@
+# boot-prefix allocation order — static DFS from the .ctors table (0x10545960, 10 entries) in table order.
+# order<TAB>site<TAB>fn<TAB>callee<TAB>arg_kind<TAB>arg_value   (arg_* joined from census.tsv)
+0	0x10434608	0x104345f4	free	dyn	?
+1	0x1038130c	0x103812e8	free	dyn	load r3, 4(r31)
+2	0x10380684	0x10380628	free	dyn	load r3, 4(r31)
+3	0x10380588	0x10380560	free	dyn	load r3, 4(r31)
+4	0x10434678	0x10434640	malloc	const	1
+5	0x104346bc	0x10434640	malloc	dyn	load r31, 0x1c(r1)
+6	0x10437284	0x104371a8	malloc	const	8
+7	0x104373b4	0x104371a8	free	dyn	?
+8	0x1043c538	0x1043c398	malloc	expr	r3+0x1
+9	0x1043c5f0	0x1043c398	free	dyn	?
+10	0x1043c690	0x1043c398	malloc	expr	r28+0x1d
+11	0x1043c708	0x1043c398	free	dyn	?
+12	0x10439650	0x10439604	realloc	dyn	load r3, 4(r3)
+13	0x1043969c	0x10439604	free	dyn	load r3, 4(r29)
+14	0x1043980c	0x104397f0	free	dyn	load r3, 4(r3)
+15	0x104370c4	0x10436ec8	free	dyn	?
+16	0x10434950	0x10434894	free	dyn	?
+17	0x104347a4	0x10434764	malloc	expr	r3+0x50
+18	0x10416344	0x104161dc	free	dyn	?
+19	0x103811b8	0x10381118	malloc	const	200
+20	0x1038126c	0x10381118	free	dyn	?
+21	0x103812b8	0x10381118	free	dyn	load r3, 4(r31)
+22	0x1040a978	0x1040a8dc	malloc	const	2048
+23	0x1040aaa0	0x1040a8dc	realloc	dyn	load r3, 0(r31)
+24	0x1034eb88	0x1034df8c	free	dyn	load r3, 0xc88(r3)
+25	0x1034ebd4	0x1034df8c	free	dyn	load r3, 0xc88(r3)

@@ -1,0 +1,443 @@
+site	fn	callee	arg_kind	arg_value	prev
+0x10007ba4	0x10007ba4	free	dyn	load r3, 0x5c40(r28)	stw r3, 0x5c3c(r9) | lis r26, 0x1054 | lwz r3, 0x5c40(r28) | lis r27, 0x1054
+0x10007be0	0x10007be0	free	dyn	load r3, 0x5c38(r26)	lis r9, 0x1054 | stw r3, 0x5c34(r9) | lis r28, 0x1054 | lwz r3, 0x5c38(r26)
+0x10007c10	0x10007c10	free	dyn	load r3, 0x5de8(r27)	mr r3, r29 | crclr cr1eq | bl 0x10546b98 | lwz r3, 0x5de8(r27)
+0x10007c40	0x10007c40	free	dyn	load r3, 0x5dd8(r28)	mr r3, r29 | crclr cr1eq | bl 0x10546b98 | lwz r3, 0x5dd8(r28)
+0x10007c5c	0x10007c5c	free	dyn	load r3, 0x5de4(r29)	stw r3, 0x5dd8(r28) | b 0x10007c6c | lis r29, 0x1054 | lwz r3, 0x5de4(r29)
+0x10007c9c	0x10007c9c	free	dyn	load r3, 0x5de8(r29)	addi r1, r1, 0x130 | blr  | lis r29, 0x1054 | lwz r3, 0x5de8(r29)
+0x10007cdc	0x10007cdc	free	dyn	load r3, 0x5c30(r29)	addi r1, r1, 0x130 | blr  | lis r29, 0x1054 | lwz r3, 0x5c30(r29)
+0x10007cf8	0x10007cf8	free	dyn	load r3, 0x5de0(r29)	stw r3, 0x5c30(r29) | b 0x10007c6c | lis r29, 0x1054 | lwz r3, 0x5de0(r29)
+0x10007d68	0x10007d68	free	dyn	load r3, 0x5c2c(r29)	addi r1, r1, 0x130 | blr  | lis r29, 0x1054 | lwz r3, 0x5c2c(r29)
+0x10009a10	0x10009a10	free	dyn	load r3, 0x5c40(r9)	bl 0x1035ba50 | bl 0x1036c430 | lis r9, 0x1054 | lwz r3, 0x5c40(r9)
+0x10009a1c	0x10009a1c	free	dyn	load r3, 0x5c38(r9)	lwz r3, 0x5c40(r9) | bl 0x10546c88 | lis r9, 0x1054 | lwz r3, 0x5c38(r9)
+0x10009a28	0x10009a28	free	dyn	load r3, 0x5c30(r9)	lwz r3, 0x5c38(r9) | bl 0x10546c88 | lis r9, 0x1054 | lwz r3, 0x5c30(r9)
+0x10009a34	0x10009a34	free	dyn	load r3, 0x5c2c(r9)	lwz r3, 0x5c30(r9) | bl 0x10546c88 | lis r9, 0x1054 | lwz r3, 0x5c2c(r9)
+0x10084cec	0x10084cec	malloc	const	458752	stw r9, 0x134(r1) | lis r3, 7 | stw r0, 0x70(r1) | stw r31, 0x138(r1)
+0x100850d4	0x100850d4	free	dyn	load r3, 0x5e80(r29)	bl 0x1008a73c | mr r3, r28 | bl 0x10081668 | lwz r3, 0x5e80(r29)
+0x1009561c	0x1009561c	free	dyn	?	li r4, 0 | bl 0x10415590 | mr r3, r29 | beq cr4, 0x1009559c
+0x100e144c	0x100e144c	malloc	const	574	stfd f0, 0x6c00(r31) | stw r29, 0x2b3c(r31) | stw r29, 0x2b38(r31) | stfd f13, 0x6bf8(r31)
+0x100e1810	0x100e1810	malloc	const	574	stfd f0, 0x6c00(r31) | stw r29, 0x2b3c(r31) | stw r29, 0x2b38(r31) | stfd f13, 0x6bf8(r31)
+0x100e18d0	0x100e18d0	free	dyn	load r3, 0x5c90(r9)	addi r3, r31, 0x1e64 | bl 0x10403b98 | lis r9, 0x1054 | lwz r3, 0x5c90(r9)
+0x100e19b4	0x100e19b4	free	dyn	load r3, 0x5c90(r9)	addi r3, r31, 0x1e64 | bl 0x10403b98 | lis r9, 0x1054 | lwz r3, 0x5c90(r9)
+0x100e1a98	0x100e1a98	free	dyn	load r3, 0x5c90(r9)	addi r3, r31, 0x1e64 | bl 0x10403b98 | lis r9, 0x1054 | lwz r3, 0x5c90(r9)
+0x100fe260	0x100fe260	free	dyn	load r3, 0x124(r30)	bl 0x1040b790 | mr r3, r30 | bl 0x10405934 | lwz r3, 0x124(r30)
+0x100fe2a4	0x100fe2a4	free	dyn	load r3, 0x124(r30)	bl 0x1040b790 | mr r3, r30 | bl 0x10405934 | lwz r3, 0x124(r30)
+0x10188f58	0x10188f58	free	dyn	load r3, 0(r3)	stw r29, 0x14(r1) | mr r29, r3 | stw r0, 0x24(r1) | lwz r3, 0(r3)
+0x10188fa4	0x10188fa4	free	dyn	load r3, 0(r3)	stw r29, 0x14(r1) | mr r29, r3 | stw r0, 0x24(r1) | lwz r3, 0(r3)
+0x10256d14	0x10256d14	free	dyn	?	addi r3, r30, 0xc0 | bl 0x102c1748 | mr r28, r3 | mr r3, r27
+0x10256d88	0x10256d88	free	dyn	?	li r4, 3 | crclr cr1eq | bl 0x10415590 | mr r3, r27
+0x102637d8	0x102637d8	malloc	dyn	?	addi r9, r9, -0x3810 | stw r30, 0x50(r31) | stw r9, 0(r31) | slwi r3, r29, 2
+0x102637f0	0x102637f0	malloc	dyn	?	addi r9, r9, 4 | stw r3, 0x64(r31) | mullw r3, r27, r9 | mullw r28, r27, r30
+0x102637fc	0x102637fc	malloc	dyn	?	mullw r28, r27, r30 | bl 0x10546560 | stw r3, 0x58(r31) | slwi r3, r28, 2
+0x1026380c	0x1026380c	malloc	dyn	?	bl 0x10546560 | mullw r0, r29, r30 | stw r3, 0x5c(r31) | slwi r3, r0, 3
+0x10263f60	0x10263f60	malloc	dyn	?	addi r9, r9, -0x3810 | stw r30, 0x50(r31) | stw r9, 0(r31) | slwi r3, r29, 2
+0x10263f78	0x10263f78	malloc	dyn	?	addi r9, r9, 4 | stw r3, 0x64(r31) | mullw r3, r27, r9 | mullw r28, r27, r30
+0x10263f84	0x10263f84	malloc	dyn	?	mullw r28, r27, r30 | bl 0x10546560 | stw r3, 0x58(r31) | slwi r3, r28, 2
+0x10263f94	0x10263f94	malloc	dyn	?	bl 0x10546560 | mullw r0, r29, r30 | stw r3, 0x5c(r31) | slwi r3, r0, 3
+0x10264704	0x10264704	free	dyn	load r3, 0x6c(r3)	addi r9, r9, -0x3810 | lwz r3, 0x6c(r3) | stw r9, 0(r31) | stw r29, 0x14(r1)
+0x10264714	0x10264714	free	dyn	load r3, 0x58(r31)	bl 0x10546c88 | li r29, 0 | lwz r3, 0x58(r31) | stw r29, 0x6c(r31)
+0x10264720	0x10264720	free	dyn	load r3, 0x5c(r31)	stw r29, 0x6c(r31) | bl 0x10546c88 | lwz r3, 0x5c(r31) | stw r29, 0x58(r31)
+0x1026472c	0x1026472c	free	dyn	load r3, 0x64(r31)	stw r29, 0x58(r31) | bl 0x10546c88 | lwz r3, 0x64(r31) | stw r29, 0x5c(r31)
+0x10264a0c	0x10264a0c	free	dyn	load r3, 0x6c(r3)	addi r9, r9, -0x3810 | lwz r3, 0x6c(r3) | stw r9, 0(r31) | stw r29, 0x14(r1)
+0x10264a1c	0x10264a1c	free	dyn	load r3, 0x58(r31)	bl 0x10546c88 | li r29, 0 | lwz r3, 0x58(r31) | stw r29, 0x6c(r31)
+0x10264a28	0x10264a28	free	dyn	load r3, 0x5c(r31)	stw r29, 0x6c(r31) | bl 0x10546c88 | lwz r3, 0x5c(r31) | stw r29, 0x58(r31)
+0x10264a34	0x10264a34	free	dyn	load r3, 0x64(r31)	stw r29, 0x58(r31) | bl 0x10546c88 | lwz r3, 0x64(r31) | stw r29, 0x5c(r31)
+0x10264ad0	0x10264ad0	free	dyn	load r3, 0x6c(r3)	addi r9, r9, -0x3810 | lwz r3, 0x6c(r3) | stw r9, 0(r31) | stw r29, 0x14(r1)
+0x10264ae0	0x10264ae0	free	dyn	load r3, 0x58(r31)	bl 0x10546c88 | li r29, 0 | lwz r3, 0x58(r31) | stw r29, 0x6c(r31)
+0x10264aec	0x10264aec	free	dyn	load r3, 0x5c(r31)	stw r29, 0x6c(r31) | bl 0x10546c88 | lwz r3, 0x5c(r31) | stw r29, 0x58(r31)
+0x10264af8	0x10264af8	free	dyn	load r3, 0x64(r31)	stw r29, 0x58(r31) | bl 0x10546c88 | lwz r3, 0x64(r31) | stw r29, 0x5c(r31)
+0x10289b04	0x10289b04	free	dyn	load r3, 0x5de8(r9)	bl 0x102a8738 | bl 0x10546448 | lis r9, 0x1054 | lwz r3, 0x5de8(r9)
+0x10289b10	0x10289b10	free	dyn	load r3, 0x5de4(r9)	lwz r3, 0x5de8(r9) | bl 0x10546c88 | lis r9, 0x1054 | lwz r3, 0x5de4(r9)
+0x10289b1c	0x10289b1c	free	dyn	load r3, 0x5de0(r9)	lwz r3, 0x5de4(r9) | bl 0x10546c88 | lis r9, 0x1054 | lwz r3, 0x5de0(r9)
+0x10289b28	0x10289b28	free	dyn	load r3, 0x5ddc(r9)	lwz r3, 0x5de0(r9) | bl 0x10546c88 | lis r9, 0x1054 | lwz r3, 0x5ddc(r9)
+0x10289b34	0x10289b34	free	dyn	load r3, 0x5dd8(r9)	lwz r3, 0x5ddc(r9) | bl 0x10546c88 | lis r9, 0x1054 | lwz r3, 0x5dd8(r9)
+0x10289b40	0x10289b40	free	dyn	load r3, 0x5dd4(r9)	lwz r3, 0x5dd8(r9) | bl 0x10546c88 | lis r9, 0x1054 | lwz r3, 0x5dd4(r9)
+0x1029b674	0x1029b674	free	dyn	?	lwz r4, 8(r1) | bl 0x10546870 | mr r29, r3 | mr r3, r30
+0x1029b740	0x1029b740	free	dyn	?	bl 0x10546160 | cmpwi cr7, r30, 0 | beq cr7, 0x1029b744 | mr r3, r30
+0x1034eb88	0x1034eb88	free	dyn	load r3, 0xc88(r3)	addi r9, r9, -0x1030 | mr r29, r3 | lwz r3, 0xc88(r3) | stw r9, 0(r29)
+0x1034ebd4	0x1034ebd4	free	dyn	load r3, 0xc88(r3)	addi r9, r9, -0x1030 | mr r29, r3 | lwz r3, 0xc88(r3) | stw r9, 0(r29)
+0x10358674	0x10358674	malloc	const	344	stw r0, 0x24(r1) | mr r30, r3 | li r3, 0x158 | beq 0x103586b8
+0x103586b4	0x103586b4	free	dyn	?	mr r3, r31 | beq cr7, 0x103586b8 | bl 0x105467c8 | mr r3, r31
+0x1035c010	0x1035c010	malloc	expr	r27+0x10	beq cr7, 0x1035c1ac | addi r29, r27, 0x10 | stw r26, 0(r30) | mr r3, r29
+0x1035c1a8	0x1035c1a8	free	dyn	?	stw r0, 0(r30) | b 0x1035c1b0 | beq cr4, 0x1035c1ac | mr r3, r26
+0x1035c298	0x1035c298	free	dyn	?	lwz r4, 0x20b8(r1) | mr r3, r31 | bl 0x105465c8 | mr r3, r31
+0x1035c398	0x1035c398	malloc	expr	r3+0x1	cmpwi cr7, r0, 0 | beq cr7, 0x1035c3c4 | lwz r3, 0x20c0(r1) | addi r3, r3, 1
+0x1035c3c0	0x1035c3c0	free	dyn	load r3, 0x20bc(r1)	lwz r0, 0x20c0(r1) | li r9, 0 | stbx r9, r31, r0 | lwz r3, 0x20bc(r1)
+0x103707fc	0x103707fc	malloc	const	1025	cmpwi cr7, r3, 0 | beq cr7, 0x1037081c | bne cr4, 0x10370804 | li r3, 0x401
+0x10370b34	0x10370b34	free	dyn	load r3, 8(r31)	beq cr7, 0x10370b3c | lwz r3, 8(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x10370b14
+0x1037f5e0	0x1037f5e0	malloc	dyn	?	addi r0, r31, 0x38 | bne 0x1037f5dc | mr r5, r0 | stw r5, 0x3c(r31)
+0x1037f668	0x1037f668	malloc	dyn	?	addi r0, r31, 0x38 | bne 0x1037f664 | mr r5, r0 | stw r5, 0x3c(r31)
+0x1037f750	0x1037f750	free	dyn	load r3, 0(r31)	cmpwi cr7, r0, 0 | beq cr7, 0x1037f754 | bl 0x1037f6b0 | lwz r3, 0(r31)
+0x1037f7a4	0x1037f7a4	free	dyn	load r3, 0(r31)	cmpwi cr7, r0, 0 | beq cr7, 0x1037f7a8 | bl 0x1037f6b0 | lwz r3, 0(r31)
+0x1037ff18	0x1037ff18	malloc	const	124	stw r9, 0xc(r3) | stw r9, 4(r3) | stw r9, 8(r3) | li r3, 0x7c
+0x1037ff68	0x1037ff68	malloc	const	124	stw r9, 0xc(r3) | stw r9, 4(r3) | stw r9, 8(r3) | li r3, 0x7c
+0x10380304	0x10380304	free	dyn	?	mr r30, r3 | mr r3, r31 | bl 0x105465c8 | mr r3, r31
+0x1038035c	0x1038035c	free	dyn	?	lwz r4, 0x18(r1) | bl 0x10546870 | mr r29, r3 | mr r3, r31
+0x10380588	0x10380588	free	dyn	load r3, 4(r31)	cmpwi cr7, r3, 0 | beq cr7, 0x10380594 | bl 0x105467c8 | lwz r3, 4(r31)
+0x10380684	0x10380684	free	dyn	load r3, 4(r31)	stw r0, 0x6c(r9) | lwz r3, 4(r31) | bl 0x10546038 | lwz r3, 4(r31)
+0x10380c9c	0x10380c9c	free	dyn	load r3, 4(r31)	stw r0, 0x6c(r9) | lwz r3, 4(r31) | bl 0x10546038 | lwz r3, 4(r31)
+0x103810d4	0x103810d4	free	dyn	load r3, 4(r31)	cmpwi cr7, r3, 0 | beq cr7, 0x103810e0 | bl 0x105467c8 | lwz r3, 4(r31)
+0x103811b8	0x103811b8	malloc	const	200	li r4, 5 | crclr cr1eq | bl 0x10415590 | li r3, 0xc8
+0x1038126c	0x1038126c	free	dyn	?	b 0x10381274 | mr r3, r31 | bl 0x105462d0 | mr r3, r31
+0x103812b8	0x103812b8	free	dyn	load r3, 4(r31)	lwz r3, 4(r3) | li r30, 0 | bl 0x105462d0 | lwz r3, 4(r31)
+0x1038130c	0x1038130c	free	dyn	load r3, 4(r31)	lwz r3, 4(r3) | li r30, 0 | bl 0x105462d0 | lwz r3, 4(r31)
+0x10392b08	0x10392b08	free	dyn	load r3, 0x2d10(r1)	beq cr7, 0x10392b0c | lwz r4, 0x2d14(r1) | bl 0x105465c8 | lwz r3, 0x2d10(r1)
+0x10396b00	0x10396b00	free	dyn	?	lwz r31, 0xc(r1) | addi r1, r1, 0x10 | mtlr r0 | blr 
+0x10396e98	0x10396e98	malloc	const	4	li r3, 4 | cmplwi cr7, r0, 0x12c | bgt cr7, 0x10396f80 | mulli r3, r0, 0xc
+0x10396fc0	0x10396fc0	free	dyn	load r26, 0x28(r1)	addi r1, r1, 0x40 | blr  | mr r3, r26 | li r22, 5
+0x103a4960	0x103a4960	free	dyn	load r3, 0xa(r9)	lwz r9, 2(r3) | addi r30, r30, 1 | add r9, r29, r9 | lwz r3, 0xa(r9)
+0x103a4974	0x103a4974	free	dyn	load r3, 2(r9)	lwz r11, 0xa8(r31) | lwz r9, 2(r11) | add r9, r29, r9 | lwz r3, 2(r9)
+0x103a49ac	0x103a49ac	free	dyn	load r3, 2(r3)	stw r28, 2(r9) | addi r29, r29, 0xe | bgt cr7, 0x103a4950 | lwz r3, 2(r3)
+0x103a49bc	0x103a49bc	free	dyn	load r3, 0xa8(r31)	bl 0x10546c88 | lwz r3, 0xa8(r31) | li r0, 0 | stw r0, 2(r3)
+0x103a49e0	0x103a49e0	free	dyn	?	bne cr7, 0x103a4a20 | li r29, 0 | mr r3, r31 | stw r29, 0x564(r31)
+0x103a4a10	0x103a4a10	free	const	0	lwz r30, 0x18(r1) | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x103a4a20	0x103a4a20	free	const	0	bl 0x10546c88 | li r0, 0 | stw r0, 0xb8(r31) | b 0x103a4924
+0x103a4a48	0x103a4a48	malloc	const	1384	stw r0, 0x14(r1) | stw r31, 0xc(r1) | bl 0x103a48dc | li r3, 0x568
+0x103a4c40	0x103a4c40	malloc	const	256	stw r0, 0x4cc(r31) | li r3, 0x100 | stw r9, 4(r31) | stw r9, 0(r31)
+0x103a4dd8	0x103a4dd8	malloc	const	256	stw r0, 0x4cc(r31) | li r3, 0x100 | stw r9, 4(r31) | stw r9, 0(r31)
+0x103a7b70	0x103a7b70	malloc	const	6	addi r22, r4, -0x18 | cmpwi cr7, r0, 0 | bne cr7, 0x103a7e84 | li r3, 6
+0x103a7bd8	0x103a7bd8	malloc	const	3	add r0, r0, r11 | clrlwi r21, r0, 0x10 | mulli r3, r21, 0xe | sth r21, 0(r25)
+0x103a7c64	0x103a7c64	malloc	dyn	?	addi r0, r3, 4 | cmplw cr7, r0, r23 | bgt cr7, 0x103a7ed8 | stw r19, 2(r31)
+0x103a7d94	0x103a7d94	malloc	dyn	?	stw r19, 0xa(r7) | lwz r29, 2(r25) | add r29, r27, r29 | lhz r3, 8(r29)
+0x103a8064	0x103a8064	malloc	dyn	?	stw r11, 8(r1) | bgt cr7, 0x103a8080 | cmpwi cr4, r0, 0 | mr r3, r0
+0x103a96b8	0x103a96b8	malloc	dyn	?	or. r0, r3, r3 | beq 0x103a964c | b 0x103a94b8 | mulli r3, r26, 0x12
+0x103a9a28	0x103a9a28	malloc	dyn	?	stw r0, 0xcc(r31) | stw r19, 0xc0(r31) | b 0x103a9934 | mr r3, r23
+0x103aa2c8	0x103aa2c8	malloc	dyn	?	stw r30, 0x48(r1) | mr r30, r5 | stw r0, 0x54(r1) | lhz r24, 0x5e(r1)
+0x103aa428	0x103aa428	free	dyn	load r31, 0(r30)	lwz r3, 0(r31) | cmpwi cr7, r3, 0 | bne cr7, 0x103aa450 | mr r3, r31
+0x103aa460	0x103aa460	free	dyn	load r31, 0xc(r1)	bl 0x103aa65c | li r0, 0 | stw r0, 0(r31) | mr r3, r31
+0x103b11a4	0x103b11a4	free	dyn	?	stw r0, 0x14(r1) | beq 0x103b11a8 | lbz r3, -1(r9) | subf r3, r3, r9
+0x103b11d0	0x103b11d0	malloc	const	0	blr  | mflr r0 | stwu r1, -0x10(r1) | stw r0, 0x14(r1)
+0x103b1264	0x103b1264	free	dyn	?	blr  | mflr r0 | stwu r1, -0x10(r1) | stw r0, 0x14(r1)
+0x103d4c04	0x103d4c04	realloc	dyn	load r27, 0xc(r1)	stw r9, 0x464(r11) | blr  | mr r3, r27 | li r4, 0
+0x103d4c18	0x103d4c18	realloc	dyn	?	b 0x103d4b80 | slwi r29, r29, 1 | mr r3, r27 | mr r4, r29
+0x103d4c44	0x103d4c44	free	dyn	?	bne 0x103d4c40 | mr r3, r26 | b 0x103d4b80 | mr r3, r27
+0x103d4e28	0x103d4e28	realloc	dyn	load r27, 0xc(r1)	stw r9, 0x464(r11) | blr  | mr r3, r27 | li r4, 0
+0x103d4e3c	0x103d4e3c	realloc	dyn	?	b 0x103d4da4 | slwi r29, r29, 1 | mr r3, r27 | mr r4, r29
+0x103d4e68	0x103d4e68	free	dyn	?	bne 0x103d4e64 | mr r3, r26 | b 0x103d4da4 | mr r3, r27
+0x103d4f6c	0x103d4f6c	free	dyn	load r3, 0x1c4(r9)	addi r3, r3, 0xe94 | bl 0x103e1da8 | lwz r9, 4(r28) | lwz r3, 0x1c4(r9)
+0x103d4fc8	0x103d4fc8	free	expr	r11+-0x10	addi r29, r29, 1 | cmpwi cr7, r11, 0 | addi r3, r11, -0x10 | beq cr7, 0x103d4f90
+0x103d4ff0	0x103d4ff0	free	dyn	load r0, 0xe08(r9)	lwz r0, 0xe08(r9) | cmpwi cr7, r0, 0 | mr r3, r0 | beq cr7, 0x103d4fa4
+0x103d511c	0x103d511c	free	dyn	load r3, 4(r29)	addic. r31, r31, -1 | addi r30, r30, 0xc | bge 0x103d50fc | lwz r3, 4(r29)
+0x103d5124	0x103d5124	free	dyn	load r3, 0(r29)	bge 0x103d50fc | lwz r3, 4(r29) | bl 0x10546c88 | lwz r3, 0(r29)
+0x103d512c	0x103d512c	free	dyn	?	bl 0x10546c88 | lwz r3, 0(r29) | bl 0x10546c88 | mr r3, r29
+0x103d514c	0x103d514c	free	dyn	?	mtlr r0 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x103d5178	0x103d5178	calloc	const	1	li r4, 8 | stw r30, 0x18(r1) | stw r31, 0x1c(r1) | stw r0, 0x24(r1)
+0x103d5190	0x103d5190	calloc	const	1	li r3, 0 | beq 0x103d527c | li r3, 1 | li r4, 0x20
+0x103d51a8	0x103d51a8	calloc	const	1	stw r3, 0(r29) | beq cr7, 0x103d52b4 | li r3, 1 | li r4, 0x1810
+0x103d51ec	0x103d51ec	malloc	dyn	load r3, 0x5b9c(r9)	lwz r3, 0x5b9c(r9) | li r0, 0x10 | stw r0, 0x468(r30) | rlwinm r3, r3, 1, 0, 0x1b
+0x103d52a8	0x103d52a8	free	dyn	load r3, 4(r29)	lwz r9, 4(r29) | lwz r3, 0x38(r9) | bl 0x103d9bc0 | lwz r3, 4(r29)
+0x103d52b0	0x103d52b0	free	dyn	load r3, 0(r29)	bl 0x103d9bc0 | lwz r3, 4(r29) | bl 0x10546c88 | lwz r3, 0(r29)
+0x103d52b8	0x103d52b8	free	dyn	load r29, 0x14(r1)	bl 0x10546c88 | lwz r3, 0(r29) | bl 0x10546c88 | mr r3, r29
+0x103d54cc	0x103d54cc	free	dyn	load r3, 0x1c4(r10)	li r29, 0 | stw r29, 0xf8(r10) | stw r29, 0(r9) | lwz r3, 0x1c4(r10)
+0x103d61c8	0x103d61c8	free	dyn	load r3, 0xc(r29)	lwz r30, 8(r29) | cmpwi cr7, r30, 0 | bne cr7, 0x103d61d0 | lwz r3, 0xc(r29)
+0x103d623c	0x103d623c	free	dyn	load r3, 0x20(r1)	bctr  | lwz r3, 0x20(r1) | cmpwi cr7, r3, 0 | beq cr7, 0x103d6240
+0x103d6338	0x103d6338	malloc	const	1	cmpwi cr7, r0, 0 | mr r3, r0 | bne cr7, 0x103d6338 | li r3, 1
+0x103d63c0	0x103d63c0	malloc	const	1	cmpwi cr7, r0, 0 | mr r3, r0 | bne cr7, 0x103d63c0 | li r3, 1
+0x103d64b4	0x103d64b4	malloc	const	1	lwz r3, 0x1c(r30) | cmpwi cr7, r3, 0 | bne cr7, 0x103d64b4 | li r3, 1
+0x103d64f0	0x103d64f0	free	dyn	load r3, 0x24(r1)	b 0x103d61e0 | lwz r3, 0x24(r1) | cmpwi cr7, r3, 0 | beq cr7, 0x103d64f4
+0x103d6514	0x103d6514	free	dyn	load r3, 0x24(r1)	b 0x103d6234 | lwz r3, 0x24(r1) | cmpwi cr7, r3, 0 | beq cr7, 0x103d6518
+0x103d6558	0x103d6558	free	dyn	load r3, 4(r9)	add r9, r9, r0 | lwz r3, 4(r9) | cmpwi cr7, r3, 0 | beq cr7, 0x103d6538
+0x103d65b0	0x103d65b0	free	dyn	load r3, 0x18(r9)	add r9, r9, r0 | lwz r3, 0x18(r9) | cmpwi cr7, r3, 0 | beq cr7, 0x103d6590
+0x103d6660	0x103d6660	calloc	dyn	?	cmpwi cr7, r3, 0 | stw r3, 0x94(r29) | beq cr7, 0x103d61e8 | li r4, 0x20
+0x103d67bc	0x103d67bc	free	dyn	load r3, 0x98(r29)	cmplw cr7, r0, r26 | ble cr7, 0x103d61e8 | lwz r3, 0x98(r29) | b 0x103d6684
+0x103d6a3c	0x103d6a3c	realloc	dyn	?	stw r30, 0x20(r1) | b 0x103d61ec | mr r3, r28 | li r4, 0
+0x103d6a70	0x103d6a70	realloc	dyn	?	b 0x103d60bc | mulli r29, r29, 0x18 | mr r3, r28 | mr r4, r29
+0x103d6a9c	0x103d6a9c	free	dyn	?	bne 0x103d6a98 | mr r3, r26 | b 0x103d5fb4 | mr r3, r28
+0x103d6b28	0x103d6b28	malloc	dyn	?	bne cr7, 0x103d623c | bne cr4, 0x103d60bc | b 0x103d6244 | mr r3, r30
+0x103d6c04	0x103d6c04	malloc	dyn	?	b 0x103d60bc | lwz r0, 0xb8(r1) | b 0x103d6b10 | mr r3, r30
+0x103d6c88	0x103d6c88	malloc	const	1	cmpwi cr7, r0, 0 | mr r3, r0 | bne cr7, 0x103d6c88 | li r3, 1
+0x103d6d58	0x103d6d58	calloc	dyn	?	li r0, 8 | stw r0, 0(r9) | b 0x103d6208 | li r4, 0x10
+0x103d6e88	0x103d6e88	malloc	const	1	cmpwi cr7, r0, 0 | mr r3, r0 | bne cr7, 0x103d6e88 | li r3, 1
+0x103d6f14	0x103d6f14	free	dyn	load r3, 4(r9)	b 0x103d6ee8 | lwz r9, 0xc(r29) | add r9, r30, r9 | lwz r3, 4(r9)
+0x103d817c	0x103d817c	free	expr	r3+-0x10	lwz r3, 0x3c(r9) | cmpwi cr7, r3, 0 | beq cr7, 0x103d8148 | addi r3, r3, -0x10
+0x103d81a4	0x103d81a4	free	dyn	load r3, 0xe08(r9)	lwz r3, 0xe08(r9) | cmpwi cr7, r3, 0 | beq cr7, 0x103d8158 | addi r30, r30, 1
+0x103d81f8	0x103d81f8	malloc	dyn	?	divwu r0, r27, r31 | cmplwi cr7, r0, 4 | blt cr7, 0x103d7750 | slwi r3, r31, 2
+0x103d9b18	0x103d9b18	calloc	const	1	stwu r1, -0x10(r1) | li r3, 1 | li r4, 0x2c | stw r0, 0x14(r1)
+0x103d9b84	0x103d9b84	free	dyn	?	lwz r31, 0xc(r1) | addi r1, r1, 0x10 | mtlr r0 | blr 
+0x103d9bdc	0x103d9bdc	free	dyn	?	mr r29, r3 | stw r0, 0x24(r1) | bl 0x103d9b2c | mr r3, r29
+0x103d9c3c	0x103d9c3c	malloc	const	0	stw r29, 0x14(r1) | mr r29, r4 | stw r30, 0x18(r1) | mr r30, r5
+0x103dd128	0x103dd128	free	dyn	?	mtlr r0 | lwz r30, 8(r1) | addi r1, r1, 0x10 | b 0x103dd0c8
+0x103dd138	0x103dd138	free	dyn	load r3, 4(r31)	bl 0x10546c88 | lwz r3, 4(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103dd10c
+0x103dd1e0	0x103dd1e0	realloc	dyn	load r27, 0(r3)	lwz r27, 0(r3) | slw r29, r0, r4 | mr r3, r27 | mr r4, r29
+0x103dd24c	0x103dd24c	realloc	dyn	load r28, 4(r31)	blr  | lwz r28, 4(r31) | mr r4, r29 | mr r3, r28
+0x103dd28c	0x103dd28c	free	dyn	?	bl 0x10546d00 | stw r30, 8(r31) | b 0x103dd198 | mr r3, r27
+0x103dd298	0x103dd298	free	dyn	?	mr r3, r27 | bl 0x10546c88 | b 0x103dd204 | mr r3, r28
+0x103e1ea8	0x103e1ea8	free	dyn	?	mtlr r0 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x103e2184	0x103e2184	realloc	dyn	load r23, 0x58(r31)	blr  | lwz r23, 0x58(r31) | mr r4, r15 | mr r3, r23
+0x103e21c8	0x103e21c8	malloc	const	1	cmpwi cr7, r15, 0 | mr r3, r15 | bne cr7, 0x103e21c8 | li r3, 1
+0x103e25fc	0x103e25fc	free	dyn	?	addi r5, r5, 4 | bdnz 0x103e25c0 | b 0x103e2058 | mr r3, r23
+0x103e2e14	0x103e2e14	malloc	const	1	mr r31, r4 | stw r0, 0x14(r1) | bne 0x103e2e14 | li r3, 1
+0x103e2edc	0x103e2edc	free	const	1	mtlr r0 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x103e2f90	0x103e2f90	free	const	1	mtlr r0 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x103e3044	0x103e3044	free	const	1	mtlr r0 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x103e30f8	0x103e30f8	free	const	1	mtlr r0 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x103e31ac	0x103e31ac	free	const	1	mtlr r0 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x103e31f8	0x103e31f8	malloc	const	1	divwu r0, r0, r4 | cmplw cr7, r0, r11 | mullw r3, r11, r4 | blt cr7, 0x103e3200
+0x103e3260	0x103e3260	calloc	const	1	stw r9, 0x4c(r30) | beq cr7, 0x103e32bc | li r3, 1 | li r4, 0x48
+0x103e329c	0x103e329c	calloc	const	1	addi r0, r30, 4 | bne cr7, 0x103e329c | stw r0, 0x28(r31) | b 0x103e32a4
+0x103e3314	0x103e3314	malloc	const	8	lwz r0, 0x44(r3) | li r3, 8 | cmpwi cr7, r0, 0 | beq cr7, 0x103e333c
+0x103e3344	0x103e3344	malloc	dyn	?	stw r10, 0(r3) | stw r3, 0x54(r31) | stw r30, 0x4c(r31) | mr r3, r30
+0x103e33a4	0x103e33a4	free	dyn	load r3, 0(r31)	cmpwi cr7, r31, 0 | beq cr7, 0x103e33c4 | lwz r3, 0(r31) | lwz r29, 4(r31)
+0x103e33bc	0x103e33bc	free	dyn	load r31, 0x54(r3)	stw r0, 4(r31) | mr r3, r31 | stw r0, 0(r31) | mr r31, r29
+0x103e33dc	0x103e33dc	realloc	dyn	load r3, 0x44(r30)	beq cr7, 0x103e33fc | lwz r4, 0x4c(r30) | lwz r3, 0x44(r30) | add r4, r0, r4
+0x103e3444	0x103e3444	free	dyn	load r3, 0x44(r28)	bl 0x103e337c | lwz r3, 0x44(r28) | cmpwi cr7, r3, 0 | beq cr7, 0x103e3448
+0x103e3470	0x103e3470	free	dyn	load r3, 0xc(r31)	cmpwi cr7, r30, 7 | addi r30, r30, 1 | beq cr7, 0x103e3474 | lwz r3, 0xc(r31)
+0x103e3484	0x103e3484	free	dyn	?	cmpwi cr7, r30, 0xe | addi r31, r31, 4 | ble cr7, 0x103e3458 | mr r3, r29
+0x103e3508	0x103e3508	free	dyn	load r3, 0(r30)	cmpwi cr7, r3, 0 | beq cr7, 0x103e350c | bl 0x103e50c0 | lwz r3, 0(r30)
+0x103e3528	0x103e3528	free	dyn	load r3, 0(r9)	lwz r3, 0(r3) | bl 0x103edf44 | lwz r9, 0xc(r30) | lwz r3, 0(r9)
+0x103e3530	0x103e3530	free	dyn	load r3, 0xc(r30)	lwz r9, 0xc(r30) | lwz r3, 0(r9) | bl 0x10546c88 | lwz r3, 0xc(r30)
+0x103e3550	0x103e3550	free	dyn	load r3, 0(r9)	lwz r3, 0(r3) | bl 0x103edf44 | lwz r9, 0x10(r30) | lwz r3, 0(r9)
+0x103e3558	0x103e3558	free	dyn	load r3, 0x10(r30)	lwz r9, 0x10(r30) | lwz r3, 0(r9) | bl 0x10546c88 | lwz r3, 0x10(r30)
+0x103e35c0	0x103e35c0	free	dyn	load r3, 0x30(r30)	bctrl  | lwz r0, 0x10(r28) | b 0x103e3578 | lwz r3, 0x30(r30)
+0x103e3628	0x103e3628	free	dyn	load r3, 0x34(r30)	bctrl  | lwz r0, 0x14(r28) | b 0x103e35e0 | lwz r3, 0x34(r30)
+0x103e3678	0x103e3678	free	dyn	load r3, 0x38(r30)	lwz r0, 0x1c(r28) | cmpw cr7, r31, r0 | blt cr7, 0x103e3654 | lwz r3, 0x38(r30)
+0x103e36dc	0x103e36dc	free	dyn	load r3, r9, r11	addi r31, r31, 1 | lwzx r3, r9, r11 | cmpwi cr7, r3, 0 | beq cr7, 0x103e36e0
+0x103e36ec	0x103e36ec	free	dyn	load r3, 8(r27)	bl 0x10546c88 | lwz r0, 4(r26) | b 0x103e36bc | lwz r3, 8(r27)
+0x103e36fc	0x103e36fc	free	dyn	load r3, 0xc(r27)	bl 0x10546c88 | lwz r3, 0xc(r27) | cmpwi cr7, r3, 0 | beq cr7, 0x103e3700
+0x103e3710	0x103e3710	free	dyn	load r3, 0x40(r30)	beq cr3, 0x103e373c | lwz r3, 0x40(r30) | cmpwi cr7, r3, 0 | beq cr7, 0x103e3714
+0x103e3720	0x103e3720	free	dyn	load r3, 0x44(r30)	bl 0x10546c88 | lwz r3, 0x44(r30) | cmpwi cr7, r3, 0 | beq cr7, 0x103e3724
+0x103e3730	0x103e3730	free	dyn	load r3, 0x48(r30)	bl 0x10546c88 | lwz r3, 0x48(r30) | cmpwi cr7, r3, 0 | beq cr7, 0x103e3734
+0x103e3738	0x103e3738	free	dyn	?	cmpwi cr7, r3, 0 | beq cr7, 0x103e3734 | bl 0x10546c88 | mr r3, r30
+0x103e37d4	0x103e37d4	calloc	const	1	lwz r28, 0xe48(r31) | bl 0x10546d00 | li r4, 0x88 | li r3, 1
+0x103e37fc	0x103e37fc	calloc	const	1	bl 0x103ebb20 | li r4, 4 | stw r3, 0x2c(r30) | li r3, 1
+0x103e380c	0x103e380c	calloc	const	1	bl 0x10546c68 | li r4, 4 | stw r3, 0xc(r30) | li r3, 1
+0x103e3820	0x103e3820	calloc	const	1	lwz r29, 0xc(r30) | stw r3, 0x10(r30) | li r4, 0x14 | li r3, 1
+0x103e3834	0x103e3834	calloc	const	1	li r4, 0x14 | stw r3, 0(r29) | li r3, 1 | lwz r29, 0x10(r30)
+0x103e38bc	0x103e38bc	calloc	dyn	load r3, 0x18(r31)	bne cr7, 0x103e3900 | lwz r3, 0x18(r31) | li r4, 0x38 | li r28, 0
+0x103e390c	0x103e390c	calloc	dyn	load r3, 0x1c(r31)	blt cr7, 0x103e38d8 | lwz r3, 0x1c(r31) | li r4, 0x34 | li r28, 0
+0x103e3990	0x103e3990	calloc	dyn	load r3, 0x18(r31)	bne cr7, 0x103e39f4 | lwz r3, 0x18(r31) | li r4, 0x38 | li r28, 0
+0x103e3a08	0x103e3a08	malloc	dyn	load r3, 4(r24)	li r28, 0 | stw r0, 0x10(r26) | lwz r3, 4(r24) | slwi r3, r3, 2
+0x103e3a18	0x103e3a18	malloc	dyn	?	bl 0x10546560 | lwz r0, 4(r24) | stw r3, 8(r26) | slwi r3, r0, 2
+0x103e3a38	0x103e3a38	calloc	dyn	load r3, 0x10(r26)	bge cr7, 0x103e3a54 | lwz r3, 0x10(r26) | li r4, 4 | lwz r29, 8(r26)
+0x103e3a80	0x103e3a80	calloc	dyn	load r3, 0x10(r31)	addze r0, r0 | stw r0, 0x14(r26) | lwz r3, 0x10(r31) | stw r0, 0x30(r26)
+0x103e3a90	0x103e3a90	calloc	dyn	load r3, 0x14(r31)	bl 0x10546c68 | li r4, 4 | stw r3, 0x30(r30) | lwz r3, 0x14(r31)
+0x103e3bf0	0x103e3bf0	calloc	const	1	bl 0x103e6208 | li r4, 0xb4 | stw r3, 0x3c(r29) | li r3, 1
+0x103e3c64	0x103e3c64	free	dyn	load r3, 0x40(r30)	lwz r27, 4(r31) | lwz r3, 0x40(r30) | cmpwi cr7, r3, 0 | beq cr7, 0x103e3c68
+0x103e3c7c	0x103e3c7c	free	dyn	load r3, 0x44(r30)	li r29, 0 | stw r29, 0x40(r30) | cmpwi cr7, r3, 0 | beq cr7, 0x103e3c80
+0x103e3c90	0x103e3c90	free	dyn	load r3, 0x48(r30)	lwz r3, 0x48(r30) | stw r29, 0x44(r30) | cmpwi cr7, r3, 0 | beq cr7, 0x103e3c94
+0x103e3ce0	0x103e3ce0	realloc	dyn	load r3, r29, r28	lwz r4, 0x10(r31) | addi r30, r30, 1 | lwzx r3, r29, r28 | slwi r4, r4, 2
+0x103e4ed4	0x103e4ed4	calloc	const	128	stfs f0, 0xc(r3) | stw r9, 0xb0(r3) | stw r24, 0(r3) | li r3, 0x80
+0x103e4fd4	0x103e4fd4	malloc	dyn	?	stw r9, 0x7c(r31) | lwz r27, 0x2c(r30) | li r28, 0 | slwi r3, r27, 2
+0x103e5090	0x103e5090	calloc	dyn	?	cmpw cr7, r30, r25 | ble cr7, 0x103e4fc8 | mulli r3, r24, 7 | li r4, 0x90
+0x103e50a0	0x103e50a0	calloc	dyn	load r3, 0xa4(r31)	bl 0x10546c68 | li r4, 4 | stw r3, 0x98(r31) | lwz r3, 0xa4(r31)
+0x103e50ec	0x103e50ec	free	dyn	load r3, 0(r31)	bl 0x103edf44 | addi r31, r30, 0x30 | lwz r3, 0(r31) | addi r31, r31, 0x10
+0x103e50fc	0x103e50fc	free	dyn	load r3, 0x24(r30)	bl 0x10546c88 | addic. r29, r29, -1 | bge 0x103e50e4 | lwz r3, 0x24(r30)
+0x103e5104	0x103e5104	free	dyn	load r3, 0x98(r30)	bge 0x103e50e4 | lwz r3, 0x24(r30) | bl 0x10546c88 | lwz r3, 0x98(r30)
+0x103e510c	0x103e510c	free	dyn	load r3, 0xa0(r30)	bl 0x10546c88 | lwz r3, 0x98(r30) | bl 0x10546c88 | lwz r3, 0xa0(r30)
+0x103e55e0	0x103e55e0	realloc	dyn	load r3, 0xa0(r31)	ble cr7, 0x103e55e8 | lwz r3, 0xa0(r31) | stw r4, 0xa4(r31) | slwi r4, r4, 2
+0x103e6228	0x103e6228	calloc	const	1	mr r28, r3 | stw r0, 0x24(r1) | lwz r29, 0x1c(r3) | li r3, 1
+0x103e6284	0x103e6284	free	dyn	?	stw r0, 0x14(r1) | beq 0x103e6288 | bl 0x10546d00 | mr r3, r31
+0x103e62c4	0x103e62c4	free	dyn	?	stw r0, 0x14(r1) | beq 0x103e62c8 | bl 0x10546d00 | mr r3, r31
+0x103e6304	0x103e6304	free	dyn	?	stw r0, 0x14(r1) | beq 0x103e6308 | bl 0x10546d00 | mr r3, r31
+0x103e63d8	0x103e63d8	malloc	const	68	fmr f29, f3 | addi r0, r1, 0x17 | li r23, 0 | rlwinm r22, r0, 0, 0, 0x1b
+0x103e6724	0x103e6724	malloc	const	32	ble cr7, 0x103e63f8 | li r23, 0 | li r3, 0x20 | lis r28, 0x4330
+0x103e6860	0x103e6860	malloc	const	232	slwi r0, r23, 2 | li r3, 0xe8 | li r30, 0 | lwzx r29, r20, r0
+0x103e7014	0x103e7014	malloc	dyn	?	lwz r9, 0x14(r1) | subf r9, r29, r9 | addi r9, r9, 1 | stw r9, 0x28(r27)
+0x103e7020	0x103e7020	malloc	dyn	?	stw r9, 0x28(r27) | bl 0x10546560 | stw r3, 0x10(r27) | mr r3, r20
+0x103e702c	0x103e702c	malloc	dyn	?	mr r3, r20 | bl 0x10546560 | stw r3, 0x14(r27) | mr r3, r20
+0x103e75b0	0x103e75b0	malloc	const	12	frsp f1, f1 | bl 0x103e6374 | stw r3, 8(r27) | li r3, 0xc
+0x103e75c8	0x103e75c8	malloc	dyn	?	slwi r28, r30, 2 | mr r3, r20 | addi r30, r30, 1 | lwz r29, 0xc(r27)
+0x103e7780	0x103e7780	free	dyn	load r3, 0x10(r31)	beq 0x103e7840 | lwz r3, 0x10(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103e7784
+0x103e7790	0x103e7790	free	dyn	load r3, 0x14(r31)	bl 0x10546c88 | lwz r3, 0x14(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103e7794
+0x103e77a0	0x103e77a0	free	dyn	load r3, 0x18(r31)	bl 0x10546c88 | lwz r3, 0x18(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103e77a4
+0x103e77d0	0x103e77d0	free	dyn	load r3, r9, r11	lwzx r11, r28, r9 | slwi r9, r29, 2 | addi r29, r29, 1 | lwzx r3, r9, r11
+0x103e77e8	0x103e77e8	free	dyn	load r3, r28, r9	ble cr7, 0x103e77b8 | lwz r9, 8(r31) | addi r30, r30, 1 | lwzx r3, r28, r9
+0x103e77f8	0x103e77f8	free	dyn	load r3, 8(r31)	bl 0x10546c88 | cmpwi cr7, r30, 0x10 | ble cr7, 0x103e77b4 | lwz r3, 8(r31)
+0x103e781c	0x103e781c	free	dyn	load r3, r11, r9	lwz r9, 0xc(r31) | slwi r11, r30, 2 | addi r30, r30, 1 | lwzx r3, r11, r9
+0x103e782c	0x103e782c	free	dyn	load r3, 0xc(r31)	bl 0x10546c88 | cmpwi cr7, r30, 2 | ble cr7, 0x103e780c | lwz r3, 0xc(r31)
+0x103e92e8	0x103e92e8	realloc	dyn	load r3, 0(r3)	lwz r9, 8(r3) | lwz r3, 0(r3) | slwi r9, r9, 2 | addi r4, r9, 8
+0x103e9300	0x103e9300	realloc	dyn	load r3, 4(r29)	stw r3, 0(r29) | slwi r4, r4, 2 | lwz r3, 4(r29) | addi r4, r4, 8
+0x103e932c	0x103e932c	malloc	expr	r3+0x1	mr r9, r3 | addi r3, r3, 1 | stwx r9, r28, r27 | lwz r27, 0(r29)
+0x103e93b4	0x103e93b4	malloc	expr	r29+0x2	mr r3, r27 | bl 0x10546848 | add r29, r29, r3 | addi r3, r29, 2
+0x103e93f0	0x103e93f0	free	dyn	?	mr r3, r26 | mr r4, r29 | bl 0x103e92c0 | mr r3, r29
+0x103e94a8	0x103e94a8	malloc	expr	r28+0x1	bl 0x10546848 | li r27, 0 | addi r28, r3, 1 | addi r3, r28, 1
+0x103e950c	0x103e950c	free	dyn	?	bne cr7, 0x103e9520 | addi r27, r27, 1 | bne cr6, 0x103e9520 | mr r3, r31
+0x103e9530	0x103e9530	free	dyn	?	lwz r0, 8(r30) | cmpw cr7, r29, r0 | b 0x103e94d4 | mr r3, r31
+0x103e9578	0x103e9578	malloc	expr	r27+0x1	li r28, 0 | bl 0x10546848 | addi r27, r3, 1 | addi r3, r27, 1
+0x103e95e0	0x103e95e0	free	dyn	?	addze r0, r28 | mr r28, r0 | b 0x103e95a4 | mr r3, r31
+0x103e9648	0x103e9648	free	dyn	load r3, r9, r11	addi r30, r30, 1 | lwzx r3, r9, r11 | cmpwi cr7, r3, 0 | beq cr7, 0x103e964c
+0x103e9658	0x103e9658	free	dyn	load r3, 0(r31)	bl 0x10546c88 | lwz r0, 8(r31) | b 0x103e9628 | lwz r3, 0(r31)
+0x103e9668	0x103e9668	free	dyn	load r3, 4(r31)	bl 0x10546c88 | lwz r3, 4(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103e966c
+0x103e9678	0x103e9678	free	dyn	load r3, 0xc(r31)	bl 0x10546c88 | lwz r3, 0xc(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103e967c
+0x103e96e4	0x103e96e4	calloc	const	1	stw r0, 0x24(r1) | bl 0x10546d00 | li r3, 1 | li r4, 0xe50
+0x103e9748	0x103e9748	free	dyn	load r3, 0(r31)	addi r29, r29, 1 | addi r31, r31, 4 | cmpwi cr7, r3, 0 | beq cr7, 0x103e974c
+0x103e98c0	0x103e98c0	free	dyn	load r3, 0xb20(r30)	blt cr7, 0x103e9878 | lwz r3, 0xb20(r30) | cmpwi cr7, r3, 0 | beq cr7, 0x103e98c4
+0x103e98f8	0x103e98f8	free	dyn	?	addi r31, r31, 4 | cmpw cr7, r29, r0 | blt cr7, 0x103e98d8 | mr r3, r30
+0x103e9bc8	0x103e9bc8	calloc	expr	r29+0x1	cmpw cr7, r29, r9 | bgt cr7, 0x103e9cd0 | li r4, 1 | addi r3, r29, 1
+0x103e9c1c	0x103e9c1c	calloc	expr	r31+0x1	bgt cr7, 0x103e9cd0 | stw r31, 8(r27) | addi r3, r31, 1 | li r4, 4
+0x103e9c30	0x103e9c30	calloc	expr	r9+0x1	lwz r9, 8(r27) | stw r3, 0(r27) | li r4, 4 | addi r3, r9, 1
+0x103e9c90	0x103e9c90	calloc	expr	r30+0x1	bgt cr7, 0x103e9cd0 | lwz r9, 4(r27) | lwz r29, 0(r27) | stwx r30, r28, r9
+0x103e9f80	0x103e9f80	calloc	const	1	bge cr7, 0x103ea020 | mr r30, r31 | li r4, 0x10 | li r3, 1
+0x103ea1b0	0x103ea1b0	malloc	const	-130	bl 0x103f6bc0 | li r3, -0x82 | b 0x103ea214 | bl 0x103f76ec
+0x103ea384	0x103ea384	free	dyn	load r3, 0x40(r27)	bl 0x103f6f24 | lwz r3, 0x40(r27) | cmpwi cr7, r3, 0 | beq cr7, 0x103ea388
+0x103ea394	0x103ea394	malloc	dyn	?	bl 0x10546c88 | mr r3, r28 | li r30, 0 | bl 0x103f76ec
+0x103ea418	0x103ea418	free	dyn	load r3, 0x44(r27)	bne 0x103ea7b0 | lwz r3, 0x44(r27) | cmpwi cr7, r3, 0 | beq cr7, 0x103ea41c
+0x103ea424	0x103ea424	malloc	dyn	?	beq cr7, 0x103ea41c | bl 0x10546c88 | mr r3, r28 | bl 0x103f76ec
+0x103ea734	0x103ea734	free	dyn	load r3, 0x48(r27)	lwz r3, 0x48(r27) | li r31, 0 | cmpwi cr7, r3, 0 | beq cr7, 0x103ea738
+0x103ea740	0x103ea740	malloc	dyn	?	beq cr7, 0x103ea738 | bl 0x10546c88 | mr r3, r28 | bl 0x103f76ec
+0x103ea808	0x103ea808	free	dyn	load r3, 0x40(r27)	bl 0x103f6bc0 | lwz r3, 0x40(r27) | cmpwi cr7, r3, 0 | beq cr7, 0x103ea80c
+0x103ea818	0x103ea818	free	dyn	load r3, 0x44(r27)	bl 0x10546c88 | lwz r3, 0x44(r27) | cmpwi cr7, r3, 0 | beq cr7, 0x103ea81c
+0x103ea828	0x103ea828	free	dyn	load r3, 0x48(r27)	bl 0x10546c88 | lwz r3, 0x48(r27) | cmpwi cr7, r3, 0 | beq cr7, 0x103ea82c
+0x103eac9c	0x103eac9c	calloc	const	1	mr r30, r3 | li r3, 1 | stw r0, 0x24(r1) | stw r12, 8(r1)
+0x103ead80	0x103ead80	malloc	dyn	load r3, 4(r31)	srawi r9, r9, 3 | cmpw cr7, r9, r11 | bgt cr7, 0x103eb008 | lwz r3, 4(r31)
+0x103eae3c	0x103eae3c	malloc	dyn	load r3, 4(r31)	addic. r28, r3, 1 | beq 0x103eb008 | lwz r3, 4(r31) | li r29, 0
+0x103eafb0	0x103eafb0	malloc	dyn	?	bgt cr7, 0x103eb008 | slwi r27, r28, 2 | li r29, 0 | mr r3, r27
+0x103ebcb8	0x103ebcb8	free	dyn	?	beq cr4, 0x103ebcc4 | slwi r3, r5, 2 | b 0x103ebcc8 | mr r3, r31
+0x103ebcc8	0x103ebcc8	malloc	const	0	bl 0x10546c88 | li r3, 0 | b 0x103ebe84 | slwi r3, r4, 2
+0x103ec050	0x103ec050	calloc	dyn	load r3, 0(r31)	lwz r3, 0(r31) | li r4, 4 | fmr f31, f1 | mullw r3, r30, r3
+0x103ec2d8	0x103ec2d8	free	dyn	load r3, 0x20(r3)	beq cr7, 0x103ec304 | lwz r3, 0x20(r3) | cmpwi cr7, r3, 0 | beq cr7, 0x103ec2dc
+0x103ec2e8	0x103ec2e8	free	dyn	load r3, 8(r31)	bl 0x10546c88 | lwz r3, 8(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103ec2ec
+0x103ec300	0x103ec300	free	dyn	?	li r4, 0 | li r5, 0x28 | bl 0x10546d00 | mr r3, r31
+0x103ec338	0x103ec338	free	dyn	load r3, 0x10(r3)	stw r0, 0x14(r1) | lwz r3, 0x10(r3) | cmpwi cr7, r3, 0 | beq cr7, 0x103ec33c
+0x103ec348	0x103ec348	free	dyn	load r3, 0x14(r31)	bl 0x10546c88 | lwz r3, 0x14(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103ec34c
+0x103ec358	0x103ec358	free	dyn	load r3, 0x18(r31)	bl 0x10546c88 | lwz r3, 0x18(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103ec35c
+0x103ec368	0x103ec368	free	dyn	load r3, 0x1c(r31)	bl 0x10546c88 | lwz r3, 0x1c(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103ec36c
+0x103ec378	0x103ec378	free	dyn	load r3, 0x20(r31)	bl 0x10546c88 | lwz r3, 0x20(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103ec37c
+0x103ec630	0x103ec630	malloc	dyn	?	mr r3, r23 | stwux r9, r1, r0 | addi r0, r1, 0x17 | rlwinm r29, r0, 0, 0, 0x1b
+0x103ec698	0x103ec698	free	dyn	?	stwx r0, r9, r11 | bdnz 0x103ec674 | mr r3, r25 | li r27, 0
+0x103ec6b8	0x103ec6b8	malloc	dyn	?	bl 0x103ebff0 | li r26, 0 | stw r3, 0x10(r28) | mr r3, r23
+0x103ec708	0x103ec708	malloc	expr	r26+0x1	addi r27, r27, 1 | bdnz 0x103ec6d4 | mr r3, r26 | li r27, 0
+0x103ec794	0x103ec794	calloc	const	2	bne cr7, 0x103ec7a8 | stw r26, 0x24(r28) | li r3, 2 | li r4, 4
+0x103ec7f4	0x103ec7f4	calloc	dyn	?	li r4, 4 | li r27, 0 | slw r22, r9, r0 | mr r3, r22
+0x103ed210	0x103ed210	malloc	dyn	?	stfd f28, 0x60(r1) | srawi r26, r31, 1 | stfd f29, 0x68(r1) | stfd f30, 0x70(r1)
+0x103ed220	0x103ed220	malloc	dyn	?	bl 0x10546560 | mr r19, r3 | add r3, r31, r23 | slwi r3, r3, 2
+0x103edf68	0x103edf68	free	dyn	load r3, 8(r31)	beq 0x103edf8c | lwz r3, 8(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103edf6c
+0x103edf78	0x103edf78	free	dyn	load r3, 0xc(r31)	bl 0x10546c88 | lwz r3, 0xc(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103edf7c
+0x103f0d18	0x103f0d18	calloc	dyn	?	stfd f28, 0x40(r1) | stfd f29, 0x48(r1) | stfd f30, 0x50(r1) | stfd f31, 0x58(r1)
+0x103f0d28	0x103f0d28	calloc	const	32	bl 0x10546c68 | stw r3, 4(r29) | li r4, 4 | li r3, 0x20
+0x103f0f4c	0x103f0f4c	free	dyn	load r3, 4(r31)	beq 0x103f0f70 | lwz r3, 4(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103f0f50
+0x103f0f5c	0x103f0f5c	free	dyn	load r3, 8(r31)	bl 0x10546c88 | lwz r3, 8(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x103f0f60
+0x103f0fac	0x103f0fac	free	dyn	?	stw r0, 0x14(r1) | beq 0x103f0fb0 | bl 0x10546d00 | mr r3, r31
+0x103f0fec	0x103f0fec	free	dyn	?	stw r0, 0x14(r1) | beq 0x103f0ff0 | bl 0x10546d00 | mr r3, r31
+0x103f123c	0x103f123c	calloc	const	1	stw r0, 0x154(r1) | li r23, 0 | lwz r24, 0x1c(r3) | li r3, 1
+0x103f1504	0x103f1504	calloc	const	1	li r3, 1 | mr r29, r4 | li r4, 0x520 | stw r0, 0x144(r1)
+0x103f3070	0x103f3070	free	dyn	?	stw r0, 0x14(r1) | beq 0x103f3074 | bl 0x10546d00 | mr r3, r31
+0x103f30b8	0x103f30b8	free	dyn	load r3, 0(r3)	beq cr7, 0x103f30d8 | lwz r3, 0(r3) | cmpwi cr7, r3, 0 | beq cr7, 0x103f30bc
+0x103f30cc	0x103f30cc	free	dyn	load r3, 4(r9)	lwz r9, 8(r31) | lwz r3, 4(r9) | cmpwi cr7, r3, 0 | beq cr7, 0x103f30d0
+0x103f30d4	0x103f30d4	free	dyn	load r3, 8(r31)	cmpwi cr7, r3, 0 | beq cr7, 0x103f30d0 | bl 0x10546c88 | lwz r3, 8(r31)
+0x103f30ec	0x103f30ec	free	dyn	?	li r4, 0 | li r5, 0x20 | bl 0x10546d00 | mr r3, r31
+0x103f3120	0x103f3120	malloc	const	96	mr r30, r4 | stw r0, 0x24(r1) | lwz r27, 0x1c(r3) | li r3, 0x60
+0x103f3268	0x103f3268	calloc	const	1	li r3, 1 | mr r28, r4 | li r4, 0x20 | stw r0, 0x24(r1)
+0x103f328c	0x103f328c	calloc	const	2	li r4, 4 | stw r0, 4(r29) | stw r9, 0(r29) | stw r28, 0x14(r29)
+0x103f359c	0x103f359c	malloc	expr	r3+0x4	fmadd f1, f1, f28, f29 | fmr f0, f31 | fadd f1, f1, f0 | fdiv f30, f30, f1
+0x103f37b4	0x103f37b4	free	dyn	?	stw r0, 0x14(r1) | beq 0x103f37b8 | bl 0x10546d00 | mr r3, r31
+0x103f380c	0x103f380c	free	dyn	load r3, r9, r11	addi r30, r30, 1 | lwzx r3, r9, r11 | cmpwi cr7, r3, 0 | beq cr7, 0x103f3810
+0x103f3820	0x103f3820	free	dyn	load r3, 0x14(r31)	lwz r0, 4(r31) | b 0x103f37ec | lwz r3, 0x14(r31) | li r30, 0
+0x103f3848	0x103f3848	free	dyn	load r3, 0x1c(r31)	addi r30, r30, 1 | lwzx r3, r9, r11 | b 0x103f3820 | lwz r3, 0x1c(r31)
+0x103f3860	0x103f3860	free	dyn	?	li r4, 0 | li r5, 0x2c | bl 0x10546d00 | mr r3, r31
+0x103f3a00	0x103f3a00	calloc	const	1	mr r29, r3 | li r4, 0xb18 | li r3, 1 | stw r0, 0x34(r1)
+0x103f3bfc	0x103f3bfc	calloc	const	1	mr r29, r3 | li r4, 0x2c | li r3, 1 | stw r0, 0x34(r1)
+0x103f3c48	0x103f3c48	calloc	dyn	load r10, 0xc(r30)	stw r10, 4(r31) | add r0, r9, r11 | lwzx r24, r9, r11 | stw r0, 0x10(r31)
+0x103f3c8c	0x103f3c8c	calloc	dyn	load r3, 0(r27)	ble cr7, 0x103f3c84 | mr r22, r30 | li r4, 4 | lwz r29, 0x14(r31)
+0x103f3d30	0x103f3d30	malloc	dyn	load r3, 0x18(r31)	lwz r3, 0x18(r31) | li r28, 0 | stw r22, 8(r31) | slwi r3, r3, 2
+0x103f3d54	0x103f3d54	malloc	dyn	?	lwz r0, 4(r31) | slwi r3, r24, 2 | lwz r29, 0x1c(r31) | divw r30, r9, r0
+0x103f4d9c	0x103f4d9c	free	dyn	?	stw r0, 0x14(r1) | beq 0x103f4da0 | bl 0x10546d00 | mr r3, r31
+0x103f4f94	0x103f4f94	calloc	const	1	mr r28, r4 | li r3, 1 | li r4, 0xc88 | stw r0, 0x34(r1)
+0x103f6a98	0x103f6a98	malloc	const	256	stmw r29, 0x14(r1) | mr r29, r3 | bl 0x10546d00 | li r3, 0x100
+0x103f6be0	0x103f6be0	free	dyn	load r3, 8(r3)	stw r0, 0x14(r1) | lwz r3, 8(r3) | cmpwi cr7, r3, 0 | beq cr7, 0x103f6be4
+0x103f6c7c	0x103f6c7c	realloc	dyn	load r3, 8(r3)	cmpw cr7, r11, r4 | bgt cr7, 0x103f6d34 | lwz r3, 8(r3) | stw r4, 0x10(r31)
+0x103f6ddc	0x103f6ddc	realloc	dyn	load r3, 8(r3)	cmpw cr7, r4, r0 | bgt cr7, 0x103f6ee0 | lwz r3, 8(r3) | addi r4, r4, 0x100
+0x103f6f80	0x103f6f80	realloc	dyn	load r3, 8(r3)	cmpw cr7, r4, r0 | bgt cr7, 0x103f707c | lwz r3, 8(r3) | addi r4, r4, 0x100
+0x103f774c	0x103f774c	malloc	dyn	load r3, 0x24(r3)	mr r29, r3 | stw r0, 0x24(r1) | lwz r3, 0x24(r3) | slwi r3, r3, 2
+0x103f775c	0x103f775c	malloc	dyn	?	bl 0x10546560 | lwz r0, 0x24(r29) | stw r3, 0x14(r29) | slwi r3, r0, 2
+0x103f776c	0x103f776c	malloc	dyn	?	bl 0x10546560 | lwz r0, 0x24(r29) | stw r3, 0x18(r29) | slwi r3, r0, 2
+0x103f777c	0x103f777c	malloc	dyn	?	bl 0x10546560 | lwz r0, 0x24(r29) | stw r3, 0x1c(r29) | slwi r3, r0, 2
+0x103f8958	0x103f8958	malloc	const	44	li r3, 0x2c | stw r29, 0x14(r1) | stw r0, 0x24(r1) | mr r29, r4
+0x103f89d8	0x103f89d8	free	dyn	?	lwz r3, 0x20(r31) | cmpwi cr7, r3, 0 | bne cr7, 0x103f89f0 | mr r3, r31
+0x103f89f0	0x103f89f0	free	dyn	?	lwz r31, 0xc(r1) | addi r1, r1, 0x10 | mtlr r0 | blr 
+0x103f89f8	0x103f89f8	free	dyn	?	mtlr r0 | blr  | bl 0x10546c88 | b 0x103f89d4
+0x103f8a00	0x103f8a00	free	dyn	?	bl 0x10546c88 | b 0x103f89d4 | bl 0x10546c88 | b 0x103f89c8
+0x103f8a08	0x103f8a08	free	dyn	?	bl 0x10546c88 | b 0x103f89c8 | bl 0x10546c88 | b 0x103f89bc
+0x104016a4	0x104016a4	malloc	dyn	load r3, r3, r9	mullw r3, r4, r5 | mflr r0 | stwu r1, -0x10(r1) | stw r0, 0x14(r1)
+0x104016c8	0x104016c8	free	dyn	?	mflr r0 | stwu r1, -0x10(r1) | mr r3, r4 | stw r0, 0x14(r1)
+0x10403888	0x10403888	malloc	const	24	beq cr7, 0x10403888 | lwz r0, 0x13c(r1) | cmpwi cr7, r0, 0 | bne cr7, 0x10403830
+0x104038ec	0x104038ec	free	dyn	load r0, 0(r30)	bl 0x10546458 | lwz r0, 0(r30) | lwz r29, 0(r3) | mr r3, r0
+0x1040487c	0x1040487c	free	dyn	?	addi r3, r1, 0x50 | bl 0x104044b4 | mr r29, r3 | mr r3, r25
+0x1040590c	0x1040590c	malloc	dyn	?	lwz r31, 0xc(r1) | mtlr r0 | addi r1, r1, 0x10 | blr 
+0x10406a78	0x10406a78	malloc	expr	r3+0x1	stw r4, 0xc(r31) | stw r3, 8(r31) | lwz r3, 0xc(r31) | addi r3, r3, 1
+0x10406b40	0x10406b40	free	dyn	?	lwz r31, 0xc(r1) | addi r1, r1, 0x10 | mtlr r0 | blr 
+0x10409a78	0x10409a78	free	dyn	load r3, -4(r9)	add r9, r29, r11 | lwz r3, -4(r9) | cmpwi cr7, r3, 0 | beq cr7, 0x10409a54
+0x10409a90	0x10409a90	free	dyn	load r11, 0(r30)	add r9, r29, r11 | stw r28, -4(r9) | b 0x10409a54 | mr r3, r11
+0x10409b74	0x10409b74	realloc	dyn	load r3, 0(r3)	addi r0, r8, 0x10 | sth r0, 6(r31) | lhz r4, 6(r31) | slwi r4, r4, 2
+0x10409e70	0x10409e70	malloc	const	16	stw r31, 0x1c(r1) | li r3, 0x10 | mr r31, r4 | stw r0, 0x24(r1)
+0x10409ee4	0x10409ee4	free	dyn	?	lwz r3, 0xc(r31) | cmpwi cr7, r3, 0 | bne cr7, 0x10409efc | mr r3, r31
+0x10409efc	0x10409efc	free	dyn	?	lwz r31, 0xc(r1) | addi r1, r1, 0x10 | mtlr r0 | blr 
+0x10409f58	0x10409f58	calloc	dyn	?	slwi r30, r3, 1 | ble cr7, 0x10409fd4 | lwz r4, 0(r31) | mr r3, r30
+0x10409fcc	0x10409fcc	free	dyn	load r3, 0xc(r31)	lwz r5, 0(r31) | mullw r5, r0, r5 | bl 0x10546ad8 | lwz r3, 0xc(r31)
+0x1040a05c	0x1040a05c	malloc	dyn	?	slwi r31, r31, 1 | cmpw cr7, r0, r31 | bgt cr7, 0x1040a04c | mullw r3, r28, r31
+0x1040a0fc	0x1040a0fc	free	dyn	load r3, 0xc(r30)	lwz r5, 8(r30) | mullw r5, r5, r28 | bl 0x10546ad8 | lwz r3, 0xc(r30)
+0x1040a124	0x1040a124	malloc	const	16	stw r0, 0x14(r1) | li r3, 0x10 | li r10, 0 | beq 0x1040a154
+0x1040a1f8	0x1040a1f8	malloc	dyn	?	mr r30, r4 | li r0, 0 | beq 0x1040a210 | stw r0, 8(r31)
+0x1040a2b0	0x1040a2b0	free	dyn	load r3, 0(r31)	cmpwi cr7, r3, 0 | bne cr7, 0x1040a2b0 | stw r30, 0(r31) | b 0x1040a278
+0x1040a320	0x1040a320	realloc	dyn	load r3, 0(r31)	mtlr r0 | addi r1, r1, 0x30 | blr  | lwz r3, 0(r31)
+0x1040a718	0x1040a718	free	dyn	load r3, 8(r30)	lwz r3, 8(r30) | cmpwi cr7, r3, 0 | bne cr7, 0x1040a720 | b 0x1040a740
+0x1040a798	0x1040a798	free	dyn	load r3, 8(r31)	lwz r3, 8(r31) | cmpwi cr7, r3, 0 | beq cr7, 0x1040a7ac | lwz r29, 0(r3)
+0x1040a7b8	0x1040a7b8	free	dyn	load r0, 0(r31)	lwz r0, 0(r31) | li r29, 0 | stw r29, 8(r31) | mr r3, r0
+0x1040a978	0x1040a978	malloc	const	2048	cmplwi cr7, r9, 0x7fb | li r3, 0 | bgt cr7, 0x1040aa68 | li r3, 0x800
+0x1040aaa0	0x1040aaa0	realloc	dyn	load r3, 0(r31)	lwz r3, 0(r31) | sth r0, 6(r31) | lhz r4, 6(r31) | slwi r4, r4, 4
+0x1040acd4	0x1040acd4	malloc	expr	r3+0x10	stw r29, 0x14(r1) | mr r29, r3 | addi r3, r3, 0x10 | stw r0, 0x24(r1)
+0x1040aee0	0x1040aee0	free	dyn	load r3, 0(r31)	beq 0x1040aef8 | lwz r3, 0(r31) | b 0x1040aee8 | lwz r29, 8(r3)
+0x1040b7f8	0x1040b7f8	free	expr	r31+0x50	lwz r31, 0xc(r1) | addi r1, r1, 0x10 | mtlr r0 | blr 
+0x1040dd98	0x1040dd98	malloc	const	20	mr r29, r5 | stw r31, 0x1c(r1) | mr r30, r4 | stw r0, 0x24(r1)
+0x1040dec0	0x1040dec0	free	dyn	?	mtlr r0 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x1040ded0	0x1040ded0	free	dyn	?	bl 0x10546c88 | lhz r0, 4(r30) | cmpw cr7, r0, r29 | b 0x1040de98
+0x1040dfb4	0x1040dfb4	malloc	const	14	sth r29, 0x182(r31) | li r3, 0xe | sth r28, 0x184(r31) | stw r9, 0x1e8(r31)
+0x1040e014	0x1040e014	malloc	const	6	stw r30, 0x1ec(r31) | bl 0x10416584 | stw r3, 0x1fc(r31) | li r3, 6
+0x1040e144	0x1040e144	free	const	1	lwz r30, 0x28(r1) | lwz r31, 0x2c(r1) | addi r1, r1, 0x30 | blr 
+0x1040e2d8	0x1040e2d8	free	dyn	load r3, 0x5f58(r29)	blr  | lwz r3, 0x5f58(r29) | bl 0x10406aec | lwz r3, 0x5f58(r29)
+0x1040e2f4	0x1040e2f4	free	dyn	load r3, 0x5f5c(r29)	b 0x1040e294 | lwz r3, 0x5f5c(r29) | bl 0x10406aec | lwz r3, 0x5f5c(r29)
+0x1040e334	0x1040e334	free	dyn	load r3, 0x1b0(r31)	mulli r5, r5, 0x5c | add r5, r0, r5 | bl 0x10546d00 | lwz r3, 0x1b0(r31)
+0x1040e378	0x1040e378	free	expr	r31+0x78	bl 0x10416794 | li r0, 0 | stw r0, 0x1fc(r31) | b 0x1040e208
+0x1040e388	0x1040e388	free	expr	r31+0x78	bl 0x10546c88 | li r0, 0 | stw r0, 0x130(r31) | b 0x1040e1fc
+0x1040e398	0x1040e398	free	dyn	?	bl 0x10546c88 | li r0, 0 | stw r0, 0x134(r31) | b 0x1040e1e8
+0x1040e3a8	0x1040e3a8	free	dyn	?	bl 0x10546c88 | li r0, 0 | stw r0, 0x13c(r31) | b 0x1040e1dc
+0x1040e3b8	0x1040e3b8	free	dyn	?	bl 0x10546c88 | li r0, 0 | stw r0, 0x128(r31) | b 0x1040e1d0
+0x1040fefc	0x1040fefc	free	expr	r29+0x3c	addi r3, r29, 0x3c | beq cr7, 0x1040fe98 | bl 0x104139e0 | b 0x1040fe98
+0x10411a04	0x10411a04	free	dyn	load r29, 0(r3)	bl 0x10417288 | bl 0x10546b20 | stw r3, 0(r28) | mr r3, r29
+0x104134f0	0x104134f0	free	dyn	load r3, 4(r31)	cmpwi cr7, r0, 0 | bne cr7, 0x104135a8 | bl 0x10546038 | lwz r3, 4(r31)
+0x1041350c	0x1041350c	free	dyn	?	lwz r3, 0x10(r31) | cmpwi cr7, r3, 0 | bne cr7, 0x10413524 | mr r3, r31
+0x1041352c	0x1041352c	free	dyn	load r3, 0x10(r31)	mtlr r0 | blr  | bl 0x105469c8 | lwz r3, 0x10(r31)
+0x1041353c	0x1041353c	free	dyn	load r31, 0x1c(r1)	bl 0x10546c88 | li r0, 0 | stw r0, 0x10(r31) | mr r3, r31
+0x10413554	0x10413554	free	dyn	load r3, 0x6c(r9)	mr r3, r0 | bl 0x105467c8 | lwz r9, 4(r31) | lwz r3, 0x6c(r9)
+0x10413570	0x10413570	free	dyn	load r3, 8(r31)	stw r0, 0x6c(r3) | b 0x104134dc | bl 0x105467c8 | lwz r3, 8(r31)
+0x10413588	0x10413588	free	dyn	load r3, 0xc(r31)	stw r0, 8(r31) | b 0x104134c4 | bl 0x10546498 | lwz r3, 0xc(r31)
+0x104136a4	0x104136a4	malloc	const	92	bne cr7, 0x104138f4 | neg r0, r30 | li r3, 0x5c | rlwinm r28, r0, 2, 0x1e, 0x1e
+0x104136f4	0x104136f4	malloc	const	124	stw r0, 0x1c(r31) | stw r0, 0x20(r31) | stw r0, 0x24(r31) | stb r0, 0x28(r31)
+0x10413778	0x10413778	malloc	const	188	mulli r4, r27, 0x3e8 | lwz r3, 4(r31) | bl 0x10546128 | li r3, 0xbc
+0x104138b4	0x104138b4	free	dyn	load r31, 0x2c(r1)	lwz r31, 0x2c(r1) | addi r1, r1, 0x30 | blr  | mr r3, r31
+0x10413a44	0x10413a44	free	dyn	load r3, 4(r31)	bl 0x10413468 | b 0x10413a14 | bl 0x105462d0 | lwz r3, 4(r31)
+0x10413a8c	0x10413a8c	malloc	const	200	cmpwi cr7, r3, 0 | stw r3, 8(r31) | beq cr7, 0x10413ab0 | li r3, 0xc8
+0x104145d0	0x104145d0	free	expr	r1+0x290	bl 0x10414054 | cmpwi cr7, r3, 0 | bne cr7, 0x1041459c | b 0x104144d4
+0x10414694	0x10414694	malloc	dyn	?	stw r0, 0x198(r30) | mulli r0, r0, 0x1138 | mulli r3, r3, 0x5c | add r3, r0, r3
+0x10414730	0x10414730	free	dyn	load r3, 0x128(r30)	bl 0x10546810 | cmpwi cr7, r3, 0 | bne cr7, 0x104148ec | lwz r3, 0x128(r30)
+0x1041474c	0x1041474c	free	dyn	load r3, 0x13c(r30)	stw r3, 0x128(r30) | b 0x104144d4 | lwz r3, 0x13c(r30) | lis r29, 0x1054
+0x10414764	0x10414764	free	dyn	load r0, 0x5f5c(r29)	bl 0x10546b20 | lwz r0, 0x5f5c(r29) | stw r3, 0x13c(r30) | mr r3, r0
+0x104148d8	0x104148d8	free	dyn	load r3, 0x12c(r30)	crclr cr1eq | bl 0x10411f30 | b 0x104144d4 | lwz r3, 0x12c(r30)
+0x10414ac8	0x10414ac8	free	dyn	load r3, 0(r3)	bl 0x1040dd34 | lwz r3, 0(r3) | cmpwi cr7, r3, 0 | beq cr7, 0x10414acc
+0x10414b98	0x10414b98	free	dyn	load r3, 4(r3)	bl 0x1040dd34 | lwz r3, 4(r3) | cmpwi cr7, r3, 0 | beq cr7, 0x10414b9c
+0x10414dcc	0x10414dcc	free	dyn	load r31, 0xc(r1)	stw r0, 0x5fc4(r11) | stw r0, 0x5fbc(r9) | bl 0x10415ff8 | mr r3, r31
+0x10415b38	0x10415b38	malloc	const	20	blt cr7, 0x10415bfc | stw r30, 8(r26) | b 0x10415a7c | li r3, 0x14
+0x10416020	0x10416020	free	dyn	load r3, 0(r31)	beq 0x10416038 | lwz r3, 0(r31) | b 0x10416028 | lwz r29, 0(r3)
+0x10416110	0x10416110	calloc	const	1	add r4, r3, r27 | addi r4, r4, 0x15 | mr r28, r3 | li r3, 1
+0x10416344	0x10416344	free	dyn	?	cmpw cr7, r0, r3 | bne cr7, 0x1041632c | lwz r0, 0(r3) | stw r0, 0(r31)
+0x104164c8	0x104164c8	malloc	const	8208	mr r31, r3 | bge cr7, 0x104164c4 | li r31, 0x2000 | addi r3, r31, 0x10
+0x1041bf24	0x1041bf24	malloc	const	544	mtctr r30 | bctrl  | b 0x1041be84 | li r3, 0x220
+0x10433570	0x10433570	malloc	const	16	lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr  | li r3, 0x10
+0x10433608	0x10433608	free	dyn	?	lis r9, 0x1054 | stw r3, 0x3d3c(r9) | b 0x104335a4 | mr r3, r30
+0x10433658	0x10433658	free	dyn	load r31, 0(r3)	ble cr7, 0x10433654 | stw r0, 0x5fe0(r11) | beq cr6, 0x10433680 | mr r3, r31
+0x10433698	0x10433698	free	dyn	load r31, 0xc(r1)	li r0, -1 | mr r3, r31 | lis r9, 0x1054 | stw r0, 0x3d3c(r9)
+0x10434608	0x10434608	free	dyn	?	mflr r0 | stwu r1, -0x10(r1) | stw r0, 0x14(r1) | beq cr7, 0x1043460c
+0x10434678	0x10434678	malloc	const	1	add r30, r0, r30 | bne 0x10434674 | li r31, 1 | mr r3, r31
+0x104346bc	0x104346bc	malloc	dyn	load r31, 0x1c(r1)	beq cr7, 0x104346dc | mtlr r0 | blrl  | mr r3, r31
+0x104347a4	0x104347a4	malloc	expr	r3+0x50	add r30, r0, r30 | stw r27, 0xc(r1) | stw r28, 0x10(r1) | stw r12, 8(r1)
+0x10434950	0x10434950	free	dyn	?	mtcrf 8, r12 | lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr 
+0x104370c4	0x104370c4	free	dyn	?	mr r3, r29 | cmpwi cr7, r3, 0 | bne cr7, 0x104370a8 | mr r3, r31
+0x10437284	0x10437284	malloc	const	8	cmpwi cr7, r0, 0 | bge cr7, 0x104371f8 | b 0x104371f0 | li r3, 8
+0x104373b4	0x104373b4	free	dyn	?	lwz r0, 8(r1) | cmpwi cr7, r0, 0 | bne cr7, 0x10437384 | mr r3, r28
+0x10439650	0x10439650	realloc	dyn	load r3, 4(r3)	cmplw cr7, r9, r27 | bge cr7, 0x10439674 | slwi r31, r9, 1 | mr r4, r31
+0x1043969c	0x1043969c	free	dyn	load r3, 4(r29)	lwz r31, 0x1c(r1) | addi r1, r1, 0x20 | blr  | lwz r3, 4(r29)
+0x1043980c	0x1043980c	free	dyn	load r3, 4(r3)	mr r29, r3 | stw r0, 0x24(r1) | lwz r3, 4(r3) | stw r30, 0x18(r1)
+0x1043c538	0x1043c538	malloc	expr	r3+0x1	addi r0, r3, 1 | stw r25, 0x50(r31) | mr r3, r0 | stw r0, 0x5c(r31)
+0x1043c5f0	0x1043c5f0	free	dyn	?	mr r4, r28 | mr r3, r27 | bl 0x10546f18 | mr r3, r28
+0x1043c690	0x1043c690	malloc	expr	r28+0x1d	lbz r0, 0xa(r29) | cmpwi cr7, r0, 0x5f | bne cr7, 0x1043c450 | addi r3, r28, 0x1d
+0x1043c708	0x1043c708	free	dyn	?	b 0x1043c5b8 | bl 0x10438240 | b 0x1043c4ec | mr r3, r27
