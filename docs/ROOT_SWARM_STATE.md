@@ -927,3 +927,15 @@ NEXT SESSION (the precise recipe):
    ~200 candidates @1s with the accumulation recipe)
 2. The EXACT S → the reboot gadget → the confirmed root-code-exec
 3. Then the shell: the argv-free spawn inventory + the config route
+
+### 2026-11-05: EXACT S FOUND — 0x106c4ef0 (the current daemon lifetime)
+
+The 4-byte canary calibration found 6 hits in 0x106c4d90-4f30; the reboot
+gadget at S=0x106c4ef0 produced a 46.4s full-device outage (31.2-77.6s) =
+system("/sbin/reboot") executed as root. THE EXACT SESSION ADDRESS.
+The canary hits: c4d90 (chain), c4e68/4eb8/4ef0/4f18/4f30 (the live cluster).
+The 0x106c5000 candidate was past the session end (crash but no gadget completion).
+NEXT: the telnetd variant at S=0x106c4ef0 (the execve wrapper + /usr/sbin/
+telnetd — the argv walk is validated in the emulator) → the root shell.
+NOTE: the band shifts per daemon lifetime — re-calibrate after any reboot
+(the canary sweep at 0x800 steps takes ~5 min).
