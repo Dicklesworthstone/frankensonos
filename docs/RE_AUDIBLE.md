@@ -643,3 +643,21 @@ AIMED-PAYLOAD LAYOUT (all inside the 24KB overflow, once the session addr S is k
 Oracle differential PROVEN on .135 today: two-stage fire with fake_ptr=0x55000000
 (unmapped) → crash @54.8s; fake_ptr=0x66BC40 (mapped) → clean. The strcpy FIRES
 and the notify dereferences attacker-controlled pointers.
+
+### SCOPE CORRECTION + PPC reboot gadget (2026-11-04 late)
+
+SageElm corrected the unit mapping: the decoded two-stage/strcpy/observer chain
+is the 57.23 PPC daemon (units .84/.202) — 0x102bf778, 0x10115478, 0x101e3a44
+are ALL PPC addresses. The .135 sweeps ran PPC layouts at the S2/MIPS unit
+(whose parse lives at 0x4xxxxx) — explains the noisy oracle.
+
+PPC secure-plt v1 CONFIRMED: 15,550 bl-into-.plt call sites; system's callable
+stub = the GOT slot itself 0x105464B0 (runtime linker writes the jump code
+there; .plt flags = WRITE|ALLOC|EXEC). execve = 0x10546420.
+
+The PPC daemon has EXACTLY ONE system() call site: 0x104123e0 —
+system("/sbin/reboot") with r3 = static string 0x10524E10.
+REBOOT GADGET: FN = 0x104123D8 (the addis r3 insn) → ignores incoming r3,
+calls system("/sbin/reboot") → unit reboots. 100% observable FN-execution proof
+(60-90s outage + recovery). Sweeping .202 with FN=reboot across the PPC heap
+(0x10650000+, 0x20000 steps) — a reboot signature = chain proven on the PPC unit.
