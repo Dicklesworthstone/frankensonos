@@ -1,0 +1,14 @@
+0071d900 (anchor+0x200): crash=None rec=False
+0071db00 (anchor+0x400): crash=10.600000000000001 rec=True
+0071dd00 (anchor+0x600): crash=0.0 rec=True
+0071df00 (anchor+0x800): crash=1.0 rec=True
+0071d500 (anchor-0x200): crash=46.6 rec=True
+0071d300 (anchor-0x400): crash=20.6 rec=True
+0071d100 (anchor-0x600): crash=54.2 rec=True
+
+=== hot zone map (orchestrator, canary pass) ===
+0x71d300: crash@20.6s | 0x71d500: crash@46.6s | 0x71d700: crash@12.6s (anchor,
+reproduced across lifetimes) | 0x71db00: crash@10.6s | 0x71dd00: crash@0.0s
+(instant) | 0x71df00: crash@1.0s.
+The whole 0x71d300-0x71df00 band fires the chain. Canary pass done; real
+system@plt pass in flight (hot2, /bin/busybox telnetd command).
