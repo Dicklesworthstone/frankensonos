@@ -141,3 +141,29 @@ STATIC string — no wrapper exists.
    calls system("/sbin/reboot") → observable 60-90s outage + ICMP loss.
 => ROOT requires a different sink: execve-family wrapper, the R_ALLOW_SSH path
    (if it launches dropbear), or a data-write primitive (config → boot script).
+off=0x05e0: s2=200 0.177954/0.20 telnetd=no
+off=0x05f0: s2=200 0.051061/0.09 telnetd=no
+off=0x0600: s2=200 0.243353/0.28 telnetd=no
+off=0x0610: s2=200 0.207849/0.23 telnetd=no
+off=0x0620: s2=200 0.178840/0.21 telnetd=no
+off=0x0630: s2=200 0.173301/0.21 telnetd=no
+off=0x0640: s2=200 0.041913/0.06 telnetd=no
+off=0x0650: s2=200 0.048399/0.08 telnetd=no
+off=0x0660: s2=200 0.034544/0.08 telnetd=no
+off=0x0670: s2=200 0.044498/0.07 telnetd=no
+off=0x0680: s2=200 0.040729/0.07 telnetd=no
+off=0x0690: s2=200 0.049295/0.08 telnetd=no
+off=0x06a0: s2=200 0.048114/0.08 telnetd=no
+off=0x06b0: s2=200 0.044338/0.12 telnetd=no
+off=0x06c0: s2=200 0.063339/0.10 telnetd=no
+off=0x06d0: s2=200 0.040832/0.07 telnetd=no
+off=0x06e0: s2=200 0.035514/0.07 telnetd=no
+off=0x06f0: s2=200 0.037993/0.06 telnetd=no
+off=0x0700: s2=200 0.037928/0.06 telnetd=no
+off=0x0710: s2=200 0.047226/0.08 telnetd=no
+off=0x0720: s2=200 0.044725/0.07 telnetd=no
+off=0x0730: s2=200 0.096316/0.12 telnetd=no
+off=0x0740: s2=200 0.035695/0.06 telnetd=no
+off=0x0750: s2=200 0.041723/0.06 telnetd=no
+off=0x0760: s2=200 0.045932/0.08 telnetd=no
+off=0x0770: s2=200 0.059359/0.10 telnetd=no

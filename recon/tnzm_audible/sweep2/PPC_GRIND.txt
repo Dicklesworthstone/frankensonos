@@ -1,0 +1,2 @@
+10650000: http_down=25.6 PING_LOST=44.400000000000006 (reboot signature!)
+10652000: http_down=0.4 PING_LOST=11.4 (reboot signature!)
