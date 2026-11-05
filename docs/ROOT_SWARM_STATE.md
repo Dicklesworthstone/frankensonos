@@ -671,3 +671,23 @@ payload from ONE integer: the session address S.
 
 IN FLIGHT: LilacKnoll runs the oracle sweep (64 candidates, 64KB steps,
 0x10600000+; clean result = S found). SwiftMarsh's arena model = fast path.
+
+### Late 2026-11-04: PPC sweep on .84 + reboot gadget
+
+- SageElm's scope correction: the decoded chain (r22/stream+6088, 0x102bf778,
+  0x10115478, observer cell) is the 57.23 PPC daemon — units .84/.202, NOT .135.
+  The .135 hot zone (0x71d300-df00) fires canary FN calls but with the S2's own
+  (undecoded) parse semantics.
+- PPC secure-plt v1: system's callable stub = the GOT slot 0x105464B0 itself
+  (15,550 bl-into-.plt sites confirm the call model). execve = 0x10546420.
+- The PPC daemon has exactly ONE system() site: 0x104123e0 = system("/sbin/reboot").
+  REBOOT GADGET: FN = 0x104123D8 → unit reboots → ironclad FN-execution proof
+  (60-90s outage with ICMP loss, vs 1-2s daemon-crash recovery).
+- .202 rejects the DIDL shape (500) — .84 accepts (200). All PPC firing on .84.
+- Coarse PPC sweep (.84): 5/6 candidates crashed (7-90s outages, ping intact =
+  daemon restarts); 0x106a0000 gave a 90s outage but ping stayed up (slow restart,
+  not reboot). Reboot verification with ICMP differential: no ping loss → the
+  exact S still not hit.
+- UNATTENDED GRIND launched: full PPC heap window 0x10650000-0x10A00000 @0x2000,
+  reboot+telnetd detection per candidate, ~2.5min each (~2.5h for 90 candidates).
+  Log: recon/tnzm_audible/sweep2/PPC_GRIND.txt. Runs unattended.
