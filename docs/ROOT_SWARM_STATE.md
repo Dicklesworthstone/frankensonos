@@ -959,3 +959,31 @@ NEXT SESSION (with fresh device state):
 1. The 4-byte canary calibration (~15 min) — the band after any reboot
 2. The FN matrix: {reboot gadget, wrapper, direct-execve} × the exact S
 3. The shell: argv-free spawn inventory + the config route (lanes)
+
+### 2026-11-05: the BENIGN CANARY — the calibration key for next session
+
+The destructive canary (FN=0x51000000, unmapped) crashes the daemon per hit —
+each crash shifts the band, making the calibration self-defeating.
+THE FIX: the BENIGN canary — FN = a MAPPED address whose function is
+harmless (e.g. 0x66BC40, the S2 vtable region, or a PPC "return- immediately"
+stub). The chain fires, the benign FN runs, the daemon SURVIVES → the
+lifetime is preserved → the sweep continues in the SAME lifetime → the
+exact S found WITHOUT shifting.
+The benign canary on PPC: a mapped address pointing at a `blr` instruction
+(op19 4e800020). Candidates: any .text address containing 4e800020 (the
+rootfs has thousands). Build a small list of verified blr addresses and
+use FN = that address: the FN call executes `blr` = an instant clean return
+= NO crash, NO state change, and the next status request confirms the
+daemon is alive (the chain fired but harmlessly).
+THE CALIBRATION: sweep the benign-canary payloads; a candidate S where the
+daemon SURVIVES and the behavior differs (the blr returns cleanly) = the
+live band. The distinguishing signal: the FN call with the blr = the
+notify path continues normally BUT the 0x104046c4-style entry would... 
+SIMPLER: the benign canary = the REBOOT gadget with path=/sbin/reboot —
+the REBOOT IS the signal (the 46.4s outage = the chain fired). The
+calibration = fire the REBOOT payload per candidate and watch for the
+46s outage. Each non-hit = no reboot (clean). Each hit = a 60-90s reboot
+(the device restarts = the lifetime changes → re-calibrate after).
+THE PRACTICAL RECIPE: sweep the reboot payload at 0x10 steps across the
+band; the first 46s-outage = S found (and the device reboots = re-calibrate
+the NEXT band for the following experiment).
