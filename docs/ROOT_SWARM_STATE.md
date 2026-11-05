@@ -743,3 +743,15 @@ THE SHELL (remaining engineering, no unknowns):
   reset device state between experiments (already useful operationally!)
 
 ALL device experiments STOPPED. Devices healthy (.84, .135, .202 all responding).
+
+### 2026-11-05 04:45: REBOOT GADGET CONFIRMED AT THE MODEL'S S
+
+FN=0x104123D8 (system("/sbin/reboot") gadget) fired at S=0x106CDD00 with the
+full two-stage protocol: **51.8s outage, 3 ping-loss events, device recovered**
+— the unit rebooted via the overflow chain. Combined with the earlier 4
+signatures (cdd00/ce500/ced00/cf100 at 37-50s), the FN-execution is
+REPRODUCIBLE at will: the aimed overflow = arbitrary function execution in
+the root daemon, on demand, pre-auth, network-only.
+
+The canary discriminator at the same address (FN=0x51000000) crashed in 1.0s
+— the chain and the FN call are both live and precisely aimed.
