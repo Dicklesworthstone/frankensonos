@@ -1009,3 +1009,25 @@ THE PAYLOAD: the node string = "http://192.168.4.160:8899/../../system/Configure
 (or the URL-encoded traversal) — the update downloader creates the file
 from the URL path. The CONTENT = the fetched bytes = our .aa (a shell
 script!). The .aa file must BE a valid shell script for this route.
+
+### 2026-11-05 08:45: the update-route falsification — the session close
+
+The overflow with the node = the pwned.sh URL: the transport does NOT re-fetch
+the corrupted +6380 URI (the URL comes from the DIDL, cached at SetAV time).
+The update-download route needs the UPDATE-subsystem URL field located (a
+separate RE task — the update-check URL lives in the update subsystem, not
+the AVTransport session).
+
+THE COMPLETE SESSION DELIVERABLES (all committed):
+1. FN-execution proven: 6 reboot signatures (the aimed overflow → root code exec)
+2. The exact S calibration protocol: the canary sweep + the band-shift handling
+3. The complete static map: both binaries, all the aims, all the gates
+4. 4 root-shell routes scoped with entry points:
+   a. argv control (the gadget hunt — the emulator-validated argv walk)
+   b. the config-write (the settings-save path — GoldMeadow)
+   c. the S2/MIPS decode (SageElm)
+   d. the update-URL field location (NEW — a separate RE task)
+5. Both payload builders + 10+ payload variants + the full diagnostic toolkit
+
+DEVICES: .84/.135/.202 all healthy. No persistence yet. The reboot gadget
+= operational (a clean device-state reset between experiments).
