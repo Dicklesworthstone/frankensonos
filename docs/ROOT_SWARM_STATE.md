@@ -1040,3 +1040,15 @@ in the update subsystem. If its address = S+X with X+73 inside the overflow
 reach (6380..30380), the overflow corrupts the update URL directly → the
 daemon fetches our payload → sonosFileCreate writes it → Configure.dev →
 boot root. GoldMeadow dispatched: compute X via the dlmalloc model.
+
+### 2026-11-05 (Route D deep-dive): the update-state is dispatch-allocated
+
+The UpdateURL logger (0x1029d85c) has ZERO bl callers — the update subsystem
+dispatches through function pointers. The update-state object = the caller's
+r4, allocated at runtime in the update module's init. Not statically derivable.
+
+THE NEXT-SESSION TASK (Route D refined): map the SESSION's pointer web —
+the +21752..+25815 "pointer-reached data" region (from the session map) may
+contain a pointer chain leading to the update state. The overflow controls
+the pointer VALUES in that range → if one leads to the update-state, the
+overflow REACHES it indirectly (write-what-where via the chained pointers).
