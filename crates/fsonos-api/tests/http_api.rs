@@ -25,7 +25,15 @@ fn runtime() -> Runtime {
         .expect("runtime")
 }
 
-/// Answers every SOAP action with success and `out_args`; records actions.
+const GROUPED_HOUSE: &str = r#"<ZoneGroups><ZoneGroup Coordinator="RINCON_LIV" ID="g">
+  <ZoneGroupMember UUID="RINCON_LIV" ZoneName="Living Room" SWGen="2"
+    Location="http://192.0.2.10:1400/xml/device_description.xml"/>
+  <ZoneGroupMember UUID="RINCON_KIT" ZoneName="Kitchen" SWGen="2"
+    Location="http://192.0.2.10:1400/xml/device_description.xml"/>
+</ZoneGroup></ZoneGroups>"#;
+
+/// Answers topology with [`house`]'s layout and other actions with success
+/// and `out_args`; records actions.
 struct Canned {
     out_args: &'static str,
     sent: Arc<Mutex<Vec<String>>>,
@@ -40,10 +48,15 @@ impl Transport for Canned {
             .unwrap_or_default()
             .to_string();
         self.sent.lock().unwrap().push(action.clone());
+        let out_args = if action == "GetZoneGroupState" {
+            fsonos_proto::soap::args_xml(&[("ZoneGroupState", GROUPED_HOUSE)])
+        } else {
+            self.out_args.to_string()
+        };
         Ok(format!(
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
              <u:{action}Response xmlns:u=\"urn:x\">{}</u:{action}Response></s:Body></s:Envelope>",
-            self.out_args
+            out_args
         ))
     }
 }
@@ -286,7 +299,7 @@ fn control_routes_address_the_coordinator() {
     assert_eq!(status, 200, "{out}");
     assert_eq!(
         api.actions(),
-        ["Pause", "SetAVTransportURI"],
+        ["Pause", "GetZoneGroupState", "SetAVTransportURI"],
         "ungroup: the room joins itself (docs/PROTOCOL.md §6)"
     );
 }

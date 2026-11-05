@@ -4,9 +4,13 @@
 //! stereo pair, a Kitchen and an Office; S2 with a Living Room.
 
 use fsonos_core::grouping::{self, Skipped};
-use fsonos_core::{HouseholdState, resolve_room};
+use fsonos_core::{HouseholdState, control, resolve_room};
+use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
+use fsonos_types::{PlayerId, TransportState};
+use std::net::IpAddr;
 
 fn sim() -> SimHandle {
     SimHousehold::builder()
@@ -204,4 +208,151 @@ fn failures_are_reported_per_room() {
     assert_eq!(out.failed.len(), 2);
     assert!(!out.is_complete());
     assert_eq!(out.failed[0].0, "Office");
+}
+
+fn playing_group(generation: u8) -> (SimHandle, Vec<HouseholdState>) {
+    let model = if generation == 1 {
+        SimModel::Play5Gen1
+    } else {
+        SimModel::One
+    };
+    let players = [
+        SimPlayerSpec::pair("Leader", model),
+        SimPlayerSpec::new("First", model),
+        SimPlayerSpec::new("Remaining", model),
+    ];
+    let builder = SimHousehold::builder();
+    let sim = if generation == 1 {
+        builder.s1(players)
+    } else {
+        builder.s2(players)
+    }
+    .spawn()
+    .unwrap();
+    let lan = sim.lan();
+    let leader = sim.player("Leader").unwrap();
+    let id = PlayerId(leader.uuid.clone());
+    for room in ["First", "Remaining"] {
+        soap::join_group(&lan, sim.player(room).unwrap().ip, &id).unwrap();
+    }
+    for n in 1..=3 {
+        soap::add_uri_to_queue(
+            &lan,
+            leader.ip,
+            &format!("x-file-cifs://example.invalid/track-{n}.flac"),
+            "",
+            false,
+        )
+        .unwrap();
+    }
+    soap::play_from_queue(&lan, leader.ip, &id).unwrap();
+    soap::seek_track(&lan, leader.ip, 2).unwrap();
+    soap::seek_position(&lan, leader.ip, 37).unwrap();
+    soap::play(&lan, leader.ip).unwrap();
+    let mut house = HouseholdState::default();
+    house.apply_topology(&get_zone_group_state(&lan, leader.ip).unwrap());
+    (sim, vec![house])
+}
+
+#[test]
+fn ungrouping_a_subset_uses_current_heirs_and_keeps_the_remaining_music() {
+    for generation in [1, 2] {
+        // The surface plans members first; the core set verb also accepts
+        // leader-first input. Both share one original planning snapshot.
+        for order in [["First", "Leader"], ["Leader", "First"]] {
+            let (sim, houses) = playing_group(generation);
+            let lan = sim.lan();
+            let rooms: Vec<_> = order
+                .iter()
+                .map(|name| resolve_room(&houses, name).unwrap())
+                .collect();
+            let since = sim.soap_log().len();
+            let out = grouping::ungroup(&lan, &houses, &rooms);
+            assert!(
+                out.is_complete(),
+                "S{generation} {order:?}: {:?}",
+                out.failed
+            );
+            assert_eq!(out.moved, names(&order));
+
+            let remaining = sim.player("Remaining").unwrap();
+            let mut after = HouseholdState::default();
+            after.apply_topology(&get_zone_group_state(&lan, remaining.ip).unwrap());
+            assert_eq!(after.groups.len(), 3, "each requested room left");
+            assert!(
+                after
+                    .rooms
+                    .iter()
+                    .all(|room| room.coordinator == room.primary)
+            );
+            assert_eq!(
+                after
+                    .rooms
+                    .iter()
+                    .find(|r| r.name == "Leader")
+                    .unwrap()
+                    .players
+                    .len(),
+                2
+            );
+            let position = soap::get_position_info(&lan, remaining.ip).unwrap();
+            assert_eq!((position.track, position.position_secs), (2, Some(37)));
+            assert_eq!(position.uri, "x-file-cifs://example.invalid/track-2.flac");
+            assert_eq!(soap::get_media_info(&lan, remaining.ip).unwrap().tracks, 3);
+            assert_eq!(
+                soap::get_transport_info(&lan, remaining.ip).unwrap().state,
+                TransportState::Playing,
+            );
+            let log = sim.soap_log();
+            let writes: Vec<_> = log[since..]
+                .iter()
+                .filter(|entry| !entry.action.starts_with("Get"))
+                .map(|entry| entry.action.as_str())
+                .collect();
+            assert_eq!(
+                writes,
+                if order[0] == "First" {
+                    vec!["SetAVTransportURI", "DelegateGroupCoordinationTo"]
+                } else {
+                    vec!["DelegateGroupCoordinationTo", "DelegateGroupCoordinationTo"]
+                },
+                "no source restart, queue rewrite or refused delegation",
+            );
+        }
+    }
+}
+
+struct UnreadableTopology(SimLan);
+
+impl Transport for UnreadableTopology {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if action.ends_with("#GetZoneGroupState\"") {
+            return Err(ProtoError::Network {
+                target: "simulator".into(),
+                detail: "topology unavailable".into(),
+            });
+        }
+        self.0.soap_post(host, path, action, body)
+    }
+}
+
+#[test]
+fn an_unreadable_current_layout_never_uses_a_stale_heir() {
+    let (sim, houses) = playing_group(2);
+    let leader = resolve_room(&houses, "Leader").unwrap();
+    let since = sim.soap_log().len();
+    assert!(control::leave(&UnreadableTopology(sim.lan()), &houses, &leader.player.id).is_err(),);
+    assert_eq!(sim.soap_log().len(), since, "no writes reached a player");
+    assert_eq!(
+        soap::get_transport_info(&sim.lan(), leader.player.ip)
+            .unwrap()
+            .state,
+        TransportState::Playing,
+    );
 }

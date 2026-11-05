@@ -609,11 +609,21 @@ pub fn join<T: Transport + ?Sized>(
 /// household already shows the leave.
 /// A lost delegation or self-join reply is reconciled from topology without
 /// replaying the write. Recovery requires the room's bonded players too.
+/// Read the current household before choosing an heir: earlier rooms in an
+/// ungroup set may have left or inherited coordination since it was planned.
 pub fn leave<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     member: &PlayerId,
 ) -> Result<(), CoreError> {
+    let host = addr(households, member)?;
+    let mut current = households
+        .iter()
+        .find(|h| h.player(member).is_some())
+        .expect("addr() found the household")
+        .clone();
+    current.apply_topology(&get_zone_group_state(t, host)?);
+    let households = std::slice::from_ref(&current);
     let host = addr(households, member)?;
     let mut lost_delegation = None;
     let delegated = match heir_of(households, member) {

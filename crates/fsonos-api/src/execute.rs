@@ -668,7 +668,10 @@ mod tests {
     #[test]
     fn grouping_mute_and_play_reach_the_right_players() {
         let houses = households();
-        let t = Canned::ok("");
+        let t = Canned {
+            destination: true,
+            ..Canned::ok("")
+        };
         let join = Command::Join {
             member: id("RINCON_STU_L"),
             coordinator: id("RINCON_DEN"),
@@ -699,6 +702,7 @@ mod tests {
             t.actions(),
             [
                 "SetAVTransportURI",
+                "GetZoneGroupState",
                 "SetAVTransportURI",
                 "SetMute",
                 "SetAVTransportURI",

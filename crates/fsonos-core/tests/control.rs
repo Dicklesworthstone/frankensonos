@@ -67,6 +67,9 @@ impl Transport for Recorder {
                 reason: "refused".into(),
             });
         }
+        if action == "GetZoneGroupState" {
+            return Ok(ZGS_S1.to_string());
+        }
         Ok(format!(
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
              <u:{action}Response xmlns:u=\"urn:x\">{}</u:{action}Response></s:Body></s:Envelope>",
@@ -196,23 +199,9 @@ fn join_targets_the_member_and_names_the_coordinator() {
     // A member leaves by joining itself (docs/PROTOCOL.md §6).
     control::leave(&t, &h, &pid(8)).unwrap();
     let sent = t.sent.borrow();
-    assert_eq!(sent[1].1, "SetAVTransportURI");
-    assert!(sent[1].2.contains(&format!("x-rincon:{}", pid(8).0)));
-    drop(sent);
-    // A coordinator that leads another room hands that room the group: its
-    // own self-join changes nothing on real players (S1 and S2, live
-    // 2026-10-14). The recorder serves no topology, so the read-back after
-    // it fails; the request is what this checks.
-    let _ = control::leave(&t, &h, &pid(3));
-    let sent = t.sent.borrow();
-    assert_eq!(sent[2].0, ip("192.0.2.15"));
-    assert_eq!(sent[2].1, "DelegateGroupCoordinationTo");
-    assert!(
-        sent[2]
-            .2
-            .contains(&format!("<NewCoordinator>{}</NewCoordinator>", pid(8).0))
-    );
-    assert!(sent[2].2.contains("<RejoinGroup>0</RejoinGroup>"));
+    assert_eq!(sent[1].1, "GetZoneGroupState");
+    assert_eq!(sent[2].1, "SetAVTransportURI");
+    assert!(sent[2].2.contains(&format!("x-rincon:{}", pid(8).0)));
 }
 
 #[test]
@@ -926,7 +915,16 @@ impl Transport for HandedOver {
             .borrow_mut()
             .push((host, action.clone(), body.into()));
         Ok(if action == "GetZoneGroupState" {
-            ZGS_S1_BEDROOM_HANDED_OVER.to_string()
+            if self
+                .sent
+                .borrow()
+                .iter()
+                .any(|(_, action, _)| action == "DelegateGroupCoordinationTo")
+            {
+                ZGS_S1_BEDROOM_HANDED_OVER.to_string()
+            } else {
+                ZGS_S1.to_string()
+            }
         } else {
             format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
@@ -942,7 +940,15 @@ fn a_pair_that_hands_its_group_on_takes_its_hidden_half_back() {
     let t = HandedOver::default();
     control::leave(&t, &h, &pid(3)).expect("Bedroom stands alone");
     let sent = t.sent.borrow();
-    assert_eq!(sent[0].1, "DelegateGroupCoordinationTo", "{sent:?}");
+    assert_eq!(sent[0].1, "GetZoneGroupState", "{sent:?}");
+    assert_eq!(sent[1].0, ip("192.0.2.15"));
+    assert_eq!(sent[1].1, "DelegateGroupCoordinationTo", "{sent:?}");
+    assert!(
+        sent[1]
+            .2
+            .contains(&format!("<NewCoordinator>{}</NewCoordinator>", pid(8).0))
+    );
+    assert!(sent[1].2.contains("<RejoinGroup>0</RejoinGroup>"));
     // The pair's hidden half (192.0.2.17) is asked back to its primary.
     let rejoin = sent
         .iter()
