@@ -279,6 +279,26 @@ impl Fader {
         )
     }
 
+    /// Sleep's durable journal records a pending level while the room's
+    /// existing intent lock is held, before that level can reach the speaker.
+    pub(crate) fn sleep_fade_until<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        claimed: &[(PlayerId, u64)],
+        deadline: Instant,
+        checkpoint: impl FnMut(&PlayerId, u8, u8) -> Result<(), CoreError>,
+    ) -> Result<FadeOutcome, CoreError> {
+        self.stepped_with_checkpoint(
+            t,
+            households,
+            claimed,
+            0,
+            Timing::until(deadline, self.interval),
+            checkpoint,
+        )
+    }
+
     /// Fade each player to its own level, all in step over `over`, each from
     /// its own current level. A player that gets a newer intent drops out
     /// and keeps it while the others carry on; those players are returned.
@@ -386,6 +406,18 @@ impl Fader {
         to: u8,
         timing: Timing,
     ) -> Result<FadeOutcome, CoreError> {
+        self.stepped_with_checkpoint(t, households, claimed, to, timing, |_, _, _| Ok(()))
+    }
+
+    fn stepped_with_checkpoint<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        claimed: &[(PlayerId, u64)],
+        to: u8,
+        timing: Timing,
+        mut checkpoint: impl FnMut(&PlayerId, u8, u8) -> Result<(), CoreError>,
+    ) -> Result<FadeOutcome, CoreError> {
         let _running = self.running();
         let mut lanes = Vec::with_capacity(claimed.len());
         for (p, intent) in claimed {
@@ -405,6 +437,7 @@ impl Fader {
                 let frame = timing.frame(Instant::now(), self.finishing.load(Ordering::Acquire));
                 let level = frame.level(*from, to);
                 if level != *last || frame.complete {
+                    checkpoint(player, *last, level)?;
                     soap::set_volume(t, *host, level)?;
                     *last = level;
                 }

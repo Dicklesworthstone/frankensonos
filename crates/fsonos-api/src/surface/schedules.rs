@@ -26,7 +26,7 @@ use fsonos_core::schedule::{
     self as core_schedule, DEFAULT_GRACE, Schedule, ScheduleAction, ScheduleError, ScheduleSpec,
     Tick,
 };
-use fsonos_core::sleep::{BACKSTOP, FADE, SleepResume, SleepTimer, SleepTimers};
+use fsonos_core::sleep::{BACKSTOP, FADE, SleepFade, SleepResume, SleepTimer, SleepTimers};
 use fsonos_core::{CoreError, HouseholdState};
 use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
@@ -700,9 +700,11 @@ pub struct Sleep {
     writing: Mutex<recovery::State>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 struct SavedTimers {
     timers: Vec<SleepTimer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fades: Vec<SleepFade>,
 }
 
 impl Default for Sleep {
@@ -747,17 +749,28 @@ impl Sleep {
     /// asked for with `--fade`), so the new level stands and the group is not
     /// paused. Returns whether a sleep fade was superseded.
     pub fn volume_changed(&self, households: &[HouseholdState], coordinator: &PlayerId) -> bool {
+        let affected = recovery::fades::supersede(self, coordinator);
         // Record the interruption before waiting out a Pause already in flight.
         // Even a failed Pause must then retire the sleep timer's own backstop.
-        let interrupted = self.timers.interrupt(&self.fader, coordinator);
+        let mut interrupted = self.timers.interrupt(&self.fader, coordinator);
+        for timer in affected.iter().filter(|id| *id != coordinator) {
+            interrupted |= self.timers.interrupt(&self.fader, timer);
+        }
         self.stop_room_fades(households, coordinator);
         interrupted
     }
 
-    /// Accepted playback and grouping changes retire only an announcement's
-    /// conditional continuation. A regular armed sleep timer keeps its intent.
+    /// Accepted playback/grouping changes retire an announcement's continuation
+    /// and any due sleep fade. An ordinary future timer keeps its intent.
     pub(super) fn playback_changing(&self, coordinator: &PlayerId) {
-        self.timers.supersede_announcement(coordinator);
+        let affected = recovery::fades::supersede(self, coordinator);
+        // The interrupt marker also covers a due worker that has not created
+        // its first checkpoint. Existing claims wait out a final Pause before
+        // the caller sends the newer playback command.
+        self.timers.interrupt(&self.fader, coordinator);
+        for timer in affected.iter().filter(|id| *id != coordinator) {
+            self.timers.interrupt(&self.fader, timer);
+        }
     }
 
     fn stop_room_fades(&self, households: &[HouseholdState], coordinator: &PlayerId) {

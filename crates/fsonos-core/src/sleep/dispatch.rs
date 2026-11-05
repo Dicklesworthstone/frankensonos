@@ -2,8 +2,8 @@
 //! once execution begins, even an error is not permission to replay it.
 
 use super::{
-    BACKSTOP, CoreError, DateTime, Fader, HouseholdState, Instant, SleepOutcome, SleepTimer,
-    SleepTimers, Transport, Utc, delta,
+    BACKSTOP, CoreError, DateTime, Fader, HouseholdState, Instant, SleepCheckpoint, SleepOutcome,
+    SleepTimer, SleepTimers, Transport, Utc, delta,
 };
 
 /// One dispatch of one timer, issued by [`SleepTimers::due_runs`]. Use it only
@@ -130,6 +130,27 @@ impl SleepTimers {
             fader,
             &run.timer.coordinator,
             Some(run.generation),
+            None,
+        )
+    }
+
+    /// Run with a durable journal. A checkpoint failure prevents the next
+    /// speaker mutation; original volumes survive an interrupted worker.
+    pub fn run_due_with_checkpoint<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        fader: &Fader,
+        run: &SleepRun,
+        checkpoint: &dyn SleepCheckpoint,
+    ) -> Result<SleepOutcome, CoreError> {
+        self.run_generation(
+            t,
+            households,
+            fader,
+            &run.timer.coordinator,
+            Some(run.generation),
+            Some(checkpoint),
         )
     }
 }

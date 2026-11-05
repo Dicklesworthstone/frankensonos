@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::{Arc, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
+pub(super) mod fades;
 mod file;
 
 const FIRST: Duration = Duration::from_secs(5);
@@ -27,6 +28,12 @@ const MAX_FILE: u64 = 1024 * 1024;
 pub(super) struct State {
     loaded: bool,
     pending: HashMap<PlayerId, SleepTimer>,
+    fades: HashMap<String, fsonos_core::sleep::SleepFade>,
+    active_fades: HashMap<String, u64>,
+    resumed_fades: HashSet<String>,
+    intent_epochs: HashMap<PlayerId, u64>,
+    changed_fades: HashSet<PlayerId>,
+    retired_timers: HashMap<PlayerId, DateTime<Utc>>,
     // Explicit local changes can precede a successful first file read.
     superseded: HashSet<PlayerId>,
     dirty: bool,
@@ -41,6 +48,12 @@ impl Default for State {
         Self {
             loaded: false,
             pending: HashMap::new(),
+            fades: HashMap::new(),
+            active_fades: HashMap::new(),
+            resumed_fades: HashSet::new(),
+            intent_epochs: HashMap::new(),
+            changed_fades: HashSet::new(),
+            retired_timers: HashMap::new(),
             superseded: HashSet::new(),
             dirty: false,
             busy: false,
@@ -56,7 +69,7 @@ impl State {
         if self.loaded {
             return Ok(());
         }
-        let timers = match std::fs::File::open(path) {
+        let saved = match std::fs::File::open(path) {
             Ok(file) => {
                 // Bound corrupted or accidentally replaced files before JSON
                 // parsing; don't partially adopt an ambiguous snapshot.
@@ -65,9 +78,7 @@ impl State {
                 if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_FILE {
                     return Err(io::Error::other("saved sleep timers exceed 1 MiB"));
                 }
-                serde_json::from_str::<SavedTimers>(&text)
-                    .map_err(io::Error::other)?
-                    .timers
+                serde_json::from_str::<SavedTimers>(&text).map_err(io::Error::other)?
             }
             Err(error)
                 if error.kind() == io::ErrorKind::NotFound
@@ -77,12 +88,12 @@ impl State {
                         .unwrap_or_else(|| Path::new("."))
                         .is_dir() =>
             {
-                Vec::new()
+                SavedTimers::default()
             }
             Err(error) => return Err(error),
         };
         let mut pending = HashMap::new();
-        for timer in timers {
+        for timer in saved.timers {
             if timer.coordinator.0.trim().is_empty()
                 || timer.room.trim().is_empty()
                 || pending.insert(timer.coordinator.clone(), timer).is_some()
@@ -92,9 +103,37 @@ impl State {
                 ));
             }
         }
+        let mut fades = HashMap::new();
+        let mut coordinators = HashSet::new();
+        for fade in saved.fades {
+            if !fade.valid()
+                || !coordinators.insert(fade.timer.coordinator.clone())
+                || fades.insert(fade.id.clone(), fade).is_some()
+            {
+                return Err(io::Error::other(
+                    "saved sleep fades have ambiguous identities",
+                ));
+            }
+        }
         pending.retain(|id, _| !self.superseded.contains(id));
+        fades.retain(|_, fade| {
+            if self.changed_fades.iter().any(|id| fade.affects(id)) {
+                if pending
+                    .get(&fade.timer.coordinator)
+                    .is_some_and(|timer| timer.ends == fade.timer.ends)
+                {
+                    pending.remove(&fade.timer.coordinator);
+                }
+                self.dirty = true;
+                false
+            } else {
+                true
+            }
+        });
         self.pending = pending;
+        self.fades = fades;
         self.superseded.clear();
+        self.changed_fades.clear();
         self.loaded = true;
         Ok(())
     }
@@ -102,15 +141,19 @@ impl State {
     fn snapshot(&self, active: Vec<SleepTimer>) -> SavedTimers {
         let mut by_id = self.pending.clone();
         for timer in active {
-            by_id.insert(timer.coordinator.clone(), timer);
+            if self.retired_timers.get(&timer.coordinator) != Some(&timer.ends) {
+                by_id.insert(timer.coordinator.clone(), timer);
+            }
         }
         let mut timers: Vec<_> = by_id.into_values().collect();
         timers.sort_by(|a, b| a.coordinator.0.cmp(&b.coordinator.0));
-        SavedTimers { timers }
+        let mut fades: Vec<_> = self.fades.values().cloned().collect();
+        fades.sort_by(|a, b| a.id.cmp(&b.id));
+        SavedTimers { timers, fades }
     }
 
     fn needs_work(&self) -> bool {
-        !self.loaded || !self.pending.is_empty() || self.dirty
+        !self.loaded || !self.pending.is_empty() || !self.fades.is_empty() || self.dirty
     }
 }
 
@@ -125,6 +168,16 @@ pub(super) fn supersede(sleep: &Sleep, id: &PlayerId) -> Option<SleepTimer> {
         state.superseded.insert(id.clone());
     }
     state.dirty = true;
+    state.retired_timers.remove(id);
+    let released: Vec<_> = state
+        .fades
+        .values()
+        .filter(|fade| fade.timer.coordinator == *id)
+        .map(|fade| fade.id.clone())
+        .collect();
+    for fade in released {
+        state.resumed_fades.remove(&fade);
+    }
     state.pending.remove(id)
 }
 
@@ -158,18 +211,22 @@ pub(super) fn save(sleep: &Sleep, changed: bool) {
     if !state.dirty {
         return;
     }
-    let written = serde_json::to_vec_pretty(&state.snapshot(sleep.timers.all()))
+    if let Err(error) = write(sleep, path, &mut state) {
+        tracing::warn!(%error, "sleep timers not saved; publication will retry");
+    }
+}
+
+fn write(sleep: &Sleep, path: &Path, state: &mut State) -> io::Result<()> {
+    serde_json::to_vec_pretty(&state.snapshot(sleep.timers.all()))
         .map_err(io::Error::other)
         .and_then(|bytes| {
             if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_FILE {
                 return Err(io::Error::other("sleep snapshot exceeds 1 MiB"));
             }
             file::replace(path, &bytes)
-        });
-    match written {
-        Ok(()) => state.dirty = false,
-        Err(error) => tracing::warn!(%error, "sleep timers not saved; publication will retry"),
-    }
+        })?;
+    state.dirty = false;
+    Ok(())
 }
 
 /// Admission is retained by the closure even if thread creation fails or a
@@ -246,7 +303,13 @@ fn expired(timer: &SleepTimer, now: DateTime<Utc>) -> bool {
 /// Removing a candidate before a concurrent command's I/O fences late reads.
 fn finish(sleep: &Sleep, timer: &SleepTimer, adopt: bool, room: &str) -> bool {
     let mut state = sleep.writing.lock().unwrap_or_else(PoisonError::into_inner);
-    if (adopt && state.stopped) || state.pending.get(&timer.coordinator) != Some(timer) {
+    if (adopt && state.stopped)
+        || state.pending.get(&timer.coordinator) != Some(timer)
+        || state
+            .fades
+            .values()
+            .any(|f| f.timer.coordinator == timer.coordinator)
+    {
         return false;
     }
     let adopted = adopt
@@ -254,6 +317,11 @@ fn finish(sleep: &Sleep, timer: &SleepTimer, adopt: bool, room: &str) -> bool {
             room: room.into(),
             ..timer.clone()
         });
+    if adopt && !adopted && sleep.timers.get(&timer.coordinator).is_none() {
+        // Nonblocking core adoption can defer while a timer operation owns
+        // the coordinator. No failure or retirement was observed.
+        return false;
+    }
     state.pending.remove(&timer.coordinator);
     state.dirty = true;
     state.delay = FIRST;
@@ -278,7 +346,8 @@ pub(super) fn adopt(surface: &Surface, sleep: &Sleep, allowed: impl Fn() -> bool
             }
         })
         .collect();
-    if candidates.is_empty() {
+    let interrupted = fades::pending(sleep);
+    if candidates.is_empty() && interrupted.is_empty() {
         save(sleep, false);
         return 0;
     }
@@ -290,10 +359,13 @@ pub(super) fn adopt(surface: &Surface, sleep: &Sleep, allowed: impl Fn() -> bool
             return 0;
         }
     };
-    let mut adopted = 0;
+    let mut adopted = fades::recover(surface, sleep, &households, interrupted, &allowed);
     for timer in candidates {
         if !allowed() {
             break;
+        }
+        if fades::blocks_adoption(sleep, &timer.coordinator) {
+            continue;
         }
         // Never infer a replacement coordinator by room name or adopt a
         // former coordinator into the unrelated group it has since joined.

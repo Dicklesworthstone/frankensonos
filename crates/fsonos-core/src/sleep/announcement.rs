@@ -109,7 +109,8 @@ impl SleepTimers {
         let (receipt, claims) = {
             let mut armed = self.lock();
             let entry = armed.get_mut(coordinator).filter(|entry| {
-                (entry.timer.fading || entry.fade_deadline.is_some()) && !entry.interrupted
+                (entry.timer.fading || entry.fade_deadline.is_some() || entry.recovery.is_some())
+                    && !entry.interrupted
             })?;
             entry.interrupted = true;
             let receipt = self.resumes.issue(coordinator);
@@ -169,6 +170,7 @@ impl SleepTimers {
                 coordinator.clone(),
                 Armed {
                     timer: timer.clone(),
+                    recovery: None,
                     generation: self.generation(),
                     running: false,
                     fade_claims: None,

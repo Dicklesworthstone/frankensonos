@@ -804,7 +804,7 @@ fn fade_volumes<T: Transport + ?Sized>(
                 match (op, set) {
                     (Some(op), Some(Ok(_))) => report.done.push(SceneOp::clone(op)),
                     (Some(op), Some(Err(e))) => {
-                        report.failed.push((SceneOp::clone(op), e.to_string()))
+                        report.failed.push((SceneOp::clone(op), e.to_string()));
                     }
                     // A room silenced to fade in, still silent: say so.
                     (None, Some(Err(e))) => {

@@ -1,7 +1,8 @@
 //! Sleep completion and explicit cancellation retain only their own volume intents.
 
 use super::{
-    CoreError, Fader, HouseholdState, PlayerId, SleepOutcome, SleepTimers, Transport, ip, soap,
+    CoreError, Fader, HouseholdState, PlayerId, SleepCheckpoint, SleepFade, SleepOutcome,
+    SleepRecovery, SleepTimer, SleepTimers, Transport, ip, soap,
 };
 use crate::fade::FadeOutcome;
 use std::collections::HashMap;
@@ -104,6 +105,8 @@ impl Claims {
 /// error return and unwinding worker. No successor snapshots an unfinished fade.
 pub(super) struct Run {
     coordinator: PlayerId,
+    timer: SleepTimer,
+    recovery: Option<SleepFade>,
     joined: bool,
     generation: u64,
     deadline: Instant,
@@ -114,14 +117,17 @@ pub(super) struct Run {
 
 impl Run {
     pub(super) fn new(
-        coordinator: &PlayerId,
+        timer: SleepTimer,
+        recovery: Option<SleepFade>,
         joined: bool,
         generation: u64,
         deadline: Option<Instant>,
         claimed: Vec<(PlayerId, u64)>,
     ) -> Self {
         Self {
-            coordinator: coordinator.clone(),
+            coordinator: timer.coordinator.clone(),
+            timer,
+            recovery,
             joined,
             generation,
             deadline: deadline.unwrap_or_else(Instant::now),
@@ -136,7 +142,35 @@ impl Run {
         t: &T,
         households: &[HouseholdState],
         fader: &Fader,
+        checkpoint: Option<&dyn SleepCheckpoint>,
     ) -> Result<FadeOutcome, CoreError> {
+        if let Some(checkpoint) = checkpoint {
+            if let Some(recovery) = &self.recovery {
+                if !recovery.matches_claims(&self.claimed)
+                    || recovery.recovery(t, households, self.timer.ends, true)?
+                        != SleepRecovery::Resume
+                {
+                    return Err(super::recovery::changed());
+                }
+            } else {
+                self.recovery = Some(SleepFade::capture(
+                    t,
+                    households,
+                    self.timer.clone(),
+                    &self.claimed,
+                )?);
+            }
+            let recovery = self.recovery.as_mut().expect("captured sleep fade");
+            self.before = recovery.original_levels();
+            checkpoint.save(recovery)?;
+            return fader.sleep_fade_until(
+                t,
+                households,
+                &self.claimed,
+                self.deadline,
+                |player, last, next| recovery.step(checkpoint, player, last, next),
+            );
+        }
         self.before = self
             .claimed
             .iter()
@@ -157,38 +191,75 @@ impl Run {
         )?)
     }
 
+    fn restore<T: Transport + ?Sized>(
+        &mut self,
+        t: &T,
+        households: &[HouseholdState],
+        fader: &Fader,
+        checkpoint: Option<&dyn SleepCheckpoint>,
+    ) -> Result<(), CoreError> {
+        if let (Some(recovery), Some(checkpoint)) = (&mut self.recovery, checkpoint) {
+            let claims = self
+                .restoration
+                .intents
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            recovery.restore_claimed(t, households, fader, &claims, checkpoint)
+        } else {
+            self.restoration.restore(t, households, fader, &self.before)
+        }
+    }
+
+    fn completed(&self, checkpoint: Option<&dyn SleepCheckpoint>) -> Result<(), CoreError> {
+        if let (Some(recovery), Some(checkpoint)) = (&self.recovery, checkpoint) {
+            checkpoint.complete(recovery)?;
+        }
+        Ok(())
+    }
+
     /// Caller holds this coordinator's operation lock, so no replacement can
     /// slip between the generation check and a device backstop clear.
     pub(super) fn finish<T: Transport + ?Sized>(
-        &self,
+        &mut self,
         timers: &SleepTimers,
         t: &T,
         households: &[HouseholdState],
         fader: &Fader,
         outcome: Result<FadeOutcome, CoreError>,
+        checkpoint: Option<&dyn SleepCheckpoint>,
     ) -> Result<SleepOutcome, CoreError> {
-        let restore = || self.restoration.restore(t, households, fader, &self.before);
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
-                let _ = restore();
+                let restored = self.restore(t, households, fader, checkpoint);
                 if timers.forget(&self.coordinator, self.generation) && !self.joined {
                     // An explicit manual interruption also retires the device
                     // fallback. It must not later stop the newer playback.
                     let _ = self.clear(t, households);
+                }
+                if restored.is_ok() {
+                    let _ = self.completed(checkpoint);
                 }
                 return Err(error);
             }
         };
         let current = timers.lock().get(&self.coordinator).map(|a| a.generation);
         if current != Some(self.generation) {
-            restore()?;
+            self.restore(t, households, fader, checkpoint)?;
+            self.completed(checkpoint)?;
             return Ok(SleepOutcome::Cancelled);
         }
         let stopped = if outcome == FadeOutcome::Reached {
             fader.with_claimed(&self.claimed, || {
+                if let (Some(recovery), Some(checkpoint)) = (&mut self.recovery, checkpoint) {
+                    recovery.stopping(t, households, checkpoint)?;
+                }
                 if self.joined {
-                    crate::control::leave(t, households, &self.coordinator)
+                    crate::control::leave(t, households, &self.coordinator)?;
+                    if let (Some(recovery), Some(checkpoint)) = (&mut self.recovery, checkpoint) {
+                        recovery.left(t, households, checkpoint)?;
+                    }
+                    Ok(())
                 } else {
                     crate::control::pause(t, households, &self.coordinator)
                 }
@@ -196,29 +267,30 @@ impl Run {
         } else {
             None
         };
-        match stopped {
-            Some(stopped) => {
-                // A genuine failed stop keeps the fallback. An interruption
-                // recorded before retiring this run takes precedence over it.
-                let restored = restore();
-                let interrupted = timers.forget(&self.coordinator, self.generation);
-                let cleared = if stopped.is_ok() || (interrupted && !self.joined) {
-                    self.clear(t, households)
-                } else {
-                    Ok(())
-                };
-                stopped
-                    .and(cleared)
-                    .and(restored)
-                    .map(|()| SleepOutcome::Paused)
+        if let Some(stopped) = stopped {
+            // A genuine failed stop keeps the fallback. An interruption
+            // recorded before retiring this run takes precedence over it.
+            let restored = self.restore(t, households, fader, checkpoint);
+            let interrupted = timers.forget(&self.coordinator, self.generation);
+            let cleared = if stopped.is_ok() || (interrupted && !self.joined) {
+                self.clear(t, households)
+            } else {
+                Ok(())
+            };
+            if restored.is_ok() {
+                self.completed(checkpoint)?;
             }
-            None => {
-                timers.forget(&self.coordinator, self.generation);
-                if !self.joined {
-                    self.clear(t, households)?;
-                }
-                Ok(SleepOutcome::Interrupted)
+            stopped
+                .and(cleared)
+                .and(restored)
+                .map(|()| SleepOutcome::Paused)
+        } else {
+            timers.forget(&self.coordinator, self.generation);
+            if !self.joined {
+                self.clear(t, households)?;
             }
+            self.completed(checkpoint)?;
+            Ok(SleepOutcome::Interrupted)
         }
     }
 }
@@ -236,7 +308,19 @@ mod tests {
     #[test]
     fn unwinding_a_worker_releases_its_pending_successors() {
         let player = PlayerId("RINCON_TEST".into());
-        let run = Run::new(&player, false, 1, None, vec![(player.clone(), 1)]);
+        let run = Run::new(
+            SleepTimer {
+                coordinator: player.clone(),
+                room: "Test".into(),
+                ends: chrono::Utc::now(),
+                fading: true,
+            },
+            None,
+            false,
+            1,
+            None,
+            vec![(player.clone(), 1)],
+        );
         let mut pending = Pending::default();
         pending.remember(&run.restoration);
         assert_eq!(pending.remaining().len(), 1);

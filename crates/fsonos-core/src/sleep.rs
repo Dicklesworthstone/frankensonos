@@ -25,15 +25,17 @@ use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 mod announcement;
 mod dispatch;
 mod ownership;
+mod recovery;
 pub use announcement::SleepResume;
 pub use dispatch::SleepRun;
 use ownership::{Claims, Operations, Run};
+pub use recovery::{SleepCheckpoint, SleepFade, SleepRecovery};
 
 /// How long before the end the fade starts.
 pub const FADE: Duration = Duration::from_mins(2);
@@ -75,6 +77,7 @@ pub enum SleepOutcome {
 #[derive(Debug)]
 struct Armed {
     timer: SleepTimer,
+    recovery: Option<SleepFade>,
     /// Changes whenever the timer is re-armed or dispatched, so a fade can tell.
     generation: u64,
     /// The worker has crossed into execution; it must never be requeued.
@@ -203,6 +206,7 @@ impl SleepTimers {
                 coordinator.clone(),
                 Armed {
                     timer: timer.clone(),
+                    recovery: None,
                     generation,
                     running: false,
                     fade_claims: None,
@@ -247,6 +251,7 @@ impl SleepTimers {
             entry.running = false;
             entry.interrupted = false;
             entry.fade_deadline = None;
+            entry.recovery = None;
             (entry.timer.clone(), claims)
         };
         if let Some(claims) = claims {
@@ -352,6 +357,7 @@ impl SleepTimers {
             entry.running = false;
             entry.interrupted = false;
             entry.fade_deadline = None;
+            entry.recovery = None;
             (claims, armed.insert(new.clone(), entry))
         };
         if let Some(claims) = claims {
@@ -377,7 +383,7 @@ impl SleepTimers {
             self.resumes.supersede(coordinator);
             let Some(a) = armed
                 .get_mut(coordinator)
-                .filter(|a| a.timer.fading || a.fade_deadline.is_some())
+                .filter(|a| a.timer.fading || a.fade_deadline.is_some() || a.recovery.is_some())
             else {
                 return false;
             };
@@ -394,10 +400,61 @@ impl SleepTimers {
     /// Arm `timer` as it was saved, leaving the player's own timer (its
     /// backstop, still running) as it is: how a restarted daemon takes up
     /// its timers. A group that already has a timer keeps it. Whether it was
-    /// armed.
+    /// armed. A coordinator with an operation in flight is left for a retry.
     pub fn adopt(&self, timer: SleepTimer) -> bool {
+        self.adopt_with_recovery(timer, None)
+    }
+
+    /// Continue a verified interrupted fade using its durable original levels.
+    /// The caller must first verify its matching device backstop and source.
+    pub fn adopt_resuming(&self, timer: SleepTimer, fade: SleepFade) -> bool {
+        if !fade.valid()
+            || fade.timer.coordinator != timer.coordinator
+            || fade.timer.ends != timer.ends
+        {
+            return false;
+        }
+        self.adopt_with_recovery(timer, Some(fade))
+    }
+
+    /// Clear only an interrupted fade's still-matching fallback, serialized
+    /// with local start/extend/cancel. A newly armed timer always keeps its own.
+    pub fn clear_recovered_backstop<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        fade: &SleepFade,
+        checkpoint: &dyn SleepCheckpoint,
+        now: DateTime<Utc>,
+    ) -> Result<(), CoreError> {
+        let coordinator = &fade.timer.coordinator;
+        let operation = self.operations.get(coordinator);
+        let _operation = operation.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.get(coordinator).is_some() || !checkpoint.current(fade) {
+            return Ok(());
+        }
+        let host = ip(households, coordinator)?;
+        if let Some(left) = soap::get_remaining_sleep_timer(t, host)?
+            && let Some(end) = fade.timer.ends.checked_add_signed(delta(BACKSTOP))
+            && end > now
+            && (TimeDelta::seconds(i64::from(left)) - (end - now)).abs() <= TimeDelta::minutes(1)
+            && checkpoint.current(fade)
+        {
+            soap::configure_sleep_timer(t, host, None)?;
+        }
+        Ok(())
+    }
+
+    fn adopt_with_recovery(&self, timer: SleepTimer, recovery: Option<SleepFade>) -> bool {
         let operation = self.operations.get(&timer.coordinator);
-        let mut active = operation.lock().unwrap_or_else(PoisonError::into_inner);
+        // Persistence fences adoption while holding its own snapshot lock.
+        // A finishing run may need that lock while owning this operation, so
+        // adoption must never wait here; its candidate remains retryable.
+        let mut active = match operation.try_lock() {
+            Ok(active) => active,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => return false,
+        };
         let predecessors = active.remaining();
         let generation = self.generation();
         let mut armed = self.lock();
@@ -408,6 +465,7 @@ impl SleepTimers {
         armed.insert(
             timer.coordinator.clone(),
             Armed {
+                recovery,
                 timer: SleepTimer {
                     fading: false,
                     ..timer
@@ -460,7 +518,7 @@ impl SleepTimers {
         fader: &Fader,
         coordinator: &PlayerId,
     ) -> Result<SleepOutcome, CoreError> {
-        self.run_generation(t, households, fader, coordinator, None)
+        self.run_generation(t, households, fader, coordinator, None, None)
     }
 
     fn run_generation<T: Transport + ?Sized>(
@@ -470,6 +528,7 @@ impl SleepTimers {
         fader: &Fader,
         coordinator: &PlayerId,
         expected: Option<u64>,
+        checkpoint: Option<&dyn SleepCheckpoint>,
     ) -> Result<SleepOutcome, CoreError> {
         let operation = self.operations.get(coordinator);
         let mut starting = operation.lock().unwrap_or_else(PoisonError::into_inner);
@@ -478,7 +537,7 @@ impl SleepTimers {
         let joined = household
             .and_then(|h| h.coordinator_of(coordinator))
             .is_some_and(|lead| lead != coordinator);
-        let mut run = {
+        let (timer, recovery, generation, deadline) = {
             let mut armed = self.lock();
             let Some(a) = armed.get_mut(coordinator).filter(|a| {
                 a.timer.fading && !a.running && expected.is_none_or(|g| g == a.generation)
@@ -505,32 +564,56 @@ impl SleepTimers {
                 }
                 return Ok(SleepOutcome::Interrupted);
             }
-            let run = Run::new(
-                coordinator,
-                joined,
+            (
+                a.timer.clone(),
+                a.recovery.take(),
                 a.generation,
                 a.fade_deadline,
-                fader.claim(&rooms),
-            );
-            a.fade_claims = Some(Arc::clone(&run.restoration));
-            starting.remember(&run.restoration);
-            run
+            )
         };
+        // A room's last step may be publishing its durable checkpoint, which
+        // reads the timer map. Never wait for that step while holding the map.
+        // This coordinator's operation still fences replacement/cancellation.
+        let mut run = Run::new(
+            timer,
+            recovery,
+            joined,
+            generation,
+            deadline,
+            fader.claim(&rooms),
+        );
+        let interrupted = {
+            let mut armed = self.lock();
+            let Some(a) = armed
+                .get_mut(coordinator)
+                .filter(|a| a.generation == generation)
+            else {
+                return Ok(SleepOutcome::Gone);
+            };
+            a.fade_claims = Some(Arc::clone(&run.restoration));
+            a.interrupted
+        };
+        // A manual change may arrive between reserving this run and claiming
+        // its rooms. It still wins before the first fade step.
+        if interrupted {
+            run.restoration.stop(fader, false);
+        }
+        starting.remember(&run.restoration);
         drop(starting);
-        let outcome = run.fade(t, households, fader);
+        let outcome = run.fade(t, households, fader, checkpoint);
         // Other groups and timer observations remain available during device
         // I/O. This coordinator cannot be re-armed during its final stop/clear.
         let _operation = operation.lock().unwrap_or_else(PoisonError::into_inner);
-        run.finish(self, t, households, fader, outcome)
+        run.finish(self, t, households, fader, outcome, checkpoint)
     }
 
     /// Retire only this generation, returning whether a manual interruption
     /// arrived before retirement. Failed workers never remove a replacement.
     fn forget(&self, coordinator: &PlayerId, generation: u64) -> bool {
         let mut armed = self.lock();
-        if !armed
+        if armed
             .get(coordinator)
-            .is_some_and(|a| a.generation == generation)
+            .is_none_or(|a| a.generation != generation)
         {
             return false;
         }
@@ -577,6 +660,7 @@ mod tests {
             timers.lock().insert(
                 PlayerId(id.into()),
                 Armed {
+                    recovery: None,
                     timer: SleepTimer {
                         coordinator: PlayerId(id.into()),
                         room: id.into(),

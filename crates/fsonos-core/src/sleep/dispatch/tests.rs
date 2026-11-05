@@ -310,3 +310,61 @@ fn real_s1_and_s2_workers_pause_and_restore_once_despite_duplicate_dispatch() {
         assert!(timers.due_runs(epoch(), 1).is_empty());
     }
 }
+
+#[test]
+fn waiting_for_a_room_step_keeps_the_timer_map_available_to_checkpoints() {
+    let sim = SimHousehold::builder()
+        .s2([SimPlayerSpec::new("Room", SimModel::One)])
+        .spawn()
+        .unwrap();
+    let lan = sim.lan();
+    let host = sim.player("Room").unwrap().ip;
+    let mut house = HouseholdState::default();
+    house.apply_topology(&get_zone_group_state(&lan, host).unwrap());
+    let houses = [house];
+    let id = crate::resolve_room(&houses, "Room")
+        .unwrap()
+        .player
+        .id
+        .clone();
+    let timers = SleepTimers::with_fade(Duration::ZERO);
+    let fader = Fader::default();
+    timers
+        .start(&lan, &houses, &fader, &id, Duration::ZERO, epoch())
+        .unwrap();
+    let ticket = timers.due_runs(epoch(), 1).remove(0);
+    let claims = fader.claim(std::slice::from_ref(&id));
+    std::thread::scope(|scope| {
+        let available = fader.with_claimed(&claims, || {
+            scope.spawn(|| timers.run_due(&lan, &houses, &fader, &ticket).unwrap());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if timers
+                    .armed
+                    .try_lock()
+                    .is_ok_and(|armed| armed.get(&id).is_some_and(|a| a.running))
+                {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        // The held step has been released, so even a regression fails without
+        // stranding the test worker forever inside a lock cycle.
+        assert_eq!(available, Some(true));
+    });
+}
+
+#[test]
+fn adoption_defers_instead_of_waiting_on_a_finishing_timer_operation() {
+    let timers = SleepTimers::new();
+    let timer = timer("room", 30);
+    let operation = timers.operations.get(&timer.coordinator);
+    let held = operation.lock().unwrap();
+    assert!(!timers.adopt(timer.clone()));
+    drop(held);
+    assert!(timers.adopt(timer));
+}

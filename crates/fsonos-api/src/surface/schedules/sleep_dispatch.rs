@@ -105,16 +105,30 @@ fn start_with(
                 return;
             }
             let timer = guard.ticket.timer();
+            if super::recovery::fades::blocks_dispatch(&guard.sleep, timer) {
+                return;
+            }
             if let Err(error) = fsonos_core::resolve_room(&households, &timer.coordinator.0) {
                 tracing::debug!("sleep fade in {} awaits its room: {error}", timer.room);
                 return;
             }
-            let outcome = guard.sleep.timers.run_due(
-                &*surface.transport,
-                &households,
-                &guard.sleep.fader,
-                &guard.ticket,
-            );
+            let outcome = if guard.sleep.saved.is_some() {
+                let checkpoint = super::recovery::fades::Checkpoint::new(&guard.sleep);
+                guard.sleep.timers.run_due_with_checkpoint(
+                    &*surface.transport,
+                    &households,
+                    &guard.sleep.fader,
+                    &guard.ticket,
+                    &checkpoint,
+                )
+            } else {
+                guard.sleep.timers.run_due(
+                    &*surface.transport,
+                    &households,
+                    &guard.sleep.fader,
+                    &guard.ticket,
+                )
+            };
             let result = match &outcome {
                 Ok(outcome) => {
                     let what = describe(*outcome);

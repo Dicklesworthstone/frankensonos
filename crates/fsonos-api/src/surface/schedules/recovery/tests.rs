@@ -17,6 +17,8 @@ use std::sync::{Mutex, mpsc};
 
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
+mod fades;
+
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -386,6 +388,7 @@ fn expired_or_overflowing_deadlines_are_retired_without_discovery_or_speaker_io(
             &h.scratch.path(),
             &serde_json::to_vec(&SavedTimers {
                 timers: vec![timer.clone()],
+                ..SavedTimers::default()
             })
             .unwrap(),
         )
@@ -418,6 +421,7 @@ fn corrupt_snapshot_is_preserved_and_later_loading_cannot_resurrect_a_local_canc
         &h.scratch.path(),
         &serde_json::to_vec(&SavedTimers {
             timers: vec![original],
+            ..SavedTimers::default()
         })
         .unwrap(),
     )
@@ -520,6 +524,7 @@ fn malformed_duplicate_or_oversized_files_never_partially_initialize() {
     let timer = h.seed();
     let duplicate = serde_json::to_vec(&SavedTimers {
         timers: vec![timer.clone(), timer],
+        ..SavedTimers::default()
     })
     .unwrap();
     for bytes in [
@@ -601,6 +606,7 @@ fn an_overdue_verified_timer_is_due_immediately_not_restarted_for_two_minutes() 
         &h.scratch.path(),
         &serde_json::to_vec(&SavedTimers {
             timers: vec![original.clone()],
+            ..SavedTimers::default()
         })
         .unwrap(),
     )
