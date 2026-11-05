@@ -1031,3 +1031,12 @@ THE COMPLETE SESSION DELIVERABLES (all committed):
 
 DEVICES: .84/.135/.202 all healthy. No persistence yet. The reboot gadget
 = operational (a clean device-state reset between experiments).
+
+### 2026-11-05 (Route D advance): the update-URL field LOCATED
+
+The UpdateURL= log site (0x1029d8e0) reveals the update-state struct: the
+URL string lives at struct+73 and struct+1098. The struct = a heap object
+in the update subsystem. If its address = S+X with X+73 inside the overflow
+reach (6380..30380), the overflow corrupts the update URL directly → the
+daemon fetches our payload → sonosFileCreate writes it → Configure.dev →
+boot root. GoldMeadow dispatched: compute X via the dlmalloc model.
