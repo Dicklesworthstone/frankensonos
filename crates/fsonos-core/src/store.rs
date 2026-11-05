@@ -22,8 +22,11 @@ pub const FILE_NAME: &str = "fsonos.db";
 /// Bounds for one playlist observation or resumable read. Source positions
 /// include unavailable entries, so skipping them cannot evade the item bound.
 pub const MAX_PLAYLIST_ENTRIES: u32 = 10_000;
-/// Maximum aggregate metadata bytes in an observation or serialized checkpoint.
+/// Maximum aggregate metadata bytes in an observation or serialized checkpoint,
+/// including the directory that discovers the owner's playlists.
 pub const MAX_PLAYLIST_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum raw entries in a resumable playlist-directory scan.
+pub const MAX_PLAYLIST_DIRECTORY_ENTRIES: u32 = 100_000;
 
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, Track, ZoneGroup};
@@ -694,6 +697,28 @@ pub trait Store {
     /// Those playlists, in the list's order.
     fn playlists(&self) -> Result<Vec<(String, String)>, StoreError>;
 
+    /// Private, bounded directory progress for this adoption of an account.
+    /// A stale receipt returns no checkpoint, even after switching away and
+    /// back to the same account. The Spotify reader validates its schema.
+    fn spotify_playlist_directory(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError>;
+
+    /// Replace directory progress only while the adoption receipt and exact
+    /// previous checkpoint still match. `expected: None` requires no checkpoint.
+    /// A complete directory may also prune private playlist proofs to `active`
+    /// in the same transaction; an unfinished scan must pass `None`. Public
+    /// names and contents remain unchanged until library publication succeeds.
+    /// Returns false without writes after an account switch or competing scan.
+    fn save_spotify_playlist_directory(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: Option<&str>,
+        progress: &str,
+        active: Option<&[String]>,
+    ) -> Result<bool, StoreError>;
+
     /// Atomically replace one playlist's observed contents. An empty complete
     /// observation is retained as evidence of an empty playlist. This does not
     /// change the separate URI/name listing; callers decide refresh retention.
@@ -853,6 +878,7 @@ pub struct MemStore {
     artist_genres: BTreeMap<String, (Vec<String>, i64)>,
     album_misses: BTreeMap<String, i64>,
     playlists: Vec<(String, String)>,
+    playlist_directories: BTreeMap<String, (u64, String)>,
     playlist_contents: BTreeMap<String, CachedPlaylist>,
     playlist_scan_cursors: BTreeMap<String, String>,
     playlist_progress: BTreeMap<(String, String), String>,
@@ -998,6 +1024,7 @@ impl Store for MemStore {
         // this account; that public cache has just been discarded.
         self.playlist_progress
             .retain(|(previous, _), _| previous != owner_id);
+        self.playlist_directories.remove(owner_id);
         self.spotify_library_owner = Some(owner.clone());
         Ok((owner, true))
     }
@@ -1216,6 +1243,49 @@ impl Store for MemStore {
         self.playlist_contents
             .insert(contents.playlist_uri.clone(), contents.clone());
         Ok(())
+    }
+
+    fn spotify_playlist_directory(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError> {
+        if self.spotify_library_owner.as_ref() != Some(owner) {
+            return Ok(None);
+        }
+        Ok(self
+            .playlist_directories
+            .get(&owner.owner_id)
+            .filter(|(generation, _)| *generation == owner.generation)
+            .map(|(_, progress)| progress.clone()))
+    }
+
+    fn save_spotify_playlist_directory(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: Option<&str>,
+        progress: &str,
+        active: Option<&[String]>,
+    ) -> Result<bool, StoreError> {
+        if progress.len() > MAX_PLAYLIST_BYTES
+            || expected.is_some_and(|value| value.len() > MAX_PLAYLIST_BYTES)
+        {
+            return Err(StoreError::Backend(
+                "playlist directory is too large".into(),
+            ));
+        }
+        if self.spotify_library_owner.as_ref() != Some(owner)
+            || self.spotify_playlist_directory(owner)?.as_deref() != expected
+        {
+            return Ok(false);
+        }
+        self.playlist_directories.insert(
+            owner.owner_id.clone(),
+            (owner.generation, progress.to_owned()),
+        );
+        if let Some(active) = active {
+            self.retain_playlist_progress(&owner.owner_id, active)?;
+        }
+        Ok(true)
     }
 
     fn playlist_contents(&self, playlist_uri: &str) -> Result<Option<CachedPlaylist>, StoreError> {

@@ -90,6 +90,33 @@ to read or save the scan position stops playlist intake and appears in the sync
 notes; it does not silently restart from the first list. Unvisited observations
 and previously cached taste tracks survive incomplete reads.
 
+### Large playlist directories also continue
+
+The directory that discovers playlists has a separate durable checkpoint.
+Each pass spends at most 20 logical directory GETs, including checks of the
+first and last accepted pages before resuming. Accepted raw offsets, totals
+and entries survive restarts; repeated directory IDs still occupy their raw
+positions and consume only one later content turn. Changed boundaries restart
+the scan. Invalid links, inconsistent coverage and failed pages retain the
+accepted checkpoint and published names. Partial directories never prune
+playlist proofs or replace the last complete listing.
+
+Background passes reuse a completed directory while finishing its playlist
+windows. Retained middle-page versions require a fresh playlist preflight
+before unfinished content can resume. Accepted version proofs update the
+directory checkpoint, allowing the subsequent full reconciliation to include
+all completed playlists within the existing 25-playlist request budget.
+That one-use reconciliation receipt is consumed only after successful,
+account-fenced full publication with a complete taste union. Failed or
+cancelled reads retain it; later explicit and daily full refreshes start a new
+directory scan instead of repeatedly reopening the just-completed one.
+
+Directory checkpoints are bounded to 100,000 raw entries and 16 MiB. A terminal
+limit marker preserves the published cache and waits for a full refresh
+instead of repeating background reads. Migration 19 stores these checkpoints
+under both the Spotify owner and its adoption generation, so switching away
+and back cannot resume or acknowledge an older account session's work.
+
 ### Long playlists continue on their next turn
 
 A private checkpoint stores each playlist's Spotify `snapshot_id`, the next raw

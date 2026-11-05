@@ -98,8 +98,8 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    let (taste, mut read) =
-        read_taste_for_owner(session, cx, store, &items, now, Some(&owner)).await;
+    let (mut taste, mut read) =
+        read_taste_for_owner(session, cx, store, &items, now, Some(&receipt)).await;
     items.extend(taste.tracks.iter().cloned());
     if read.incomplete() {
         // An unfinished read keeps what the last one found: every track's
@@ -161,7 +161,10 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
             })
             .count();
     }
-    acknowledge_playlists(store, &receipt, &taste, &mut read.continuation)?;
+    acknowledge_playlists(store, &receipt, &mut taste, &mut read.continuation)?;
+    if !read.incomplete() && read.continuation.pending == 0 && read.continuation.limited == 0 {
+        crate::taste::finish_reconciliation(store, &receipt, taste.directory.as_ref())?;
+    }
     let works = group_works(pool_from_store(store)?.tracks());
     let albums = complete_library_works(session, cx, store, works, now).await;
     let notes = sync_notes(&read, &genres, &albums);
@@ -209,7 +212,7 @@ async fn complete_library_works<S: Store + ?Sized>(
 fn acknowledge_playlists<S: Store + ?Sized>(
     store: &mut S,
     owner: &SpotifyLibraryOwner,
-    taste: &Taste,
+    taste: &mut Taste,
     continuation: &mut PlaylistContinuation,
 ) -> Result<(), SpotifyError> {
     for observation in &taste.playlist_contents {
@@ -222,6 +225,7 @@ fn acknowledge_playlists<S: Store + ?Sized>(
             continuation.limited += usize::from(limited);
         }
     }
+    crate::taste::remember_versions(store, owner, &mut taste.directory, &taste.playlist_contents)?;
     Ok(())
 }
 

@@ -296,7 +296,7 @@ fn consecutive_duplicate_queue_occurrences_are_each_recorded_once() {
     let host = sim.player("Kitchen").unwrap().ip;
     let repeated = "https://stream.example.invalid/repeated.mp3";
     for _ in 0..2 {
-        soap::add_uri_to_queue(&*lan, host, repeated, "", false).unwrap();
+        fsonos_proto::control::add_uri_to_queue(&*lan, host, repeated, "", false).unwrap();
     }
     let surface = daemon(&sim, &live, MemStore::default(), Box::new(SystemClock));
     let plays = || surface.recent_plays(&Client::Cli, None, 10).unwrap();

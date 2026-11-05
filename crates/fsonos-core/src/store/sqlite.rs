@@ -223,6 +223,15 @@ const MIGRATIONS: &[Migration] = &[
         ALTER TABLE album_tracks ADD COLUMN explicit INTEGER;
     ",
     },
+    Migration {
+        version: 19,
+        name: "bounded Spotify playlist directories resume across restarts",
+        sql: "
+        CREATE TABLE spotify_playlist_directories (
+            owner_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+            progress TEXT NOT NULL);
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -976,6 +985,10 @@ impl Store for SqliteStore {
                 &[owner_id.into()],
             )?;
             connection.execute_with_params_sync(
+                "DELETE FROM spotify_playlist_directories WHERE owner_id = ?1",
+                &[owner_id.into()],
+            )?;
+            connection.execute_with_params_sync(
                 "INSERT OR REPLACE INTO spotify_library_owner (singleton, owner_id, generation) \
                  VALUES (1, ?1, ?2)",
                 &[owner_id.into(), stored_generation.into()],
@@ -1483,6 +1496,87 @@ impl Store for SqliteStore {
             Ok(contents)
         })
         .transpose()
+    }
+
+    fn spotify_playlist_directory(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError> {
+        let generation = i64::try_from(owner.generation).map_err(backend)?;
+        self.query(
+            "SELECT directory.progress FROM spotify_playlist_directories AS directory \
+             JOIN spotify_library_owner AS current \
+             ON current.owner_id = directory.owner_id AND current.generation = directory.generation \
+             WHERE current.singleton = 1 AND directory.owner_id = ?1 AND directory.generation = ?2",
+            &[owner.owner_id.as_str().into(), generation.into()],
+        )?
+        .first()
+        .map(|row| {
+            let progress = text(row, 0)?;
+            if progress.len() > super::MAX_PLAYLIST_BYTES {
+                return Err(backend("playlist directory is too large"));
+            }
+            Ok(progress)
+        })
+        .transpose()
+    }
+
+    fn save_spotify_playlist_directory(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: Option<&str>,
+        progress: &str,
+        active: Option<&[String]>,
+    ) -> Result<bool, StoreError> {
+        if progress.len() > super::MAX_PLAYLIST_BYTES
+            || expected.is_some_and(|value| value.len() > super::MAX_PLAYLIST_BYTES)
+        {
+            return Err(backend("playlist directory is too large"));
+        }
+        let generation = i64::try_from(owner.generation).map_err(backend)?;
+        let keep = active.map(|uris| {
+            uris.iter()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+        self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != Some(owner) {
+                return Ok(false);
+            }
+            let current = connection.query_with_params_sync(
+                "SELECT progress FROM spotify_playlist_directories WHERE owner_id = ?1 AND generation = ?2",
+                &[owner.owner_id.as_str().into(), generation.into()],
+            )?;
+            let current = current
+                .first()
+                .map(|row| text(row, 0).map_err(|error| FrankenError::Internal(error.to_string())))
+                .transpose()?;
+            if current.as_deref() != expected {
+                return Ok(false);
+            }
+            connection.execute_with_params_sync(
+                "INSERT OR REPLACE INTO spotify_playlist_directories (owner_id, generation, progress) \
+                 VALUES (?1, ?2, ?3)",
+                &[owner.owner_id.as_str().into(), generation.into(), progress.into()],
+            )?;
+            if let Some(keep) = &keep {
+                let rows = connection.query_with_params_sync(
+                    "SELECT playlist_uri FROM spotify_playlist_progress WHERE owner_id = ?1",
+                    &[owner.owner_id.as_str().into()],
+                )?;
+                for row in rows {
+                    let uri = text(&row, 0)
+                        .map_err(|error| FrankenError::Internal(error.to_string()))?;
+                    if !keep.contains(uri.as_str()) {
+                        connection.execute_with_params_sync(
+                            "DELETE FROM spotify_playlist_progress WHERE owner_id = ?1 AND playlist_uri = ?2",
+                            &[owner.owner_id.as_str().into(), uri.into()],
+                        )?;
+                    }
+                }
+            }
+            Ok(true)
+        })
     }
 
     fn playlist_scan_cursor(&self, owner_id: &str) -> Result<Option<String>, StoreError> {
@@ -2044,7 +2138,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
             ]
         );
         let lib = store.library().unwrap();
@@ -2087,7 +2181,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
             ]
         );
         let lib = store.library().unwrap();
@@ -2146,7 +2240,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
             ]
         );
         let lib = store.library().unwrap();

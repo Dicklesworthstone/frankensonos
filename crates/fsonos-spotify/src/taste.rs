@@ -32,7 +32,7 @@
 use std::collections::{HashMap, HashSet};
 
 use asupersync::Cx;
-use fsonos_core::store::{CachedPlaylist, Store};
+use fsonos_core::store::{CachedPlaylist, SpotifyLibraryOwner, Store};
 
 use crate::SpotifyError;
 use crate::client::{
@@ -44,12 +44,14 @@ use crate::session::Session;
 
 mod artists;
 mod continuation;
+mod directory;
 mod paging;
 mod playlist_scan;
 
 pub use continuation::PlaylistContinuation;
 use continuation::Scan;
 pub(crate) use continuation::read_pending_playlists;
+pub(crate) use directory::{finish_reconciliation, remember_versions};
 pub(crate) use playlist_scan::mark_applied as mark_playlist_applied;
 
 /// A top track's weight (per mille).
@@ -124,6 +126,8 @@ pub struct Taste {
     /// Ordered observations from the existing bounded playlist reads. Kept
     /// apart from `tracks`, whose library projection deduplicates by URI.
     pub(crate) playlist_contents: Vec<PlaylistObservation>,
+    /// Exact accepted directory proof, for version updates and full reconciliation.
+    pub(crate) directory: Option<directory::DirectoryReceipt>,
     /// What the owner played lately (`spotify:track:` URI, unix seconds),
     /// when that read succeeded; `None` when it wasn't read, so the cached
     /// plays stay.
@@ -142,6 +146,7 @@ pub struct Taste {
 #[derive(Debug, Clone)]
 pub(crate) struct PlaylistObservation {
     pub(crate) contents: CachedPlaylist,
+    pub(crate) snapshot_id: String,
     /// A failed refresh preserves the last useful observation. Partial
     /// windows never replace an already complete published observation.
     pub(crate) failed: bool,
@@ -220,13 +225,13 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
     store: &mut S,
     saved: &[LibraryItem],
     now: i64,
-    owner: Option<&str>,
+    owner: Option<&SpotifyLibraryOwner>,
 ) -> (Taste, TasteRead) {
     let mut taste = Taste::default();
     let mut read = TasteRead {
         missing_scopes: session.missing_taste_scopes(),
         continuation: PlaylistContinuation {
-            owner: owner.map(str::to_owned),
+            owner: owner.map(|owner| owner.owner_id.clone()),
             ..PlaylistContinuation::default()
         },
         ..TasteRead::default()
@@ -243,7 +248,8 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
         session,
         cx,
         read: &mut read,
-        owner,
+        owner: owner.map(|owner| owner.owner_id.as_str()),
+        receipt: owner,
     };
     // The followed and top artists, for their tracks below.
     let mut artists: Vec<Artist> = Vec::new();
@@ -360,6 +366,8 @@ struct Reader<'a> {
     read: &'a mut TasteRead,
     /// Required proof from a full sync; standalone/continuation reads verify it.
     owner: Option<&'a str>,
+    /// The full sync's adoption receipt fences private progress across I/O.
+    receipt: Option<&'a SpotifyLibraryOwner>,
 }
 
 impl Reader<'_> {
@@ -408,6 +416,7 @@ impl Reader<'_> {
                 store,
                 &mut taste.named,
                 &mut taste.playlist_contents,
+                &mut taste.directory,
                 now,
                 Scan::Refresh,
             )

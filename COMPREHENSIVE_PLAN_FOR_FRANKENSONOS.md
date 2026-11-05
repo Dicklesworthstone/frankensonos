@@ -370,6 +370,11 @@ Added by §12 (each table is created by the migration of the bead that needs it)
   (migration 14; ordered cached occurrences, original source positions,
   timestamp, raw coverage and a local revision; independent of deduplicated
   library rows).
+- `spotify_playlist_directories(owner_id TEXT PK, generation INT, progress TEXT)`
+  (migration 19; bounded directory scans resume across restarts, retain raw
+  positions, and publish/prune only after completion under the same account
+  adoption). A completed background scan carries one full-reconciliation
+  receipt; successful, complete library publication consumes it.
 
 The genre-agnostic DJ (§12.1, migrations 7-8): `spotify_library` gained a
 `candidate` flag (superseding `is_classical` as the candidacy test), the
@@ -508,6 +513,10 @@ from a genre the DJ was built around.
   never-read contents stay distinct; failed refreshes retain the previous
   observation rather than replace it with an empty playlist. See
   [`docs/PLAYLIST_CONTENTS.md`](docs/PLAYLIST_CONTENTS.md) for coverage and bounds.
+  The playlist directory itself also continues beyond its 20-page request
+  budget, so later playlists can enter the pool. Accepted playlist versions
+  accompany the completed directory into one full reconciliation; subsequent
+  explicit or daily refreshes start a new directory scan.
 - **Manual preference overrides win.** Persistent, owner-wide preferences in
   `preferences.toml` (data dir, beside `moods.toml`), with matching CLI, HTTP
   and MCP verbs: genres, artists, eras and moods to favor or avoid; a default

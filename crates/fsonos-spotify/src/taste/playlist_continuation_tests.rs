@@ -76,7 +76,7 @@ fn background_windows_complete_after_restart_without_saved_library_or_artist_req
         assert_eq!(first.playlists.owner.as_deref(), Some(OWNER));
         assert_eq!(
             (first.playlists.pending, first.playlists.advanced),
-            (1, 150)
+            (1, 151)
         );
         let mut saved = store
             .library()

@@ -548,6 +548,7 @@ fn project(
 ) -> (Vec<LibraryItem>, PlaylistObservation) {
     let observation = PlaylistObservation {
         contents: progress.observation(progress.fetched_at.unwrap_or(0)),
+        snapshot_id: progress.snapshot_id.clone(),
         failed,
     };
     let stated = crate::genre_guess::from_name(&list.name);

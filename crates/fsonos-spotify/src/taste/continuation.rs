@@ -1,11 +1,11 @@
 //! Playlist-only passes finish bounded reads without rereading saved music.
 
-use super::{MAX_PAGES, MAX_PLAYLISTS, PlaylistObservation, Reader, Taste, TasteRead};
+use super::{MAX_PLAYLISTS, PlaylistObservation, Reader, Taste, TasteRead};
 use crate::client::{Me, SimplifiedPlaylist};
 use crate::library::LibraryItem;
 use crate::session::Session;
 use asupersync::Cx;
-use fsonos_core::store::Store;
+use fsonos_core::store::{SpotifyLibraryOwner, Store};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -16,9 +16,9 @@ pub struct PlaylistContinuation {
     pub owner: Option<String>,
     /// Unread or unfinished snapshots, plus one when the directory is incomplete.
     pub pending: usize,
-    /// Snapshots at the entry or metadata bound; they do not schedule more reads.
+    /// Snapshots or directories at their entry/metadata bound; no more automatic reads.
     pub limited: usize,
-    /// Raw positions newly accepted during this pass, for no-progress backoff.
+    /// Raw playlist or directory positions newly accepted, for no-progress backoff.
     pub advanced: u32,
     /// Remaining server cooldown, rounded up; never shorten it on restart.
     pub retry_after_secs: u64,
@@ -29,6 +29,8 @@ pub struct PlaylistContinuation {
 #[derive(Clone, Copy)]
 pub(super) enum Scan<'a> {
     Refresh,
+    /// One full union using the directory completed by background passes.
+    Reconcile,
     Pending(&'a str),
 }
 
@@ -45,7 +47,7 @@ pub(crate) async fn read_pending_playlists<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
     store: &mut S,
-    owner: &str,
+    owner: &SpotifyLibraryOwner,
     now: i64,
 ) -> (Taste, TasteRead) {
     let mut taste = Taste::default();
@@ -55,21 +57,23 @@ pub(crate) async fn read_pending_playlists<S: Store + ?Sized>(
     };
     if !read.missing_scopes.contains(&"playlist-read-private") {
         // Preserve retry readiness when even the owner or directory read fails.
-        read.continuation.owner = Some(owner.to_owned());
+        read.continuation.owner = Some(owner.owner_id.clone());
         read.continuation.pending = 1;
         let mut reader = Reader {
             session,
             cx,
             read: &mut read,
             owner: None,
+            receipt: Some(owner),
         };
         let (tracks, listed) = reader
             .playlist_tracks(
                 store,
                 &mut taste.named,
                 &mut taste.playlist_contents,
+                &mut taste.directory,
                 now,
-                Scan::Pending(owner),
+                Scan::Pending(&owner.owner_id),
             )
             .await;
         taste.playlists = listed;
@@ -88,6 +92,7 @@ impl Reader<'_> {
         store: &mut S,
         named: &mut HashMap<String, Vec<String>>,
         observations: &mut Vec<PlaylistObservation>,
+        receipt: &mut Option<super::directory::DirectoryReceipt>,
         now: i64,
         scan: Scan<'_>,
     ) -> (Vec<LibraryItem>, Option<Vec<(String, String)>>) {
@@ -121,10 +126,19 @@ impl Reader<'_> {
             ));
             return (Vec::new(), None);
         }
-        let url = self.session.endpoints().my_playlists(0);
-        let failed = self.read.failed.len();
-        let lists: Vec<SimplifiedPlaylist> = self.page(&url, "playlists", MAX_PAGES).await;
-        let listed = (self.read.failed.len() == failed && self.read.halted.is_none()).then(|| {
+        let directory = self.playlist_directory(store, &me.id, scan).await;
+        if self.read.continuation.requires_refresh {
+            self.read.continuation.pending = 0;
+            return (Vec::new(), None);
+        }
+        *receipt = directory.receipt;
+        let scan = if receipt.as_ref().is_some_and(|receipt| receipt.reconcile) {
+            Scan::Reconcile
+        } else {
+            scan
+        };
+        let lists = directory.items;
+        let listed = directory.complete.then(|| {
             lists
                 .iter()
                 .filter(|list| !list.id.is_empty())
@@ -137,19 +151,8 @@ impl Reader<'_> {
             .collect();
         readable.sort_by(|a, b| a.id.cmp(&b.id));
         readable.dedup_by(|a, b| a.id == b.id);
-        if listed.is_some() {
-            let active = readable
-                .iter()
-                .map(|list| format!("spotify:playlist:{}", list.id))
-                .collect::<Vec<_>>();
-            if let Err(error) = store.retain_playlist_progress(&me.id, &active) {
-                self.read
-                    .failed
-                    .push(("playlist progress".into(), error.to_string()));
-                return (Vec::new(), listed);
-            }
-        }
-        self.read.continuation.pending = usize::from(listed.is_none());
+        self.read.continuation.pending = usize::from(!directory.complete && !directory.limited);
+        self.read.continuation.limited = usize::from(directory.limited);
         let tracks = self
             .scan_playlists(store, &me.id, readable, named, observations, now, scan)
             .await;
@@ -222,7 +225,7 @@ impl Reader<'_> {
                 continue;
             }
             if attempted == MAX_PLAYLISTS {
-                if matches!(scan, Scan::Refresh)
+                if matches!(scan, Scan::Refresh | Scan::Reconcile)
                     && let Some((items, observation)) =
                         self.reuse_playlist(store, owner, list, named)
                 {
@@ -242,6 +245,14 @@ impl Reader<'_> {
                 break;
             }
             attempted += 1;
+            let checked = matches!(scan, Scan::Reconcile).then(|| {
+                // The receipt supplies membership and completed proofs; a
+                // visited list still checks its current version before reading.
+                let mut checked = (**list).clone();
+                checked.snapshot_id = None;
+                checked
+            });
+            let list = checked.as_ref().unwrap_or(list);
             let (items, observation) = self
                 .read_playlist(
                     store,

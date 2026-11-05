@@ -899,7 +899,7 @@ fn sqlite_in_memory_conforms() {
     assert_eq!(
         s.schema_versions().unwrap(),
         [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
         ]
     );
     s.close().unwrap();
@@ -1031,7 +1031,7 @@ fn sqlite_file_survives_close_and_reopen() {
     assert_eq!(
         s.schema_versions().unwrap(),
         [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
         ]
     );
     assert_eq!(

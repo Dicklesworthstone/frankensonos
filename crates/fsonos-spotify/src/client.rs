@@ -738,7 +738,7 @@ pub struct Me {
 }
 
 /// `GET /me/playlists` item.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimplifiedPlaylist {
     pub id: String,
     #[serde(default)]
@@ -751,7 +751,7 @@ pub struct SimplifiedPlaylist {
     pub snapshot_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaylistOwner {
     #[serde(default)]
     pub id: String,

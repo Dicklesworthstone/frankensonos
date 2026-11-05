@@ -265,6 +265,8 @@ mod playlist_progress;
 mod account_ownership;
 #[path = "album_continuation_tests.rs"]
 mod album_continuation;
+#[path = "directory_tests.rs"]
+mod directory;
 #[path = "playlist_continuation_tests.rs"]
 mod playlist_continuation;
 
@@ -323,6 +325,7 @@ fn exact_page_budget_completion_is_distinct_from_an_unfinished_read() {
                 cx: &cx,
                 read: &mut read,
                 owner: None,
+                receipt: None,
             };
             let first = first.replace(API, &server.endpoints.api);
             assert_eq!(reader.page::<u32>(&first, "top tracks", 2).await, [1, 2]);

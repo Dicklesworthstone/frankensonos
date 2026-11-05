@@ -40,30 +40,28 @@ pub async fn continue_playlists<S: Store + ?Sized>(
             i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
         });
     let receipt = store.spotify_library_owner()?;
-    let (taste, mut read) = if receipt
-        .as_ref()
-        .is_some_and(|receipt| receipt.owner_id == owner)
-    {
-        read_pending_playlists(session, cx, store, owner, now).await
-    } else {
-        // A scheduler checkpoint alone is not proof of the library's owner:
-        // another process may have switched accounts, or this is a legacy DB.
-        (
-            Taste::default(),
-            TasteRead {
-                continuation: PlaylistContinuation {
-                    owner: receipt.as_ref().map(|receipt| receipt.owner_id.clone()),
-                    requires_refresh: true,
-                    ..PlaylistContinuation::default()
+    let (mut taste, mut read) =
+        if let Some(receipt) = receipt.as_ref().filter(|receipt| receipt.owner_id == owner) {
+            read_pending_playlists(session, cx, store, receipt, now).await
+        } else {
+            // A scheduler checkpoint alone is not proof of the library's owner:
+            // another process may have switched accounts, or this is a legacy DB.
+            (
+                Taste::default(),
+                TasteRead {
+                    continuation: PlaylistContinuation {
+                        owner: receipt.as_ref().map(|receipt| receipt.owner_id.clone()),
+                        requires_refresh: true,
+                        ..PlaylistContinuation::default()
+                    },
+                    failed: vec![(
+                        "playlist continuation".into(),
+                        "the library's Spotify owner needs a full refresh".into(),
+                    )],
+                    ..TasteRead::default()
                 },
-                failed: vec![(
-                    "playlist continuation".into(),
-                    "the library's Spotify owner needs a full refresh".into(),
-                )],
-                ..TasteRead::default()
-            },
-        )
-    };
+            )
+        };
     let mut items = candidate_items(store)?;
     let mut library = summarize(&items);
     let mut albums = Expansion::default();
@@ -75,7 +73,7 @@ pub async fn continue_playlists<S: Store + ?Sized>(
         items.extend(incoming);
         if let Some(applied) = publish_library_read(store, receipt, &items, &taste)? {
             library = applied;
-            acknowledge_playlists(store, receipt, &taste, &mut read.continuation)?;
+            acknowledge_playlists(store, receipt, &mut taste, &mut read.continuation)?;
             // Complete only works touched by this pass, including movements
             // cached from an earlier window, within the usual read bounds.
             let observed: HashSet<&str> = taste
