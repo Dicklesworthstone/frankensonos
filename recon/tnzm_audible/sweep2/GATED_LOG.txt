@@ -1,0 +1,3 @@
+00711700: bind=STOPPED SetAV=200 crash=None rec=False
+0071d700: bind=STOPPED SetAV=200 crash=None rec=False
+00725700: bind=STOPPED SetAV=200 crash=None rec=False

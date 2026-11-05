@@ -1,0 +1,12 @@
+00711700: crash=None rec=False
+0071d700: crash=12.600000000000001 rec=True
+00725700: crash=None rec=False
+00735700: crash=None rec=False
+
+=== reproducibility finding (orchestrator) ===
+0x71d700 crashed in BOTH lifetimes tested (coarse 53.8s, reset-protocol 12.6s).
+All other coarse crashers came back clean under the reset protocol → 0x71d700 is
+the reproducible anchor. The crash fires only after the C-kill reset (fresh state);
+without reset the gate goes silent (state accumulation). Protocol locked:
+C-kill → recovery → stage1 benign+8s → stage2 GP candidate → watch.
+Refinement: 0x71d700 ±0x800 @0x200 in flight (REFINE71D_LOG.txt).
