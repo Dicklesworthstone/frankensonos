@@ -862,3 +862,16 @@ opens WITHOUT the execve-argv problem.
 NEXT: map the settings registry ID for rmtShell (the registration walk),
 find the value-consumer function, and check whether the +24024 free()/unlink
 primitives (or a settings-save path) can flip it.
+
+### rmtShell analysis addendum (2026-11-05 08:00)
+
+The dev-mode key cluster (devmode/rmtShell/unlockedBld/confdev/console at
+0x10498754-a8) is referenced ONLY by the status-dump function 0x102b21e8 —
+the keys are consumed via the registry by NAME at runtime. The config-setter
+candidate: 0x10372860 (frame -64; builds a string with length 15; calls
+0x103725bc-class functions). Its exact (key,value) signature needs decode —
+if it's config-set(key,value), the FN=gadget with r3=B (the key "rmtShell\0"
+in our buffer) + the value in r5 could FLIP the setting to 1 without any
+execve. The setting's consumer (the native shell spawner) is then the
+persisted action.
+GoldMeadow has the dispatch (the registry-ID mapping + this setter decode).
