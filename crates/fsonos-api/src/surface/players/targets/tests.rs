@@ -16,8 +16,17 @@ fn names(view: &ResolvedRoomsDto) -> Vec<String> {
 }
 
 #[test]
-fn an_alias_expands_ambiguous_entries_exactly_as_the_command_does() {
+fn an_alias_refuses_ambiguous_entries_exactly_as_the_command_does() {
     let aliases = Aliases::parse("[aliases]\ntogether = ['Kitchen', 'Patio@S2']").unwrap();
+    let error = resolved(&households(), Some(&aliases), &Client::Unknown, "together").unwrap_err();
+    assert_eq!(error.code, ErrorCode::AmbiguousRoom);
+    assert_eq!(error.suggestions, ["Kitchen@S1", "Kitchen@S2"]);
+}
+
+#[test]
+fn explicitly_qualified_alias_entries_include_both_households() {
+    let aliases =
+        Aliases::parse("[aliases]\ntogether = ['Kitchen@S1', 'Kitchen@S2', 'Patio@S2']").unwrap();
     let view = resolved(&households(), Some(&aliases), &Client::Unknown, "together").unwrap();
     assert_eq!(view.matched, "alias");
     assert_eq!(names(&view), ["Kitchen@S1", "Kitchen@S2", "Patio@S2"]);
@@ -202,9 +211,14 @@ fn the_surface_rereads_alias_edits_instead_of_reusing_a_previous_resolution() {
     std::fs::write(&path, "[aliases]\nlistening = ['Kitchen']").unwrap();
     let after = surface
         .resolve_rooms(&Client::Unknown, "listening")
-        .unwrap();
+        .unwrap_err();
     assert_eq!(names(&before), ["Den@S1"]);
-    assert_eq!(names(&after), ["Kitchen@S1", "Kitchen@S2"]);
-    assert_ne!(before, after);
+    assert_eq!(after.code, ErrorCode::AmbiguousRoom);
+    std::fs::write(&path, "[aliases]\nlistening = ['Kitchen@S1', 'Kitchen@S2']").unwrap();
+    let qualified = surface
+        .resolve_rooms(&Client::Unknown, "listening")
+        .unwrap();
+    assert_eq!(names(&qualified), ["Kitchen@S1", "Kitchen@S2"]);
+    assert_ne!(before, qualified);
     assert_eq!(io.load(Ordering::SeqCst), 0);
 }

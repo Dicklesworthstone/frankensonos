@@ -252,17 +252,17 @@ pub fn resolve_targets<'a>(
     }
 
     // 5: an alias, whose rooms resolve by name / `Name@Label` / id only (an
-    // alias never names another alias, so there are no cycles).
+    // alias never names another alias, so there are no cycles). Each entry
+    // must name one room: a duplicate name cannot silently widen the set.
     if let Some(alias) = ctx.aliases.and_then(|a| a.get(q)) {
         let mut hits: Vec<(usize, &Room)> = Vec::new();
         for room in &alias.rooms {
-            for hit in direct_hits(households, &labels, room) {
-                if !hits
+            if let Some(hit) = named_room(households, room)?
+                && !hits
                     .iter()
                     .any(|(i, r)| *i == hit.0 && r.primary == hit.1.primary)
-                {
-                    hits.push(hit);
-                }
+            {
+                hits.push(hit);
             }
         }
         if hits.is_empty() {

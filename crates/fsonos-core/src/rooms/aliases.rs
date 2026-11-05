@@ -18,7 +18,7 @@
 //! the households do not show right now is only an [`AliasWarning`] from
 //! [`Aliases::check`] (the room may be offline).
 
-use super::{RESERVED, direct_hits, household_labels, normalize_room};
+use super::{RESERVED, direct_hits, household_labels, named_room, normalize_room};
 use crate::HouseholdState;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -206,16 +206,25 @@ impl Aliases {
             .map(|(room, _)| room.as_str())
     }
 
-    /// Entries that do not match `households` right now: rooms no household
-    /// shows (perhaps offline), targets that are aliases rather than rooms,
-    /// and aliases a real room name shadows (the room wins).
+    /// Entries that do not match `households` unambiguously right now: rooms
+    /// no household shows (perhaps offline), duplicate room names, targets
+    /// that are aliases rather than rooms, and aliases a real room name
+    /// shadows (the room wins).
     #[must_use]
     pub fn check(&self, households: &[HouseholdState]) -> Vec<AliasWarning> {
         let labels = household_labels(households);
         let mut warnings = Vec::new();
         let mut check_room = |room: &str, line: usize, what: &str| {
-            if !direct_hits(households, &labels, room).is_empty() {
-                return;
+            match named_room(households, room) {
+                Ok(Some(_)) => return,
+                Err(error) => {
+                    warnings.push(AliasWarning {
+                        line,
+                        message: format!("{what}: {error}"),
+                    });
+                    return;
+                }
+                Ok(None) => {}
             }
             let message = if self.get(room).is_some() {
                 format!("{what} names the alias {room:?}; aliases may name only rooms")

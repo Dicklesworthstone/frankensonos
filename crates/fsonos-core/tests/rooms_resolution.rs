@@ -199,3 +199,141 @@ fn alias_check_warns_with_lines() {
     assert_eq!(lines[3].0, 12);
     assert!(lines[3].1.contains("alice@example.com"), "{lines:#?}");
 }
+
+fn houses_with_duplicate_room_names() -> [HouseholdState; 2] {
+    let mut houses = [household(ZGS_S1), household(ZGS_S2)];
+    for room in &mut houses[0].rooms {
+        if room.name == "Den" {
+            room.name = "Kitchen".into();
+        }
+    }
+    for player in &mut houses[0].players {
+        if player.room_name == "Den" {
+            player.room_name = "Kitchen".into();
+        }
+    }
+    houses
+}
+
+#[test]
+fn ambiguous_alias_members_refuse_the_entire_target_set() {
+    let houses = houses_with_duplicate_room_names();
+    let aliases = Aliases::parse(
+        r#"[aliases]
+single = "Kitchen"
+first = ["Kitchen", "Bedroom"]
+last = ["Bedroom", "Kitchen"]
+
+[defaults]
+room = "last"
+"#,
+    )
+    .unwrap();
+    let ctx = ResolveContext {
+        aliases: Some(&aliases),
+        client: None,
+    };
+
+    // No resolved prefix or suffix escapes as a partial set, including when
+    // `here` names the alias. The error names the member that needs fixing.
+    for query in ["Kitchen", "single", "first", "last", "here"] {
+        match resolve_targets(&houses, query, ctx) {
+            Err(CoreError::AmbiguousRoom { name, candidates }) => {
+                assert_eq!(name, "Kitchen", "{query}");
+                assert_eq!(candidates, ["Kitchen@S1", "Kitchen@S2"], "{query}");
+            }
+            other => panic!("{query:?}: expected AmbiguousRoom, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn qualified_alias_members_preserve_explicit_sets_and_deduplicate_rooms() {
+    let houses = houses_with_duplicate_room_names();
+    let aliases = Aliases::parse(
+        r#"[aliases]
+one = "Kitchen@S1"
+both = ["Kitchen@S1", "Kitchen@S2", "Bedroom"]
+overlap = ["Kitchen@S1", "RINCON_000E58A0000201400"]
+"#,
+    )
+    .unwrap();
+    let ctx = ResolveContext {
+        aliases: Some(&aliases),
+        client: None,
+    };
+
+    let one = resolve_one(&houses, "one", ctx).unwrap();
+    assert_eq!(one.room.name, "Kitchen");
+    assert_eq!(one.player.generation, fsonos_types::Generation::S1);
+    let both = resolve_targets(&houses, "both", ctx).unwrap();
+    assert_eq!(both.matched, Matched::Alias);
+    assert_eq!(rooms(&both), ["Kitchen", "Kitchen", "Bedroom"]);
+    assert_eq!(
+        both.targets[0].player.generation,
+        fsonos_types::Generation::S1
+    );
+    assert_eq!(
+        both.targets[1].player.generation,
+        fsonos_types::Generation::S2
+    );
+    assert_eq!(
+        resolve_targets(&houses, "overlap", ctx)
+            .unwrap()
+            .targets
+            .len(),
+        1
+    );
+    assert!(aliases.check(&houses).is_empty());
+
+    // Reserved whole-house targets still intentionally include every room.
+    assert_eq!(
+        resolve_targets(&houses, "all", ctx).unwrap().targets.len(),
+        8
+    );
+    assert_eq!(
+        resolve_targets(&houses, "everywhere@S1", ctx)
+            .unwrap()
+            .targets
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn alias_check_names_ambiguous_members_and_defaults_with_repair_choices() {
+    let houses = houses_with_duplicate_room_names();
+    let aliases = Aliases::parse(
+        r#"[aliases]
+single = "Kitchen"
+set = ["Bedroom", "Kitchen"]
+qualified = ["Kitchen@S1", "Kitchen@S2"]
+
+[defaults]
+room = "Kitchen"
+
+[defaults.clients."alice@example.com"]
+room = "Kitchen"
+"#,
+    )
+    .unwrap();
+    let warnings = aliases.check(&houses);
+    assert_eq!(
+        warnings.iter().map(|w| w.line).collect::<Vec<_>>(),
+        [2, 3, 7, 10]
+    );
+    for warning in &warnings {
+        assert!(
+            warning.message.contains("room \"Kitchen\" is ambiguous"),
+            "{warning:?}"
+        );
+        assert!(
+            warning.message.contains("Kitchen@S1, Kitchen@S2"),
+            "{warning:?}"
+        );
+    }
+    assert!(warnings[0].message.starts_with("alias \"single\""));
+    assert!(warnings[1].message.starts_with("alias \"set\""));
+    assert!(warnings[2].message.starts_with("the default room:"));
+    assert!(warnings[3].message.contains("alice@example.com"));
+}

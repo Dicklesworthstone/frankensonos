@@ -49,10 +49,13 @@ introduced by this increment; existing MCP commands already accept the core's
 smart targets.
 
 The browser deliberately does not reconstruct aliases from the `/rooms`
-listing. An alias may contain an unqualified room name shared by two
-households, and the core can select both. A room's informational alias labels
-are not enough to reproduce that behavior. Missing alias members are not
-invented: only currently addressable rooms appear in the resolution.
+listing. Every alias member must identify one room unambiguously. If two
+households share `Kitchen`, an alias containing `Kitchen` returns
+`AMBIGUOUS_ROOM` with qualification choices before any room is selected;
+list `Kitchen@S1` and `Kitchen@S2` explicitly to include both. A room's
+informational alias labels are not enough to reproduce this resolution.
+Missing alias members are not invented: only currently addressable rooms
+appear in the resolution.
 
 Before dispatch, the browser resolves the same target again and requires the
 same selected identities and complete groups. Editing the target, changing

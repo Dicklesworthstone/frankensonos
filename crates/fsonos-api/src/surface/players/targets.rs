@@ -114,9 +114,9 @@ fn resolved(
 }
 
 impl Surface {
-    /// Inspect the exact core resolution, including aliases whose unqualified
-    /// entries select rooms in several households. `/rooms`' alias labels are
-    /// discovery hints, not enough information to reproduce this resolution.
+    /// Inspect the exact core resolution, including explicitly qualified
+    /// aliases that select rooms in several households. Ambiguous entries
+    /// fail as they do for commands; `/rooms`' alias labels are only hints.
     pub fn resolve_rooms(
         &self,
         client: &Client,
