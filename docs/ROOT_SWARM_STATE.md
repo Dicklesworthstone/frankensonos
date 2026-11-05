@@ -939,3 +939,23 @@ NEXT: the telnetd variant at S=0x106c4ef0 (the execve wrapper + /usr/sbin/
 telnetd — the argv walk is validated in the emulator) → the root shell.
 NOTE: the band shifts per daemon lifetime — re-calibrate after any reboot
 (the canary sweep at 0x800 steps takes ~5 min).
+
+### 2026-11-05 08:30: the direct-execve entry — no listener; session close
+
+FN=0x104046c4 (post-fork pre-dup2: path=[r29+0], execve direct, no access
+check, no fork) at the exact S=0x106c4ef0: 3 fires accepted, the daemon
+stays up, no port 23. The r29-at-entry = F assumption may be wrong (the
+dispatcher's r29 during the FN call = the fake ptr F per the decode, but
+the 0x104046c4 path also expects r4/r5 in a specific state).
+
+THE SESSION'S COMPLETE DELIVERABLES:
+1. EXACT S = 0x106c4ef0 (the canary-calibrated, reboot-confirmed session addr)
+2. Arbitrary FN execution: the reboot gadget reproduced (46.4s full outage)
+3. The canary discriminator: 1.0s chain-fire detection
+4. The 4-byte calibration protocol (the band re-finding after reboots)
+5. Both payload builders + 6 payload variants + the full static map
+
+NEXT SESSION (with fresh device state):
+1. The 4-byte canary calibration (~15 min) — the band after any reboot
+2. The FN matrix: {reboot gadget, wrapper, direct-execve} × the exact S
+3. The shell: argv-free spawn inventory + the config route (lanes)
