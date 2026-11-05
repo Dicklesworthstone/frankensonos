@@ -778,3 +778,22 @@ THE SHELL (next session, three routes):
 3. The S2/MIPS chain for .135 (0x4xxxxx binary — separate decode)
 
 Devices healthy. All work committed through this commit.
+
+### 2026-11-05 06:30: 5-attempt telnetd repeat — falsified
+
+FN=wrapper (fork/execve) + path=/usr/sbin/telnetd at the live band
+(0x106CDD00): 5 attempts, ALL accepted (200/200), NO port 23/22/2323 in
+60s polls after each. The argv-from-notify-context theory: either the
+execve EFAULTs on the argv walk (an int-typed object field), or telnetd's
+getopt exits on the garbage strings. The canary (FN=0x51000000) proves the
+FN call happens — the failure is INSIDE the execve'd process or the syscall.
+
+THE NEXT-SESSION PLAN (in order):
+1. argv-free spawn: find a setuid-root binary or script on the rootfs that
+   ignores argv entirely and produces a persistent artifact (listener, file,
+   config change). Inventory /bin /usr/bin /usr/sbin against the dlmalloc
+   model. The reboot gadget is the template (it ignores everything).
+2. The config route: R_ALLOW_SSH_PUBKEY_INSTALL — if the persisted-statement
+   file can be written via ANY primitive (the overflow's free()/unlink are
+   root-powered), the daemon processes it at next boot.
+3. The S2/MIPS chain for .135 — the 0x4xxxxx binary decode (lanes).
