@@ -1,0 +1,20 @@
+00705700: SetAV=200 crash=None rec=False class=A/B
+00709700: SetAV=200 crash=None rec=False class=A/B
+0070d700: SetAV=200 crash=None rec=False class=A/B
+00711700: SetAV=200 crash=80.80000000000001 rec=True class=A/B
+00715700: SetAV=200 crash=None rec=False class=A/B
+00719700: SetAV=200 crash=None rec=False class=A/B
+0071d700: SetAV=200 crash=53.800000000000004 rec=True class=A/B
+00721700: SetAV=200 crash=None rec=False class=A/B
+00725700: SetAV=200 crash=5.0 rec=True class=A/B
+00729700: SetAV=200 crash=None rec=False class=A/B
+0072d700: SetAV=200 crash=None rec=False class=A/B
+00731700: SetAV=200 crash=None rec=False class=A/B
+00735700: SetAV=200 crash=71.4 rec=True class=A/B
+00739700: SetAV=200 crash=None rec=False class=A/B
+
+=== ANALYSIS (orchestrator) ===
+4 crashes / 15 candidates. CRITICAL: each crash restarts anacapad → heap re-randomized
+(SwiftMarsh op-note) → candidates AFTER a crash ran against a different heap.
+Clean read: candidates 1-4 (0x705700..0x711700) against ONE lifetime: 3 no-crash +
+first crash AT 0x711700. Refine 0x711700±0x800 @0x200, one candidate per lifetime.
