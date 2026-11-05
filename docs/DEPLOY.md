@@ -381,6 +381,10 @@ plain HTTP inside WireGuard. Two things to know:
   host's interfaces remain, without a stale MagicDNS name. An explicitly
   configured HTTP address keeps its configured startup behavior, and
   `FSONOS_TAILSCALE=off` disables automatic tailnet listeners.
+  CLI probes, caller identification and Serve setup bound both command
+  execution and output collection. On macOS and Linux, a completed or timed
+  out CLI command also cleans up its helper processes, so inherited output
+  pipes cannot stall remote requests, listener recovery or daemon shutdown.
   `fsonos doctor --only tailscale` checks the whole chain: Tailscale up and
   logged in, the MagicDNS name, and the daemon answering over the tailnet,
   with the connect URLs or the fix. With Serve in front, `tailscale.serve`

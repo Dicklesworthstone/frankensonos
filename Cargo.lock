@@ -1375,6 +1375,7 @@ name = "fsonos-tailscale"
 version = "0.1.0"
 dependencies = [
  "if-addrs",
+ "rustix",
  "serde",
  "serde_json",
 ]

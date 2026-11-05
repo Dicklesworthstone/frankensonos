@@ -12,6 +12,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 if-addrs = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# Keep short-lived CLI helpers from retaining the probe's output pipes.
+rustix = { version = "1", features = ["process"] }
+
 [features]
 # Live smoke test against this host's real Tailscale. Off in CI.
 tailscale-live = []

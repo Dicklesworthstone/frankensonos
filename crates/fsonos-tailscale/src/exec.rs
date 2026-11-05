@@ -2,12 +2,14 @@
 //!
 //! `std::process` has no wait-with-timeout, so the child's pipes are drained
 //! on helper threads (a large `status --json` would otherwise fill the pipe
-//! and stall the child) while this thread polls for exit until the deadline,
-//! then kills the child.
+//! and stall the child) while this thread polls for exit until the deadline.
+//! On Linux and macOS the command owns a process group, cleaned up before
+//! reaping its leader, so a wrapper cannot leave a helper holding those pipes.
+//! Output collection shares the deadline instead of waiting forever for EOF.
 
 use std::io::{self, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,8 +24,8 @@ const LATE_OUTPUT: Duration = Duration::from_millis(200);
 pub enum ExecError {
     /// The program does not exist (or is not executable).
     NotFound,
-    /// It did not exit before the deadline and was killed; `output` is what
-    /// it had printed (stdout, then stderr), trimmed for display.
+    /// It did not finish with complete output before the deadline; a running
+    /// command is killed. `output` is captured stdout, then stderr, trimmed.
     TimedOut { output: String },
     /// It could not be run, or exited unsuccessfully; `detail` is stderr (or
     /// the exit status) trimmed for display.
@@ -34,12 +36,18 @@ pub enum ExecError {
 /// `timeout`.
 pub fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, ExecError> {
     let spawn = || {
-        Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
+        command.spawn()
     };
     let mut busy = 0;
     let mut child = loop {
@@ -68,30 +76,41 @@ pub fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, 
     };
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
+    let mut child = ChildGuard {
+        child,
+        completed: false,
+    };
+    let deadline = Instant::now() + timeout;
 
-    let status = match wait_until(&mut child, Instant::now() + timeout) {
+    let status = match wait_until(&mut child, deadline) {
         Ok(Some(status)) => status,
         Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
+            drop(child);
             // The pipes close with the child; don't wait on a grandchild
             // that kept one open.
-            let mut printed = stdout.recv_timeout(LATE_OUTPUT).unwrap_or_default();
-            printed.extend(stderr.recv_timeout(LATE_OUTPUT).unwrap_or_default());
+            let until = Instant::now() + LATE_OUTPUT;
+            let mut printed = receive(&stdout, until).unwrap_or_default();
+            printed.extend(receive(&stderr, until).unwrap_or_default());
             return Err(ExecError::TimedOut {
                 output: for_display(String::from_utf8_lossy(&printed).trim().to_owned()),
             });
         }
         Err(e) => {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err(ExecError::Failed {
                 detail: e.to_string(),
             });
         }
     };
-    let stdout = stdout.recv().unwrap_or_default();
-    let stderr = stderr.recv().unwrap_or_default();
+    let stdout = receive(&stdout, deadline).map_err(|_| ExecError::TimedOut {
+        output: for_display(
+            String::from_utf8_lossy(&stderr.try_recv().unwrap_or_default())
+                .trim()
+                .to_owned(),
+        ),
+    })?;
+    let stderr = receive(&stderr, deadline).map_err(|_| ExecError::TimedOut {
+        output: for_display(String::from_utf8_lossy(&stdout).trim().to_owned()),
+    })?;
     if status.success() {
         Ok(stdout)
     } else {
@@ -104,6 +123,66 @@ pub fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, 
         Err(ExecError::Failed {
             detail: for_display(detail),
         })
+    }
+}
+
+/// A shared deadline also bounds reads after the direct child has exited.
+fn receive(
+    output: &Receiver<Vec<u8>>,
+    deadline: Instant,
+) -> Result<Vec<u8>, mpsc::RecvTimeoutError> {
+    output.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+}
+
+/// Reserve the leader's PID until its process group has been cleaned up.
+/// Signalling after reaping could otherwise address a reused process id.
+struct ChildGuard {
+    child: Child,
+    completed: bool,
+}
+
+impl ChildGuard {
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+            if waitid(
+                WaitId::Pid(Pid::from_child(&self.child)),
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+            )?
+            .is_none()
+            {
+                return Ok(None);
+            }
+            self.kill_group();
+            let status = self.child.wait()?;
+            self.completed = true;
+            Ok(Some(status))
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let status = self.child.try_wait()?;
+            self.completed = status.is_some();
+            Ok(status)
+        }
+    }
+
+    fn kill_group(&self) {
+        #[cfg(unix)]
+        {
+            use rustix::process::{Pid, Signal, kill_process_group};
+            let _ = kill_process_group(Pid::from_child(&self.child), Signal::KILL);
+        }
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.kill_group();
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
     }
 }
 
@@ -133,7 +212,7 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {
 }
 
 fn wait_until(
-    child: &mut Child,
+    child: &mut ChildGuard,
     deadline: Instant,
 ) -> io::Result<Option<std::process::ExitStatus>> {
     loop {
@@ -192,6 +271,37 @@ mod tests {
                 detail: "daemon not running".into()
             }
         );
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn completed_commands_do_not_wait_for_inherited_output_pipes() {
+        for redirect in ["", " >&2"] {
+            let started = Instant::now();
+            let script = format!("(sleep 3; printf late{redirect}) & printf ready");
+            assert_eq!(
+                sh(&script, Duration::from_millis(300)).unwrap(),
+                b"ready",
+                "a completed probe must not wait for its background helper"
+            );
+            assert!(started.elapsed() < Duration::from_secs(2));
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn failed_commands_keep_diagnostics_without_waiting_for_helpers() {
+        let started = Instant::now();
+        assert_eq!(
+            sh(
+                "(sleep 3; printf late >&2) & printf 'daemon unavailable' >&2; exit 1",
+                Duration::from_millis(300),
+            ),
+            Err(ExecError::Failed {
+                detail: "daemon unavailable".into(),
+            })
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
