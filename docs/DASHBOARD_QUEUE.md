@@ -33,9 +33,10 @@ Every actionable selection belongs to one observed page, exact household/group,
 revision and ordered renderer URI range. A missing revision or renderer identity
 leaves the page readable but not editable. Editing invalid range text retires
 the prior selection rather than leaving an older valid range behind. Navigation,
-refresh, grouping changes, event invalidation, close and suspension retire old
-selections. Retained row callbacks cannot silently select a different page or
-household.
+refresh, grouping changes, events affecting the selected group, close and
+suspension retire old selections. A scoped event for another group preserves
+the selection; events without a trustworthy group identity still invalidate it.
+Retained row callbacks cannot silently select a different page or household.
 
 The existing dashboard command lane rechecks playback, group membership and the
 selected queue page before submitting one native `/queue/play`, `/queue/remove`

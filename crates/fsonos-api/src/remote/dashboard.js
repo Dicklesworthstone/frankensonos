@@ -409,12 +409,15 @@
     demo,
     connect: () => typeof RemoteEventFeed !== 'undefined' ? RemoteEventFeed.open('/events')
       : typeof EventSource !== 'undefined' ? new EventSource('/events') : null,
-    reload: (user) => controller.refresh(user),
+    reload: (user, scope) => controller.refresh(user, scope),
+    eventTargets: room => controller.eventTargets(room),
+    failedTargets: () => controller.state.topologyFresh ? controller.state.failedTargets : null,
+    reconciled: () => controller.state.topologyFresh,
     blocked: () => controller.state.busy || controller.state.loading,
     retryAfter: () => controller.state.retryAfter,
     connection: (value) => controller.connection(value),
-    invalidate(hard) {
-      controller.invalidate(); workspace?.invalidate();
+    invalidate(hard, targets = null) {
+      controller.invalidate(targets); workspace?.invalidate(targets);
       if (hard) {
         ++historyVersion; catalogsDirty = true;
         session.suspend();
@@ -422,8 +425,9 @@
         request.cancelReads();
       }
     },
-    observed() {
-      if (!session.state.loading && !session.state.pending) void session.load();
+    observed(scope) {
+      if ((!scope?.targets || scope.targets.includes(controller.state.selected))
+          && !session.state.loading && !session.state.pending) void session.load();
       if (catalogsDirty) { catalogsDirty = false; void session.catalog(); void history(); }
     },
   });

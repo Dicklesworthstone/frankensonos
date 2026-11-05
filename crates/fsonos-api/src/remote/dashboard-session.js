@@ -313,7 +313,7 @@ const DashboardSession = (() => {
           return { ...result, done: `${result.done}${incomplete ? ' Partial result: check the failed or skipped steps below. No automatic retry.' : ''}` };
         }
         return result;
-      });
+      }, { wholeHouse: r.kind === 'scene' });
       emit(); if (ok && active && !disposed) await load(); return ok;
     }
     return { state, load, catalog, search, review, reviewLibrary, reviewQueue, reviewScene, confirm, cancel,

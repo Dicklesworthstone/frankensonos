@@ -25,6 +25,19 @@ fallback with backoff. Server Retry-After minima survive visibility changes,
 reconnects and explicit Refresh clicks. An unavailable stream is never labelled
 live merely because a fallback snapshot succeeded.
 
+Room state, player health and DJ events refresh the affected listening groups.
+An event naming a member resolves to its coordinator; a name present in several
+households refreshes every matching group with an explicit household address.
+Other groups retain their observations and queue selections. Unknown or malformed
+identities, topology changes and journal resets require a full reconciliation.
+`action.logged` also requires a full reconciliation: its human-readable intent
+does not provide a structured target that the browser can safely narrow.
+
+An offline group's recovery checks topology and rereads stale groups without
+restamping healthy observations. Healthy room updates can proceed during that
+group's backoff; a daemon-wide Retry-After still gates all reads. A partial room
+failure remains visible without discarding event continuity for healthy rooms.
+
 ## Commands and reviews
 
 Freshness is invalidated before recovery, including any dependent command
@@ -33,6 +46,14 @@ stalled response body honors abort. Already submitted commands are not cancelled
 retried or replayed by event recovery. Their eventual acknowledgement remains
 visible; lost or incomplete acknowledgements retain the existing uncertain
 outcome until a successful explicit Refresh.
+
+A command for an unchanged group can take priority over a background read of
+another group. The browser retires and cancels only that observation before
+claiming the command lane, then queues the interrupted groups for another read.
+Late responses cannot overwrite state or release a newer read or command lane.
+Transport, DJ and queue actions refresh their group afterward; scenes and undo
+retain full-house reconciliation. Full reconciliation and a read of the selected
+group continue to block control until the required observations are available.
 
 A quiet live snapshot remains usable while event continuity is healthy; every
 command still performs its existing native preflight. Without event continuity,
@@ -50,18 +71,18 @@ sends no network reads or commands.
 ## Verification
 
 ```sh
-node --test scripts/test-dashboard-recovery.cjs scripts/test-dashboard-live-integration.cjs
+node --test scripts/test-dashboard-recovery.cjs scripts/test-dashboard-live-integration.cjs scripts/test-dashboard-room-recovery.cjs
 node --test --test-name-pattern='real loopback HTTP|throttled read' scripts/test-dashboard-http.cjs
 python scripts/test-dashboard-recovery-component.py --chromium /path/to/chromium
 ```
 
-The new Node suites contain 42 passing tests. One uses a real localhost HTTP
-server to show that cancelling a stalled read leaves a submitted command alive
-and single-dispatch. Twelve integration checks cover the actual dashboard page
-binding, shared heartbeat transport, request adapter and models, with native
-Node Streams and fixture HTTP/time. The six selected existing HTTP tests pass
-unchanged; five use real localhost sockets. The two unselected asset tests in
-that existing file were not run locally.
+The Node suites exercise the actual dashboard page binding, shared heartbeat
+transport, request adapter and models with native Node Streams and fixture
+HTTP/time. They cover both command/event orderings, stalled response bodies,
+late cancelled responses, shared group members and duplicate names across
+households, scoped queue invalidation, failed-room recovery, server cooldowns,
+and explicit acknowledgement of uncertain writes. Real localhost HTTP cases
+also check cancellation and single dispatch.
 
 Ten Chromium component cases execute the shipped page script, dashboard models,
 reconciler and shared event transport together. They use native DOM and Streams

@@ -64,7 +64,7 @@ const DashboardCore = (() => {
   }
   function request({ fetcher = (...a) => fetch(...a), schedule = setTimeout, cancel = clearTimeout } = {}) {
     const readers = new Set();
-    const send = async (url, body) => {
+    const send = async (url, body, { signal } = {}) => {
       const write = body !== undefined, abort = new AbortController();
       const budget = write && (url === '/queue' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)) ? 600000 : write ? 120000 : 10000;
       let timer, finished = false, stopped = null, rejectStopped;
@@ -75,12 +75,17 @@ const DashboardCore = (() => {
         rejectStopped(error); abort.abort();
       };
       const cancelRead = () => stop(Object.assign(new Error('The obsolete state request was cancelled.'), { code: 'DASHBOARD_READ_CANCELLED' }));
-      if (!write) readers.add(cancelRead);
+      if (!write) {
+        readers.add(cancelRead);
+        signal?.addEventListener('abort', cancelRead, { once: true });
+        if (signal?.aborted) cancelRead();
+      }
       timer = schedule(() => stop(new Error(write
         ? 'No command confirmation arrived. It may still complete; refresh before another action.'
         : 'The daemon did not answer in time.')), budget);
       try {
         return await Promise.race([timeout, (async () => {
+          if (finished) throw stopped;
           const response = await fetcher(url, { method: write ? 'POST' : 'GET',
             headers: { Accept: 'application/json', ...(write ? { 'Content-Type': 'application/json' } : {}) },
             ...(write ? { body: JSON.stringify(body) } : {}), signal: abort.signal,
@@ -100,7 +105,10 @@ const DashboardCore = (() => {
           }
           return data;
         })()]);
-      } finally { finished = true; cancel(timer); readers.delete(cancelRead); }
+      } finally {
+        finished = true; cancel(timer); readers.delete(cancelRead);
+        if (!write) signal?.removeEventListener('abort', cancelRead);
+      }
     };
     // Stream/lifecycle recovery cancels observations, never submitted commands.
     send.cancelReads = () => { for (const cancelRead of [...readers]) cancelRead(); };
@@ -115,7 +123,8 @@ const DashboardCore = (() => {
     const revision = (target) => revisions.get(target) || 0;
     const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const selected = () => state.items.find((i) => key(i.zone) === state.selected);
-    const canControl = () => !!(!demo && !disposed && state.active && !state.busy && !state.loading
+    const canControl = () => !!(!demo && !disposed && state.active && !state.busy
+      && (!reading || reading.retained.has(state.selected))
       && !state.uncertain && selected()?.fresh && (state.connected || now() - selected().at < 30000));
     // Event names are not household identities. Resolve all matching groups,
     // then issue only qualified reads; unknown names require fresh topology.
@@ -134,37 +143,47 @@ const DashboardCore = (() => {
       if (!state.topologyFresh || (targets && [...targets].some((t) => !state.items.some((i) => key(i.zone) === t)))) {
         targets = null; scope = null;
       }
-      const version = ++epoch, observation = {}, stamps = new Map(revisions);
+      const version = ++epoch, observation = { abort: new AbortController(), retained: new Set() }, stamps = new Map(revisions);
       reading = observation;
       state.loading = true; state.retryAfter = 0; emit();
       const current = () => !disposed && state.active && version === epoch;
       try {
-        const list = targets ? state.items.map((i) => i.zone) : zones(await call('/zones'));
+        const options = { signal: observation.abort.signal };
+        const list = targets ? state.items.map((i) => i.zone) : zones(await call('/zones', undefined, options));
         if (!current()) return false;
         const old = new Map(state.items.map((i) => [shape(i.zone), i]));
-        const jobs = [];
+        const jobs = [], baselines = new Map(), cooldowns = new Map();
         const items = list.map((zone) => {
           const prior = old.get(shape(zone));
           const wanted = targets ? targets.has(key(zone)) : !scope?.recovery || !prior?.fresh;
-          if (!wanted && prior) return prior;
+          if (!wanted && prior) { observation.retained.add(key(zone)); return prior; }
           const item = { zone, state: prior?.state || null, fresh: false, at: prior?.at ?? now(), error: prior?.error || '' };
+          baselines.set(item, { ...item });
           jobs.push(item); return item;
         });
+        if (observation.retained.size) emit();
         await each(jobs, async (item) => {
           const target = key(item.zone), stamp = stamps.get(target) || 0;
           const stillCurrent = () => current() && stamp === revision(target);
           if (!stillCurrent()) return;
           try {
-            const next = playback(await call(`/zones/${encodeURIComponent(target)}/state`), item.zone);
+            const next = playback(await call(`/zones/${encodeURIComponent(target)}/state`, undefined, options), item.zone);
             if (!stillCurrent()) return;
             item.state = next; item.at = now(); item.fresh = true; item.error = '';
           } catch (e) {
             if (!stillCurrent()) return;
             item.error = problem(e);
-            state.retryAfter = Math.max(state.retryAfter, e.retryAfter || 0);
+            cooldowns.set(item, e.retryAfter || 0);
           }
         });
         if (!current()) return false;
+        // One room can finish before another stalls. An intervening event
+        // still retires that finished observation before the batch publishes.
+        for (const item of jobs) {
+          const target = key(item.zone);
+          if ((stamps.get(target) || 0) !== revision(target)) Object.assign(item, baselines.get(item));
+          else state.retryAfter = Math.max(state.retryAfter, cooldowns.get(item) || 0);
+        }
         state.items = items;
         if (!targets) {
           state.topologyFresh = true;
@@ -199,8 +218,17 @@ const DashboardCore = (() => {
     }
     // One mutation lane for transport, the DJ, search and house scenes. A
     // retained callback cannot dispatch after its operation/lifetime ended.
-    async function mutate(operation) {
+    async function mutate(operation, { wholeHouse = true } = {}) {
       if (!canControl()) return false;
+      if (reading) {
+        // Controls for an unchanged group take priority over background reads
+        // of other rooms. Retire that batch before claiming the mutation lane;
+        // late bodies cannot publish or release a newer observation's lane.
+        const obsolete = reading;
+        ++epoch; reading = null; state.loading = false;
+        for (const item of state.items) if (!obsolete.retained.has(key(item.zone))) item.fresh = false;
+        obsolete.abort.abort();
+      }
       const item = selected(), version = epoch, target = key(item.zone), stamp = revision(target);
       let sent = false, accepted = false, open = true;
       const valid = () => open && !disposed && state.active && version === epoch && stamp === revision(target) && state.selected === target;
@@ -229,7 +257,7 @@ const DashboardCore = (() => {
       } finally {
         const canRefresh = valid(); open = false;
         state.busy = false; emit();
-        if (accepted && canRefresh) await refresh();
+        if (accepted && canRefresh) await refresh(false, wholeHouse ? null : { targets: [target] });
       }
     }
     async function command(verb, change = {}) {
@@ -243,7 +271,7 @@ const DashboardCore = (() => {
           throw new Error('Playback changed. Refresh before sending this command.');
         }
         return send(`/${verb}`, { zone: target, ...(verb === 'volume' ? { delta: change.delta, group: true } : {}) });
-      });
+      }, { wholeHouse: false });
     }
     function invalidate(targets = null) {
       if (targets === null) {

@@ -149,6 +149,23 @@ test('late failures from an obsolete room read cannot change recovery or server 
   assert.deepEqual(f.model.state.failedTargets, []); assert.equal(f.model.state.retryAfter, 0);
 });
 
+for (const result of ['state', 'failure']) {
+  test(`an event retires a completed ${result} while another room still holds the snapshot open`, async () => {
+    const f = await fixture().ready(), held = deferred();
+    f.hook((url) => {
+      if (url.includes('Beta')) return held.promise;
+      if (result === 'failure') throw Object.assign(new Error('Obsolete throttling'), { retryAfter: 180000 });
+      return level(f.data.zones[0], 99);
+    });
+    const pending = f.model.refresh(false, { targets: ['Alpha@S2', 'Beta@S2'] });
+    await tick(); f.model.invalidate(['Alpha@S2']);
+    held.resolve(level(f.data.zones[1], 31)); assert.equal(await pending, false);
+    assert.equal(f.item('Alpha@S2').fresh, false); assert.equal(f.item('Alpha@S2').state.volume, 20);
+    assert.equal(f.item('Beta@S2').fresh, true); assert.equal(f.item('Beta@S2').state.volume, 31);
+    assert.deepEqual(f.model.state.failedTargets, []); assert.equal(f.model.state.retryAfter, 0);
+  });
+}
+
 test('suspension fences replies and prevents queued reads from starting', async () => {
   const f = await fixture(Array.from({ length: 9 }, (_, n) => zone(`Room${n}`))).ready();
   const gates = []; let peak = 0, ongoing = 0;

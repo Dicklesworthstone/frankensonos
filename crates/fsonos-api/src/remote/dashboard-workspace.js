@@ -158,7 +158,10 @@ const DashboardWorkspace = (() => {
         if (next !== roomKey) { roomKey = next; paintRooms(); }
         for (const b of document.querySelectorAll('[data-open-rooms]')) b.disabled = state.busy;
       },
-      invalidate() { queue.invalidate(); activity?.invalidate(); },
+      invalidate(targets = null) {
+        if (targets === null || targets.includes(controller.state.selected)) queue.invalidate();
+        activity?.invalidate();
+      },
       immerse(value) { immersive = value; if (value) { queue.suspend(); activity?.suspend(); } else if (active) { queue.resume(); activity?.resume(); if (chosenTab === 'queue') queue.open(); } },
       suspend() { active = false; library?.suspend(); activity?.suspend(); queue.suspend(); for (const id of ['rooms-dialog', 'shortcuts-dialog']) if ($(id).open) $(id).close(); },
       resume() { active = true; library?.resume(); if (!immersive) { queue.resume(); activity?.resume(); } },
