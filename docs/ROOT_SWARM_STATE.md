@@ -1061,3 +1061,18 @@ The ctor zeroes 6 pointer fields in the +21752..+25815 range (r26=0 at
 RUNTIME. The overflow overwrites them → the daemon dereferences our values.
 SageElm dispatched: dump the live values via the emulator (the object types
 + whether one leads to the update state or a config-write).
+
+### 2026-11-05 (Route d consumer map): the pointer fields feed the URL assembly
+
+The +22800 pointer's use sites: the value is passed to 0x1038906c and
+0x10103244 (the SAME accessor that consumes the +28012 URL strings!).
+The chain: the overflow corrupts the +22800 pointer → the daemon's URL
+assembly reads from OUR buffer → the injected strings enter the daemon's
+URL/LOG processing. The pointer corruption = the string-injection primitive
+(what happens next depends on the URL assembly's consumer — the same chain
+that builds the update/replication URLs).
+
+The consumer map (reader counts): +21756: 4, +22800: 9, +22808: 17,
++22816: 10, +22824: 8 — 48 total sites. The NULL-check pattern dominates
+(the pointers are optional); the non-NULL path passes them to the
+processing functions.
