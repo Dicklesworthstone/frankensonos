@@ -661,3 +661,21 @@ REBOOT GADGET: FN = 0x104123D8 (the addis r3 insn) → ignores incoming r3,
 calls system("/sbin/reboot") → unit reboots. 100% observable FN-execution proof
 (60-90s outage + recovery). Sweeping .202 with FN=reboot across the PPC heap
 (0x10650000+, 0x20000 steps) — a reboot signature = chain proven on the PPC unit.
+
+### THE EXECVE WRAPPER — root sink FOUND (2026-11-05)
+
+The PPC daemon's process-spawn API: fork/execve wrapper at **0x104044c0**
+(frame -1104; r3 = arg struct, r4 = 2nd arg). It reads ONLY [struct+0] =
+the PATH POINTER, then fork() → execve(path, r4, static_envp).
+Zero static callers (reached via a runtime-built vtable) — but callable DIRECTLY
+as the dispatcher's FN.
+
+THE V5 LAYOUT (solves the system() NUL problem — execve takes a path POINTER,
+not a string at r3):
+  [F+6404]=A; [A+8]=B; [B]=V; FN=[V+28]=0x104044c0;
+  V = the string "/sbin/reboot\0" in-buffer; [B+0]=V doubles as the path pointer
+  (the dispatcher's vtable read and the wrapper's path read are THE SAME dword).
+  r3=B → wrapper: path=[B]=V → execve("/sbin/reboot") → observable reboot.
+  For ROOT: path = any executable (e.g. a fetched script) with argv=r4 caveat.
+
+Builder: recon/tnzm_audible/ppc_v5_builder.py — verified all chain levels.
