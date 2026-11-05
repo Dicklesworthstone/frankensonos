@@ -1,0 +1,11 @@
+{
+ "case": "32700:1",
+ "getaa": "curlrc28",
+ "pre": "200",
+ "post": "200",
+ "late": "200",
+ "q": [
+  "QINFO units=32700 delta=1 buflen=32800 fnlen=65402"
+ ],
+ "verdict": "ANOMALY"
+}

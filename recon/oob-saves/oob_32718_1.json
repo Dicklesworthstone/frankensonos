@@ -1,0 +1,11 @@
+{
+ "case": "32718:1",
+ "getaa": "curlrc7",
+ "pre": "200",
+ "post": "200",
+ "late": "200",
+ "q": [
+  "QINFO units=32718 delta=1 buflen=32818 fnlen=65438"
+ ],
+ "verdict": "ANOMALY"
+}
