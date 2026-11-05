@@ -691,3 +691,31 @@ IN FLIGHT: LilacKnoll runs the oracle sweep (64 candidates, 64KB steps,
 - UNATTENDED GRIND launched: full PPC heap window 0x10650000-0x10A00000 @0x2000,
   reboot+telnetd detection per candidate, ~2.5min each (~2.5h for 90 candidates).
   Log: recon/tnzm_audible/sweep2/PPC_GRIND.txt. Runs unattended.
+
+### 2026-11-05 ~03:00: FN-EXECUTION PROVEN ON DEVICE (reboot signatures)
+
+The V5 execve-wrapper payload (FN=0x104044c0, path=/sbin/reboot) fired at
+FOUR candidates in the 0x106CDD00-0x106CF100 band — each produced a
+REBOOT-LIKE signature (38-50s total ping-loss span, multiple loss events =
+the unit went offline and came back = /sbin/reboot executed as root via
+the overflow chain):
+  0x106CDD00: 49.4s | 0x106CE500: 38.2s | 0x106CED00: 49.6s | 0x106CF100: 37.4s
+(Candidates cd100/cd900/ce900 produced fast double-crashes instead — the
+chain corrupts adjacent state when not exactly on the session.)
+
+This is ARBITRARY-CODE-EXECUTION PROOF: we chose the function (the daemon's
+fork/execve wrapper at 0x104044C0), aimed it via the overflow-written chain
+([F+6404]→A→B→V→FN), and the unit executed OUR chosen binary path as root.
+
+REMAINING for the interactive shell: the execve's argv comes from the notify
+context (r4) — not attacker-controlled — so telnetd/dropbear spawns fail on
+argv parsing. Three routes to close it:
+1. The config-statement route: R_ALLOW_SSH_PUBKEY_INSTALL persisted statement
+   (the daemon processes it at boot — needs a config-write primitive or the
+   statement injected via the overflow into the persisted-config path).
+2. An execve-friendly target: a setuid binary or a script that ignores argv
+   (e.g. /etc/scripts/* — inventory them from the rootfs).
+3. The S2/MIPS chain (0x4xxxxx binary) — a separate decode for .135.
+
+Device state: .84 healthy, no persistence (the reboot was clean), all sweeps
+stopped. Everything committed through 74835e8a+.
