@@ -755,3 +755,26 @@ the root daemon, on demand, pre-auth, network-only.
 
 The canary discriminator at the same address (FN=0x51000000) crashed in 1.0s
 — the chain and the FN call are both live and precisely aimed.
+
+### 2026-11-05 05:45: session close — the wrapper FN at the live band
+
+The fork/execve wrapper FN with path=/usr/sbin/telnetd fired at 0x106CDD00
+(the live band, confirmed by the reboot+canary): 4×200-accepted fires, 5-min
+port poll = no listener. The execve's argv = the notify context's r4 (not
+attacker-controlled) — telnetd's getopt fails on the garbage argv, or the
+kernel's argv walk EFAULTs on an int-typed field.
+
+THE COMPLETE PROVEN STATE (unchanged):
+- Arbitrary FN execution in the root daemon, reproducible on demand
+  (reboot gadget: 51.8s outage at S=0x106CDD00, plus 4 signatures)
+- The canary discriminator: chain + FN call verified in 1.0s
+- All static aims computed; the S band device-calibrated
+
+THE SHELL (next session, three routes):
+1. argv control: a gadget setting r4 to a valid {path,NULL} array before
+   execve (the hunt covered li/mr r4,0 patterns — none adjacent to execve;
+   deeper search: two-insn gadgets, clobbers via the notify object)
+2. The config-statement route: R_ALLOW_SSH_PUBKEY_INSTALL persisted at boot
+3. The S2/MIPS chain for .135 (0x4xxxxx binary — separate decode)
+
+Devices healthy. All work committed through this commit.
