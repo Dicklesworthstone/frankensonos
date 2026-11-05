@@ -820,3 +820,25 @@ fire didn't happen in those two runs (the state variance — 4/8 candidates
 produced reboots; the SSH fires used cdd00 which DID reboot earlier).
 The next-session probe: fire run_sshd.sh TWICE (the double-fire pattern that
 triggered the notify in the extended fire) + poll port 23 for 5 min.
+
+### 2026-11-05 07:15: accumulation falsification — the final variable closed
+
+8 rapid SSH-payload fires WITHOUT reset (state accumulation): all accepted,
+no port in 3min. The accumulation theory is dead. The execve of
+/etc/scripts/run_sshd.sh fails silently regardless of state.
+
+THE ROOT CAUSE (needs device-side visibility to pin down):
+- The kernel's shebang processing loads /bin/sh (exists in rootfs) ✓
+- run_sshd.sh execs /usr/sbin/telnetd with NO args (clean argv) ✓
+- telnetd (standalone ELF, getopt HSaf::t::d::s::c::m::l::p::n::v::w::)
+  should bind port 23 and daemonize ✓
+- The untested variable: the DEVICE's actual /etc/scripts/ content (the
+  runtime overlay may differ from the rootfs extraction), or the wrapper's
+  fork-child environment (the dup2'd pipe fds as stdio).
+
+THE NEXT-SESSION PLAN (unchanged, plus one):
+1. The config route: R_ALLOW_SSH_PUBKEY_INSTALL + the free()/unlink write
+2. The S2/MIPS chain decode for .135
+3. The daemon-env probe: fire the wrapper with path=/bin/sh and a SEPARATE
+   observer to determine whether /bin/sh even executes (the errno distinction
+   between ENOENT and EFAULT is visible in the crash timing).
