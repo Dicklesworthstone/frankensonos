@@ -913,3 +913,17 @@ THE CORRECT PROTOCOL (next session):
 
 This also explains the earlier calibration variance (the 8-candidate calib
 ran across an unrecorded reboot boundary).
+
+### 2026-11-05 07:30: the new band's gadget — daemon crash but no reboot
+
+The accumulation recipe (6 gadget fires after the stage1 bind) at S=0x106c5000:
+2 daemon crashes (62s, 118s) but no full reboot. The canary crash @3.4s at the
+same S proves the chain+FN-jump. The gadget's system("/sbin/reboot") doesn't
+complete — either the band is close-but-not-exact (the chain fires, the gadget's
+environment is corrupted), or the notify context differs per-lifetime.
+
+NEXT SESSION (the precise recipe):
+1. Canary re-calibration at 4-byte granularity around 0x106c5000 (±0x400,
+   ~200 candidates @1s with the accumulation recipe)
+2. The EXACT S → the reboot gadget → the confirmed root-code-exec
+3. Then the shell: the argv-free spawn inventory + the config route
