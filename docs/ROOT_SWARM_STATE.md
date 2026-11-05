@@ -654,3 +654,20 @@ the wire pointer. The stride-4 element at position 11 = a chosen 32-bit value fo
 - All device shots today state-saturated: SetAV=200 + no crash even for byte-exact
   copies of previously-crashing files + fresh URLs + C-kill resets. The emu/model
   is the only live oracle for (a) the strcpy gate conditions, (b) the session address.
+
+### BREAKTHROUGH (2026-11-04 evening): two-stage fire PROVEN on device
+
+SageElm mapped r22 = [stream+6088] (transport interface pointer): 0 while unbound,
+nonzero once the audible stream opens. TWO-STAGE FIRE: benign .aa (transport
+binds) → overflow .aa → the unchecked strcpy FIRES.
+
+Oracle differential on .135: fake_ptr=0x55000000 (unmapped) → daemon crash @54.8s;
+fake_ptr=0x66BC40 (mapped) → clean/benign. The notify path dereferences
+ATTACKER-CONTROLLED pointers end-to-end. PC-control mechanics proven on device.
+
+Static aim values (S2 86.10): system@plt = 0x6DCE50, execve@plt = 0x6DCA00
+(non-PIE — no libc base needed). aimed_builder.py builds the complete aimed
+payload from ONE integer: the session address S.
+
+IN FLIGHT: LilacKnoll runs the oracle sweep (64 candidates, 64KB steps,
+0x10600000+; clean result = S found). SwiftMarsh's arena model = fast path.
