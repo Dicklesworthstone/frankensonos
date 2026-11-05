@@ -91,7 +91,7 @@ def reg_writes(reg, ins, depth=0):
 
 
 def main():
-    print("site\tfn\tcallee\targ_kind\targ_value\tprev")
+    print("site\tfn\tcallee\targ_kind\targ_value\targ2_kind\targ2_value\tprev")
     for a, callee in raw_sites(TARGETS):
         ins = context(a)
         if not ins or ins[-1].address != a:
@@ -99,8 +99,13 @@ def main():
             pass
         rw = reg_writes("r3", ins)
         val = rw[1] if len(rw) == 2 else "%s+%#x" % (rw[1], rw[2])
+        if callee in ("calloc", "realloc"):
+            rw2 = reg_writes("r4", ins)
+            val2 = rw2[1] if len(rw2) == 2 else "%s+%#x" % (rw2[1], rw2[2])
+        else:
+            rw2, val2 = ("", ""), ""
         prev = " | ".join("%s %s" % (i.mnemonic, i.op_str) for i in ins[-4:])
-        print("%#x\t%#x\t%s\t%s\t%s\t%s" % (a, containing(a), callee, rw[0], val, prev))
+        print("%#x\t%#x\t%s\t%s\t%s\t%s\t%s\t%s" % (a, containing(a), callee, rw[0], val, rw2[0], val2, prev))
 
 
 main()

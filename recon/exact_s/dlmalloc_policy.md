@@ -76,3 +76,11 @@ outside the boot prefix (request-path), which is where the tail's sizes come fro
 - `0x10103598` (session initialiser) and the class vtable `0x1046e960` are built at run time; no
   static reference exists (searched `.rodata`, `.data`, `.sdata`, `.got2`, `.ctors`, and every
   `lis/addi` base-register form). Identify the block by the initialiser's field writes.
+
+## Census schema
+
+`census.tsv` columns: `site, fn, callee, arg_kind, arg_value, arg2_kind, arg2_value, context`.
+`arg_*` is the size argument (r3); `arg2_*` is `calloc`'s element size (r4) or `realloc`'s new size
+(r4). Sizes are `const`, `base+N` expressions, or `dyn` with the producing load/move in
+`arg_value`; `context` is the preceding instruction run so a dynamic size can be traced. No C++
+`operator new` is imported by this binary, so malloc/calloc/realloc is the complete surface.
