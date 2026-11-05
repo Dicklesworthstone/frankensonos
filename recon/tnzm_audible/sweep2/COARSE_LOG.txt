@@ -18,3 +18,4 @@
 (SwiftMarsh op-note) → candidates AFTER a crash ran against a different heap.
 Clean read: candidates 1-4 (0x705700..0x711700) against ONE lifetime: 3 no-crash +
 first crash AT 0x711700. Refine 0x711700±0x800 @0x200, one candidate per lifetime.
+0073d700: SetAV=200 crash=None rec=False class=A/B
