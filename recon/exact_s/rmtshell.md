@@ -47,3 +47,24 @@ file: the statement-save handler (`0x103940b8`, route `0x10394b70`) writes the P
 path held at **`[statement+1072]`**, composed as `sprintf("%s/localsettings.txt", base)` by
 `0x10007a90` (setter `0x10007bec`/`0x10007c08`, free+strdup per path). The name tail is fixed, so
 the file is `localsettings.txt` — good for settings, not for Configure.dev by itself.
+
+## Follow-up: who can create Configure.dev
+
+- The daemon never writes it: the only daemon xref is the `stat` at `0x102b2574`/`0x102b2578`
+  that populates the `confdev` value. `confdev` is therefore **reported, not a switch**, and the
+  "one registry flip arms the boot shell" idea does not hold on 57.23.
+- The daemon's save path can only produce the names the setter knows. Formats at `0x1043de1c`ff:
+  `%s/shadow2`, `%s/localsettings.txt`, `%s/settings`, `%s/netsettings.txt`, `%s/rinconradio.xml`
+  (setter `0x10007a90`, compose at `0x10007bec`, store via free+strdup `0x10007c08`). The base is
+  the config root; the tail is fixed, so a redirected base still lands as `…/localsettings.txt`
+  and `/etc/Configure` never sources that file (checked: no script reads it).
+- The string `system/Configure.dev` also lives in `lib/libsonosutils.so.1` (`0x9a34`, next to
+  `Configure` `0x98e4`, `debug/devmode.bin` `0x99e8`), which exports the file API the daemon
+  imports: `sonosFileCreate` (`anacapad` stub `0x10546790`, sites `0x1028abfc`, `0x102b8eb8`),
+  `sonosFileCreateEx` (stub `0x10546d88`, site `0x100e6744`), plus `sonosCopyFile`,
+  `sonosMkDirRecursive`, `sonosFileWriteInt`. Neither stub site passes a Configure.dev path
+  (0x102b8eb8 builds its path via `0x102b8c4c`), so the creator of Configure.dev is still open —
+  the lib string has no static xref either (PIC, runtime-composed).
+
+So the live question is narrowed to: which route reaches `sonosFileCreate` with a
+`system/Configure.dev` argument (or with a path we can steer).
