@@ -12,3 +12,17 @@ reproduced across lifetimes) | 0x71db00: crash@10.6s | 0x71dd00: crash@0.0s
 (instant) | 0x71df00: crash@1.0s.
 The whole 0x71d300-0x71df00 band fires the chain. Canary pass done; real
 system@plt pass in flight (hot2, /bin/busybox telnetd command).
+
+=== r3-analysis (orchestrator) ===
+Canary pass proves FN is CALLED. system@plt fires but produces no observable
+effect (no wedge with sleep 500, no telnetd). Root cause candidates:
+(a) r3 at the call = B → system reads the V-pointer bytes at B → leading 0x00
+    (all S2 addresses < 0x01000000) → empty command → no-op. The string must
+    live AT r3, but [B]=V occupies B..B+3 → structurally impossible with
+    system@plt + in-buffer vtable UNLESS r3=V (decode dispute).
+(b) FN isn't reached with a valid r3 in the real notify (context differs).
+RESOLUTION PATH: (1) MIPS16 decode of the dropbear/R_ALLOW_SSH_PUBKEY_INSTALL
+handler (native SSH install, no system needed) — dispatched to SageElm/GoldMeadow.
+(2) Find a system-wrapper taking this->field (r3-relative string) — the daemon
+must have one; its FN address becomes the aim, and the string goes in the fake
+object at the wrapper's expected field offset.
