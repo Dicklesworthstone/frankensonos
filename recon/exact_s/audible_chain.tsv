@@ -1,0 +1,83 @@
+# audible-chain allocation order — static DFS from the handler 0x10118ad8 and 0x1011d2e8/0x10104df0 (skeleton; runtime order from the harness trace wins)
+# order<TAB>site<TAB>fn<TAB>callee<TAB>arg_kind<TAB>arg_value
+0	0x10434608	0x104345f4	free	dyn	?
+1	0x10416344	0x104161dc	free	dyn	?
+2	0x10434678	0x10434640	malloc	const	1
+3	0x104346bc	0x10434640	malloc	dyn	load r31, 0x1c(r1)
+4	0x10437284	0x104371a8	malloc	const	8
+5	0x104373b4	0x104371a8	free	dyn	?
+6	0x1043c538	0x1043c398	malloc	expr	r3+0x1
+7	0x1043c5f0	0x1043c398	free	dyn	?
+8	0x1043c690	0x1043c398	malloc	expr	r28+0x1d
+9	0x1043c708	0x1043c398	free	dyn	?
+10	0x10439650	0x10439604	realloc	dyn	load r3, 4(r3)
+11	0x1043969c	0x10439604	free	dyn	load r3, 4(r29)
+12	0x1043980c	0x104397f0	free	dyn	load r3, 4(r3)
+13	0x104370c4	0x10436ec8	free	dyn	?
+14	0x10434950	0x10434894	free	dyn	?
+15	0x104347a4	0x10434764	malloc	expr	r3+0x50
+16	0x1041bf24	0x1041be14	malloc	const	544
+17	0x1038130c	0x103812e8	free	dyn	load r3, 4(r31)
+18	0x10380684	0x10380628	free	dyn	load r3, 4(r31)
+19	0x10380588	0x10380560	free	dyn	load r3, 4(r31)
+20	0x103811b8	0x10381118	malloc	const	200
+21	0x1038126c	0x10381118	free	dyn	?
+22	0x103812b8	0x10381118	free	dyn	load r3, 4(r31)
+23	0x1040a320	0x1040a2bc	realloc	dyn	load r3, 0(r31)
+24	0x1040a1f8	0x1040a1cc	malloc	dyn	?
+25	0x1040a2b0	0x1040a250	free	dyn	load r3, 0(r31)
+26	0x10370b34	0x10370a2c	free	dyn	load r3, 8(r31)
+27	0x103707fc	0x10370784	malloc	const	1025
+28	0x1034eb88	0x1034d9b8	free	dyn	load r3, 0xc88(r3)
+29	0x1034ebd4	0x1034d9b8	free	dyn	load r3, 0xc88(r3)
+30	0x103e9748	0x103e9700	free	dyn	load r3, 0(r31)
+31	0x103e98c0	0x103e9700	free	dyn	load r3, 0xb20(r30)
+32	0x103e98f8	0x103e9700	free	dyn	?
+33	0x103ec2d8	0x103ec2ac	free	dyn	load r3, 0x20(r3)
+34	0x103ec2e8	0x103ec2ac	free	dyn	load r3, 8(r31)
+35	0x103ec300	0x103ec2ac	free	dyn	?
+36	0x103ec338	0x103ec318	free	dyn	load r3, 0x10(r3)
+37	0x103ec348	0x103ec318	free	dyn	load r3, 0x14(r31)
+38	0x103ec358	0x103ec318	free	dyn	load r3, 0x18(r31)
+39	0x103ec368	0x103ec318	free	dyn	load r3, 0x1c(r31)
+40	0x103ec378	0x103ec318	free	dyn	load r3, 0x20(r31)
+41	0x103e6304	0x103e62dc	free	dyn	?
+42	0x1040a978	0x1040a8dc	malloc	const	2048
+43	0x1040aaa0	0x1040a8dc	realloc	dyn	load r3, 0(r31)
+44	0x100850d4	0x10085070	free	dyn	load r3, 0x5e80(r29)
+45	0x103810d4	0x10381080	free	dyn	load r3, 4(r31)
+46	0x10380c9c	0x10380b04	free	dyn	load r3, 4(r31)
+47	0x1037ff18	0x1037fee8	malloc	const	124
+48	0x1037ff68	0x1037fee8	malloc	const	124
+49	0x10358674	0x10358654	malloc	const	344
+50	0x103586b4	0x10358654	free	dyn	?
+51	0x10380304	0x10380258	free	dyn	?
+52	0x1038035c	0x10380258	free	dyn	?
+53	0x1035c010	0x1035bf70	malloc	expr	r27+0x10
+54	0x1035c1a8	0x1035bf70	free	dyn	?
+55	0x10396b00	0x10396abc	free	dyn	?
+56	0x10413a44	0x104139e0	free	dyn	load r3, 4(r31)
+57	0x104134f0	0x10413468	free	dyn	load r3, 4(r31)
+58	0x1041350c	0x10413468	free	dyn	?
+59	0x1041352c	0x10413468	free	dyn	load r3, 0x10(r31)
+60	0x1041353c	0x10413468	free	dyn	load r31, 0x1c(r1)
+61	0x10413554	0x10413468	free	dyn	load r3, 0x6c(r9)
+62	0x10413570	0x10413468	free	dyn	load r3, 8(r31)
+63	0x10413588	0x10413468	free	dyn	load r3, 0xc(r31)
+64	0x1040590c	0x10405810	malloc	dyn	?
+65	0x10416110	0x104160a0	calloc	const	1
+66	0x104016a4	0x1040167c	malloc	dyn	load r3, r3, r9
+67	0x104016c8	0x1040167c	free	dyn	?
+68	0x1029b674	0x1029b5f8	free	dyn	?
+69	0x1029b740	0x1029b5f8	free	dyn	?
+70	0x103e96e4	0x103e96bc	calloc	const	1
+71	0x10084cec	0x10084b2c	malloc	const	458752
+72	0x10433570	0x10433518	malloc	const	16
+73	0x10433608	0x10433518	free	dyn	?
+74	0x10433658	0x10433518	free	dyn	load r31, 0(r3)
+75	0x10433698	0x10433518	free	dyn	load r31, 0xc(r1)
+76	0x1037f5e0	0x1037f52c	malloc	dyn	?
+77	0x1009561c	0x10095560	free	dyn	?
+78	0x1035c298	0x1035c1cc	free	dyn	?
+79	0x1035c398	0x1035c1cc	malloc	expr	r3+0x1
+80	0x1035c3c0	0x1035c1cc	free	dyn	load r3, 0x20bc(r1)
