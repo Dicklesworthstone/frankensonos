@@ -29,8 +29,20 @@
   two-stage via :1400 + audio/aac):** 19 hits / 47 candidates across
   **0x704000-0x716000** (hits every 0x800 mostly; 0x711000 gave a 2-poll
   outage). Device healthy throughout.
-- **FN matrix (FN=0x4ab64c, cmd="reboot") running at 7 band hits** —
-  verdicts in `recon/tnzm_audible/sweep2/` + this file's next update.
+- **FN matrix PROVEN: the S2 root-code-exec is now CONFIRMED on .135** —
+  FN=0x4ab64c (system-gadget) with cmd="reboot" produced full-device
+  REBOOT signatures at S=0x704000 (58s ICMP loss) and 0x705800 (69s),
+  plus a third (92s) in the post-matrix lifetime. a0 at the FN call =
+  node0 (our command string) — `system(<node0 string>)` executes as root.
+- **Shell route (in progress):** `audio/audible` PI → 714; the S2 unlock
+  chain = system-gadget cmd → /tmp/device_unlocked_flag → the respawned
+  /etc/scripts/run_sshd.sh (blocks in waitwhiletrue) → dropbear -R -F :22.
+  4 unlock-flag+authorized_keys fires at live hits produced NO port 22 —
+  the open issue: dropbear -R generates host keys into /etc/dropbear which
+  is SQUASHFS (read-only) on 86.10; next volley uses
+  `dropbearkey -t ecdsa -f /jffs/... ` + `dropbear -r <jffs key> -p 2323`
+  (payloads S2SHELLF_*, fine-sweep runner sweepshell.py). a0=node0 makes
+  the cmd string length a free parameter (347B used).
 - Tooling: S2 anacapad is MIPS16-dominant; plain objdump = noise; use
   `-m mips:16`. Full cached disasm `/tmp/s2decode/full16.asm`; upd
   decryptor `/tmp/s2decode/decrypt_upd.py` (model12 key; section 23 =

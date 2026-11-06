@@ -837,3 +837,30 @@ Device-lane facts re-confirmed live on .135 (81100) this session:
   the type-cap question is answered empirically instead: CAN135 wrote the
   observer cell at node 23620 (file 23656) and fired ⇒ the S2 node string
   reaches ≥23.6KB ⇒ **no 4KB cap on the S2 path**.
+
+### 2026-11-06 device results (.135, 86.10-81100) — the S2 reboot proof
+
+Two-stage protocol per fire: stage1 `A_toc_past_eof.aa` + Play (transport
+bind), 1.5s, stage2 payload + Play, then watch. Delivered over :1400 SOAP
+with protocolInfo `http-get:*:audio/aac:*` (the audible PI 714s on this
+build).
+
+- Canary recalibration sweep (FN=0x51000000, 0x800 steps, 0x700000-0x716000):
+  **19 hits / 47 candidates** across 0x704000-0x716000
+  (`recon/tnzm_audible/sweep2/CAN135L_LOG.txt`). The band is wide and mostly
+  contiguous; a daemon-crash canary (down>=1) is the discriminator.
+- **FN matrix (FN=0x4ab64c system-gadget, cmd="reboot" at node0):**
+  - S=0x704000: **58s ICMP loss = full device REBOOT**
+  - S=0x705800: **69s ICMP loss = full device REBOOT**
+  - S=0x704000 again (post-matrix lifetime): **92s ICMP loss = REBOOT**
+  (`S2FNMATRIX_LOG.txt`). system(<node0 string>) executes as root — the S2
+  a0 at the FN call is node0 (the observer cell F=node0 ⇒ the dispatcher's
+  first argument is the node-buffer start, exactly like PPC r3=B).
+- Shell-route volley #1 (unlock flag + authorized_keys cmd at the 4 live
+  hits): all 4 fired clean, no port 22 (`S2SHELL_LOG.txt`). Working theory:
+  dropbear -R wants /etc/dropbear, which is SQUASHFS (read-only) on 86.10 —
+  volley #2 generates the host key on /jffs
+  (`dropbearkey -t ecdsa -f /jffs/persist/ssh/db_key`) and runs
+  `dropbear -r <key> -p 2323` (payloads `S2SHELLF_*`, runner `sweepshell.py`).
+- The band shifts after every full reboot (all post-reboot canaries at the
+  old hits ran clean); re-calibrate per lifetime as on PPC.
