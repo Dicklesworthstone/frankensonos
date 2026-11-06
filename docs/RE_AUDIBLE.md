@@ -722,3 +722,35 @@ the state-change event — string pointers by construction, NULL-terminated.
 The downstream +6100 sub-object traversal (0x10408dd8) crashes in the emu on
 synthetic transport state — infrastructure, post-dump-point, not the argv
 answer. The 0x104044c0 wrapper builds argv from r4 with the same layout.
+
+### 2026-11-05 (SageElm, mgs7) — live dump: session fields + notify object
+
+**Session pointer fields post-parse** (parse_drive harness, single invocation):
+
+All six requested fields (+21756/+22800/+22804/+22808/+22816/+22824) are **zero**
+in the single-invocation parse run — they are written at **stream-start**
+(0x1010375c/0x10103760/0x1010373c/0x10103764/0x10103778/0x10103788, all
+`stw r26, OFFSET(r28)`) which precedes the parse in the full flow. The same r26
+value is stored to all six offsets — they are **stream-context pointers**
+(loaded at parse/state-machine time by 0x1010608c/0x1010657c/0x101068d4/0x10105ca8/
+0x10105cd8/0x10105f7c and passed to the string builder 0x10103244). Their live
+values = the stream-start r26 argument.
+
+**Notify object (session+12 sub-object):**
+- session+12 = `0x1045EAF4` (embedded vtable, not a heap ptr — the notifier is an
+  embedded C++ sub-object)
+- vtable slot 3 = `0x102AC8FC` (the state-changed handler)
+- the handler reads `[notifier+6068]` = `session+6080` and tails into 0x102AC8B0
+  which sets the changed flag and enqueues
+- the notify BUILD + dispatch (0x101e3aa0 → 0x102bf778) runs on queue drain, not
+  in the state-changed handler itself
+
+**The full live-dump requires:** stream-start (0x10103598, 10 args) → parse
+(0x101152f8, multi-entry) → state change → notify queue drain → dispatcher.
+Each stage is emulated individually; the chain between them (stream-start args,
+multi-entry parse loop, queue drain) is the remaining integration work.
+
+**What this unblocks:** the field map is now complete — +21756/+22800/+22804/
++22808/+22816/+22824 are stream-context pointers (the values 0x102bf778's argv
+walk would see); the observer cell +30000 is the PC-control target; the two-stage
+fire recipe is the delivery mechanism.
