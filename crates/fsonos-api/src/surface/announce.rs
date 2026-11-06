@@ -386,12 +386,11 @@ impl Surface {
             title: title(&source),
             duration: stored.duration,
         };
-        let policy = self.policy();
-        let now = self.clock.now();
         // The announcer asks each room's cap once its household's turn has
         // come, just before it sets the levels: the moment to end the fades
         // there. A sleep timer that was fading sleeps again once the music is
-        // back (see `announcing`).
+        // back (see `announcing`). Read the policy and clock at that boundary:
+        // a queued clip may have waited across quiet hours or a policy edit.
         let sleeping = std::sync::Mutex::new(Vec::new());
         let cap = |room: &Room| {
             if let Some(receipt) = self.announcing(room) {
@@ -400,7 +399,8 @@ impl Surface {
                     .unwrap_or_else(PoisonError::into_inner)
                     .push(receipt);
             }
-            policy.max_volume(&room.name, client, now)
+            self.policy()
+                .max_volume(&room.name, client, self.clock.now())
         };
         let completed = |household: &HouseholdState, report: &HouseholdAnnouncement| {
             // Each household completes while its announcement turn is still
@@ -615,6 +615,9 @@ impl AnnounceDto {
         }
     }
 }
+
+#[cfg(test)]
+mod policy_tests;
 
 #[cfg(test)]
 mod tests {
