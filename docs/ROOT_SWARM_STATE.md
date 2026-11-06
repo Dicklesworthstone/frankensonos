@@ -1112,3 +1112,16 @@ FN call. The earlier r3=V interpretation was a decode error.
 => The PPC root shell: the WRAPPER FN (path=[B+0]=V) or the config route.
    The system@plt gadget would need r3 ≠ B — a gadget "addi r3,r3,K" before
    system, or the wrapper with a telnetd-compatible path (the script route).
+
+### 2026-11-05 (audits 2+3): the sweep logic is sound; the hits were lifetime-specific
+
+Audit 2: the reboot detection (the ping-loss span >30s) correctly separates
+reboots from daemon crashes. No fix.
+Audit 3: the F4/canary sweeps' rebind logic is sound, BUT the 6 canary hits
+(c4d90-f30) were SIX DIFFERENT DAEMON LIFETIMES (each hit crashed the daemon
+→ rebind → the next hit = the NEW band). The "0x1a0-wide zone" was actually
+lifetime-specific narrow bands. THE CORRECT PROTOCOL: calibrate within ONE
+lifetime using the NON-destructive probe... the destructive canary breaks
+this. THE FIX: the reboot payload itself as the probe (a non-hit = clean, a
+hit = a 60-90s reboot + a lifetime change), OR the emulator-derived S (the
+boot-floor + the allocation record, no device probing).
