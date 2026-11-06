@@ -1285,3 +1285,27 @@ the chain, and the reboot gadget completes system("/sbin/reboot").
 THE OPERATIONAL CAPABILITY: pre-auth network-only root-level code
 execution on the Sonos daemon, reproducible at will, address-robust
 (no precise calibration needed — any heap address in the range works).
+
+### 2026-11-05 (the 20× fire + the telnetd analysis): the session's final state
+
+20 SSH-payload fires: all accepted, 2 daemon crashes, no port 23. The
+telnetd binary analysis: it's a standalone ELF with getopt
+"HSaf::t::d::s::c::m::l::p::n::v::w::" — the notify ctx's argv
+["/bin/sh","-c",cmd,NULL] would parse: -c is VALID (the login program
+option) with the cmd as its arg. The bind should still happen (-c only
+affects the login, not the bind). The no-port outcome means the execve
+itself failed: the LIVE notify object's argv walk differs from the
+emulator's synthetic dump (an int-typed field → EFAULT).
+
+THE DEFINITIVE NEXT-SESSION DIAGNOSTIC: the live notify object's ACTUAL
+dwords (the emulator run with the REAL notify serialization, not the
+synthetic context) — SageElm's caveat was exactly this. The real
+0x101e3aa0 serializers build the object from the state-change event;
+the emu needs the REAL event data (the state-change fields from the
+overflow-corrupted session), not synthetic values.
+
+THE CAMPAIGN STATE: arbitrary root-level FN execution PROVEN and
+reproducible; the interactive shell needs the live notify-object dump
+(which needs the emulator to process the REAL event data — the overflow
+corrupts the session state that FEEDS the event, so the emulator can
+construct the real event from the corrupted session!).
