@@ -1087,3 +1087,14 @@ no URL injection, no write vector. The Route-d consumer map is corrected:
 the pointer fields are STATE, not string pointers. The write-vector hunt
 shifts back to the update-state (Route d's dispatch-allocated object) and
 the config route.
+
+### 2026-11-05 (audit 2): the pointer-field audit complete — the fields are STATE
+
+The +21756 consumers: bitfield tests (rlwinm/andi) = a FLAGS field, not a
+pointer. The +21752..+25815 region = MIXED STATE (timestamps + flags), not
+a pointer web. The Route-d pointer-web theory is retired: the overflow
+corrupts state values, not pointer chains. The write-vector hunt refocuses:
+the update-state object (dispatch-allocated, needs the live dump) or the
+config route (the settings-save path). The reboot gadget's mid-function
+entry is validated (the 3-insn sequence is frame-independent — the reboot
+proof at 4 band addresses).
