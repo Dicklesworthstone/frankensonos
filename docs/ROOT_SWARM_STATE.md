@@ -1166,3 +1166,24 @@ THE COMPLETE SESSION DELIVERABLES (all committed through this commit):
 
 DEVICES: .84/.135/.202 healthy. No persistence. The next session starts
 with the 4 routes + fresh device state.
+
+### 2026-11-05 (Route B COMPLETE): the localsettings.txt unlock chain
+
+The daemon reads /jffs/localsettings.txt DIRECTLY (the string at 0x1043d10a,
+next to /proc/slabinfo in the status/meminfo handler). The settings-save
+compose (0x10007bec) writes "%s/localsettings.txt" from the config root.
+
+THE COMPLETE ROUTE B:
+1. The overflow corrupts the config root -> "/jffs"
+2. The overflow corrupts the setting VALUES (the session state fields —
+   the "unlockedBld" value among them)
+3. The settings-save (0x10007bec) writes /jffs/localsettings.txt with our
+   statements (unlockedBld=1 etc.)
+4. The daemon persists it -> the next boot: /etc/Configure checks
+   unlocked_build_flag -> the unlock -> run_sshd.sh -> telnetd -> ROOT
+5. Or Configure.dev: the boot script also runs /jffs/system/Configure.dev
+   if it exists — the localsettings route may set the flag that arms it
+
+THE REMAINING LINKS: (a) which session field = the "unlockedBld" value,
+(b) the config-root field's session offset (the overflow must reach it),
+(c) the settings-save trigger (what makes the daemon call 0x10007bec).
