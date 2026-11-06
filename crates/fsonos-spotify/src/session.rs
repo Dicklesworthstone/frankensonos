@@ -22,6 +22,9 @@ use crate::library::{LibraryItem, LibraryRead};
 
 mod retry;
 
+#[cfg(test)]
+mod credential_tests;
+
 /// Per-request ceiling; the Cx budget can shorten it further.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Refresh the access token this long before it expires.
@@ -274,11 +277,18 @@ impl Session {
 
     async fn refresh(&mut self, cx: &Cx) -> Result<(), SpotifyError> {
         let current = self.token.as_ref().ok_or_else(not_authorized)?;
+        if self.cache.load()?.as_ref() != Some(current) {
+            return Err(sign_in_changed());
+        }
         let body = self.config.refresh_body(&current.refresh_token);
         let response = self.post_token(cx, body).await?;
         let next = current.refreshed(response, unix_now())?;
-        // Persist first: a rotated refresh token must not be lost.
-        self.cache.store(&next)?;
+        // A new sign-in or another refresh may have completed during HTTP.
+        // Persist first, without replacing a changed or removed grant. Never
+        // adopt a different session's account midway through a library read.
+        if !self.cache.store_if_current(current, &next)? {
+            return Err(sign_in_changed());
+        }
         self.token = Some(next);
         Ok(())
     }
@@ -303,6 +313,10 @@ impl Session {
 
 fn not_authorized() -> SpotifyError {
     SpotifyError::Auth("not authorized yet: run the Spotify login first".into())
+}
+
+fn sign_in_changed() -> SpotifyError {
+    SpotifyError::Auth("Spotify sign-in changed or was removed; retry with a new session".into())
 }
 
 fn unix_now() -> i64 {

@@ -57,6 +57,8 @@ pub struct Fake {
     pub access: String,
     pub refresh: String,
     pub refreshes: usize,
+    /// Run once after rotating a refresh token, before sending its response.
+    pub before_refresh_response: Option<Box<dyn FnOnce() + Send>>,
     pub rate_limit_tracks_once: bool,
     /// Serve this liked-tracks page instead of the fixture.
     pub liked_tracks: Option<String>,
@@ -129,7 +131,13 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
                 fake.refreshes += 1;
                 fake.access = format!("access-r{}", fake.refreshes);
                 fake.refresh = format!("refresh-r{}", fake.refreshes);
-                token_json(&fake.access.clone(), Some(&fake.refresh.clone()))
+                let response = token_json(&fake.access, Some(&fake.refresh));
+                let before_response = fake.before_refresh_response.take();
+                drop(fake);
+                if let Some(before_response) = before_response {
+                    before_response();
+                }
+                response
             }
             _ => json(
                 400,

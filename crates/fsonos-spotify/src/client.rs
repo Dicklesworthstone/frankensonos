@@ -17,6 +17,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -409,10 +410,13 @@ pub fn api_error(status: u16, body: &[u8]) -> SpotifyError {
 
 // ── Token cache ────────────────────────────────────────────────────────────
 
+static NEXT_TOKEN_WRITE: AtomicU64 = AtomicU64::new(0);
+
 /// The on-disk token cache: one JSON file in the daemon's data directory
 /// (`--data-dir` / `FSONOS_DATA_DIR`, never the repo). It holds the refresh
 /// token, so the directory is created owner-only (0700) and the file is
-/// written owner-only (0600) via an atomic rename.
+/// written owner-only (0600) via an atomic rename. Writers share a stable
+/// sibling lock file, which must remain in place even when removing the token.
 #[derive(Debug, Clone)]
 pub struct TokenCache {
     path: PathBuf,
@@ -445,14 +449,48 @@ impl TokenCache {
 
     /// Persist `token`, atomically replacing any previous one.
     pub fn store(&self, token: &CachedToken) -> Result<(), SpotifyError> {
+        let _lock = self.lock()?;
+        self.write(token)
+    }
+
+    /// Publish a refresh only if its original grant is still current. The
+    /// comparison and replacement share the same lock as a new sign-in. A
+    /// changed or absent grant at that boundary is not replaced.
+    pub(crate) fn store_if_current(
+        &self,
+        current: &CachedToken,
+        token: &CachedToken,
+    ) -> Result<bool, SpotifyError> {
+        let _lock = self.lock()?;
+        if self.load()?.as_ref() != Some(current) {
+            return Ok(false);
+        }
+        self.write(token)?;
+        Ok(true)
+    }
+
+    /// A short filesystem-only critical section; never retained over HTTP.
+    /// Closing the independently opened file releases its cross-process lock.
+    fn lock(&self) -> Result<fs::File, SpotifyError> {
         if let Some(dir) = self.path.parent() {
             create_private_dir(dir)?;
         }
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(self.path.with_extension("json.lock"))?;
+        file.lock()?;
+        Ok(file)
+    }
+
+    fn write(&self, token: &CachedToken) -> Result<(), SpotifyError> {
         let json = serde_json::to_vec_pretty(token)
             .map_err(|e| SpotifyError::Decode(format!("token cache: {e}")))?;
-        let tmp = self.path.with_extension("json.tmp");
-        write_private(&tmp, &json)?;
-        fs::rename(&tmp, &self.path)?;
+        write_private_atomic(&self.path, &json)?;
         Ok(())
     }
 }
@@ -471,17 +509,46 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    for _ in 0..128 {
+        let tmp = path.with_extension(format!(
+            "json.{}.{}.tmp",
+            std::process::id(),
+            NEXT_TOKEN_WRITE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&tmp) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        // Close before rename, including on platforms that deny renaming an
+        // open file. Only our create_new-owned staging file may be cleaned up.
+        drop(file);
+        let result = written.and_then(|()| {
+            fs::rename(&tmp, path)?;
+            #[cfg(unix)]
+            if let Some(parent) = path.parent() {
+                fs::File::open(parent)?.sync_all()?;
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        return result;
     }
-    let mut file = options.open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not allocate a private token-cache staging file",
+    ))
 }
 
 // ── Library endpoints ──────────────────────────────────────────────────────
@@ -1548,8 +1615,13 @@ mod tests {
         cache.store(&second).unwrap();
         assert_eq!(cache.load().unwrap(), Some(second));
         assert!(
-            !cache.path().with_extension("json.tmp").exists(),
-            "temp file renamed away"
+            fs::read_dir(cache.path().parent().unwrap())
+                .unwrap()
+                .all(
+                    |entry| entry.unwrap().path().extension().and_then(|s| s.to_str())
+                        != Some("tmp")
+                ),
+            "private staging files are renamed away"
         );
 
         #[cfg(unix)]
@@ -1557,6 +1629,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode(cache.path()), 0o600);
+            assert_eq!(mode(&cache.path().with_extension("json.lock")), 0o600);
             assert_eq!(mode(cache.path().parent().unwrap()), 0o700);
         }
 
@@ -1564,6 +1637,98 @@ mod tests {
         let err = cache.load().unwrap_err().to_string();
         assert!(err.contains("token cache"), "{err}");
         fs::remove_dir_all(&data_dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_token_stores_publish_complete_private_credentials() {
+        let data_dir = scratch_dir("concurrent-token-stores");
+        let tokens: Vec<_> = (0..8)
+            .map(|revision| CachedToken {
+                access_token: format!("access-{revision}-").repeat(2_048),
+                refresh_token: format!("refresh-{revision}-").repeat(2_048),
+                expires_at: revision,
+                scope: SCOPE.into(),
+            })
+            .collect();
+        let ready = std::sync::Barrier::new(tokens.len());
+        std::thread::scope(|threads| {
+            for token in &tokens {
+                let cache = TokenCache::in_data_dir(&data_dir);
+                let tokens = &tokens;
+                let ready = &ready;
+                threads.spawn(move || {
+                    ready.wait();
+                    for _ in 0..4 {
+                        cache.store(token).unwrap();
+                        let published = cache.load().unwrap().expect("token was published");
+                        assert!(tokens.contains(&published), "one complete credential pair");
+                    }
+                });
+            }
+        });
+        let cache = TokenCache::in_data_dir(&data_dir);
+        assert!(tokens.contains(&cache.load().unwrap().unwrap()));
+        assert_eq!(
+            fs::read_dir(cache.path().parent().unwrap())
+                .unwrap()
+                .count(),
+            2,
+            "only the token and its stable lock remain"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(cache.path()).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn only_one_concurrent_refresh_can_replace_the_same_grant() {
+        let data_dir = scratch_dir("concurrent-token-refreshes");
+        let cache = TokenCache::in_data_dir(&data_dir);
+        let current = CachedToken {
+            access_token: "original-access".into(),
+            refresh_token: "original-refresh".into(),
+            expires_at: 100,
+            scope: SCOPE.into(),
+        };
+        cache.store(&current).unwrap();
+        let refreshed: Vec<_> = (0..8)
+            .map(|revision| CachedToken {
+                access_token: format!("access-{revision}"),
+                refresh_token: format!("refresh-{revision}"),
+                ..current.clone()
+            })
+            .collect();
+        let ready = std::sync::Barrier::new(refreshed.len());
+        let published: Vec<_> = std::thread::scope(|threads| {
+            let mut writes = Vec::new();
+            for token in &refreshed {
+                let cache = cache.clone();
+                let current = &current;
+                let ready = &ready;
+                writes.push(threads.spawn(move || {
+                    ready.wait();
+                    cache.store_if_current(current, token).unwrap()
+                }));
+            }
+            writes
+                .into_iter()
+                .map(|write| write.join().unwrap())
+                .collect()
+        });
+        let winners: Vec<_> = refreshed
+            .iter()
+            .zip(published)
+            .filter_map(|(token, published)| published.then_some(token))
+            .collect();
+        assert_eq!(winners.len(), 1, "exactly one refresh owns this generation");
+        assert_eq!(cache.load().unwrap().as_ref(), Some(winners[0]));
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
