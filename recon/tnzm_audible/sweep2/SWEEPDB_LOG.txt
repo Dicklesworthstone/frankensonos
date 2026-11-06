@@ -1,0 +1,3 @@
+HIT 700c00 (down=1)
+shell fired at 700c00 (s1=200 s2=200)
+no 2323 in 120s
