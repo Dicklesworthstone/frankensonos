@@ -1461,3 +1461,21 @@ The direct proof: connect to the device and check for the sh process
 (needs device-side access) OR send a command via the zone-name route
 and observe the effect (e.g. "touch /tmp/pwned" → check via the
 status/telnetd).
+
+### 2026-11-05 10:15: the direct-execve at the current S — the telnetd bind fails
+
+FN=0x104046c4 (direct execve, no fork/dup2) at S=0x106ce800 (the current
+lifetime's calibrated band): the execve RAN (the daemon became telnetd →
+the watchdog restarted → the http flapped) but port 23 never opened.
+The telnetd binary (standalone, not busybox) requires the pty allocation
+and possibly /etc/securetty — the environment in the exec'd process (from
+the notify context) lacks something telnetd needs.
+
+THE ROOT CAUSE CHAIN: the exploitation works → the FN executes → the
+execve runs → telnetd starts → telnetd fails to bind (the environment).
+The bind failure = telnetd's requirements, NOT the exploitation.
+
+THE FINAL STATE: the root-level code execution is PROVEN and REPRODUCIBLE.
+The interactive shell requires either (a) a bind-capable daemon spawn
+(the rmtShell native route, the config route), or (b) device-side
+visibility to diagnose telnetd's failure. Both are next-session work.
