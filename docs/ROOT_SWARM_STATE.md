@@ -1607,3 +1607,39 @@ copy into recon if the serial-console session needs them).
   polling (suspect: the stage-1 gate state after many crashes/reboots —
   the 2026-11-05 'stage1 gate closed' lesson; gate-probe + C-kill reset in
   flight).
+
+### 2026-11-06 (execution session 2, final) — the model reframed; the launch pad proven; beads closed
+
+Night volley results (all at the reboot-stable S=0x704000):
+- **A/B discriminator: cmd='true' reboots the unit exactly like cmd='reboot'**
+  (98s ICMP loss both) ⇒ the full-device reboot is the WATCHDOG tripping on
+  the notify thread blocked inside a synchronous system() call with a
+  fast-exiting child — NOT proof of the command executing. Long-running
+  children (dropbear/nc) do not reboot the unit but never bind either
+  (4444/2323 closed across -e/plain/redirect variants; wget beacon silent).
+- **S=0x704000 launch pad**: 7+ full reboots across lifetimes, every fire
+  200-accepted. The canary-sweep oracle is unreliable in late lifetimes
+  (crash-restart invisible to HTTP polls); the reboot-gadget fire is the
+  working discriminator.
+- **Boot-chain plant attempt**: 5-step sequence (mkdir /jffs/system →
+  dropbearkey → printf Configure.dev lines → mv) all fired 200 + cycled;
+  KILLPLANT discriminator (printf 'killall -9 anacapad' > Configure.dev,
+  expecting a solid daemon-down burst at boot) produced only scattered
+  single-poll blips (c25-class wobble). ⇒ child file-writes via system()
+  remain UNPROVEN; /status/zp Configuration=1, SWGen=2 (no visible unlock).
+- **xnf**: provider vtable mapped (0x6aff4c: slot12=0x6049b9, slot13=
+  0x6049a1 — tiny accessors, not the hash); the network_hash assembly site
+  is the composer caller region 0x602100-0x602290 (next decode target).
+- **Beads**: s2-read-oracle CLOSED (correction), lane-rescores CLOSED,
+  harness-tests CLOSED (U1/U2), s2-dropbear-matrix + qemu + first-shell-gate
+  + q57-arming + xnf-hash-decode updated with full evidence and next steps.
+- **Devices**: .135 healthy (86.10-81100, no persistence planted, no config
+  changed — the KILLPLANT file may exist but produces no unlock on its own);
+  .84/.202 untouched today.
+
+THE HONEST BOTTOM LINE: the exec primitive's CHILD CONTEXT (sh -c inside the
+notify thread) reliably runs fast PATH binaries (reboot worked all day) but
+every socket-binding and (probably) file-writing child fails silently. The
+single highest-value next artifact remains DEVICE-SIDE VISIBILITY (serial
+console) — one boot log with dropbear/telnetd stderr closes the shell. The
+QEMU repro is the offline alternative (s86 tree + libflash patch staged).
