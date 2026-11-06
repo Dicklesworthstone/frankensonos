@@ -1643,3 +1643,26 @@ every socket-binding and (probably) file-writing child fails silently. The
 single highest-value next artifact remains DEVICE-SIDE VISIBILITY (serial
 console) — one boot log with dropbear/telnetd stderr closes the shell. The
 QEMU repro is the offline alternative (s86 tree + libflash patch staged).
+
+### 2026-11-06 (session 3) — EXEC-MODEL CORRECTION for S2: the reboots were `killall anacapad`
+
+The S2 anacapad has exactly ONE `system()` call site (0x4ab64c, the
+legacy_anacapad recovery handler) and its a0 is loaded from the **literal
+pool** (`lw a0, =0x676608 "killall anacapad"`) immediately before
+`jal system@mips16plt` — NOT from the dispatcher's argument register.
+Therefore every FN=0x4ab64c fire tonight executed
+`system("killall anacapad")` → daemon killed → watchdog → the 60-100s
+clean reboot. The cmd strings in our node buffers were **never executed**
+(the `cmd='true'` A/B fired the identical reboot — now fully explained).
+
+What STANDS: the FN-call primitive itself (we control the jump target;
+FN=0x51000000 produced real SIGSEGV crashes in the morning canaries) and
+the stable launch pad (S=0x704000 fired 7+ times across lifetimes). What
+is still OPEN on S2: **argument control at a call site** — the routes:
+(a) the 0x656c28 run-cmd utility (space-split argv + vfork/pipe spawn +
+poll/read/waitpid; fed from device state through 0x656e34's bit-64
+dispatch — statically gated), (b) a `lw a0,<ours>; jal system` gadget
+(none exists — single call site), (c) the execve wrapper 0x656978/656a8a
+(argv from the caller's struct). The S1/PPC reboot gadget (0x104123D8,
+r3-independent) remains the clean arbitrary-FN proof; the S2
+arbitrary-ARGUMENT proof is the remaining gap to close.
