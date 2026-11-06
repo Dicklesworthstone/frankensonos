@@ -1187,3 +1187,14 @@ THE COMPLETE ROUTE B:
 THE REMAINING LINKS: (a) which session field = the "unlockedBld" value,
 (b) the config-root field's session offset (the overflow must reach it),
 (c) the settings-save trigger (what makes the daemon call 0x10007bec).
+
+### 2026-11-05 (Route B static limit): the compose is runtime-dispatched
+
+The settings-path compose (0x10007bec) is the ONLY localsettings/settings
+path builder, and it has zero static callers (no bl, no vtable refs in the
+file image) — the config objects and the dispatch are runtime-built. The
+static limit: the config-root offset in the session requires the live dump
+(SageElm's task) or the heap trace at runtime.
+Route B's chain (root → the settings paths → the save → the boot unlock)
+is fully documented; the remaining links (the root's session offset, the
+unlockedBld value's offset, the save trigger) need the live dump.
