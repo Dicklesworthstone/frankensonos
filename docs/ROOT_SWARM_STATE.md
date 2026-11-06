@@ -1198,3 +1198,12 @@ static limit: the config-root offset in the session requires the live dump
 Route B's chain (root → the settings paths → the save → the boot unlock)
 is fully documented; the remaining links (the root's session offset, the
 unlockedBld value's offset, the save trigger) need the live dump.
+
+### 2026-11-05 (audit 3): the RBCAL sweep's post-reboot candidates were INVALID
+
+The RBCAL sweep did NOT re-run stage1 after each reboot hit — the two-stage
+gate (r22) stayed closed for all post-reboot candidates, so their "clean"
+results are meaningless (the chain never fired). The reboot zone (e10-f50,
+8 hits) stands for the PRE-reboot lifetime; the post-reboot candidates need
+a REDO with the stage1 rebind. The band after the reboots: re-calibrate
+with the canary sweep (the shift measured once, then applied).
