@@ -1408,3 +1408,15 @@ THE NEXT-SESSION S2 TASKS:
 2. The S2's forceupdateurl reader: the string addressing (the .rodata
    base register hunt)
 3. The S2's audible parse: the entry point (the .aa handler in the library)
+
+### 2026-11-05 (the S2 root route): sonosFileCreate('/jffs/system/Configure.dev')
+
+The S2's file API stubs found: sonosFileCreate (0x6DB970), sonosMkDirRecursive
+(0x6DB1E0), sonosFileCreateV (0x6DBAB0). The S2 root route:
+FN = sonosFileCreate with the path from [r4+0] = the notify object's first
+field = built by the serializers from the event data (the overflow-corrupted
+session state). If [r4+0] = "/jffs/system/Configure.dev", the empty file is
+created → the next boot: /etc/Configure:79 runs run_sshd.sh → telnetd → ROOT.
+The file's EXISTENCE is the gate (no content, no argv needed!).
+
+SageElm dispatched: the [r4+0] target trace (the S2 dispatcher).
