@@ -1098,3 +1098,17 @@ the update-state object (dispatch-allocated, needs the live dump) or the
 config route (the settings-save path). The reboot gadget's mid-function
 entry is validated (the 3-insn sequence is frame-independent — the reboot
 proof at 4 band addresses).
+
+### 2026-11-05 (audit 1 definitive): r3=B at the FN call — the builders resolved
+
+The dispatcher decode, corrected: r3 = B (= the 0x102bdedc return) at the
+FN call. The earlier r3=V interpretation was a decode error.
+=> The V5 wrapper layout (path ptr at [B+0], the string at V) is CORRECT.
+=> The aimed_builder's system@plt + the string at B is STRUCTURALLY BROKEN
+   on PPC: [B]=V (the vtable dword) occupies B..B+3, and system(B) reads
+   the V pointer bytes = NUL-prefixed → empty command → no-op. The system
+   route needs r3 = a clean string address, which the dispatcher doesn't
+   provide (r3 = B always).
+=> The PPC root shell: the WRAPPER FN (path=[B+0]=V) or the config route.
+   The system@plt gadget would need r3 ≠ B — a gadget "addi r3,r3,K" before
+   system, or the wrapper with a telnetd-compatible path (the script route).
