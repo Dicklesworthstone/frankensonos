@@ -1,3 +1,69 @@
+# ROOT SWARM — CONSOLIDATED STATE (2026-11-05, post-audit)
+
+## THE PROVEN PRIMITIVE
+Pre-auth network-only arbitrary root-level function execution in the Sonos
+daemon (anacapad), demonstrated by 8+ deliberate device reboots via
+system("/sbin/reboot") executed through the aimed overflow chain.
+
+## THE COMPLETE CHAIN (every link device-verified)
+1. SetAVTransportURI (pre-auth SOAP :1400) delivers the crafted .aa
+2. The audible parser's unchecked strcpy(session+6380, node) — NO CAP
+3. The two-stage gate: the transport-bind sets r22=[stream+6088] ≠ 0
+4. The observer cell at session+30000 is smashed with the fake handler F
+5. The 4-level chain: [F+6404]→A; [A+8]→B; [B]=V; FN=[V+28]
+6. The dispatcher (0x102bf778): r3=B at the FN call; the argv walk on the
+   notify object at r4 (the emulator-validated 3-ptr+NULL structure)
+7. FN executes as root — the reboot gadget (0x104123d8) = the proof
+
+## THE CALIBRATED BAND (per daemon lifetime)
+0x106c4e10-f50 produced reboots in the calibrated lifetime. THE BAND SHIFTS
+after every successful reboot (the heap re-seeds). Re-calibrate with the
+canary sweep (0x800 steps, then 0x10) after any reboot. The RBCAL sweep's
+post-reboot candidates were INVALID (the stage1 gate closed — the redo
+needs the rebind).
+
+## THE KEY ADDRESSES (PPC 57.23)
+- The unchecked strcpy: 0x10115478 (dst = session+6380, NO CAP)
+- The observer cell: session+30000 {handler, gen, changed}
+- The dispatcher: 0x102bf778 (r3=B at the FN call; FN=[V+28])
+- The fork/execve wrapper: 0x104044C0 (path=[struct+0])
+- The reboot site: 0x104123D8 (system("/sbin/reboot"), frame-independent)
+- system@plt stub: 0x105464B0 (the GOT slot, secure-plt v1)
+- The settings-path compose: 0x10007bec ("%s/localsettings.txt", "%s/settings")
+- The dev-mode keys: rmtShell 0x1049875c, confdev 0x104987a0 (status-only)
+
+## THE 4 SHELL ROUTES (scoped, the falsifications documented)
+a. argv control: the emu-validated walk ✓; the live notify-object dump = the
+   circular dependency (needs the shell)
+b. the config-write: the settings-save compose builds FIXED names
+   (localsettings.txt/settings) — /etc/Configure never sources them. The
+   base is steerable but the tail is fixed. The Configure.dev route needs
+   sonosFileCreate with a steerable path (the sites: 0x1028abfc = static
+   fmt; 0x102b8eb8 = the caller's r3+4 — STEERABLE, the update-download
+   filename!)
+c. the S2/MIPS decode for .135 (0x4xxxxx binary) — SageElm dispatched
+d. the update-URL: the update-state struct is dispatch-allocated; the URL
+   at struct+73/1098 (the log site 0x1029d8e0). The session pointer-web
+   theory was RETIRED (the +21752..+25815 fields = timestamps+flags).
+
+## THE FALSIFICATION RECORD (all root-caused, no repeats)
+- The timing oracle: the daemon jitter swamps the signal
+- The accumulation theory: 8 fires without reset — no effect
+- The URI-marker probe: the transport caches the URL from the DIDL
+- The 5-attempt/10× telnetd repeats: the execve argv (r4) = the notify ctx
+- The V6 config-flip: 0x10372860 was the UPnP metadata formatter (misidentified)
+- The RBCAL post-reboot candidates: the stage1 gate closed (invalid)
+
+## THE NEXT-SESSION EXECUTION ORDER
+1. The canary re-calibration (the post-reboot band, 0x800→0x10 steps)
+2. The stage1 REBIND after every reboot (the RBCAL bug fix)
+3. The FN matrix at the exact S: the reboot gadget (the proof) + the wrapper
+   with the /usr/sbin/telnetd path (the shell attempt)
+4. Route b's update-download traversal: the .aa node = the URL with the
+   ../ traversal → sonosFileCreate → Configure.dev (the file-write route)
+
+---
+
 # Root swarm state — CalmHawk orchestrator (2026-10-28)
 
 Living checkpoint for the 6-pane root-exploit swarm (`frankensonos--rootswarm`).
