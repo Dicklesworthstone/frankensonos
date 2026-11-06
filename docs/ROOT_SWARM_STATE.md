@@ -1699,3 +1699,22 @@ Also this session: S2 exec-model CORRECTION (the reboots were
 `system("killall anacapad")` — a0 comes from the literal pool at the only
 system() site; our cmd strings never executed; argument control is the
 open S2 gap); harness U3 (6 offline unit tests + fixtures, all green).
+
+### 2026-11-06 (session 4) — the :443 gap closed; runbook staged
+
+- **The device's settings fetch targets system-api.sonos.com:443** (the
+  decompiled URL carries no port). The 11-03 responder on :8643 was never
+  device-reachable — that gap is now closed with pf rdr rules:
+  `en0 tcp from {84,202,135,86,81} to 192.168.4.160:443 → :8643`
+  (the other agent's wyze :443 service is untouched — source-IP-scoped).
+  pf is enabled (token recorded in the session transcript).
+- **POST_FLIP_RUNBOOK.md** (recon/q57/): the exact post-DNS-flip sequence —
+  dns.log renewal lines → requests.log settings HIT → upgradeinfo MinVersion
+  check → BSU → UPD-SERVED → accepted-image reboot → telnetd 2323 verify —
+  with abort conditions and the stock-image rollback path.
+- S2 run-cmd lane (0x656c28) traced to fixed literals only
+  ('/bin/dmesg -s N' via the strncmp('/status') handler; /dropout_triggered
+  //button_triggered SSE) — no request-reachable attacker string. PPC
+  sonosFileCreate: 2 sites, the steerable one (0x102b8eb8) sits in a
+  runtime-vtable-dispatched pair (0x102b8e4c/0x102b8f28, no static refs) —
+  needs the vtable-slot decode or register priming; recorded on q57.
