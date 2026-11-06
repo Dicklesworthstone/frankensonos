@@ -1351,3 +1351,22 @@ THE ONLY ROUTE TO +30000: a per-type handler that writes TOC-length bytes
 DIRECTLY to the session (no parse-buffer intermediary) — the per-type
 handlers 0x10105xxx/0x10106xxx. THE NEXT-SESSION TARGET: decode the
 per-type handlers to find the direct-write path.
+
+### 2026-11-05 09:30: the type-2 handler decoded — the 4096 cap is the designed limit
+
+The type-2 handler (0x10104f38) decoded: it operates on session+6380 with
+a format check (0x100a53d8 = memcmp against static signatures) and LENGTH
+VALIDATION (strlen ≤ 1024 and ≤ 4096) BEFORE processing. The 4096 cap =
+the handler's DESIGNED limit — the parse buffer cap and the handler cap
+are the same constraint. The accumulation doesn't bypass it (each entry
+re-validates).
+
+THE ROUTE TO +30000: a per-type handler WITHOUT the 4096 cap, or a
+different write mechanism entirely. The per-type handlers 0x10105xxx/
+0x10106xxx = the candidates (the type dispatch found at 0x1010532c/05e20/
+060a8). THE NEXT-SESSION TARGET: decode the OTHER type handlers (type 1,
+3-15) for one WITHOUT the length cap.
+
+THE SESSION'S PROVEN DELIVERABLES (unchanged): arbitrary root-level FN
+execution (8+ reboots), the address-robust exploitation, the complete
+static map, the calibration protocol, 4 shell routes scoped.
