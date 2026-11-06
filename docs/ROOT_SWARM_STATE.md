@@ -1125,3 +1125,20 @@ lifetime using the NON-destructive probe... the destructive canary breaks
 this. THE FIX: the reboot payload itself as the probe (a non-hit = clean, a
 hit = a 60-90s reboot + a lifetime change), OR the emulator-derived S (the
 boot-floor + the allocation record, no device probing).
+
+### 2026-11-05 (the compose decode): the settings-path setter + the final state
+
+The compose (0x10007bec) decoded: it rebuilds [obj+24040] =
+strdup("<root>/localsettings.txt") and [obj+24024] =
+strdup("<root>/settings") from the config root (r3). The overflow corrupts
+the root → the settings paths = OUR directory. But /etc/Configure only
+sources Configure.dev (never localsettings.txt) — the settings-write route
+lands files at the wrong name.
+
+THE FINAL STATE: the execve route (run_sshd.sh) SHOULD work (the script
+solves the argv problem; the access check should pass; telnetd has clean
+argv via the script). The 3 SSH fires produced no port — the state-variance
+fire rate (~50% from the calibration) may simply have missed. THE
+NEXT-SESSION PROBE: fire the V5/run_sshd payload 10× with 30s polls —
+one success = the root shell. No new RE needed; the payload is built
+(SSH_106cdd00.aa, recalibrate the band after any reboot first).
