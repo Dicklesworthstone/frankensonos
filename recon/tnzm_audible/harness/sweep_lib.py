@@ -93,18 +93,21 @@ def calibrate(device, lo=0x700000, hi=0x71c000, step=0x400, host="192.168.4.160"
         c1 = soap(device, "SetAVTransportURI",
                   f"<CurrentURI>http://{host}:{port}/A_toc_past_eof.aa</CurrentURI>"
                   f"<CurrentURIMetaData>{_didl('http://%s:%d/A_toc_past_eof.aa' % (host, port))}</CurrentURIMetaData>")
-        soap(device, "Play", "<Speed>1</Speed>"); time.sleep(1.2)
+        soap(device, "Play", "<Speed>1</Speed>"); time.sleep(2.0)
         c2 = soap(device, "SetAVTransportURI",
                   f"<CurrentURI>http://{host}:{port}/{name}</CurrentURI>"
                   f"<CurrentURIMetaData>{_didl('http://%s:%d/%s' % (host, port, name))}</CurrentURIMetaData>")
         soap(device, "Play", "<Speed>1</Speed>")
-        down = 0; t0 = time.time()
-        while time.time() - t0 < 7:
-            time.sleep(1)
-            if not alive(device): down += 1
-            elif down: break
-        log(f"canary {S:06x}: down={down}")
-        if down >= 1:
+        down = 0; maxd = 0; t0 = time.time()
+        while time.time() - t0 < 6:
+            time.sleep(0.2)
+            if not alive(device, 0.8):
+                down += 1; maxd = max(maxd, down)
+            else:
+                if down >= 3: break
+                down = 0
+        log(f"canary {S:06x}: outage_polls={down} max={maxd}")
+        if maxd >= 3:
             for _ in range(45):
                 time.sleep(2)
                 if alive(device): break
