@@ -1309,3 +1309,16 @@ reproducible; the interactive shell needs the live notify-object dump
 (which needs the emulator to process the REAL event data — the overflow
 corrupts the session state that FEEDS the event, so the emulator can
 construct the real event from the corrupted session!).
+
+### 2026-11-05 (BREAKTHROUGH): the notify argv[2] may be ATTACKER-CONTROLLED
+
+The notify object's argv = ['/bin/sh', '-c', command, NULL] (the r4 dump).
+The command string at [r4+8] = built by 0x101e3aa0's serializers FROM THE
+EVENT DATA = the session's state-change fields = THE OVERFLOW-CORRUPTED
+VALUES. If [r4+8] points into the session's overflow range, the execve'd
+telnetd gets -c <our string> = the login program = OUR STRING = the root
+shell per-connection.
+
+SageElm dispatched: the emulator trace past the state-change into the
+notify build, dumping [r4+8]'s target address. If it lands in the overflow
+range → the root shell payload is the overflow bytes at that offset.
