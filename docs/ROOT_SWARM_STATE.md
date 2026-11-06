@@ -1580,3 +1580,30 @@ Artifacts: `S2DB_*`/`S2FLAG_*`/`S2SHELL*`/`S2RBB*`/`S2RBC*` payloads,
 `SWEEPDB_LOG.txt`/`SWEEPSHELL_LOG.txt`/`S2FNMATRIX_LOG.txt`,
 runners `sweepshell.py`/`sweepdb.py`/`diagfire.py` (in /tmp/s2decode —
 copy into recon if the serial-console session needs them).
+
+### 2026-11-06 (execution session 2) — beads live: oracle corrected, composer decoded, harness v1, cadence lesson
+
+- **s2-read-oracle CLOSED with a correction**: `/status/ZPLocalSettingsFile/<name>`
+  is the `/status/<name>` dispatcher passthrough (name-table), NOT a /jffs
+  read — the 2026-10-29 "one `..` = /jffs" note was a misread. Live matrix:
+  status names 200 w/ content; non-table names empty-200; ≥2 hops 404.
+  Deliverable: `recon/tnzm_audible/s2shell/READ_ORACLE.md`. Consequence: the
+  dropbear-matrix feedback design pivoted to **self-reporting payloads**
+  (bind a port / outbound wget beacon / polled state).
+- **xnf composer DECODED** (Ghidra 12.2 headless, kit committed:
+  `captures/research/ghidra/scripts/{Dec2,MkFun}.java`): the iss string is
+  `{ owner { luid <[ctx+0x48]> } hhid <[ctx+0x30]> network_hash <hash_str> } }`
+  and `hash_str` comes from a **slot-12 vtable call on the zone-service
+  provider object** (site 0x602274) — a live device-computed value. Prior
+  "0x51b9b4 = the real getter" was a wrong-mode misread (it's an
+  operator-delete thunk). Next: identify the slot-12 method's hash input.
+- **sonos-exploit harness v1 landed** (`recon/tnzm_audible/harness/`):
+  build/budget/calibrate/fire/read subcommands + sweep_lib; U1 (byte-exact
+  CAN135 rebuild) + U2 (107B budget) pass; oracle-cadence fix applied
+  (0.2s polls, 2.0s bind wait).
+- **Oracle-cadence lesson**: the S2 canary crash-restart completes in <1s;
+  1s-poll watchers score it clean — but the fast-poll sweep (0.2s) still
+  ran clean through 0x709400, so the evening's no-hit state is deeper than
+  polling (suspect: the stage-1 gate state after many crashes/reboots —
+  the 2026-11-05 'stage1 gate closed' lesson; gate-probe + C-kill reset in
+  flight).
