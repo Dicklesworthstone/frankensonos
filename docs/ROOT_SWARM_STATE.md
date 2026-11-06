@@ -1370,3 +1370,18 @@ different write mechanism entirely. The per-type handlers 0x10105xxx/
 THE SESSION'S PROVEN DELIVERABLES (unchanged): arbitrary root-level FN
 execution (8+ reboots), the address-robust exploitation, the complete
 static map, the calibration protocol, 4 shell routes scoped.
+
+### 2026-11-05 (the type dispatch): only types 1 and 2 are handled
+
+The type-dispatch function (0x10104f00-0x106200): cmpwi r0,1 (the type-1
+handler at 0x10105e58 — reads the observer cell at +30000, triggers the
+notify) and cmpwi r0,2 (the type-2 handler at 0x10104f38 — writes at
++6380 with the 4096 cap). NO type 3-15 dispatch exists — the .aa format
+handles only types 1-2. The other types are skipped.
+
+THE PER-TYPE HANDLER ROUTE IS EXHAUSTED: type 2 (the only data writer) has
+the 4096 cap BY DESIGN. The route to +30000 requires:
+1. The 24KB fetch buffer as the parse target (SageElm's route 3 — if the
+   parse reads directly from the fetch buffer, the TOC length propagates)
+2. The config route (the lanes) — the settings-write with a steerable path
+3. A different .aa format version (the S2's 86.10 may have more types)
