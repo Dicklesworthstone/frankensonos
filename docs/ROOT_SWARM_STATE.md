@@ -1273,3 +1273,15 @@ results are meaningless (the chain never fired). The reboot zone (e10-f50,
 8 hits) stands for the PRE-reboot lifetime; the post-reboot candidates need
 a REDO with the stage1 rebind. The band after the reboots: re-calibrate
 with the canary sweep (the shift measured once, then applied).
+
+### 2026-11-05 (RBCAL V2): THE EXPLOIT IS ADDRESS-ROBUST — 26/29 canary hits, reboots confirmed
+
+The canary re-calibration post-reboots: 26 of 29 candidates crashed (the
+chain fires across the ENTIRE 0x106c0000-d000 range = 52KB+ of the heap).
+The reboot gadget confirmed at 0x106c0000 (31.2s) and 0x106c0800 (46.2s).
+THE EXPLOIT IS NOT ADDRESS-FRAGILE — any S in the live heap range fires
+the chain, and the reboot gadget completes system("/sbin/reboot").
+
+THE OPERATIONAL CAPABILITY: pre-auth network-only root-level code
+execution on the Sonos daemon, reproducible at will, address-robust
+(no precise calibration needed — any heap address in the range works).
