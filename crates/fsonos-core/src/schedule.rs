@@ -153,13 +153,14 @@ fn parse_delay(s: &str) -> Option<TimeDelta> {
         }
         let n: i64 = number.parse().ok()?;
         number.clear();
-        total += match c {
+        let part = match c {
             'd' => TimeDelta::try_days(n)?,
             'h' => TimeDelta::try_hours(n)?,
             'm' => TimeDelta::try_minutes(n)?,
             's' => TimeDelta::try_seconds(n)?,
             _ => return None,
         };
+        total = total.checked_add(&part)?;
     }
     (number.is_empty() && total > TimeDelta::zero()).then_some(total)
 }
@@ -179,7 +180,10 @@ impl ScheduleSpec {
             .strip_prefix("in ")
             .and_then(|d| parse_delay(&d.replace(' ', "")))
         {
-            return Ok(Self::Once(whole_second(now + delay)));
+            let at = now
+                .checked_add_signed(delay)
+                .ok_or_else(|| ScheduleError::Unrecognized(input.trim().to_string()))?;
+            return Ok(Self::Once(whole_second(at)));
         }
         let spec = Self::from_canonical(&s)
             .map_err(|_| ScheduleError::Unrecognized(input.trim().to_string()))?;
@@ -619,6 +623,53 @@ mod tests {
             ScheduleSpec::parse("2026-10-07T11:00:00-04:00", now),
             Err(ScheduleError::Past("2026-10-07T11:00:00-04:00".into()))
         );
+    }
+
+    #[test]
+    fn relative_schedules_reject_duration_and_calendar_overflow() {
+        let now = at("2026-10-07T12:00:00-04:00");
+        for input in [
+            "in 9223372036854775807s",
+            "in 9000000000000000s9000000000000000s",
+            "  IN 1000000000D  ",
+        ] {
+            assert_eq!(
+                ScheduleSpec::parse(input, now),
+                Err(ScheduleError::Unrecognized(input.trim().to_string())),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn relative_schedules_accept_the_last_representable_second() {
+        for hours in [-23, 0, 23] {
+            let offset = FixedOffset::east_opt(hours * 3600).unwrap();
+            let last = DateTime::<Utc>::MAX_UTC
+                .with_nanosecond(0)
+                .unwrap()
+                .with_timezone(&offset);
+            let now = (DateTime::<Utc>::MAX_UTC - TimeDelta::seconds(1)).with_timezone(&offset);
+            let parsed = ScheduleSpec::parse("in 1s", now).unwrap();
+            assert_eq!(parsed, ScheduleSpec::Once(last));
+            assert_eq!(parsed.to_string(), format!("once {}", last.to_rfc3339()));
+            assert_eq!(
+                ScheduleSpec::parse("in 2s", now),
+                Err(ScheduleError::Unrecognized("in 2s".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn relative_schedules_format_near_the_earliest_date_with_offsets() {
+        for hours in [-23, 0, 23] {
+            let offset = FixedOffset::east_opt(hours * 3600).unwrap();
+            let now = DateTime::<Utc>::MIN_UTC.with_timezone(&offset);
+            let next = now + TimeDelta::seconds(1);
+            let parsed = ScheduleSpec::parse("in 1s", now).unwrap();
+            assert_eq!(parsed, ScheduleSpec::Once(next));
+            assert_eq!(parsed.to_string(), format!("once {}", next.to_rfc3339()));
+        }
     }
 
     #[test]

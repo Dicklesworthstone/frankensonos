@@ -2831,6 +2831,28 @@ mod tests {
     }
 
     #[test]
+    fn overflowing_schedule_delays_are_rejected_without_saving_or_speaker_writes() {
+        let (s, log, _) = surface("");
+        for when in [
+            "in 1000000000d",
+            "in 9000000000000000s9000000000000000s",
+            "in 9223372036854775807d",
+        ] {
+            let refused = add(&s, when, pause_patio()).unwrap_err();
+            assert_eq!(
+                refused.code,
+                ErrorCode::InvalidArgument,
+                "{when}: {refused:?}"
+            );
+            assert!(s.schedules(&Client::Cli).unwrap().is_empty());
+            assert!(
+                sent(&log).is_empty(),
+                "invalid schedule contacted a speaker"
+            );
+        }
+    }
+
+    #[test]
     fn without_a_store_there_are_no_schedules() {
         let houses = households();
         let survey: Survey = Box::new(move |_| Ok(houses.clone()));
