@@ -1385,3 +1385,26 @@ the 4096 cap BY DESIGN. The route to +30000 requires:
    parse reads directly from the fetch buffer, the TOC length propagates)
 2. The config route (the lanes) — the settings-write with a steerable path
 3. A different .aa format version (the S2's 86.10 may have more types)
+
+### 2026-11-05 09:15: the .135 canary sweep — 12 hits across 1MB+; the S2 RE dispatch
+
+The .135 (S2/MIPS) canary sweep: **12 hits across 0x710000-0x810000** —
+the S2's overflow chain is ALSO address-robust! The S2's heap range:
+0x710000-0x810000 (the S2 binary at 0x400000-0x6E0000, the heap after).
+
+THE S2-SPECIFIC FINDINGS:
+- The S2 has NO "audible" string (the .aa handler is in a library or
+  renamed) — but the .aa files ARE accepted (the 200s)
+- The S2's forceupdateurl mechanism found: /var/run/forceupdateurl +
+  /var/run/forceupdate (the update trigger files!) — the reader is NOT
+  statically findable (the S2's string addressing differs)
+- The S2's process-spawn: no /bin/sh, no popen, no start-stop-daemon in
+  the binary — the spawn is via the library or the update handler
+
+THE NEXT-SESSION S2 TASKS:
+1. The .135 FN matrix: the reboot gadget + the execve wrapper at the 12
+   hit addresses (the S2's system@plt = 0x6DCE50, execve = 0x6DCA00,
+   vfork = 0x6DB190 — the MIPS stubs, all static)
+2. The S2's forceupdateurl reader: the string addressing (the .rodata
+   base register hunt)
+3. The S2's audible parse: the entry point (the .aa handler in the library)
