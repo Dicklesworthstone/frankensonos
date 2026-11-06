@@ -1666,3 +1666,36 @@ dispatch — statically gated), (b) a `lw a0,<ours>; jal system` gadget
 (argv from the caller's struct). The S1/PPC reboot gadget (0x104123D8,
 r3-independent) remains the clean arbitrary-FN proof; the S2
 arbitrary-ARGUMENT proof is the remaining gap to close.
+
+### 2026-11-06 (session 3, final) — THE Q57 ARMING CHAIN IS STAGED LIVE
+
+The no-shell route to the root fetcher is now fully built and running on
+this Mac (192.168.4.160):
+
+1. **Decompile complete** (Ghidra 12.2, `DecPpc.java`, extract at
+   `/tmp/s2decode/arming.c`): `FUN_102c691c` = HTTPS GET
+   `/product-settings/v3/settings` (application/json, redirects DISABLED,
+   10s timeout). Arming predicate = restrictions-seen flag AND non-empty
+   MinVersion string. `FUN_1029c34c` appends `MinVersion: [<v>]` to
+   `/var/run/upgradeinfo` and fires the update job.
+2. **Forge builder**: `recon/q57/settings_forge.py` — dual-shape body
+   (top-level `downgradeMinVersion` + nested under `downgradeRestrictions`
+   + the swupdate copy), matching the 2-entry binding table 0x104f2d74.
+3. **Responder upgraded and LIVE** (:8643, eMudhra chain,
+   CN=system-api.sonos.com): serves the dual-shape policy AND the
+   `pwned-q57.upd` payload on request (wire-verified sha256-identical,
+   `UPD-SERVED` lines in requests.log).
+4. **DNS override LIVE** (:53 as root): `system-api.sonos.com` →
+   192.168.4.160 (a stale 11-03 forwarder answering cloudfront was found
+   on :53 and replaced).
+
+**The single remaining action is the owner's (approved 2026-11-03): flip
+the router DHCP DNS to 192.168.4.160.** After the units renew, their next
+settings refresh pulls our policy; upgradeinfo arms; CheckForUpdate/BSU
+makes /bin/upgrade fetch `pwned-q57.upd` from us PRE-signature — root
+execution of our package by the vendor's own updater.
+
+Also this session: S2 exec-model CORRECTION (the reboots were
+`system("killall anacapad")` — a0 comes from the literal pool at the only
+system() site; our cmd strings never executed; argument control is the
+open S2 gap); harness U3 (6 offline unit tests + fixtures, all green).
