@@ -1076,3 +1076,14 @@ The consumer map (reader counts): +21756: 4, +22800: 9, +22808: 17,
 +22816: 10, +22824: 8 — 48 total sites. The NULL-check pattern dominates
 (the pointers are optional); the non-NULL path passes them to the
 processing functions.
+
+### 2026-11-05 (audit correction): the +22800 "URL assembly" was a misread
+
+Fresh-eyes decode of 0x10103244: it's an ELAPSED-TIME FORMATTER
+(ostringstream + 0x101031dc h/m/s + string assign). The +22800 pointer is
+loaded as r5 = a TIME VALUE argument, not a URL. The +21756/+22808/+22816/
++22824 fields are TIMESTAMPS/state values consumed by log formatters —
+no URL injection, no write vector. The Route-d consumer map is corrected:
+the pointer fields are STATE, not string pointers. The write-vector hunt
+shifts back to the update-state (Route d's dispatch-allocated object) and
+the config route.
