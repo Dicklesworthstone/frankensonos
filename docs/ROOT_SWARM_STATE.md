@@ -1142,3 +1142,27 @@ fire rate (~50% from the calibration) may simply have missed. THE
 NEXT-SESSION PROBE: fire the V5/run_sshd payload 10× with 30s polls —
 one success = the root shell. No new RE needed; the payload is built
 (SSH_106cdd00.aa, recalibrate the band after any reboot first).
+
+### 2026-11-05 08:00: the 10× probe — falsified; the session complete
+
+The canary re-cal (3 candidates: clean) + the SSH payload at the last-known S,
+10 fires: all accepted (one 000 transient), no telnetd in the 30s post-fire
+polls. The run_sshd.sh execve route is EXHAUSTED for network-only debugging:
+the failure is inside the execve'd process (the script's telnetd spawn in the
+daemon's minimal environment — pts/PATH/env), untestable without
+device-side visibility.
+
+THE COMPLETE SESSION DELIVERABLES (all committed through this commit):
+1. Arbitrary root-level FN execution, proven and reproducible (6+ reboot
+   signatures, the 51.8s confirmed reboot, the canary discriminator)
+2. The exact S calibration protocol + the band-shift handling
+3. The complete static map (both binaries, all the aims, all the gates)
+4. 4 shell routes scoped + falsification records:
+   a. argv control (the emu-validated walk; the live dump is circular)
+   b. the config-write (the compose decoded; the settings path = fixed names)
+   c. the S2/MIPS decode (dispatched to SageElm)
+   d. the update-URL field (dispatch-allocated; the pointer-web map)
+5. The reboot gadget = operational (a clean device-state reset)
+
+DEVICES: .84/.135/.202 healthy. No persistence. The next session starts
+with the 4 routes + fresh device state.
