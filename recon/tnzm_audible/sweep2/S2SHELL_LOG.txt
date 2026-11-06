@@ -1,0 +1,16 @@
+phase1: canary recalibration
+  704000 HIT (down=1)
+  707800 HIT (down=1)
+  709800 HIT (down=1)
+  70b800 HIT (down=2)
+live candidates: ['0x704000', '0x707800', '0x709800', '0x70b800']
+phase2: shell fire at first live candidate
+  shell payload fired at 704000 (s1=200 s2=200)
+  no port 22 in 120s
+  shell payload fired at 707800 (s1=200 s2=200)
+  no port 22 in 120s
+  shell payload fired at 709800 (s1=200 s2=200)
+  no port 22 in 120s
+  shell payload fired at 70b800 (s1=200 s2=200)
+  no port 22 in 120s
+done
