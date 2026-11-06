@@ -751,6 +751,10 @@ Each stage is emulated individually; the chain between them (stream-start args,
 multi-entry parse loop, queue drain) is the remaining integration work.
 
 **What this unblocks:** the field map is now complete — +21756/+22800/+22804/
-+22808/+22816/+22824 are stream-context pointers (the values 0x102bf778's argv
-walk would see); the observer cell +30000 is the PC-control target; the two-stage
-fire recipe is the delivery mechanism.
++22808/+22816/+22824 are stream-context pointers (all the same r26 value, read
+by the state-machine consumers 0x1010608c/0x1010657c/0x101068d4/0x10105ca8/
+0x10105cd8/0x10105f7c — NOT the dispatcher's argv walk, which reads the notify
+object at r4); the observer cell +30000 is the PC-control target; the two-stage
+fire recipe is the delivery mechanism. The overflow overwrites these six
+zeroed-then-filled fields with OUR values — the post-parse consumers deref
+them (the write-what-where primitive, the consumers' full chains = next).
