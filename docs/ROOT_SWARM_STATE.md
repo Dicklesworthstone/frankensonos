@@ -1420,3 +1420,17 @@ created → the next boot: /etc/Configure:79 runs run_sshd.sh → telnetd → RO
 The file's EXISTENCE is the gate (no content, no argv needed!).
 
 SageElm dispatched: the [r4+0] target trace (the S2 dispatcher).
+
+### 2026-11-05: .202 REPLICATION COMPLETE — ROOT-CODE-EXEC PROVEN ON BOTH PPC UNITS
+
+The .202 (Jeff's Office R, S1/PPC 57.23): 15/15 canary hits (0x106c0000-
+7000) + the reboot gadget confirmed (FULL REBOOT 4.8-44.2s = 39.4s outage).
+BOTH PPC units (.84 + .202) now have proven, reproducible, address-robust
+root-level code execution via the aimed overflow chain.
+
+THE CAMPAIGN STATUS:
+- .84 (PPC): root-code-exec PROVEN ✓ (8+ reboots)
+- .202 (PPC): root-code-exec PROVEN ✓ (the replication confirmed)
+- .135 (S2/MIPS): the chain fires (12 canary hits) — the FN matrix pending
+- The interactive shell: the argv route (the lanes) or the config route
+- The firmware replacement: after the shell
