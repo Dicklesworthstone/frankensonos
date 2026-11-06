@@ -1747,3 +1747,28 @@ open S2 gap); harness U3 (6 offline unit tests + fixtures, all green).
   (vtbl+0x3c(2) → '%llu' vs +0xd0). The mint needs iss == the provider's
   output; next: identify the provider class (registered trio 0x481054)
   and reproduce its string in mint_jwt.py.
+
+### 2026-11-06 (session 6, final) — the chain is reboot-proof; walls precisely mapped
+
+- **launchd persistence verified live**: `com.frankensonos.q57-serve`
+  (KeepAlive) re-ran the full stack after a kill — DNS → .160, settings
+  200, .upd 5.6MB. Plist/start.sh/README committed. **The owner's router
+  DNS flip is the only remaining trigger, and everything on this Mac now
+  survives until it lands.**
+- **xnf**: the slot-6 thunk (0x47b798) feeds the validator's +20 field
+  into 0x51b9b4(a1=0x14); the **network_hash computation located** —
+  `sonos_fnv1a_32_strHash_knownLen` at 0x498882 (a0=0x30003 len/type pair,
+  string from [ctx+2384] vtbl slot88 → 5-char value) via wrapper 0x634214
+  → 0x6341dc. Remaining: trace the exact hashed string, then replicate in
+  mint_jwt.py; validation = diff a real device-token iss from household
+  traffic.
+- **QEMU hhid-wall mapped precisely**: the daemon's identity comes from
+  /dev/mtd0 via libflash MEMGETINFO; css's VPS mtd char device rejects the
+  ioctl natively (verified with host python), LD_PRELOAD shims don't
+  intercept guest syscalls, and the sysroot /dev/mtd0 file still ENOTTYs.
+  The three open fixes (libflash MIPS16 branch patch / real .135 mtd dump
+  / mtd-emulating qemu) are documented on the bead. Everything before that
+  wall works: loader, libs, config, loggers, /opt staging, watchdog patch.
+- **rdr caveat recorded**: the pf rdr rules can only be proven from an
+  external source — Mac-local curls bypass en0. Post-flip observables:
+  pf counters + requests.log HIT/UPD-SERVED lines.
