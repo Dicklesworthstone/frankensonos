@@ -1479,3 +1479,24 @@ THE FINAL STATE: the root-level code execution is PROVEN and REPRODUCIBLE.
 The interactive shell requires either (a) a bind-capable daemon spawn
 (the rmtShell native route, the config route), or (b) device-side
 visibility to diagnose telnetd's failure. Both are next-session work.
+
+### 2026-11-05 (final): the argv-free spawn analysis complete
+
+The rootfs has ONLY telnetd as a network daemon. The execve'd /bin/sh
+exits immediately (the pipe = no writer → EOF). The execve'd telnetd
+fails on the garbage argv. The zone-name command channel: the wrapper's
+parent never writes to the pipe (no code does) → the pipe is empty →
+sh exits. ALL argv-free spawn routes through the wrapper are exhausted.
+
+THE ROOT SHELL REQUIRES:
+1. Device-side visibility (the serial console) to diagnose telnetd's
+   failure in the exec'd environment, OR
+2. The config-write primitive (the settings-save with a steerable root
+   + a sourced file — the compose's fixed-name limitation needs a new
+   angle), OR
+3. A different exploitation surface entirely (the S2/MIPS decode, the
+   other :1400 services).
+
+THE PROVEN DELIVERABLE: arbitrary root-level FN execution, pre-auth,
+network-only, address-robust, on 2 PPC units. The S2: 12 live addresses.
+The firmware replacement: after the shell.
