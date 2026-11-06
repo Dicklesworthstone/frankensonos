@@ -758,3 +758,82 @@ object at r4); the observer cell +30000 is the PC-control target; the two-stage
 fire recipe is the delivery mechanism. The overflow overwrites these six
 zeroed-then-filled fields with OUR values — the post-parse consumers deref
 them (the write-what-where primitive, the consumers' full chains = next).
+
+## 2026-11-06 — S2/MIPS decode corrected: the real PLT stubs, the native system() site, and the FN-matrix protocol
+
+Corrections to everything above that cites S2 PLT addresses. The old values
+(0x6DCE50 system / 0x6DCA00 execve / 0x6DB190 vfork / 0x6DB970
+sonosFileCreate) came from a rel.plt lookup that read section VADDRs as file
+offsets; the values below are byte-verified (`readelf -r` index → `.plt`
+0x6daf40 + j*16, stub shape + GOT word cross-checked, GNU objdump
+`-m mips:16` annotations):
+
+| symbol | old (wrong) | byte-verified stub |
+|---|---|---|
+| system | 0x6DCE50 (= `kill@mips16plt`) | **0x6DCEA0** |
+| execve | 0x6DCA00 | **0x6DCA70** |
+| vfork | 0x6DB190 | **0x6DB2D0** |
+| sonosFileCreate | 0x6DB970 | **0x6DBA80** |
+| sonosFileCreateV | — | 0x6DBBC0 |
+| sonosMkDirRecursive | 0x6DB1E0 | **0x6DB320** |
+| pipe / dup2 / strcpy | — | 0x6DBFD0 / 0x6DCC20 / 0x6DCED0 |
+| access / close / write | — | 0x6DB290 / 0x6DCC10 / 0x6DB830 |
+
+The prior "S2 system@plt" payloads therefore called `kill()`. This does NOT
+invalidate the 12/19 CAN135 hits (the canary is FN-agnostic: it proves the
+observer deref + FN call, not the FN's identity).
+
+Tooling facts (this binary is MIPS16-dominant — plain objdump decodes noise):
+- `-m mips:16` is mandatory; the full cached disasm lives at
+  `/tmp/s2decode/full16.asm` (931k lines). `.plt` decodes as MIPS16 by
+  default; `.text` needs the flag.
+- eh_frame_hdr: 2,972 FDEs, pc_begin stored ABSOLUTE (not pcrel) — function
+  boundary lookup: bisect the sorted loc array, read `[fde+8]`/`[fde+12]`.
+- `jal system@mips16plt` encoding example: `1b60 73a8` at 0x4ab64c.
+
+### The S2's process-spawn surface (both found this session)
+
+1. **The only `system()` call site: 0x4ab64c** — inside the legacy_anacapad
+   recovery-URL handler (~0x4ab000-0x4ab68a). That handler:
+   - `url` form field → `sonosFileCreate("/var/run/forceupdateurl", value)`
+     (call 0x4ab5d8) — the update-URL write primitive, pre-auth via the
+     legacy form;
+   - `forceupdate` → writes `/var/run/forceupdate` (0x4ab644), then
+     `lw a0,=0x676608 ("killall anacapad")` + `jal system` at 0x4ab64a-4c.
+   - **FN=0x4ab64c** = jump straight at the `jal system` with a0 = whatever
+     the dispatcher passes. If a0 = B (the node buffer), `system(node0)`
+     = arbitrary root command. The device fire decides (reboot = proof).
+2. **The only `execve()`: the vfork/pipe wrapper 0x656978-0x656b24**
+   (`RReportFirmwareDownloadConfig` lane): 3× pipe, vfork, child dup2(0/1/2)
+   + close(3..255), `sonos_auth_add_ambient("all")` gate, then
+   `execve(argv[0], argv, environ)` at **0x656a8a** with argv/environ taken
+   from the CALLER's arg struct (sp-relative in the middle). Unlike the PPC
+   fork/execve wrapper, the argv here is a real argv array — the S2 route
+   does not inherit the PPC notify-ctx-argv problem. Entry candidates:
+   0x656978 (top; a0 = arg struct) or 0x656a82/0x656a86 (mid; sp-fragile).
+   Failure path logs `exec of '%s' failed, errno=%d` (0x6bb908).
+
+### 86.10-80260 .upd map (decrypted with model12-private.pem)
+
+`/tmp/s2decode/decrypt_upd.py`: section 3 = preinstall.sh (matches
+`captures/firmware/86.10-80260-1-12/preinstall.sh`); 6 = kernel uImage
+(lzma → 2,828,124 B); 4 = rootfs.squashfs (SquashFS **v4 LE**, 315 inodes);
+23 = ustar `app.tar` = `bin/anacapad` → installed to
+`/jffs/app/install/bin/anacapad` (`anacapad.sha256` = 1b598f11…c2d6a =
+byte-identical to `captures/firmware/s2_overlay/bin/anacapad`). The rootfs
+`/opt/bin` carries no anacapad — the app partition tarball is the daemon.
+
+Device-lane facts re-confirmed live on .135 (81100) this session:
+- `http-get:*:audio/audible:*` → UPnP **714** (missing MIME) on both :1400
+  SOAP and the :1443 API — the audible protocolInfo is NOT accepted by this
+  build; the working shapes are `http-get:*:audio/aac:*` (200 + device
+  FETCHES the .aa — verified server-side), `audio/mp4`, `audio/mpeg`.
+  The container is sniffed (no magic gate) exactly as the PPC lane found.
+- CAN135 chain layout byte-validated: rebuild(S, FN) with
+  node108→S+6380+200, node200→S+6380+600, node628=FN ([V+28], V=node600),
+  node6404→S+6380+100, observer F=node0 at node23620 reproduces
+  CAN135_00710000.aa byte-for-byte. The prior session's "0x59c060 type
+  switch" was derived under MIPS32 disassembly and is void (desync);
+  the type-cap question is answered empirically instead: CAN135 wrote the
+  observer cell at node 23620 (file 23656) and fired ⇒ the S2 node string
+  reaches ≥23.6KB ⇒ **no 4KB cap on the S2 path**.

@@ -1,5 +1,41 @@
 # ROOT SWARM — CONSOLIDATED STATE (2026-11-05, post-audit)
 
+## 2026-11-06 UPDATE — S2 (.135) decode corrections + band re-calibrated
+
+- **All prior S2 PLT aims were WRONG** (bad rel.plt offset math): the real
+  86.10 stubs are system=**0x6DCEA0** (the old 0x6DCE50 is `kill@mips16plt`),
+  execve=**0x6DCA70**, vfork=**0x6DB2D0**, sonosFileCreate=**0x6DBA80**,
+  sonosMkDirRecursive=**0x6DB320**. Every prior S2 "system@plt" payload
+  called kill(). Canary hits unaffected (FN-agnostic). Full table + the
+  only-in-binary spawn surface in `docs/RE_AUDIBLE.md` §2026-11-06.
+- **S2 spawn surface found:** the ONLY system() call site is **0x4ab64c**
+  (legacy_anacapad recovery handler: `url` → sonosFileCreate(
+  `/var/run/forceupdateurl`), `forceupdate` → `/var/run/forceupdate` +
+  system("killall anacapad")). FN=0x4ab64c = `jal system` with a0=whatever
+  the S2 dispatcher passes. The ONLY execve = the vfork/pipe wrapper
+  **0x656978-0x656b24** (dup2 0/1/2, close 3..255,
+  sonos_auth_add_ambient("all"), execve(argv[0], argv, environ) at
+  0x656a8a) — argv comes from the CALLER struct, NOT the notify ctx: the
+  S2 route does not inherit the PPC argv problem.
+- **The audible protocolInfo is REJECTED on 81100** (`audio/audible` → UPnP
+  714 on :1400 and :1443). Working shapes: `http-get:*:audio/aac:*` (200 +
+  the device FETCHES the .aa — re-verified live), audio/mp4, audio/mpeg.
+- **CAN135 layout byte-validated** (rebuild reproduces the payload
+  exactly): node108→+200, node200→+600, node628=FN=[V+28] (V=node600),
+  node6404→+100, observer F=node0 at node23620.
+- **No 4KB cap on the S2 path** (empirical): the observer cell at node
+  23620 is written and fires.
+- **.135 current-lifetime band re-calibrated (canary FN=0x51000000,
+  two-stage via :1400 + audio/aac):** 19 hits / 47 candidates across
+  **0x704000-0x716000** (hits every 0x800 mostly; 0x711000 gave a 2-poll
+  outage). Device healthy throughout.
+- **FN matrix (FN=0x4ab64c, cmd="reboot") running at 7 band hits** —
+  verdicts in `recon/tnzm_audible/sweep2/` + this file's next update.
+- Tooling: S2 anacapad is MIPS16-dominant; plain objdump = noise; use
+  `-m mips:16`. Full cached disasm `/tmp/s2decode/full16.asm`; upd
+  decryptor `/tmp/s2decode/decrypt_upd.py` (model12 key; section 23 =
+  the app tarball containing the byte-identical daemon).
+
 ## THE PROVEN PRIMITIVE
 Pre-auth network-only arbitrary root-level function execution in the Sonos
 daemon (anacapad), demonstrated by 8+ deliberate device reboots via

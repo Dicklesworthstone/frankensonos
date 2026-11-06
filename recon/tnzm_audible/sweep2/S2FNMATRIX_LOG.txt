@@ -1,0 +1,3 @@
+704000: max_http_down=1s icmp_losses=58 REBOOT?
+705800: max_http_down=1s icmp_losses=69 REBOOT?
+707000: max_http_down=0s icmp_losses=85 REBOOT?
