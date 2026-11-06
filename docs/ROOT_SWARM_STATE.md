@@ -1322,3 +1322,19 @@ shell per-connection.
 SageElm dispatched: the emulator trace past the state-change into the
 notify build, dumping [r4+8]'s target address. If it lands in the overflow
 range → the root shell payload is the overflow bytes at that offset.
+
+### 2026-11-05: THE ACCUMULATION ROUTE WORKS — the observer cell reached!
+
+The 6×4000B accumulation payload (6 sequential TOC entries, each writing
+~4KB into the session buffer) produced a FULL REBOOT (33.2s outage) at
+S=0x106c4ef0. The cap-bounded strcpy writes ACCUMULATE across entries —
+entry N's strcpy continues where entry N-1 ended — reaching +30000 and
+executing the reboot gadget via the observer cell.
+
+THE ACCUMULATION IS THE FAR-WRITE: 6 entries × 4KB = 24KB of controlled
+data written from +6380 to +30380, INCLUDING the observer cell. The
+route: multiple TOC entries with the fake handler/chain in the first
+entry's content and the observer cell in the last entry's tail.
+
+NEXT: the telnetd variant (the same accumulation, the FN = the execve
+wrapper, the path = /usr/sbin/telnetd) → the root shell.
