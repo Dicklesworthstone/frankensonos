@@ -1718,3 +1718,32 @@ open S2 gap); harness U3 (6 offline unit tests + fixtures, all green).
   sonosFileCreate: 2 sites, the steerable one (0x102b8eb8) sits in a
   runtime-vtable-dispatched pair (0x102b8e4c/0x102b8f28, no static refs) —
   needs the vtable-slot decode or register priming; recorded on q57.
+
+### 2026-11-06 (session 5) — arming services persisted; xnf inspector fully decoded
+
+- **The arming chain now survives Mac reboots**: LaunchDaemon
+  `com.frankensonos.q57-serve` (KeepAlive) runs the DNS responder (:53),
+  the HTTPS responder (:8643, .upd delivery with repo-independent paths),
+  and re-applies the pf rdr rules. Verified live after a launchd
+  bootstrap (DNS → .160, settings 200, .upd 5606749B). Plist + start.sh
+  + README committed at `recon/q57/launchd/`. The router DNS flip remains
+  the single trigger.
+- **The S2 86.10 daemon RUNS under qemu-mips on css** (x86_64 ubuntu,
+  qemu-mips BE). The walls that fell: the guest loader SIGSEGV was the
+  HOST x86 ld.so.cache being mmap'd (sysroot with an EMPTY cache fixes
+  it), libcap/nss from the host rootfs, /opt symlink staging, initgroups
+  (run as root), and the 45s init watchdog (signal(14, handler@0x4758ad)
+  = raise(SIGKILL) — patched to NOP at 0x4758ae). The daemon now boots,
+  opens all loggers, binds :1410 (watchdog IPC), and restarts its init
+  loop on 'hhid not available' — the MDP2 identity from /dev/mtd1 is the
+  remaining emulation gap (synthetic MDP2 needs the S2 OTP keys; recipe
+  and walls documented on the qemu bead). Once hhid loads → :1400/:1443
+  binds → the dropbear-spawn repro.
+- **The xnf inspector is FULLY decoded** (Ghidra MkFun @0x6021e4): the
+  inspector builds the EXPECTED iss from live device state via
+  vtbl+0x18 on the provider at [param_2+0x10], composes
+  '{ owner { luid } hhid network_hash }' through 0x6020f8, and gates on
+  exact match with the token's iss (+0x70) plus an expiry check
+  (vtbl+0x3c(2) → '%llu' vs +0xd0). The mint needs iss == the provider's
+  output; next: identify the provider class (registered trio 0x481054)
+  and reproduce its string in mint_jwt.py.
