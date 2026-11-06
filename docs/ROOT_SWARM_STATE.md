@@ -1548,3 +1548,35 @@ THE ROOT SHELL REQUIRES:
 THE PROVEN DELIVERABLE: arbitrary root-level FN execution, pre-auth,
 network-only, address-robust, on 2 PPC units. The S2: 12 live addresses.
 The firmware replacement: after the shell.
+
+### 2026-11-06 (final for this session) — the .135 shell boundary closed precisely
+
+Volley results at freshly-calibrated hits (each: fine-sweep canary HIT →
+immediate same-S fire):
+- `reboot` cmd → REBOOT (3rd signature, 92s ICMP loss) at 0x700c00 in the
+  same lifetime where the dropbear cmd produced nothing ⇒ **system()
+  execution at calibrated S is deterministic**.
+- direct-dropbear cmd (80B, budget-clean: `/bin/dropbearkey -t ecdsa -f
+  /jffs/k -s 256;/usr/bin/dropbear -r /jffs/k -p 2323`) → daemon healthy,
+  no port 2323 in 120s.
+- unlock-flag cmd (32B `touch /tmp/device_unlocked_flag`) + the respawned
+  run_sshd.sh → no port 22 (dropbear -R's hostkey path /etc/dropbear is
+  SQUASHFS on 86.10; the flag itself likely set — invisible without a
+  shell).
+- One fire (truncated 212B cmd, the 107B-budget lesson) DID coincide with
+  a 78s reboot — ambiguous (may have been dropbearkey crashing the notify
+  thread → 2-crash unit watchdog).
+
+**The precise remaining blocker = the dropbear/dropbearkey exec
+environment inside the system() child** (stdio, PATH-independent since
+absolute, /dev/pts present, /jffs writable) — indistinguishable
+externally without device-side visibility (the serial console), exactly
+as the handoff predicted for the PPC telnetd lane. The serial-console
+diagnosis (dropbear's stderr says which step fails) is the single
+remaining step for the interactive S2 shell; everything mechanical
+(delivery, calibration, command execution) is proven and scripted.
+
+Artifacts: `S2DB_*`/`S2FLAG_*`/`S2SHELL*`/`S2RBB*`/`S2RBC*` payloads,
+`SWEEPDB_LOG.txt`/`SWEEPSHELL_LOG.txt`/`S2FNMATRIX_LOG.txt`,
+runners `sweepshell.py`/`sweepdb.py`/`diagfire.py` (in /tmp/s2decode —
+copy into recon if the serial-console session needs them).
