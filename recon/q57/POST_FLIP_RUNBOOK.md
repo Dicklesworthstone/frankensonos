@@ -38,3 +38,10 @@
 - `UPD-SERVED` never appears while upgradeinfo IS armed: the fetch host in
   upgradeinfo points elsewhere — read the URL line and adjust the
   responder's served names.
+
+## rdr proof note
+The pf rdr rules can only be exercised by an external source (a Sonos unit
+or any LAN device whose traffic actually traverses en0) — Mac-local curl
+bypasses en0 and hits whatever binds wildcard :443 directly. After the
+flip, verify with `sudo pfctl -s info | grep -A2 rdr` (counter deltas) or
+simply the requests.log HIT lines.
