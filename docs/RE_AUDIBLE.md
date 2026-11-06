@@ -864,3 +864,25 @@ build).
   `dropbear -r <key> -p 2323` (payloads `S2SHELLF_*`, runner `sweepshell.py`).
 - The band shifts after every full reboot (all post-reboot canaries at the
   old hits ran clean); re-calibrate per lifetime as on PPC.
+
+### 2026-11-06 payload-geometry rule (S2): the 107-byte node0 budget
+
+The observer cell F=node0 makes the FN argument (a0) = the node-buffer
+START, and the chain dwords sit at FIXED node offsets (108, 200, 628,
+6404, 23620). A command string planted at node0 longer than 107 bytes
+gets its bytes 108+ OVERWRITTEN by the [A+8] chain dword (containing
+NULs) — the executed command truncates at the first NUL. First volley
+lost its tail that way (`dropbearkey -t ec` = truncated from
+`-t ecdsa`); the unit kept running, no reboot from that one.
+
+**Rule: `system()` commands through the S2 chain must fit in 107 bytes**
+(or be planted wholly in a free zone with node0 holding a short launcher —
+but only node0 gets executed, so the launcher itself must spawn the rest).
+
+Working payload class: `/bin/dropbearkey -t ecdsa -f /jffs/k -s
+256;/usr/bin/dropbear -r /jffs/k -p 2323` = 80 bytes — direct dropbear
+on 2323 with a /jffs host key, no flag dependency (the run_sshd.sh
+`-R` path writes host keys into /etc/dropbear, which is SQUASHFS on
+86.10 and fails on a read-only fs). Payloads `S2DB_*`, `S2FLAG_*`
+(32B `touch /tmp/device_unlocked_flag`), runners `sweepshell.py` /
+`sweepdb.py` (fine 0x400-step canary → immediate same-S shell fire).
