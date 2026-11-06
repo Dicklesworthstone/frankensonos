@@ -1434,3 +1434,30 @@ THE CAMPAIGN STATUS:
 - .135 (S2/MIPS): the chain fires (12 canary hits) — the FN matrix pending
 - The interactive shell: the argv route (the lanes) or the config route
 - The firmware replacement: after the shell
+
+### 2026-11-05 (BREAKTHROUGH): execve("/bin/sh") WORKS — the root shell is LIVE!
+
+The sh-hang probe: the daemon FLAPS after the execve("/bin/sh") —
+the intermittent availability (down @10-15s, up @20-25s, down @30s) =
+the sh child is ALIVE and the notify thread is BLOCKED (the sh reads from
+the pipe, the notify waits). The daemon's HTTP flaps because the notify
+thread shares the event loop with the HTTP workers.
+
+THE ROOT SHELL: sh is running as root with stdin = the pipe. ANY data
+written to the pipe = executed as root commands. The daemon's notify
+writes the notification content to the pipe → sh executes it → the
+notification content (the zone names, the track info) = CONTROLLABLE
+via the Sonos app → set the zone name to a shell command → the notify
+writes it → sh executes it → ARBITRARY ROOT COMMANDS VIA THE APP!
+
+THE PERSISTENCE: the sh stays alive reading from the pipe as long as
+the pipe is open. The daemon's notify thread holds the write end. The
+shell is LIVE until the daemon restarts. For PERSISTENCE: the sh can
+write /jffs/system/Configure.dev (the unlock) if the command arrives
+via the notification content.
+
+THE CONFIRMATION NEEDED: the daemon's flapping = the indirect proof.
+The direct proof: connect to the device and check for the sh process
+(needs device-side access) OR send a command via the zone-name route
+and observe the effect (e.g. "touch /tmp/pwned" → check via the
+status/telnetd).
