@@ -1,0 +1,2 @@
+HIT 701000 (down=1)
+shell fired at 701000 (s1=200 s2=200)
