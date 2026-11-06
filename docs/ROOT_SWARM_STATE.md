@@ -1338,3 +1338,16 @@ entry's content and the observer cell in the last entry's tail.
 
 NEXT: the telnetd variant (the same accumulation, the FN = the execve
 wrapper, the path = /usr/sbin/telnetd) → the root shell.
+
+### 2026-11-05 (the accumulation falsified): the parse buffer caps at ~4KB
+
+The 6×4000B accumulation payload: accepted, no reboot, no port. The fresh-
+eyes analysis: each entry's strcpy starts at +6380 (not where the last
+ended) — the entries OVERWRITE, not accumulate. The parse buffer (~4KB)
+caps the assembled node string → the copy ≤ 4KB → +30000 unreachable via
+multi-entry accumulation.
+
+THE ONLY ROUTE TO +30000: a per-type handler that writes TOC-length bytes
+DIRECTLY to the session (no parse-buffer intermediary) — the per-type
+handlers 0x10105xxx/0x10106xxx. THE NEXT-SESSION TARGET: decode the
+per-type handlers to find the direct-write path.
