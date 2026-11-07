@@ -147,3 +147,14 @@ test('cancelReads retires observations but never aborts or repeats an already su
   finish({ ok: true, text: async () => '{"name":"Evening"}' }); assert.deepEqual(await saving, { name: 'Evening' });
   assert.deepEqual(calls, ['GET', 'PUT']);
 });
+
+test('only native announcement POST receives the synthesis, playback and restoration deadline', async () => {
+  const budgets = [], call = C.request({ schedule(fn, ms) { budgets.push(ms); return 1; }, cancel() {},
+    fetcher: async () => ({ ok: true, text: async () => '{}' }) });
+  await call('/announce', { text: 'Synthetic notice' });
+  await call('/announce', undefined);
+  await call('/announce', {}, { method: 'PUT' });
+  await call('/announce-more', {});
+  await call('/schedules', {});
+  assert.deepEqual(budgets, [1200000, 10000, 120000, 120000, 120000]);
+});

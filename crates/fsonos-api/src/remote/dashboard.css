@@ -161,3 +161,31 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line-str
 .scene-capture-preview details,.scene-capture-result details{border-top:1px solid var(--line);margin:12px 0;padding-top:6px}
 .scene-capture-result .outline-button{margin-top:7px;min-height:44px}
 @media(max-width:600px){.scene-heading-actions{width:100%;justify-content:space-between}.scene-capture-dialog{padding:20px}.scene-capture-preview,.scene-capture-result{padding:14px}.scene-capture-context .small-note{flex-basis:100%}.scene-capture-context button{margin-left:auto}}
+
+/* Persistent routines share the house dialog and native DJ direction editor. */
+.routines-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 48px);overflow-y:auto}
+.routine-toolbar,.routine-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.routine-toolbar{margin:20px 0}.routine-toolbar button,.routine-actions button{min-height:44px}
+.routine-list{display:grid;gap:12px;margin-top:20px}
+.routine-card,.routine-form,.routine-review{padding:18px;border:1px solid var(--line-strong);border-radius:12px;background:var(--raised);overflow-wrap:anywhere}
+.routine-form,.routine-review{margin:18px 0}.routine-review{border-color:var(--accent)}
+.routine-card h3,.routine-form h3,.routine-review h3{font-size:16px;line-height:1.5;margin:0 0 12px}
+.routine-card p,.routine-review p{font-size:13px;line-height:1.7}
+.routine-card-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.routine-status{color:var(--accent);font-size:11px;white-space:nowrap}
+.routine-times{display:grid;grid-template-columns:auto 1fr;gap:7px 12px;font-size:11px;line-height:1.7;color:var(--muted)}
+.routine-times dt{color:var(--text)}.routine-times dd{margin:0;overflow-wrap:anywhere}
+.routine-field{display:grid;gap:8px;font-size:12px;margin:16px 0}
+.routine-field input,.routine-field select,.routines-dialog .dj-direction-grid input:not([type=checkbox]),.routines-dialog .dj-direction-grid select,.routines-dialog .dj-direction-grid textarea{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--panel);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;font:inherit}
+.routine-days{border:0;padding:0;margin:12px 0 20px;display:flex;flex-wrap:wrap;gap:7px 14px;font-size:12px}
+.routine-days legend{padding:0 0 8px}.routine-days label{display:flex;align-items:center;gap:7px;min-height:44px;text-transform:capitalize}
+.routine-days input,.routines-dialog input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}
+.routine-review pre{white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.7;max-height:260px;overflow:auto}
+.routine-review summary,.routines-dialog .dj-direction-editor summary{cursor:pointer;min-height:44px;align-content:center;font-size:12px}
+.routine-result{padding:14px;border-left:2px solid var(--accent);font-size:13px;line-height:1.7}
+.routines-dialog .dj-direction-editor{margin:18px 0;padding-top:8px;border-top:1px solid var(--line)}
+.routines-dialog .dj-direction-editor p{font-size:11px;color:var(--muted);line-height:1.7}
+.routines-dialog .dj-direction-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.routines-dialog .dj-direction-grid label{display:grid;gap:7px;min-width:0;font-size:11px}
+.routines-dialog .dj-direction-grid .dj-direction-check{display:flex;align-items:center;gap:8px;min-height:44px}
+@media(max-width:600px){.routines-dialog{padding:20px}.routine-card,.routine-form,.routine-review{padding:14px}.routine-card-heading{display:block}.routine-status{display:block;margin-bottom:10px}.routine-times,.routines-dialog .dj-direction-grid{grid-template-columns:1fr}.routine-times{gap:3px}.routine-times dd{margin-bottom:9px}.routine-toolbar{gap:8px}.routine-actions{justify-content:space-between}}

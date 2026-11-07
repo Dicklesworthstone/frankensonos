@@ -12,10 +12,10 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'dashboard.js']
+SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
-  writes: [], calls: [], feeds: [], savedScenes: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
+  writes: [], calls: [], feeds: [], savedScenes: [], routines: [], nextRoutine:100, offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
   zones:[{household:'S2',coordinator_room:'Studio',members:['Studio','Kitchen'],transport_state:'playing'},
     {household:'S1',coordinator_room:'Studio',members:['Studio'],transport_state:'paused'}],
   queueRevision:'fixture-queue',
@@ -56,6 +56,7 @@ window.fetch=async(url,init)=>{
   else if(url.endsWith('/dj')) data={zone:'Studio',running:f.running[index],now:f.running[index]?f.work:null,
     next:f.running[index]?[{...f.work,movement:undefined,title:'The next work'}]:[],steering:{source:'session',mood:f.mood,constraints:{energy_bias:-1},added:{}}};
   else if(url==='/dj/moods') data={moods:[{name:'focus',constraints:{energy_bias:-1}},{name:'dinner',constraints:{energy_bias:0}}]};
+  else if(init.method==='GET'&&url==='/schedules') data=f.routines;
   else if(url==='/scenes') data=[f.scene,...f.savedScenes];
   else if(init.method==='GET'&&url.startsWith('/scenes/')) data=[f.scene,...f.savedScenes].find(scene=>scene.name===decodeURIComponent(url.slice(8)));
   else if(init.method==='PUT'&&/^\/scenes\/[^/]+$/.test(url)){
@@ -78,6 +79,18 @@ window.fetch=async(url,init)=>{
     const body=JSON.parse(init.body); f.writes.push({url,body});
     const target=f.zones.findIndex(z=>z.members.some(member=>`${member}@${z.household}`===body.zone));
     data={done:'Fixture command accepted',changed:true};
+    if(url==='/schedules'){
+      const when=body.when.startsWith('in ')?'once 2030-06-20T19:00:00+09:00':/^\d{4}-/.test(body.when)?'once '+body.when:body.when;
+      data={id:f.nextRoutine++,when,action:body.action,zone:body.zone??null,scene:body.scene??null,mood:body.mood??null,
+        ...(body.direction!==undefined?{direction:body.direction}:{}),volume:null,fade_secs:null,creator:'Fixture owner',enabled:true,
+        summary:'Fixture stored routine',next:when.startsWith('once ')?when.slice(5):'2030-06-18T07:30:00+09:00',last_fired:null};
+      f.routines.push(data);
+    }
+    if(['/schedules/pause','/schedules/resume','/schedules/remove'].includes(url)){
+      const index=f.routines.findIndex(row=>row.id===body.id);data={...f.routines[index]};
+      if(url.endsWith('/remove'))f.routines.splice(index,1);
+      else{data.enabled=url.endsWith('/resume');data.next=data.enabled?'2030-06-18T07:30:00+09:00':null;f.routines[index]=data;}
+    }
     if(url==='/pause')f.states[target]='paused';
     if(url==='/resume')f.states[target]='playing';
     if(url==='/volume'&&body.volume!==undefined){f.levels[body.zone]=body.volume;data={done:'Room volume changed',changed:true,volume:body.volume};}
@@ -317,6 +330,28 @@ def main():
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
         page.locator('#close-capture-scene').click()
         checks.append('whole-house scene capture, queue backup, reviewed recall and explicit replacement on desktop and mobile')
+        before=page.evaluate('fixture.writes.length')
+        page.locator('#open-routines').click()
+        page.wait_for_function("!document.getElementById('routines-create-scene').disabled")
+        page.locator('#routines-create-scene').click()
+        page.locator('#routine-scene').select_option('Dinner')
+        page.locator('#routine-time').fill('08:15')
+        page.locator('[data-routine-focus="review-create"]').click()
+        assert 'daemon host' in page.locator('.routine-review').inner_text()
+        assert page.evaluate('fixture.writes.length')==before
+        page.locator('[data-routine-focus="confirm"]').click()
+        page.wait_for_selector('.routine-result')
+        assert page.evaluate('fixture.writes.at(-1).body')=={'when':'weekdays 08:15','action':'apply_scene','scene':'Dinner'}
+        assert '2030-06-18T07:30:00+09:00' in page.locator('.routine-result').inner_text()
+        page.locator('#routines-read').click()
+        page.wait_for_function("!document.getElementById('routines-create-scene').disabled")
+        page.locator('[data-routine-focus="toggle-100"]').click()
+        page.locator('[data-routine-focus="confirm"]').click()
+        page.wait_for_function("document.getElementById('routines-message').textContent.includes('paused')")
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/schedules/pause','body':{'id':100}}
+        assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
+        page.locator('#close-routines').click()
+        checks.append('persistent scene routines, daemon next-run times and exact-ID pause on mobile')
         page.locator('#tab-queue').click()
         page.wait_for_function("document.getElementById('queue-status').textContent.includes('120 tracks')")
         page.locator('.queue-finder summary').click()

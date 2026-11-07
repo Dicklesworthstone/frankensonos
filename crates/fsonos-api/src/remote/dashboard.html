@@ -86,7 +86,7 @@
   </div>
   <div class="lower-grid">
 
-    <section id="scene-section" class="scene-section" aria-labelledby="scenes-title"><header class="section-heading"><div><span class="eyebrow">A DIFFERENT SOUND FOR EVERY MOMENT</span><h2 id="scenes-title">One scene. Your whole house.</h2></div><div class="scene-heading-actions"><button id="open-capture-scene" class="outline-button" type="button" aria-haspopup="dialog" aria-controls="capture-scene-dialog" aria-expanded="false" disabled>Save current house</button><a href="/" class="text-button" aria-label="Manage house scenes">Manage ↗</a></div></header><div id="scenes" class="scene-grid"></div><p id="catalog-error" class="small-note" role="status"></p><div id="scene-result" class="scene-result" role="status"></div></section>
+    <section id="scene-section" class="scene-section" aria-labelledby="scenes-title"><header class="section-heading"><div><span class="eyebrow">A DIFFERENT SOUND FOR EVERY MOMENT</span><h2 id="scenes-title">One scene. Your whole house.</h2></div><div class="scene-heading-actions"><button id="open-capture-scene" class="outline-button" type="button" aria-haspopup="dialog" aria-controls="capture-scene-dialog" aria-expanded="false" disabled>Save current house</button><button id="open-routines" class="text-button" type="button" aria-haspopup="dialog" aria-controls="routines-dialog" aria-expanded="false">Routines</button><a href="/" class="text-button" aria-label="Manage house scenes">Manage ↗</a></div></header><div id="scenes" class="scene-grid"></div><p id="catalog-error" class="small-note" role="status"></p><div id="scene-result" class="scene-result" role="status"></div></section>
   </div>
   <section class="recent-section" aria-labelledby="history-title"><header class="section-heading"><div><span class="eyebrow">WORTH ANOTHER LISTEN</span><h2 id="history-title">In recent rotation</h2></div><button id="history-refresh" class="text-button">Refresh history <svg><use href="#i-refresh"/></svg></button></header><div id="history" class="history-grid"></div></section>
   <footer class="page-footer"><span><svg><use href="#i-shield"/></svg>Your speakers. Your rules. Your network.</span><a href="/">Open full remote ↗</a></footer>
@@ -201,6 +201,15 @@
     <button id="capture-scene-recall" class="outline-button" type="button" disabled>Review recall</button>
   </section>
   <p id="capture-scene-message" class="sleep-message" role="status"></p>
+</dialog>
+<dialog id="routines-dialog" class="review-dialog routines-dialog" aria-labelledby="routines-title" aria-describedby="routines-description">
+  <header><span class="eyebrow">MUSIC THAT KEEPS YOUR HOURS</span><button id="close-routines" class="icon-button" type="button" aria-label="Close routines"><svg><use href="#i-close"/></svg></button></header>
+  <h2 id="routines-title">Make it a routine.</h2>
+  <p id="routines-description" class="small-note">Schedule a saved scene or DJ session. The house stores and runs routines even when this page is closed. Recurring times use the daemon host’s timezone; next runs below are reported by the house.</p>
+  <div class="routine-toolbar"><button id="routines-read" class="text-button" type="button">Refresh routines</button><button id="routines-create-scene" class="outline-button" type="button" disabled>Schedule a scene</button><button id="routines-create-dj" class="outline-button" type="button" disabled>Schedule the DJ</button></div>
+  <p id="routines-message" class="sleep-message" role="status"></p>
+  <div id="routines-body"></div>
+  <p class="small-note">Runs missed by more than ten minutes are skipped. Pausing or removing a routine does not stop a run already in progress. The creator’s permissions and current house policy still apply.</p>
 </dialog>
 <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><header><h2 id="shortcuts-title">Less reaching. More listening.</h2><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts"><svg><use href="#i-close"/></svg></button></header><dl class="shortcut-list"><dt>Search your music</dt><dd><kbd>⌘ / Ctrl K</kbd></dd><dt>Choose a listening group</dt><dd><kbd>R</kbd></dd><dt>Pause or resume</dt><dd><kbd>Space</kbd></dd><dt>Immersive visualization</dt><dd><kbd>V</kbd></dd><dt>Close a dialog or immersive view</dt><dd><kbd>Esc</kbd></dd></dl><p class="small-note">Playback shortcuts are inactive while typing or reviewing an action.</p></dialog>
 <noscript><p class="notice">The dashboard needs JavaScript. The command-line interface remains available.</p></noscript>

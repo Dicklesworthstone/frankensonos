@@ -998,3 +998,14 @@ test('the schedule DOM creates multi-room speech and displays the complete saved
   assert.match(panel.node.textContent, /Creator: test-client/);
   assert.equal(control('toggle-99').disabled, false);
 });
+
+test('saved queue backups are schedulable while bookmark and backup summaries cannot be interchanged', () => {
+  const scene = { name: 'Saved listening', saved: 17, volumes: {}, mutes: {},
+    groups: [{ coordinator: 'Studio@S2', members: [], playing: true, source: { kind: 'queue_backup',
+      queue: { coordinator: 'RINCON_FIXTURE', household: 'S2', update_id: 7, track: 2, position_secs: 30, total: 12 } } }] };
+  assert.equal(Schedules.scenesOf([scene])[0].name, 'Saved listening');
+  scene.groups[0].source.kind = 'queue';
+  assert.throws(() => Schedules.scenesOf([scene]), /kind does not match/);
+  scene.groups[0].source.kind = 'queue_backup'; delete scene.groups[0].source.queue.total;
+  assert.throws(() => Schedules.scenesOf([scene]), /kind does not match/);
+});

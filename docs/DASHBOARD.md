@@ -156,6 +156,41 @@ Changed grouping, queue/DJ ownership or an intervening mode change invalidates
 the review. Reads expire after 45 seconds; hidden pages and closed dialogs retire
 unfinished reads. An unconfirmed write is never retried automatically.
 
+### Persistent routines
+
+**Routines** beside the house scenes opens the daemon's saved schedule list.
+Create a routine for a saved scene, including a complete queue backup, or for a
+qualified listening group and DJ direction. The DJ editor shares the full
+remote's mood, filter and relative-duration validation; choosing automatic
+explicitly clears earlier temporary steering each time the routine runs.
+
+Timing supports daily, weekday, weekend and custom-day recurrence, a relative
+delay, or an exact date/time with seconds and an explicit UTC offset. Recurring
+times use the **daemon host's local timezone**, including its daylight-saving
+rules. The browser shows the daemon's reported next run and last fired/skipped
+occurrence, with an explicitly labelled browser-time conversion. It never
+calculates a substitute next run.
+
+Every creation shows its complete reviewed target, timing and DJ direction or
+current scene contents. Confirmation rereads the stored schedules, checks for an
+equivalent routine, and verifies the scene, group and named mood before one
+native write. Each future scene run resolves the saved name at execution time;
+replacing or deleting that scene changes what future runs can restore.
+
+Pause, resume and removal review the exact stored ID and definition. They do not
+stop an occurrence already in progress, and resuming does not replay missed
+occurrences. Routines persist after closing the browser and execute with their
+creator's rights under current house policy. The daemon skips runs more than ten
+minutes late.
+
+Routine storage remains manageable with no selected or online speakers. It
+shares the same dashboard command lane as playback, with no automatic retry.
+An uncertain schedule write requires explicit **Refresh routines** and inspection
+of the returned list; refreshing playback does not acknowledge it. Reading
+routines cannot clear an uncertain speaker command. Closed or hidden panels,
+expired reviews and changed definitions prevent unsent actions. Preflight is a
+fresh check, not a server-side lock against another client.
+
 ### Sleep timers
 
 **Sleep timer** in Up next reads the selected group's current timer on demand.

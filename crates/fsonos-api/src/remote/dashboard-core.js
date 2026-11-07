@@ -69,7 +69,8 @@ const DashboardCore = (() => {
         throw new Error('The dashboard request method does not match its body.');
       }
       const write = method !== 'GET', abort = new AbortController();
-      const budget = write && (url === '/queue' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
+      const budget = method === 'POST' && url === '/announce' ? 1200000
+        : write && (url === '/queue' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
         || (method === 'PUT' && /^\/scenes\/[^/]+$/.test(url) && body?.backup_queues === true)) ? 600000
         : write ? 120000 : /^\/zones\/[^/]+\/queue\/search(?:\?|$)/.test(url) ? 60000 : 10000;
       let timer, finished = false, stopped = null, rejectStopped;
@@ -123,7 +124,7 @@ const DashboardCore = (() => {
     const state = { items: [], selected: '', loading: false, busy: false, error: '', message: '',
       uncertain: false, connected: false, active: true, initialized: false, retryAfter: 0,
       topologyFresh: false, failedTargets: [] };
-    let epoch = 0, disposed = false, reading = null;
+    let epoch = 0, lifetime = 0, doubt = 0, uncertainStore = null, disposed = false, reading = null;
     const revisions = new Map();
     const revision = (target) => revisions.get(target) || 0;
     const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
@@ -131,6 +132,22 @@ const DashboardCore = (() => {
     const canControl = () => !!(!demo && !disposed && state.active && !state.busy
       && (!reading || reading.retained.has(state.selected))
       && !state.uncertain && selected()?.fresh && (state.connected || now() - selected().at < 30000));
+    const canManage = () => !demo && !disposed && state.active && !state.busy && !state.uncertain;
+    // Routine storage remains readable without any online speaker. Only a
+    // current, explicit reread can acknowledge an uncertain schedule write;
+    // reading schedules can never clear uncertainty from a speaker command.
+    async function refreshStored(store, decode, { explicit = false, signal } = {}) {
+      if (store !== 'schedules' || typeof decode !== 'function' || disposed || !state.active || state.busy) return null;
+      const version = lifetime, before = doubt;
+      const value = await call('/schedules', undefined, { signal });
+      if (disposed || !state.active || version !== lifetime || state.busy || signal?.aborted) return null;
+      const result = decode(value);
+      if (explicit && state.uncertain && uncertainStore === store && before === doubt) {
+        state.uncertain = false; uncertainStore = null;
+        state.message = 'Routines refreshed. Review the stored list before another command.'; emit();
+      }
+      return result;
+    }
     // Event names are not household identities. Resolve all matching groups,
     // then issue only qualified reads; unknown names require fresh topology.
     function eventTargets(room) {
@@ -202,7 +219,7 @@ const DashboardCore = (() => {
         state.initialized = true;
         // Scoped/event recovery is never the explicit acknowledgement of a
         // previously uncertain command, even when it observes its effect.
-        if (explicit && scope === null && selected()?.fresh) {
+        if (explicit && scope === null && selected()?.fresh && uncertainStore !== 'schedules') {
           state.uncertain = false; state.message = 'Playback refreshed. Review the current state before acting.';
         }
         return jobs.every((i) => i.fresh);
@@ -223,8 +240,9 @@ const DashboardCore = (() => {
     }
     // One mutation lane for transport, the DJ, search and house scenes. A
     // retained callback cannot dispatch after its operation/lifetime ended.
-    async function mutate(operation, { wholeHouse = true } = {}) {
-      if (!canControl()) return false;
+    async function mutate(operation, { wholeHouse = true, stored } = {}) {
+      const storage = stored === 'schedules';
+      if ((stored !== undefined && !storage) || !(storage ? canManage() : canControl())) return false;
       if (reading) {
         // Controls for an unchanged group take priority over background reads
         // of other rooms. Retire that batch before claiming the mutation lane;
@@ -234,9 +252,11 @@ const DashboardCore = (() => {
         for (const item of state.items) if (!obsolete.retained.has(key(item.zone))) item.fresh = false;
         obsolete.abort.abort();
       }
-      const item = selected(), version = epoch, target = key(item.zone), stamp = revision(target);
+      const item = selected(), version = epoch, life = lifetime;
+      const target = storage ? null : key(item.zone), stamp = revision(target);
       let sent = false, accepted = false, open = true;
-      const valid = () => open && !disposed && state.active && version === epoch && stamp === revision(target) && state.selected === target;
+      const valid = () => open && !disposed && state.active && life === lifetime
+        && (storage || (version === epoch && stamp === revision(target) && state.selected === target));
       const check = () => { if (!valid()) throw new Error('The view changed. Review this action again.'); };
       state.busy = true; state.message = ''; emit();
       try {
@@ -244,6 +264,10 @@ const DashboardCore = (() => {
           async send(url, body, options) {
             check();
             if (sent) throw new Error('This action already dispatched its one command.');
+            if (storage && (!/^\/schedules(?:\/(?:pause|resume|remove))?$/.test(url)
+                || body == null || (options?.method != null && options.method !== 'POST'))) {
+              throw new Error('Stored routine actions must use the native schedule endpoints.');
+            }
             sent = true;
             return call(url, body, options);
           } });
@@ -255,14 +279,16 @@ const DashboardCore = (() => {
         state.message = [result.done, ...(result.notes || []).map((n) => n.detail)].join(' ');
         return true;
       } catch (e) {
-        state.uncertain ||= sent;
-        item.fresh = false;
-        state.message = `${problem(e)} ${sent ? 'Outcome uncertain; no retry was sent. Use Refresh before another command.' : 'No command was sent.'}`;
+        if (sent) { state.uncertain = true; uncertainStore = storage ? stored : null; ++doubt; }
+        if (!storage) item.fresh = false;
+        state.message = `${problem(e)} ${sent ? storage
+          ? 'Outcome uncertain; no retry was sent. Use Refresh routines and inspect the stored list before another command.'
+          : 'Outcome uncertain; no retry was sent. Use Refresh before another command.' : 'No command was sent.'}`;
         return false;
       } finally {
         const canRefresh = valid(); open = false;
         state.busy = false; emit();
-        if (accepted && canRefresh) await refresh(false, wholeHouse ? null : { targets: [target] });
+        if (accepted && canRefresh && !storage) await refresh(false, wholeHouse ? null : { targets: [target] });
       }
     }
     async function command(verb, change = {}) {
@@ -292,10 +318,11 @@ const DashboardCore = (() => {
       emit();
     }
     function suspend() {
+      ++lifetime;
       state.active = false; state.connected = false;
       invalidate();
     }
-    return { state, refresh, eventTargets, select, selected, canControl, command, mutate, suspend, invalidate,
+    return { state, refresh, refreshStored, eventTargets, select, selected, canControl, canManage, command, mutate, suspend, invalidate,
       connection(value) {
         const lost = state.connected && !value;
         state.connected = value;

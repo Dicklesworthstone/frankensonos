@@ -189,14 +189,19 @@ const SchedulesRemote = (() => {
           || !Object.values(v.mutes).every((b) => typeof b === 'boolean')
           || !v.groups.every((g) => g && text(g.coordinator, 256) && Array.isArray(g.members)
             && g.members.every((r) => text(r, 256)) && object(g.source)
-            && ['keep', 'favorite', 'uri', 'dj', 'queue'].includes(g.source.kind)
+            && ['keep', 'favorite', 'uri', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
             && (g.source.kind === 'dj' || g.source.direction == null)
-            && (g.source.kind === 'queue' || g.source.queue == null)
+            && (['queue', 'queue_backup'].includes(g.source.kind) || g.source.queue == null)
             && (g.playing == null || typeof g.playing === 'boolean'))) {
         throw new Error('A saved scene is incomplete or ambiguous.');
       }
       for (const group of v.groups) {
-        if (group.source.kind === 'queue') queueApi().read(group.source.queue);
+        if (['queue', 'queue_backup'].includes(group.source.kind)) {
+          const queue = queueApi().read(group.source.queue);
+          if ((group.source.kind === 'queue_backup') !== (queue.total != null)) {
+            throw new Error('The saved queue kind does not match its contents.');
+          }
+        }
         if (group.source.direction != null) directionApi().read(group.source.direction, group.source.mood);
       }
       seen.add(v.name);
@@ -313,6 +318,26 @@ const SchedulesRemote = (() => {
     if (planned.timing.kind === 'delay') return;
     const duplicate = rows.find((r) => sameAction(r, planned.body) && sameWhen(r, planned));
     if (duplicate) throw new Error(`An equivalent schedule #${duplicate.id} already exists. Manage that routine instead.`);
+  }
+
+  function addedOf(value, rows, planned) {
+    const result = scheduleOf(value);
+    if (rows.some((r) => r.id === result.id) || !result.enabled || !sameAction(result, planned.body)
+        || !sameWhen(result, planned) || !result.next
+        || (planned.timing.kind !== 'weekly' && Date.parse(result.next) !== Date.parse(result.when.slice(5)))) {
+      throw new Error('The reply did not confirm the reviewed new routine.');
+    }
+    return result;
+  }
+
+  function changedOf(value, row, action) {
+    const result = scheduleOf(value);
+    const expected = action === 'remove' ? row.enabled : action === 'resume';
+    if (!['pause', 'resume', 'remove'].includes(action)
+        || definition(result) !== definition(row) || result.enabled !== expected) {
+      throw new Error('The reply did not confirm the reviewed schedule change.');
+    }
+    return result;
   }
 
   function model({ call, changed = () => {} }) {
@@ -473,12 +498,7 @@ const SchedulesRemote = (() => {
             throw new Error('The target group, scene or mood changed. Refresh and review it again.');
           }
           sent = true;
-          const result = scheduleOf(await call('scheduleAdd', { body: reviewed.body }));
-          if (rows.some((r) => r.id === result.id) || !result.enabled || !sameAction(result, reviewed.body)
-              || !sameWhen(result, reviewed) || !result.next
-              || (reviewed.timing.kind !== 'weekly' && Date.parse(result.next) !== Date.parse(result.when.slice(5)))) {
-            throw new Error('The reply did not confirm the reviewed new routine.');
-          }
+          const result = addedOf(await call('scheduleAdd', { body: reviewed.body }), rows, reviewed);
           if (current(version)) {
             state.rows = [...rows, result];
             state.message = `Created schedule #${result.id}: ${result.when}. Next: ${displayTime(result.next)}. Refresh before another change.`;
@@ -491,11 +511,7 @@ const SchedulesRemote = (() => {
         }
         const route = { pause: 'schedulePause', resume: 'scheduleResume', remove: 'scheduleRemove' }[reviewed.action];
         sent = true;
-        const result = scheduleOf(await call(route, { body: { id: row.id } }));
-        const expected = reviewed.action === 'remove' ? row.enabled : reviewed.action === 'resume';
-        if (definition(result) !== definition(row) || result.enabled !== expected) {
-          throw new Error('The reply did not confirm the reviewed schedule change.');
-        }
+        changedOf(await call(route, { body: { id: row.id } }), row, reviewed.action);
         if (current(version)) {
           state.message = `Schedule #${row.id} ${reviewed.action === 'remove' ? 'removed' : reviewed.action === 'pause' ? 'paused' : 'resumed'}. Refresh to see its current state.`;
         }
@@ -629,7 +645,7 @@ const SchedulesRemote = (() => {
           el('h3', { text: `${p.action === 'remove' ? 'Remove' : p.action === 'pause' ? 'Pause' : 'Resume'} schedule #${p.row.id}?` }),
           el('p', { text: `${p.row.when}: ${p.row.summary}` }),
           ...(p.row.announcement ? [el('p', { text: announcementDescription(p.row.announcement) })] : []),
-          el('p', { text: p.action === 'remove' ? 'This permanently removes the saved routine, not the music or scene. A run already in progress is not cancelled. Speaker undo does not restore schedules.'
+          el('p', { text: p.action === 'remove' ? 'This removes the saved routine. The music and saved scene are kept, and a run already in progress is not cancelled.'
             : p.action === 'pause' ? 'Prevent future runs; this does not pause music or cancel a run already in progress.'
               : 'Enable future runs. Missed runs are not made up; the daemon decides the next eligible time.' }),
           el('p', { text: 'The saved definition is checked again before sending. A different client can still change it between that check and the write.' }),
@@ -663,11 +679,12 @@ const SchedulesRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { routes, scheduleOf, schedulesOf, definition, announcementOf, roomsOf, scenesOf, moodsOf, timeOf, creation, model, panel };
+  return { routes, scheduleOf, schedulesOf, definition, announcementOf, roomsOf, scenesOf, moodsOf,
+    timeOf, creation, draftOf, choices, noDuplicate, addedOf, changedOf, displayTime, DAYS: Object.freeze(DAYS), model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SchedulesRemote;
-else {
+else if (typeof ROUTES !== 'undefined') {
   Object.assign(ROUTES, SchedulesRemote.routes);
   document.getElementById('scenes-section')?.before(SchedulesRemote.panel({ call, el }).node);
 }
