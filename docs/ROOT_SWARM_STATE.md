@@ -1988,3 +1988,46 @@ session starts with: (1) the PPC daemon under qemu-ppc (the S2 recipe
 applies), (2) the devmode statement (owner portal action), (3) the
 encrypted-type-3 install verdict via the chroot with the hw-set faked
 properly (an anacapad-IPC fake server instead of the real one).
+
+### 2026-11-07 (session 11) — GENUINE DOWNGRADE INSTALLED; the type-3 exec wall mapped
+
+BREAKTHROUGH: the genuine 57.22-65130-1-16.upd (no modifications) was served
+via per-unit BSU and .84 INSTALLED it — the unit now runs 57.22-65130. The
+downgrade path works with a per-unit SOAP call, no DNS changes, no eero.
+This proves: the BSU mechanism, the fetch, the version/compat/patch-floor
+gates, and the flasher ALL work — the only variable that blocked our
+modified packages is the trailing/modified type-3 record handling.
+
+TYPE-3 EXEC WALL (now fully mapped):
+- PLAINTEXT trailing type-3: fetched, never executed (confirmed)
+- ENCRYPTED trailing type-3 (886499ca envelope, model-16 key): fetched, never executed
+- MODIFIED inline type-3 (decrypted original → append → re-encrypt): prefix
+  digest fix works, but type-17 signature becomes stale (the model-16 private
+  key signs the old digest, and the keyring key #2 SPKI ≠ our key — the
+  re-signature doesn't match the keyring verification)
+- The genuine type-3 INSIDE the 65130 package (176KB encrypted preinstall
+  script) executes at install time. We CAN decrypt it (model-16 key) and
+  re-encrypt with the same AES key/IV. But the re-encrypted version shifts
+  the section length → shifts the type-17 → breaks the prefix digest AND
+  the signature.
+- The CORRECT approach requires: modify the type-3 content in place (same
+  total length, padding to maintain alignment) → type-17 position unchanged
+  → prefix digest unchanged → signature unchanged. This is possible if we
+  fit our payload inside the existing 176KB script without changing its
+  encrypted length (the script is padded to a block boundary — there's room).
+
+ALSO CONFIRMED: the 65130→57.23 upgrade with our encrypted trailing type-3
+(pwned-enc.upd) fetched fully but the 65130's upgrade binary runs a
+different compat check — the install didn't proceed.
+
+THE PATH FORWARD: modify the genuine 65130 type-3 IN PLACE (same encrypted
+length — append our Configure.dev plant inside the existing script's blank
+space). The type-17 prefix covers the type-3 → the digest changes → BUT the
+prefix digest can be fixed with fix_upd_prefix_digest.py. The signature
+covers only the type-17 record header (the digest field area, 0x10:0x49) —
+if we re-sign with the model-16 key and the keyring SPKI matches, it passes.
+The model-16 private key DID decrypt the envelope → it IS the matching key
+→ the SPKI in the 65130 libsonoscrypto MUST include it (the keyring is
+per-version but the model-16 key is the one that encrypted the type-3).
+The MISMATCH above = the 65130 lib's keyring offsets differ from 57.23's.
+Need to find the correct KEY_OFFSETS for the 65130 libsonoscrypto.
