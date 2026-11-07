@@ -2031,3 +2031,31 @@ The model-16 private key DID decrypt the envelope → it IS the matching key
 per-version but the model-16 key is the one that encrypted the type-3).
 The MISMATCH above = the 65130 lib's keyring offsets differ from 57.23's.
 Need to find the correct KEY_OFFSETS for the 65130 libsonoscrypto.
+
+### 2026-11-07 (session 11 addendum) — the signing key ≠ the envelope key
+
+The type-17 signature verification uses SPKIs from the libsonoscrypto
+KEYRING — a SEPARATE keypair from the 886499ca envelope encryption key.
+We hold model16-private.pem (the envelope key) but NOT the vendor's type-17
+signing keypair. The keyring SPKI at 0xD8B8 in the 65130 lib ≠ model16 pub
+(first diff at byte 33).
+
+This means: the in-place type-3 modification path (modify → re-digest →
+re-sign) requires the VENDOR SIGNING KEY which we don't have and can't
+derive. The trailing type-3 path (after type-17, prefix unchanged, sig
+valid) doesn't need re-signing — but the encrypted trailing type-3 didn't
+execute on hardware (tested). The plaintext also didn't execute.
+
+The remaining hypothesis: the trailing type-3 envelope needs the DEVICE's
+own public key as recipient (from the device's MDP), not the model key.
+The genuine type-3 envelope inside the package uses a recipient that
+matches the device — cloning THAT recipient (as pwned-enc did) should
+work. But the beacon still didn't fire. The remaining variable: the
+envelope format itself (version field, tag byte, the encrypted script's
+inner structure) may have requirements beyond what we cloned.
+
+The practical path forward: use the fact that .84 is NOW on 57.22-65130
+(a genuinely installed older version) — the entire 34.16 bug surface and
+the older Sonos exploitation writeups now apply. Also: the devmode
+statement lane (E9) is a zero-exploit path if the owner completes the
+portal form.
