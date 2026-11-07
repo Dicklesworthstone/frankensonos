@@ -1948,3 +1948,21 @@ a NON-network observable — e.g. `;cp /etc/VERSION /jffs/system/VERSION2`
 then read via the S1 /jffs file-read (the S2 has none; the S1 status table
 has /jffs/VERSION in its strings) — a pure file-write test with no socket,
 no wget. That fire distinguishes (a) from (b) definitively.
+
+### 2026-11-06 (session 10 final) — the CPY discriminator: no external read-back either
+
+The file-write discriminator (`;mkdir -p /jffs/system;cp /etc/VERSION
+/jffs/system/VERSION2` via FN=system@plt): fire 200/200 → reboot → the three
+candidate read-back routes all empty. The S1 status passthrough does not
+serve /jffs/system/* (unlike the S2's localsettings route). The read-back
+loop closes only with a shell or serial.
+
+EXECUTION EVIDENCE TOTALS (this session): 12+ fires across both
+architectures, every fire 200/200, every post-reboot observable negative.
+The consistent pattern: the FN call + system() execute (the watchdog reboot
+proves the notify thread blocks); the sh -c child's effects are never
+externally visible. The two candidate causes stand, and the duel's
+blind-spot probe suggestion (run the child with `setsid` + redirect all
+stdio to /dev/null + `nohup` — eliminating the fd/env inheritance issues
+entirely) is the last untested variant. After that: device-side visibility
+is genuinely required.
