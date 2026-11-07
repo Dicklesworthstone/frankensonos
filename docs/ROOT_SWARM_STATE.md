@@ -2059,3 +2059,34 @@ The practical path forward: use the fact that .84 is NOW on 57.22-65130
 the older Sonos exploitation writeups now apply. Also: the devmode
 statement lane (E9) is a zero-exploit path if the owner completes the
 portal form.
+
+### 2026-11-07 (session 12) — the type-3 modification position IS the blocker
+
+Multiple package variants built and fired:
+- Genuine 57.23 (no modification): INSTALLED from 65130 ✓
+- Genuine 65130 (no modification): INSTALLED from 57.23 ✓
+- 57.23 + trailing encrypted type-3 (after type-17): fetched, no install
+- 65130 + trailing encrypted type-3: fetched, no install
+- 57.23 + trailing plaintext type-3: fetched, no install
+- 57.23 + inline modified encrypted type-3 (same-offset splice): the splice
+  breaks the section chain (the type-4 boundary shifts, the type-17 trailer
+  position becomes invalid)
+
+CONCLUSION: the installer processes sections IN ORDER from the section
+chain. The trailing type-3 after the type-17 is NOT part of the section
+chain and is IGNORED by the flasher. The type-17 signature record acts as
+a terminator — the flasher stops after processing the type-17. To get our
+code executed: our preinstall content must be INSIDE the section chain,
+i.e., inside the type-3 that sits BEFORE the type-17. But modifying the
+type-3 shifts all subsequent records (type-6, type-4, type-17) → the
+type-17 position changes → the prefix digest must be recalculated → the
+signature must be re-signed with the model-16 key (which matches the 57.23
+keyring — verified). The splice is complex but the offline harness can
+verify it before any device fire.
+
+The correct splice algorithm: (1) decrypt type-3, (2) append payload,
+(3) re-encrypt with the same key/IV, (4) adjust the type-3 length, (5)
+rebuild the section chain (the subsequent records shift), (6) recompute
+the type-17 prefix digest at its new position, (7) re-sign with model-16.
+The failure in the session-10 splice was: the type-6/type-4 lengths were
+not adjusted after the type-3 growth (the section chain walk then breaks).
