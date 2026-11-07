@@ -84,6 +84,20 @@ a queue polling loop. Only one queue read can be in flight. Closing the tab,
 changing groups, hiding the page or entering immersive mode fences late replies.
 Read-only queue inspection cannot replay a command or mutate playback.
 
+### Shuffle and repeat
+
+**Shuffle & repeat** in Up next reads the selected group's actual queue mode on
+demand. The dialog offers in-order or shuffled playback, with no repeat, queue
+repeat or current-track repeat. It shows the current setting and applies only the
+reviewed change through the native API. The queue remains selected and playback
+does not restart.
+
+A stream or other non-queue source cannot be switched by this control. The DJ
+keeps whole works in sequence, so its active session blocks shuffle and repeat.
+Changed grouping, queue/DJ ownership or an intervening mode change invalidates
+the review. Reads expire after 45 seconds; hidden pages and closed dialogs retire
+unfinished reads. An unconfirmed write is never retried automatically.
+
 ## Room scope and keyboard interaction
 
 The stage's group pill, the player group name and the Rooms button open a

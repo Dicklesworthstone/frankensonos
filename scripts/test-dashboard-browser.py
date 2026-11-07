@@ -12,13 +12,13 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['dashboard-core.js', 'dashboard-seek.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard.js']
+SCRIPTS = ['dashboard-core.js', 'dashboard-seek.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
   writes: [], calls: [], feeds: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
   zones:[{household:'S2',coordinator_room:'Studio',members:['Studio','Kitchen'],transport_state:'playing'},
     {household:'S1',coordinator_room:'Studio',members:['Studio'],transport_state:'paused'}],
-  states:['playing','paused'], running:[true,false], mood:'focus', track:'fixture:movement',
+  states:['playing','paused'], running:[true,false], modes:['NORMAL','NORMAL'], mood:'focus', track:'fixture:movement',
   work:{composer:'Fixture composer',title:'Three rooms',album:'Fixture recording',performers:['Fixture quartet'],movements:3,movement:2,
     movement_title:'II. Fixture movement',minutes:21,reason:{summary:'Variety and the owner’s preferences.',factors:[{factor:'artist_spacing',weight:1400},{factor:'feedback',weight:800}],relaxed:[]}},
   scene:{name:'Dinner',saved:1700000000,groups:[{coordinator:'Studio@S2',members:['Kitchen@S2'],source:{kind:'dj',mood:'dinner'},playing:true}],volumes:{'Studio@S2':20,'Kitchen@S2':15},mutes:{}},
@@ -33,6 +33,7 @@ window.fetch=async(url,init)=>{
   if(url==='/zones') data=f.zones;
   else if(url.endsWith('/state')) data={zone:f.zones[index],transport_state:f.states[index],volume:20,group_volume:22,
     track:{uri:f.track,title:f.rawTitle,creator:'Fixture artist',album:'Fixture album',position_secs:20,duration_secs:300,queue_position:2}};
+  else if(url.startsWith('/zones/')&&url.endsWith('/play-mode')) data={zone:f.zones[index].coordinator_room,mode:f.modes[index],queue_active:true,dj_active:f.running[index]};
   else if(url.endsWith('/dj')) data={zone:'Studio',running:f.running[index],now:f.running[index]?f.work:null,
     next:f.running[index]?[{...f.work,movement:undefined,title:'The next work'}]:[],steering:{source:'session',mood:f.mood,constraints:{energy_bias:-1},added:{}}};
   else if(url==='/dj/moods') data={moods:[{name:'focus',constraints:{energy_bias:-1}},{name:'dinner',constraints:{energy_bias:0}}]};
@@ -46,6 +47,11 @@ window.fetch=async(url,init)=>{
     data={done:'Fixture command accepted',changed:true};
     if(url==='/pause')f.states[target]='paused';
     if(url==='/resume')f.states[target]='playing';
+    if(url==='/play-mode'){
+      if(body.expected_mode!==f.modes[target])throw new Error('Fixture playback order changed');
+      f.modes[target]=body.mode;
+      data={done:'Playback order changed',changed:true,recovered:false,state:{zone:f.zones[target].coordinator_room,mode:body.mode,queue_active:true,dj_active:f.running[target]}};
+    }
     if(url==='/dj/steer')f.mood=body.mood||'focus';
     if(url==='/dj/stop')f.running[target]=false;
     if(url==='/dj/start')f.running[target]=true;

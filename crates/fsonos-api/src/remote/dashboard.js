@@ -37,8 +37,8 @@
     { title: 'Evening radio', subtitle: 'Household favorite', kind: 'favorite', favorite: 'FV:2/7' },
   ];
   const request = C.request();
-  async function call(url, body) {
-    if (!demo) return request(url, body);
+  async function call(url, body, options) {
+    if (!demo) return request(url, body, options);
     if (body !== undefined) throw new Error('Design preview never sends speaker commands.');
     if (url === '/zones') return structuredClone(fixtureZones);
     if (url.endsWith('/state')) {
@@ -55,6 +55,11 @@
       return { zone: zone.coordinator_room, total: titles.length, playing: zone === fixtureZones[0] ? 2 : null,
         revision: 'fictional-queue', items: titles.slice(offset, offset + 40).map((title, n) => ({ position: offset + n + 1,
           title, creator: offset + n < 3 ? 'Adrian Vale · Northlight Ensemble' : offset + n === 3 ? 'Mira Sol' : 'Canopy', uri: `demo:queued${offset + n}` })) };
+    }
+    if (url.endsWith('/play-mode')) {
+      const zone = fixtureZones.find((z) => url.includes(encodeURIComponent(C.key(z))));
+      return { zone: zone.coordinator_room, mode: 'NORMAL',
+        queue_active: zone === fixtureZones[0], dj_active: zone === fixtureZones[0] };
     }
     if (url.endsWith('/dj')) {
       const zone = fixtureZones.find((z) => url.includes(encodeURIComponent(C.key(z))));
@@ -76,7 +81,7 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   let active = !document.hidden, disposed = false, immersive = false, lastFocus = null, motionPaused = reduced.matches;
   let artKey = '', visualKey = '', roomKey = '', mapKey = '', sessionKey = '', sceneKey = '', reviewed = null, selectedKey = '';
-  let workspace, controller, session, live, seek, clockTimer = null;
+  let workspace, controller, session, live, seek, playMode, clockTimer = null;
   let reviewReading = false, searchTimer = null, historyVersion = 0, historyRunning = false, catalogsDirty = true;
   const renderer = DashboardVisualizer.create($('visualizer'), { reduced: reduced.matches });
   const audio = DashboardAudio.create({ changed(s) {
@@ -89,6 +94,7 @@
   controller = C.model({ call, demo, changed: render });
   session = S.model({ call, controller, demo, changed: renderSession });
   seek = DashboardSeek.create({ call, controller });
+  playMode = DashboardPlayMode.panel({ call, controller });
   workspace = DashboardWorkspace.create({ call, controller, session, el, icon, openSearch,
     native: (...args) => native(...args), immerse });
   const resize = () => { const box = $('stage').getBoundingClientRect(); renderer.resize(box.width, box.height, devicePixelRatio || 1); };
@@ -126,7 +132,8 @@
     $('stage').classList.toggle('immersive', value); document.body.classList.toggle('is-immersive', value); $('exit-immerse').hidden = !value;
     for (const n of document.querySelectorAll('.sidebar,.topbar,.greeting,.demo-banner,#summary,#error,#room-section,.intelligence-column,.lower-grid,.recent-section,.page-footer,.player-dock,.outcome,.mobile-nav')) n.inert = value;
     workspace?.immerse(value); renderer.immersive(value); resize();
-    if (value) seek?.suspend(); else if (active) seek?.resume();
+    if (value) { seek?.suspend(); playMode?.suspend(); }
+    else if (active) { seek?.resume(); playMode?.resume(); }
     if (value) {
       $('exit-immerse').focus();
       try { Promise.resolve($('stage').requestFullscreen?.()).catch(() => {}); } catch (_) { /* Full-window view remains. */ }
@@ -169,7 +176,7 @@
     $('dj-start-stop').disabled = !sessionReady; $('dj-clear').disabled = !sessionReady || !d.dj.running;
     for (const b of document.querySelectorAll('.mood-chip')) b.disabled = !sessionReady;
     for (const b of document.querySelectorAll('.scene-card')) b.disabled = reviewReading || !active || (!demo && !can);
-    seek?.observe();
+    seek?.observe(); playMode?.observe();
   }
   function render(state) {
     if (disposed) return;
@@ -439,13 +446,13 @@
     clearTimeout(clockTimer); clockTimer = null; clearTimeout(searchTimer); searchTimer = null;
     live.suspend(); request.cancelReads();
     audio.stop('Microphone stopped while hidden. Enable it again explicitly to resume.');
-    seek?.suspend(); workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
+    seek?.suspend(); playMode?.suspend(); workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
   }
   function clockLoop() { if (!active || disposed) return; timing(); controls(); clockTimer = setTimeout(clockLoop, 1000); }
   function resume() {
     if (document.hidden || disposed) return;
     active = true; catalogsDirty = true; workspace?.resume(); controller.resume(); session.resume();
-    if (!immersive) seek?.resume();
+    if (!immersive) { seek?.resume(); playMode?.resume(); }
     renderer.visible(true); live.resume();
     if (clockTimer === null) clockLoop();
   }

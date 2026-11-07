@@ -52,3 +52,19 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line-str
 .seek-dialog footer{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
 .seek-dialog footer button{min-height:44px}
 @media(max-width:600px){.transport #open-seek{width:36px;min-height:44px}.seek-dialog{padding:20px}.seek-time{margin-top:20px}.seek-time output{font-size:38px}}
+
+.queue-playback-order{display:flex;justify-content:flex-end;margin:-2px 0 12px}
+.queue-playback-order button{display:inline-flex;align-items:center;gap:7px;font-size:11px;min-height:36px}
+.queue-playback-order svg{width:15px;height:15px}
+.play-mode-dialog{width:min(500px,calc(100vw - 32px))}
+.play-mode-observation{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}
+.play-mode-observation strong{font-size:13px;font-weight:500;line-height:1.5}
+.play-mode-observation button{font-size:11px;min-height:40px}
+.play-mode-dialog>label{display:block;font-size:12px;font-weight:500;margin:22px 0 8px}
+.play-mode-dialog select{width:100%;min-height:44px;padding:10px 12px;background:var(--raised);color:var(--text);border:1px solid var(--line-strong);border-radius:9px;font:inherit;font-size:13px}
+.play-mode-dialog select:disabled{opacity:.55}
+.play-mode-message{font-size:12px;line-height:1.6;color:var(--muted);overflow-wrap:anywhere}
+.play-mode-message:empty{display:none}
+.play-mode-dialog footer{display:flex;justify-content:flex-end}
+.play-mode-dialog footer button{min-height:44px}
+@media(max-width:600px){.queue-playback-order button{min-height:44px}.play-mode-dialog{padding:20px}.play-mode-observation button{min-height:44px}}
