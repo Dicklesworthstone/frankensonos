@@ -122,6 +122,65 @@ fn ordinary_controls_forward_exact_requests_and_preserve_cap_notes() {
 }
 
 #[test]
+fn sync_tools_preserve_genre_progress_cooldowns_and_completion_from_the_daemon() {
+    use fsonos_api::surface::dj_sync::{GenreEnrichmentDto, LibrarySyncDto, SyncedDto};
+
+    let last = SyncedDto {
+        at: 1_790_000_000,
+        tracks: 100,
+        candidates: 80,
+        classical: 12,
+        retired: 0,
+        genre_artists_pending: 99,
+        genre_stalled: 0,
+        notes: Vec::new(),
+    };
+    for genres in [
+        GenreEnrichmentDto {
+            pending: 12,
+            completed: 7,
+            retry_at: Some(last.at + 900),
+            not_before: Some(last.at + 3600),
+            ..Default::default()
+        },
+        GenreEnrichmentDto {
+            pending: 8,
+            completed: 4,
+            running: true,
+            ..Default::default()
+        },
+        GenreEnrichmentDto {
+            completed: 8,
+            ..Default::default()
+        },
+        GenreEnrichmentDto {
+            requires_refresh: true,
+            ..Default::default()
+        },
+    ] {
+        let state = LibrarySyncDto::new(genres.running, Some(last.clone()), None)
+            .with_genre_enrichment(Some(genres));
+        let answer = serde_json::to_value(&state).unwrap();
+        let (backend, reply) = fixture(Some(Ok(answer.clone())));
+        for result in [
+            backend.dj_sync_status().unwrap(),
+            backend.dj_sync().unwrap(),
+        ] {
+            assert!(!result.is_error);
+            assert_eq!(text(&result), state.done);
+            assert_eq!(result.structured_content, Some(answer.clone()));
+        }
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [
+                json!(["GET", "/dj/sync", null]),
+                json!(["POST", "/dj/sync", {}])
+            ]
+        );
+    }
+}
+
+#[test]
 fn every_control_error_and_malformed_success_is_terminal() {
     for answer in [
         Err(Failure::new(ErrorCode::PlayerUnreachable, "reply lost")),

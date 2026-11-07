@@ -9,9 +9,15 @@
 //! reads Spotify (read-only) in the background and writes only the cache;
 //! the DJ plays from what it found from its next pick. A start is logged.
 //! It is not undoable: the next sync reads the library afresh anyway.
+//! Artist genre enrichment continues in bounded passes of its own. Its
+//! current pending work and retry deadlines are separate from the last
+//! full refresh, so a saved library does not imply every genre was read.
 
 pub mod library;
 pub mod playlist;
+
+mod genres;
+pub use genres::GenreEnrichmentDto;
 
 use std::fmt::Write as _;
 
@@ -28,15 +34,20 @@ use crate::failure::Failure;
 pub struct LibrarySyncDto {
     /// Where it stands, in a sentence.
     pub done: String,
-    /// A refresh is reading Spotify now.
+    /// A library refresh or enrichment pass is reading Spotify now.
     pub running: bool,
-    /// The last refresh that completed.
+    /// The last full library refresh that completed. Background enrichment
+    /// does not change its timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<SyncedDto>,
     /// Why the latest attempt failed, when it did. It is retried at the
     /// daemon's next check (a rate limit resumes where it stopped).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Current artist genre progress, separate from the last full refresh.
+    /// Absent for older daemons or before progress has been observed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre_enrichment: Option<GenreEnrichmentDto>,
 }
 
 /// One completed refresh.
@@ -82,41 +93,82 @@ impl LibrarySyncDto {
     /// The state, with its sentence.
     #[must_use]
     pub fn new(running: bool, last: Option<SyncedDto>, error: Option<String>) -> Self {
-        let done = match (running, &last, &error) {
-            (true, _, _) => {
-                "Refreshing the library from Spotify; GET /dj/sync (fsonos dj sync) shows when \
-                 it is done."
-                    .to_owned()
-            }
-            (false, _, Some(error)) => format!("The last library refresh failed: {error}"),
-            (false, Some(last), None) => last.text(),
-            (false, None, None) => "The library has not been refreshed by this daemon yet.".into(),
-        };
-        Self {
-            done,
+        let mut state = Self {
+            done: String::new(),
             running,
             last,
             error,
-        }
+            genre_enrichment: None,
+        };
+        state.done = state.text();
+        state
     }
+
+    /// Add current, durable artist genre progress without changing the last
+    /// full refresh. The sentence distinguishes enrichment from a full read
+    /// and uses these current counts instead of an old stamp's pending count.
+    #[must_use]
+    pub fn with_genre_enrichment(mut self, enrichment: Option<GenreEnrichmentDto>) -> Self {
+        self.genre_enrichment = enrichment;
+        self.done = self.text();
+        self
+    }
+
+    fn text(&self) -> String {
+        if self.running
+            && let Some(genres) = &self.genre_enrichment
+            && genres.running
+        {
+            return genres.text();
+        }
+        let mut text = match (self.running, &self.last, &self.error) {
+            (true, _, _) => {
+                "Refreshing the library from Spotify; GET /dj/sync (fsonos dj sync --status) \
+                 shows when it is done."
+                    .to_owned()
+            }
+            (false, _, Some(error)) if self.genre_enrichment.is_some() => {
+                format!("The last library update failed: {error}")
+            }
+            (false, _, Some(error)) => format!("The last library refresh failed: {error}"),
+            (false, Some(last), None) => last.text_with_genres(self.genre_enrichment.is_none()),
+            (false, None, None) => "The library has not been refreshed by this daemon yet.".into(),
+        };
+        if let Some(genres) = &self.genre_enrichment {
+            let _ = write!(text, " {}", genres.text());
+        }
+        text
+    }
+}
+
+fn timestamp_text(at: i64) -> String {
+    chrono::DateTime::from_timestamp(at, 0).map_or_else(
+        || at.to_string(),
+        |time| time.format("%Y-%m-%d %H:%M UTC").to_string(),
+    )
 }
 
 impl SyncedDto {
     /// `Library refreshed <when>: …`.
     #[must_use]
     pub fn text(&self) -> String {
-        let when = chrono::DateTime::from_timestamp(self.at, 0).map_or_else(
-            || self.at.to_string(),
-            |t| t.format("%Y-%m-%d %H:%M UTC").to_string(),
-        );
+        self.text_with_genres(true)
+    }
+
+    fn text_with_genres(&self, show_pending: bool) -> String {
+        let when = timestamp_text(self.at);
         let retired = match self.retired {
             0 => String::new(),
             n => format!(", {n} no longer saved"),
         };
-        let pending = match self.genre_artists_pending {
-            0 => String::new(),
-            1 => ", 1 artist genre lookup pending; continuing at the next daemon check".to_owned(),
-            n => format!(", {n} artist genre lookups pending; continuing at the next daemon check"),
+        let pending = match (show_pending, self.genre_artists_pending) {
+            (false, _) | (_, 0) => String::new(),
+            (true, 1) => {
+                ", 1 artist genre lookup pending; continuing at the next daemon check".to_owned()
+            }
+            (true, n) => {
+                format!(", {n} artist genre lookups pending; continuing at the next daemon check")
+            }
         };
         let mut text = format!(
             "Library refreshed {when}: {} tracks, {} the DJ can play ({} classical){retired}{pending}.",
@@ -213,5 +265,125 @@ mod tests {
         )
         .unwrap();
         assert!(old.notes.is_empty());
+    }
+
+    #[test]
+    fn current_genre_progress_round_trips_without_rewriting_the_full_refresh() {
+        let last = SyncedDto {
+            genre_artists_pending: 99,
+            ..synced(0)
+        };
+        let genres = GenreEnrichmentDto {
+            pending: 12,
+            completed: 7,
+            retry_at: Some(last.at + 900),
+            not_before: Some(last.at + 3600),
+            ..Default::default()
+        };
+        let status = LibrarySyncDto::new(false, Some(last.clone()), None)
+            .with_genre_enrichment(Some(genres.clone()));
+        assert_eq!(status.last, Some(last.clone()));
+        assert!(status.done.contains("12 artist genre lookups pending"));
+        assert!(
+            status
+                .done
+                .contains("last pass completed 7 artist genre lookups")
+        );
+        assert!(!status.done.contains("99 artist"), "{}", status.done);
+        assert!(status.done.contains("Spotify cooldown"));
+        assert!(status.done.ends_with(&format!(
+            "The next genre pass is eligible at {}.",
+            timestamp_text(last.at + 3600)
+        )));
+        let wire = serde_json::to_value(&status).unwrap();
+        assert_eq!(wire["last"]["at"], last.at);
+        assert_eq!(wire["genre_enrichment"]["pending"], 12);
+        assert_eq!(wire["genre_enrichment"]["completed"], 7);
+        assert_eq!(wire["genre_enrichment"]["not_before"], last.at + 3600);
+        assert_eq!(
+            serde_json::from_value::<LibrarySyncDto>(wire).unwrap(),
+            status
+        );
+    }
+
+    #[test]
+    fn a_running_genre_pass_does_not_claim_another_full_refresh() {
+        let status = LibrarySyncDto::new(true, Some(synced(0)), None).with_genre_enrichment(Some(
+            GenreEnrichmentDto {
+                pending: 8,
+                completed: 2,
+                running: true,
+                ..Default::default()
+            },
+        ));
+        assert!(status.done.starts_with("Enriching artist genres"));
+        assert!(!status.done.contains("Library refreshed"));
+        assert!(!status.done.contains("eligible"));
+        assert_eq!(status.last.as_ref().unwrap().at, synced(0).at);
+        assert!(status.running);
+    }
+
+    #[test]
+    fn genre_completion_and_required_refresh_are_distinct() {
+        let last = SyncedDto {
+            genre_artists_pending: 99,
+            ..synced(0)
+        };
+        let finished = LibrarySyncDto::new(false, Some(last.clone()), None).with_genre_enrichment(
+            Some(GenreEnrichmentDto {
+                completed: 4,
+                retry_at: Some(last.at + 900),
+                ..Default::default()
+            }),
+        );
+        assert!(
+            finished
+                .done
+                .contains("Artist genre enrichment is complete.")
+        );
+        assert!(!finished.done.contains("pending"), "{}", finished.done);
+        assert!(!finished.done.contains("eligible"), "{}", finished.done);
+
+        let refresh = LibrarySyncDto::new(false, Some(last), None).with_genre_enrichment(Some(
+            GenreEnrichmentDto {
+                requires_refresh: true,
+                not_before: Some(1_790_000_900),
+                ..Default::default()
+            },
+        ));
+        assert!(refresh.done.contains("needs a full library refresh"));
+        assert!(refresh.done.contains("Spotify cooldown"));
+        assert!(!refresh.done.contains("enrichment is complete"));
+        assert!(!refresh.done.contains("next genre pass is eligible"));
+    }
+
+    #[test]
+    fn genre_failures_leave_the_completed_full_refresh_available() {
+        let status = LibrarySyncDto::new(false, Some(synced(0)), Some("Spotify is busy".into()))
+            .with_genre_enrichment(Some(GenreEnrichmentDto {
+                pending: 1,
+                ..Default::default()
+            }));
+        assert!(
+            status
+                .done
+                .starts_with("The last library update failed: Spotify is busy")
+        );
+        assert!(status.done.contains("1 artist genre lookup pending"));
+        assert!(status.done.contains("bounded background passes"));
+        assert_eq!(status.last, Some(synced(0)));
+        assert_eq!(status.error.as_deref(), Some("Spotify is busy"));
+    }
+
+    #[test]
+    fn older_sync_responses_still_read_but_incomplete_genre_data_is_not_completion() {
+        let old = serde_json::json!({"done": "Library refreshed", "running": false});
+        let status: LibrarySyncDto = serde_json::from_value(old.clone()).unwrap();
+        assert!(status.genre_enrichment.is_none());
+        assert_eq!(serde_json::to_value(status).unwrap(), old);
+
+        let mut malformed = old;
+        malformed["genre_enrichment"] = serde_json::json!({});
+        assert!(serde_json::from_value::<LibrarySyncDto>(malformed).is_err());
     }
 }

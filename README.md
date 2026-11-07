@@ -485,6 +485,14 @@ the DJ and scenes) to any
 device on your tailnet. The daemon keeps the DJ's library fresh on its own,
 and `fsonos dj sync` refreshes it on demand.
 
+Large libraries continue artist genre enrichment in background passes of up to
+50 artists. Progress survives restarts, failed artists yield to later ones,
+and newly learned tags reach the DJ's next selection without rereading saved
+music. `fsonos dj sync --status`, the HTTP and MCP status tools, and the web
+sync panel show current progress and Spotify cooldowns separately from the last
+full refresh. New genre evidence that reveals a classical work also feeds the
+existing whole-work album completion queue.
+
 Next:
 
 - Real-hardware CI (a nightly `fsonos selftest` against a real house), then

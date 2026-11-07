@@ -23,7 +23,8 @@
 //! refresh to reconcile removed playlist music with the current taste signals.
 //! Missing whole-work album lists have their own bounded passes and durable
 //! page progress. They refresh the DJ pool without rereading personal music
-//! or changing the full-sync timestamp.
+//! or changing the full-sync timestamp. Artist genres also continue separately,
+//! using persisted artist identities and a rotating bounded read budget.
 
 use asupersync::Cx;
 use asupersync::http::Client;
@@ -34,7 +35,8 @@ use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::cache::{
-    LibrarySyncDetailed, continue_albums, continue_playlists, sync_library_detailed,
+    LibrarySyncDetailed, continue_albums, continue_genres, continue_playlists,
+    sync_library_detailed,
 };
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
@@ -76,6 +78,7 @@ pub struct LibrarySync {
 #[derive(Default)]
 struct Running {
     running: bool,
+    genres: bool,
     error: Option<String>,
 }
 
@@ -145,11 +148,13 @@ impl LibrarySync {
     /// Where it stands.
     #[must_use]
     pub fn status(&self) -> LibrarySyncDto {
-        let (running, error) = {
+        let (running, genres, error) = {
             let state = self.running();
-            (state.running, state.error.clone())
+            (state.running, state.genres, state.error.clone())
         };
-        LibrarySyncDto::new(running, self.last(), error)
+        LibrarySyncDto::new(running, self.last(), error).with_genre_enrichment(
+            continuation::genre_status(&self.data_dir, genres, self.now()),
+        )
     }
 
     /// Claim the one refresh slot. Admission happens before a worker is
@@ -160,6 +165,7 @@ impl LibrarySync {
             return false;
         }
         state.running = true;
+        state.genres = false;
         state.error = None;
         true
     }
@@ -240,6 +246,9 @@ impl LibrarySync {
                         Pass::Albums(previous) => {
                             continue_albums(&mut session, &cx, &mut store, previous.as_ref()).await
                         }
+                        Pass::Genres(previous) => {
+                            continue_genres(&mut session, &cx, &mut store, previous.as_ref()).await
+                        }
                     };
                     Ok((result, session.retry_after_secs()))
                 })
@@ -264,14 +273,14 @@ impl LibrarySync {
         last_synced(&self.data_dir)
     }
 
-    /// Whether a refresh is due at `now` (Unix seconds): never made, older
-    /// than [`MAX_AGE`], or with artist genres still pending. Pending genres
-    /// are retried at the next check while the refreshes make progress; each
-    /// one in a row that made none doubles the wait, from two [`CHECK`]s up
-    /// to [`MAX_AGE`] (sp4f.14).
+    /// Whether a full refresh is due at `now` (Unix seconds): never made,
+    /// older than [`MAX_AGE`], or needed to reconcile changed ownership or
+    /// playlist intake. Old stamps with pending genres get one full refresh
+    /// to persist artist identities; thereafter genres have their own passes.
     #[must_use]
     pub fn due(&self, now: i64) -> bool {
-        if let Some(saved) = continuation::load(&self.data_dir) {
+        let checkpoint = continuation::load(&self.data_dir);
+        if let Some(saved) = &checkpoint {
             if now < saved.not_before {
                 return false;
             }
@@ -281,6 +290,7 @@ impl LibrarySync {
         }
         let max = i64::try_from(MAX_AGE.as_secs()).unwrap_or(i64::MAX);
         let check = i64::try_from(CHECK.as_secs()).unwrap_or(i64::MAX);
+        let legacy_genres = checkpoint.as_ref().is_none_or(|saved| !saved.has_genres());
         self.last().is_none_or(|last| {
             let age = now.saturating_sub(last.at);
             let shift = u32::try_from(last.genre_stalled.min(16)).unwrap_or(16);
@@ -289,7 +299,7 @@ impl LibrarySync {
             } else {
                 check.saturating_mul(1_i64 << shift).min(max)
             };
-            age >= max || (last.genre_artists_pending > 0 && age >= retry)
+            age >= max || (legacy_genres && last.genre_artists_pending > 0 && age >= retry)
         })
     }
 
@@ -423,7 +433,10 @@ pub fn run(global: &GlobalArgs, args: &SyncArgs) -> anyhow::Result<()> {
             Some(daemon) => daemon.get("/dj/sync")?,
             // Without a daemon nothing refreshes in the background.
             None => {
-                LibrarySyncDto::new(false, last_synced(&crate::daemon::data_dir(global)?), None)
+                let dir = crate::daemon::data_dir(global)?;
+                LibrarySyncDto::new(false, last_synced(&dir), None).with_genre_enrichment(
+                    continuation::genre_status(&dir, false, SystemClock.now().timestamp()),
+                )
             }
         };
         return crate::emit(global.json, &state, |s| format!("{}\n", s.done));
@@ -461,8 +474,8 @@ pub fn run(global: &GlobalArgs, args: &SyncArgs) -> anyhow::Result<()> {
     if !sync.signed_in() {
         return Err(signed_out().into());
     }
-    let synced = sync.run()?;
-    let state = LibrarySyncDto::new(false, Some(synced), None);
+    sync.run()?;
+    let state = sync.status();
     crate::emit(global.json, &state, |s| format!("{}\n", s.done))
 }
 

@@ -28,7 +28,10 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             ),
             |s, c, _| answer(s.dj_sync_status(c)),
         )
-        .response_schema::<LibrarySyncDto>(200, "Running or not, and the last refresh"),
+        .response_schema::<LibrarySyncDto>(
+            200,
+            "Current activity, last full refresh, and bounded artist genre progress with retry and cooldown deadlines",
+        ),
         cx.route(
             &Op::post(
                 "/dj/sync",
@@ -40,7 +43,10 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 answer(body_or_default(req, Map::<String, Value>::new()).and_then(|_| s.dj_sync(c)))
             },
         )
-        .response_schema::<LibrarySyncDto>(200, "The refresh started (or already running)"),
+        .response_schema::<LibrarySyncDto>(
+            200,
+            "The refresh started or current work and cooldown; unfinished genres continue independently",
+        ),
         cx.route(
             &Op::get(
                 "/library/browse",

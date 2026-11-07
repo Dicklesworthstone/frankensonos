@@ -605,6 +605,14 @@ their standing preferences on every surface and in the daemon. What is on
   retrying a failed read at its next 15-minute check, on a thread of its own.
   `fsonos dj sync` (`POST /dj/sync`, MCP `dj_sync`) asks for a read now, and
   `GET /dj/sync` (`dj_sync_status`) says where it stands.
+- Artist genre enrichment has its own durable continuation. Migration 20
+  retains lead artist IDs with cached library rows. Background passes read up
+  to 50 artists, rotate past failed artists, retain accepted tags, and share
+  Spotify cooldowns with playlist and album completion. The three readers
+  take turns without moving the last full-refresh timestamp. Cached genre
+  evidence reaches new DJ picks without rewriting personal library rows;
+  newly recognized classical works enter album completion. HTTP, MCP, CLI and
+  the web sync panel expose current pending work, progress and retry deadlines.
 - Taste beyond the library is read with the owner's grant
   (`user-follow-read`, `user-top-read`, `user-read-recently-played`,
   `playlist-read-private`: owner-authorized, requested at sign-in, listed in

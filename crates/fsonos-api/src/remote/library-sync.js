@@ -7,9 +7,11 @@ const LibrarySyncRemote = (() => {
     librarySyncStart: ['POST', '/dj/sync'],
   };
   const POLL_MS = 3000;
+  const GENRE_POLL_MS = 60000;
   const MAX_BACKOFF_MS = 60000;
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const count = (v) => Number.isSafeInteger(v) && v >= 0;
+  const timestamp = (v) => Number.isSafeInteger(v) && Math.abs(v) <= 8640000000000;
   const text = (v) => typeof v === 'string';
   const message = (error) => error && text(error.message)
     ? `${error.message}${error.hint ? ` ${error.hint}` : ''}` : 'The library request failed.';
@@ -22,7 +24,7 @@ const LibrarySyncRemote = (() => {
     let last = null;
     if (value.last != null) {
       const v = value.last;
-      if (!object(v) || !Number.isSafeInteger(v.at) || Math.abs(v.at) > 8640000000000
+      if (!object(v) || !timestamp(v.at)
           || !['tracks', 'candidates', 'classical', 'retired'].every((key) => count(v[key]))
           || !count(v.genre_artists_pending ?? 0) || v.candidates > v.tracks || v.classical > v.candidates
           || !Array.isArray(v.notes ?? []) || !(v.notes ?? []).every(text)) {
@@ -32,7 +34,21 @@ const LibrarySyncRemote = (() => {
         classical: v.classical, retired: v.retired, genre_artists_pending: v.genre_artists_pending ?? 0,
         notes: Object.freeze([...(v.notes ?? [])]) });
     }
-    return Object.freeze({ done: value.done, running: value.running, last, error: value.error ?? null });
+    let genres = null;
+    if (value.genre_enrichment != null) {
+      const v = value.genre_enrichment;
+      if (!object(v) || !count(v.pending) || !count(v.completed)
+          || typeof v.running !== 'boolean' || typeof v.requires_refresh !== 'boolean'
+          || (v.running && !value.running)
+          || (v.retry_at != null && !timestamp(v.retry_at))
+          || (v.not_before != null && !timestamp(v.not_before))) {
+        throw new Error('The artist genre enrichment status is unreadable. Check status again.');
+      }
+      genres = Object.freeze({ pending: v.pending, completed: v.completed, running: v.running,
+        retry_at: v.retry_at ?? null, not_before: v.not_before ?? null, requires_refresh: v.requires_refresh });
+    }
+    return Object.freeze({ done: value.done, running: value.running, last,
+      error: value.error ?? null, genre_enrichment: genres });
   }
 
   function model({ call, changed = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
@@ -47,8 +63,11 @@ const LibrarySyncRemote = (() => {
 
     function arm() {
       stopTimer();
-      if (!active() || state.busy || readFlight || (!failures && !state.status?.running)) return;
-      const delay = failures ? Math.min(MAX_BACKOFF_MS, POLL_MS * 2 ** Math.min(failures, 5)) : POLL_MS;
+      const genres = state.status?.genre_enrichment;
+      const pending = genres && (genres.pending > 0 || genres.requires_refresh);
+      if (!active() || state.busy || readFlight || (!failures && !state.status?.running && !pending)) return;
+      const delay = failures ? Math.min(MAX_BACKOFF_MS, POLL_MS * 2 ** Math.min(failures, 5))
+        : state.status?.running ? POLL_MS : GENRE_POLL_MS;
       timer = schedule(() => { timer = null; void refresh(); }, delay);
     }
 
@@ -150,16 +169,18 @@ const LibrarySyncRemote = (() => {
       if (observed !== state.status) {
         observed = state.status; facts.replaceChildren();
         if (observed) {
-          if (observed.running) facts.append(el('p', { text: 'A refresh is running on the daemon. Status is checked while this panel is visible; closing it does not stop the refresh.' }));
+          if (observed.running) facts.append(el('p', { text: 'A library update is running on the daemon. Status is checked while this panel is visible; closing it does not stop the update.' }));
           if (observed.error) facts.append(el('p', { class: 'library-sync-warning', text: `Last reported failure: ${observed.error}` }));
-          if (!observed.last) facts.append(el('p', { text: 'No completed refresh reported by this daemon yet.' }));
+          if (!observed.last) facts.append(el('p', { text: 'No completed full refresh reported by this daemon yet.' }));
           else {
             const last = observed.last, at = new Date(last.at * 1000);
-            facts.append(el('h3', { text: 'Last completed refresh' }),
+            facts.append(el('h3', { text: 'Last completed full refresh' }),
               el('time', { datetime: at.toISOString(), text: `${at.toLocaleString()} (browser local time)` }));
             const counts = el('dl', { class: 'library-sync-counts' });
-            for (const [label, key] of [['Tracks read', 'tracks'], ['DJ candidates', 'candidates'],
-              ['Classical candidates', 'classical'], ['Retired tracks', 'retired'], ['Artist genres pending', 'genre_artists_pending']]) {
+            const fields = [['Tracks read', 'tracks'], ['DJ candidates', 'candidates'],
+              ['Classical candidates', 'classical'], ['Retired tracks', 'retired']];
+            if (!observed.genre_enrichment) fields.push(['Artist genres pending', 'genre_artists_pending']);
+            for (const [label, key] of fields) {
               counts.append(el('dt', { text: label }), el('dd', { text: last[key].toLocaleString() }));
             }
             facts.append(counts);
@@ -167,6 +188,28 @@ const LibrarySyncRemote = (() => {
               el('strong', { text: 'Not everything was read' }),
               el('ul', {}, ...last.notes.map((note) => el('li', { text: note })))));
             if (!last.candidates) facts.append(el('p', { text: 'No DJ candidates were reported. Check the diagnostics, sign-in and your saved music before starting a DJ.' }));
+          }
+          if (observed.genre_enrichment) {
+            const genres = observed.genre_enrichment;
+            facts.append(el('h3', { text: 'Artist genre enrichment' }),
+              el('p', { text: genres.requires_refresh ? 'A full library refresh is needed before genre enrichment can continue.'
+                : genres.running ? 'A bounded artist genre pass is running on the daemon.'
+                  : genres.pending ? 'Artist genres are still incomplete. The daemon resumes in bounded passes without rereading saved music.'
+                    : 'Artist genres are complete for the cached library.' }));
+            facts.append(el('dl', { class: 'library-sync-counts' },
+              el('dt', { text: 'Artist lookups pending' }), el('dd', { text: genres.pending.toLocaleString() }),
+              el('dt', { text: 'Completed in the latest pass' }), el('dd', { text: genres.completed.toLocaleString() })));
+            const deadline = (label, seconds) => {
+              if (seconds === null) return;
+              const at = new Date(seconds * 1000);
+              facts.append(el('p', {}, el('span', { text: `${label} ` }),
+                el('time', { datetime: at.toISOString(), text: `${at.toLocaleString()} (browser local time)` })));
+            };
+            deadline('Spotify cooldown ends at', genres.not_before);
+            if (!genres.running && genres.pending && !genres.requires_refresh) {
+              const deadlines = [genres.retry_at, genres.not_before].filter((at) => at !== null);
+              if (deadlines.length) deadline('Next genre pass no earlier than', Math.max(...deadlines));
+            }
           }
         }
       }
@@ -189,7 +232,7 @@ const LibrarySyncRemote = (() => {
         document.removeEventListener('visibilitychange', visibility); control.dispose();
       } };
   }
-  return { routes, statusOf, model, panel, POLL_MS, MAX_BACKOFF_MS };
+  return { routes, statusOf, model, panel, POLL_MS, GENRE_POLL_MS, MAX_BACKOFF_MS };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = LibrarySyncRemote;

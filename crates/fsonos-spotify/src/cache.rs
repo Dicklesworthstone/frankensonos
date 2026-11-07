@@ -34,9 +34,13 @@ use crate::session::Session;
 use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_taste_for_owner};
 
 mod albums;
+#[cfg(test)]
+mod genre_cache_tests;
+mod genre_completion;
 mod playlists;
 use crate::works::{Work, group_works};
 pub use albums::{ALBUM_PAGE_BUDGET, AlbumContinuation, continue_albums};
+pub use genre_completion::{GENRE_READ_BUDGET, GenreContinuation, continue_genres};
 pub use playlists::continue_playlists;
 
 /// What one sync did.
@@ -58,6 +62,8 @@ pub struct LibrarySync {
 pub struct LibrarySyncDetailed {
     pub library: LibrarySync,
     pub genres: GenreRead,
+    /// Missing artist tags for a separate bounded, owner-scoped continuation.
+    pub genre_continuation: GenreContinuation,
     /// Unfinished owner-scoped playlist work and the server's remaining cooldown.
     pub playlists: PlaylistContinuation,
     /// Missing whole-work album lists for a separate bounded continuation.
@@ -170,11 +176,17 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     let notes = sync_notes(&read, &genres, &albums);
     let mut completion = albums::status(store, &receipt, now)?;
     completion.completed = albums.fetched;
+    let mut genre_continuation = genre_completion::status(store, &receipt, now)?;
+    if !genre_continuation.requires_refresh {
+        genre_continuation.completed = genres.fetched;
+    }
+    genre_continuation.retry_after_secs = session.retry_after_secs();
     let mut playlists = read.continuation;
     playlists.retry_after_secs = session.retry_after_secs();
     Ok(LibrarySyncDetailed {
         library: report,
         genres,
+        genre_continuation,
         playlists,
         albums: completion,
         notes,
@@ -366,14 +378,10 @@ fn library_projection<S: Store + ?Sized>(
 /// The DJ's pool from the cache's candidate rows, in any genre. Which of
 /// them are classical is judged again from the cached titles, credits,
 /// albums and genres (the cache keeps no label), as [`CandidatePool::build`]
-/// does.
+/// does. Artist tags accepted by a later enrichment pass are overlaid without
+/// rewriting the personal library or losing its other genre evidence.
 pub fn pool_from_store<S: Store + ?Sized>(store: &S) -> Result<CandidatePool, SpotifyError> {
-    let items: Vec<LibraryItem> = store
-        .library()?
-        .iter()
-        .filter(|entry| entry.is_candidate())
-        .map(from_entry)
-        .collect();
+    let items = playlists::candidate_items(store)?;
     Ok(CandidatePool::build(&items))
 }
 

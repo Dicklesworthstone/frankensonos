@@ -319,6 +319,7 @@ pub async fn continue_albums<S: Store + ?Sized>(
     Ok(LibrarySyncDetailed {
         library,
         genres: GenreRead::default(),
+        genre_continuation: super::GenreContinuation::default(),
         playlists: PlaylistContinuation::default(),
         albums: state,
         notes,

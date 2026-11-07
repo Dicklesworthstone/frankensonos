@@ -39,7 +39,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "Where the DJ's library refresh from Spotify stands: whether one is running, when the last one finished and what it found (tracks, how many the DJ can play, how many classical), and why the latest attempt failed if it did. The daemon refreshes daily on its own.",
+    description = "Where the DJ's Spotify library update stands: current activity, the last full refresh and its track counts, and any latest error. Artist genre enrichment has separate running, pending and completed counts, a retry deadline, Spotify cooldown, and whether a full refresh is required. A finished full refresh can still have genres pending; the daemon continues bounded genre passes independently and refreshes the library daily. This status read starts no work.",
     annotations(read_only, idempotent)
 )]
 async fn dj_sync_status(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -47,7 +47,7 @@ async fn dj_sync_status(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallT
 }
 
 #[tool(
-    description = "Refresh the DJ's library from the owner's Spotify now (read-only on Spotify), in the background: new saves and likes, their artists' genres, and the taste signals the sign-in allows. Use it after the owner saves new music; the DJ plays from what it finds from its next pick. Answers at once; call dj_sync_status to see when it is done. Starting one while one runs changes nothing.",
+    description = "Request a background refresh of the DJ's library from the owner's Spotify (read-only on Spotify): new saves and likes, artist genres, and the taste signals the sign-in allows. Use it after the owner saves new music; newly selected DJ picks use the updated cache. Answers at once; use dj_sync_status to follow the full refresh and independent bounded genre enrichment. Existing work and Spotify cooldowns are respected; repeating this request does not bypass a rate limit.",
     annotations(idempotent)
 )]
 async fn dj_sync(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {

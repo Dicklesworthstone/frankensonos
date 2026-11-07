@@ -276,6 +276,9 @@ mod artist_catalog;
 #[path = "explicit_metadata_tests.rs"]
 mod explicit_metadata;
 
+#[path = "genre_continuation_tests.rs"]
+mod genre_continuation;
+
 impl Drop for Server {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {

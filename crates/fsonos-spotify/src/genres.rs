@@ -8,10 +8,11 @@
 //! is one request per artist; the answers are cached in the store and
 //! re-read after [`REFRESH_SECS`], a sync reads at most
 //! [`MAX_READS_PER_SYNC`] artists, and a rate limit past the waits (or a
-//! server error, or being signed out) stops the run: the rest wait for the
-//! next sync, as album expansion does.
+//! server error, or being signed out) stops the run: the rest wait for
+//! a bounded [`crate::cache::continue_genres`] pass. Its durable cursor
+//! keeps failed artists from starving later ones in a large library.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use asupersync::Cx;
 use fsonos_core::store::Store;
@@ -29,8 +30,8 @@ pub const MAX_READS_PER_SYNC: usize = 250;
 /// What one genre read did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GenreRead {
-    /// Artists read from the Web API (an unknown id counts: it is cached as
-    /// having no genres).
+    /// Artists read from the Web API and cached (an unknown id counts: it is
+    /// cached as having no genres).
     pub fetched: usize,
     /// Artists answered from the cache.
     pub cached: usize,
@@ -96,11 +97,12 @@ pub async fn tag_genres<S: Store + ?Sized>(
                 continue;
             }
         };
-        report.fetched += 1;
         if let Err(e) = store.save_artist_genres(&id, &tags, now) {
             report
                 .failed
                 .push((id.clone(), SpotifyError::from(e).to_string()));
+        } else {
+            report.fetched += 1;
         }
         genres.insert(id, tags);
     }
@@ -115,6 +117,48 @@ pub async fn tag_genres<S: Store + ?Sized>(
         }
     }
     report
+}
+
+/// Overlay the latest available artist evidence without rewriting personal
+/// library rows. A continuation can enrich the DJ immediately, including after
+/// restart, without replacing a newer library snapshot or its taste weights.
+/// Keep album, playlist and heuristic tags, and retain stale artist evidence
+/// until a later successful read replaces it in the public catalog cache.
+/// Artist cache failures are optional metadata failures: retain the stored
+/// tags and report the failure without making an otherwise usable pool fail.
+pub(crate) fn apply_cached_genres<S: Store + ?Sized>(store: &S, items: &mut [LibraryItem]) {
+    let mut genres = HashMap::new();
+    let mut failures = 0usize;
+    let mut first_failure = None;
+    for id in items.iter().filter_map(|item| item.artist_id.as_ref()) {
+        if let Entry::Vacant(entry) = genres.entry(id.clone()) {
+            let tags = match store.artist_genres(id) {
+                Ok(cached) => cached.map_or_default(|(tags, _)| tags),
+                Err(error) => {
+                    failures += 1;
+                    first_failure.get_or_insert(error);
+                    Vec::new()
+                }
+            };
+            entry.insert(tags);
+        }
+    }
+    if let Some(error) = first_failure {
+        tracing::warn!(
+            failed_artists = failures,
+            %error,
+            "artist genre cache unavailable; retaining stored library genres"
+        );
+    }
+    for item in items {
+        if let Some(tags) = item.artist_id.as_ref().and_then(|id| genres.get(id)) {
+            for tag in tags {
+                if !item.genres.contains(tag) {
+                    item.genres.push(tag.clone());
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

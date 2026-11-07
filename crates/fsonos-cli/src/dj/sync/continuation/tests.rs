@@ -97,6 +97,7 @@ fn successful_continuation_updates_the_pool_without_postponing_daily_full_refres
             retired: 0,
         },
         genres: GenreRead::default(),
+        genre_continuation: GenreContinuation::default(),
         playlists: pending(0, 105),
         albums: AlbumContinuation::default(),
         notes: Vec::new(),

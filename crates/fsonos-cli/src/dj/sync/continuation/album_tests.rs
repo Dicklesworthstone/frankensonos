@@ -108,6 +108,7 @@ fn report(albums: AlbumContinuation) -> LibrarySyncDetailed {
             retired: 0,
         },
         genres: GenreRead::default(),
+        genre_continuation: GenreContinuation::default(),
         playlists: playlists(0),
         albums,
         notes: Vec::new(),
@@ -154,7 +155,7 @@ fn retained_pages_survive_restart_and_only_complete_albums_refresh_the_dj_pool()
     let sync = controller(dir.clone(), at + check);
     let read = report(partial());
     let latest = sync
-        .accepted(Some(before), &state, &read, false, true, at + check)
+        .accepted(Some(before), &state, &read, PassKind::Albums, at + check)
         .unwrap();
     assert_eq!(latest.at, at);
     assert_eq!(latest.retired, 2);
@@ -178,8 +179,7 @@ fn retained_pages_survive_restart_and_only_complete_albums_refresh_the_dj_pool()
             restarted.last(),
             &saved,
             &complete,
-            false,
-            true,
+            PassKind::Albums,
             saved.album_retry_at,
         )
         .unwrap();
@@ -214,8 +214,7 @@ fn a_cache_publication_before_an_interrupted_checkpoint_still_refreshes_the_pool
         Some(full(at)),
         &state,
         &read,
-        false,
-        true,
+        PassKind::Albums,
         state.album_retry_at,
     )
     .unwrap();
@@ -235,8 +234,7 @@ fn an_account_generation_change_requests_full_refresh_without_a_fresh_pool_signa
         Some(full(at)),
         &state,
         &report(changed),
-        false,
-        true,
+        PassKind::Albums,
         state.album_retry_at,
     )
     .unwrap();
@@ -289,8 +287,14 @@ fn playlist_progress_keeps_due_album_pages_and_the_two_background_readers_take_t
     let mut read = report(albums(1, 0, 0));
     read.playlists = playlists(1);
     read.playlists.advanced = 150;
-    sync.accepted(Some(full(at)), &state, &read, false, false, album_deadline)
-        .unwrap();
+    sync.accepted(
+        Some(full(at)),
+        &state,
+        &read,
+        PassKind::Playlists,
+        album_deadline,
+    )
+    .unwrap();
     let next = load(&dir).unwrap();
     assert_eq!(next.album_retry_at, album_deadline);
     assert_eq!(next.album_stalled, 0);
@@ -310,8 +314,7 @@ fn playlist_progress_keeps_due_album_pages_and_the_two_background_readers_take_t
         sync.last(),
         &next,
         &report(progressed),
-        false,
-        true,
+        PassKind::Albums,
         next.retry_at,
     )
     .unwrap();

@@ -8,6 +8,8 @@ const remote = require('../crates/fsonos-api/src/remote/library-sync.js');
 const completed = (overrides = {}) => ({ at: 1790000000, tracks: 100, candidates: 80,
   classical: 12, retired: 3, ...overrides });
 const status = (overrides = {}) => ({ done: 'Library read.', running: false, last: completed(), ...overrides });
+const genres = (overrides = {}) => ({ pending: 12, completed: 7, running: false,
+  retry_at: 1790000900, not_before: 1790003600, requires_refresh: false, ...overrides });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -27,8 +29,52 @@ test('opening only observes; neither construction nor observation starts a refre
 
 test('old completed DTOs keep omitted notes and pending genres at their defaults', () => {
   const s = remote.statusOf(status()); assert.deepEqual(s.last.notes, []); assert.equal(s.last.genre_artists_pending, 0);
+  assert.equal(s.genre_enrichment, null);
   assert.equal(remote.statusOf({ done: 'Not read yet', running: false }).last, null);
   assert.ok(Object.isFrozen(s) && Object.isFrozen(s.last) && Object.isFrozen(s.last.notes));
+});
+
+test('current genre progress and cooldowns survive parsing independently of the full refresh', () => {
+  const raw = status({ last: completed({ genre_artists_pending: 99 }), genre_enrichment: genres() });
+  const parsed = remote.statusOf(raw); raw.genre_enrichment.pending = 100;
+  assert.deepEqual(parsed.genre_enrichment, genres()); assert.ok(Object.isFrozen(parsed.genre_enrichment));
+  assert.equal(parsed.last.genre_artists_pending, 99); assert.equal(parsed.last.at, completed().at);
+  const finished = remote.statusOf(status({ genre_enrichment: genres({ pending: 0, completed: 12, retry_at: null, not_before: null }) }));
+  assert.equal(finished.genre_enrichment.pending, 0); assert.equal(finished.genre_enrichment.completed, 12);
+});
+
+test('malformed or contradictory genre progress cannot be mistaken for a complete update', async () => {
+  for (const value of [[], {}, genres({ pending: -1 }), genres({ pending: 2 ** 53 }),
+    genres({ completed: 1.5 }), genres({ running: 'yes' }), genres({ requires_refresh: 1 }),
+    genres({ retry_at: 'later' }), genres({ not_before: 8640000000001 }), genres({ running: true })]) {
+    const raw = status({ genre_enrichment: value });
+    assert.throws(() => remote.statusOf(raw)); const h = harness(() => raw);
+    assert.equal(await h.model.open(), false); assert.equal(await h.model.start(), false);
+    assert.equal(h.calls.length, 1); h.model.dispose();
+  }
+});
+
+test('pending genre passes use modest read polling until actual completion', async () => {
+  let answer = status({ genre_enrichment: genres() }); const h = harness(() => answer);
+  await h.model.open(); assert.equal(h.model.state.status.running, false);
+  assert.equal(h.fire(), remote.GENRE_POLL_MS); await settle(); assert.ok(remote.GENRE_POLL_MS >= 30000);
+  answer = status({ running: true, genre_enrichment: genres({ running: true }) });
+  h.fire(); await settle(); assert.equal(h.fire(), remote.POLL_MS); await settle();
+  answer = status({ last: completed({ genre_artists_pending: 99 }),
+    genre_enrichment: genres({ pending: 0, completed: 12, retry_at: null, not_before: null }) });
+  h.fire(); await settle(); assert.equal(h.timers.size, 0);
+  assert.equal(h.model.state.status.last.at, completed().at);
+  assert.ok(h.calls.every(([name]) => name === 'librarySyncStatus')); h.model.dispose();
+});
+
+test('required full refreshes remain observable without starting work and hidden tabs stop waiting polls', async () => {
+  const h = harness(() => status({ genre_enrichment: genres({ pending: 0, requires_refresh: true }) }));
+  await h.model.open(); assert.equal([...h.timers.values()][0].delay, remote.GENRE_POLL_MS);
+  h.model.setVisible(false); assert.equal(h.timers.size, 0);
+  h.model.setVisible(true); await settle(); assert.equal(h.calls.length, 2);
+  assert.equal([...h.timers.values()][0].delay, remote.GENRE_POLL_MS);
+  h.model.close(); assert.equal(h.timers.size, 0);
+  assert.ok(h.calls.every(([name]) => name === 'librarySyncStatus')); h.model.dispose();
 });
 
 test('partial results, previous completion and latest failure stay distinct', () => {
@@ -185,6 +231,41 @@ test('the registered routes dispatch through actual loopback HTTP with JSON', as
   } });
   await m.open(); assert.equal(await m.start(), true); m.dispose();
   assert.deepEqual(requests, [['GET', '/dj/sync', undefined, ''], ['POST', '/dj/sync', 'application/json', '{}']]);
+});
+
+test('the panel shows current genre counts and cooldown instead of a stale full-refresh count', async (t) => {
+  class Element {
+    constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.textContent = ''; }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
+    setAttribute(name, value) { this.attrs[name] = value; }
+    focus() {}
+  }
+  const el = (tag, attrs = {}, ...children) => {
+    const node = new Element(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (key === 'text') node.textContent = value; else node[key] = value;
+    }
+    node.append(...children); return node;
+  };
+  const all = (node) => [node, ...node.children.flatMap(all)];
+  const previous = global.document; let panel;
+  global.document = { hidden: false, addEventListener() {}, removeEventListener() {} };
+  t.after(() => { panel?.dispose(); if (previous === undefined) delete global.document; else global.document = previous; });
+  let answer = status({ last: completed({ genre_artists_pending: 99 }), genre_enrichment: genres() });
+  panel = remote.panel({ call: async () => answer, el }); await panel.model.open();
+  let nodes = all(panel.node);
+  const counts = nodes.filter((node) => node.tag === 'dl').map((node) => node.children.map((child) => child.textContent));
+  assert.ok(counts.some((items) => items.join('|') === 'Artist lookups pending|12|Completed in the latest pass|7'));
+  assert.ok(!nodes.some((node) => node.textContent === '99' || node.textContent === 'Artist genres pending'));
+  const retry = nodes.find((node) => node.tag === 'p' && node.children[0]?.textContent === 'Next genre pass no earlier than ');
+  assert.equal(retry.children[1].datetime, new Date(genres().not_before * 1000).toISOString());
+  assert.ok(nodes.some((node) => node.textContent === 'Last completed full refresh'));
+
+  answer = status({ genre_enrichment: genres({ pending: 0, completed: 12, not_before: null, retry_at: null }) });
+  await panel.model.refresh(); nodes = all(panel.node);
+  assert.ok(nodes.some((node) => node.textContent === 'Artist genres are complete for the cached library.'));
+  assert.ok(!nodes.some((node) => node.textContent === 'Spotify cooldown ends at '));
 });
 
 test('the write error hint survives a subsequent successful observation', async () => {

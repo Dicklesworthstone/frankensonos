@@ -1,22 +1,45 @@
-//! Durable scheduling for bounded playlist and whole-work album enrichment. The public stamp's
+//! Durable scheduling for bounded playlist, album and genre enrichment. The public stamp's
 //! timestamp remains the last full sync, while private state survives restarts.
 
 use super::{
     CHECK, ErrorCode, Failure, LibrarySync, LibrarySyncDetailed, MAX_AGE, Path, STAMP, SyncedDto,
     failure, stalled,
 };
-use fsonos_spotify::cache::AlbumContinuation;
+use fsonos_api::surface::dj_sync::GenreEnrichmentDto;
+use fsonos_spotify::cache::{AlbumContinuation, GenreContinuation};
 use fsonos_spotify::taste::PlaylistContinuation;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
 const NOTE: &str = "Playlist continuation: ";
 const ALBUM_NOTE: &str = "Album completion: ";
+const GENRE_NOTE: &str = "Genre enrichment: ";
 
 pub(super) enum Pass {
     Full,
     Playlists(String),
     Albums(Option<AlbumContinuation>),
+    Genres(Option<GenreContinuation>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PassKind {
+    Full,
+    Playlists,
+    Albums,
+    Genres,
+}
+
+impl Pass {
+    fn kind(&self) -> PassKind {
+        match self {
+            Self::Full => PassKind::Full,
+            Self::Playlists(_) => PassKind::Playlists,
+            Self::Albums(_) => PassKind::Albums,
+            Self::Genres(_) => PassKind::Genres,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +64,15 @@ pub(super) struct Checkpoint {
     album_retry_at: i64,
     #[serde(default)]
     album_turn: bool,
+    #[serde(default)]
+    genres: Option<GenreContinuation>,
+    #[serde(default)]
+    genre_stalled: usize,
+    #[serde(default)]
+    genre_retry_at: i64,
+    /// Rotate the three independent readers; old stamps retain album_turn.
+    #[serde(default)]
+    next_enrichment: Option<PassKind>,
 }
 
 impl Checkpoint {
@@ -56,6 +88,7 @@ impl Checkpoint {
         self.not_before = self.not_before.max(until);
         self.retry_at = self.retry_at.max(self.not_before);
         self.album_retry_at = self.album_retry_at.max(self.not_before);
+        self.genre_retry_at = self.genre_retry_at.max(self.not_before);
     }
 
     fn reserve(&self, now: i64) -> Self {
@@ -91,6 +124,14 @@ impl Checkpoint {
                 self.album_retry_at
             },
             album_turn: self.album_turn,
+            genres: self.genres.clone(),
+            genre_stalled: self.genre_stalled,
+            genre_retry_at: if self.genres.is_none() {
+                now.saturating_add(Self::wait(0))
+            } else {
+                self.genre_retry_at
+            },
+            next_enrichment: self.next_enrichment,
         };
         next.cooldown(now, report.retry_after_secs);
         next
@@ -132,6 +173,87 @@ impl Checkpoint {
             && now >= self.not_before
             && now >= self.album_retry_at
             && self.albums.as_ref().is_none_or(|albums| albums.pending > 0)
+    }
+
+    pub(super) fn has_genres(&self) -> bool {
+        self.genres.is_some()
+    }
+
+    fn genre_due(&self, now: i64) -> bool {
+        !self.requires_refresh
+            && !self.reconcile
+            && now >= self.not_before
+            && now >= self.genre_retry_at
+            && self
+                .genres
+                .as_ref()
+                .is_some_and(|genres| genres.pending > 0)
+    }
+
+    fn reserve_genres(&self, now: i64) -> Self {
+        let mut reserved = self.clone();
+        reserved.genre_stalled = reserved.genre_stalled.saturating_add(1);
+        reserved.genre_retry_at = now
+            .saturating_add(Self::wait(reserved.genre_stalled))
+            .max(reserved.not_before);
+        reserved
+    }
+
+    fn observed_genres(&mut self, report: &GenreContinuation, now: i64, keep_cursor: bool) {
+        if keep_cursor
+            && report.completed == 0
+            && !report.requires_refresh
+            && let Some(previous) = &self.genres
+            && previous.pending > 0
+            && report.pending > 0
+            && previous.owner == report.owner
+            && previous.generation == report.generation
+        {
+            let mut genres = report.clone();
+            genres.inherit_progress(previous);
+            self.genres = Some(genres);
+            // A playlist/full observation must not reset a due genre reader
+            // or move its cursor back to the first failing artist.
+            self.cooldown(now, report.retry_after_secs);
+            return;
+        }
+        let progress = report.completed > 0
+            || self.genres.as_ref().is_none_or(|previous| {
+                report.pending < previous.pending
+                    || report.owner != previous.owner
+                    || report.generation != previous.generation
+            });
+        self.genre_stalled = if progress || report.pending == 0 {
+            0
+        } else {
+            self.genre_stalled.saturating_add(1)
+        };
+        self.genre_retry_at = now.saturating_add(Self::wait(self.genre_stalled));
+        let mut genres = report.clone();
+        if keep_cursor && let Some(previous) = &self.genres {
+            genres.inherit_progress(previous);
+        }
+        if report.requires_refresh {
+            self.requires_refresh = true;
+            self.retry_at = self.genre_retry_at;
+        }
+        self.genres = Some(genres);
+        self.cooldown(now, report.retry_after_secs);
+    }
+
+    fn genre_note(&self) -> Option<String> {
+        let genres = self.genres.as_ref()?;
+        if genres.requires_refresh {
+            return Some(format!(
+                "{GENRE_NOTE}the Spotify account needs a full library refresh"
+            ));
+        }
+        (genres.pending > 0 || genres.completed > 0).then(|| {
+            format!(
+                "{GENRE_NOTE}{} artist lookup(s) completed, {} unfinished; the next bounded pass follows the saved retry deadline",
+                genres.completed, genres.pending
+            )
+        })
     }
 
     fn reserve_albums(&self, now: i64) -> Self {
@@ -204,11 +326,30 @@ impl Checkpoint {
     fn background_pass(&self, now: i64) -> Option<Pass> {
         let owner = self.owner_due(now);
         let albums = self.album_due(now);
-        if albums && (self.album_turn || owner.is_none()) {
-            Some(Pass::Albums(self.albums.clone()))
+        let genres = self.genre_due(now);
+        let first = self.next_enrichment.unwrap_or(if self.album_turn {
+            PassKind::Albums
         } else {
-            owner.map(Pass::Playlists)
+            PassKind::Playlists
+        });
+        let start = match first {
+            PassKind::Full | PassKind::Playlists => 0,
+            PassKind::Albums => 1,
+            PassKind::Genres => 2,
+        };
+        for offset in 0..3 {
+            match (start + offset) % 3 {
+                0 => {
+                    if let Some(owner) = &owner {
+                        return Some(Pass::Playlists(owner.clone()));
+                    }
+                }
+                1 if albums => return Some(Pass::Albums(self.albums.clone())),
+                2 if genres => return Some(Pass::Genres(self.genres.clone())),
+                _ => {}
+            }
         }
+        None
     }
 
     fn note(&self) -> String {
@@ -244,6 +385,19 @@ pub(super) fn load(data_dir: &Path) -> Option<Checkpoint> {
     serde_json::from_str::<Envelope>(&text)
         .ok()?
         .playlist_continuation
+}
+
+pub(super) fn genre_status(data_dir: &Path, running: bool, now: i64) -> Option<GenreEnrichmentDto> {
+    let saved = load(data_dir)?;
+    let genres = saved.genres.as_ref()?;
+    Some(GenreEnrichmentDto {
+        pending: genres.pending,
+        completed: genres.completed,
+        running,
+        retry_at: (genres.pending > 0 || genres.requires_refresh).then_some(saved.genre_retry_at),
+        not_before: (saved.not_before > now).then_some(saved.not_before),
+        requires_refresh: genres.requires_refresh || saved.requires_refresh,
+    })
 }
 
 fn write(
@@ -287,10 +441,7 @@ fn full_result(read: &LibrarySyncDetailed, at: i64) -> SyncedDto {
         candidates: read.library.candidates,
         classical: read.library.classical,
         retired: read.library.retired,
-        genre_artists_pending: read
-            .genres
-            .deferred
-            .saturating_add(read.genres.failed.len()),
+        genre_artists_pending: read.genre_continuation.pending,
         genre_stalled: 0,
         notes: read.notes.clone(),
     }
@@ -318,6 +469,21 @@ fn continued_result_with_note(
         ));
     }
     previous
+}
+
+/// Older full-sync stamps put genre diagnostics beside the other read notes.
+/// A current genre pass replaces only those diagnostics, keeping taste and
+/// album failures visible until their own readers resolve them.
+fn legacy_genre_note(note: &str) -> bool {
+    if note.starts_with("the genre read stopped early (") {
+        return true;
+    }
+    note.split_once(' ').is_some_and(|(count, detail)| {
+        count.parse::<usize>().is_ok()
+            && (detail == "artists' genres wait for the next sync"
+                || detail.starts_with("artist's genres couldn't be read (")
+                || detail.starts_with("artists' genres couldn't be read ("))
+    })
 }
 
 impl LibrarySync {
@@ -348,16 +514,18 @@ impl LibrarySync {
     }
 
     pub(super) fn run_pass(&self, pass: Pass) -> Result<SyncedDto, Failure> {
+        self.running().genres = matches!(pass, Pass::Genres(_));
         let result = self.perform_pass(pass);
         let mut state = self.running();
         state.running = false;
+        state.genres = false;
         state.error = result.as_ref().err().map(|error| error.detail.clone());
         result
     }
 
     fn perform_pass(&self, pass: Pass) -> Result<SyncedDto, Failure> {
-        let full = matches!(pass, Pass::Full);
-        let album_pass = matches!(pass, Pass::Albums(_));
+        let kind = pass.kind();
+        let full = kind == PassKind::Full;
         let before = self.last();
         let checkpoint = load(&self.data_dir).unwrap_or_default();
         let now = self.now();
@@ -378,10 +546,10 @@ impl LibrarySync {
         }
         // Persist admission before network I/O: interrupted processes retain
         // their unfinished work and cannot restart the retry clock at zero.
-        let mut reserved = if album_pass {
-            checkpoint.reserve_albums(now)
-        } else {
-            checkpoint.reserve(now)
+        let mut reserved = match kind {
+            PassKind::Albums => checkpoint.reserve_albums(now),
+            PassKind::Genres => checkpoint.reserve_genres(now),
+            PassKind::Full | PassKind::Playlists => checkpoint.reserve(now),
         };
         write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
         let read = self.read(pass);
@@ -394,7 +562,9 @@ impl LibrarySync {
         match result {
             Ok(mut read) => {
                 read.albums.retry_after_secs = read.albums.retry_after_secs.max(retry_after);
-                self.accepted(before, &checkpoint, &read, full, album_pass, at)
+                read.genre_continuation.retry_after_secs =
+                    read.genre_continuation.retry_after_secs.max(retry_after);
+                self.accepted(before, &checkpoint, &read, kind, at)
             }
             Err(error) => {
                 write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
@@ -404,24 +574,45 @@ impl LibrarySync {
     }
 
     /// Publish one accepted read to the scheduler and notify active DJ feeds.
-    /// Shared by full reads and both continuation paths.
+    /// Shared by full reads and all three continuation paths.
     fn accepted(
         &self,
         before: Option<SyncedDto>,
         checkpoint: &Checkpoint,
         read: &LibrarySyncDetailed,
-        full: bool,
-        album_pass: bool,
+        kind: PassKind,
         at: i64,
     ) -> Result<SyncedDto, Failure> {
-        let mut next = if album_pass {
+        let full = kind == PassKind::Full;
+        let album_pass = kind == PassKind::Albums;
+        let genre_pass = kind == PassKind::Genres;
+        let mut next = if album_pass || genre_pass {
             checkpoint.clone()
         } else {
             checkpoint.completed(&read.playlists, at, !full)
         };
+        // New artist tags can reveal a classical movement whose whole album
+        // is still missing. This is a local observation, not an album read.
         next.observed_albums(&read.albums, at, !album_pass);
-        next.album_turn = !album_pass;
-        next.cooldown(at, read.albums.retry_after_secs);
+        if !genre_pass {
+            next.album_turn = !album_pass;
+        }
+        if !album_pass {
+            next.observed_genres(&read.genre_continuation, at, !genre_pass);
+        }
+        next.next_enrichment = match kind {
+            PassKind::Full => next.next_enrichment,
+            PassKind::Playlists => Some(PassKind::Albums),
+            PassKind::Albums => Some(PassKind::Genres),
+            PassKind::Genres => Some(PassKind::Playlists),
+        };
+        next.cooldown(
+            at,
+            read.albums
+                .retry_after_secs
+                .max(read.genre_continuation.retry_after_secs)
+                .max(read.playlists.retry_after_secs),
+        );
         let mut synced = if full {
             let mut synced = full_result(read, at);
             synced.genre_stalled = stalled(before.as_ref(), &synced);
@@ -432,15 +623,29 @@ impl LibrarySync {
             })?;
             if album_pass {
                 continued_result_with_note(before, read, at, ALBUM_NOTE)
+            } else if genre_pass {
+                let mut synced = continued_result_with_note(before, read, at, GENRE_NOTE);
+                synced.notes.retain(|note| !legacy_genre_note(note));
+                synced
             } else {
                 continued_result(before, read, at)
             }
         };
         if !album_pass {
+            synced.genre_artists_pending = read.genre_continuation.pending;
+            if !full {
+                synced.genre_stalled = next.genre_stalled;
+            }
+        }
+        if !album_pass {
             synced.notes.retain(|note| !note.starts_with(ALBUM_NOTE));
         }
+        if !genre_pass {
+            synced.notes.retain(|note| !note.starts_with(GENRE_NOTE));
+        }
         synced.notes.extend(next.album_note());
-        if next.owner.is_some() && !album_pass {
+        synced.notes.extend(next.genre_note());
+        if next.owner.is_some() && !album_pass && !genre_pass {
             synced.notes.push(next.note());
         }
         // A partial page cannot yet complete a work. A finished album
@@ -450,9 +655,19 @@ impl LibrarySync {
                 && old.generation == read.albums.generation
                 && read.albums.pending < old.pending
         });
-        if !next.requires_refresh
-            && (!album_pass || read.albums.completed > 0 || completed_since_checkpoint)
-        {
+        let genres_completed_since_checkpoint = checkpoint.genres.as_ref().is_some_and(|old| {
+            old.owner == read.genre_continuation.owner
+                && old.generation == read.genre_continuation.generation
+                && read.genre_continuation.pending < old.pending
+        });
+        let published = match kind {
+            PassKind::Full | PassKind::Playlists => true,
+            PassKind::Albums => read.albums.completed > 0 || completed_since_checkpoint,
+            PassKind::Genres => {
+                read.genre_continuation.completed > 0 || genres_completed_since_checkpoint
+            }
+        };
+        if !next.requires_refresh && published {
             self.fresh.store(true, Ordering::Release);
         }
         write(&self.data_dir, Some(&synced), &next).map_err(store_failure)?;
@@ -465,3 +680,6 @@ mod tests;
 
 #[cfg(test)]
 mod album_tests;
+
+#[cfg(test)]
+mod genre_tests;

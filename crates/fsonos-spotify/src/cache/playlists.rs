@@ -69,7 +69,7 @@ pub async fn continue_playlists<S: Store + ?Sized>(
         .as_ref()
         .filter(|_| !read.continuation.requires_refresh)
     {
-        let incoming = incoming_items(store, &taste)?;
+        let incoming = incoming_items(store, &taste);
         items.extend(incoming);
         if let Some(applied) = publish_library_read(store, receipt, &items, &taste)? {
             library = applied;
@@ -104,16 +104,22 @@ pub async fn continue_playlists<S: Store + ?Sized>(
     }
     let genres = GenreRead::default();
     let notes = sync_notes(&read, &genres, &albums);
-    let mut completion = match receipt {
-        Some(receipt) => super::albums::status(store, &receipt, now)?,
+    let mut completion = match receipt.as_ref() {
+        Some(receipt) => super::albums::status(store, receipt, now)?,
         None => super::AlbumContinuation::refresh_required(),
     };
     completion.completed = albums.fetched;
+    let mut genre_continuation = match receipt.as_ref() {
+        Some(receipt) => super::genre_completion::status(store, receipt, now)?,
+        None => super::GenreContinuation::refresh_required(),
+    };
+    genre_continuation.retry_after_secs = session.retry_after_secs();
     let mut playlists = read.continuation;
     playlists.retry_after_secs = session.retry_after_secs();
     Ok(LibrarySyncDetailed {
         library,
         genres,
+        genre_continuation,
         playlists,
         albums: completion,
         notes,
@@ -123,12 +129,14 @@ pub async fn continue_playlists<S: Store + ?Sized>(
 pub(super) fn candidate_items<S: Store + ?Sized>(
     store: &S,
 ) -> Result<Vec<crate::library::LibraryItem>, SpotifyError> {
-    Ok(store
+    let mut items = store
         .library()?
         .iter()
         .filter(|entry| entry.is_candidate())
         .map(from_entry)
-        .collect())
+        .collect::<Vec<_>>();
+    crate::genres::apply_cached_genres(store, &mut items);
+    Ok(items)
 }
 
 pub(super) fn summarize(items: &[crate::library::LibraryItem]) -> LibrarySync {
@@ -142,22 +150,12 @@ pub(super) fn summarize(items: &[crate::library::LibraryItem]) -> LibrarySync {
     }
 }
 
-fn incoming_items<S: Store + ?Sized>(
-    store: &S,
-    taste: &Taste,
-) -> Result<Vec<crate::library::LibraryItem>, SpotifyError> {
+fn incoming_items<S: Store + ?Sized>(store: &S, taste: &Taste) -> Vec<crate::library::LibraryItem> {
     let mut incoming = taste.tracks.clone();
     taste.weigh(&mut incoming);
     taste.name_genres(&mut incoming);
     // Reuse stored genre evidence without adding artist requests to this pass.
-    for item in &mut incoming {
-        if item.genres.is_empty()
-            && let Some(id) = &item.artist_id
-            && let Some((genres, _)) = store.artist_genres(id)?
-        {
-            item.genres = genres;
-        }
-    }
+    crate::genres::apply_cached_genres(store, &mut incoming);
     crate::genre_guess::fill(&mut incoming);
-    Ok(incoming)
+    incoming
 }
