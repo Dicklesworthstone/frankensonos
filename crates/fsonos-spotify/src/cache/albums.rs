@@ -6,30 +6,27 @@ use super::LibrarySyncDetailed;
 use super::playlists::{candidate_items, summarize};
 use crate::SpotifyError;
 use crate::classical::CandidatePool;
-use crate::client::{Endpoints, SimplifiedTrack};
-use crate::expand::{
-    AlbumMisses, MAX_ALBUM_ENTRIES, MAX_ALBUM_PAGES, album_id, album_track, halts,
-};
+use crate::expand::{AlbumMisses, album_id, halts};
 use crate::genres::GenreRead;
-use crate::library::{LibraryItem, Page};
+use crate::library::LibraryItem;
 use crate::session::Session;
 use crate::taste::PlaylistContinuation;
 use crate::works::group_works;
 use asupersync::Cx;
-use fsonos_core::store::{AlbumTrack, SpotifyLibraryOwner, Store};
+use fsonos_core::store::{SpotifyLibraryOwner, Store};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod library;
+mod proof;
 pub(super) use library::complete_verified;
+use proof::PartialAlbum;
 #[cfg(test)]
 mod tests;
 
 /// Catalog pages per background pass, plus one account identity read.
 pub const ALBUM_PAGE_BUDGET: usize = 8;
-/// A private partial list cannot grow beyond this many metadata bytes.
-const MAX_PARTIAL_BYTES: usize = 8 * 1024 * 1024;
 
 /// Durable whole-work completion progress. Personal library rows are never
 /// changed by this pass. The owner and adoption generation bind the checkpoint
@@ -42,7 +39,7 @@ pub struct AlbumContinuation {
     pub pending: usize,
     /// Complete album lists published by this pass.
     pub completed: usize,
-    /// Raw positions retained in a newly advanced partial list.
+    /// Raw positions newly retained or verified in this pass's partial list.
     pub advanced: usize,
     pub retry_after_secs: u64,
     pub requires_refresh: bool,
@@ -79,18 +76,16 @@ impl AlbumContinuation {
 
     /// Resume retained pages first; otherwise rotate past the last album
     /// attempted so malformed recordings cannot starve later candidates.
-    fn order(&mut self, albums: &[String]) -> Vec<String> {
+    fn order(&mut self, albums: &[String], at: i64) -> Vec<String> {
         let mut order = albums.to_vec();
         if let Some(cursor) = &self.cursor {
             let start = order.partition_point(|uri| uri <= cursor);
             order.rotate_left(start);
         }
-        // Old checkpoints predate explicit-content metadata. Their tracks
-        // cannot be published as clean; restart the album instead.
-        self.partial = self.partial.take().filter(|part| {
-            part.bounded()
-                && part.tracks.iter().all(|track| track.explicit.is_some())
-                && albums.contains(&part.uri)
+        // Retained metadata must match its bounded, unexpired proof before
+        // its cursor can be resumed. Legacy unproved checkpoints start again.
+        self.partial = self.partial.take().and_then(|mut part| {
+            (albums.contains(&part.uri) && part.resume(at)).then_some(part)
         });
         if let Some(part) = &self.partial
             && let Some(index) = order.iter().position(|uri| uri == &part.uri)
@@ -111,116 +106,6 @@ impl AlbumContinuation {
         self.partial = None;
         self.pending = 0;
         self.advanced = 0;
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PartialAlbum {
-    uri: String,
-    offset: u32,
-    total: Option<u32>,
-    pages: usize,
-    tracks: Vec<PartialTrack>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PartialTrack {
-    disc_number: u32,
-    track_number: u32,
-    source_uri: String,
-    title: String,
-    duration_secs: Option<u32>,
-    #[serde(default)]
-    explicit: Option<bool>,
-}
-
-impl From<AlbumTrack> for PartialTrack {
-    fn from(track: AlbumTrack) -> Self {
-        Self {
-            disc_number: track.disc_number,
-            track_number: track.track_number,
-            source_uri: track.source_uri,
-            title: track.title,
-            duration_secs: track.duration_secs,
-            explicit: track.explicit,
-        }
-    }
-}
-
-impl From<PartialTrack> for AlbumTrack {
-    fn from(track: PartialTrack) -> Self {
-        Self {
-            disc_number: track.disc_number,
-            track_number: track.track_number,
-            source_uri: track.source_uri,
-            title: track.title,
-            duration_secs: track.duration_secs,
-            explicit: track.explicit,
-        }
-    }
-}
-
-impl PartialAlbum {
-    fn new(uri: String) -> Self {
-        Self {
-            uri,
-            offset: 0,
-            total: None,
-            pages: 0,
-            tracks: Vec::new(),
-        }
-    }
-
-    fn bounded(&self) -> bool {
-        album_id(&self.uri).is_some()
-            && self.pages <= MAX_ALBUM_PAGES
-            && self.offset as usize <= MAX_ALBUM_ENTRIES
-            && self.tracks.len() <= self.offset as usize
-            && self.total.is_none_or(|total| self.offset <= total)
-            && self
-                .tracks
-                .iter()
-                .try_fold(0usize, |bytes, track| {
-                    bytes
-                        .checked_add(track.source_uri.len())?
-                        .checked_add(track.title.len())?
-                        .checked_add(64)
-                })
-                .is_some_and(|bytes| bytes <= MAX_PARTIAL_BYTES)
-    }
-
-    /// A validated page is retained atomically; errors discard this album's
-    /// partial observation, never publish a truncated complete cache.
-    fn ingest(&mut self, body: &[u8], endpoints: &Endpoints) -> Result<bool, SpotifyError> {
-        let id = album_id(&self.uri)
-            .ok_or_else(|| SpotifyError::Decode("invalid album checkpoint".into()))?;
-        if self.pages >= MAX_ALBUM_PAGES {
-            return Err(SpotifyError::Decode("album page budget exceeded".into()));
-        }
-        let url = endpoints.album_tracks(id, self.offset);
-        let page = Page::<SimplifiedTrack>::read(body, &url, endpoints, self.total, |offset| {
-            endpoints.album_tracks(id, offset)
-        })?;
-        let count = u32::try_from(page.items.len())
-            .map_err(|_| SpotifyError::Decode("album page is too large".into()))?;
-        self.offset = self
-            .offset
-            .checked_add(count)
-            .ok_or_else(|| SpotifyError::Decode("album position overflow".into()))?;
-        self.total = page.coverage.total;
-        self.pages += 1;
-        self.tracks.extend(
-            page.items
-                .iter()
-                .filter_map(album_track)
-                .map(PartialTrack::from),
-        );
-        if !self.bounded() {
-            return Err(SpotifyError::Decode(
-                "album checkpoint budget exceeded".into(),
-            ));
-        }
-        Ok(page.next.is_none())
     }
 }
 
@@ -382,11 +267,7 @@ async fn read_pages<S: Store + ?Sized>(
     notes: &mut Vec<String>,
 ) -> Result<(), SpotifyError> {
     let at = now();
-    let order = state.order(albums);
-    let before = state
-        .partial
-        .as_ref()
-        .map(|part| (part.uri.clone(), part.offset));
+    let order = state.order(albums, at);
     let mut misses = AlbumMisses::load(store, at)?;
     let mut requests = 0;
     'albums: for uri in order {
@@ -398,45 +279,67 @@ async fn read_pages<S: Store + ?Sized>(
             .partial
             .take()
             .filter(|part| part.uri == uri)
-            .unwrap_or_else(|| PartialAlbum::new(uri.clone()));
+            .unwrap_or_else(|| PartialAlbum::new(uri.clone(), at));
+        // One root check per resumed pass leaves seven requests for forward
+        // intake or verification. Persisted verification never starts over
+        // merely because this pass used its request allowance.
+        let mut root_pending = part.has_pages();
+        let mut advanced = 0usize;
         loop {
             if store.spotify_library_owner()?.as_ref() != Some(receipt) {
                 state.changed_owner();
                 break 'albums;
             }
-            if requests >= ALBUM_PAGE_BUDGET {
+            if !root_pending && part.ready() {
+                if publish_complete(store, &part, at, &mut misses, state, notes) {
+                    break;
+                }
                 state.partial = Some(part);
+                state.advanced = advanced;
                 break 'albums;
             }
+            if requests >= ALBUM_PAGE_BUDGET {
+                state.partial = Some(part);
+                state.advanced = advanced;
+                break 'albums;
+            }
+            let check = if root_pending {
+                Some(0)
+            } else {
+                part.verification_index()
+            };
+            let offset = check
+                .and_then(|index| part.page_offset(index))
+                .unwrap_or(part.offset);
             let id = album_id(&uri)
                 .ok_or_else(|| SpotifyError::Decode("invalid pending album".into()))?;
-            let url = session.endpoints().album_tracks(id, part.offset);
+            let url = session.endpoints().album_tracks(id, offset);
             requests += 1;
             let result = session.get_brief(cx, &url).await;
             if store.spotify_library_owner()?.as_ref() != Some(receipt) {
                 state.changed_owner();
                 break 'albums;
             }
-            let page = result.and_then(|body| part.ingest(&body, session.endpoints()));
+            let previous = (part.offset, part.verified_positions());
+            let page = result.and_then(|body| match check {
+                Some(index) => part.verify(index, &body, session.endpoints()),
+                None => part.ingest(&body, session.endpoints()).map(|()| true),
+            });
             match page {
-                Ok(false) => {}
                 Ok(true) => {
-                    if part.tracks.is_empty() {
-                        misses.record(&uri, at);
-                        notes.push(format!("{uri}: no playable album tracks"));
-                    } else {
-                        let mut tracks: Vec<AlbumTrack> =
-                            part.tracks.into_iter().map(AlbumTrack::from).collect();
-                        tracks.sort_by_key(|track| (track.disc_number, track.track_number));
-                        match store.save_album_tracks(&uri, &tracks, at) {
-                            Ok(()) => state.completed += 1,
-                            Err(error) => notes.push(format!("{uri}: {error}")),
-                        }
-                    }
+                    root_pending = false;
+                    advanced += part.offset.saturating_sub(previous.0) as usize
+                        + part.verified_positions().saturating_sub(previous.1);
+                }
+                Ok(false) => {
+                    notes.push(format!("{uri}: album catalog changed; retained pages discarded"));
+                    // Rotate immediately. A repeatedly changing large album
+                    // must not consume every pass ahead of stable recordings.
                     break;
                 }
                 Err(error) if halts(&error) => {
                     state.partial = Some(part);
+                    state.advanced = advanced;
                     notes.push(format!("album completion paused: {error}"));
                     break 'albums;
                 }
@@ -454,14 +357,38 @@ async fn read_pages<S: Store + ?Sized>(
     }
     if !state.requires_refresh && store.spotify_library_owner()?.as_ref() == Some(receipt) {
         misses.save(store, at)?;
-        if let Some(part) = &state.partial {
-            let old = before
-                .filter(|(uri, _)| uri == &part.uri)
-                .map_or(0, |(_, offset)| offset);
-            state.advanced = part.offset.saturating_sub(old) as usize;
-        }
     } else {
         state.changed_owner();
     }
     Ok(())
+}
+
+/// Return false only when the completed metadata must remain private for a
+/// later cache-write attempt. Owner and proof checks precede this call.
+fn publish_complete<S: Store + ?Sized>(
+    store: &mut S,
+    part: &PartialAlbum,
+    at: i64,
+    misses: &mut AlbumMisses,
+    state: &mut AlbumContinuation,
+    notes: &mut Vec<String>,
+) -> bool {
+    let uri = &part.uri;
+    let mut tracks = part.album_tracks();
+    if tracks.is_empty() {
+        misses.record(uri, at);
+        notes.push(format!("{uri}: no playable album tracks"));
+        return true;
+    }
+    tracks.sort_by_key(|track| (track.disc_number, track.track_number));
+    match store.save_album_tracks(uri, &tracks, at) {
+        Ok(()) => {
+            state.completed += 1;
+            true
+        }
+        Err(error) => {
+            notes.push(format!("{uri}: {error}"));
+            false
+        }
+    }
 }

@@ -500,6 +500,14 @@ the web panel keeps observing it. `fsonos setup` shares the daemon's refresh
 worker when available and explains unfinished intake without asking you to
 repeat a successful Spotify sign-in.
 
+Whole-work album completion also retains private page proofs across interruptions.
+Each pass still uses at most eight catalog requests, including root checks and
+verification. A resumed album is published only after its retained pages are
+rechecked; changed metadata or coverage discards the partial scan and gives later
+albums a turn. Verification progress survives restarts, and checkpoints older
+than seven days start again. Small albums read in one uninterrupted pass do not
+need an extra scan.
+
 Large libraries continue artist genre enrichment in background passes of up to
 50 artists. Progress survives restarts, failed artists yield to later ones,
 and newly learned tags reach the DJ's next selection without rereading saved

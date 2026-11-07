@@ -13,24 +13,25 @@ fn status(pending: usize) -> AlbumContinuation {
 
 fn progressed(offset: u32) -> AlbumContinuation {
     let uri = "spotify:album:TestAlbum".to_owned();
+    let mut partial = PartialAlbum::new(uri.clone(), now());
+    let body = serde_json::json!({
+        "offset": 0, "total": 50,
+        "items": (0..offset).map(|number| serde_json::json!({
+            "uri": format!("spotify:track:Partial{number}"),
+            "name": format!("Movement {number}"),
+            "disc_number": 1, "track_number": number + 1,
+            "duration_ms": 180_000, "explicit": false
+        })).collect::<Vec<_>>()
+    });
+    partial
+        .ingest(
+            &serde_json::to_vec(&body).unwrap(),
+            &crate::client::Endpoints::default(),
+        )
+        .unwrap();
     AlbumContinuation {
-        cursor: Some(uri.clone()),
-        partial: Some(PartialAlbum {
-            uri,
-            offset,
-            total: Some(50),
-            pages: 1,
-            tracks: (0..offset)
-                .map(|number| PartialTrack {
-                    disc_number: 1,
-                    track_number: number + 1,
-                    source_uri: format!("spotify:track:Partial{number}"),
-                    title: format!("Movement {number}"),
-                    duration_secs: Some(180),
-                    explicit: Some(false),
-                })
-                .collect(),
-        }),
+        cursor: Some(uri),
+        partial: Some(partial),
         advanced: usize::try_from(offset).unwrap(),
         ..status(2)
     }

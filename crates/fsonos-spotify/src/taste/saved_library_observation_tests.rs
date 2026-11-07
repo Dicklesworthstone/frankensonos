@@ -55,7 +55,9 @@ fn identity_http_failures_leave_retained_pages_and_public_ownership_unchanged() 
                 );
                 assert!(failed.progress.is_none());
                 assert_eq!(
-                    store.spotify_library_progress(OWNER, owner.as_ref()).unwrap(),
+                    store
+                        .spotify_library_progress(OWNER, owner.as_ref())
+                        .unwrap(),
                     Some(encoded)
                 );
                 assert_eq!(store.spotify_library_owner().unwrap(), owner);

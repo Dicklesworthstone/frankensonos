@@ -9,6 +9,8 @@ use fsonos_core::store::SqliteStore;
 
 #[path = "album_budget_tests.rs"]
 mod budget;
+#[path = "album_proof_tests.rs"]
+mod proof;
 
 const OWNER: &str = "test-owner";
 const ALBUM: &str = "BackgroundSonata";
@@ -71,6 +73,29 @@ async fn continue_with(
     continue_albums(&mut session, cx, store, previous)
         .await
         .unwrap()
+}
+
+/// Test albums have ten short pages. Finish their verification across bounded
+/// passes, round-tripping the durable cursor between every attempt.
+async fn finish_with(
+    server: &Server,
+    cx: &Cx,
+    store: &mut dyn Store,
+    previous: &AlbumContinuation,
+) -> LibrarySyncDetailed {
+    let mut previous = previous.clone();
+    for _ in 0..4 {
+        let before = server.calls("/v1/albums/").len();
+        let loaded = serde_json::from_str(&serde_json::to_string(&previous).unwrap()).unwrap();
+        let result = continue_with(server, cx, store, Some(&loaded)).await;
+        assert!(server.calls("/v1/albums/").len() - before <= ALBUM_PAGE_BUDGET);
+        if result.albums.pending == 0 {
+            return result;
+        }
+        assert!(result.albums.advanced > 0, "verification must keep moving");
+        previous = result.albums;
+    }
+    panic!("short stable test album failed to finish its bounded verification");
 }
 
 #[test]
@@ -178,15 +203,22 @@ fn a_long_album_resumes_its_validated_pages_after_restart_before_any_cache_publi
 
         let previous: AlbumContinuation = serde_json::from_str(&saved).unwrap();
         let mut store = SqliteStore::open(&file).unwrap();
-        let result = continue_with(&server, &cx, &mut store, Some(&previous)).await;
+        let checking = continue_with(&server, &cx, &mut store, Some(&previous)).await;
+        assert_eq!((checking.albums.completed, checking.albums.pending), (0, 1));
+        assert_eq!(checking.albums.advanced, ALBUM_PAGE_BUDGET);
+        assert!(
+            store
+                .album_tracks(&format!("spotify:album:{ALBUM}"))
+                .unwrap()
+                .is_none(),
+            "retained pages must pass verification before publication"
+        );
+        let result = finish_with(&server, &cx, &mut store, &checking.albums).await;
         assert_eq!((result.albums.completed, result.albums.pending), (1, 0));
         let calls = server.calls(ROUTE);
-        assert_eq!(
-            calls.len(),
-            count as usize,
-            "no earlier pages were fetched again"
-        );
-        assert!(calls[ALBUM_PAGE_BUDGET].contains("offset=8"));
+        assert_eq!(calls.len(), 2 * count as usize + 1);
+        assert!(calls[ALBUM_PAGE_BUDGET].contains("offset=0"));
+        assert!(calls[ALBUM_PAGE_BUDGET + 1].contains("offset=8"));
         let album = store
             .album_tracks(&format!("spotify:album:{ALBUM}"))
             .unwrap()
@@ -269,11 +301,11 @@ fn legacy_album_caches_and_checkpoints_are_refreshed_before_expansion() {
         assert!(calls[ALBUM_PAGE_BUDGET].contains("offset=0"));
         assert_eq!(store.album_tracks(&uri).unwrap().unwrap().tracks, legacy);
 
-        let done = continue_with(&server, &cx, &mut store, Some(&restarted.albums)).await;
+        let done = finish_with(&server, &cx, &mut store, &restarted.albums).await;
         assert_eq!((done.albums.completed, done.albums.pending), (1, 0));
         assert_eq!(
             server.calls(ROUTE).len(),
-            ALBUM_PAGE_BUDGET + count as usize
+            ALBUM_PAGE_BUDGET + 2 * count as usize + 1
         );
         assert!(
             store
