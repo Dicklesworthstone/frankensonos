@@ -64,9 +64,14 @@ const DashboardCore = (() => {
   }
   function request({ fetcher = (...a) => fetch(...a), schedule = setTimeout, cancel = clearTimeout } = {}) {
     const readers = new Set();
-    const send = async (url, body, { signal } = {}) => {
-      const write = body !== undefined, abort = new AbortController();
-      const budget = write && (url === '/queue' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)) ? 600000 : write ? 120000 : 10000;
+    const send = async (url, body, { signal, method = body === undefined ? 'GET' : 'POST' } = {}) => {
+      if (!['GET', 'POST', 'PUT'].includes(method) || (method === 'GET') !== (body === undefined)) {
+        throw new Error('The dashboard request method does not match its body.');
+      }
+      const write = method !== 'GET', abort = new AbortController();
+      const budget = write && (url === '/queue' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
+        || (method === 'PUT' && /^\/scenes\/[^/]+$/.test(url) && body?.backup_queues === true)) ? 600000
+        : write ? 120000 : /^\/zones\/[^/]+\/queue\/search(?:\?|$)/.test(url) ? 60000 : 10000;
       let timer, finished = false, stopped = null, rejectStopped;
       const timeout = new Promise((_, reject) => { rejectStopped = reject; });
       const stop = (error) => {
@@ -86,7 +91,7 @@ const DashboardCore = (() => {
       try {
         return await Promise.race([timeout, (async () => {
           if (finished) throw stopped;
-          const response = await fetcher(url, { method: write ? 'POST' : 'GET',
+          const response = await fetcher(url, { method,
             headers: { Accept: 'application/json', ...(write ? { 'Content-Type': 'application/json' } : {}) },
             ...(write ? { body: JSON.stringify(body) } : {}), signal: abort.signal,
             credentials: 'same-origin', redirect: 'error', cache: 'no-store' });
@@ -236,11 +241,11 @@ const DashboardCore = (() => {
       state.busy = true; state.message = ''; emit();
       try {
         const result = await operation({ item, target, check,
-          async send(url, body) {
+          async send(url, body, options) {
             check();
             if (sent) throw new Error('This action already dispatched its one command.');
             sent = true;
-            return call(url, body);
+            return call(url, body, options);
           } });
         if (!result || typeof result.done !== 'string' || typeof result.changed !== 'boolean'
             || (result.notes != null && (!Array.isArray(result.notes) || !result.notes.every((n) => n && typeof n.detail === 'string')))) {

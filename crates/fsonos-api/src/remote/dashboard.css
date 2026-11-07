@@ -138,3 +138,26 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line-str
 .groups-message{font-size:12px;line-height:1.75;color:var(--muted);overflow-wrap:anywhere;margin-top:16px}
 .groups-message:empty{display:none}
 @media(max-width:600px){.groups-context{flex-wrap:wrap}.groups-context .review-target{flex-basis:100%}.groups-context button{margin-left:auto}.room-group-actions .text-button{min-height:44px}.groups-preview{padding:14px}}
+
+/* Native house capture and explicit saved-scene replacement. */
+.scene-section>.section-heading{flex-wrap:wrap;gap:12px}
+.scene-heading-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.scene-heading-actions .outline-button{min-height:42px;font-size:11px}
+.scene-capture-dialog{width:min(640px,calc(100vw - 32px))}
+.scene-capture-context{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:16px}
+.scene-capture-context .small-note{flex:1;min-width:180px}
+.scene-capture-context button{min-height:44px;flex:none}
+.scene-capture-groups{list-style:none;display:grid;gap:6px;padding:0;margin:8px 0 20px;font-size:12px;line-height:1.6;color:var(--muted)}
+.scene-capture-groups li{border-left:2px solid var(--accent);padding-left:11px;overflow-wrap:anywhere}
+.scene-capture-name{display:grid;gap:8px;font-size:12px;margin-top:16px}
+.scene-capture-name input{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--raised);border:1px solid var(--line-strong);border-radius:8px;font-size:14px}
+.scene-capture-option{display:flex;align-items:flex-start;gap:11px;padding:15px 0;font-size:13px;line-height:1.6}
+.scene-capture-option input{width:18px;height:18px;margin-top:3px;flex:none;accent-color:var(--accent)}
+.scene-capture-option small{display:block;margin-top:5px;font-size:11px;color:var(--muted)}
+.scene-capture-preview,.scene-capture-result{background:var(--raised);border:1px solid var(--line-strong);border-radius:11px;padding:17px;margin-top:20px;overflow-wrap:anywhere}
+.scene-capture-preview h3,.scene-capture-result h3{font-size:17px;line-height:1.5;margin:0 0 12px}
+.scene-capture-preview p,.scene-capture-result p{font-size:12px;line-height:1.75;color:var(--muted);margin:10px 0}
+.scene-capture-preview summary,.scene-capture-result summary{font-size:12px;cursor:pointer;min-height:40px;align-content:center}
+.scene-capture-preview details,.scene-capture-result details{border-top:1px solid var(--line);margin:12px 0;padding-top:6px}
+.scene-capture-result .outline-button{margin-top:7px;min-height:44px}
+@media(max-width:600px){.scene-heading-actions{width:100%;justify-content:space-between}.scene-capture-dialog{padding:20px}.scene-capture-preview,.scene-capture-result{padding:14px}.scene-capture-context .small-note{flex-basis:100%}.scene-capture-context button{margin-left:auto}}

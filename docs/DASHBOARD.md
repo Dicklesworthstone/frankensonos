@@ -65,6 +65,40 @@ household's favorites, and plays the exact reviewed result rather than a new
 first-ranked match. These workflows share one mutation lane with transport and
 volume, retaining native policy and action logging.
 
+## Save the current house and its queues
+
+**Save current house** in the scene section captures every listening group, its
+source and playback state, and each room's volume and mute. Enter a name, review
+the house groups, then save through the native scene API. Capture reads the
+house when confirmed and changes only saved storage; playback continues as it is.
+
+By default, ordinary queues become bookmarks that retain their occurrence,
+position and known playback mode. Recall requires the original players and
+unchanged queues. Enable **Back up complete queue contents** to retain the
+ordered tracks too, up to 1,000 entries and 4 MiB per queue. Recall can then
+reconstruct those queues on their original players after queue edits or restarts.
+DJ sessions retain their direction rather than a frozen queue copy. Unsupported,
+changing or oversized queue captures fail in the daemon before replacing a saved
+scene.
+
+An existing name opens an explicit replacement review with its current saved
+groups, sources and room levels. The stored spelling is preserved for case-only
+matches. Confirmation rereads the saved definition and whole-house grouping;
+changed definitions, occupied names, stale observations or a closed/hidden view
+retire the review. These checks do not lock other controllers out between the
+preflight and native capture.
+
+After saving, the new scene appears in the scene cards and **Review recall**
+opens the existing whole-house apply review. Saved queue backups state their
+entry count and occurrence and explain that recall replaces current queue
+contents. Replacing a saved definition and restoring backed-up queue contents
+cannot be reversed through speaker action-history undo.
+
+Capture and recall share the dashboard's single mutation lane. A lost or
+unreadable save reply keeps the outcome uncertain and requires explicit
+**Refresh**; it is never retried automatically. Scene reads are on demand, and
+the design preview cannot save.
+
 ## DJ selections and the actual speaker queue
 
 The Up next panel has two keyboard-accessible tabs:
@@ -237,6 +271,7 @@ Run the local suites:
 ```sh
 node --test scripts/test-dashboard-session.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-workspace.cjs
 node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs scripts/test-dashboard-volume.cjs
+node --test scripts/test-dashboard-scenes.cjs scripts/test-dashboard-http.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-workspace.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preview.py

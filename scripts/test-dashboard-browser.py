@@ -12,10 +12,10 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard.js']
+SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
-  writes: [], calls: [], feeds: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
+  writes: [], calls: [], feeds: [], savedScenes: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
   zones:[{household:'S2',coordinator_room:'Studio',members:['Studio','Kitchen'],transport_state:'playing'},
     {household:'S1',coordinator_room:'Studio',members:['Studio'],transport_state:'paused'}],
   states:['playing','paused'], running:[true,false], modes:['NORMAL','NORMAL'], timers:[null,null], levels:{'Studio@S2':20,'Kitchen@S2':15,'Studio@S1':20}, muted:{}, mood:'focus', track:'fixture:movement',
@@ -42,8 +42,22 @@ window.fetch=async(url,init)=>{
   else if(url.endsWith('/dj')) data={zone:'Studio',running:f.running[index],now:f.running[index]?f.work:null,
     next:f.running[index]?[{...f.work,movement:undefined,title:'The next work'}]:[],steering:{source:'session',mood:f.mood,constraints:{energy_bias:-1},added:{}}};
   else if(url==='/dj/moods') data={moods:[{name:'focus',constraints:{energy_bias:-1}},{name:'dinner',constraints:{energy_bias:0}}]};
-  else if(url==='/scenes') data=[f.scene];
-  else if(url==='/scenes/Dinner') data=f.scene;
+  else if(url==='/scenes') data=[f.scene,...f.savedScenes];
+  else if(init.method==='GET'&&url.startsWith('/scenes/')) data=[f.scene,...f.savedScenes].find(scene=>scene.name===decodeURIComponent(url.slice(8)));
+  else if(init.method==='PUT'&&/^\/scenes\/[^/]+$/.test(url)){
+    const body=JSON.parse(init.body),name=decodeURIComponent(url.slice(8));
+    f.writes.push({url,body,method:'PUT'});
+    data={name,saved:1700000001,groups:f.zones.map((zone,index)=>({
+      coordinator:zone.coordinator_room+'@'+zone.household,
+      members:zone.members.filter(room=>room!==zone.coordinator_room).map(room=>room+'@'+zone.household),
+      playing:f.states[index]==='playing',
+      source:{kind:body.backup_queues?'queue_backup':'queue',queue:{coordinator:'fixture-player-'+zone.household,household:zone.household,
+        update_id:9,track:2,position_secs:20,play_mode:f.modes[index],...(body.backup_queues?{total:3}:{})}}
+    })),volumes:{...f.levels},mutes:{...f.muted}};
+    if(name===f.scene.name)f.scene=data;
+    else{const index=f.savedScenes.findIndex(scene=>scene.name===name);if(index<0)f.savedScenes.push(data);else f.savedScenes[index]=data;}
+    if(f.lost)throw new Error('Fixture lost reply');
+  }
   else if(url.startsWith('/library/search')) data=[f.hit];
   else if(url.startsWith('/history')) data=[];
   else if(init.method==='POST'){
@@ -252,6 +266,42 @@ def main():
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
         page.locator('#close-room-volume').click()
         checks.append('physical member volume and mute through reviewed keyboard controls on mobile')
+        page.set_viewport_size({'width':1536,'height':1120})
+        page.locator('#open-capture-scene').click()
+        page.wait_for_function("!document.getElementById('capture-scene-read').disabled")
+        page.locator('#capture-scene-name').fill('A later listen')
+        page.locator('#capture-scene-backup').check()
+        page.locator('#capture-scene-review').click()
+        assert 'Create scene “A later listen”' in page.locator('#capture-scene-preview-title').inner_text()
+        assert '1,000 entries and 4 MiB' in page.locator('#capture-scene-preview-detail').inner_text()
+        before=page.evaluate('fixture.writes.length')
+        page.locator('#capture-scene-confirm').click()
+        page.wait_for_function("!document.getElementById('capture-scene-recall').disabled")
+        assert page.evaluate('fixture.writes.length')==before+1
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/scenes/A%20later%20listen','body':{'backup_queues':True},'method':'PUT'}
+        page.locator('#capture-scene-recall').click()
+        page.wait_for_function("document.getElementById('review-dialog').open")
+        assert page.locator('#review-dialog').is_visible()
+        assert 'A later listen' in page.locator('#review-title').inner_text()
+        assert '3 entries' in page.locator('#review-details').inner_text()
+        assert page.evaluate('fixture.writes.length')==before+1
+        page.locator('#close-review').click()
+        page.set_viewport_size({'width':390,'height':900})
+        page.locator('#open-capture-scene').click()
+        page.wait_for_function("!document.getElementById('capture-scene-read').disabled")
+        page.locator('#capture-scene-name').fill('a LATER LISTEN')
+        page.locator('#capture-scene-backup').uncheck()
+        page.locator('#capture-scene-review').click()
+        assert 'Replace scene “A later listen”' in page.locator('#capture-scene-preview-title').inner_text()
+        page.locator('#capture-scene-existing summary').click()
+        assert 'Saved queue backup, 3 entries' in page.locator('#capture-scene-existing-detail').inner_text()
+        page.locator('#capture-scene-confirm').click()
+        page.wait_for_function("!document.getElementById('capture-scene-recall').disabled")
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/scenes/A%20later%20listen','body':{},'method':'PUT'}
+        assert page.evaluate('fixture.savedScenes.length')==1
+        assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
+        page.locator('#close-capture-scene').click()
+        checks.append('whole-house scene capture, queue backup, reviewed recall and explicit replacement on desktop and mobile')
         page.close()
         preview=browser.new_page(viewport={'width':1536,'height':1120},reduced_motion='reduce')
         preview.on('pageerror',lambda e:errors.append(str(e)));load(preview,True)
@@ -262,6 +312,11 @@ def main():
         preview.locator('[data-mood="dinner"]').click();assert preview.locator('#confirm-action').is_disabled()
         preview.locator('#close-review').click()
         assert preview.evaluate('fixture.writes.length')==0
+        preview.locator('#open-capture-scene').click()
+        preview.locator('#capture-scene-name').fill('Preview only')
+        assert preview.locator('#capture-scene-review').is_disabled()
+        preview.locator('#close-capture-scene').click()
+        assert preview.evaluate('fixture.calls.length')==0
         checks.append('preview can explore reviews without contacting any speaker')
         assert preview.locator('#motion').inner_text()=='Resume motion'
         frames=[]

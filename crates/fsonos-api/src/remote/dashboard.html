@@ -86,7 +86,7 @@
   </div>
   <div class="lower-grid">
 
-    <section id="scene-section" class="scene-section" aria-labelledby="scenes-title"><header class="section-heading"><div><span class="eyebrow">A DIFFERENT SOUND FOR EVERY MOMENT</span><h2 id="scenes-title">One scene. Your whole house.</h2></div><a href="/" class="text-button" aria-label="Manage house scenes">Manage ↗</a></header><div id="scenes" class="scene-grid"></div><p id="catalog-error" class="small-note" role="status"></p><div id="scene-result" class="scene-result" role="status"></div></section>
+    <section id="scene-section" class="scene-section" aria-labelledby="scenes-title"><header class="section-heading"><div><span class="eyebrow">A DIFFERENT SOUND FOR EVERY MOMENT</span><h2 id="scenes-title">One scene. Your whole house.</h2></div><div class="scene-heading-actions"><button id="open-capture-scene" class="outline-button" type="button" aria-haspopup="dialog" aria-controls="capture-scene-dialog" aria-expanded="false" disabled>Save current house</button><a href="/" class="text-button" aria-label="Manage house scenes">Manage ↗</a></div></header><div id="scenes" class="scene-grid"></div><p id="catalog-error" class="small-note" role="status"></p><div id="scene-result" class="scene-result" role="status"></div></section>
   </div>
   <section class="recent-section" aria-labelledby="history-title"><header class="section-heading"><div><span class="eyebrow">WORTH ANOTHER LISTEN</span><h2 id="history-title">In recent rotation</h2></div><button id="history-refresh" class="text-button">Refresh history <svg><use href="#i-refresh"/></svg></button></header><div id="history" class="history-grid"></div></section>
   <footer class="page-footer"><span><svg><use href="#i-shield"/></svg>Your speakers. Your rules. Your network.</span><a href="/">Open full remote ↗</a></footer>
@@ -179,6 +179,28 @@
     <footer><button id="groups-cancel" class="text-button" type="button">Change selection</button><button id="groups-confirm" class="primary-button" type="button" disabled>Confirm group change</button></footer>
   </section>
   <p id="groups-message" class="groups-message" role="status"></p>
+</dialog>
+<dialog id="capture-scene-dialog" class="review-dialog scene-capture-dialog" aria-labelledby="capture-scene-title" aria-describedby="capture-scene-description">
+  <header><span class="eyebrow">KEEP THIS LISTENING SETUP</span><button id="close-capture-scene" class="icon-button" type="button" aria-label="Close scene capture"><svg><use href="#i-close"/></svg></button></header>
+  <h2 id="capture-scene-title">Save this moment.</h2>
+  <p id="capture-scene-description" class="small-note">Capture every listening group, its source and playback state, and each room’s volume and mute. Saving reads the current house and stores a scene without changing playback.</p>
+  <div class="scene-capture-context"><p id="capture-scene-context" class="small-note"></p><button id="capture-scene-read" class="text-button" type="button" disabled>Read current house</button></div>
+  <ul id="capture-scene-groups" class="scene-capture-groups" aria-label="House groups to capture"></ul>
+  <label class="scene-capture-name" for="capture-scene-name">Scene name<input id="capture-scene-name" type="text" maxlength="128" autocomplete="off" placeholder="Evening, weekend, a queue for later…" aria-describedby="capture-scene-name-help"></label>
+  <p id="capture-scene-name-help" class="small-note">Use 1–64 characters. An existing name opens a replacement review.</p>
+  <label class="scene-capture-option" for="capture-scene-backup"><input id="capture-scene-backup" type="checkbox"><span>Back up complete queue contents<small>Keep the tracks so they can be restored later. With this off, queue bookmarks require the original queues to remain unchanged. DJ sessions retain their direction instead of a queue copy.</small></span></label>
+  <button id="capture-scene-review" class="outline-button" type="button" disabled>Review capture</button>
+  <section id="capture-scene-preview" class="scene-capture-preview" aria-labelledby="capture-scene-preview-title" tabindex="-1" hidden>
+    <h3 id="capture-scene-preview-title"></h3><p id="capture-scene-preview-detail"></p>
+    <details id="capture-scene-existing" hidden><summary>Saved scene that will be replaced</summary><div id="capture-scene-existing-detail"></div></details>
+    <p class="small-note">The daemon captures current playback after confirmation. The saved definition and house groups are checked again before sending; another controller can still change them between that check and capture. Replacing a saved scene cannot be undone through speaker history.</p>
+    <footer><button id="capture-scene-back" class="text-button" type="button">Go back</button><button id="capture-scene-confirm" class="primary-button" type="button" disabled>Save scene</button></footer>
+  </section>
+  <section id="capture-scene-result" class="scene-capture-result" aria-labelledby="capture-scene-result-title" hidden>
+    <h3 id="capture-scene-result-title"></h3><details><summary>Saved groups, sources and room levels</summary><div id="capture-scene-result-detail"></div></details>
+    <button id="capture-scene-recall" class="outline-button" type="button" disabled>Review recall</button>
+  </section>
+  <p id="capture-scene-message" class="sleep-message" role="status"></p>
 </dialog>
 <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><header><h2 id="shortcuts-title">Less reaching. More listening.</h2><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts"><svg><use href="#i-close"/></svg></button></header><dl class="shortcut-list"><dt>Search your music</dt><dd><kbd>⌘ / Ctrl K</kbd></dd><dt>Choose a listening group</dt><dd><kbd>R</kbd></dd><dt>Pause or resume</dt><dd><kbd>Space</kbd></dd><dt>Immersive visualization</dt><dd><kbd>V</kbd></dd><dt>Close a dialog or immersive view</dt><dd><kbd>Esc</kbd></dd></dl><p class="small-note">Playback shortcuts are inactive while typing or reviewing an action.</p></dialog>
 <noscript><p class="notice">The dashboard needs JavaScript. The command-line interface remains available.</p></noscript>

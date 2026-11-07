@@ -84,3 +84,66 @@ test('production assets have no inline scripts, external dependencies or unsafe 
   }
   assert.match(html, /id="demo-banner"/); assert.match(html, /aria-label="Visualization style"/);
 });
+
+test('native PUT requests retain JSON, same-origin, no-redirect and single-dispatch behavior', async () => {
+  const calls = [], call = C.request({ fetcher: async (url, init) => {
+    calls.push({ url, init }); return { ok: true, text: async () => '{"name":"Evening"}' };
+  } });
+  assert.deepEqual(await call('/scenes/Evening', { backup_queues: true }, { method: 'PUT' }), { name: 'Evening' });
+  assert.equal(calls.length, 1); assert.equal(calls[0].init.method, 'PUT');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { backup_queues: true });
+  assert.equal(calls[0].init.headers['Content-Type'], 'application/json'); assert.equal(calls[0].init.headers.Accept, 'application/json');
+  assert.equal(calls[0].init.credentials, 'same-origin'); assert.equal(calls[0].init.redirect, 'error'); assert.equal(calls[0].init.cache, 'no-store');
+});
+
+test('method/body mismatches and unsupported methods never reach fetch', async () => {
+  let requests = 0; const call = C.request({ fetcher: async () => { requests++; throw new Error('Unexpected fetch'); } });
+  for (const [body, method] of [[{}, 'GET'], [undefined, 'PUT'], [undefined, 'POST'], [{}, 'DELETE'], [{}, 'put']]) {
+    await assert.rejects(call('/scenes/Evening', body, { method }), /request method does not match/);
+  }
+  assert.equal(requests, 0);
+});
+
+test('queue-search reads have a bounded scan deadline while ordinary reads retain their short budget', async () => {
+  const budgets = [], calls = [];
+  const call = C.request({ schedule(fn, ms) { budgets.push(ms); return budgets.length; }, cancel() {},
+    fetcher: async (url, init) => { calls.push({ url, method: init.method }); return { ok: true, text: async () => '{}' }; } });
+  const cases = [
+    ['/zones', undefined, undefined, 10000],
+    ['/zones/Studio%40S2/queue?offset=0&limit=40', undefined, undefined, 10000],
+    ['/zones/Studio%40S2/queue/search?q=fixture&limit=20', undefined, undefined, 60000],
+    ['/zones/Studio%40S2/queue/search', undefined, undefined, 60000],
+    ['/zones/Studio%40S2/queue/search-more?q=fixture', undefined, undefined, 10000],
+    ['/zones/Studio%40S2/state?next=/queue/search', undefined, undefined, 10000],
+    ['/scenes/Evening', {}, { method: 'PUT' }, 120000],
+    ['/scenes/Evening', { backup_queues: true }, { method: 'PUT' }, 600000],
+    ['/scenes/Evening', null, { method: 'PUT' }, 120000],
+    ['/pause', { zone: 'Studio@S2' }, undefined, 120000],
+  ];
+  for (const [url, body, options] of cases) await call(url, body, options);
+  assert.deepEqual(budgets, cases.map(row => row[3]));
+  assert.deepEqual(calls.map(row => row.method), ['GET', 'GET', 'GET', 'GET', 'GET', 'GET', 'PUT', 'PUT', 'PUT', 'POST']);
+});
+
+test('a queue-search deadline aborts the outstanding read without a retry', async () => {
+  let expire, signal, requests = 0;
+  const call = C.request({ schedule(fn, ms) { assert.equal(ms, 60000); expire = fn; return 1; }, cancel() {},
+    fetcher: async (url, init) => { requests++; signal = init.signal; return new Promise(() => {}); } });
+  const reading = call('/zones/Studio%40S2/queue/search?q=fixture');
+  const rejected = assert.rejects(reading, /did not answer in time/);
+  expire(); await rejected; assert.equal(signal.aborted, true); assert.equal(requests, 1);
+});
+
+test('cancelReads retires observations but never aborts or repeats an already submitted PUT', async () => {
+  let finish, writeSignal, readSignal;
+  const calls = [], call = C.request({ schedule() { return 1; }, cancel() {}, fetcher: async (url, init) => {
+    calls.push(init.method);
+    if (init.method === 'PUT') { writeSignal = init.signal; return new Promise(resolve => { finish = resolve; }); }
+    readSignal = init.signal; return new Promise(() => {});
+  } });
+  const reading = call('/zones'), rejected = assert.rejects(reading, error => error.code === 'DASHBOARD_READ_CANCELLED');
+  const saving = call('/scenes/Evening', {}, { method: 'PUT' }); call.cancelReads(); await rejected;
+  assert.equal(readSignal.aborted, true); assert.equal(writeSignal.aborted, false);
+  finish({ ok: true, text: async () => '{"name":"Evening"}' }); assert.deepEqual(await saving, { name: 'Evening' });
+  assert.deepEqual(calls, ['GET', 'PUT']);
+});
