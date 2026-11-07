@@ -12,13 +12,13 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'dashboard.js']
+SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
   writes: [], calls: [], feeds: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
   zones:[{household:'S2',coordinator_room:'Studio',members:['Studio','Kitchen'],transport_state:'playing'},
     {household:'S1',coordinator_room:'Studio',members:['Studio'],transport_state:'paused'}],
-  states:['playing','paused'], running:[true,false], modes:['NORMAL','NORMAL'], mood:'focus', track:'fixture:movement',
+  states:['playing','paused'], running:[true,false], modes:['NORMAL','NORMAL'], timers:[null,null], mood:'focus', track:'fixture:movement',
   work:{composer:'Fixture composer',title:'Three rooms',album:'Fixture recording',performers:['Fixture quartet'],movements:3,movement:2,
     movement_title:'II. Fixture movement',minutes:21,reason:{summary:'Variety and the owner’s preferences.',factors:[{factor:'artist_spacing',weight:1400},{factor:'feedback',weight:800}],relaxed:[]}},
   scene:{name:'Dinner',saved:1700000000,groups:[{coordinator:'Studio@S2',members:['Kitchen@S2'],source:{kind:'dj',mood:'dinner'},playing:true}],volumes:{'Studio@S2':20,'Kitchen@S2':15},mutes:{}},
@@ -31,6 +31,11 @@ window.fetch=async(url,init)=>{
   const room=decodeURIComponent(String(url).split('/')[2]||'');
   const index=f.zones.findIndex(z=>`${z.coordinator_room}@${z.household}`===room);
   if(url==='/zones') data=f.zones;
+  else if(url.startsWith('/sleep?zone=')) {
+    const target=new URLSearchParams(url.split('?')[1]).get('zone');
+    const index=f.zones.findIndex(z=>`${z.coordinator_room}@${z.household}`===target);
+    data=f.timers[index]?[f.timers[index]]:[];
+  }
   else if(url.endsWith('/state')) data={zone:f.zones[index],transport_state:f.states[index],volume:20,group_volume:22,
     track:{uri:f.track,title:f.rawTitle,creator:'Fixture artist',album:'Fixture album',position_secs:20,duration_secs:300,queue_position:2}};
   else if(url.startsWith('/zones/')&&url.endsWith('/play-mode')) data={zone:f.zones[index].coordinator_room,mode:f.modes[index],queue_active:true,dj_active:f.running[index]};
@@ -47,6 +52,12 @@ window.fetch=async(url,init)=>{
     data={done:'Fixture command accepted',changed:true};
     if(url==='/pause')f.states[target]='paused';
     if(url==='/resume')f.states[target]='playing';
+    if(url==='/sleep'){
+      const remaining=body.cancel?null:Number(body.duration.slice(0,-1))*60+(body.extend?f.timers[target].remaining_secs:0);
+      data={zone:f.zones[target].coordinator_room,ends:remaining===null?null:new Date(Date.now()+remaining*1000).toISOString(),
+        remaining_secs:remaining,fades:true,fading:false,done:body.cancel?'Sleep timer cancelled':body.extend?'Sleep timer extended':'Sleep timer set',changed:true};
+      f.timers[target]=body.cancel?null:data;
+    }
     if(url==='/play-mode'){
       if(body.expected_mode!==f.modes[target])throw new Error('Fixture playback order changed');
       f.modes[target]=body.mode;
@@ -192,6 +203,29 @@ def main():
         page.locator('.map-select').nth(1).click()
         assert 'S1' in page.locator('#dock-target').inner_text()
         checks.append('truthful household map and group selection')
+        page.locator('#open-sleep').click()
+        page.wait_for_function("!document.getElementById('sleep-set').disabled")
+        assert 'S1' in page.locator('#sleep-target').inner_text()
+        page.locator('#sleep-preset-30').click();page.locator('#sleep-set').click()
+        before=page.evaluate('fixture.writes.length')
+        assert '30 minutes' in page.locator('#sleep-preview-title').inner_text()
+        page.locator('#sleep-confirm').click()
+        page.wait_for_function("document.getElementById('sleep-message').textContent==='Sleep timer set'")
+        assert page.evaluate('fixture.writes.length')==before+1
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/sleep','body':{'zone':'Studio@S1','duration':'30m'}}
+        assert '30:00' in page.locator('#sleep-countdown').inner_text()
+        page.locator('#close-sleep').click()
+        page.set_viewport_size({'width':390,'height':900})
+        page.locator('#open-sleep').click();page.wait_for_function("!document.getElementById('sleep-extend').disabled")
+        page.locator('#sleep-preset-15').click();page.locator('#sleep-extend').click();page.locator('#sleep-confirm').click()
+        page.wait_for_function("document.getElementById('sleep-message').textContent==='Sleep timer extended'")
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/sleep','body':{'zone':'Studio@S1','duration':'15m','extend':True}}
+        page.locator('#sleep-cancel').click();page.locator('#sleep-confirm').click()
+        page.wait_for_function("document.getElementById('sleep-current').textContent==='No active sleep timer.'")
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/sleep','body':{'zone':'Studio@S1','cancel':True}}
+        assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
+        page.locator('#close-sleep').click()
+        checks.append('reviewed sleep timer set, extend and cancel on desktop and mobile')
         page.close()
         preview=browser.new_page(viewport={'width':1536,'height':1120},reduced_motion='reduce')
         preview.on('pageerror',lambda e:errors.append(str(e)));load(preview,True)

@@ -98,6 +98,31 @@ Changed grouping, queue/DJ ownership or an intervening mode change invalidates
 the review. Reads expire after 45 seconds; hidden pages and closed dialogs retire
 unfinished reads. An unconfirmed write is never retried automatically.
 
+### Sleep timers
+
+**Sleep timer** in Up next reads the selected group's current timer on demand.
+Choose a preset from 15 minutes to two hours, or enter any whole duration from
+1 to 1,380 minutes. Review **Set timer** to replace the existing deadline,
+**Extend timer** to add time, or **Cancel timer** to stop it. Each review names
+the whole listening group. Extending or cancelling during a fade ends that fade;
+cancelling does not restart music.
+
+The dialog shows the native deadline in your browser's time zone, an approximate
+countdown and whether the daemon is fading or the speaker is using a timer
+without a fade. The daemon or speaker owns the timer, so closing the browser does
+not cancel it. The displayed countdown advances from the reported remaining
+duration; reaching zero asks for a fresh read and does not claim playback paused.
+An observation older than 45 seconds remains labelled as a last observation but
+cannot authorize a change.
+
+Confirmation rechecks the group, coordinator, current deadline and fade state
+before one native `/sleep` command. A changed or expired review, hidden page or
+different selection prevents dispatch. Timer changes share the dashboard's
+command lane, preserve uncertain outcomes until explicit **Refresh**, and never
+retry automatically. One fresh timer read follows an accepted change; there is
+no background timer polling. Other controllers can still act between preflight
+and the native command.
+
 ### Group rooms and move music
 
 **Group rooms** below the room cards can add a room to the selected listening
@@ -186,6 +211,7 @@ Run the local suites:
 
 ```sh
 node --test scripts/test-dashboard-session.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-workspace.cjs
+node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-workspace.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preview.py

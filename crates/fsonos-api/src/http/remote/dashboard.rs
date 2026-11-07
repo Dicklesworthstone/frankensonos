@@ -29,6 +29,8 @@ const ACTIVITY_STYLE: &str = include_str!("../../remote/dashboard-activity.css")
 const WORKSPACE: &str = include_str!("../../remote/dashboard-workspace.js");
 const PLAY_MODE: &str = include_str!("../../remote/dashboard-play-mode.js");
 const GROUPS: &str = include_str!("../../remote/dashboard-groups.js");
+const TIMERS: &str = include_str!("../../remote/timers.js");
+const SLEEP: &str = include_str!("../../remote/dashboard-sleep.js");
 const SCRIPT: &str = include_str!("../../remote/dashboard.js");
 
 fn document(content_type: &str, text: &str) -> Response {
@@ -76,7 +78,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{SCRIPT}"
                     ),
                 )
             },

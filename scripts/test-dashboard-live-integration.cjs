@@ -154,7 +154,9 @@ test('the served asset order installs heartbeat delivery and recovery before pag
   assert.ok(rust.includes('{EVENTS}\\n{CORE}\\n{SEEK}\\n{LIVE}\\n{VISUALIZER}'));
   assert.match(rust,/const PLAY_MODE: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-play-mode\.js"\);/);
   assert.match(rust,/const GROUPS: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-groups\.js"\);/);
-  assert.ok(rust.includes('{WORKSPACE}\\n{PLAY_MODE}\\n{GROUPS}\\n{SCRIPT}'));
+  assert.match(rust,/const TIMERS: &str = include_str!\("\.\.\/\.\.\/remote\/timers\.js"\);/);
+  assert.match(rust,/const SLEEP: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-sleep\.js"\);/);
+  assert.ok(rust.includes('{WORKSPACE}\\n{PLAY_MODE}\\n{GROUPS}\\n{TIMERS}\\n{SLEEP}\\n{SCRIPT}'));
   assert.match(script,/live\.suspend\(\); request\.cancelReads\(\);/);
   assert.match(script,/live\.resume\(\)/);
   assert.doesNotMatch(script,/schedule\(changedDuringRead \? 500 : wait\)/);

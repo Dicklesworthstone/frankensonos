@@ -237,11 +237,11 @@ const TimersRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { model, panel, routes, roomsOf, text, instant, displayTime, errorText, durationOf };
+  return { model, panel, routes, roomsOf, text, instant, displayTime, errorText, durationOf, timerOf, sameTimer };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = TimersRemote;
-else {
+else if (typeof ROUTES !== 'undefined') {
   Object.assign(ROUTES, TimersRemote.routes);
   document.getElementById('scenes-section')?.before(TimersRemote.panel({ call, el }).node);
 }

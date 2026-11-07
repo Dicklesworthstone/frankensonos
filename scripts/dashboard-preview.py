@@ -15,7 +15,7 @@ SCRIPTS = ["event-feed.js", "dashboard-core.js", "dashboard-seek.js", "dashboard
            "dashboard-audio.js", "scene-queue.js", "dj-direction.js", "playlist-contents.js",
            "dashboard-library.js", "dashboard-session.js", "dashboard-queue.js",
            "dashboard-library-panel.js", "dashboard-activity.js", "dashboard-activity-panel.js",
-           "dashboard-workspace.js", "dashboard-play-mode.js", "dashboard-groups.js", "dashboard.js"]
+           "dashboard-workspace.js", "dashboard-play-mode.js", "dashboard-groups.js", "timers.js", "dashboard-sleep.js", "dashboard.js"]
 STYLES = ["dashboard.css", "dashboard-library.css", "dashboard-queue.css", "dashboard-activity.css"]
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
