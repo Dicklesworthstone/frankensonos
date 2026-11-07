@@ -15,7 +15,10 @@ const TRACK: &str = "spotify:track:0000000000000000000001";
 const OWNER: &str = "x-file-cifs://example.invalid/owner.flac";
 
 fn queue(revision: u32, uris: &[&str]) -> Queue {
-    Queue::new(revision, uris.iter().map(|uri| (*uri).to_string()).collect())
+    Queue::new(
+        revision,
+        uris.iter().map(|uri| (*uri).to_string()).collect(),
+    )
 }
 
 #[test]

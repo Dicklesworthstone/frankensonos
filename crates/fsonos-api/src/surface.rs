@@ -103,6 +103,8 @@ pub struct Surface {
     policy_file: Option<PolicyFile>,
     clock: Box<dyn Clock>,
     log: Option<ActionLog>,
+    /// Bounded, revision-fenced projections of the local music catalog.
+    library_cache: dj_sync::library::Cache,
     doctor_checks: Option<DoctorChecks>,
     /// The last doctor report and when it was made.
     doctor_last: Mutex<Option<(Instant, Report)>>,
@@ -215,6 +217,7 @@ impl Surface {
             policy_file: None,
             clock,
             log: None,
+            library_cache: dj_sync::library::Cache::default(),
             doctor_checks: None,
             doctor_last: Mutex::new(None),
             dj: None,
@@ -493,6 +496,8 @@ impl Surface {
     /// `cli`, ...), which also enables [`Self::undo`].
     #[must_use]
     pub fn with_action_log(mut self, store: Box<dyn Store + Send>, surface: &str) -> Self {
+        // A different store can have the same numeric catalog revision.
+        self.library_cache = dj_sync::library::Cache::default();
         self.log = Some(ActionLog {
             store: Mutex::new(store),
             surface: surface.to_string(),

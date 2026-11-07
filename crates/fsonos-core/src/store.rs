@@ -611,6 +611,18 @@ pub trait Store {
     /// The whole library cache, ordered by `added` then `source_uri`.
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError>;
 
+    /// Monotonic revision of the public library, playlist and album catalog.
+    /// A supported store changes it atomically with every catalog write,
+    /// including writes by another connection. Private sync progress, listening
+    /// history and independent artist-genre caches do not change this token.
+    /// Same-value row rewrites may conservatively advance it. Callers must
+    /// bracket a catalog snapshot with equal revisions before reusing it.
+    /// None disables reuse, including permanently after counter exhaustion.
+    /// Custom stores remain safe until they implement the complete contract.
+    fn library_catalog_revision(&self) -> Result<Option<u64>, StoreError> {
+        Ok(None)
+    }
+
     /// The Spotify account whose library and personal taste this cache holds.
     /// A legacy cache has no proved owner until its first complete library read.
     fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError>;
@@ -1233,6 +1245,7 @@ pub struct MemStore {
     players: BTreeMap<(String, String), CachedPlayer>,
     groups: BTreeMap<String, Vec<ZoneGroup>>,
     library: BTreeMap<String, LibraryEntry>,
+    catalog_revision: u64,
     spotify_library_owner: Option<SpotifyLibraryOwner>,
     spotify_library_progress: BTreeMap<String, SpotifyLibraryProgress>,
     render_params: BTreeMap<String, (SpotifyRenderParams, i64)>,
@@ -1263,6 +1276,31 @@ struct SpotifyLibraryProgress {
 }
 
 impl MemStore {
+    fn bump_library_catalog_revision(&mut self) {
+        // Values beyond SQLite's signed range permanently disable reuse.
+        self.catalog_revision = self.catalog_revision.saturating_add(1);
+    }
+
+    fn write_library(&mut self, entries: &[LibraryEntry]) -> bool {
+        for entry in entries {
+            let mut entry = entry.clone();
+            entry.track.uri = None;
+            self.library.insert(entry.track.source_uri.clone(), entry);
+        }
+        !entries.is_empty()
+    }
+
+    fn replace_playlists(&mut self, playlists: &[(String, String)]) -> bool {
+        let changed = !self.playlists.is_empty() || !playlists.is_empty();
+        self.playlists.clear();
+        for (uri, name) in playlists {
+            if !self.playlists.iter().any(|(existing, _)| existing == uri) {
+                self.playlists.push((uri.clone(), name.clone()));
+            }
+        }
+        changed
+    }
+
     fn library_progress_for(
         &self,
         incoming_id: &str,
@@ -1410,10 +1448,8 @@ impl Store for MemStore {
     }
 
     fn upsert_library(&mut self, entries: &[LibraryEntry]) -> Result<(), StoreError> {
-        for e in entries {
-            let mut e = e.clone();
-            e.track.uri = None;
-            self.library.insert(e.track.source_uri.clone(), e);
+        if self.write_library(entries) {
+            self.bump_library_catalog_revision();
         }
         Ok(())
     }
@@ -1422,6 +1458,12 @@ impl Store for MemStore {
         let mut all: Vec<LibraryEntry> = self.library.values().cloned().collect();
         all.sort_by(|a, b| (a.added, &a.track.source_uri).cmp(&(b.added, &b.track.source_uri)));
         Ok(all)
+    }
+
+    fn library_catalog_revision(&self) -> Result<Option<u64>, StoreError> {
+        Ok(i64::try_from(self.catalog_revision)
+            .ok()
+            .map(|_| self.catalog_revision))
     }
 
     fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError> {
@@ -1515,6 +1557,7 @@ impl Store for MemStore {
         // Every essential checkpoint was bound to the previous public receipt.
         self.spotify_library_progress.clear();
         self.spotify_library_owner = Some(owner.clone());
+        self.bump_library_catalog_revision();
         Ok((owner, true))
     }
 
@@ -1554,9 +1597,9 @@ impl Store for MemStore {
         if self.spotify_library_owner.as_ref() != Some(owner) {
             return Ok(false);
         }
-        self.upsert_library(entries)?;
+        let mut changed = self.write_library(entries);
         if let Some(playlists) = playlists {
-            self.save_playlists(playlists)?;
+            changed |= self.replace_playlists(playlists);
         }
         for observation in contents {
             self.playlist_contents
@@ -1564,6 +1607,9 @@ impl Store for MemStore {
         }
         if let Some(heard) = heard {
             self.spotify_heard = latest_plays(heard);
+        }
+        if changed || !contents.is_empty() {
+            self.bump_library_catalog_revision();
         }
         Ok(true)
     }
@@ -1638,6 +1684,7 @@ impl Store for MemStore {
         ) {
             return Ok(false);
         }
+        let mut changed = false;
         for incoming in &publication.entries {
             if let Some(current) = self.library.get_mut(&incoming.track.source_uri)
                 && current.is_candidate()
@@ -1646,13 +1693,14 @@ impl Store for MemStore {
                     stronger_playlist_weight(current.taste_weight, incoming.taste_weight)
                 {
                     current.taste_weight = Some(weight);
+                    changed = true;
                 }
             } else {
-                self.upsert_library(std::slice::from_ref(incoming))?;
+                changed |= self.write_library(std::slice::from_ref(incoming));
             }
         }
         if let Some(playlists) = &publication.playlists {
-            self.save_playlists(playlists)?;
+            changed |= self.replace_playlists(playlists);
         }
         for observation in &publication.observations {
             let incoming = &observation.contents;
@@ -1666,12 +1714,16 @@ impl Store for MemStore {
             }
             self.playlist_contents
                 .insert(incoming.playlist_uri.clone(), incoming.clone());
+            changed = true;
         }
         self.apply_playlist_evidence(
             owner,
             publication.directory.as_deref(),
             &publication.observations,
         );
+        if changed {
+            self.bump_library_catalog_revision();
+        }
         Ok(true)
     }
 
@@ -1790,8 +1842,8 @@ impl Store for MemStore {
         tracks: &[AlbumTrack],
         fetched_at: i64,
     ) -> Result<(), StoreError> {
-        if tracks.is_empty() {
-            self.album_tracks.remove(album_uri);
+        let changed = if tracks.is_empty() {
+            self.album_tracks.remove(album_uri).is_some()
         } else {
             let by_position = tracks
                 .iter()
@@ -1799,6 +1851,10 @@ impl Store for MemStore {
                 .collect();
             self.album_tracks
                 .insert(album_uri.to_string(), (by_position, fetched_at));
+            true
+        };
+        if changed {
+            self.bump_library_catalog_revision();
         }
         Ok(())
     }
@@ -1842,11 +1898,8 @@ impl Store for MemStore {
     }
 
     fn save_playlists(&mut self, playlists: &[(String, String)]) -> Result<(), StoreError> {
-        self.playlists.clear();
-        for (uri, name) in playlists {
-            if !self.playlists.iter().any(|(u, _)| u == uri) {
-                self.playlists.push((uri.clone(), name.clone()));
-            }
+        if self.replace_playlists(playlists) {
+            self.bump_library_catalog_revision();
         }
         Ok(())
     }
@@ -1859,6 +1912,7 @@ impl Store for MemStore {
         contents.validate()?;
         self.playlist_contents
             .insert(contents.playlist_uri.clone(), contents.clone());
+        self.bump_library_catalog_revision();
         Ok(())
     }
 
@@ -2146,5 +2200,38 @@ impl Store for MemStore {
 
     fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError> {
         Ok(self.schedules.remove(&id).is_some())
+    }
+}
+
+#[cfg(test)]
+mod catalog_revision_tests {
+    use super::*;
+
+    #[test]
+    fn an_exhausted_catalog_clock_never_reuses_an_old_token_or_blocks_writes() {
+        let mut store = MemStore {
+            catalog_revision: i64::MAX.unsigned_abs() - 1,
+            ..MemStore::default()
+        };
+        for (name, expected) in [
+            ("Last", Some(i64::MAX.unsigned_abs())),
+            ("Overflow", None),
+            ("StillWritable", None),
+        ] {
+            let entry = LibraryEntry {
+                track: Track {
+                    source_uri: format!("spotify:track:{name}"),
+                    title: name.into(),
+                    artist: None,
+                    album: None,
+                    uri: None,
+                    duration_secs: None,
+                },
+                ..LibraryEntry::default()
+            };
+            store.upsert_library(&[entry]).unwrap();
+            assert_eq!(store.library_catalog_revision().unwrap(), expected);
+        }
+        assert_eq!(store.library().unwrap().len(), 3);
     }
 }

@@ -138,6 +138,10 @@ impl Store for SharedStore<'_> {
         self.lock().library()
     }
 
+    fn library_catalog_revision(&self) -> Result<Option<u64>, StoreError> {
+        self.lock().library_catalog_revision()
+    }
+
     fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError> {
         self.lock().spotify_library_owner()
     }

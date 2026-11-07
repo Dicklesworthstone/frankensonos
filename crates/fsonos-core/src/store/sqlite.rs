@@ -268,6 +268,15 @@ const MIGRATIONS: &[Migration] = &[
             progress TEXT NOT NULL);
     ",
     },
+    Migration {
+        version: 24,
+        name: "monotonic public catalog revisions for reusable library browsing",
+        sql: "
+        CREATE TABLE library_catalog_clock (
+            singleton INTEGER PRIMARY KEY, revision INTEGER);
+        INSERT INTO library_catalog_clock (singleton, revision) VALUES (1, 0);
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -697,6 +706,18 @@ fn generation_text(g: Generation) -> &'static str {
     }
 }
 
+/// Called only inside the transaction that changed a public catalog projection.
+/// NULL is sticky: exhausting the counter disables reuse without failing writes.
+fn bump_library_catalog_revision(connection: &AsyncConnection) -> Result<(), FrankenError> {
+    connection
+        .execute_sync(
+            "UPDATE library_catalog_clock SET revision = \
+             CASE WHEN revision < 9223372036854775807 THEN revision + 1 ELSE NULL END \
+             WHERE singleton = 1",
+        )
+        .map(drop)
+}
+
 fn library_rows(entries: &[LibraryEntry]) -> Vec<Vec<SqliteValue>> {
     entries
         .iter()
@@ -792,10 +813,12 @@ fn prepare_spotify_library(
 fn write_spotify_library(
     connection: &AsyncConnection,
     projection: &SpotifyLibraryProjection,
-) -> Result<(), FrankenError> {
+) -> Result<bool, FrankenError> {
     write_library(connection, &projection.library)?;
+    let mut changed = !projection.library.is_empty() || !projection.observations.is_empty();
     if let Some(rows) = &projection.directory {
-        connection.execute_sync("DELETE FROM spotify_playlists")?;
+        changed |= connection.execute_sync("DELETE FROM spotify_playlists")? > 0;
+        changed |= !rows.is_empty();
         if !rows.is_empty() {
             connection.execute_many_with_params_in_transaction_sync(
                 "INSERT OR IGNORE INTO spotify_playlists (playlist_uri, name, position) \
@@ -820,7 +843,7 @@ fn write_spotify_library(
             )?;
         }
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn read_artist_discovery(
@@ -939,7 +962,8 @@ fn write_playlist_evidence(
 fn merge_playlist_library(
     connection: &AsyncConnection,
     entries: &[LibraryEntry],
-) -> Result<(), FrankenError> {
+) -> Result<bool, FrankenError> {
+    let mut changed = false;
     for chunk in entries.chunks(400) {
         let placeholders = (1..=chunk.len())
             .map(|index| format!("?{index}"))
@@ -983,6 +1007,7 @@ fn merge_playlist_library(
                 inserted.extend(library_rows(std::slice::from_ref(entry)));
             }
         }
+        changed |= !inserted.is_empty() || !weights.is_empty();
         write_library(connection, &inserted)?;
         if !weights.is_empty() {
             connection.execute_many_with_params_in_transaction_sync(
@@ -991,13 +1016,14 @@ fn merge_playlist_library(
             )?;
         }
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn write_playlist_observations(
     connection: &AsyncConnection,
     observations: &[SpotifyPlaylistPublicationItem],
-) -> Result<(), FrankenError> {
+) -> Result<bool, FrankenError> {
+    let mut changed = false;
     for observation in observations {
         let incoming = &observation.contents;
         if !incoming.complete {
@@ -1024,8 +1050,9 @@ fn write_playlist_observations(
             "INSERT OR REPLACE INTO spotify_playlist_contents (playlist_uri, observation) VALUES (?1, ?2)",
             &[incoming.playlist_uri.as_str().into(), encoded.into()],
         )?;
+        changed = true;
     }
-    Ok(())
+    Ok(changed)
 }
 
 fn read_spotify_owner(
@@ -1155,6 +1182,7 @@ fn adopt_spotify_owner(
          VALUES (1, ?1, ?2)",
         &[owner_id.into(), stored_generation.into()],
     )?;
+    bump_library_catalog_revision(connection)?;
     Ok((
         SpotifyLibraryOwner {
             owner_id: owner_id.to_owned(),
@@ -1365,7 +1393,10 @@ impl Store for SqliteStore {
         if rows.is_empty() {
             return Ok(());
         }
-        self.in_transaction(|connection| write_library(connection, &rows))
+        self.in_transaction(|connection| {
+            write_library(connection, &rows)?;
+            bump_library_catalog_revision(connection)
+        })
     }
 
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError> {
@@ -1414,6 +1445,24 @@ impl Store for SqliteStore {
             })
         })
         .collect()
+    }
+
+    fn library_catalog_revision(&self) -> Result<Option<u64>, StoreError> {
+        let rows = self.query(
+            "SELECT revision FROM library_catalog_clock WHERE singleton = 1",
+            &[],
+        )?;
+        let Some(revision) = rows
+            .first()
+            .map(|row| opt_int(row, 0))
+            .transpose()?
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        u64::try_from(revision)
+            .map(Some)
+            .map_err(|_| backend("the library catalog revision is negative"))
     }
 
     fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError> {
@@ -1510,7 +1559,9 @@ impl Store for SqliteStore {
             if read_spotify_owner(connection)?.as_ref() != Some(owner) {
                 return Ok(false);
             }
-            write_spotify_library(connection, &projection)?;
+            if write_spotify_library(connection, &projection)? {
+                bump_library_catalog_revision(connection)?;
+            }
             Ok(true)
         })
     }
@@ -1567,7 +1618,7 @@ impl Store for SqliteStore {
             {
                 return Ok(false);
             }
-            write_spotify_library(connection, &projection)?;
+            let changed = write_spotify_library(connection, &projection)?;
             if let Some(fence) = playlist_fence {
                 write_playlist_evidence(
                     connection,
@@ -1583,6 +1634,9 @@ impl Store for SqliteStore {
                 "DELETE FROM spotify_library_progress WHERE incoming_id = ?1",
                 &[owner.owner_id.as_str().into()],
             )?;
+            if changed {
+                bump_library_catalog_revision(connection)?;
+            }
             Ok(true)
         })
     }
@@ -1603,15 +1657,18 @@ impl Store for SqliteStore {
             )? {
                 return Ok(false);
             }
-            merge_playlist_library(connection, &publication.entries)?;
-            write_spotify_library(connection, &projection)?;
-            write_playlist_observations(connection, &publication.observations)?;
+            let mut changed = merge_playlist_library(connection, &publication.entries)?;
+            changed |= write_spotify_library(connection, &projection)?;
+            changed |= write_playlist_observations(connection, &publication.observations)?;
             write_playlist_evidence(
                 connection,
                 owner,
                 publication.directory.as_deref(),
                 &publication.observations,
             )?;
+            if changed {
+                bump_library_catalog_revision(connection)?;
+            }
             Ok(true)
         })
     }
@@ -1859,11 +1916,14 @@ impl Store for SqliteStore {
             })
             .collect();
         self.in_transaction(|c| {
-            c.execute_with_params_sync(
+            let removed = c.execute_with_params_sync(
                 "DELETE FROM album_tracks WHERE album_uri = ?1",
                 &[album_uri.into()],
             )?;
             if rows.is_empty() {
+                if removed > 0 {
+                    bump_library_catalog_revision(c)?;
+                }
                 return Ok(());
             }
             c.execute_many_with_params_in_transaction_sync(
@@ -1871,8 +1931,8 @@ impl Store for SqliteStore {
                  (album_uri, disc_number, track_number, source_uri, title, duration_secs, \
                   fetched_at, explicit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 &rows,
-            )
-            .map(drop)
+            )?;
+            bump_library_catalog_revision(c)
         })
     }
 
@@ -2007,16 +2067,19 @@ impl Store for SqliteStore {
     fn save_playlists(&mut self, playlists: &[(String, String)]) -> Result<(), StoreError> {
         let rows = playlist_rows(playlists);
         self.in_transaction(|c| {
-            c.execute_sync("DELETE FROM spotify_playlists")?;
+            let removed = c.execute_sync("DELETE FROM spotify_playlists")?;
             if rows.is_empty() {
+                if removed > 0 {
+                    bump_library_catalog_revision(c)?;
+                }
                 return Ok(());
             }
             c.execute_many_with_params_in_transaction_sync(
                 "INSERT OR IGNORE INTO spotify_playlists (playlist_uri, name, position) \
                  VALUES (?1, ?2, ?3)",
                 &rows,
-            )
-            .map(drop)
+            )?;
+            bump_library_catalog_revision(c)
         })
     }
 
@@ -2033,14 +2096,17 @@ impl Store for SqliteStore {
     fn save_playlist_contents(&mut self, contents: &CachedPlaylist) -> Result<(), StoreError> {
         contents.validate()?;
         let observation = serde_json::to_string(contents).map_err(backend)?;
-        self.execute(
-            "INSERT OR REPLACE INTO spotify_playlist_contents (playlist_uri, observation) \
-             VALUES (?1, ?2)",
-            &[
-                contents.playlist_uri.as_str().into(),
-                observation.as_str().into(),
-            ],
-        )
+        self.in_transaction(|connection| {
+            connection.execute_with_params_sync(
+                "INSERT OR REPLACE INTO spotify_playlist_contents (playlist_uri, observation) \
+                 VALUES (?1, ?2)",
+                &[
+                    contents.playlist_uri.as_str().into(),
+                    observation.as_str().into(),
+                ],
+            )?;
+            bump_library_catalog_revision(connection)
+        })
     }
 
     fn playlist_contents(&self, playlist_uri: &str) -> Result<Option<CachedPlaylist>, StoreError> {
@@ -2638,6 +2704,167 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
 
+    fn catalog_entry(name: &str) -> LibraryEntry {
+        LibraryEntry {
+            track: Track {
+                source_uri: format!("spotify:track:{name}"),
+                title: name.into(),
+                artist: None,
+                album: None,
+                uri: None,
+                duration_secs: None,
+            },
+            ..LibraryEntry::default()
+        }
+    }
+
+    #[test]
+    fn catalog_clock_migration_preserves_existing_rows_and_starts_a_new_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("catalog-clock-upgrade.db");
+        let old = SqliteStore::open_migrated(&file.to_string_lossy(), &MIGRATIONS[..23]).unwrap();
+        old.execute(
+            "INSERT INTO spotify_library (source_uri, title, is_classical, added) \
+             VALUES (?1, 'Existing', 0, 10)",
+            &["spotify:track:Existing".into()],
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO spotify_playlists (playlist_uri, name, position) \
+             VALUES (?1, 'Existing list', 0)",
+            &["spotify:playlist:Existing".into()],
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO album_tracks \
+             (album_uri, disc_number, track_number, source_uri, title, fetched_at) \
+             VALUES (?1, 1, 1, ?2, 'Existing album track', 11)",
+            &[
+                "spotify:album:Existing".into(),
+                "spotify:track:Existing".into(),
+            ],
+        )
+        .unwrap();
+        let library = old.library().unwrap();
+        let names = old.playlists().unwrap();
+        let album = old.album_tracks("spotify:album:Existing").unwrap();
+        old.close().unwrap();
+
+        let mut store = SqliteStore::open(&file).unwrap();
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&24));
+        assert_eq!(store.library_catalog_revision().unwrap(), Some(0));
+        assert_eq!(store.library().unwrap(), library);
+        assert_eq!(store.playlists().unwrap(), names);
+        assert_eq!(store.album_tracks("spotify:album:Existing").unwrap(), album);
+        store
+            .upsert_library(&[catalog_entry("AfterUpgrade")])
+            .unwrap();
+        assert_eq!(store.library_catalog_revision().unwrap(), Some(1));
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn failed_publication_preserves_the_clock_rows_and_completed_proof() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let (owner, _) = store.adopt_spotify_library_owner("catalog-owner").unwrap();
+        store.upsert_library(&[catalog_entry("Existing")]).unwrap();
+        store
+            .save_playlists(&[("spotify:playlist:Existing".into(), "Existing".into())])
+            .unwrap();
+        assert!(
+            store
+                .save_spotify_library_progress("catalog-owner", Some(&owner), None, "ready")
+                .unwrap()
+        );
+        let revision = store.library_catalog_revision().unwrap();
+        let library = store.library().unwrap();
+        let names = store.playlists().unwrap();
+        // This fails after the library and directory writes inside publication.
+        store.execute("DROP TABLE spotify_heard", &[]).unwrap();
+        assert!(
+            store
+                .publish_spotify_library_from_progress(
+                    &owner,
+                    "ready",
+                    &[catalog_entry("MustRollBack")],
+                    Some(&[]),
+                    &[],
+                    Some(&[]),
+                    None,
+                    None,
+                )
+                .is_err()
+        );
+        assert_eq!(store.library_catalog_revision().unwrap(), revision);
+        assert_eq!(store.library().unwrap(), library);
+        assert_eq!(store.playlists().unwrap(), names);
+        assert_eq!(
+            store
+                .spotify_library_progress("catalog-owner", Some(&owner))
+                .unwrap()
+                .as_deref(),
+            Some("ready")
+        );
+    }
+
+    #[test]
+    fn a_rollback_after_increment_restores_the_previous_catalog_token() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store.upsert_library(&[catalog_entry("Existing")]).unwrap();
+        let revision = store.library_catalog_revision().unwrap();
+        let library = store.library().unwrap();
+        let replacement = library_rows(&[catalog_entry("MustRollBack")]);
+        let result = store.in_transaction(|connection| {
+            write_library(connection, &replacement)?;
+            bump_library_catalog_revision(connection)?;
+            Err::<(), _>(FrankenError::Internal("failure after the increment".into()))
+        });
+        assert!(result.is_err());
+        assert_eq!(store.library_catalog_revision().unwrap(), revision);
+        assert_eq!(store.library().unwrap(), library);
+    }
+
+    #[test]
+    fn catalog_clock_exhaustion_is_durable_and_does_not_block_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("catalog-clock-exhausted.db");
+        let mut store = SqliteStore::open(&file).unwrap();
+        store
+            .execute(
+                "UPDATE library_catalog_clock SET revision = ?1 WHERE singleton = 1",
+                &[(i64::MAX - 1).into()],
+            )
+            .unwrap();
+        store.upsert_library(&[catalog_entry("Last")]).unwrap();
+        assert_eq!(
+            store.library_catalog_revision().unwrap(),
+            Some(i64::MAX.unsigned_abs())
+        );
+        store.upsert_library(&[catalog_entry("Overflow")]).unwrap();
+        assert_eq!(store.library_catalog_revision().unwrap(), None);
+        store.close().unwrap();
+
+        let mut reopened = SqliteStore::open(&file).unwrap();
+        assert_eq!(reopened.library_catalog_revision().unwrap(), None);
+        let (owner, _) = reopened
+            .adopt_spotify_library_owner("still-writable")
+            .unwrap();
+        assert!(
+            reopened
+                .publish_spotify_library(
+                    &owner,
+                    &[catalog_entry("StillWritable")],
+                    None,
+                    &[],
+                    None,
+                )
+                .unwrap()
+        );
+        assert_eq!(reopened.library_catalog_revision().unwrap(), None);
+        assert_eq!(reopened.library().unwrap().len(), 3);
+        reopened.close().unwrap();
+    }
+
     #[test]
     fn artist_cache_batches_are_bounded_and_isolate_failed_rows_and_chunks() {
         let store = SqliteStore::open_in_memory().unwrap();
@@ -2725,7 +2952,7 @@ mod tests {
         old.close().unwrap();
 
         let mut store = SqliteStore::open(&file).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&23));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&24));
         assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
         assert_eq!(
             store.spotify_followed_directory(&owner).unwrap().as_deref(),
@@ -2815,7 +3042,7 @@ mod tests {
         old.close().unwrap();
 
         let mut store = SqliteStore::open(&file).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&23));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&24));
         assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
         assert_eq!(store.library().unwrap(), library);
         assert_eq!(
@@ -3048,7 +3275,7 @@ mod tests {
         legacy.close().unwrap();
 
         let mut store = SqliteStore::open(&path).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&23));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&24));
         let mut entry = store.library().unwrap().pop().unwrap();
         assert_eq!(entry.artist_id, None, "a name does not prove an artist ID");
         assert_eq!(entry.origin, LibraryOrigin::Both);
@@ -3088,7 +3315,8 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24
             ]
         );
         let lib = store.library().unwrap();
@@ -3131,7 +3359,8 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24
             ]
         );
         let lib = store.library().unwrap();
@@ -3190,7 +3419,8 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+                24
             ]
         );
         let lib = store.library().unwrap();

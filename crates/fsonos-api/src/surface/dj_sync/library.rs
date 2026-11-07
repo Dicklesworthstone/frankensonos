@@ -3,10 +3,16 @@
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::policy::Client;
-use fsonos_core::store::{CachedAlbum, LibraryEntry};
+#[cfg(test)]
+use fsonos_core::store::CachedAlbum;
+use fsonos_core::store::LibraryEntry;
+#[cfg(test)]
 use fsonos_types::text::normalize;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, hash_map::DefaultHasher};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::hash_map::DefaultHasher;
+#[cfg(test)]
 use std::hash::{Hash, Hasher};
 
 use super::super::Surface;
@@ -15,8 +21,13 @@ use crate::failure::{ErrorCode, Failure};
 /// Response and query limit, independent of the size of the owner's library.
 pub const MAX_PAGE: usize = 50;
 
+#[cfg(test)]
 mod albums;
+mod cache;
 mod client;
+mod index;
+
+pub(in crate::surface) use cache::Cache;
 
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct BrowseQuery {
@@ -144,33 +155,7 @@ impl Surface {
             )
             .with_hint("Connect to fsonos serve and refresh its library first.")
         })?;
-        let (library, playlists, album) = {
-            let store = log.store.lock().map_err(|_| {
-                Failure::new(ErrorCode::Internal, "the library store is unavailable")
-            })?;
-            let error = |e: fsonos_core::store::StoreError| {
-                Failure::new(ErrorCode::Internal, e.to_string())
-            };
-            // Only copy the category we need; sorting and filtering happen after
-            // releasing the store lock. No lock is held across network I/O.
-            if query.kind.as_deref() == Some("playlists") {
-                (Vec::new(), store.playlists().map_err(error)?, None)
-            } else {
-                // A drill-down reads exactly its one completed catalog list.
-                let album = query
-                    .album_uri
-                    .as_deref()
-                    .map(|uri| store.album_tracks(uri))
-                    .transpose()
-                    .map_err(error)?
-                    .flatten();
-                (store.library().map_err(error)?, Vec::new(), album)
-            }
-        };
-        match album {
-            Some(album) => browse_catalog(&library, &playlists, query, Some(&album)),
-            None => browse(&library, &playlists, query),
-        }
+        self.library_cache.browse(&log.store, query)
     }
 }
 
@@ -246,7 +231,8 @@ fn track_items(entries: Vec<&LibraryEntry>, album_uri: Option<&str>) -> Vec<Brow
         .collect()
 }
 
-/// Pure projection, shared by all callers and deterministic under store reordering.
+/// Reference projection kept to check the indexed browser byte for byte.
+#[cfg(test)]
 fn browse(
     library: &[LibraryEntry],
     playlists: &[(String, String)],
@@ -255,6 +241,7 @@ fn browse(
     browse_catalog(library, playlists, query, None)
 }
 
+#[cfg(test)]
 fn browse_catalog(
     library: &[LibraryEntry],
     playlists: &[(String, String)],
@@ -359,6 +346,9 @@ fn browse_catalog(
         items,
     })
 }
+
+#[cfg(test)]
+mod cache_tests;
 
 #[cfg(test)]
 mod tests {
