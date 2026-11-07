@@ -2111,3 +2111,17 @@ The most productive next step: run the band canary sweep on .84's fresh
 57.23 (the same procedure that found 19 hits in the previous lifetime) —
 the freshly installed 57.23 should have a similar heap layout. Then fire
 the telnetd payload at the calibrated hits.
+
+### 2026-11-07 (session 13) — the pre-signature fuzzer: 300 mutants, 0 crashes (checked null)
+
+The structure-aware fuzzer ran 300 mutants against the REAL 57.23/65130
+upgrade binary in the chroot on css. Strategies: byte corruption at the
+128KB reassembly boundary, length field lies, series count corruption,
+type-22 header corruption, truncation at the boundary, extension past the
+reassembly buffer, and double-fetch. ALL parsed cleanly — the pre-signature
+parsers are robust against structure-aware black-box mutation at this depth.
+
+This is a checked null: the parsers need binary-level RE of the parse code
+(the Ghidra ppcproj has the upgrade binary imported) to identify the
+exact code paths before deeper mutation. The devmode statement lane and
+the S2 86.11 upgrade are the practical routes.
