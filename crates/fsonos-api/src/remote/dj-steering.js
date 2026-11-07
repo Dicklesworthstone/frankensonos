@@ -53,9 +53,24 @@ const DjSteeringRemote = (() => {
         || (value.expires_in_secs != null && !integer(value.expires_in_secs, 0, Number.MAX_SAFE_INTEGER))) {
       fail('The current steering is unreadable. Refresh before editing.');
     }
+    const known = Object.hasOwn(value, 'session_mood');
+    if (known && ((value.session_mood !== null && !word(value.session_mood))
+        || (value.source !== 'session' && value.session_mood !== null)
+        || (value.session_mood !== null && value.session_mood !== value.mood))) {
+      fail('The session mood is unreadable. Refresh before editing.');
+    }
     return Object.freeze({ source: value.source, mood: value.mood ?? null,
+      session_mood: known ? value.session_mood : null, session_mood_known: known,
       constraints: constraintsOf(value.constraints), added: constraintsOf(value.added),
       expires_at: value.expires_at ?? null, expires_in_secs: value.expires_in_secs ?? null });
+  }
+
+  // Null means a legacy session reported an effective mood but not whether
+  // it was pinned. The editor must ask, not silently pin or clear that mood.
+  function sessionMoodOf(steering) {
+    if (steering.source !== 'session') return '';
+    if (steering.session_mood_known) return steering.session_mood || '';
+    return steering.mood ? null : '';
   }
 
   function workOf(w) {
@@ -125,7 +140,8 @@ const DjSteeringRemote = (() => {
   }
 
   // A decreasing countdown and changing tracks do not mean steering changed.
-  const signatureOf = (s) => JSON.stringify([s.source, s.mood, s.constraints, s.added, s.expires_at]);
+  const signatureOf = (s) => JSON.stringify([s.source, s.mood, s.session_mood_known, s.session_mood,
+    s.constraints, s.added, s.expires_at]);
 
   function model({ call, changed = () => {} }) {
     let epoch = 0, disposed = false;
@@ -318,7 +334,8 @@ const DjSteeringRemote = (() => {
           if (input.value !== '') constraints[key] = /^\d+$/.test(input.value) ? Number(input.value) : fail('Work lengths need whole minutes.');
         }
         if (expiry.value === 'duration' && !minutes.value) fail('Enter the new duration in whole minutes.');
-        editor.review({ mood: mood.value, minutes: expiry.value === 'duration' ? minutes.value : '',
+        if (!mood.value) fail('Choose whether this session follows the time-of-day mood or pins a named mood.');
+        editor.review({ mood: JSON.parse(mood.value) ?? '', minutes: expiry.value === 'duration' ? minutes.value : '',
           keep_expiry: expiry.value === 'keep', constraints }, start);
       } catch (error) { editor.cancel(); status.textContent = message(error); }
     }
@@ -357,7 +374,9 @@ const DjSteeringRemote = (() => {
       target.value = state.target;
       if (displayedMoods !== state.moods) {
         displayedMoods = state.moods;
-        mood.replaceChildren(el('option', { value: '', text: 'Follow time-of-day mood' }), ...state.moods.map((m) => el('option', { value: m, text: m })));
+        mood.replaceChildren(el('option', { value: '', text: 'Choose how this session handles mood', disabled: true }),
+          el('option', { value: 'null', text: 'Follow time-of-day mood' }),
+          ...state.moods.map((m) => el('option', { value: JSON.stringify(m), text: m })));
       }
       if (observed !== state.status) {
         observed = state.status; facts.replaceChildren();
@@ -371,12 +390,15 @@ const DjSteeringRemote = (() => {
           if (observed.now) facts.append(workNode(observed.now, 'Current DJ work'));
           else facts.append(el('p', { text: 'No current DJ work reported.' }));
           observed.next.forEach((w, i) => facts.append(workNode(w, `Queued DJ work ${i + 1}`)));
-          // Do not silently clear a mood removed from the daemon's catalog.
-          if (s.source === 'session' && s.mood && !state.moods.includes(s.mood)
-              && !Array.from(mood.options).some((option) => option.value === s.mood)) {
-            mood.append(el('option', { value: s.mood, text: `${s.mood} (not listed; choose a mood)` }));
+          // The effective program mood is not an explicit session choice.
+          const chosen = sessionMoodOf(s);
+          if (chosen && !state.moods.includes(chosen)
+              && !Array.from(mood.options).some((option) => option.value === JSON.stringify(chosen))) {
+            mood.append(el('option', { value: JSON.stringify(chosen), text: `${chosen} (not listed; choose a mood)` }));
           }
-          mood.value = s.source === 'session' ? s.mood || '' : '';
+          mood.value = chosen === null ? '' : JSON.stringify(chosen || null);
+          if (chosen === null) facts.append(el('p', { class: 'dj-direction-warning',
+            text: 'This daemon reported only the effective mood. Choose whether to follow the time-of-day mood or pin a named mood before saving.' }));
           expiry.value = s.source === 'session' && s.expires_at !== null ? 'keep' : 'until';
           expiry.options[0].disabled = s.source !== 'session' || s.expires_at === null;
           minutes.value = s.source === 'session' && s.expires_in_secs !== null ? String(Math.max(1, Math.ceil(s.expires_in_secs / 60))) : '';
@@ -390,7 +412,7 @@ const DjSteeringRemote = (() => {
         imported = state.imported;
         if (imported) {
           const c = imported.constraints;
-          mood.value = imported.mood || '';
+          mood.value = JSON.stringify(imported.mood || null);
           energy.value = String(c.energy_bias || 0); long.checked = c.allow_long_works || false;
           min.value = c.min_work_minutes ?? ''; max.value = c.max_work_minutes ?? '';
           for (const [key, input] of Object.entries(filters)) input.value = (c[key] || []).join('\n');
@@ -437,7 +459,7 @@ const DjSteeringRemote = (() => {
         return opened;
       }, dispose: editor.dispose };
   }
-  return { routes, lists: Object.freeze(lists), zonesOf, constraintsOf, moodsOf, steeringOf, workOf, statusOf, requestOf, settingsOf, signatureOf, model, panel };
+  return { routes, lists: Object.freeze(lists), zonesOf, constraintsOf, moodsOf, steeringOf, sessionMoodOf, workOf, statusOf, requestOf, settingsOf, signatureOf, model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = DjSteeringRemote;

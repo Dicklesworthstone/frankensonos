@@ -101,6 +101,7 @@ impl DjEngine for Picking {
             steering: DjSteeringDto {
                 source: "none".into(),
                 mood: None,
+                session_mood: None,
                 constraints: SteerConstraints::default(),
                 added: SteerConstraints::default(),
                 expires_at: None,

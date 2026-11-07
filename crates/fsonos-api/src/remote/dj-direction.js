@@ -143,10 +143,10 @@ const DjDirection = (() => {
   // The caller owns draft/review lifecycle and restores focus after rerender.
   // This component only emits field edits; it cannot save or start music.
   function editor({ draft: value, change, disabled = false, el, idPrefix,
-    focusAttribute = 'data-dj-direction-focus', open = false, toggle = () => {} }) {
+    focusAttribute = 'data-dj-direction-focus', open = false, toggle = () => {}, includeDuration = true, note }) {
     const d = copyDraft(value), helpId = `${idPrefix}-help`;
     const box = el('details', { class: 'dj-direction-editor', open,
-      ontoggle: (event) => toggle(event.target.open) }, el('summary', { text: 'DJ filters and duration' }));
+      ontoggle: (event) => toggle(event.target.open) }, el('summary', { text: includeDuration ? 'DJ filters and duration' : 'DJ filters' }));
     const grid = el('div', { class: 'dj-direction-grid' });
     const attrs = (key, label) => ({ id: `${idPrefix}-${key}`, 'aria-label': label,
       [focusAttribute]: `${idPrefix}-${key}`, disabled });
@@ -162,8 +162,10 @@ const DjDirection = (() => {
       input.value = d[key];
       grid.append(field(lists[key], input));
     }
-    for (const [key, label, max] of [['min_work_minutes', 'Minimum work length (minutes)', 600],
-      ['max_work_minutes', 'Maximum work length (minutes)', 600], ['minutes', 'Direction duration (minutes)', 10080]]) {
+    const lengths = [['min_work_minutes', 'Minimum work length (minutes)', 600],
+      ['max_work_minutes', 'Maximum work length (minutes)', 600]];
+    if (includeDuration) lengths.push(['minutes', 'Direction duration (minutes)', 10080]);
+    for (const [key, label, max] of lengths) {
       grid.append(field(label, el('input', { ...attrs(key, label), type: 'number', min: 1, max, step: 1,
         inputmode: 'numeric', value: d[key], placeholder: key === 'minutes' ? 'Until cleared' : 'No limit',
         oninput: (event) => change(key, event.target.value) })));
@@ -178,7 +180,7 @@ const DjDirection = (() => {
       ...attrs('allow_long_works', 'Allow long works'), type: 'checkbox', checked: d.allow_long_works,
       onchange: (event) => change('allow_long_works', event.target.checked) }), 'Allow long works'));
     box.append(el('p', { id: helpId, text: 'One entry per line; commas stay part of a name. Decades use the first year, such as 1960. Leave filters empty to use the selected mood or automatic program.' }),
-      grid, el('p', { class: 'dj-direction-note', text: 'The duration starts afresh each time this scene or routine starts the DJ. With no mood or filters, it clears temporary steering and returns to the automatic program.' }));
+      grid, el('p', { class: 'dj-direction-note', text: note ?? 'The duration starts afresh each time this scene or routine starts the DJ. With no mood or filters, it clears temporary steering and returns to the automatic program.' }));
     return box;
   }
 

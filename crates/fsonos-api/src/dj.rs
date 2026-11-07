@@ -405,8 +405,16 @@ pub struct DjSteeringDto {
     /// `session` (set with dj_steer), `program` (the time-of-day program in
     /// moods.toml) or `none`.
     pub source: String,
+    /// The effective mood, including the time-of-day program when the
+    /// session does not select one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mood: Option<String>,
+    /// The active session's explicit mood. Null follows the time-of-day
+    /// program (and is also used when no session is active). Always present
+    /// on the wire so clients can distinguish it from older observations
+    /// that reported only the effective mood.
+    #[serde(default)]
+    pub session_mood: Option<String>,
     /// The constraints in effect: the mood's, with the session's on top.
     #[serde(default, skip_serializing_if = "SteerConstraints::is_empty")]
     pub constraints: SteerConstraints,

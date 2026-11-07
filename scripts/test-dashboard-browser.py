@@ -12,10 +12,10 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'announcements.js', 'dashboard-announcements.js', 'dashboard.js']
+SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'announcements.js', 'dashboard-announcements.js', 'dj-steering.js', 'dashboard-direction.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
-  writes: [], calls: [], feeds: [], savedScenes: [], routines: [], nextRoutine:100, offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
+  writes: [], calls: [], feeds: [], savedScenes: [], routines: [], nextRoutine:100, offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement', directions:[null,null],
   zones:[{household:'S2',coordinator_room:'Studio',members:['Studio','Kitchen'],transport_state:'playing'},
     {household:'S1',coordinator_room:'Studio',members:['Studio'],transport_state:'paused'}],
   queueRevision:'fixture-queue',
@@ -54,7 +54,7 @@ window.fetch=async(url,init)=>{
   }
   else if(url.startsWith('/zones/')&&url.endsWith('/play-mode')) data={zone:f.zones[index].coordinator_room,mode:f.modes[index],queue_active:true,dj_active:f.running[index]};
   else if(url.endsWith('/dj')) data={zone:'Studio',running:f.running[index],now:f.running[index]?f.work:null,
-    next:f.running[index]?[{...f.work,movement:undefined,title:'The next work'}]:[],steering:{source:'session',mood:f.mood,constraints:{energy_bias:-1},added:{}}};
+    next:f.running[index]?[{...f.work,movement:undefined,title:'The next work'}]:[],steering:f.directions[index]||{source:'session',mood:f.mood,session_mood:f.mood,constraints:{energy_bias:-1},added:{}}};
   else if(url==='/dj/moods') data={moods:[{name:'focus',constraints:{energy_bias:-1}},{name:'dinner',constraints:{energy_bias:0}}]};
   else if(init.method==='GET'&&url==='/schedules') data=f.routines;
   else if(url==='/scenes') data=[f.scene,...f.savedScenes];
@@ -113,7 +113,13 @@ window.fetch=async(url,init)=>{
       f.modes[target]=body.mode;
       data={done:'Playback order changed',changed:true,recovered:false,state:{zone:f.zones[target].coordinator_room,mode:body.mode,queue_active:true,dj_active:f.running[target]}};
     }
-    if(url==='/dj/steer')f.mood=body.mood||'focus';
+    if(url==='/dj/steer'||(url==='/dj/start'&&(body.mood||body.constraints))){
+      f.mood=body.mood||'focus';
+      f.directions[target]=body.clear?{source:'program',mood:'focus',session_mood:null,constraints:{energy_bias:-1},added:{}}
+        :{source:'session',mood:f.mood,session_mood:body.mood||null,
+          constraints:{energy_bias:-1,...body.constraints},added:body.constraints||{},
+          expires_at:body.for_secs?Math.floor(Date.now()/1000)+body.for_secs:null,expires_in_secs:body.for_secs||null};
+    }
     if(url==='/dj/stop')f.running[target]=false;
     if(url==='/dj/start')f.running[target]=true;
     if(url==='/dj/feedback')data={zone:'Studio',signal:body.signal,work:`${f.work.composer}: ${f.work.title}`,composer:f.work.composer,done:'Feedback recorded'};
@@ -135,7 +141,7 @@ def load(page, preview=False):
     if preview: html=html.replace('<body>','<body data-preview="true">')
     html=re.sub(r'<link[^>]+>|<script[^>]+></script>','',html)
     page.set_content(html)
-    for name in ['dashboard.css','dashboard-queue.css','dashboard-announcements.css']:
+    for name in ['dashboard.css','dashboard-queue.css','dashboard-announcements.css','dashboard-direction.css']:
         page.add_style_tag(content=(ROOT/name).read_text())
     page.add_script_tag(content=FIXTURE)
     for name in SCRIPTS: page.add_script_tag(content=(ROOT/name).read_text())
@@ -414,6 +420,43 @@ def main():
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
         assert page.evaluate('fixture.writes.length')==before
         checks.append('native queue search, duplicate occurrences, reviewed playback and direct position navigation on mobile')
+        page.set_viewport_size({'width':1536,'height':1120})
+        page.evaluate("""fixture.running[0]=true;fixture.directions[0]={source:'session',mood:'focus',session_mood:null,
+          constraints:{energy_bias:-1,exclude_artists:['Fixture avoid']},added:{exclude_artists:['Fixture avoid']},
+          expires_at:Math.floor(Date.now()/1000)+7200,expires_in_secs:7200}""")
+        page.locator('#refresh').click()
+        page.wait_for_function("!document.getElementById('open-direction').disabled")
+        page.locator('#open-direction').click()
+        page.wait_for_selector('#direction-form:not([hidden])')
+        assert page.locator('#direction-mood').input_value()=='null'
+        assert 'time-of-day mood as it changes' in page.locator('#direction-mood-help').inner_text()
+        page.locator('#direction-filters summary').click()
+        page.locator('#live-direction-include_artists').fill('Earth, Wind & Fire')
+        page.locator('#live-direction-include_genres').fill('jazz')
+        page.locator('#direction-expiry').select_option('duration')
+        page.locator('#direction-minutes').fill('90')
+        before=page.evaluate('fixture.writes.length')
+        page.locator('#direction-review').click()
+        assert 'Earth, Wind & Fire' in page.locator('#direction-preview-settings').inner_text()
+        assert '90 minutes' in page.locator('#direction-preview-expiry').inner_text()
+        assert page.evaluate('fixture.writes.length')==before
+        page.locator('#direction-confirm').click()
+        page.wait_for_function("document.getElementById('direction-message').textContent==='Fixture command accepted' && document.getElementById('direction-dialog').getAttribute('aria-busy')==='false'")
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/dj/steer','body':{'zone':'Studio@S2',
+          'constraints':{'include_artists':['Earth, Wind & Fire'],'exclude_artists':['Fixture avoid'],'include_genres':['jazz']},'for_secs':5400}}
+        page.locator('#close-direction').click()
+        assert page.evaluate('document.activeElement.id')=='open-direction'
+        page.set_viewport_size({'width':390,'height':900})
+        page.locator('#open-direction').click()
+        page.wait_for_function("!document.getElementById('direction-clear').disabled")
+        page.locator('#direction-clear').click()
+        assert 'Clear the group' in page.locator('#direction-preview-settings').inner_text()
+        page.locator('#direction-confirm').click()
+        page.wait_for_function("document.getElementById('direction-message').textContent==='Fixture command accepted' && document.getElementById('direction-dialog').getAttribute('aria-busy')==='false'")
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/dj/steer','body':{'zone':'Studio@S2','clear':True}}
+        assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
+        page.locator('#close-direction').click()
+        checks.append('advanced DJ filters preserve automatic mood and review exact native direction on desktop and mobile')
         page.close()
         preview=browser.new_page(viewport={'width':1536,'height':1120},reduced_motion='reduce')
         preview.on('pageerror',lambda e:errors.append(str(e)));load(preview,True)
@@ -438,6 +481,12 @@ def main():
         assert preview.locator('[data-queue-match="5"]').count()==1
         assert preview.evaluate('fixture.calls.length')==0
         preview.locator('#tab-picks').click()
+        preview.locator('#open-direction').click()
+        preview.wait_for_selector('#direction-form:not([hidden])')
+        assert preview.locator('#direction-review').is_disabled()
+        assert preview.locator('#direction-start').is_disabled()
+        preview.locator('#close-direction').click()
+        assert preview.evaluate('fixture.calls.length')==0
         checks.append('preview can explore reviews without contacting any speaker')
         assert preview.locator('#motion').inner_text()=='Resume motion'
         frames=[]

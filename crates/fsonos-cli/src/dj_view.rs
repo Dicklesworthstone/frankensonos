@@ -115,6 +115,7 @@ pub fn steering_of(
         constraints: steer.as_ref().map_or_default(|s| from_dj(&s.constraints)),
         added: session.as_ref().map_or_default(|s| from_dj(&s.constraints)),
         mood: steer.and_then(|s| s.mood),
+        session_mood: session.as_ref().and_then(|s| s.mood.clone()),
         expires_at,
         expires_in_secs: expires_at.map(|at| at.saturating_sub(now).max(0).unsigned_abs()),
     })
@@ -130,6 +131,7 @@ pub fn program_now(moods: &Moods, clock: &dyn Clock) -> DjSteeringDto {
         constraints: mood.and_then(|m| moods.get(m)).map_or_default(from_dj),
         added: SteerConstraints::default(),
         mood: mood.map(str::to_owned),
+        session_mood: None,
         expires_at: None,
         expires_in_secs: None,
     }
@@ -407,6 +409,7 @@ mod tests {
             ("program", Some("bright"))
         );
         assert_eq!(shown.constraints.energy_bias, 2);
+        assert_eq!(shown.session_mood, None);
         assert_eq!(program_now(&moods, &clock), shown);
 
         let now = clock.now().timestamp();
@@ -426,6 +429,7 @@ mod tests {
             (shown.source.as_str(), shown.mood.as_deref()),
             ("session", Some("focus"))
         );
+        assert_eq!(shown.session_mood.as_deref(), Some("focus"));
         assert_eq!(shown.constraints.include_composers, ["Bach"]);
         assert_eq!(shown.constraints.energy_bias, -1, "focus's own");
         assert_eq!(shown.added.include_composers, ["Bach"]);
@@ -441,6 +445,55 @@ mod tests {
         clock.advance(chrono::TimeDelta::hours(4));
         let shown = steering_of(&store, &moods, &den, &clock).unwrap();
         assert_eq!((shown.source.as_str(), shown.mood), ("none", None));
+    }
+
+    #[test]
+    fn session_mood_distinguishes_an_inherited_mood_from_an_explicit_pin() {
+        let clock =
+            FakeClock::new(DateTime::parse_from_rfc3339("2026-10-07T08:00:00-04:00").unwrap());
+        let moods = Moods::builtin();
+        let den = PlayerId("RINCON_DEN".into());
+        let mut store = MemStore::default();
+        let mut session = DjSession {
+            zone: den.0.clone(),
+            mood: None,
+            constraints: to_dj(&SteerConstraints {
+                exclude_artists: words(&["Synthetic artist"]),
+                ..SteerConstraints::default()
+            })
+            .unwrap(),
+            expires_at: None,
+        };
+        store.save_dj_session(&session.to_store().unwrap()).unwrap();
+        let automatic = steering_of(&store, &moods, &den, &clock).unwrap();
+        assert_eq!(automatic.source, "session");
+        assert_eq!(automatic.mood.as_deref(), Some("bright"));
+        assert_eq!(automatic.session_mood, None);
+        assert_eq!(automatic.added.exclude_artists, ["Synthetic artist"]);
+        let wire = serde_json::to_value(&automatic).unwrap();
+        assert_eq!(wire["mood"], "bright");
+        assert!(wire.get("session_mood").unwrap().is_null());
+
+        session.mood = Some("bright".into());
+        store.save_dj_session(&session.to_store().unwrap()).unwrap();
+        let pinned = steering_of(&store, &moods, &den, &clock).unwrap();
+        assert_eq!(pinned.mood, automatic.mood);
+        assert_eq!(pinned.constraints, automatic.constraints);
+        assert_eq!(pinned.session_mood.as_deref(), Some("bright"));
+        assert_eq!(
+            serde_json::to_value(&pinned).unwrap()["session_mood"],
+            "bright"
+        );
+
+        let mut legacy = wire;
+        legacy.as_object_mut().unwrap().remove("session_mood");
+        let decoded: DjSteeringDto = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.mood.as_deref(), Some("bright"));
+        assert_eq!(decoded.session_mood, None);
+        assert!(
+            serde_json::to_value(decoded).unwrap()["session_mood"].is_null(),
+            "new responses always include the field, including null"
+        );
     }
 
     #[test]
@@ -474,6 +527,7 @@ mod tests {
         let steering = DjSteeringDto {
             source: "none".into(),
             mood: None,
+            session_mood: None,
             constraints: SteerConstraints::default(),
             added: SteerConstraints::default(),
             expires_at: None,
@@ -494,7 +548,11 @@ mod tests {
         assert!(!shown.running && shown.now.is_none() && shown.next.is_empty());
         assert_eq!(
             serde_json::to_value(&shown).unwrap(),
-            serde_json::json!({ "zone": "Den", "running": false, "steering": { "source": "none" } })
+            serde_json::json!({
+                "zone": "Den",
+                "running": false,
+                "steering": { "source": "none", "session_mood": null }
+            })
         );
     }
 }

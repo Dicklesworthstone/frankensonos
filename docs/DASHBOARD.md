@@ -65,6 +65,41 @@ household's favorites, and plays the exact reviewed result rather than a new
 first-ranked match. These workflows share one mutation lane with transport and
 volume, retaining native policy and action logging.
 
+## Advanced direction for the current DJ
+
+**Advanced direction** beside the mood presets reads the selected group's current
+DJ and offers all native artist, genre, composer, period, decade, keyword, work
+length and energy filters. Each name occupies its own line, so commas inside an
+artist's name are preserved. The draft starts with the session's own additions;
+it does not copy inherited mood filters into the replacement.
+
+The session mood is separate from the effective mood shown in the observation.
+An automatic session keeps following the house's time-of-day program, while a
+named mood stays pinned for that session. The native status now includes
+`session_mood`, explicitly null for automatic, alongside the unchanged effective
+`mood`. An older response without that evidence requires a deliberate choice
+before replacing an ambiguous session.
+
+**Review direction** saves settings for future picks without starting or
+restarting playback. When the DJ is stopped, **Review & start DJ** sends the
+settings and start together so they apply from its first pick; a fresh DJ session
+can replace the current source and queue. **Review return to program** clears
+temporary steering. Already queued DJ works and standing preferences remain.
+
+Keep the existing deadline, choose any new whole duration from 1 to 10,080
+minutes, or keep the direction until cleared. Keeping a deadline uses the
+daemon's remaining seconds read last during confirmation, not the duration first
+shown or the browser's wall clock. A deadline with less than a minute remaining
+needs an explicit new duration or a return to program.
+
+Confirmation checks the exact qualified group, running state, steering, selected
+mood definition, and, for a start, the current source and queue occurrence.
+Changed observations retire the review. Reads expire after 45 seconds; edited
+drafts survive an on-demand reread in the same group, while changing groups,
+closing or hiding the dialog discards them. One native command uses the shared
+dashboard lane, retains uncertain outcomes until explicit **Refresh**, and is
+never retried automatically. There is no added DJ polling or hidden writer.
+
 ## Save the current house and its queues
 
 **Save current house** in the scene section captures every listening group, its
@@ -367,6 +402,7 @@ Run the local suites:
 node --test scripts/test-dashboard-session.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-workspace.cjs
 node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs scripts/test-dashboard-volume.cjs
 node --test scripts/test-dashboard-scenes.cjs scripts/test-dashboard-http.cjs
+node --test scripts/test-dashboard-direction.cjs scripts/test-remote-dj-steering.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-workspace.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preview.py

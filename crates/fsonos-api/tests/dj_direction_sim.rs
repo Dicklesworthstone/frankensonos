@@ -91,6 +91,7 @@ fn steering(at: Option<DjSpeakers<'_>>, store: &dyn Store, clock: &dyn Clock) ->
         mood: session
             .as_ref()
             .map_or_else(|| Some("calm".into()), |row| row.mood.clone()),
+        session_mood: session.as_ref().and_then(|row| row.mood.clone()),
         constraints: effective,
         added,
         expires_at,

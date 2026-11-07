@@ -809,6 +809,7 @@ mod tests {
         DjSteeringDto {
             source: "session".into(),
             mood: Some("focus".into()),
+            session_mood: Some("focus".into()),
             constraints: SteerConstraints {
                 include_composers: vec!["Bach".into()],
                 exclude_keywords: vec!["vocal".into()],

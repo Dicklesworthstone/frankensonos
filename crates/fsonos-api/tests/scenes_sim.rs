@@ -617,6 +617,7 @@ impl DjEngine for PlaysIn {
             next: Vec::new(),
             steering: DjSteeringDto {
                 source: if session.is_some() { "session" } else { "none" }.into(),
+                session_mood: session.as_ref().and_then(|s| s.mood.clone()),
                 mood: session.and_then(|s| s.mood),
                 constraints: SteerConstraints::default(),
                 added: SteerConstraints::default(),
@@ -642,6 +643,7 @@ impl DjEngine for PlaysIn {
             now: DjSteeringDto {
                 source: "none".into(),
                 mood: None,
+                session_mood: None,
                 constraints: SteerConstraints::default(),
                 added: SteerConstraints::default(),
                 expires_at: None,
