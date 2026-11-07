@@ -3,7 +3,7 @@
 //! retire candidates, adopt an account, or advance the full-sync timestamp.
 
 use crate::SpotifyError;
-use crate::library::{LibraryItem, LibraryProgress};
+use crate::library::{LibraryItem, LibraryProgress, SavedLibraryProgress};
 use crate::session::Session;
 use asupersync::Cx;
 use fsonos_core::store::{SpotifyLibraryOwner, Store, StoreError};
@@ -25,14 +25,18 @@ pub(super) struct SavedLibrary {
 
 pub(super) fn changed() -> SpotifyError {
     StoreError::Backend(
-        "the Spotify account or saved-library read changed during this refresh; refresh again".into(),
-    ).into()
+        "the Spotify account or saved-library read changed during this refresh; refresh again"
+            .into(),
+    )
+    .into()
 }
 
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .map_or(0, |duration| {
+            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
+        })
 }
 
 fn save<S: Store + ?Sized>(
@@ -41,15 +45,19 @@ fn save<S: Store + ?Sized>(
     base: Option<&SpotifyLibraryOwner>,
     expected: &mut Option<String>,
     progress: &LibraryProgress,
+    report: &mut Option<SavedLibraryProgress>,
 ) -> Result<(), SpotifyError> {
     let encoded = progress.encode()?;
     if expected.as_deref() == Some(encoded.as_str()) {
+        *report = Some(progress.summary(base));
         return Ok(());
     }
     if !store.save_spotify_library_progress(owner, base, expected.as_deref(), &encoded)? {
+        *report = None;
         return Err(changed());
     }
     *expected = Some(encoded);
+    *report = Some(progress.summary(base));
     Ok(())
 }
 
@@ -60,20 +68,24 @@ pub(super) async fn read<S: Store + ?Sized>(
     owner: &str,
     base: Option<&SpotifyLibraryOwner>,
     page_budget: usize,
+    report: &mut Option<SavedLibraryProgress>,
 ) -> Result<SavedLibrary, SpotifyError> {
     // Two saved collections can need root checks before any resumed work.
     if page_budget < 3 {
-        return Err(SpotifyError::Decode("saved-library pass needs at least three page requests".into()));
+        return Err(SpotifyError::Decode(
+            "saved-library pass needs at least three page requests".into(),
+        ));
     }
     let at = now();
     let mut expected = store.spotify_library_progress(owner, base)?;
-    let mut progress = expected.as_deref()
+    let mut progress = expected
+        .as_deref()
         .and_then(|encoded| LibraryProgress::restore(encoded, owner, session.endpoints(), at))
         .unwrap_or_else(|| LibraryProgress::new(owner, session.endpoints(), at));
     progress.claim()?;
     // Claim before HTTP: another full sync cannot consume the same completed
     // evidence while this pass is validating or enriching it.
-    save(store, owner, base, &mut expected, &progress)?;
+    save(store, owner, base, &mut expected, &progress, report)?;
 
     let mut used = 0usize;
     for index in progress.roots() {
@@ -85,7 +97,7 @@ pub(super) async fn read<S: Store + ?Sized>(
         if !progress.matches(index, &body)? {
             progress = LibraryProgress::new(owner, session.endpoints(), at);
             progress.claim()?;
-            save(store, owner, base, &mut expected, &progress)?;
+            save(store, owner, base, &mut expected, &progress, report)?;
             break;
         }
     }
@@ -102,7 +114,7 @@ pub(super) async fn read<S: Store + ?Sized>(
         let body = match session.get_brief(cx, &url).await {
             Ok(body) => body,
             Err(error) => {
-                save(store, owner, base, &mut expected, &progress)?;
+                save(store, owner, base, &mut expected, &progress, report)?;
                 return Err(error);
             }
         };
@@ -124,20 +136,20 @@ pub(super) async fn read<S: Store + ?Sized>(
                 // cannot prove a complete library. Start a fresh private read.
                 progress = LibraryProgress::new(owner, session.endpoints(), at);
                 progress.claim()?;
-                save(store, owner, base, &mut expected, &progress)?;
+                save(store, owner, base, &mut expected, &progress, report)?;
             }
             Err(error) => {
-                save(store, owner, base, &mut expected, &progress)?;
+                save(store, owner, base, &mut expected, &progress, report)?;
                 return Err(error);
             }
         }
         if used.is_multiple_of(CHECKPOINT_EVERY) {
-            save(store, owner, base, &mut expected, &progress)?;
+            save(store, owner, base, &mut expected, &progress, report)?;
         }
     }
 
     let complete = progress.finish();
-    save(store, owner, base, &mut expected, &progress)?;
+    save(store, owner, base, &mut expected, &progress, report)?;
     if !complete {
         return Err(SpotifyError::LibraryPending {
             pages: progress.pages(),

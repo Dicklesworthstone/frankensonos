@@ -20,9 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use asupersync::Cx;
-use fsonos_core::store::{
-    CachedPlaylist, LibraryEntry, LibraryOrigin, SpotifyLibraryOwner, Store,
-};
+use fsonos_core::store::{CachedPlaylist, LibraryEntry, LibraryOrigin, SpotifyLibraryOwner, Store};
 
 use crate::SpotifyError;
 use crate::classical::{CandidatePool, ClassicalTrack};
@@ -39,6 +37,7 @@ mod genre_cache_tests;
 mod genre_completion;
 mod playlists;
 mod saved;
+pub use crate::library::{SavedLibraryPhase, SavedLibraryProgress};
 use crate::works::{Work, group_works};
 pub use albums::{ALBUM_PAGE_BUDGET, AlbumContinuation, continue_albums};
 pub use genre_completion::{GENRE_READ_BUDGET, GenreContinuation, continue_genres};
@@ -75,6 +74,17 @@ pub struct LibrarySyncDetailed {
     pub notes: Vec<String>,
 }
 
+/// One full-refresh attempt, including durable intake progress when it pauses
+/// or fails. The report has no personal library payload or token material.
+#[derive(Debug)]
+pub struct LibrarySyncAttempt {
+    pub result: Result<LibrarySyncDetailed, SpotifyError>,
+    /// Last successfully saved essential-read checkpoint. An accepted full
+    /// refresh clears it; an ownership conflict invalidates it. Other failures
+    /// retain the last known counts without claiming that a refresh completed.
+    pub progress: Option<SavedLibraryProgress>,
+}
+
 /// Read the owner's whole library from Spotify, add and weigh what their
 /// other taste signals name ([`crate::taste::read_taste`], as far as the grant allows),
 /// tag it all with its artists' genres ([`tag_genres`], guessed where they
@@ -96,27 +106,90 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     cx: &Cx,
     store: &mut S,
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
-    sync_library_pass(session, cx, store, SAVED_LIBRARY_PAGE_BUDGET).await
+    sync_library_attempt(session, cx, store).await.result
 }
 
+/// Read the library with a compact durable report even when no full result can
+/// be published yet. Status callers should persist this report once per attempt
+/// rather than reopen and parse the private saved-library checkpoint.
+pub async fn sync_library_attempt<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+) -> LibrarySyncAttempt {
+    sync_library_attempt_with_budget(session, cx, store, SAVED_LIBRARY_PAGE_BUDGET).await
+}
+
+pub(crate) async fn sync_library_attempt_with_budget<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    page_budget: usize,
+) -> LibrarySyncAttempt {
+    let mut progress = None;
+    let result = sync_library_observed(session, cx, store, page_budget, &mut progress).await;
+    if result.is_ok() {
+        progress = None;
+    } else if let Some(saved) = &progress
+        && let Ok(current) = store.spotify_library_owner()
+        && (current.as_ref().map(|owner| owner.owner_id.as_str()) != saved.base_owner.as_deref()
+            || current.as_ref().map(|owner| owner.generation) != saved.base_generation)
+    {
+        // A different adoption owns the cache now. Historical counts from a
+        // losing reader must not appear to be that account's resumable work.
+        progress = None;
+    }
+    LibrarySyncAttempt { result, progress }
+}
+
+#[cfg(test)]
 pub(crate) async fn sync_library_pass<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
     store: &mut S,
     page_budget: usize,
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
+    sync_library_attempt_with_budget(session, cx, store, page_budget)
+        .await
+        .result
+}
+
+async fn sync_library_observed<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    page_budget: usize,
+    progress: &mut Option<SavedLibraryProgress>,
+) -> Result<LibrarySyncDetailed, SpotifyError> {
     let owner = session.read_owner(cx).await?;
     let base = store.spotify_library_owner()?;
-    let saved = saved::read(session, cx, store, &owner, base.as_ref(), page_budget).await?;
+    let saved = saved::read(
+        session,
+        cx,
+        store,
+        &owner,
+        base.as_ref(),
+        page_budget,
+        progress,
+    )
+    .await?;
     let mut items = saved.items;
     // No ownership change, retirement or publication before the essential
     // saved-library read succeeds. Adoption and retiring the prior owner's
     // candidates are atomic, so a crash cannot label old music as the new
     // owner's cache. An unowned legacy cache needs the same fresh proof.
     let previous = store.library()?;
-    let (receipt, changed_owner) = store
-        .adopt_spotify_library_from_progress(&owner, base.as_ref(), &saved.proof)?
-        .ok_or_else(saved::changed)?;
+    let Some((receipt, changed_owner)) =
+        store.adopt_spotify_library_from_progress(&owner, base.as_ref(), &saved.proof)?
+    else {
+        *progress = None;
+        return Err(saved::changed());
+    };
+    if let Some(progress) = progress {
+        // Adoption atomically moves the same retained proof to this receipt.
+        progress.base_owner = Some(receipt.owner_id.clone());
+        progress.base_generation = Some(receipt.generation);
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
@@ -167,8 +240,11 @@ pub(crate) async fn sync_library_pass<S: Store + ?Sized>(
     // the owner's playlists call them first.
     taste.name_genres(&mut items);
     crate::genre_guess::fill(&mut items);
-    let mut report = publish_library_read(store, &receipt, &saved.proof, &items, &taste)?
-        .ok_or_else(saved::changed)?;
+    let Some(mut report) = publish_library_read(store, &receipt, &saved.proof, &items, &taste)?
+    else {
+        *progress = None;
+        return Err(saved::changed());
+    };
     if changed_owner {
         // Adoption retires everything before the new read is published;
         // report only prior candidates absent from this accepted library.

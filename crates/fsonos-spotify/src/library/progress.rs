@@ -7,13 +7,43 @@ use super::intake::{ITEM_BUDGET, PAGE_BUDGET, check_route, invalid, offset, path
 use super::{Fetch, LibraryItem, LibraryRead, Origin};
 use crate::SpotifyError;
 use crate::client::{Album, Endpoints, random_state, sha256};
-use fsonos_core::store::MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES;
+use fsonos_core::store::{MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES, SpotifyLibraryOwner};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 
 const VERSION: u8 = 1;
 const MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 const MAX_FIELD: usize = 16 * 1024;
+
+/// The essential read's current phase, before the full refresh is accepted.
+/// `Ready` means saved music is prepared; it does not claim publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedLibraryPhase {
+    Reading,
+    Verifying,
+    Ready,
+}
+
+/// Compact evidence from a successfully persisted essential-read checkpoint.
+/// The daemon can retain this beside its retry deadline without parsing or
+/// exposing the private library payload on every status request. Counts refer
+/// to the last saved checkpoint, not to a percentage or an atomic API snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedLibraryProgress {
+    /// The verified account being read, which may differ from the public cache.
+    pub owner: String,
+    /// The public ownership receipt that fenced this saved checkpoint.
+    pub base_owner: Option<String>,
+    pub base_generation: Option<u64>,
+    /// Validated input pages retained; verification requests do not add pages.
+    pub pages: usize,
+    /// Playable input rows retained, before deduplicating saves and likes.
+    pub tracks: usize,
+    /// Retained pages checked again after an interrupted read.
+    pub verified_pages: usize,
+    pub phase: SavedLibraryPhase,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct LibraryProgress {
@@ -73,7 +103,12 @@ impl Fetch {
                     artist.id = None;
                     artist.uri = None;
                 }
-                Self::AlbumTracks(endpoints.album_tracks(&album.id, position), album, *added, *total)
+                Self::AlbumTracks(
+                    endpoints.album_tracks(&album.id, position),
+                    album,
+                    *added,
+                    *total,
+                )
             }
         })
     }
@@ -203,7 +238,9 @@ impl LibraryProgress {
         let encoded = serde_json::to_string(self)
             .map_err(|error| invalid(&format!("library checkpoint: {error}")))?;
         if encoded.len() > MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES {
-            return Err(invalid("saved-library progress exceeds its 64 MiB metadata limit"));
+            return Err(invalid(
+                "saved-library progress exceeds its 64 MiB metadata limit",
+            ));
         }
         Ok(encoded)
     }
@@ -214,6 +251,24 @@ impl LibraryProgress {
 
     pub(crate) fn tracks(&self) -> usize {
         self.read.items.len()
+    }
+
+    pub(crate) fn summary(&self, base: Option<&SpotifyLibraryOwner>) -> SavedLibraryProgress {
+        SavedLibraryProgress {
+            owner: self.owner_id.clone(),
+            base_owner: base.map(|owner| owner.owner_id.clone()),
+            base_generation: base.map(|owner| owner.generation),
+            pages: self.pages(),
+            tracks: self.tracks(),
+            verified_pages: self.checked,
+            phase: if self.next_url().is_some() {
+                SavedLibraryPhase::Reading
+            } else if self.next_check().is_some() {
+                SavedLibraryPhase::Verifying
+            } else {
+                SavedLibraryPhase::Ready
+            },
+        }
     }
 
     pub(crate) fn next_url(&self) -> Option<&str> {
@@ -229,20 +284,29 @@ impl LibraryProgress {
             .iter()
             .enumerate()
             .filter(|(_, proof)| {
-                matches!(proof.fetch, Fetch::SavedAlbums(_, _) | Fetch::SavedTracks(_, _))
-                    && offset(proof.fetch.url()).is_ok_and(|position| position == 0)
+                matches!(
+                    proof.fetch,
+                    Fetch::SavedAlbums(_, _) | Fetch::SavedTracks(_, _)
+                ) && offset(proof.fetch.url()).is_ok_and(|position| position == 0)
             })
             .map(|(index, _)| index)
             .collect()
     }
 
     pub(crate) fn collection_changed(&self, body: &[u8]) -> bool {
-        self.read.pending.front().is_some_and(|fetch| changed_total(fetch.total(), body))
+        self.read
+            .pending
+            .front()
+            .is_some_and(|fetch| changed_total(fetch.total(), body))
     }
 
     /// Keep the same atomic intake rules as the unbounded public reader.
     pub(crate) fn ingest(&mut self, body: &[u8]) -> Result<(), SpotifyError> {
-        let fetch = self.read.pending.front().cloned()
+        let fetch = self
+            .read
+            .pending
+            .front()
+            .cloned()
             .ok_or_else(|| invalid("library read already complete"))?;
         let raw: RawPage = serde_json::from_slice(body)
             .map_err(|error| invalid(&format!("library page: {error}")))?;
@@ -252,11 +316,23 @@ impl LibraryProgress {
         let item_start = self.read.items.len();
         let previous_pending = self.read.pending.len();
         self.read.ingest(body)?;
-        let spawned: Vec<_> = self.read.pending.iter().skip(previous_pending - 1).cloned().collect();
+        let spawned: Vec<_> = self
+            .read
+            .pending
+            .iter()
+            .skip(previous_pending - 1)
+            .cloned()
+            .collect();
         let items = &self.read.items[item_start..];
         let digest = fingerprint(&self.read.endpoints, raw_count, total, items, &spawned)?;
         self.proofs.push(PageProof {
-            fetch, spawned, item_start, item_count: items.len(), raw_count, total, digest,
+            fetch,
+            spawned,
+            item_start,
+            item_count: items.len(),
+            raw_count,
+            total,
+            digest,
         });
         self.checked = 0;
         self.ready = false;
@@ -282,8 +358,10 @@ impl LibraryProgress {
     }
 
     pub(crate) fn next_check(&self) -> Option<usize> {
-        (self.read.pending.is_empty() && self.verification_required && self.checked < self.proofs.len())
-            .then_some(self.checked)
+        (self.read.pending.is_empty()
+            && self.verification_required
+            && self.checked < self.proofs.len())
+        .then_some(self.checked)
     }
 
     pub(crate) fn checked(&mut self) {
@@ -303,18 +381,24 @@ impl LibraryProgress {
     }
 
     fn valid(&self, owner: &str, endpoints: &Endpoints, now: i64) -> bool {
-        if self.version != VERSION || self.owner_id != owner || self.api != endpoints.api
-            || self.started_at < 0 || self.started_at > now.saturating_add(300)
+        if self.version != VERSION
+            || self.owner_id != owner
+            || self.api != endpoints.api
+            || self.started_at < 0
+            || self.started_at > now.saturating_add(300)
             || now.saturating_sub(self.started_at) >= MAX_AGE_SECS
-            || self.nonce.is_empty() || self.nonce.len() > 128
-            || self.read.pages > PAGE_BUDGET || self.read.items.len() > ITEM_BUDGET
+            || self.nonce.is_empty()
+            || self.nonce.len() > 128
+            || self.read.pages > PAGE_BUDGET
+            || self.read.items.len() > ITEM_BUDGET
             || self.read.requested.len() > PAGE_BUDGET
             || self.read.pages != self.proofs.len()
             || self.checked > self.proofs.len()
             || (!self.verification_required && self.checked != 0)
             || (!self.read.pending.is_empty() && self.checked != 0)
-            || (self.ready && (!self.read.pending.is_empty()
-                || (self.verification_required && self.checked != self.proofs.len())))
+            || (self.ready
+                && (!self.read.pending.is_empty()
+                    || (self.verification_required && self.checked != self.proofs.len())))
             || !self.read.items.iter().all(valid_item)
         {
             return false;
@@ -327,7 +411,10 @@ impl LibraryProgress {
             if replay.pending.pop_front().as_ref() != Some(&proof.fetch)
                 || !valid_fetch(endpoints, &proof.fetch)
                 || proof.item_start != item_start
-                || proof.fetch.total().is_some_and(|total| proof.total != Some(total))
+                || proof
+                    .fetch
+                    .total()
+                    .is_some_and(|total| proof.total != Some(total))
             {
                 return false;
             }
@@ -349,10 +436,12 @@ impl LibraryProgress {
                 return false;
             }
             item_start = next_item;
-            let Some(end) = offset(proof.fetch.url()).ok()
-                .and_then(|start| start.checked_add(proof.raw_count)) else {
-                    return false;
-                };
+            let Some(end) = offset(proof.fetch.url())
+                .ok()
+                .and_then(|start| start.checked_add(proof.raw_count))
+            else {
+                return false;
+            };
             if proof.total.is_some_and(|total| end > total) {
                 return false;
             }
@@ -363,7 +452,9 @@ impl LibraryProgress {
                 }
                 if path(next.url()) == path(proof.fetch.url()) {
                     follows += 1;
-                    if proof.raw_count == 0 || !offset(next.url()).is_ok_and(|position| position == end) {
+                    if proof.raw_count == 0
+                        || !offset(next.url()).is_ok_and(|position| position == end)
+                    {
                         return false;
                     }
                 } else if !matches!(proof.fetch, Fetch::SavedAlbums(_, _))
@@ -380,7 +471,11 @@ impl LibraryProgress {
         item_start == self.read.items.len()
             && replay.pending == self.read.pending
             && replay.requested == self.read.requested
-            && self.read.pending.iter().all(|fetch| valid_fetch(endpoints, fetch))
+            && self
+                .read
+                .pending
+                .iter()
+                .all(|fetch| valid_fetch(endpoints, fetch))
     }
 }
 

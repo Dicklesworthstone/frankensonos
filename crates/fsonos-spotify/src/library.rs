@@ -22,6 +22,7 @@ mod intake;
 mod progress;
 
 pub(crate) use progress::LibraryProgress;
+pub use progress::{SavedLibraryPhase, SavedLibraryProgress};
 
 /// How a track entered the owner's library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
