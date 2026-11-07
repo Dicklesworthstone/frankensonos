@@ -7,6 +7,9 @@ use crate::cache::{
 };
 use fsonos_core::store::SqliteStore;
 
+#[path = "album_budget_tests.rs"]
+mod budget;
+
 const OWNER: &str = "test-owner";
 const ALBUM: &str = "BackgroundSonata";
 const ROUTE: &str = "/v1/albums/BackgroundSonata/tracks";

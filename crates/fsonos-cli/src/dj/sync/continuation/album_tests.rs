@@ -276,6 +276,30 @@ fn interrupted_album_passes_back_off_independently_and_retain_server_cooldowns()
 }
 
 #[test]
+fn library_pass_album_progress_resets_backoff_without_rolling_back_pages() {
+    let at = 1_790_000_000;
+    let mut state = checkpoint(at, 1);
+    state.observed_albums(&partial(), at, false);
+    state.album_stalled = 4;
+    state.album_retry_at = at + 10_000;
+    let mut value = serde_json::to_value(partial()).unwrap();
+    value["partial"]["offset"] = json!(16);
+    value["partial"]["total"] = json!(20);
+    value["partial"]["pages"] = json!(16);
+    let advanced: AlbumContinuation = serde_json::from_value(value.clone()).unwrap();
+    state.observed_albums(&advanced, at + 1, true);
+    assert_eq!(state.album_stalled, 0);
+    assert_eq!(
+        state.album_retry_at,
+        at + 1 + i64::try_from(CHECK.as_secs()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(state.albums.unwrap()).unwrap()["partial"],
+        value["partial"]
+    );
+}
+
+#[test]
 fn playlist_progress_keeps_due_album_pages_and_the_two_background_readers_take_turns() {
     let dir = directory("fairness");
     let at = 1_790_000_000;

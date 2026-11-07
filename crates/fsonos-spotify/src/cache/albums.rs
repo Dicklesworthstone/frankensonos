@@ -21,6 +21,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod library;
+pub(super) use library::complete_verified;
+#[cfg(test)]
+mod tests;
+
 /// Catalog pages per background pass, plus one account identity read.
 pub const ALBUM_PAGE_BUDGET: usize = 8;
 /// A private partial list cannot grow beyond this many metadata bytes.
@@ -53,12 +58,19 @@ impl AlbumContinuation {
         }
     }
 
-    /// A library pass can discover more works without discarding an album
-    /// whose earlier pages the background reader already retained.
+    /// A status-only observation can discover more works without discarding
+    /// an album's retained pages. A pass that actually read albums already
+    /// carries its current cursor and must never be rolled back by this merge.
     pub fn inherit_progress(&mut self, previous: &Self) {
         if !self.requires_refresh
+            && !previous.requires_refresh
             && self.owner == previous.owner
             && self.generation == previous.generation
+            && self.pending > 0
+            && self.completed == 0
+            && self.advanced == 0
+            && self.cursor.is_none()
+            && self.partial.is_none()
         {
             self.cursor.clone_from(&previous.cursor);
             self.partial.clone_from(&previous.partial);

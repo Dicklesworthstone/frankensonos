@@ -300,6 +300,7 @@ impl Checkpoint {
     fn observed_albums(&mut self, report: &AlbumContinuation, now: i64, keep_pages: bool) {
         if keep_pages
             && report.completed == 0
+            && report.advanced == 0
             && !report.requires_refresh
             && let Some(previous) = &self.albums
             && previous.pending > 0
@@ -591,7 +592,7 @@ impl LibrarySync {
             PassKind::Playlists => checkpoint.reserve(now),
         };
         write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
-        let read = self.read(pass);
+        let read = self.read(pass, checkpoint.albums.clone());
         self.finish_pass(before, &checkpoint, reserved, kind, read)
     }
 
@@ -679,8 +680,9 @@ impl LibrarySync {
             next.intake = None;
             next.intake_error = None;
         }
-        // New artist tags can reveal a classical movement whose whole album
-        // is still missing. This is a local observation, not an album read.
+        // Genre-only passes just observe missing albums; full and playlist
+        // passes can now return newly read pages. Retain a previous checkpoint
+        // only when this report contains no newer album progress.
         next.observed_albums(&read.albums, at, !album_pass);
         if !genre_pass {
             next.album_turn = !album_pass;

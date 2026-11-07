@@ -1,7 +1,7 @@
 //! Continue durable playlist windows without a complete saved-library reread.
 
 use super::{
-    LibrarySync, LibrarySyncDetailed, acknowledge_playlists, complete_library_works, from_entry,
+    AlbumContinuation, LibrarySync, LibrarySyncDetailed, acknowledge_playlists, from_entry,
     publish_library_read, sync_notes,
 };
 use crate::SpotifyError;
@@ -10,10 +10,8 @@ use crate::expand::Expansion;
 use crate::genres::GenreRead;
 use crate::session::Session;
 use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_pending_playlists};
-use crate::works::group_works;
 use asupersync::Cx;
 use fsonos_core::store::{ArtistGenresBatch, Store};
-use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Finish only unread or unfinished playlist snapshots for the last full
@@ -21,13 +19,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// saved albums/likes, top items, artist endpoints or speaker calls occur.
 /// Existing candidates and their weights survive this additive enrichment.
 /// Only a full sync has authority to retire music absent from the account.
-/// Newly observed works use the same best-effort album completion as a full
-/// sync, so a movement on a late playlist page need not play alone all day.
+/// Album completion shares the full sync's separate bounded page allowance.
 pub async fn continue_playlists<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
     store: &mut S,
     owner: &str,
+) -> Result<LibrarySyncDetailed, SpotifyError> {
+    continue_playlists_with_albums(session, cx, store, owner, None).await
+}
+
+/// Finish playlist windows and continue the scheduler's existing album read.
+/// A long album resumes its accepted offset even when playlist work or a full
+/// refresh happens between its dedicated continuation passes.
+pub async fn continue_playlists_with_albums<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    owner: &str,
+    previous_albums: Option<&AlbumContinuation>,
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
     if owner.trim().is_empty() || owner.len() > 1_024 || owner.chars().any(char::is_control) {
         return Err(SpotifyError::Config(
@@ -64,7 +74,8 @@ pub async fn continue_playlists<S: Store + ?Sized>(
         };
     let mut items = candidate_items(store)?;
     let mut library = summarize(&items);
-    let mut albums = Expansion::default();
+    let mut album_notes = Vec::new();
+    let mut completion = None;
     if let Some(receipt) = receipt
         .as_ref()
         .filter(|_| !read.continuation.requires_refresh)
@@ -74,22 +85,22 @@ pub async fn continue_playlists<S: Store + ?Sized>(
         if let Some(applied) = publish_library_read(store, receipt, &items, &taste)? {
             library = applied;
             acknowledge_playlists(store, receipt, &mut taste, &mut read.continuation)?;
-            // Complete only works touched by this pass, including movements
-            // cached from an earlier window, within the usual read bounds.
-            let observed: HashSet<&str> = taste
-                .tracks
-                .iter()
-                .map(|item| item.source_uri.as_str())
-                .collect();
-            let works = group_works(CandidatePool::build(&items).tracks())
-                .into_iter()
-                .filter(|work| {
-                    work.movements
-                        .iter()
-                        .any(|track| observed.contains(track.track.source_uri.as_str()))
-                })
-                .collect();
-            albums = complete_library_works(session, cx, store, works, now).await;
+            // A directory proof follows a verified identity read. A missing
+            // grant or failed identity cannot authorize unrelated album I/O;
+            // an API halt also stops later optional reads in this pass.
+            if taste.directory.is_some() && read.halted.is_none() {
+                completion = Some(
+                    super::albums::complete_verified(
+                        session,
+                        cx,
+                        store,
+                        receipt,
+                        previous_albums,
+                        &mut album_notes,
+                    )
+                    .await?,
+                );
+            }
         } else {
             // Even a switch away and back invalidates the original receipt.
             // Keep the new adoption's cache and leave this pass unacknowledged.
@@ -103,12 +114,19 @@ pub async fn continue_playlists<S: Store + ?Sized>(
         }
     }
     let genres = GenreRead::default();
-    let notes = sync_notes(&read, &genres, &albums);
-    let mut completion = match receipt.as_ref() {
-        Some(receipt) => super::albums::status(store, receipt, now)?,
-        None => super::AlbumContinuation::refresh_required(),
+    let mut notes = sync_notes(&read, &genres, &Expansion::default());
+    notes.extend(album_notes);
+    let mut completion = match completion {
+        Some(completion) => completion,
+        None => match receipt.as_ref() {
+            Some(receipt) => super::albums::status(store, receipt, now)?,
+            None => AlbumContinuation::refresh_required(),
+        },
     };
-    completion.completed = albums.fetched;
+    if let Some(previous) = previous_albums {
+        completion.inherit_progress(previous);
+    }
+    completion.retry_after_secs = session.retry_after_secs();
     let mut genre_continuation = match receipt.as_ref() {
         Some(receipt) => super::genre_completion::status(store, receipt, now)?,
         None => super::GenreContinuation::refresh_required(),

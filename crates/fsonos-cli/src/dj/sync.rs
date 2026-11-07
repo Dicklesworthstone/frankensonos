@@ -35,8 +35,8 @@ use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::cache::{
-    LibrarySyncDetailed, SavedLibraryProgress, continue_albums, continue_genres,
-    continue_playlists, sync_library_attempt,
+    AlbumContinuation, LibrarySyncDetailed, SavedLibraryProgress, continue_albums,
+    continue_genres, continue_playlists_with_albums, sync_library_attempt_with_albums,
 };
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
@@ -222,7 +222,11 @@ impl LibrarySync {
 
     /// Read Spotify into a store of its own. Keep the session's server
     /// cooldown even when the read fails before producing a library result.
-    fn read(&self, pass: Pass) -> Result<ReadResult, Failure> {
+    fn read(
+        &self,
+        pass: Pass,
+        previous_albums: Option<AlbumContinuation>,
+    ) -> Result<ReadResult, Failure> {
         let (config, dir) = (self.config.clone(), self.data_dir.clone());
         thread::Builder::new()
             .stack_size(STACK)
@@ -243,12 +247,25 @@ impl LibrarySync {
                     let mut progress = None;
                     let result = match pass {
                         Pass::Full => {
-                            let attempt = sync_library_attempt(&mut session, &cx, &mut store).await;
+                            let attempt = sync_library_attempt_with_albums(
+                                &mut session,
+                                &cx,
+                                &mut store,
+                                previous_albums.as_ref(),
+                            )
+                            .await;
                             progress = attempt.progress;
                             attempt.result
                         }
                         Pass::Playlists(owner) => {
-                            continue_playlists(&mut session, &cx, &mut store, &owner).await
+                            continue_playlists_with_albums(
+                                &mut session,
+                                &cx,
+                                &mut store,
+                                &owner,
+                                previous_albums.as_ref(),
+                            )
+                            .await
                         }
                         Pass::Albums(previous) => {
                             continue_albums(&mut session, &cx, &mut store, previous.as_ref()).await

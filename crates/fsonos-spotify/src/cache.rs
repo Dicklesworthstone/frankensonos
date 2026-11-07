@@ -24,8 +24,8 @@ use fsonos_core::store::{CachedPlaylist, LibraryEntry, LibraryOrigin, SpotifyLib
 
 use crate::SpotifyError;
 use crate::classical::{CandidatePool, ClassicalTrack};
-use crate::dj::{DjConfig, WorkPool};
-use crate::expand::{AlbumMisses, Expansion, complete_from_cache, complete_works};
+use crate::dj::WorkPool;
+use crate::expand::{Expansion, complete_from_cache};
 use crate::genres::{GenreRead, tag_genres};
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
@@ -36,12 +36,14 @@ mod albums;
 mod genre_cache_tests;
 mod genre_completion;
 mod playlists;
+#[cfg(test)]
+mod publication_tests;
 mod saved;
 pub use crate::library::{SavedLibraryPhase, SavedLibraryProgress};
-use crate::works::{Work, group_works};
+use crate::works::group_works;
 pub use albums::{ALBUM_PAGE_BUDGET, AlbumContinuation, continue_albums};
 pub use genre_completion::{GENRE_READ_BUDGET, GenreContinuation, continue_genres};
-pub use playlists::continue_playlists;
+pub use playlists::{continue_playlists, continue_playlists_with_albums};
 pub use saved::SAVED_LIBRARY_PAGE_BUDGET;
 
 /// What one sync did.
@@ -109,6 +111,20 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     sync_library_attempt(session, cx, store).await.result
 }
 
+/// Refresh saved music while resuming the scheduler's existing album work.
+/// Album enrichment spends at most [`ALBUM_PAGE_BUDGET`] requests after the
+/// library is accepted; its returned checkpoint belongs to the same owner.
+pub async fn sync_library_detailed_with_albums<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    previous_albums: Option<&AlbumContinuation>,
+) -> Result<LibrarySyncDetailed, SpotifyError> {
+    sync_library_attempt_with_albums(session, cx, store, previous_albums)
+        .await
+        .result
+}
+
 /// Read the library with a compact durable report even when no full result can
 /// be published yet. Status callers should persist this report once per attempt
 /// rather than reopen and parse the private saved-library checkpoint.
@@ -117,17 +133,48 @@ pub async fn sync_library_attempt<S: Store + ?Sized>(
     cx: &Cx,
     store: &mut S,
 ) -> LibrarySyncAttempt {
-    sync_library_attempt_with_budget(session, cx, store, SAVED_LIBRARY_PAGE_BUDGET).await
+    sync_library_attempt_with_albums(session, cx, store, None).await
 }
 
+/// Observe essential intake and resume previously retained album pages in the
+/// same bounded full-refresh attempt.
+pub async fn sync_library_attempt_with_albums<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    previous_albums: Option<&AlbumContinuation>,
+) -> LibrarySyncAttempt {
+    attempt_library_pass(
+        session,
+        cx,
+        store,
+        SAVED_LIBRARY_PAGE_BUDGET,
+        previous_albums,
+    )
+    .await
+}
+
+#[cfg(test)]
 pub(crate) async fn sync_library_attempt_with_budget<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
     store: &mut S,
     page_budget: usize,
 ) -> LibrarySyncAttempt {
+    attempt_library_pass(session, cx, store, page_budget, None).await
+}
+
+async fn attempt_library_pass<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    page_budget: usize,
+    previous_albums: Option<&AlbumContinuation>,
+) -> LibrarySyncAttempt {
     let mut progress = None;
-    let result = sync_library_observed(session, cx, store, page_budget, &mut progress).await;
+    let result =
+        sync_library_observed(session, cx, store, page_budget, &mut progress, previous_albums)
+            .await;
     if result.is_ok() {
         progress = None;
     } else if let Some(saved) = &progress
@@ -160,6 +207,7 @@ async fn sync_library_observed<S: Store + ?Sized>(
     store: &mut S,
     page_budget: usize,
     progress: &mut Option<SavedLibraryProgress>,
+    previous_albums: Option<&AlbumContinuation>,
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
     let owner = session.read_owner(cx).await?;
     let base = store.spotify_library_owner()?;
@@ -240,11 +288,14 @@ async fn sync_library_observed<S: Store + ?Sized>(
     // the owner's playlists call them first.
     taste.name_genres(&mut items);
     crate::genre_guess::fill(&mut items);
-    let Some(mut report) = publish_library_read(store, &receipt, &saved.proof, &items, &taste)?
+    let Some(mut report) = publish_saved_library(store, &receipt, &saved.proof, &items, &taste)?
     else {
         *progress = None;
         return Err(saved::changed());
     };
+    // Publication consumed the retained proof. Later optional enrichment errors
+    // must not advertise these already accepted pages as resumable intake.
+    *progress = None;
     if changed_owner {
         // Adoption retires everything before the new read is published;
         // report only prior candidates absent from this accepted library.
@@ -260,11 +311,10 @@ async fn sync_library_observed<S: Store + ?Sized>(
     if !read.incomplete() && read.continuation.pending == 0 && read.continuation.limited == 0 {
         crate::taste::finish_reconciliation(store, &receipt, taste.directory.as_ref())?;
     }
-    let works = group_works(pool_from_store(store)?.tracks());
-    let albums = complete_library_works(session, cx, store, works, now).await;
-    let notes = sync_notes(&read, &genres, &albums);
-    let mut completion = albums::status(store, &receipt, now)?;
-    completion.completed = albums.fetched;
+    let mut notes = sync_notes(&read, &genres, &Expansion::default());
+    let completion =
+        albums::complete_verified(session, cx, store, &receipt, previous_albums, &mut notes)
+            .await?;
     let mut genre_continuation = genre_completion::status(store, &receipt, now)?;
     if !genre_continuation.requires_refresh {
         genre_continuation.completed = genres.fetched;
@@ -280,34 +330,6 @@ async fn sync_library_observed<S: Store + ?Sized>(
         albums: completion,
         notes,
     })
-}
-
-/// Both full sync and playlist continuation prepare the album cache before
-/// the daemon publishes a fresh DJ pool. Completion remains best effort:
-/// missing albums retain their week-long backoff and an outage halts reads.
-async fn complete_library_works<S: Store + ?Sized>(
-    session: &mut Session,
-    cx: &Cx,
-    store: &mut S,
-    works: Vec<Work>,
-    now: i64,
-) -> Expansion {
-    if works.is_empty() {
-        return Expansion::default();
-    }
-    let mut misses = AlbumMisses::load(&*store, now).unwrap_or_default();
-    let (_, albums) = complete_works(
-        session,
-        cx,
-        store,
-        works,
-        &DjConfig::default(),
-        now,
-        &mut misses,
-    )
-    .await;
-    let _ = misses.save(store, now);
-    albums
 }
 
 fn acknowledge_playlists<S: Store + ?Sized>(
@@ -353,25 +375,63 @@ fn playlist_publication<S: Store + ?Sized>(
 /// All personal projections use the same adoption receipt. Reads and network
 /// requests may span another process's account switch; none of their prepared
 /// candidates, weights or observations may be published after that switch.
-fn publish_library_read<S: Store + ?Sized>(
+fn publish_saved_library<S: Store + ?Sized>(
     store: &mut S,
     owner: &SpotifyLibraryOwner,
     proof: &str,
     items: &[LibraryItem],
     taste: &Taste,
 ) -> Result<Option<LibrarySync>, SpotifyError> {
-    let (entries, report) = library_projection(store, items)?;
-    let contents = playlist_publication(store, taste)?;
+    let prepared = prepare_library_publication(store, items, taste)?;
     Ok(store
         .publish_spotify_library_from_progress(
             owner,
             proof,
-            &entries,
+            &prepared.entries,
             taste.playlists.as_deref(),
-            &contents,
+            &prepared.contents,
             taste.heard.as_deref(),
         )?
-        .then_some(report))
+        .then_some(prepared.report))
+}
+
+/// Additive playlist windows need the current owner, but neither create nor
+/// consume the proof reserved for an essential saved-library replacement.
+fn publish_library_read<S: Store + ?Sized>(
+    store: &mut S,
+    owner: &SpotifyLibraryOwner,
+    items: &[LibraryItem],
+    taste: &Taste,
+) -> Result<Option<LibrarySync>, SpotifyError> {
+    let prepared = prepare_library_publication(store, items, taste)?;
+    Ok(store
+        .publish_spotify_library(
+            owner,
+            &prepared.entries,
+            taste.playlists.as_deref(),
+            &prepared.contents,
+            taste.heard.as_deref(),
+        )?
+        .then_some(prepared.report))
+}
+
+struct LibraryPublication {
+    entries: Vec<LibraryEntry>,
+    contents: Vec<CachedPlaylist>,
+    report: LibrarySync,
+}
+
+fn prepare_library_publication<S: Store + ?Sized>(
+    store: &S,
+    items: &[LibraryItem],
+    taste: &Taste,
+) -> Result<LibraryPublication, SpotifyError> {
+    let (entries, report) = library_projection(store, items)?;
+    Ok(LibraryPublication {
+        entries,
+        contents: playlist_publication(store, taste)?,
+        report,
+    })
 }
 
 /// What a sync's best-effort reads couldn't read, a sentence each: the
