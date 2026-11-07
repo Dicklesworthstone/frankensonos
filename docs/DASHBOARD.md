@@ -98,6 +98,24 @@ Changed grouping, queue/DJ ownership or an intervening mode change invalidates
 the review. Reads expire after 45 seconds; hidden pages and closed dialogs retire
 unfinished reads. An unconfirmed write is never retried automatically.
 
+### Group rooms and whole-house playback
+
+**Group rooms** below the room cards can add a room to the selected listening
+group, separate an individual room, or play that group's music throughout its
+household. The review names the affected groups and explains when current audio
+will be replaced or a coordinator may change. Same-name rooms in different
+households remain distinct; joining and whole-house playback stay within one
+household.
+
+The dialog reads current grouping on demand, then checks the affected membership,
+coordinators and reported unavailable rooms again before sending one native
+command. A new room also invalidates a whole-house review. Observations expire
+after 45 seconds, and changing selection, hiding the page or entering immersive
+mode discards the review. All operations use the dashboard's shared command lane
+and refresh the whole house after an accepted result. An unconfirmed or partial
+failure is never retried automatically; use **Refresh** to inspect current state
+before another command. Whole-house grouping can complete only partly.
+
 ## Room scope and keyboard interaction
 
 The stage's group pill, the player group name and the Rooms button open a

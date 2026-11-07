@@ -68,3 +68,28 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line-str
 .play-mode-dialog footer{display:flex;justify-content:flex-end}
 .play-mode-dialog footer button{min-height:44px}
 @media(max-width:600px){.queue-playback-order button{min-height:44px}.play-mode-dialog{padding:20px}.play-mode-observation button{min-height:44px}}
+
+/* Native multi-room control, with the same reviewed-command surface as playback. */
+.room-group-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px}
+.room-group-actions button{color:var(--accent)}
+.groups-dialog{width:min(600px,calc(100vw - 32px))}
+.groups-context{display:flex;align-items:center;gap:10px}
+.groups-context .review-target{flex:1;min-width:0}
+.groups-context button{flex:none;min-height:44px}
+.groups-fields{display:grid;gap:16px;margin-top:20px}
+.groups-fields label{display:grid;gap:8px;font-size:12px;font-weight:500}
+.groups-fields select{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--raised);color:var(--text);border:1px solid var(--line-strong);border-radius:9px;font:inherit;font-size:13px}
+.groups-fields select:disabled{opacity:.55}
+#groups-review{margin-top:16px;min-height:44px}
+.groups-preview{margin-top:20px;padding:16px;background:var(--raised);border:1px solid var(--line-strong);border-radius:11px;overflow-wrap:anywhere}
+.groups-preview:focus{outline:2px solid var(--accent);outline-offset:3px}
+.groups-preview h3{font-size:16px;line-height:1.5}
+.groups-preview p{font-size:12px;line-height:1.75;color:var(--muted);margin-top:10px}
+.groups-preview h4{font-size:12px;font-weight:550;margin:18px 0 6px}
+.groups-preview ul{margin:0;padding-left:19px;max-height:180px;overflow:auto;font-size:12px;line-height:1.7}
+.groups-preview li{padding:4px 0}
+.groups-preview footer{margin-top:16px}
+.groups-preview footer button{min-height:44px}
+.groups-message{font-size:12px;line-height:1.75;color:var(--muted);overflow-wrap:anywhere;margin-top:16px}
+.groups-message:empty{display:none}
+@media(max-width:600px){.groups-context{flex-wrap:wrap}.groups-context .review-target{flex-basis:100%}.groups-context button{margin-left:auto}.room-group-actions .text-button{min-height:44px}.groups-preview{padding:14px}}
