@@ -19,6 +19,7 @@ pub enum FollowedArtistsPhase {
 /// A compact observation of the bounded followed-artist reader. The private
 /// artist metadata, account identity, cursor and ownership receipt stay local.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[allow(clippy::struct_excessive_bools)] // Independent wire flags for waiting, bounds, activity and ownership.
 pub struct FollowedArtistsDto {
     /// The directory still needs reading, verification or full reconciliation.
     /// A budget pause is normal progress; ready pages are not publication.

@@ -1,9 +1,11 @@
 //! Bounded taste reads keep useful prefixes, but never mistake a page budget
 //! or a broken continuation for a complete account snapshot.
 
-use super::{MAX_PAGES, Reader};
+#[cfg(test)]
+use super::MAX_PAGES;
+use super::Reader;
 use crate::SpotifyError;
-use crate::client::{Artist, Endpoints, FollowedArtists, parse_query};
+use crate::client::{Endpoints, parse_query};
 use std::collections::HashSet;
 
 mod coverage;
@@ -95,6 +97,15 @@ impl Chain {
         }
         Ok(())
     }
+}
+
+/// Accept only a cursor for this API's followed-artist collection. Durable
+/// readers retain the decoded position, never an arbitrary response URL.
+pub(super) fn followed_cursor(endpoints: &Endpoints, url: &str) -> Result<String, SpotifyError> {
+    let first = endpoints.followed_artists();
+    let mut chain = Chain::new(&first, Progress::Cursor(HashSet::new()));
+    chain.follow(endpoints, url)?;
+    parameter(url, "after")
 }
 
 impl Reader<'_> {
@@ -221,25 +232,6 @@ impl Reader<'_> {
             complete,
             failed,
         }
-    }
-
-    pub(super) async fn followed(&mut self) -> Vec<Artist> {
-        let mut artists = Vec::new();
-        let first = self.session.endpoints().followed_artists();
-        let mut chain = Chain::new(&first, Progress::Cursor(HashSet::new()));
-        let mut next = Some(first);
-        for _ in 0..MAX_PAGES {
-            let Some(url) = next.take() else {
-                break;
-            };
-            let Some(page) = self.get::<FollowedArtists>(&url, "followed artists").await else {
-                break;
-            };
-            artists.extend(page.artists.items);
-            next = self.continuation(&mut chain, page.artists.next, "followed artists");
-        }
-        self.exhausted(next.is_some(), "followed artists");
-        artists
     }
 }
 

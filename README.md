@@ -511,6 +511,17 @@ Catalog cache reads are batched, so rebuilding a large DJ pool avoids one
 database call per artist. Failed metadata rows preserve the tracks' stored
 tags while healthy entries remain usable.
 
+Followed-artist directories also continue past the first 1,000 artists. Each
+pass reads at most 20 directory pages, including verification; private cursor
+and artist evidence survives restart. Resumed scans recheck their boundaries
+and retained pages before a full refresh reconciles membership and taste
+weights. Background passes retain directory progress and genre evidence without
+rewriting playable music. The sync panel and CLI/HTTP/MCP distinguish reading,
+verification, and a verified directory awaiting full reconciliation. This reader
+takes turns with playlist, album, and genre completion and shares Spotify's
+cooldown. Private evidence is bounded to 100,000 artists, 16 MiB, and seven days;
+a reached cache bound is reported as incomplete and stops automatic intake.
+
 Next:
 
 - Real-hardware CI (a nightly `fsonos selftest` against a real house), then

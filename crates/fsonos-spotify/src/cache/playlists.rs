@@ -139,6 +139,7 @@ pub async fn continue_playlists_with_albums<S: Store + ?Sized>(
         genres,
         genre_continuation,
         playlists,
+        followed_artists: crate::taste::FollowedArtistContinuation::default(),
         albums: completion,
         notes,
     })

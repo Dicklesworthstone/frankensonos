@@ -1,4 +1,4 @@
-//! Durable scheduling for bounded playlist, album and genre enrichment. The public stamp's
+//! Durable scheduling for bounded playlist, album, genre and artist-directory reads. The public stamp's
 //! timestamp remains the last full sync, while private state survives restarts.
 
 use super::{
@@ -7,14 +7,17 @@ use super::{
 };
 use fsonos_api::surface::dj_sync::GenreEnrichmentDto;
 use fsonos_spotify::cache::{AlbumContinuation, GenreContinuation, SavedLibraryProgress};
-use fsonos_spotify::taste::PlaylistContinuation;
+use fsonos_spotify::taste::{FollowedArtistContinuation, PlaylistContinuation};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 
 const NOTE: &str = "Playlist continuation: ";
 const ALBUM_NOTE: &str = "Album completion: ";
 const GENRE_NOTE: &str = "Genre enrichment: ";
+const FOLLOWED_NOTE: &str = "Followed artists: ";
 
+mod followed;
+use followed::followed_status;
 mod intake;
 pub(super) use intake::status;
 
@@ -23,6 +26,7 @@ pub(super) enum Pass {
     Playlists(String),
     Albums(Option<AlbumContinuation>),
     Genres(Option<GenreContinuation>),
+    Followed(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +36,7 @@ enum PassKind {
     Playlists,
     Albums,
     Genres,
+    Followed,
 }
 
 impl Pass {
@@ -41,6 +46,7 @@ impl Pass {
             Self::Playlists(_) => PassKind::Playlists,
             Self::Albums(_) => PassKind::Albums,
             Self::Genres(_) => PassKind::Genres,
+            Self::Followed(_) => PassKind::Followed,
         }
     }
 }
@@ -73,7 +79,13 @@ pub(super) struct Checkpoint {
     genre_stalled: usize,
     #[serde(default)]
     genre_retry_at: i64,
-    /// Rotate the three independent readers; old stamps retain album_turn.
+    #[serde(default)]
+    followed: Option<FollowedArtistContinuation>,
+    #[serde(default)]
+    followed_stalled: usize,
+    #[serde(default)]
+    followed_retry_at: i64,
+    /// Rotate the independent readers; old stamps retain album_turn.
     #[serde(default)]
     next_enrichment: Option<PassKind>,
     /// A full read has been admitted, but has not published a complete library.
@@ -95,11 +107,14 @@ impl Checkpoint {
     }
 
     fn cooldown(&mut self, now: i64, seconds: u64) {
-        let until = now.saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX));
-        self.not_before = self.not_before.max(until);
+        if seconds > 0 {
+            let until = now.saturating_add(i64::try_from(seconds).unwrap_or(i64::MAX));
+            self.not_before = self.not_before.max(until);
+        }
         self.retry_at = self.retry_at.max(self.not_before);
         self.album_retry_at = self.album_retry_at.max(self.not_before);
         self.genre_retry_at = self.genre_retry_at.max(self.not_before);
+        self.followed_retry_at = self.followed_retry_at.max(self.not_before);
     }
 
     fn reserve(&self, now: i64) -> Self {
@@ -161,6 +176,9 @@ impl Checkpoint {
                 self.genre_retry_at
             },
             next_enrichment: self.next_enrichment,
+            followed: self.followed.clone(),
+            followed_stalled: self.followed_stalled,
+            followed_retry_at: self.followed_retry_at,
             intake_pending: self.intake_pending,
             intake: self.intake.clone(),
             intake_error: self.intake_error.clone(),
@@ -360,6 +378,7 @@ impl Checkpoint {
         let owner = self.owner_due(now);
         let albums = self.album_due(now);
         let genres = self.genre_due(now);
+        let followed = self.followed_due(now);
         let first = self.next_enrichment.unwrap_or(if self.album_turn {
             PassKind::Albums
         } else {
@@ -369,9 +388,10 @@ impl Checkpoint {
             PassKind::Full | PassKind::Playlists => 0,
             PassKind::Albums => 1,
             PassKind::Genres => 2,
+            PassKind::Followed => 3,
         };
-        for offset in 0..3 {
-            match (start + offset) % 3 {
+        for offset in 0..4 {
+            match (start + offset) % 4 {
                 0 => {
                     if let Some(owner) = &owner {
                         return Some(Pass::Playlists(owner.clone()));
@@ -379,6 +399,11 @@ impl Checkpoint {
                 }
                 1 if albums => return Some(Pass::Albums(self.albums.clone())),
                 2 if genres => return Some(Pass::Genres(self.genres.clone())),
+                3 => {
+                    if let Some(owner) = &followed {
+                        return Some(Pass::Followed(owner.clone()));
+                    }
+                }
                 _ => {}
             }
         }
@@ -549,6 +574,7 @@ impl LibrarySync {
         {
             let mut state = self.running();
             state.genres = matches!(pass, Pass::Genres(_));
+            state.followed = matches!(pass, Pass::Followed(_));
             state.intake = matches!(pass, Pass::Full);
         }
         let result = self.perform_pass(pass);
@@ -556,6 +582,7 @@ impl LibrarySync {
             let mut state = self.running();
             state.running = false;
             state.genres = false;
+            state.followed = false;
             state.intake = false;
             state.error = result.as_ref().err().map(|error| error.detail.clone());
         }
@@ -588,6 +615,7 @@ impl LibrarySync {
         let reserved = match kind {
             PassKind::Albums => checkpoint.reserve_albums(now),
             PassKind::Genres => checkpoint.reserve_genres(now),
+            PassKind::Followed => checkpoint.reserve_followed(now),
             PassKind::Full => checkpoint.reserve_full(now),
             PassKind::Playlists => checkpoint.reserve(now),
         };
@@ -653,6 +681,8 @@ impl LibrarySync {
                 read.albums.retry_after_secs = read.albums.retry_after_secs.max(retry_after);
                 read.genre_continuation.retry_after_secs =
                     read.genre_continuation.retry_after_secs.max(retry_after);
+                read.followed_artists.retry_after_secs =
+                    read.followed_artists.retry_after_secs.max(retry_after);
                 self.accepted(before, checkpoint, &read, kind, at)
                     .map(|_| ())
             }
@@ -664,7 +694,7 @@ impl LibrarySync {
     }
 
     /// Publish one accepted read to the scheduler and notify active DJ feeds.
-    /// Shared by full reads and all three continuation paths.
+    /// Shared by full reads and all continuation paths.
     fn accepted(
         &self,
         before: Option<SyncedDto>,
@@ -676,7 +706,8 @@ impl LibrarySync {
         let full = kind == PassKind::Full;
         let album_pass = kind == PassKind::Albums;
         let genre_pass = kind == PassKind::Genres;
-        let mut next = if album_pass || genre_pass {
+        let followed_pass = kind == PassKind::Followed;
+        let mut next = if album_pass || genre_pass || followed_pass {
             checkpoint.clone()
         } else {
             checkpoint.completed(&read.playlists, at, !full)
@@ -689,24 +720,31 @@ impl LibrarySync {
         // Genre-only passes just observe missing albums; full and playlist
         // passes can now return newly read pages. Retain a previous checkpoint
         // only when this report contains no newer album progress.
-        next.observed_albums(&read.albums, at, !album_pass);
-        if !genre_pass {
+        if !followed_pass {
+            next.observed_albums(&read.albums, at, !album_pass);
+        }
+        if !genre_pass && !followed_pass {
             next.album_turn = !album_pass;
         }
-        if !album_pass {
+        if !album_pass && !followed_pass {
             next.observed_genres(&read.genre_continuation, at, !genre_pass);
+        }
+        if full || followed_pass {
+            next.observed_followed(&read.followed_artists, at);
         }
         next.next_enrichment = match kind {
             PassKind::Full => next.next_enrichment,
             PassKind::Playlists => Some(PassKind::Albums),
             PassKind::Albums => Some(PassKind::Genres),
-            PassKind::Genres => Some(PassKind::Playlists),
+            PassKind::Genres => Some(PassKind::Followed),
+            PassKind::Followed => Some(PassKind::Playlists),
         };
         next.cooldown(
             at,
             read.albums
                 .retry_after_secs
                 .max(read.genre_continuation.retry_after_secs)
+                .max(read.followed_artists.retry_after_secs)
                 .max(read.playlists.retry_after_secs),
         );
         let mut synced = if full {
@@ -723,25 +761,32 @@ impl LibrarySync {
                 let mut synced = continued_result_with_note(before, read, at, GENRE_NOTE);
                 synced.notes.retain(|note| !legacy_genre_note(note));
                 synced
+            } else if followed_pass {
+                continued_result_with_note(before, read, at, FOLLOWED_NOTE)
             } else {
                 continued_result(before, read, at)
             }
         };
-        if !album_pass {
+        if !album_pass && !followed_pass {
             synced.genre_artists_pending = read.genre_continuation.pending;
             if !full {
                 synced.genre_stalled = next.genre_stalled;
             }
         }
-        if !album_pass {
+        if !album_pass && !followed_pass {
             synced.notes.retain(|note| !note.starts_with(ALBUM_NOTE));
         }
-        if !genre_pass {
+        if !genre_pass && !followed_pass {
             synced.notes.retain(|note| !note.starts_with(GENRE_NOTE));
         }
-        synced.notes.extend(next.album_note());
-        synced.notes.extend(next.genre_note());
-        if next.owner.is_some() && !album_pass && !genre_pass {
+        if !followed_pass {
+            synced.notes.extend(next.album_note());
+            synced.notes.extend(next.genre_note());
+        }
+        if full || followed_pass {
+            synced.notes.extend(next.followed_note());
+        }
+        if next.owner.is_some() && !album_pass && !genre_pass && !followed_pass {
             synced.notes.push(next.note());
         }
         // A partial page cannot yet complete a work. A finished album
@@ -762,6 +807,7 @@ impl LibrarySync {
             PassKind::Genres => {
                 read.genre_continuation.completed > 0 || genres_completed_since_checkpoint
             }
+            PassKind::Followed => read.followed_artists.advanced > 0,
         };
         if !next.requires_refresh && published {
             self.fresh.store(true, Ordering::Release);

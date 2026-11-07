@@ -45,6 +45,7 @@ use crate::session::Session;
 mod artists;
 mod continuation;
 mod directory;
+mod followed;
 mod paging;
 mod playlist_scan;
 
@@ -52,6 +53,8 @@ pub use continuation::PlaylistContinuation;
 use continuation::Scan;
 pub(crate) use continuation::read_pending_playlists;
 pub(crate) use directory::{finish_reconciliation, remember_versions};
+pub use followed::{FOLLOWED_ARTIST_PAGE_BUDGET, FollowedArtistContinuation, FollowedArtistPhase};
+pub(crate) use followed::{finish_followed_reconciliation, read_pending_followed};
 pub(crate) use playlist_scan::mark_applied as mark_playlist_applied;
 
 /// A top track's weight (per mille).
@@ -93,6 +96,8 @@ pub struct TasteRead {
     pub playlist_tracks: usize,
     /// Durable unfinished playlist work for the daemon's bounded continuation pass.
     pub continuation: PlaylistContinuation,
+    /// Durable followed-artist membership, separate from published music.
+    pub followed_continuation: FollowedArtistContinuation,
     /// Tracks of followed or top artists the owner saved nothing by: their
     /// top tracks, or a catalog sample when that endpoint is unavailable.
     pub artist_tracks: usize,
@@ -128,6 +133,8 @@ pub struct Taste {
     pub(crate) playlist_contents: Vec<PlaylistObservation>,
     /// Exact accepted directory proof, for version updates and full reconciliation.
     pub(crate) directory: Option<directory::DirectoryReceipt>,
+    /// Exact checked membership used by a full account-fenced publication.
+    pub(crate) followed: Option<followed::FollowedReceipt>,
     /// What the owner played lately (`spotify:track:` URI, unix seconds),
     /// when that read succeeded; `None` when it wasn't read, so the cached
     /// plays stay.
@@ -254,8 +261,10 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
     // The followed and top artists, for their tracks below.
     let mut artists: Vec<Artist> = Vec::new();
     if follow {
-        for artist in reader.followed().await {
-            remember_genres(store, &artist, now, reader.read);
+        for artist in reader
+            .followed(store, &mut taste.followed, now, followed::Mode::Full)
+            .await
+        {
             taste.artist(&artist, ARTIST_PM);
             reader.read.followed_artists += 1;
             artists.push(artist);

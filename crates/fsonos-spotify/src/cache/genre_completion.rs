@@ -236,6 +236,7 @@ pub async fn continue_genres<S: Store + ?Sized>(
         genres,
         genre_continuation: state,
         playlists: PlaylistContinuation::default(),
+        followed_artists: crate::taste::FollowedArtistContinuation::default(),
         albums,
         notes,
     })

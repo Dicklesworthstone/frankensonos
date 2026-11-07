@@ -658,6 +658,17 @@ impl Endpoints {
         format!("{}/me/following?type=artist&limit={PAGE_LIMIT}", self.api)
     }
 
+    /// Rebuild a validated followed-artist position against the active API.
+    /// Persisted checkpoints contain cursor IDs, never transport URLs.
+    #[must_use]
+    pub(crate) fn followed_artists_after(&self, after: &str) -> String {
+        format!(
+            "{}&after={}",
+            self.followed_artists(),
+            percent_encode(after)
+        )
+    }
+
     /// The owner's top `kind` (`artists` or `tracks`) over about six months.
     #[must_use]
     pub fn top(&self, kind: &str) -> String {

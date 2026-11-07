@@ -219,6 +219,7 @@ fn prepared_rows_remain_pending_until_full_publication_then_progress_is_cleared(
         },
         genres: GenreRead::default(),
         genre_continuation: GenreContinuation::default(),
+        followed_artists: fsonos_spotify::taste::FollowedArtistContinuation::default(),
         playlists: PlaylistContinuation::default(),
         albums: AlbumContinuation::default(),
         notes: Vec::new(),

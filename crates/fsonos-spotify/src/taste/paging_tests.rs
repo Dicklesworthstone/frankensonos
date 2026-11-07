@@ -267,6 +267,8 @@ mod account_ownership;
 mod album_continuation;
 #[path = "directory_tests.rs"]
 mod directory;
+#[path = "followed_tests.rs"]
+mod followed;
 #[path = "playlist_continuation_tests.rs"]
 mod playlist_continuation;
 
@@ -354,7 +356,7 @@ fn looping_cursor_and_wrong_collection_keep_prefixes_without_fetching_the_bad_li
         json!({ "artists": { "items": [artist], "next": cursor }}),
     );
     server.set(
-        "/v1/me/following?after=ArtistA&type=artist",
+        "/v1/me/following?type=artist&limit=50&after=ArtistA",
         json!({ "artists": {
             "items": [], "next": format!("{API}/me/following?type=artist&after=Artist%41")
         }}),
@@ -374,6 +376,12 @@ fn looping_cursor_and_wrong_collection_keep_prefixes_without_fetching_the_bad_li
         assert_eq!(taste.tracks.len(), 1);
     });
     assert_eq!(server.calls("/v1/me/following").len(), 2);
+    assert!(
+        server
+            .calls("/v1/me/following")
+            .iter()
+            .any(|call| { call == "/v1/me/following?type=artist&limit=50&after=ArtistA" })
+    );
     assert!(server.calls("/v1/me/albums").is_empty());
 }
 

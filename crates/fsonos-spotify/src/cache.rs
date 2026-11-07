@@ -29,9 +29,12 @@ use crate::expand::{Expansion, complete_from_cache};
 use crate::genres::{GenreRead, tag_genres};
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
-use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_taste_for_owner};
+use crate::taste::{
+    FollowedArtistContinuation, PlaylistContinuation, Taste, TasteRead, read_taste_for_owner,
+};
 
 mod albums;
+mod followed;
 #[cfg(test)]
 mod genre_cache_tests;
 mod genre_completion;
@@ -42,6 +45,7 @@ mod saved;
 pub use crate::library::{SavedLibraryPhase, SavedLibraryProgress};
 use crate::works::group_works;
 pub use albums::{ALBUM_PAGE_BUDGET, AlbumContinuation, continue_albums};
+pub use followed::continue_followed_artists;
 pub use genre_completion::{GENRE_READ_BUDGET, GenreContinuation, continue_genres};
 pub use playlists::{continue_playlists, continue_playlists_with_albums};
 pub use saved::SAVED_LIBRARY_PAGE_BUDGET;
@@ -69,6 +73,8 @@ pub struct LibrarySyncDetailed {
     pub genre_continuation: GenreContinuation,
     /// Unfinished owner-scoped playlist work and the server's remaining cooldown.
     pub playlists: PlaylistContinuation,
+    /// Account-bound followed-artist directory intake and verification.
+    pub followed_artists: FollowedArtistContinuation,
     /// Missing whole-work album lists for a separate bounded continuation.
     pub albums: AlbumContinuation,
     /// What the best-effort reads couldn't read this time, a sentence each
@@ -177,9 +183,15 @@ async fn attempt_library_pass<S: Store + ?Sized>(
     previous_albums: Option<&AlbumContinuation>,
 ) -> LibrarySyncAttempt {
     let mut progress = saved::Observation::default();
-    let result =
-        sync_library_observed(session, cx, store, page_budget, &mut progress, previous_albums)
-            .await;
+    let result = sync_library_observed(
+        session,
+        cx,
+        store,
+        page_budget,
+        &mut progress,
+        previous_albums,
+    )
+    .await;
     if result.is_ok() {
         progress.clear();
     } else if let Some(saved) = &progress.progress
@@ -319,6 +331,9 @@ async fn sync_library_observed<S: Store + ?Sized>(
     acknowledge_playlists(store, &receipt, &mut taste, &mut read.continuation)?;
     if !read.incomplete() && read.continuation.pending == 0 && read.continuation.limited == 0 {
         crate::taste::finish_reconciliation(store, &receipt, taste.directory.as_ref())?;
+        if crate::taste::finish_followed_reconciliation(store, &receipt, taste.followed.as_ref())? {
+            read.followed_continuation.pending = false;
+        }
     }
     let mut notes = sync_notes(&read, &genres, &Expansion::default());
     let completion =
@@ -331,11 +346,14 @@ async fn sync_library_observed<S: Store + ?Sized>(
     genre_continuation.retry_after_secs = session.retry_after_secs();
     let mut playlists = read.continuation;
     playlists.retry_after_secs = session.retry_after_secs();
+    let mut followed_artists = read.followed_continuation;
+    followed_artists.retry_after_secs = session.retry_after_secs();
     Ok(LibrarySyncDetailed {
         library: report,
         genres,
         genre_continuation,
         playlists,
+        followed_artists,
         albums: completion,
         notes,
     })

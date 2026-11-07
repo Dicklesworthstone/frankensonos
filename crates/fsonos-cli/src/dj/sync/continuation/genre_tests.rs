@@ -94,6 +94,7 @@ fn report(genres: GenreContinuation, albums: AlbumContinuation) -> LibrarySyncDe
         },
         genres: GenreRead::default(),
         genre_continuation: genres,
+        followed_artists: fsonos_spotify::taste::FollowedArtistContinuation::default(),
         playlists: PlaylistContinuation {
             owner: Some("test-owner".into()),
             pending: 2,

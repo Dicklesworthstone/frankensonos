@@ -25,6 +25,9 @@
 //! page progress. They refresh the DJ pool without rereading personal music
 //! or changing the full-sync timestamp. Artist genres also continue separately,
 //! using persisted artist identities and a rotating bounded read budget.
+//! Followed-artist directories have a fourth bounded reader. It retains cursor
+//! evidence privately and schedules a full reconciliation only after membership
+//! is verified, preserving the last full-refresh timestamp in the meantime.
 
 use asupersync::Cx;
 use asupersync::http::Client;
@@ -36,7 +39,8 @@ use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::cache::{
     AlbumContinuation, LibrarySyncDetailed, SavedLibraryProgress, continue_albums,
-    continue_genres, continue_playlists_with_albums, sync_library_attempt_with_albums,
+    continue_followed_artists, continue_genres, continue_playlists_with_albums,
+    sync_library_attempt_with_albums,
 };
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
@@ -79,6 +83,7 @@ pub struct LibrarySync {
 struct Running {
     running: bool,
     genres: bool,
+    followed: bool,
     intake: bool,
     error: Option<String>,
 }
@@ -169,6 +174,7 @@ impl LibrarySync {
         }
         state.running = true;
         state.genres = false;
+        state.followed = false;
         state.intake = true;
         state.error = None;
         true
@@ -275,6 +281,9 @@ impl LibrarySync {
                         }
                         Pass::Genres(previous) => {
                             continue_genres(&mut session, &cx, &mut store, previous.as_ref()).await
+                        }
+                        Pass::Followed(owner) => {
+                            continue_followed_artists(&mut session, &cx, &mut store, &owner).await
                         }
                     };
                     Ok(ReadResult {

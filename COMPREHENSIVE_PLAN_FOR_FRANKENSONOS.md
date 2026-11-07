@@ -379,6 +379,10 @@ Added by §12 (each table is created by the migration of the bead that needs it)
   positions, and publish/prune only after completion under the same account
   adoption). A completed background scan carries one full-reconciliation
   receipt; successful, complete library publication consumes it.
+- `spotify_followed_directories(owner_id TEXT PK, generation INT, progress TEXT)`
+  (migration 22; private followed-artist pages and cursor positions). Exact
+  checkpoint comparisons and account-adoption receipts fence competing readers;
+  completed evidence is acknowledged only after full library reconciliation.
 
 The genre-agnostic DJ (§12.1, migrations 7-8): `spotify_library` gained a
 `candidate` flag (superseding `is_classical` as the candidacy test), the
@@ -641,6 +645,23 @@ their standing preferences on every surface and in the daemon. What is on
   candidate snapshots before and after network reads and shares the latter
   across progress, summary and album discovery. The API store wrapper forwards
   artist and album batches to preserve these bounds.
+- Followed-artist directories resume beyond the first 20 pages. Each full or
+  dedicated background pass spends at most 20 directory-page reads, including
+  root/boundary checks and verification. Private checkpoints retain validated
+  artist IDs, names, genre metadata and canonical cursor positions for seven
+  days, bounded to 100,000 artists and 16 MiB. Resumed scans verify all retained
+  pages before membership becomes authoritative; changed evidence restarts
+  private intake, and cursor loops, duplicate artists, changed totals and
+  foreign continuation URLs cannot authorize retirement. These checks detect
+  changes without claiming an atomic Spotify snapshot. A fresh reader claim
+  and the account-adoption receipt fence checkpoint replacement and final
+  acknowledgement. Background work changes no public candidate rows or taste
+  weights; genre evidence can still reach new DJ picks. A ready directory
+  schedules full reconciliation, retaining that intent across restart and
+  backing off repeated unsuccessful reconciliations. The fourth background
+  reader shares cooldowns and rotates with playlist, album and genre work.
+  HTTP, MCP, CLI and web expose reading/verifying/ready states, counts, cache
+  limits and deadlines independently of the last completed full refresh.
 - Taste beyond the library is read with the owner's grant
   (`user-follow-read`, `user-top-read`, `user-read-recently-played`,
   `playlist-read-private`: owner-authorized, requested at sign-in, listed in
