@@ -32,7 +32,7 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use super::Surface;
-use crate::dj::{DjDirectionDto, DjSpeakers, DjSteer, SteerConstraints};
+use crate::dj::{DjDirectionDto, DjSpeakers};
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, VolumeScope};
@@ -40,6 +40,7 @@ use crate::request::VolumeChange;
 use crate::source::normalize_source_uri;
 
 mod dj_direction;
+mod dj_start;
 
 /// A saved scene (`GET /scenes`, `list_scenes`, `fsonos scene show`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -728,19 +729,7 @@ impl SceneHooks for SceneDj<'_> {
     ) -> Result<(), String> {
         let s = self.surface;
         let dj = s.dj.as_deref().ok_or("this surface runs no DJ")?;
-        let steer = match direction {
-            Some(direction) => Some(
-                DjDirectionDto::from(direction)
-                    .steer(mood)
-                    .map_err(|failure| failure.detail)?,
-            ),
-            None => mood.map(|mood| DjSteer::Set {
-                mood: Some(mood.to_lowercase()),
-                constraints: SteerConstraints::default(),
-                // Legacy mood-only scenes last until the program takes over.
-                for_secs: s.mood_lasts(),
-            }),
-        };
+        let steer = dj_start::steering(s, mood, direction).map_err(|failure| failure.detail)?;
         let at = DjSpeakers {
             transport: &*s.transport,
             households: self.households,
@@ -1017,6 +1006,36 @@ impl Surface {
         self.apply_scene_fading(client, name, None)
     }
 
+    /// Read-only DJ prerequisites for a scheduled scene, before its occurrence
+    /// is claimed. DJ source operations are always planned, so no speaker
+    /// snapshot is needed to identify every prospective start.
+    pub(super) fn scene_dj_ready(
+        &self,
+        client: &Client,
+        scene: &Scene,
+        households: &[HouseholdState],
+    ) -> Result<(), Failure> {
+        dj_direction::validate(scene)?;
+        let mut plan = scenes::plan_apply(scene, households, &[]).map_err(scene_failure)?;
+        let writer = scene
+            .writer
+            .as_deref()
+            .map(super::schedules::client_of)
+            .filter(|writer| writer != client);
+        let policy = self.policy();
+        // Execution omits a step either identity cannot perform. Its unused
+        // DJ dependencies must not hold the scene's permitted work due.
+        for who in std::iter::once(client).chain(writer.as_ref()) {
+            let guard = Guard {
+                policy: policy.clone(),
+                client: who,
+                clock: &*self.clock,
+            };
+            (plan, _) = Self::permitted_ops(&guard, households, plan);
+        }
+        dj_start::check_readiness(self, households, &plan)
+    }
+
     /// [`Self::apply_scene`], its volumes ramping over `req.fade_secs` when
     /// given (1-60 s; the call answers once the fade is done).
     pub fn apply_scene_with(
@@ -1226,6 +1245,10 @@ impl Surface {
                 });
             }
         }
+        // Every DJ dependency must be available before even the cap-lowering
+        // writes below, which can also supersede an existing volume fade.
+        // Only permitted operations are checked, exactly as execution sees them.
+        dj_start::check_readiness(self, households, &plan)?;
         notes.extend(self.lower_scene_rooms(households, &plan, &clients)?);
         Ok((plan, notes, allowed_fade))
     }

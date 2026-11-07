@@ -334,3 +334,5 @@ fn aliases_and_client_defaults_wait_for_every_explicit_member() {
     };
     assert!(targets_ready(&rooms, "kitchens", false).is_ok());
 }
+
+mod dj;

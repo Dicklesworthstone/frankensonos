@@ -919,6 +919,28 @@ fn dj_start(room: &str, mood: Option<&str>, for_secs: Option<u64>) -> DjStartReq
     }
 }
 
+/// Admission and execution must preview the same prospective steering,
+/// including an explicit return to automatic mode and legacy mood duration.
+fn dj_start_command(
+    rooms: &plan::Rooms<'_>,
+    room: &str,
+    mood: Option<&str>,
+    direction: Option<&DjDirection>,
+    mood_lasts: Option<u64>,
+) -> Result<plan::Command, Failure> {
+    match direction {
+        Some(direction) => Ok(plan::Command::DjSteer {
+            coordinator: resolve(rooms, zone_name("zone", room)?)?
+                .coordinator
+                .id
+                .clone(),
+            steer: Box::new(DjDirectionDto::from(direction).steer(mood)?),
+            start: true,
+        }),
+        None => plan::plan_dj_start(rooms, &dj_start(room, mood, mood_lasts)),
+    }
+}
+
 impl Surface {
     /// How long a mood that a schedule or a scene starts the DJ in lasts:
     /// until the time-of-day program picks another (the DJ says when), so a
@@ -1820,30 +1842,20 @@ fn fire(
         ScheduleAction::DjStart {
             room,
             mood,
-            direction: Some(direction),
+            direction,
         } => {
-            let steer = DjDirectionDto::from(direction).steer(mood.as_deref())?;
-            surface.authorize_write(&client, "dj_steer")?;
-            let room = zone_name("zone", room)?;
+            if direction.is_some() {
+                surface.authorize_write(&client, "dj_steer")?;
+            }
             surface
                 .control(&client, "dj_start", |rooms| {
-                    Ok(plan::Command::DjSteer {
-                        coordinator: resolve(rooms, room)?.coordinator.id.clone(),
-                        steer: Box::new(steer),
-                        start: true,
-                    })
-                })
-                .map(|outcome| outcome.done)
-        }
-        ScheduleAction::DjStart {
-            room,
-            mood,
-            direction: None,
-        } => {
-            let req = dj_start(room, mood.as_deref(), surface.mood_lasts());
-            surface
-                .control(&client, "dj_start", |rooms| {
-                    plan::plan_dj_start(rooms, &req)
+                    dj_start_command(
+                        &rooms,
+                        room,
+                        mood.as_deref(),
+                        direction.as_ref(),
+                        surface.mood_lasts(),
+                    )
                 })
                 .map(|o| o.done)
         }

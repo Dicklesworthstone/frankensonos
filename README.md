@@ -519,6 +519,12 @@ Catalog cache reads are batched, so rebuilding a large DJ pool avoids one
 database call per artist. Failed metadata rows preserve the tracks' stored
 tags while healthy entries remain usable.
 
+Playlist background passes add proved snapshot music in one transaction while
+preserving current saved-track metadata and stronger taste weights. Overlapping
+full and background refreshes cannot replace newer accepted candidates or
+playlist observations. A full refresh that loses this race keeps its prepared
+saved-library read for retry and does not advance the last successful refresh.
+
 Followed-artist directories also continue past the first 1,000 artists. Each
 pass reads at most 20 directory pages, including verification; private cursor
 and artist evidence survives restart. Resumed scans recheck their boundaries
@@ -529,6 +535,17 @@ verification, and a verified directory awaiting full reconciliation. This reader
 takes turns with playlist, album, and genre completion and shares Spotify's
 cooldown. Private evidence is bounded to 100,000 artists, 16 MiB, and seven days;
 a reached cache bound is reported as incomplete and stops automatic intake.
+
+Scheduled DJ starts and DJ scenes check their prospective direction, playable
+music, required household Spotify rendering, and current queue prerequisites
+before the occurrence is marked as run. Queue checks cover ownership, readable
+contents and capacity; a scene's future coordinator is checked after regrouping.
+Temporary readiness failures retry after 30 seconds within the existing
+grace period. Once dispatch begins, failures are not replayed. Direct scene
+application checks every permitted DJ before regrouping, volume cap changes,
+fades, queues, or stored steering change. These checks preserve the current
+feed and selection state; a complete retained DJ queue can resume without new
+library picks.
 
 Next:
 

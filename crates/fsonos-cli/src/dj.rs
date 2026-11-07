@@ -62,6 +62,7 @@ mod plan_cache_tests;
 pub(crate) mod prefs;
 #[cfg(test)]
 mod problem_tests;
+mod readiness;
 mod rehearsal;
 mod retry;
 pub(crate) mod saved;
@@ -218,6 +219,25 @@ struct Context {
 }
 
 impl State {
+    /// Read the same validated plan for a start or a read-only preflight.
+    /// Keeping it separate lets admission leave the running plan untouched.
+    fn read_plan(
+        store: &dyn Store,
+        moods_file: Option<&PathBuf>,
+        now: i64,
+    ) -> Result<Self, Failure> {
+        let mut next = Self {
+            pool: works_from_store(store)
+                .map_err(|e| Failure::new(ErrorCode::Internal, format!("the DJ's pool: {e}")))?,
+            // Feedback only weights the picks; without it the DJ still plays.
+            feedback: FeedbackModel::load(&StoreFeedback(store), now).ok(),
+            moods: read_moods(moods_file)?,
+            ..Self::default()
+        };
+        prefs::apply(&mut next, moods_file)?;
+        Ok(next)
+    }
+
     /// Rebuild the pool, feedback and moods without losing the last good
     /// preferences if any read or validation fails.
     fn reload(
@@ -227,21 +247,7 @@ impl State {
         now: i64,
     ) -> Result<(), Failure> {
         let inputs = plan_inputs(moods_file);
-        let candidate = (|| -> Result<Self, Failure> {
-            // Complete partly-held works from cached album tracks, then
-            // validate the owner's constraints before publishing the pool.
-            let mut next = Self {
-                pool: works_from_store(store).map_err(|e| {
-                    Failure::new(ErrorCode::Internal, format!("the DJ's pool: {e}"))
-                })?,
-                // Feedback only weights the picks; without it the DJ still plays.
-                feedback: FeedbackModel::load(&StoreFeedback(store), now).ok(),
-                moods: read_moods(moods_file)?,
-                ..Self::default()
-            };
-            prefs::apply(&mut next, moods_file)?;
-            Ok(next)
-        })();
+        let candidate = Self::read_plan(store, moods_file, now);
         self.plan_check_at = Some(Instant::now() + PLAN_CHECK);
         match candidate {
             Ok(next) => {
@@ -594,13 +600,8 @@ fn steer(
             constraints,
             for_secs,
         } => {
-            let now = clock.now().timestamp();
-            let session = DjSession {
-                zone: key.clone(),
-                mood: mood.clone(),
-                constraints: dj_view::to_dj(constraints)?,
-                expires_at: for_secs.map(|secs| now.saturating_add_unsigned(secs)),
-            };
+            let session =
+                directed_session(key, mood, constraints, *for_secs, clock.now().timestamp())?;
             // An unknown mood, or bounds that clash with the mood's.
             session.steer(&state.moods, None).map_err(|e| {
                 steer_failure(
@@ -616,6 +617,21 @@ fn steer(
             )))
         }
     }
+}
+
+fn directed_session(
+    zone: &str,
+    mood: &Option<String>,
+    constraints: &fsonos_api::dj::SteerConstraints,
+    for_secs: Option<u64>,
+    now: i64,
+) -> Result<DjSession, Failure> {
+    Ok(DjSession {
+        zone: zone.to_owned(),
+        mood: mood.clone(),
+        constraints: dj_view::to_dj(constraints)?,
+        expires_at: for_secs.map(|secs| now.saturating_add_unsigned(secs)),
+    })
 }
 
 impl SpotifyDj {
@@ -725,6 +741,16 @@ impl SpotifyDj {
 }
 
 impl DjEngine for SpotifyDj {
+    fn start_ready(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        steer: Option<&DjSteer>,
+        clock: &dyn Clock,
+    ) -> Result<(), Failure> {
+        readiness::check(self, at, store, steer, clock)
+    }
+
     fn act(
         &self,
         at: DjSpeakers<'_>,

@@ -57,6 +57,7 @@ use crate::steer::Steer;
 
 mod enqueue;
 mod mode;
+mod readiness;
 mod navigation {
     //! Follow a listener back through the retained DJ queue without mistaking an
     //! old event for a new seek. Queue positions are checked against the player
@@ -991,6 +992,21 @@ impl QueueFeed {
         Ok(want - ahead)
     }
 
+    /// Discard only the unfinished work a start would already have passed.
+    /// Admission applies the same decision to a clone before counting picks.
+    fn partial_to_finish(&mut self) -> Option<usize> {
+        let index = self.queued.iter().position(|work| !work.is_whole())?;
+        if self.queued[index]
+            .last()
+            .is_some_and(|last| !self.playing.is_some_and(|playing| playing > last))
+        {
+            Some(index)
+        } else {
+            self.queued.remove(index);
+            None
+        }
+    }
+
     /// Add the movements an earlier failure left unadded, right after the
     /// ones that made it — ahead of anything queued since — so the work
     /// plays whole and in order. A work already played past is let go.
@@ -1000,17 +1016,9 @@ impl QueueFeed {
         store: &mut S,
         now: i64,
     ) -> Result<(), FeedError> {
-        let Some(index) = self.queued.iter().position(|w| !w.is_whole()) else {
+        let Some(index) = self.partial_to_finish() else {
             return Ok(());
         };
-        let Some(last) = self.queued[index].last() else {
-            self.queued.remove(index);
-            return Ok(());
-        };
-        if self.playing.is_some_and(|playing| playing > last) {
-            self.queued.remove(index);
-            return Ok(());
-        }
         let params = render_params(at, store, now)?;
         let host = host_of(at)?;
         let mut proof = enqueue::Batch::new(at.coordinator);
@@ -1282,6 +1290,20 @@ fn render_params<T: Transport + ?Sized, S: Store + ?Sized>(
     store: &mut S,
     now: i64,
 ) -> Result<SpotifyRenderParams, FeedError> {
+    let (params, learned_for) = read_render_params(at, &*store)?;
+    if let Some(household) = learned_for {
+        let _ = store.save_render_params(&household, &params, now);
+    }
+    Ok(params)
+}
+
+/// The same lookup without publishing newly learned parameters. The optional
+/// household names only a live observation, so reusing a cache never refreshes
+/// its observation time.
+fn read_render_params<T: Transport + ?Sized, S: Store + ?Sized>(
+    at: &Speakers<'_, T>,
+    store: &S,
+) -> Result<(SpotifyRenderParams, Option<String>), FeedError> {
     let household = at
         .households
         .iter()
@@ -1293,15 +1315,12 @@ fn render_params<T: Transport + ?Sized, S: Store + ?Sized>(
                 .unwrap_or(at.coordinator.0.as_str())
         });
     if let Some(params) = control::spotify_params(at.transport, at.households, at.coordinator)? {
-        if let Some(hh) = household {
-            let _ = store.save_render_params(hh, &params, now);
-        }
-        return Ok(params);
+        return Ok((params, household.map(str::to_owned)));
     }
     if let Some(hh) = household
         && let Some((params, _)) = store.render_params(hh)?
     {
-        return Ok(params);
+        return Ok((params, None));
     }
     Err(FeedError::NoRenderParams)
 }

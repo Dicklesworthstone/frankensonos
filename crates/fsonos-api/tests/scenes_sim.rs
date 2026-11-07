@@ -844,3 +844,27 @@ fn a_deleted_or_overwritten_scene_comes_back_on_undo() {
     assert_eq!(s.scenes(&Client::Cli).unwrap()[0].name, "EVENING");
     sim.shutdown();
 }
+
+#[test]
+fn a_scene_without_a_dj_engine_fails_before_regrouping_or_volume_changes() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default());
+    let definition: SceneDefinition = serde_json::from_value(serde_json::json!({
+        "groups": [{"coordinator": "Kitchen", "members": ["Office"],
+            "source": {"kind": "dj"}}],
+        "volumes": {"Kitchen": 21, "Office": 23}
+    }))
+    .unwrap();
+    s.save_scene_from(&Client::Cli, "Needs DJ", &definition)
+        .unwrap();
+    let before = sim.soap_log().len();
+    let failure = s.apply_scene(&Client::Cli, "Needs DJ").unwrap_err();
+    assert_eq!(failure.code, ErrorCode::NotImplemented);
+    let log = sim.soap_log();
+    assert!(
+        log[before..]
+            .iter()
+            .all(|request| { request.action.starts_with("Get") || request.action == "Browse" })
+    );
+    assert!(!kitchen(&sim).1);
+}

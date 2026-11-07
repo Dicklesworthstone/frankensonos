@@ -44,6 +44,23 @@ pub struct DjSpeakers<'a> {
 
 /// Runs the DJ; see the module docs.
 pub trait DjEngine: Send + Sync {
+    /// Check that a start can select music and address its renderer without
+    /// changing a speaker, session, feed, RNG or listening history. `steer`
+    /// is the direction the caller will apply before starting; `None` keeps
+    /// the current session. A scheduler calls this before claiming a run so
+    /// unavailable dependencies can recover within its grace period.
+    /// Engines without separate prerequisites keep their existing behavior.
+    fn start_ready(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        steer: Option<&DjSteer>,
+        clock: &dyn Clock,
+    ) -> Result<(), Failure> {
+        let _ = (at, store, steer, clock);
+        Ok(())
+    }
+
     /// Start, skip or stop the DJ in the group `at.coordinator` leads.
     /// `clock` is the house's: its local day and time pick the time-of-day
     /// program and the energy target.

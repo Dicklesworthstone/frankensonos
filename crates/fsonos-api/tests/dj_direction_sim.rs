@@ -33,11 +33,20 @@ enum Call {
     Start(Option<DjSession>, i64),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadyCall {
+    coordinator: PlayerId,
+    steer: Option<DjSteer>,
+    session: Option<DjSession>,
+}
+
 #[derive(Clone, Default)]
 struct Probe {
     calls: Arc<Mutex<Vec<Call>>>,
     feeding: Arc<AtomicBool>,
     status_fails: Arc<AtomicBool>,
+    readiness: Arc<Mutex<Vec<ReadyCall>>>,
+    refuse_start: Arc<Mutex<Option<PlayerId>>>,
 }
 
 impl Probe {
@@ -90,6 +99,27 @@ fn steering(at: Option<DjSpeakers<'_>>, store: &dyn Store, clock: &dyn Clock) ->
 }
 
 impl DjEngine for Probe {
+    fn start_ready(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        steer: Option<&DjSteer>,
+        _: &dyn Clock,
+    ) -> Result<(), Failure> {
+        self.readiness.lock().unwrap().push(ReadyCall {
+            coordinator: at.coordinator.clone(),
+            steer: steer.cloned(),
+            session: store.dj_session(&at.coordinator.0).unwrap(),
+        });
+        if self.refuse_start.lock().unwrap().as_ref() == Some(at.coordinator) {
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "the DJ library is still loading",
+            ));
+        }
+        Ok(())
+    }
+
     fn act(
         &self,
         at: DjSpeakers<'_>,
@@ -214,8 +244,14 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_rooms(&["Alpha"])
+    }
+
+    fn with_rooms(rooms: &[&str]) -> Self {
         let sim = SimHousehold::builder()
-            .s2([SimPlayerSpec::new("Alpha", SimModel::One)])
+            .s2(rooms
+                .iter()
+                .map(|name| SimPlayerSpec::new(*name, SimModel::One)))
             .spawn()
             .unwrap();
         let lan = sim.lan();
@@ -667,4 +703,199 @@ fn a_stored_schedule_rechecks_its_creators_steering_permission_before_start() {
             .last_fired
             .is_some()
     );
+}
+
+fn only_read_requests(sim: &SimHandle, from: usize) {
+    let log = sim.soap_log();
+    let writes: Vec<_> = log[from..]
+        .iter()
+        .filter(|request| !request.action.starts_with("Get") && request.action != "Browse")
+        .map(|request| request.action.as_str())
+        .collect();
+    assert!(
+        writes.is_empty(),
+        "readiness sent speaker writes: {writes:?}"
+    );
+}
+
+#[test]
+fn a_capped_scene_checks_prospective_direction_before_lowering_any_volume() {
+    let f = Fixture::new();
+    let player = f.sim.player("Alpha").unwrap();
+    let coordinator = PlayerId(player.uuid.clone());
+    soap::set_volume(&f.sim.lan(), player.ip, 90).unwrap();
+    let policy = Policy::from_toml("[clients.\"tag:capped\"]\nmax_volume = 30\n").unwrap();
+    let surface = f.surface(Box::new(MemStore::default()), policy);
+    steer(&surface, "bright", SteerConstraints::default(), None);
+    let definition: SceneDefinition = serde_json::from_value(json!({
+        "groups": [{"coordinator": "Alpha", "source": {
+            "kind": "dj", "mood": "calm",
+            "direction": {"constraints": constraints(), "for_secs": 60}
+        }}],
+        "mutes": {"Alpha": true}
+    }))
+    .unwrap();
+    surface
+        .save_scene_from(
+            &Client::Tailnet("tag:capped".into()),
+            "Ready first",
+            &definition,
+        )
+        .unwrap();
+    *f.probe.refuse_start.lock().unwrap() = Some(coordinator.clone());
+    drop(f.probe.take());
+    let before = f.sim.soap_log().len();
+    let failure = surface
+        .apply_scene(&Client::Cli, "Ready first")
+        .unwrap_err();
+    assert_eq!(failure.code, ErrorCode::NotReady);
+    only_read_requests(&f.sim, before);
+    assert_eq!(soap::get_volume(&f.sim.lan(), player.ip).unwrap(), 90);
+    assert!(
+        f.probe.take().is_empty(),
+        "no steering or start before readiness"
+    );
+    let prepared = f.probe.readiness.lock().unwrap().clone();
+    assert_eq!(prepared.len(), 1);
+    assert_eq!(prepared[0].coordinator, coordinator);
+    assert_eq!(
+        prepared[0].session.as_ref().unwrap().mood.as_deref(),
+        Some("bright")
+    );
+    assert_eq!(
+        prepared[0].steer,
+        Some(DjSteer::Set {
+            mood: Some("calm".into()),
+            constraints: constraints(),
+            for_secs: Some(60)
+        })
+    );
+    assert_eq!(
+        surface
+            .dj_status(&Client::Cli, "Alpha")
+            .unwrap()
+            .steering
+            .mood
+            .as_deref(),
+        Some("bright")
+    );
+
+    // Once ready, execution sees exactly the direction checked above, with a
+    // fresh relative lifetime and the writer's volume cap still enforced.
+    *f.probe.refuse_start.lock().unwrap() = None;
+    assert!(
+        surface
+            .apply_scene(&Client::Cli, "Ready first")
+            .unwrap()
+            .complete
+    );
+    assert_set_then_start(&f.probe.take(), &constraints(), 60);
+    assert_eq!(soap::get_volume(&f.sim.lan(), player.ip).unwrap(), 30);
+}
+
+#[test]
+fn every_scene_dj_is_ready_before_regrouping_to_a_future_coordinator() {
+    let f = Fixture::with_rooms(&["Alpha", "Beta", "Gamma"]);
+    let alpha = f.sim.player("Alpha").unwrap();
+    let beta = f.sim.player("Beta").unwrap();
+    let gamma = f.sim.player("Gamma").unwrap();
+    soap::set_av_transport_uri(
+        &f.sim.lan(),
+        beta.ip,
+        &format!("x-rincon:{}", alpha.uuid),
+        "",
+    )
+    .unwrap();
+    let before_topology = get_zone_group_state(&f.sim.lan(), alpha.ip).unwrap();
+    let surface = f.memory_surface();
+    let definition: SceneDefinition = serde_json::from_value(json!({
+        "groups": [
+            {"coordinator": "Gamma", "source": {"kind": "dj", "mood": "calm"}},
+            {"coordinator": "Beta", "members": ["Alpha"],
+                "source": {"kind": "dj", "mood": "bright"}}
+        ],
+        "volumes": {"Alpha": 20, "Beta": 22, "Gamma": 25}
+    }))
+    .unwrap();
+    surface
+        .save_scene_from(&Client::Cli, "Two DJs", &definition)
+        .unwrap();
+    *f.probe.refuse_start.lock().unwrap() = Some(PlayerId(beta.uuid.clone()));
+    let before = f.sim.soap_log().len();
+    let failure = surface.apply_scene(&Client::Cli, "Two DJs").unwrap_err();
+    assert_eq!(failure.code, ErrorCode::NotReady);
+    only_read_requests(&f.sim, before);
+    assert!(
+        f.probe.take().is_empty(),
+        "even the first ready group stays untouched"
+    );
+    assert_eq!(
+        get_zone_group_state(&f.sim.lan(), alpha.ip).unwrap(),
+        before_topology
+    );
+    let prepared = f.probe.readiness.lock().unwrap();
+    assert_eq!(
+        prepared
+            .iter()
+            .map(|call| call.coordinator.clone())
+            .collect::<Vec<_>>(),
+        [PlayerId(gamma.uuid.clone()), PlayerId(beta.uuid.clone())]
+    );
+    assert!(prepared.iter().all(|call| call.session.is_none()));
+}
+
+#[test]
+fn a_scheduled_scene_ignores_denied_dj_steps_and_applies_its_allowed_volumes() {
+    for restricted_writer in [false, true] {
+        let f = Fixture::new();
+        let player = f.sim.player("Alpha").unwrap();
+        soap::set_volume(&f.sim.lan(), player.ip, 45).unwrap();
+        let policy =
+            Policy::from_toml("[clients.\"tag:restricted\"]\ndeny = [\"dj_steer\"]\n").unwrap();
+        let surface = f.surface(Box::new(MemStore::default()), policy);
+        let restricted = Client::Tailnet("tag:restricted".into());
+        let cli = Client::Cli;
+        let (writer, caller) = if restricted_writer {
+            (&restricted, &cli)
+        } else {
+            (&cli, &restricted)
+        };
+        let definition: SceneDefinition = serde_json::from_value(json!({
+            "groups": [{"coordinator": "Alpha", "source": {
+                "kind": "dj", "mood": "calm", "direction": {}
+            }}],
+            "volumes": {"Alpha": 20}
+        }))
+        .unwrap();
+        surface
+            .save_scene_from(writer, "Permitted steps", &definition)
+            .unwrap();
+        *f.probe.refuse_start.lock().unwrap() = Some(PlayerId(player.uuid.clone()));
+        let request: ScheduleRequest = serde_json::from_value(json!({
+            "when": "in 1m", "action": "apply_scene", "scene": "Permitted steps"
+        }))
+        .unwrap();
+        let saved = surface.add_schedule(caller, &request).unwrap();
+        f.clock.advance(TimeDelta::minutes(1));
+        let at = f.clock.now().to_utc();
+        let scheduler = Scheduler::new(&surface);
+        assert_eq!(
+            scheduler.tick_at(at, &Utc),
+            [Ran::Fired { id: saved.id, at }]
+        );
+        assert!(scheduler.wait(Duration::from_secs(5)));
+        assert_eq!(soap::get_volume(&f.sim.lan(), player.ip).unwrap(), 20);
+        assert!(f.probe.readiness.lock().unwrap().is_empty());
+        assert!(f.probe.take().is_empty());
+        assert!(
+            surface.schedules(&Client::Cli).unwrap()[0]
+                .last_fired
+                .is_some()
+        );
+        assert!(
+            scheduler
+                .tick_at(at + TimeDelta::seconds(1), &Utc)
+                .is_empty()
+        );
+    }
 }

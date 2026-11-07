@@ -55,7 +55,14 @@ fn slot<T: Transport + ?Sized>(
     host: IpAddr,
     offset: u32,
 ) -> Result<Slot, FeedError> {
-    let page = browse(transport, host, QUEUE, BrowseFlag::DirectChildren, offset, 1)?;
+    let page = browse(
+        transport,
+        host,
+        QUEUE,
+        BrowseFlag::DirectChildren,
+        offset,
+        1,
+    )?;
     let expected = u32::from(offset < page.total_matches);
     if page.total_matches > MAX_BROWSE_OBJECTS
         || page.number_returned != expected
@@ -92,8 +99,34 @@ fn current<T: Transport + ?Sized>(
     if queue.matches_head(&slot(transport, host, 0)?) {
         Ok(())
     } else {
-        Err(invalid("the queue changed during enqueue; refresh its positions"))
+        Err(invalid(
+            "the queue changed during enqueue; refresh its positions",
+        ))
     }
+}
+
+/// Validate the reads and capacity a new append would require. This evidence
+/// is discarded: the real batch must establish its owner and queue again after
+/// admission, especially when a scene has regrouped the players.
+pub(super) fn ready<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    additional: usize,
+) -> Result<(), FeedError> {
+    let owner = Owner::read(transport, host, coordinator)?;
+    let queue = read(transport, host)?;
+    owner.confirm(transport, host, coordinator)?;
+    if queue
+        .uris
+        .len()
+        .checked_add(additional)
+        .and_then(|length| u32::try_from(length).ok())
+        .is_none_or(|length| length > MAX_BROWSE_OBJECTS)
+    {
+        return Err(invalid("the DJ start exceeds the queue verification limit"));
+    }
+    current(transport, host, &queue)
 }
 
 struct ReadBack {

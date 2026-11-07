@@ -8,31 +8,54 @@
 
 use super::{
     Ran, Schedule, ScheduleAction, Scheduler, Surface, Tick, announcements, client_of,
-    core_schedule, fire, room_view, span, summary,
+    core_schedule, dj_start_command, fire, room_view, span, summary,
 };
+use crate::dj::DjSpeakers;
 use crate::failure::{ErrorCode, Failure};
 use crate::plan;
 use crate::surface::scenes::scene_failure;
 use chrono::{DateTime, TimeZone, Utc};
 use fsonos_core::rooms::{Matched, ResolveContext, named_room, resolve_targets};
 use fsonos_core::{HouseholdState, scenes};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const MAX_RUNS: usize = 8;
+const READINESS_RETRY: Duration = Duration::from_secs(30);
 type Work = Box<dyn FnOnce() + Send>;
 
 #[derive(Default)]
 pub(super) struct Dispatch {
     active: Mutex<HashSet<i64>>,
+    readiness_retry: Mutex<HashMap<i64, DateTime<Utc>>>,
     stopping: AtomicBool,
 }
 
 impl Dispatch {
+    fn readiness_due(&self, id: i64, now: DateTime<Utc>) -> bool {
+        self.readiness_retry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&id)
+            .is_none_or(|due| *due <= now)
+    }
+
+    fn defer_readiness(&self, id: i64, now: DateTime<Utc>, elapsed: Duration) {
+        let delay = chrono::TimeDelta::from_std(elapsed.saturating_add(READINESS_RETRY))
+            .unwrap_or(chrono::TimeDelta::MAX);
+        let due = now
+            .checked_add_signed(delay)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC);
+        self.readiness_retry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, due);
+    }
+
     pub(super) fn stopped(&self) -> bool {
         self.stopping.load(Ordering::Acquire)
     }
@@ -90,6 +113,14 @@ pub(super) fn run_schedules<Tz: TimeZone>(
             return Vec::new();
         }
     };
+    // Expired/removed schedules cannot retain cooldown entries indefinitely.
+    // Prune once per tick, not once for every due schedule.
+    scheduler
+        .dispatch
+        .readiness_retry
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|_, due| *due > now);
     let mut ran = Vec::new();
     for (id, tick) in core_schedule::due(&saved, now, tz, scheduler.grace) {
         let Some(schedule) = saved.iter().find(|schedule| schedule.id == id).cloned() else {
@@ -188,13 +219,41 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<(), Failure> {
             {
                 named_ready(&households, room)?;
             }
-            Ok(())
+            surface.scene_dj_ready(&client, &scene, &households)
         }
         ScheduleAction::Pause { room, fade_secs: 0 } | ScheduleAction::Volume { room, .. } => {
             targets_ready(&rooms, room, false)
         }
-        ScheduleAction::DjStart { room, .. } | ScheduleAction::Pause { room, .. } => {
-            targets_ready(&rooms, room, true)
+        ScheduleAction::Pause { room, .. } => targets_ready(&rooms, room, true),
+        ScheduleAction::DjStart {
+            room,
+            mood,
+            direction,
+        } => {
+            targets_ready(&rooms, room, true)?;
+            let dj = surface.dj_engine()?;
+            let command = dj_start_command(
+                &rooms,
+                room,
+                mood.as_deref(),
+                direction.as_ref(),
+                surface.mood_lasts(),
+            )?;
+            let (coordinator, steer) = match &command {
+                plan::Command::Dj { coordinator, .. } => (coordinator, None),
+                plan::Command::DjSteer {
+                    coordinator, steer, ..
+                } => (coordinator, Some(steer.as_ref())),
+                _ => unreachable!("a scheduled DJ start always plans a DJ command"),
+            };
+            let at = DjSpeakers {
+                transport: &*surface.transport,
+                households: &households,
+                coordinator,
+            };
+            surface
+                .with_dj_store(|store| Ok(dj.start_ready(at, store, steer, &*surface.clock)))?
+                .unwrap_or_else(|| Err(crate::surface::no_dj_store()))
         }
     }
 }
@@ -269,6 +328,9 @@ fn launch(
     now: DateTime<Utc>,
     spawn: impl FnOnce(String, Work) -> io::Result<JoinHandle<()>>,
 ) -> bool {
+    if !scheduler.dispatch.readiness_due(schedule.id, now) {
+        return false;
+    }
     let Some(permit) = scheduler.dispatch.reserve(schedule.id) else {
         return false;
     };
@@ -296,6 +358,9 @@ fn launch(
             && let Err(failure) = ready(&surface, &schedule)
         {
             tracing::debug!("schedule #{id} awaits its targets: {}", failure.detail);
+            reservation
+                .dispatch
+                .defer_readiness(id, now, admitted.elapsed());
             return;
         }
         // A due announcement needs its normal caller slot before it can be

@@ -90,9 +90,7 @@ fn lost_and_inconsistent_replies_reconcile_the_warm_batch_without_replay() {
             .add(&mut batch, TRACK, 0, Effect::Healthy)
             .unwrap();
         assert_eq!(
-            transport
-                .add(&mut batch, TRACK, 0, effect)
-                .unwrap(),
+            transport.add(&mut batch, TRACK, 0, effect).unwrap(),
             (203, Some(203))
         );
         transport
@@ -122,9 +120,7 @@ fn revision_jumps_and_wraps_fall_back_to_the_complete_exact_sequence() {
             Effect::SkipRevision
         };
         assert_eq!(
-            transport
-                .add(&mut batch, TRACK, 0, effect)
-                .unwrap(),
+            transport.add(&mut batch, TRACK, 0, effect).unwrap(),
             (202, Some(202))
         );
         assert_eq!(
@@ -274,9 +270,7 @@ fn duplicate_middle_insertion_preserves_both_neighbor_sequences() {
         (2, Some(4))
     );
     assert_eq!(
-        transport
-            .add(&mut batch, TRACK, 3, Effect::Lost)
-            .unwrap(),
+        transport.add(&mut batch, TRACK, 3, Effect::Lost).unwrap(),
         (3, Some(5))
     );
     assert_eq!(
@@ -307,7 +301,10 @@ fn real_s1_and_s2_batches_recover_a_lost_second_reply_without_duplicates() {
         );
         add_movement(&transport, target, &params, &movement(), 0, &mut batch).unwrap();
         assert_eq!(transport.adds.get(), 3);
-        assert_eq!(read(&sim.lan(), target).unwrap().uris, [TRACK, TRACK, TRACK]);
+        assert_eq!(
+            read(&sim.lan(), target).unwrap().uris,
+            [TRACK, TRACK, TRACK]
+        );
     }
 }
 
@@ -397,4 +394,30 @@ fn missing_source_evidence_after_send_is_uncertain_without_replay() {
     ));
     assert_eq!(transport.writes.get(), 2);
     assert!(batch.queue.is_none());
+}
+
+#[test]
+fn readiness_checks_capacity_without_a_write_or_retained_batch_proof() {
+    let transport = Model::new(5);
+    let before = transport.state.borrow().uris.clone();
+    let remaining = usize::try_from(MAX_BROWSE_OBJECTS).unwrap() - before.len();
+    ready(&transport, model::host(), &coordinator(), remaining).unwrap();
+    for additional in [remaining + 1, usize::MAX] {
+        let error = ready(&transport, model::host(), &coordinator(), additional).unwrap_err();
+        assert!(error.to_string().contains("verification limit"), "{error}");
+    }
+    assert_eq!(transport.writes.get(), 0);
+    assert_eq!(transport.state.borrow().uris, before);
+}
+
+#[test]
+fn readiness_rejects_missing_source_and_unidentifiable_queue_entries_without_writes() {
+    let transport = Model::new(5);
+    transport.omit_source.set(true);
+    assert!(ready(&transport, model::host(), &coordinator(), 2).is_err());
+    transport.omit_source.set(false);
+    transport.state.borrow_mut().uris[2] = "NOT_IMPLEMENTED".into();
+    let error = ready(&transport, model::host(), &coordinator(), 2).unwrap_err();
+    assert!(error.to_string().contains("no identity"), "{error}");
+    assert_eq!(transport.writes.get(), 0);
 }

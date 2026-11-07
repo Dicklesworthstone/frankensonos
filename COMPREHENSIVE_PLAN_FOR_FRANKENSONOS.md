@@ -525,6 +525,13 @@ from a genre the DJ was built around.
   budget, so later playlists can enter the pool. Accepted playlist versions
   accompany the completed directory into one full reconciliation; subsequent
   explicit or daily refreshes start a new directory scan.
+  Background publication now merges only proved playlist additions against the
+  current store, preserving active metadata and stronger weights. Exact owner,
+  directory and per-playlist receipts protect both full and incremental writes;
+  public rows and private acknowledgements commit together. Publication changes
+  the directory receipt even for a different bounded subset of an unchanged
+  snapshot. A full refresh that loses this race retains its saved-library proof
+  for retry, without advancing freshness or retiring newer additions.
 - **Manual preference overrides win.** Persistent, owner-wide preferences in
   `preferences.toml` (data dir, beside `moods.toml`), with matching CLI, HTTP
   and MCP verbs: genres, artists, eras and moods to favor or avoid; a default
@@ -871,6 +878,11 @@ contents are outside action-history undo. Existing `keep` scenes retain their
 original behavior.
 See `docs/SCENE_QUEUES.md` for the capture and apply contract.
 
+DJ scenes check every permitted prospective start after caller/writer policy
+filtering and before any volume cap lowering, fade supersession, grouping,
+queue, or steering writes. Readiness uses the future coordinator's inventory
+identity and does not modify the current feed, selection RNG or sessions.
+
 ### 12.8 An instant CLI through the daemon
 
 [`d-cli-daemon-client`] The CLI uses a running daemon's warm state when one
@@ -898,6 +910,17 @@ default mood when none is given.
 `schedule add "weekdays 07:30" dj start Kitchen --mood bright` or a scene.
 Device alarms can't start the DJ or a scene and differ between S1 and S2, so the
 daemon owns scheduling. A run missed by more than 10 minutes is skipped.
+
+Scheduled DJ starts and scenes now check the exact prospective steering,
+selectable music and required Spotify renderer before claiming an occurrence.
+For a player that already leads its group, admission also checks current owner,
+source, coherent queue identity and capacity for the exact planned movements.
+A scene's future coordinator establishes that proof after regrouping, and
+execution always reacquires it before sending any enqueue mutation.
+Temporary failures remain due, with a 30-second readiness retry interval and
+the existing grace deadline. A retained complete queue can resume without new
+library picks. The worker rechecks the definition and deadline before claiming;
+after dispatch, even an error is not replayed because speakers may have acted.
 
 ### 12.11 Move playback and whole-house mode
 
