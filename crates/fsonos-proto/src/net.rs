@@ -9,7 +9,9 @@
 //! completion, in order, so one player's requests keep their order while a
 //! player that doesn't answer (each request waits out its timeout) or a
 //! survey's listening window holds up only its own lane, never control of
-//! the other players. Lanes start on first use. Callers are ordinary
+//! the other players. An HTTP request's deadline includes admission and
+//! waiting in its lane: an expired queued request is never sent. Lanes start
+//! on first use. Callers are ordinary
 //! synchronous code (the protocol and core logic stay pure), and because
 //! they never run on a lane's thread they may call in from anywhere,
 //! including from inside another asupersync runtime such as the MCP
@@ -33,7 +35,7 @@ use asupersync::time::{timeout, wall_now};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, mpsc};
 use std::task::Poll;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -41,10 +43,14 @@ use std::time::{Duration, Instant};
 mod inbox;
 pub use inbox::{CallbackEvent, EVENT_BACKLOG, EVENT_BACKLOG_BYTES};
 
+#[cfg(test)]
+mod deadline_tests;
+
 /// The port every player serves its UPnP control and description on.
 pub const PLAYER_PORT: u16 = 1400;
 
-/// How long one request may take before it fails as [`ProtoError::Network`].
+/// How long one HTTP request, including its wait in a lane, may take before
+/// it fails as [`ProtoError::Network`]. Discovery uses its own listening window.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The most lanes a [`Lan`] runs; requests to further addresses share them.
@@ -101,7 +107,7 @@ enum Job {
         url: String,
         headers: Vec<(String, String)>,
         body: Vec<u8>,
-        timeout: Duration,
+        deadline: Instant,
         reply: mpsc::Sender<Result<Reply, ProtoError>>,
     },
     Search {
@@ -136,7 +142,7 @@ struct Lane {
 }
 
 impl Lane {
-    fn start(name: &str) -> Result<Self, ProtoError> {
+    fn start(name: &str, deadline: Option<Instant>) -> Result<Self, ProtoError> {
         let (jobs, inbox) = mpsc::channel::<Job>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let worker = thread::Builder::new()
@@ -157,11 +163,33 @@ impl Lane {
                 }
             })
             .map_err(|e| network("LAN worker", e))?;
-        match ready_rx.recv() {
+        match receive(&ready_rx, deadline) {
             Ok(Ok(())) => Ok(Self { jobs, worker }),
             Ok(Err(e)) => Err(network("asupersync runtime", e)),
-            Err(e) => Err(network("LAN worker", e)),
+            Err(e) => Err(e),
         }
+    }
+}
+
+/// A deadline applies before admission, before dispatch and while waiting
+/// for the result. Timing out the caller alone would leave a stale write
+/// waiting to reach the speaker after the caller gave up.
+fn remaining(deadline: Instant) -> Result<Duration, ProtoError> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|left| !left.is_zero())
+        .ok_or_else(|| network("LAN request", "deadline elapsed"))
+}
+
+fn receive<T>(receiver: &mpsc::Receiver<T>, deadline: Option<Instant>) -> Result<T, ProtoError> {
+    match deadline {
+        Some(deadline) => receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|e| match e {
+                mpsc::RecvTimeoutError::Timeout => network("LAN request", "deadline elapsed"),
+                mpsc::RecvTimeoutError::Disconnected => network("LAN worker", e),
+            }),
+        None => receiver.recv().map_err(|e| network("LAN worker", e)),
     }
 }
 
@@ -201,11 +229,14 @@ impl Lan {
         Self::with_timeout(DEFAULT_TIMEOUT)
     }
 
-    /// Start the workers; every request fails after `timeout`. The
+    /// Start the workers; every HTTP request has one `timeout` budget for
+    /// admission, waiting in its lane and the network exchange. A write
+    /// already in flight may have taken effect when its deadline expires;
+    /// one still queued is discarded without sending it. The
     /// discovery lane starts now, so a runtime that can't start fails here;
     /// the others start on first use.
     pub fn with_timeout(timeout: Duration) -> Result<Self, ProtoError> {
-        let discovery = Lane::start(DISCOVERY)?;
+        let discovery = Lane::start(DISCOVERY, None)?;
         Ok(Self {
             lanes: Mutex::new(HashMap::from([(DISCOVERY.to_owned(), discovery)])),
             tap: Mutex::new(None),
@@ -279,11 +310,12 @@ impl Lan {
     fn submit<T>(
         &self,
         lane: &str,
+        deadline: Option<Instant>,
         make: impl FnOnce(mpsc::Sender<Result<T, ProtoError>>) -> Job,
     ) -> Result<T, ProtoError> {
         let (reply, answer) = mpsc::channel();
         {
-            let mut lanes = self.lanes.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut lanes = self.admit(deadline)?;
             let name = if lanes.contains_key(lane) || lanes.len() < MAX_LANES {
                 lane.to_owned()
             } else {
@@ -296,19 +328,43 @@ impl Lan {
                 players[shared].clone()
             };
             if !lanes.contains_key(&name) {
-                let started = Lane::start(&name)?;
+                let started = Lane::start(&name, deadline)?;
                 lanes.insert(name.clone(), started);
             }
             let Some(lane) = lanes.get(&name) else {
                 return Err(network("LAN worker", "stopped"));
             };
+            if let Some(deadline) = deadline {
+                remaining(deadline)?;
+            }
             if let Err(e) = lane.jobs.send(make(reply)) {
                 // A lane whose worker died is started afresh next time.
                 lanes.remove(&name);
                 return Err(network("LAN worker", e));
             }
         }
-        answer.recv().map_err(|e| network("LAN worker", e))?
+        receive(&answer, deadline)?
+    }
+
+    /// Starting another address's lane may hold the admission lock. An
+    /// expired caller must not wait for it and enqueue a late request.
+    fn admit(
+        &self,
+        deadline: Option<Instant>,
+    ) -> Result<MutexGuard<'_, HashMap<String, Lane>>, ProtoError> {
+        let Some(deadline) = deadline else {
+            return Ok(self.lanes.lock().unwrap_or_else(PoisonError::into_inner));
+        };
+        loop {
+            let left = remaining(deadline)?;
+            match self.lanes.try_lock() {
+                Ok(lanes) => return Ok(lanes),
+                Err(TryLockError::Poisoned(e)) => return Ok(e.into_inner()),
+                Err(TryLockError::WouldBlock) => {
+                    thread::sleep(left.min(Duration::from_millis(1)));
+                }
+            }
+        }
     }
 
     /// Show every HTTP exchange from now on to `tap`, until [`Self::untap`]
@@ -329,7 +385,10 @@ impl Lan {
         headers: Vec<(String, String)>,
         body: Vec<u8>,
     ) -> Result<Reply, ProtoError> {
-        let timeout = self.timeout;
+        let started = Instant::now();
+        let deadline = started
+            .checked_add(self.timeout)
+            .ok_or_else(|| network("LAN request", "timeout is too large"))?;
         let lane = lane_of(&url).to_owned();
         let tapped = self
             .tap
@@ -342,15 +401,15 @@ impl Lan {
                 url.clone(),
                 headers.clone(),
                 String::from_utf8_lossy(&body).into_owned(),
-                Instant::now(),
+                started,
             )
         });
-        let reply = self.submit(&lane, |reply| Job::Http {
+        let reply = self.submit(&lane, Some(deadline), |reply| Job::Http {
             method,
             url,
             headers,
             body,
-            timeout,
+            deadline,
             reply,
         });
         if let Some((method, url, headers, request, started)) = asked
@@ -379,7 +438,7 @@ impl Lan {
     /// give players as a GENA callback. Sends nothing.
     pub fn local_address_toward(&self, player: IpAddr) -> Result<IpAddr, ProtoError> {
         let toward = self.endpoint(player);
-        self.submit(ROUTE, |reply| Job::Route { toward, reply })
+        self.submit(ROUTE, None, |reply| Job::Route { toward, reply })
     }
 
     /// SUBSCRIBE to the events `event_path` on the player at `host` publishes,
@@ -554,7 +613,7 @@ impl Transport for Lan {
             return Ok(Vec::new());
         }
         let target = self.ssdp_target;
-        self.submit(DISCOVERY, |reply| Job::Search {
+        self.submit(DISCOVERY, None, |reply| Job::Search {
             target,
             mx_secs,
             wait,
@@ -572,7 +631,7 @@ impl Transport for Lan {
             return Ok(Vec::new());
         }
         let target = self.mdns_target;
-        self.submit(DISCOVERY, |reply| Job::MdnsSearch {
+        self.submit(DISCOVERY, None, |reply| Job::MdnsSearch {
             target,
             wait,
             reply,
@@ -602,7 +661,7 @@ impl Transport for Lan {
             };
         }
         let (ssdp_target, mdns_target) = (self.ssdp_target, self.mdns_target);
-        self.submit(DISCOVERY, |reply| Job::Discover {
+        self.submit(DISCOVERY, None, |reply| Job::Discover {
             ssdp_target,
             mdns_target,
             mx_secs,
@@ -623,10 +682,10 @@ async fn run(job: Job) {
             url,
             headers,
             body,
-            timeout,
+            deadline,
             reply,
         } => {
-            let _ = reply.send(http(method, url, headers, body, timeout).await);
+            let _ = reply.send(http(method, url, headers, body, deadline).await);
         }
         Job::Search {
             target,
@@ -694,8 +753,9 @@ async fn http(
     url: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<Reply, ProtoError> {
+    remaining(deadline)?;
     let cx = Cx::current().ok_or_else(|| network(&url, "no asupersync context"))?;
     let client = Client::default_for_runtime(&cx);
     let mut request = client.request_builder(method, url.clone());
@@ -706,7 +766,7 @@ async fn http(
         request = request.body(body);
     }
     let response = request
-        .timeout(timeout)
+        .timeout(remaining(deadline)?)
         .send(&cx)
         .await
         .map_err(|e| network(&url, e))?;
