@@ -1796,3 +1796,47 @@ CAMPAIGN WAITING STATE: everything is staged, persistent, and instrumented.
 The single trigger = the owner's eero DNS flip. On flip: units → our
 policy → upgradeinfo arms → BSU → root fetch of pwned-q57.upd → persistent
 root on .202/.84 → shell → S2 muse actions → S2 chain.
+
+### 2026-11-06 (session 8) — THE NO-DNS DELIVERY PATH: per-unit BSU, zero network changes
+
+The owner's objection (network-wide DNS + disabling eero Plus = deal killer)
+is SOLVED with a per-unit path that needs **no DNS and no eero changes**:
+
+1. **The malleability foothold** (UPDATE_FEED_AND_SIGNATURE.md, measured):
+   bytes after the type-17 record are OUTSIDE the signature; the prefix hash
+   covers only the pre-type-17 bytes; version semantics are first-wins.
+2. **The toolchain existed**: `scripts/append_upd_section.py` appends a
+   record after type-17 keeping the prefix BYTE-IDENTICAL;
+   `verify_upd.py` verdict **PASS** on both built packages (type-22 digest,
+   type-17 prefix digest, type-17 signature key #2 — the trailing record
+   rides a VALIDLY SIGNED package).
+3. **Built packages**:
+   - `pwned-nodns.upd` = genuine 57.23-74170-1-16 + 237B trailing type-3
+     preinstall (plants /jffs/system/Configure.dev → telnetd 2323 +
+     unlock flag at next boot; S1 chain verified in the 65130 rootfs:
+     etc/Configure:79/87-88);
+   - `pwned-65130.upd` = genuine 57.22-65130-1-16 (an ACCEPTED-version
+     family per the downgrade-floor table: 4 patch entries, full read,
+     accepted) + the same trailing preinstall. The 65130 rootfs was
+     decrypted (model16 key) and its Configure.dev chain confirmed.
+4. **Delivery = per-unit SOAP**:
+   `POST /ZoneGroupTopology/Control`,
+   `ZoneGroupTopology:1#BeginSoftwareUpdate(URL, Flags=1,
+   ExtraOptions=&#10;MinVersion: [57.16-41110])` — the LF injection writes
+   the MinVersion line into /var/run/upgradeinfo (the second-gate
+   satisfier per the chroot harness).
+5. **LIVE RESULTS**: .84 fetched BOTH packages in full (5.6MB each) via its
+   own root updater; .202 fetched both too. **No DNS, no eero, per-unit.**
+6. **OPEN**: the post-fetch install verdict is invisible externally —
+   .84/.202 stayed on 57.23 (no reboot). Candidate causes: the
+   downgrade-blocked(9) verdict persisting despite the injected MinVersion
+   ('inert in practice: the writer templates every key afterwards'), or the
+   trailing-type-3 flasher question. The upgrade.log/serial visibility that
+   answers it is the same device-side-visibility wall as the S2 shell.
+   NEXT: (a) try Flags variants + the deferred-path trigger, (b) the
+   same-version fire on a unit RUNNING 65130 (if one installs), (c) accept
+   that the flasher question needs the upgrade.log.
+
+The DNS-flip path remains staged and valid as the FALLBACK (it arms via the
+cloud-settings predicate instead of ExtraOptions). Both paths deliver the
+same packages.
