@@ -227,6 +227,47 @@ fn sync_tools_preserve_saved_intake_without_turning_a_pause_into_a_failed_result
 }
 
 #[test]
+fn sync_tools_preserve_followed_artist_verification_and_reconciliation_progress() {
+    use fsonos_api::surface::dj_sync::{FollowedArtistsDto, FollowedArtistsPhase, LibrarySyncDto};
+
+    for (phase, verified_pages) in [
+        (FollowedArtistsPhase::Reading, 0),
+        (FollowedArtistsPhase::Verifying, 8),
+        (FollowedArtistsPhase::Ready, 20),
+    ] {
+        let state = LibrarySyncDto::new(false, None, None).with_followed_artists(Some(
+            FollowedArtistsDto {
+                pending: true,
+                phase,
+                pages: 20,
+                artists: 1_000,
+                verified_pages,
+                retry_at: Some(1_790_000_900),
+                not_before: Some(1_790_003_600),
+                ..Default::default()
+            },
+        ));
+        let answer = serde_json::to_value(&state).unwrap();
+        let (backend, reply) = fixture(Some(Ok(answer.clone())));
+        for result in [
+            backend.dj_sync_status().unwrap(),
+            backend.dj_sync().unwrap(),
+        ] {
+            assert!(!result.is_error);
+            assert_eq!(text(&result), state.done);
+            assert_eq!(result.structured_content, Some(answer.clone()));
+        }
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [
+                json!(["GET", "/dj/sync", null]),
+                json!(["POST", "/dj/sync", {}])
+            ]
+        );
+    }
+}
+
+#[test]
 fn every_control_error_and_malformed_success_is_terminal() {
     for answer in [
         Err(Failure::new(ErrorCode::PlayerUnreachable, "reply lost")),

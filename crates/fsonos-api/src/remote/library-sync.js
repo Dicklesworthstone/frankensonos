@@ -62,8 +62,24 @@ const LibrarySyncRemote = (() => {
         verified_pages: v.verified_pages, running: v.running,
         retry_at: v.retry_at ?? null, not_before: v.not_before ?? null });
     }
+    let followed = null;
+    if (value.followed_artists != null) {
+      const v = value.followed_artists;
+      if (!object(v) || !['pending', 'limited', 'running', 'requires_refresh'].every((key) => typeof v[key] === 'boolean')
+          || !['reading', 'verifying', 'ready'].includes(v.phase)
+          || !['pages', 'artists', 'verified_pages'].every((key) => count(v[key]))
+          || v.verified_pages > v.pages || (v.limited && v.pending)
+          || (v.running && (!value.running || genres?.running || intake?.running))
+          || (v.retry_at != null && !timestamp(v.retry_at))
+          || (v.not_before != null && !timestamp(v.not_before))) {
+        throw new Error('The followed-artist progress is unreadable. Check status again.');
+      }
+      followed = Object.freeze({ pending: v.pending, phase: v.phase, pages: v.pages, artists: v.artists,
+        verified_pages: v.verified_pages, limited: v.limited, running: v.running,
+        retry_at: v.retry_at ?? null, not_before: v.not_before ?? null, requires_refresh: v.requires_refresh });
+    }
     return Object.freeze({ done: value.done, running: value.running, last,
-      error: value.error ?? null, genre_enrichment: genres, library_intake: intake });
+      error: value.error ?? null, genre_enrichment: genres, library_intake: intake, followed_artists: followed });
   }
 
   function model({ call, changed = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
@@ -79,7 +95,9 @@ const LibrarySyncRemote = (() => {
     function arm() {
       stopTimer();
       const genres = state.status?.genre_enrichment;
-      const pending = state.status?.library_intake?.pending || (genres && (genres.pending > 0 || genres.requires_refresh));
+      const followed = state.status?.followed_artists;
+      const pending = state.status?.library_intake?.pending || (genres && (genres.pending > 0 || genres.requires_refresh))
+        || (followed && (followed.pending || followed.requires_refresh));
       if (!active() || state.busy || readFlight || (!failures && !state.status?.running && !pending)) return;
       const delay = failures ? Math.min(MAX_BACKOFF_MS, POLL_MS * 2 ** Math.min(failures, 5))
         : state.status?.running ? POLL_MS : PENDING_POLL_MS;
@@ -244,6 +262,31 @@ const LibrarySyncRemote = (() => {
             if (!genres.running && genres.pending && !genres.requires_refresh) {
               const deadlines = [genres.retry_at, genres.not_before].filter((at) => at !== null);
               if (deadlines.length) deadline('Next genre pass no earlier than', Math.max(...deadlines));
+            }
+          }
+          if (observed.followed_artists) {
+            const followed = observed.followed_artists;
+            const phase = { reading: 'Reading the artists you follow in a bounded pass.',
+              verifying: 'Checking retained followed-artist pages before reconciliation.',
+              ready: 'Followed artists are retained and verified. A full library refresh still needs to reconcile them.' };
+            facts.append(el('h3', { text: 'Followed artists' }),
+              el('p', { text: followed.requires_refresh ? 'A full library refresh is needed before followed-artist intake can continue.'
+                : followed.limited ? 'Followed-artist intake reached its cache limit. The retained directory is incomplete; automatic page reads have stopped for this scan.'
+                  : followed.running || followed.pending ? phase[followed.phase]
+                    : 'Followed-artist directory intake is complete.' }));
+            facts.append(el('dl', { class: 'library-sync-counts' },
+              el('dt', { text: 'Validated pages retained' }), el('dd', { text: followed.pages.toLocaleString() }),
+              el('dt', { text: 'Artists retained' }), el('dd', { text: followed.artists.toLocaleString() }),
+              el('dt', { text: 'Pages validated for reconciliation' }), el('dd', { text: followed.verified_pages.toLocaleString() })));
+            if (followed.pending && !followed.running && !followed.requires_refresh && followed.phase !== 'ready') {
+              facts.append(el('p', { text: 'Progress is saved. The daemon continues this directory in bounded passes without rereading saved music.' }));
+            }
+            if (followed.not_before !== observed.library_intake?.not_before
+                && followed.not_before !== observed.genre_enrichment?.not_before) deadline('Spotify cooldown ends at', followed.not_before);
+            if (!followed.running && followed.pending && !followed.requires_refresh && !followed.limited) {
+              const deadlines = [followed.retry_at, followed.not_before].filter((at) => at !== null);
+              const label = followed.phase === 'ready' ? 'Next library reconciliation no earlier than' : 'Next followed-artist pass no earlier than';
+              if (deadlines.length) deadline(label, Math.max(...deadlines));
             }
           }
         }

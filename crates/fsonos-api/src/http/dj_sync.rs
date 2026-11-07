@@ -30,7 +30,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .response_schema::<LibrarySyncDto>(
             200,
-            "Current activity, retained saved-library intake, last full refresh, and artist genre progress with retry and cooldown deadlines",
+            "Current activity, saved-library and followed-artist intake, last full refresh, and artist genre progress with retry and cooldown deadlines",
         ),
         cx.route(
             &Op::post(
@@ -45,7 +45,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .response_schema::<LibrarySyncDto>(
             200,
-            "The refresh started or current work and cooldown; unfinished saved music and genres retain separate progress",
+            "The refresh started or current work and cooldown; saved music, followed artists and genres retain separate progress",
         ),
         cx.route(
             &Op::get(

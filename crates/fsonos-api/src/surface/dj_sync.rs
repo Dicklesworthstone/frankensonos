@@ -14,6 +14,8 @@
 //! full refresh, so a saved library does not imply every genre was read.
 //! Essential saved-library intake also has durable progress: a bounded pause
 //! is unfinished work, and never replaces the last complete public library.
+//! Followed-artist directories resume independently, so their request budget
+//! does not permanently hide artists beyond the first pages.
 
 pub mod library;
 pub mod playlist;
@@ -22,6 +24,8 @@ mod genres;
 pub use genres::GenreEnrichmentDto;
 mod intake;
 pub use intake::{SavedLibraryIntakeDto, SavedLibraryIntakePhase};
+mod followed;
+pub use followed::{FollowedArtistsDto, FollowedArtistsPhase};
 
 use std::fmt::Write as _;
 
@@ -56,6 +60,10 @@ pub struct LibrarySyncDto {
     /// can exist before the first completed refresh, and survives restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_intake: Option<SavedLibraryIntakeDto>,
+    /// Current followed-artist directory progress, without private identities
+    /// or cursor payloads. Independent of the last completed full refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub followed_artists: Option<FollowedArtistsDto>,
 }
 
 /// One completed refresh.
@@ -108,6 +116,7 @@ impl LibrarySyncDto {
             error,
             genre_enrichment: None,
             library_intake: None,
+            followed_artists: None,
         };
         state.done = state.text();
         state
@@ -132,6 +141,14 @@ impl LibrarySyncDto {
         self
     }
 
+    /// Add the followed-artist reader's current progress and retry deadlines.
+    #[must_use]
+    pub fn with_followed_artists(mut self, artists: Option<FollowedArtistsDto>) -> Self {
+        self.followed_artists = artists;
+        self.done = self.text();
+        self
+    }
+
     fn text(&self) -> String {
         if self.running
             && let Some(genres) = &self.genre_enrichment
@@ -145,6 +162,12 @@ impl LibrarySyncDto {
         {
             return intake.text();
         }
+        if self.running
+            && let Some(artists) = &self.followed_artists
+            && artists.running
+        {
+            return artists.text();
+        }
         let pending = self
             .library_intake
             .as_ref()
@@ -156,7 +179,9 @@ impl LibrarySyncDto {
                     .to_owned()
             }
             (false, _, Some(error))
-                if self.genre_enrichment.is_some() || self.library_intake.is_some() =>
+                if self.genre_enrichment.is_some()
+                    || self.library_intake.is_some()
+                    || self.followed_artists.is_some() =>
             {
                 format!("The last library update failed: {error}")
             }
@@ -184,6 +209,9 @@ impl LibrarySyncDto {
         }
         if let Some(genres) = &self.genre_enrichment {
             let _ = write!(text, " {}", genres.text());
+        }
+        if let Some(artists) = &self.followed_artists {
+            let _ = write!(text, " {}", artists.text());
         }
         text
     }

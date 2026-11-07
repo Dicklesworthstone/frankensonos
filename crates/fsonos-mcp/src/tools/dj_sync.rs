@@ -39,7 +39,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "Where the DJ's Spotify library update stands: current activity, the last full refresh and its track counts, and any latest error. Saved-library intake reports retained pages and tracks, verification progress, pending work and retry/cooldown deadlines even before the first full refresh. A bounded pause is unfinished work, not a published partial library. Artist genre enrichment has separate running, pending and completed counts, a retry deadline, Spotify cooldown, and whether a full refresh is required. The daemon continues unfinished reads and refreshes the library daily. This status read starts no work.",
+    description = "Where the DJ's Spotify library update stands: current activity, the last full refresh and its track counts, and any latest error. Saved-library intake reports retained pages and tracks, verification progress, pending work and retry/cooldown deadlines even before the first full refresh. Followed-artist intake reports retained pages and artists, verification progress, cache limits and retry deadlines; ready artist pages still await full library reconciliation. A bounded pause is unfinished work, not a published partial library. Artist genre enrichment has separate running, pending and completed counts, a retry deadline, Spotify cooldown, and whether a full refresh is required. The daemon continues unfinished reads and refreshes the library daily. This status read starts no work.",
     annotations(read_only, idempotent)
 )]
 async fn dj_sync_status(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -47,7 +47,7 @@ async fn dj_sync_status(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallT
 }
 
 #[tool(
-    description = "Request a background refresh of the DJ's library from the owner's Spotify (read-only on Spotify): new saves and likes, artist genres, and the taste signals the sign-in allows. Use it after the owner saves new music; newly selected DJ picks use the updated cache. Answers at once; use dj_sync_status to follow durable saved-library intake and independent bounded genre enrichment. Retained partial reads survive restarts and never replace the last complete library. Existing work and Spotify cooldowns are respected; repeating this request does not bypass a rate limit.",
+    description = "Request a background refresh of the DJ's library from the owner's Spotify (read-only on Spotify): new saves and likes, artist genres, and the taste signals the sign-in allows. Use it after the owner saves new music; newly selected DJ picks use the updated cache. Answers at once; use dj_sync_status to follow durable saved-library and followed-artist intake and independent bounded genre enrichment. Retained partial reads survive restarts and never replace the last complete library. Existing work and Spotify cooldowns are respected; repeating this request does not bypass a rate limit.",
     annotations(idempotent)
 )]
 async fn dj_sync(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {

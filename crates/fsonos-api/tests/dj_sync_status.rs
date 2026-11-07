@@ -1,4 +1,4 @@
-//! Full-refresh history and current genre enrichment through real HTTP.
+//! Full-refresh history and current library intake and enrichment through real HTTP.
 //! Status reads never schedule work or discover speakers; the write route
 //! preserves the engine's cooldown response and existing policy boundary.
 
@@ -9,7 +9,8 @@ use fastapi::{ServerConfig, TcpServer};
 use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::DjAction;
 use fsonos_api::surface::dj_sync::{
-    GenreEnrichmentDto, LibrarySyncDto, SavedLibraryIntakeDto, SavedLibraryIntakePhase, SyncedDto,
+    FollowedArtistsDto, FollowedArtistsPhase, GenreEnrichmentDto, LibrarySyncDto,
+    SavedLibraryIntakeDto, SavedLibraryIntakePhase, SyncedDto,
 };
 use fsonos_api::{Failure, Identity, OutcomeDto, Surface, WebPolicy};
 use fsonos_core::clock::{Clock, SystemClock};
@@ -280,6 +281,10 @@ fn sync_http_preserves_current_progress_and_last_full_refresh_separately() {
             schema["properties"].get("library_intake").is_some(),
             "{schema}"
         );
+        assert!(
+            schema["properties"].get("followed_artists").is_some(),
+            "{schema}"
+        );
     }
 }
 
@@ -328,6 +333,57 @@ fn saved_intake_is_observable_before_first_publication_and_during_recovery() {
         completed
     );
     assert_eq!(api.requests.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn followed_artist_progress_keeps_directory_completion_separate_from_library_publication() {
+    let api = Api::start(Client::Unknown);
+    let previous = state(GenreEnrichmentDto::default());
+    for artists in [
+        FollowedArtistsDto {
+            pending: true,
+            pages: 20,
+            artists: 1_000,
+            retry_at: Some(1_790_000_900),
+            not_before: Some(1_790_003_600),
+            ..Default::default()
+        },
+        FollowedArtistsDto {
+            pending: true,
+            phase: FollowedArtistsPhase::Verifying,
+            pages: 21,
+            artists: 1_025,
+            verified_pages: 8,
+            running: true,
+            ..Default::default()
+        },
+        FollowedArtistsDto {
+            pending: true,
+            phase: FollowedArtistsPhase::Ready,
+            pages: 21,
+            artists: 1_025,
+            verified_pages: 21,
+            ..Default::default()
+        },
+        FollowedArtistsDto {
+            pages: 20,
+            artists: 1_000,
+            limited: true,
+            ..Default::default()
+        },
+    ] {
+        let expected = LibrarySyncDto::new(artists.running, previous.last.clone(), None)
+            .with_followed_artists(Some(artists));
+        *api.status.lock().unwrap() = expected.clone();
+        let (status, body) = api.request("GET", "/dj/sync");
+        assert_eq!(status, 200);
+        assert_eq!(body["last"]["at"], 1_790_000_000);
+        assert_eq!(
+            serde_json::from_value::<LibrarySyncDto>(body).unwrap(),
+            expected
+        );
+        assert_eq!(api.requests.load(Ordering::SeqCst), 0);
+    }
 }
 
 #[test]
