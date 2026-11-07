@@ -1772,3 +1772,27 @@ open S2 gap); harness U3 (6 offline unit tests + fixtures, all green).
 - **rdr caveat recorded**: the pf rdr rules can only be proven from an
   external source — Mac-local curls bypass en0. Post-flip observables:
   pf counters + requests.log HIT/UPD-SERVED lines.
+
+### 2026-11-06 (session 7) — eero instructions issued; flip watcher running; campaign waiting state
+
+- **eero DNS instructions delivered to the owner** (Settings → Advanced
+  networking → DNS → Custom → 192.168.4.160; eero Plus caveat; network
+  reboot on save). The DNS responder now answers **empty AAAA** for the
+  intercepted names (IPv6 bypass closed) — patched, staged, restarted.
+- **Flip watcher running** (/tmp/q57-serve/flipwatch.sh): logs unit-source
+  DNS hits and responder requests to flipwatch.log the moment the flip
+  lands.
+- **xnf iss replica**: `captures/research/emudhra/build_iss.py` — the
+  decoded composer format `{ owner { luid L } hhid H network_hash N } }`
+  with the brace count verified against the disassembly; network_hash
+  passed as a parameter until the fnv1a input trace completes (the
+  accumulator is a multi-field provider interface, not a single string —
+  the practical close is diffing a real captured token).
+- **libflash patch attempt**: the MEMGETINFO constant sits between
+  functions; the ioctl site is reached via registered jalr — patch site
+  needs per-function identification (documented on the qemu bead).
+
+CAMPAIGN WAITING STATE: everything is staged, persistent, and instrumented.
+The single trigger = the owner's eero DNS flip. On flip: units → our
+policy → upgradeinfo arms → BSU → root fetch of pwned-q57.upd → persistent
+root on .202/.84 → shell → S2 muse actions → S2 chain.
