@@ -4,8 +4,10 @@
 //! backs both control surfaces: the HTTP API and the MCP server over
 //! streamable HTTP (`/mcp`). Each listens on its own thread and runtime.
 //! Once both are bound, a ready line on stderr names the actual addresses (so
-//! ephemeral `:0` ports are usable), then the daemon runs until SIGINT or
-//! SIGTERM. It keeps running when discovery finds nothing: calls answer
+//! ephemeral `:0` ports are usable), then the daemon runs until SIGINT,
+//! SIGTERM, or an essential worker stops. A worker failure drains pending
+//! work and exits unsuccessfully so the service manager can restart it.
+//! It keeps running when discovery finds nothing: calls answer
 //! `NOT_READY` until the speakers do (TN3179: macOS shows the Local Network
 //! prompt only to a process that stays alive).
 //!
@@ -36,7 +38,6 @@
 
 use anyhow::Context as _;
 use fastapi::{ServerConfig, TcpServer};
-use fsonos_api::surface::schedules::Scheduler;
 use fsonos_api::web::ServeOrigin;
 use fsonos_api::{Failure, Identity, Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
@@ -45,7 +46,7 @@ use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::SqliteStore;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -58,6 +59,7 @@ mod bridge_compat;
 mod spotify_auth;
 
 mod serve_origin;
+mod supervision;
 mod tailnet;
 mod warning_file;
 
@@ -335,7 +337,7 @@ fn vet_binds(
 }
 
 /// Vet the configuration, start both servers, report readiness, and run
-/// until SIGINT / SIGTERM.
+/// until SIGINT / SIGTERM or an essential worker stops unexpectedly.
 pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> anyhow::Result<()> {
     // Unconfigured listeners bind loopback plus the tailnet (ts-autobind).
     let tailnet = args.tailnet();
@@ -364,7 +366,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         signal_hook::flag::register(signal, Arc::clone(&stop))
             .context("install the SIGINT/SIGTERM handler")?;
     }
-    let ticking = start_scheduler(&surface, &stop)?;
+    let mut ticking = start_scheduler(&surface, &stop)?;
     // The DJ's library: refreshed when due at start, then daily.
     crate::dj::sync::watch(library, Arc::clone(&stop));
     let counting = warning_file::keep(&data_dir, Arc::clone(&stop));
@@ -390,10 +392,10 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             &serve,
         )
     })?;
-    let mcp = start_all("MCP server", &mcp_plan, |addr| {
+    let mut mcp = start_all("MCP server", &mcp_plan, |addr| {
         start_mcp(addr, &names, args.tailscale_serve)
     })?;
-    let bridge = bridge_compat::start(&surface, args.bridge_compat)?;
+    let mut bridge = bridge_compat::start(&surface, args.bridge_compat)?;
     // One value per key: the e2e harness and scripts parse this line.
     eprintln!(
         "fsonos serve: ready http=http://{} mcp=http://{}/mcp data={}",
@@ -409,7 +411,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // Only automatic HTTP binds follow Tailscale while the daemon runs.
     // Loopback stays owned here; an explicit bind and every MCP listener
     // retain exactly the configured startup behavior.
-    let (http, tailnet_watch) = if tailnet::enabled(args) {
+    let (mut http, tailnet_watch) = if tailnet::enabled(args) {
         let (local, automatic) = http
             .into_iter()
             .partition(|(_, addr)| addr.ip().is_loopback());
@@ -428,14 +430,20 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     };
     announce_live(&live);
 
-    while !stop.load(Ordering::Acquire) {
-        thread::sleep(Duration::from_millis(100));
+    let mut outcome = supervision::wait(&stop, || {
+        worker_failure(&mut http, &mut bridge, &mut mcp, &mut ticking)
+    });
+    if let Err(error) = &outcome {
+        tracing::error!("stopping the daemon after a worker failure: {error:#}");
     }
     eprintln!("fsonos serve: stopping");
     crate::remote::remove_daemon_file(&data_dir, std::process::id());
     // Fades in flight put their volumes back; runs in flight finish.
-    if ticking.join().is_err() {
-        tracing::warn!("the scheduler stopped with a panic");
+    if let Err(error) = ticking.shutdown() {
+        tracing::warn!("{error:#}");
+        if outcome.is_ok() {
+            outcome = Err(error);
+        }
     }
     stop_http(&http);
     stop_http(&bridge);
@@ -450,7 +458,36 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // The surfaces hold the model weakly: this ends every subscription.
     drop(live);
     warning_file::finish(&data_dir, counting);
-    Ok(())
+    outcome
+}
+
+/// Only required listeners belong here: automatic tailnet HTTP listeners
+/// are owned and retried by their watcher instead of stopping the daemon.
+fn worker_failure(
+    http: &mut [(HttpStop, SocketAddr)],
+    bridge: &mut [(HttpStop, SocketAddr)],
+    mcp: &mut [(McpStop, SocketAddr)],
+    scheduler: &mut supervision::SchedulerWorker,
+) -> Option<anyhow::Error> {
+    for (role, listeners) in [("HTTP API", http), ("bridge-compatible API", bridge)] {
+        for (listener, addr) in listeners {
+            if let Some(error) = supervision::listener_failure(
+                &mut listener.thread,
+                &format!("{role} on {addr}"),
+            ) {
+                return Some(error);
+            }
+        }
+    }
+    for (listener, addr) in mcp {
+        if let Some(error) = supervision::listener_failure(
+            &mut listener.thread,
+            &format!("MCP server on {addr}"),
+        ) {
+            return Some(error);
+        }
+    }
+    scheduler.failure()
 }
 
 /// Keep up with Tailscale Serve: watch the origin it proxies (unless
@@ -532,9 +569,9 @@ fn drain_announcements(pending: impl Fn() -> u64, wait: Duration) -> bool {
 }
 
 /// Shut the HTTP API listeners down.
-fn stop_http(http: &[(Arc<TcpServer>, SocketAddr)]) {
-    for (server, addr) in http {
-        server.shutdown();
+fn stop_http(http: &[(HttpStop, SocketAddr)]) {
+    for (listener, addr) in http {
+        listener.server.shutdown();
         // Wake the accept loop so it sees the shutdown. Briefly: a host may
         // not reach its own tailnet IPv6 address (Tailscale on macOS), and
         // the loop also polls for the shutdown.
@@ -560,25 +597,28 @@ fn stop_mcp(mcp: Vec<(McpStop, SocketAddr)>) {
     }
     let deadline = Instant::now() + MCP_STOP;
     for (listener, addr) in mcp {
-        while !listener.thread.is_finished() && Instant::now() < deadline {
+        let Some(thread) = listener.thread else {
+            continue;
+        };
+        while !thread.is_finished() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
         }
-        if !listener.thread.is_finished() {
+        if !thread.is_finished() {
             tracing::warn!("the MCP server on {addr} did not stop within {MCP_STOP:?}");
+        } else if thread.join().is_err() {
+            tracing::warn!("the MCP server on {addr} panicked during shutdown");
         }
     }
 }
 
 /// Run the sleep timers and the stored schedules on `surface`: a tick a
-/// second until `stop`, then a graceful stop (see [`Scheduler`]).
+/// second until `stop`, then a graceful stop.
 fn start_scheduler(
     surface: &Arc<Surface>,
     stop: &Arc<AtomicBool>,
-) -> anyhow::Result<thread::JoinHandle<()>> {
+) -> anyhow::Result<supervision::SchedulerWorker> {
     take_up_sleep_timers(surface);
-    Arc::new(Scheduler::new(surface))
-        .start(Arc::clone(stop))
-        .context("start the scheduler")
+    supervision::SchedulerWorker::start(surface, Arc::clone(stop))
 }
 
 /// Bind every address of `plan`. Loopback and a configured address must
@@ -611,7 +651,7 @@ fn start_all<T>(
 fn announce_tailnet(
     tailnet: &fsonos_tailscale::TailnetStatus,
     plan: &fsonos_tailscale::BindPlan,
-    http: &[(Arc<TcpServer>, SocketAddr)],
+    http: &[(HttpStop, SocketAddr)],
     mcp: &[(McpStop, SocketAddr)],
     fronted: bool,
 ) {
@@ -683,8 +723,16 @@ fn listener_identity(addr: SocketAddr, names: &[String], behind_serve: bool) -> 
     }
 }
 
-/// Bind the HTTP API on its own thread; returns the server and the bound
-/// address once it listens. Only the listener's own Host names are admitted
+/// An HTTP listener's shutdown handle and serving result. Keeping the
+/// thread lets both the daemon and the automatic tailnet watcher notice
+/// errors and panics after the startup channel has closed.
+struct HttpStop {
+    server: Arc<TcpServer>,
+    thread: supervision::Serving,
+}
+
+/// Bind the HTTP API on its own thread; returns its shutdown handle and
+/// bound address once it listens. Only its own Host names are admitted
 /// (DNS-rebinding defense), and every route applies the browser rules for
 /// the address it bound (so an ephemeral `:0` admits its own origin); a
 /// loopback listener also admits what `serve` learns.
@@ -695,7 +743,7 @@ fn start_http(
     behind_serve: bool,
     cli_token: &str,
     serve: &ServeOrigin,
-) -> anyhow::Result<(Arc<TcpServer>, SocketAddr)> {
+) -> anyhow::Result<(HttpStop, SocketAddr)> {
     // Host names do not depend on the port.
     let hosts = WebPolicy::for_listener(addr, names).hosts().to_vec();
     let identity =
@@ -712,8 +760,7 @@ fn start_http(
     let server = Arc::new(TcpServer::new(config));
     let (bound_tx, bound_rx) = mpsc::channel();
     let serving = Arc::clone(&server);
-    let finished = Arc::clone(&server);
-    thread::Builder::new()
+    let thread = thread::Builder::new()
         .name("fsonos-http".into())
         .spawn(move || {
             let ready_tx = bound_tx.clone();
@@ -738,11 +785,10 @@ fn start_http(
                         .map_err(|e| anyhow::anyhow!("HTTP API: {e}"))
                 })
             });
-            if let Err(e) = result {
-                let _ = bound_tx.send(Err(e));
+            if let Err(error) = &result {
+                let _ = bound_tx.send(Err(anyhow::anyhow!("{error:#}")));
             }
-            // Automatic listeners can be retried after a serving failure.
-            finished.shutdown();
+            result
         })
         .context("start the HTTP API thread")?;
     let bound = match bound_rx
@@ -758,7 +804,13 @@ fn start_http(
             return Err(error);
         }
     };
-    Ok((server, bound))
+    Ok((
+        HttpStop {
+            server,
+            thread: Some(thread),
+        },
+        bound,
+    ))
 }
 
 /// The most connections the HTTP API holds open at once: an event stream or
@@ -792,7 +844,7 @@ struct McpStop {
     /// The listener's context: its accept loop ends once this is cancelled.
     cx: asupersync::Cx,
     /// The listener's thread, finished once the listener has closed.
-    thread: thread::JoinHandle<()>,
+    thread: supervision::Serving,
 }
 
 /// Bind the MCP server (streamable HTTP) on its own thread; returns the bound
@@ -830,21 +882,28 @@ fn start_mcp(
                         .map_err(|e| anyhow::anyhow!("MCP server: {e}"))
                 })
             });
-            if let Err(e) = result {
-                let _ = bound_tx.send(Err(e));
+            if let Err(error) = &result {
+                let _ = bound_tx.send(Err(anyhow::anyhow!("{error:#}")));
             }
+            result
         })
         .context("start the MCP thread")?;
     let (local, cx) = bound_rx
         .recv_timeout(Duration::from_secs(10))
         .context("the MCP server did not start within 10 s")??;
-    Ok((McpStop { cx, thread }, local))
+    Ok((
+        McpStop {
+            cx,
+            thread: Some(thread),
+        },
+        local,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// launchd sends SIGKILL `ExitTimeOut` seconds after SIGTERM. The job
     /// template must leave the announcement drain, and the unsubscribes after

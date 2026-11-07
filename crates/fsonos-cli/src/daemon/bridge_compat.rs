@@ -21,7 +21,7 @@ const MAX_CONNECTIONS: usize = 64;
 pub(super) fn start(
     surface: &Arc<Surface>,
     addr: Option<SocketAddr>,
-) -> anyhow::Result<Vec<(Arc<TcpServer>, SocketAddr)>> {
+) -> anyhow::Result<Vec<(super::HttpStop, SocketAddr)>> {
     let Some(addr) = addr else {
         return Ok(Vec::new());
     };
@@ -36,7 +36,7 @@ pub(super) fn start(
     let server = Arc::new(TcpServer::new(config));
     let (bound_tx, bound_rx) = mpsc::channel();
     let (serving, surface) = (Arc::clone(&server), Arc::clone(surface));
-    thread::Builder::new()
+    let thread = thread::Builder::new()
         .name("fsonos-bridge-compat".into())
         .spawn(move || {
             let ready_tx = bound_tx.clone();
@@ -57,14 +57,29 @@ pub(super) fn start(
                         .map_err(|e| anyhow::anyhow!("bridge-compatible API: {e}"))
                 })
             });
-            if let Err(e) = result {
-                let _ = bound_tx.send(Err(e));
+            if let Err(error) = &result {
+                let _ = bound_tx.send(Err(anyhow::anyhow!("{error:#}")));
             }
+            result
         })
         .context("start the bridge-compatible API thread")?;
-    let bound = bound_rx
+    let bound = match bound_rx
         .recv_timeout(Duration::from_secs(10))
-        .context("the bridge-compatible API did not start within 10 s")??;
+        .context("the bridge-compatible API did not start within 10 s")
+        .and_then(std::convert::identity)
+    {
+        Ok(bound) => bound,
+        Err(error) => {
+            server.shutdown();
+            return Err(error);
+        }
+    };
     eprintln!("fsonos serve: bridge-compatible API on http://{bound} (as client bridge-compat)");
-    Ok(vec![(server, bound)])
+    Ok(vec![(
+        super::HttpStop {
+            server,
+            thread: Some(thread),
+        },
+        bound,
+    )])
 }

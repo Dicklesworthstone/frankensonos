@@ -7,7 +7,6 @@
 //! and own-address identity rules. Configured HTTP and all MCP binds stay
 //! outside this worker.
 
-use fastapi::TcpServer;
 use fsonos_api::Surface;
 use fsonos_api::web::ServeOrigin;
 use fsonos_tailscale::{Probe, TailnetStatus};
@@ -31,7 +30,7 @@ pub(super) fn enabled(args: &ServeArgs) -> bool {
 
 /// A live listener owns its shutdown, including when the worker cannot be
 /// spawned or unwinds. Dropping an Arc alone does not stop a serving thread.
-struct Http((Arc<TcpServer>, SocketAddr));
+struct Http((super::HttpStop, SocketAddr));
 
 impl Drop for Http {
     fn drop(&mut self) {
@@ -128,7 +127,7 @@ fn accept(status: &TailnetStatus, listening: bool, unanswered: &mut u32) -> bool
 /// The default probe bounds each CLI attempt; waiting between probes also
 /// checks shutdown so a late-starting Tailscale cannot delay daemon exit.
 pub(super) fn watch(
-    initial: Vec<(Arc<TcpServer>, SocketAddr)>,
+    initial: Vec<(super::HttpStop, SocketAddr)>,
     names: Vec<String>,
     surface: Arc<Surface>,
     cli_token: String,
@@ -154,9 +153,17 @@ pub(super) fn watch(
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
-                listeners
-                    .held
-                    .retain(|(_, listener)| !listener.0.0.is_shutting_down());
+                listeners.held.retain_mut(|(addr, listener)| {
+                    if let Some(error) = super::supervision::listener_failure(
+                        &mut listener.0.0.thread,
+                        &format!("automatic tailnet HTTP API on {addr}"),
+                    ) {
+                        tracing::warn!("{error:#}; will retry");
+                        false
+                    } else {
+                        true
+                    }
+                });
                 if accept(&status, !listeners.held.is_empty(), &mut unanswered) {
                     let desired = addresses(&status);
                     let ours = config::own_tailnet_addrs(&status);
