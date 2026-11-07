@@ -274,6 +274,8 @@ mod playlist_continuation;
 
 #[path = "artist_catalog_tests.rs"]
 mod artist_catalog;
+#[path = "artist_rotation_tests.rs"]
+mod artist_rotation;
 
 #[path = "explicit_metadata_tests.rs"]
 mod explicit_metadata;

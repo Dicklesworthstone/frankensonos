@@ -31,6 +31,8 @@ pub const MAX_PLAYLIST_DIRECTORY_ENTRIES: u32 = 100_000;
 pub const MAX_FOLLOWED_ARTISTS: u32 = 100_000;
 /// Maximum aggregate metadata bytes in a followed-artist checkpoint.
 pub const MAX_FOLLOWED_ARTIST_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum serialized artist-discovery cursor and publication receipt.
+pub const MAX_SPOTIFY_ARTIST_DISCOVERY_BYTES: usize = 16 * 1024;
 /// Maximum compact state retained for an unfinished essential library read.
 /// The Spotify reader also bounds pages, source items and individual metadata.
 pub const MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES: usize = 64 * 1024 * 1024;
@@ -504,6 +506,15 @@ pub struct SpotifyLibraryOwner {
     pub generation: u64,
 }
 
+/// An artist-discovery cursor update consumed with the accepted library.
+/// Exact bytes fence competing refreshes; the reader owns the bounded schema.
+/// A new publication receipt also invalidates a delayed full-library snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpotifyArtistDiscoveryFence {
+    pub expected: Option<String>,
+    pub progress: String,
+}
+
 /// One validated playlist observation and the exact private proof it consumes.
 /// The Spotify reader checks the opaque proof's snapshot and coverage before
 /// preparing this value; the store fences and acknowledges it atomically.
@@ -604,6 +615,14 @@ pub trait Store {
     /// A legacy cache has no proved owner until its first complete library read.
     fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError>;
 
+    /// Fair artist-discovery progress belonging to this adoption of the account.
+    /// A stale or returning account receipt cannot see another generation's cursor.
+    /// Progress advances only with an accepted library publication.
+    fn spotify_artist_discovery(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError>;
+
     /// Private essential-read progress for a verified incoming account, bound
     /// to the public ownership receipt observed before the read began. None
     /// is the receipt of a cache with no verified owner yet. A stale receipt or
@@ -671,6 +690,8 @@ pub trait Store {
     /// Any failed fence leaves all public projections and private progress intact.
     /// A supplied playlist fence also checks and acknowledges its exact private
     /// evidence in this transaction, before another continuation can publish.
+    /// The artist fence advances fair discovery only with this accepted library;
+    /// a stale cursor leaves the library, all receipts and progress untouched.
     #[allow(clippy::too_many_arguments)]
     fn publish_spotify_library_from_progress(
         &mut self,
@@ -681,6 +702,7 @@ pub trait Store {
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
         playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
+        artist_fence: Option<&SpotifyArtistDiscoveryFence>,
     ) -> Result<bool, StoreError>;
 
     /// Add validated playlist candidates while preserving the current library.
@@ -1037,6 +1059,27 @@ fn validate_spotify_library_progress(
     Ok(())
 }
 
+fn validate_spotify_artist_discovery(
+    owner: &SpotifyLibraryOwner,
+    expected: Option<&str>,
+    progress: Option<&str>,
+) -> Result<(), StoreError> {
+    validate_spotify_owner(&owner.owner_id)?;
+    if owner.generation == 0 || i64::try_from(owner.generation).is_err() {
+        return Err(StoreError::Backend(
+            "invalid Spotify library ownership generation".into(),
+        ));
+    }
+    if expected.is_some_and(|value| value.len() > MAX_SPOTIFY_ARTIST_DISCOVERY_BYTES)
+        || progress.is_some_and(|value| value.len() > MAX_SPOTIFY_ARTIST_DISCOVERY_BYTES)
+    {
+        return Err(StoreError::Backend(
+            "artist-discovery progress is too large".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_spotify_followed_directory(
     owner: &SpotifyLibraryOwner,
     expected: Option<&str>,
@@ -1202,6 +1245,7 @@ pub struct MemStore {
     playlists: Vec<(String, String)>,
     playlist_directories: BTreeMap<String, (u64, String)>,
     followed_directories: BTreeMap<String, (u64, String)>,
+    artist_discovery: BTreeMap<String, (u64, String)>,
     playlist_contents: BTreeMap<String, CachedPlaylist>,
     playlist_scan_cursors: BTreeMap<String, String>,
     playlist_progress: BTreeMap<(String, String), String>,
@@ -1384,6 +1428,21 @@ impl Store for MemStore {
         Ok(self.spotify_library_owner.clone())
     }
 
+    fn spotify_artist_discovery(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError> {
+        validate_spotify_artist_discovery(owner, None, None)?;
+        if self.spotify_library_owner.as_ref() != Some(owner) {
+            return Ok(None);
+        }
+        Ok(self
+            .artist_discovery
+            .get(&owner.owner_id)
+            .filter(|(generation, _)| *generation == owner.generation)
+            .map(|(_, progress)| progress.clone()))
+    }
+
     fn spotify_library_progress(
         &self,
         incoming_id: &str,
@@ -1452,6 +1511,7 @@ impl Store for MemStore {
             .retain(|(previous, _), _| previous != owner_id);
         self.playlist_directories.remove(owner_id);
         self.followed_directories.remove(owner_id);
+        self.artist_discovery.remove(owner_id);
         // Every essential checkpoint was bound to the previous public receipt.
         self.spotify_library_progress.clear();
         self.spotify_library_owner = Some(owner.clone());
@@ -1518,8 +1578,19 @@ impl Store for MemStore {
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
         playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
+        artist_fence: Option<&SpotifyArtistDiscoveryFence>,
     ) -> Result<bool, StoreError> {
         validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
+        if let Some(fence) = artist_fence {
+            validate_spotify_artist_discovery(
+                owner,
+                fence.expected.as_deref(),
+                Some(&fence.progress),
+            )?;
+            if self.spotify_artist_discovery(owner)?.as_deref() != fence.expected.as_deref() {
+                return Ok(false);
+            }
+        }
         if let Some(fence) = playlist_fence {
             validate_spotify_playlist_evidence(
                 owner,
@@ -1543,6 +1614,12 @@ impl Store for MemStore {
         }
         if let Some(fence) = playlist_fence {
             self.apply_playlist_evidence(owner, fence.directory.as_deref(), &fence.observations);
+        }
+        if let Some(fence) = artist_fence {
+            self.artist_discovery.insert(
+                owner.owner_id.clone(),
+                (owner.generation, fence.progress.clone()),
+            );
         }
         self.spotify_library_progress.remove(&owner.owner_id);
         Ok(true)

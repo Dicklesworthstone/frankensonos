@@ -83,6 +83,7 @@ fn publish(store: &mut dyn Store, owner: &SpotifyLibraryOwner, proof: &str, name
             &[observation()],
             Some(&heard),
             None,
+            None,
         )
         .unwrap()
 }
@@ -200,6 +201,7 @@ fn publish_after_claim(store: &mut dyn Store, owner: &SpotifyLibraryOwner) {
                 Some(&[]),
                 &[invalid],
                 Some(&[]),
+                None,
                 None,
             )
             .is_err()
@@ -345,6 +347,7 @@ fn reject_invalid_progress(store: &mut dyn Store) {
                 Some(&[]),
                 &[],
                 Some(&[]),
+                None,
                 None,
             )
             .is_err()
@@ -573,6 +576,7 @@ fn failed_sqlite_publication_retains_completed_progress_and_rolls_back_all_earli
                     Vec::new()
                 )],
                 Some(&[]),
+                None,
                 None,
             )
             .is_err()

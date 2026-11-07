@@ -669,6 +669,18 @@ their standing preferences on every surface and in the daemon. What is on
   reader shares cooldowns and rotates with playlist, album and genre work.
   HTTP, MCP, CLI and web expose reading/verifying/ready states, counts, cache
   limits and deadlines independently of the last completed full refresh.
+- Followed/top-artist track discovery rotates on every accepted full refresh,
+  rather than selecting the same calendar-day slice. A bounded cursor orders
+  stable artist IDs, resumes after the last attempted artist, and wraps fairly.
+  Each pass still samples at most 50 artists and three tracks per artist using
+  the existing top-tracks/catalog fallback. Failed artists yield without
+  advancing past unattempted reads after a global halt. Migration 23 binds the
+  cursor to the account adoption; the exact prior cursor, library publication
+  and fresh publication nonce commit together. Failed/stale refreshes retain
+  the cursor and essential read. Lead-artist IDs prevent namesake collisions;
+  hashed unread IDs/names retain deferred samples and guest-credit evidence.
+  Sync notes distinguish samples deferred by this pass from full discography
+  coverage and explain that another explicit sync advances the rotation.
 - Taste beyond the library is read with the owner's grant
   (`user-follow-read`, `user-top-read`, `user-read-recently-played`,
   `playlist-read-private`: owner-authorized, requested at sign-in, listed in

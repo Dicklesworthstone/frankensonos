@@ -536,6 +536,16 @@ takes turns with playlist, album, and genre completion and shares Spotify's
 cooldown. Private evidence is bounded to 100,000 artists, 16 MiB, and seven days;
 a reached cache bound is reported as incomplete and stops automatic intake.
 
+Followed and top artists without music in the fresh library now get a fair
+turn on every accepted sync. Each refresh samples at most 50 artists and up to
+three tracks each, then the next sync continues after the last attempted
+artist—even on the same day or after restart. Artist IDs distinguish namesakes;
+cached samples for deferred or unavailable artists remain playable. The cursor
+and new music commit together, so a failed or superseded publication cannot
+skip a batch. Sync notes report deferred samples and explain that another
+`fsonos dj sync` advances the rotation. This is bounded sampling, not complete
+discography coverage; artist-track sampling still runs during full refreshes.
+
 Scheduled DJ starts and DJ scenes check their prospective direction, playable
 music, required household Spotify rendering, and current queue prerequisites
 before the occurrence is marked as run. Queue checks cover ownership, readable

@@ -12,8 +12,8 @@
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
     CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, PlayName,
-    PlayRecord, SpotifyLibraryOwner, SpotifyPlaylistPublication, SpotifyPlaylistPublicationFence,
-    Store, StoreError, StoredScene, StoredSchedule,
+    PlayRecord, SpotifyArtistDiscoveryFence, SpotifyLibraryOwner, SpotifyPlaylistPublication,
+    SpotifyPlaylistPublicationFence, Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, ZoneGroup};
@@ -142,6 +142,13 @@ impl Store for SharedStore<'_> {
         self.lock().spotify_library_owner()
     }
 
+    fn spotify_artist_discovery(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError> {
+        self.lock().spotify_artist_discovery(owner)
+    }
+
     fn spotify_library_progress(
         &self,
         incoming_id: &str,
@@ -200,6 +207,7 @@ impl Store for SharedStore<'_> {
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
         playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
+        artist_fence: Option<&SpotifyArtistDiscoveryFence>,
     ) -> Result<bool, StoreError> {
         self.lock().publish_spotify_library_from_progress(
             owner,
@@ -209,6 +217,7 @@ impl Store for SharedStore<'_> {
             contents,
             heard,
             playlist_fence,
+            artist_fence,
         )
     }
 

@@ -26,8 +26,9 @@
 //! early (rate limited past the waits, a server error, signed out, or a read
 //! budget reached) keeps what it read; the sync then keeps the taste-only
 //! tracks it cached before, rather than retiring what it didn't get to read.
-//! Playlist scans resume after their last attempted ID, including across
-//! restarts, so the per-sync limit doesn't permanently hide later playlists.
+//! Playlist scans and accepted artist samples resume after their last attempted
+//! ID, including across restarts. Repeated full refreshes on the same day give
+//! later artists their turn; a failed publication never advances their cursor.
 
 use std::collections::{HashMap, HashSet};
 
@@ -42,6 +43,7 @@ use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
 use crate::session::Session;
 
+mod artist_scan;
 mod artists;
 mod continuation;
 mod directory;
@@ -49,6 +51,7 @@ mod followed;
 mod paging;
 mod playlist_scan;
 
+pub(crate) use artist_scan::prepare_publication as prepare_artist_publication;
 pub use continuation::PlaylistContinuation;
 use continuation::Scan;
 pub(crate) use continuation::read_pending_playlists;
@@ -102,7 +105,14 @@ pub struct TasteRead {
     /// Tracks of followed or top artists the owner saved nothing by: their
     /// top tracks, or a catalog sample when that endpoint is unavailable.
     pub artist_tracks: usize,
-    /// Why those artist tracks couldn't be read. Optional: it leaves the
+    /// Distinct artists whose bounded sample was attempted in this pass.
+    pub artist_reads: usize,
+    /// Artists deferred or unsuccessful in this refresh, including previously
+    /// cached samples. This is not a count of unexplored discographies.
+    /// Accepted full refreshes continue from the last attempted artist.
+    pub artist_reads_pending: usize,
+    /// Why artist samples remain unread, including the per-refresh budget.
+    /// Optional: it leaves the
     /// read whole and retains previously cached music for unread artists.
     pub artist_tracks_unread: Option<String>,
     /// Reads that failed or reached a budget before completion, and why.
@@ -144,6 +154,11 @@ pub struct Taste {
     /// read meant to bring and didn't: more of them than one sync reads, or
     /// their read failed. The sync keeps what it cached for them before.
     pub artists_unread: Vec<String>,
+    /// Stable identities of unread artists, for exact lead-artist retention.
+    /// Names above remain a fallback for guest credits and legacy rows.
+    pub(crate) artists_unread_ids: Vec<String>,
+    /// Last attempted artist, published atomically with this full library.
+    pub(crate) artist_cursor: Option<String>,
     track_pm: HashMap<String, u32>,
     artist_pm: HashMap<String, u32>,
     /// The genres the names of the owner's playlists state ("Late Night
@@ -225,7 +240,7 @@ pub async fn read_taste<S: Store + ?Sized>(
     saved: &[LibraryItem],
     now: i64,
 ) -> (Taste, TasteRead) {
-    read_taste_for_owner(session, cx, store, saved, now, None).await
+    read_taste_for_owner(session, cx, store, saved, now, None, None).await
 }
 
 /// A full sync has already proved its account before reading saved music.
@@ -238,6 +253,7 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
     saved: &[LibraryItem],
     now: i64,
     owner: Option<&SpotifyLibraryOwner>,
+    artist_base: Option<&str>,
 ) -> (Taste, TasteRead) {
     let mut taste = Taste::default();
     let mut read = TasteRead {
@@ -247,6 +263,17 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
             ..PlaylistContinuation::default()
         },
         ..TasteRead::default()
+    };
+    taste.artist_cursor = match artist_scan::cursor(artist_base) {
+        Ok(cursor) => cursor,
+        Err(error) => {
+            // The cursor is scheduling advice, never authority to retire music.
+            // Restarting repairs it only with an accepted full publication;
+            // incomplete taste keeps every previously accepted candidate.
+            read.failed
+                .push(("artist discovery progress".into(), error.to_string()));
+            None
+        }
     };
     let granted =
         |scope: &str| TASTE_SCOPES.contains(&scope) && !read.missing_scopes.contains(&scope);
@@ -301,50 +328,53 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
         reader.playlist_taste(store, &mut taste, now).await;
     }
     let covered = covered_artists(saved, &taste.tracks);
-    // An artist followed and among the top artists is one artist.
-    let mut seen = HashSet::new();
-    let unsaved: Vec<&Artist> = artists
+    // Artist IDs distinguish namesakes and survive renamed profiles.
+    let unsaved = artists
         .iter()
-        .filter(|a| a.id.as_ref().is_some_and(|id| seen.insert(id.clone())))
-        .filter(|a| !covered.contains(&a.name.to_lowercase()))
+        .filter(|artist| artist.id.as_ref().is_some_and(|id| !covered.contains(id)))
         .collect();
-    let (today, later) = todays_artists(unsaved, now);
-    let (tracks, unread) = reader.artist_tracks(&today).await;
-    for item in tracks {
+    let (selected, later) = artist_scan::select(unsaved, taste.artist_cursor.as_deref());
+    let samples = reader.artist_tracks(&selected).await;
+    for item in samples.tracks {
         // Weighed as the artist's: `Taste::weigh` multiplies in ARTIST_PM.
         taste.track(item, 1000);
     }
-    taste.artists_unread = unread;
-    taste
-        .artists_unread
-        .extend(later.iter().map(|artist| artist.name.to_lowercase()));
+    if samples.last_attempted.is_some() {
+        taste.artist_cursor = samples.last_attempted;
+    }
+    taste.artists_unread = samples.unread_names;
+    taste.artists_unread_ids = samples.unread_ids;
+    for artist in later {
+        taste.artists_unread.push(artist.name.to_lowercase());
+        if let Some(id) = &artist.id {
+            taste.artists_unread_ids.push(id.clone());
+        }
+    }
+    reader.read.artist_reads_pending = taste.artists_unread_ids.len();
+    if reader.read.artist_reads_pending > 0 {
+        let next = format!(
+            "{} artist samples deferred; run dj sync again to continue after the last attempted artist",
+            reader.read.artist_reads_pending
+        );
+        match &mut reader.read.artist_tracks_unread {
+            Some(reason) => {
+                reason.push_str("; ");
+                reason.push_str(&next);
+            }
+            reason => *reason = Some(next),
+        }
+    }
     (taste, read)
 }
 
-/// The artists whose top tracks this sync reads, and the rest: at most
-/// [`MAX_ARTIST_READS`], a different stretch of them each day when there are
-/// more, so each gets its turn.
-fn todays_artists(mut unsaved: Vec<&Artist>, now: i64) -> (Vec<&Artist>, Vec<&Artist>) {
-    if unsaved.len() > MAX_ARTIST_READS {
-        let stretches = unsaved.len().div_ceil(MAX_ARTIST_READS);
-        let day = usize::try_from(now.div_euclid(86_400)).unwrap_or(0);
-        unsaved.rotate_left(day % stretches * MAX_ARTIST_READS);
-    }
-    let later = unsaved.split_off(unsaved.len().min(MAX_ARTIST_READS));
-    (unsaved, later)
-}
-
-/// The lead artists (lowercased names) the pool already has music by:
-/// `saved`, the library as this sync read it, and `tracks` (this read's top
-/// tracks, recent plays and playlist tracks). Tracks cached only as taste
-/// don't count, so an artist known only from their top tracks is read again
-/// rather than retired.
+/// Lead-artist IDs already represented by this read's saved music or direct
+/// taste tracks. Names are not identity: two Spotify artists can share one.
+/// Cached artist samples do not suppress their own later refreshes.
 fn covered_artists(saved: &[LibraryItem], tracks: &[LibraryItem]) -> HashSet<String> {
     saved
         .iter()
         .chain(tracks)
-        .filter_map(|t| t.artists.first())
-        .map(|a| a.to_lowercase())
+        .filter_map(|track| track.artist_id.clone())
         .collect()
 }
 
@@ -731,45 +761,21 @@ mod tests {
     }
 
     #[test]
-    fn more_artists_than_a_sync_reads_take_turns_by_day() {
-        let all: Vec<Artist> = (0..120)
-            .map(|n| Artist {
-                id: Some(format!("a{n}")),
-                name: format!("Artist {n}"),
-                genres: Vec::new(),
-            })
-            .collect();
-        let read_on = |day: i64| {
-            let (today, later) = todays_artists(all.iter().collect(), day * 86_400);
-            assert_eq!((today.len(), later.len()), (MAX_ARTIST_READS, 70));
-            today
-                .iter()
-                .filter_map(|a| a.id.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(read_on(0)[0], "a0");
-        assert_eq!(read_on(1)[0], "a50");
-        let third = read_on(2);
-        assert_eq!(
-            (third[0].as_str(), third[20].as_str()),
-            ("a100", "a0"),
-            "the last stretch wraps round"
-        );
-        assert_eq!(read_on(3)[0], "a0", "then from the start again");
-        // Few enough are all read, whatever the day.
-        let (today, later) = todays_artists(all.iter().take(3).collect(), 5 * 86_400);
-        assert_eq!((today.len(), later.len()), (3, 0));
-
-        // An artist the library has music by needs no top tracks.
+    fn covered_artists_use_ids_instead_of_names_or_guest_credits() {
         let saved = [LibraryItem {
             artists: vec!["Lantern Coast".into(), "A Guest".into()],
+            artist_id: Some("lead1".into()),
             ..LibraryItem::default()
         }];
-        let covered = covered_artists(&saved, &[]);
-        assert!(
-            covered.contains("lantern coast") && !covered.contains("a guest"),
-            "{covered:?}"
-        );
+        let taste = [LibraryItem {
+            artists: vec!["Lantern Coast".into()],
+            artist_id: Some("namesake2".into()),
+            ..LibraryItem::default()
+        }];
+        let covered = covered_artists(&saved, &taste);
+        assert_eq!(covered.len(), 2);
+        assert!(covered.contains("lead1") && covered.contains("namesake2"));
+        assert!(!covered.contains("lantern coast") && !covered.contains("a guest"));
     }
 
     #[test]

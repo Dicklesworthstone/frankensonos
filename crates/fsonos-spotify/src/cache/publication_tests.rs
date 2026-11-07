@@ -180,7 +180,8 @@ fn a_full_publication_invalidates_an_older_continuation_without_consuming_its_ne
             "full",
             &[song(9)],
             &mut Taste::default(),
-            directory.as_deref()
+            directory.as_deref(),
+            None,
         )
         .unwrap()
         .is_some()
@@ -235,7 +236,8 @@ fn essential_publication_requires_the_exact_read_and_playlist_directory() {
                 proof,
                 &[song(3)],
                 &mut Taste::default(),
-                directory.as_deref()
+                directory.as_deref(),
+                None,
             )
             .unwrap()
             .is_none()
@@ -257,7 +259,8 @@ fn essential_publication_requires_the_exact_read_and_playlist_directory() {
             "current-read",
             &[song(3)],
             &mut Taste::default(),
-            current.as_deref()
+            current.as_deref(),
+            None,
         )
         .unwrap()
         .is_some()

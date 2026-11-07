@@ -262,11 +262,20 @@ async fn sync_library_observed<S: Store + ?Sized>(
     // A failed or missing playlist read still needs to notice another pass's
     // publication after this full pass snapshots retained taste candidates.
     let playlist_base = store.spotify_playlist_directory(&receipt)?;
+    let artist_base = store.spotify_artist_discovery(&receipt)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    let (mut taste, mut read) =
-        read_taste_for_owner(session, cx, store, &items, now, Some(&receipt)).await;
+    let (mut taste, mut read) = read_taste_for_owner(
+        session,
+        cx,
+        store,
+        &items,
+        now,
+        Some(&receipt),
+        artist_base.as_deref(),
+    )
+    .await;
     items.extend(taste.tracks.iter().cloned());
     if read.incomplete() {
         // An unfinished read keeps what the last one found: every track's
@@ -292,16 +301,28 @@ async fn sync_library_observed<S: Store + ?Sized>(
         // credit: catalog samples can contain shared releases. Preserve the
         // actual lead artist and all other metadata in the cached item.
         let cached = store.library()?;
+        let unread_ids: HashSet<&str> = taste
+            .artists_unread_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let unread_names: HashSet<&str> = taste.artists_unread.iter().map(String::as_str).collect();
         items.extend(
             cached
                 .iter()
                 .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
                 .filter(|e| {
-                    e.track.artist.as_deref().is_some_and(|joined| {
-                        split_artists(joined)
-                            .iter()
-                            .any(|name| taste.artists_unread.contains(&name.to_lowercase()))
-                    })
+                    e.artist_id
+                        .as_deref()
+                        .is_some_and(|id| unread_ids.contains(id))
+                        || e.track.artist.as_deref().is_some_and(|joined| {
+                            split_artists(joined)
+                                .iter()
+                                // A known lead ID takes precedence over its
+                                // name. Guest IDs are not stored yet.
+                                .skip(usize::from(e.artist_id.is_some()))
+                                .any(|name| unread_names.contains(name.to_lowercase().as_str()))
+                        })
                 })
                 .map(from_entry),
         );
@@ -319,6 +340,7 @@ async fn sync_library_observed<S: Store + ?Sized>(
         &items,
         &mut taste,
         playlist_base.as_deref(),
+        artist_base.as_deref(),
     )?
     else {
         if store
@@ -421,6 +443,7 @@ fn publish_saved_library<S: Store + ?Sized>(
     items: &[LibraryItem],
     taste: &mut Taste,
     playlist_base: Option<&str>,
+    artist_base: Option<&str>,
 ) -> Result<Option<LibrarySync>, SpotifyError> {
     let prepared = prepare_library_publication(store, items, taste)?;
     let (fence, directory) = crate::taste::prepare_playlist_publication(
@@ -429,6 +452,8 @@ fn publish_saved_library<S: Store + ?Sized>(
         playlist_base,
         &taste.playlist_contents,
     )?;
+    let artist_fence =
+        crate::taste::prepare_artist_publication(artist_base, taste.artist_cursor.as_deref())?;
     if store.publish_spotify_library_from_progress(
         owner,
         proof,
@@ -437,6 +462,7 @@ fn publish_saved_library<S: Store + ?Sized>(
         &prepared.contents,
         taste.heard.as_deref(),
         Some(&fence),
+        Some(&artist_fence),
     )? {
         taste.directory = directory;
         Ok(Some(prepared.report))

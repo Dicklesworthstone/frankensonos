@@ -13,42 +13,53 @@ use std::collections::HashSet;
 const CATALOG_ALBUM_LIMIT: u32 = 10;
 const MAX_CATALOG_ALBUMS: usize = 3;
 
+#[derive(Default)]
+pub(super) struct ArtistSamples {
+    pub(super) tracks: Vec<LibraryItem>,
+    pub(super) unread_names: Vec<String>,
+    pub(super) unread_ids: Vec<String>,
+    pub(super) last_attempted: Option<String>,
+}
+
+impl ArtistSamples {
+    fn unread(&mut self, artists: &[&Artist]) {
+        for artist in artists {
+            self.unread_names.push(artist.name.to_lowercase());
+            if let Some(id) = &artist.id {
+                self.unread_ids.push(id.clone());
+            }
+        }
+    }
+}
+
 impl Reader<'_> {
     /// Up to three distinct playable tracks per artist. A 403/404 from the
     /// optional top-tracks endpoint selects the catalog path for the rest
     /// of this pass, avoiding a refused request for every followed artist.
     /// Failed artists remain unread so the sync retains their cached tracks.
-    pub(super) async fn artist_tracks(
-        &mut self,
-        artists: &[&Artist],
-    ) -> (Vec<LibraryItem>, Vec<String>) {
-        let mut tracks = Vec::new();
-        let mut unread = Vec::new();
+    /// Only attempted artists advance the proposed cursor; publication makes
+    /// that scheduling change durable together with the accepted candidates.
+    pub(super) async fn artist_tracks(&mut self, artists: &[&Artist]) -> ArtistSamples {
+        let mut samples = ArtistSamples::default();
         let mut catalog = false;
         for (index, artist) in artists.iter().enumerate() {
             let Some(id) = artist.id.as_deref() else {
                 continue;
             };
             if self.read.halted.is_some() {
-                unread.extend(
-                    artists[index..]
-                        .iter()
-                        .map(|artist| artist.name.to_lowercase()),
-                );
+                samples.unread(&artists[index..]);
                 break;
             }
+            samples.last_attempted = Some(id.to_owned());
+            self.read.artist_reads += 1;
             match self.artist_sample(id, &mut catalog).await {
                 Ok(sample) => {
                     self.read.artist_tracks += sample.len();
-                    tracks.extend(sample);
+                    samples.tracks.extend(sample);
                 }
                 Err(error) if halts(&error) && !endpoints_own(&error) => {
                     self.read.halted = Some(format!("artist tracks: {error}"));
-                    unread.extend(
-                        artists[index..]
-                            .iter()
-                            .map(|artist| artist.name.to_lowercase()),
-                    );
+                    samples.unread(&artists[index..]);
                     break;
                 }
                 Err(error) => {
@@ -60,20 +71,16 @@ impl Reader<'_> {
                         SpotifyError::Api { status: 404, .. } | SpotifyError::Decode(_)
                     ) {
                         // One unavailable or empty artist must not starve the
-                        // later artists on every daily pass.
-                        unread.push(artist.name.to_lowercase());
+                        // later artists on every full refresh.
+                        samples.unread(&artists[index..=index]);
                         continue;
                     }
-                    unread.extend(
-                        artists[index..]
-                            .iter()
-                            .map(|artist| artist.name.to_lowercase()),
-                    );
+                    samples.unread(&artists[index..]);
                     break;
                 }
             }
         }
-        (tracks, unread)
+        samples
     }
 
     async fn artist_sample(
@@ -87,14 +94,23 @@ impl Reader<'_> {
                 Ok(body) => {
                     let top: ArtistTopTracks = decode(&body, "artist top tracks")?;
                     let mut seen = HashSet::new();
-                    return Ok(top
+                    let tracks: Vec<_> = top
                         .tracks
                         .iter()
                         .filter_map(|track| track.library_item(Origin::Taste, None))
                         .filter(valid_taste_track)
                         .filter(|track| seen.insert(track.source_uri.clone()))
                         .take(ARTIST_TRACKS)
-                        .collect());
+                        .collect();
+                    if tracks.is_empty() {
+                        // A bounded sample with no playable music cannot
+                        // prove that this artist's accepted music disappeared.
+                        // Retain it and let later artists have their turn.
+                        return Err(SpotifyError::Decode(
+                            "no playable tracks in the artist top-track sample".into(),
+                        ));
+                    }
+                    return Ok(tracks);
                 }
                 Err(SpotifyError::Api {
                     status: 403 | 404, ..

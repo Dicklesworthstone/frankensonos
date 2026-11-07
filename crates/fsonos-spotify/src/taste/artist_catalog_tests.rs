@@ -236,10 +236,12 @@ fn top_tracks_stay_preferred_when_available_and_fill_three_playable_distinct_slo
             owner: None,
             receipt: None,
         };
-        let (tracks, unread) = reader.artist_tracks(&[&artist]).await;
-        assert_eq!(tracks.len(), 3);
-        assert!(unread.is_empty());
-        assert_eq!(tracks[2].source_uri, "spotify:track:TestTrack3");
+        let samples = reader.artist_tracks(&[&artist]).await;
+        assert_eq!(samples.tracks.len(), 3);
+        assert!(samples.unread_names.is_empty() && samples.unread_ids.is_empty());
+        assert_eq!(samples.last_attempted.as_deref(), Some(ARTIST));
+        assert_eq!(samples.tracks[2].source_uri, "spotify:track:TestTrack3");
+        assert_eq!(read.artist_reads, 1);
         assert!(read.artist_tracks_unread.is_none());
     });
     assert_eq!(server.calls("/v1/").len(), 1);

@@ -10,9 +10,9 @@
 use super::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
     CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction,
-    PlayName, PlayRecord, SpotifyLibraryOwner, SpotifyPlaylistPublication,
-    SpotifyPlaylistPublicationFence, SpotifyPlaylistPublicationItem, Store, StoreError,
-    StoredScene, StoredSchedule,
+    PlayName, PlayRecord, SpotifyArtistDiscoveryFence, SpotifyLibraryOwner,
+    SpotifyPlaylistPublication, SpotifyPlaylistPublicationFence, SpotifyPlaylistPublicationItem,
+    Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -255,6 +255,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "bounded followed-artist directories resume across restarts",
         sql: "
         CREATE TABLE spotify_followed_directories (
+            owner_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+            progress TEXT NOT NULL);
+    ",
+    },
+    Migration {
+        version: 23,
+        name: "fair artist discovery advances with accepted library publications",
+        sql: "
+        CREATE TABLE spotify_artist_discovery (
             owner_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
             progress TEXT NOT NULL);
     ",
@@ -814,6 +823,42 @@ fn write_spotify_library(
     Ok(())
 }
 
+fn read_artist_discovery(
+    connection: &AsyncConnection,
+    owner: &SpotifyLibraryOwner,
+) -> Result<Option<String>, FrankenError> {
+    let generation = i64::try_from(owner.generation)
+        .map_err(|error| FrankenError::Internal(error.to_string()))?;
+    connection
+        .query_with_params_sync(
+            "SELECT progress FROM spotify_artist_discovery WHERE owner_id = ?1 AND generation = ?2",
+            &[owner.owner_id.as_str().into(), generation.into()],
+        )?
+        .first()
+        .map(|row| text(row, 0).map_err(|error| FrankenError::Internal(error.to_string())))
+        .transpose()
+}
+
+fn write_artist_discovery(
+    connection: &AsyncConnection,
+    owner: &SpotifyLibraryOwner,
+    progress: &str,
+) -> Result<(), FrankenError> {
+    let generation = i64::try_from(owner.generation)
+        .map_err(|error| FrankenError::Internal(error.to_string()))?;
+    connection
+        .execute_with_params_sync(
+            "INSERT OR REPLACE INTO spotify_artist_discovery (owner_id, generation, progress) \
+         VALUES (?1, ?2, ?3)",
+            &[
+                owner.owner_id.as_str().into(),
+                generation.into(),
+                progress.into(),
+            ],
+        )
+        .map(drop)
+}
+
 fn read_playlist_progress(
     connection: &AsyncConnection,
     owner: &SpotifyLibraryOwner,
@@ -1100,6 +1145,10 @@ fn adopt_spotify_owner(
         "DELETE FROM spotify_followed_directories WHERE owner_id = ?1",
         &[owner_id.into()],
     )?;
+    connection.execute_with_params_sync(
+        "DELETE FROM spotify_artist_discovery WHERE owner_id = ?1",
+        &[owner_id.into()],
+    )?;
     connection.execute_sync("DELETE FROM spotify_library_progress")?;
     connection.execute_with_params_sync(
         "INSERT OR REPLACE INTO spotify_library_owner (singleton, owner_id, generation) \
@@ -1371,6 +1420,21 @@ impl Store for SqliteStore {
         retrying(|| read_spotify_owner(&self.conn)).map_err(engine)
     }
 
+    fn spotify_artist_discovery(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError> {
+        super::validate_spotify_artist_discovery(owner, None, None)?;
+        let progress = self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != Some(owner) {
+                return Ok(None);
+            }
+            read_artist_discovery(connection, owner)
+        })?;
+        super::validate_spotify_artist_discovery(owner, None, progress.as_deref())?;
+        Ok(progress)
+    }
+
     fn spotify_library_progress(
         &self,
         incoming_id: &str,
@@ -1461,8 +1525,16 @@ impl Store for SqliteStore {
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
         playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
+        artist_fence: Option<&SpotifyArtistDiscoveryFence>,
     ) -> Result<bool, StoreError> {
         super::validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
+        if let Some(fence) = artist_fence {
+            super::validate_spotify_artist_discovery(
+                owner,
+                fence.expected.as_deref(),
+                Some(&fence.progress),
+            )?;
+        }
         if let Some(fence) = playlist_fence {
             super::validate_spotify_playlist_evidence(
                 owner,
@@ -1477,6 +1549,11 @@ impl Store for SqliteStore {
                 || read_spotify_library_progress(connection, &owner.owner_id, Some(owner))?
                     .as_deref()
                     != Some(expected)
+            {
+                return Ok(false);
+            }
+            if let Some(fence) = artist_fence
+                && read_artist_discovery(connection, owner)?.as_deref() != fence.expected.as_deref()
             {
                 return Ok(false);
             }
@@ -1498,6 +1575,9 @@ impl Store for SqliteStore {
                     fence.directory.as_deref(),
                     &fence.observations,
                 )?;
+            }
+            if let Some(fence) = artist_fence {
+                write_artist_discovery(connection, owner, &fence.progress)?;
             }
             connection.execute_with_params_sync(
                 "DELETE FROM spotify_library_progress WHERE incoming_id = ?1",
@@ -2618,6 +2698,84 @@ mod tests {
     }
 
     #[test]
+    fn artist_rotation_migration_preserves_followed_directory_and_library_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("artist-discovery-upgrade.db");
+        let mut old =
+            SqliteStore::open_migrated(&file.to_string_lossy(), &MIGRATIONS[..22]).unwrap();
+        old.execute(
+            "INSERT INTO spotify_library_owner (singleton, owner_id, generation) VALUES (1, ?1, 7)",
+            &["existing-owner".into()],
+        )
+        .unwrap();
+        let owner = old.spotify_library_owner().unwrap().unwrap();
+        assert!(
+            old.save_spotify_followed_directory(&owner, None, "followed proof")
+                .unwrap()
+        );
+        assert!(
+            old.save_spotify_library_progress(
+                "existing-owner",
+                Some(&owner),
+                None,
+                "complete saved read",
+            )
+            .unwrap()
+        );
+        old.close().unwrap();
+
+        let mut store = SqliteStore::open(&file).unwrap();
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&23));
+        assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
+        assert_eq!(
+            store.spotify_followed_directory(&owner).unwrap().as_deref(),
+            Some("followed proof")
+        );
+        assert_eq!(store.spotify_artist_discovery(&owner).unwrap(), None);
+        let cursor = SpotifyArtistDiscoveryFence {
+            expected: None,
+            progress: "artist050".into(),
+        };
+        assert!(
+            store
+                .publish_spotify_library_from_progress(
+                    &owner,
+                    "complete saved read",
+                    &[],
+                    None,
+                    &[],
+                    None,
+                    None,
+                    Some(&cursor),
+                )
+                .unwrap()
+        );
+        store.close().unwrap();
+
+        let reopened = SqliteStore::open(&file).unwrap();
+        assert_eq!(
+            reopened
+                .spotify_artist_discovery(&owner)
+                .unwrap()
+                .as_deref(),
+            Some("artist050")
+        );
+        assert_eq!(
+            reopened
+                .spotify_followed_directory(&owner)
+                .unwrap()
+                .as_deref(),
+            Some("followed proof")
+        );
+        assert_eq!(
+            reopened
+                .spotify_library_progress("existing-owner", Some(&owner))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn followed_directory_migration_preserves_existing_personal_checkpoints() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("followed-directory-upgrade.db");
@@ -2657,7 +2815,7 @@ mod tests {
         old.close().unwrap();
 
         let mut store = SqliteStore::open(&file).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&22));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&23));
         assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
         assert_eq!(store.library().unwrap(), library);
         assert_eq!(
@@ -2890,7 +3048,7 @@ mod tests {
         legacy.close().unwrap();
 
         let mut store = SqliteStore::open(&path).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&22));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&23));
         let mut entry = store.library().unwrap().pop().unwrap();
         assert_eq!(entry.artist_id, None, "a name does not prove an artist ID");
         assert_eq!(entry.origin, LibraryOrigin::Both);
@@ -2930,7 +3088,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
             ]
         );
         let lib = store.library().unwrap();
@@ -2973,7 +3131,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
             ]
         );
         let lib = store.library().unwrap();
@@ -3032,7 +3190,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23
             ]
         );
         let lib = store.library().unwrap();
