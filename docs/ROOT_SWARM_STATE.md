@@ -1966,3 +1966,25 @@ blind-spot probe suggestion (run the child with `setsid` + redirect all
 stdio to /dev/null + `nohup` — eliminating the fd/env inheritance issues
 entirely) is the last untested variant. After that: device-side visibility
 is genuinely required.
+
+### 2026-11-06 (session 10, final close) — the exec-shape matrix complete
+
+The setsid+nohup+stdio-detach variant fired: same pattern (200/200 →
+93s watchdog reboot → no 2323). The exec-shape matrix is now COMPLETE:
+direct, `;`-prefix, beacon-first, persistent-loop, file-write, setsid+detach
+— 6 shapes × 2 architectures, every fire 200/200, every post-reboot
+observable negative. The conclusion is firm: **the notify thread's
+system() child cannot produce externally-visible effects in the
+post-overflow state** — the root cause is inside the child's exec
+environment and requires the child's stderr (serial) or the upgrade.log
+(qemu-ppc S1 daemon repro — the next offline step, using the session-5
+S2 recipe on the PPC daemon) to read.
+
+EVERYTHING ELSE IS DONE: the no-DNS per-unit delivery (proven to fetch),
+the DNS-flip fallback (staged+persistent), the offline verdict harness
+(both architectures), the xnf decode (composer+gate+hash located), the
+Duel artifacts (2 plans, 2 cross-scores, consensus ranked). The next
+session starts with: (1) the PPC daemon under qemu-ppc (the S2 recipe
+applies), (2) the devmode statement (owner portal action), (3) the
+encrypted-type-3 install verdict via the chroot with the hw-set faked
+properly (an anacapad-IPC fake server instead of the real one).
