@@ -68,7 +68,7 @@ test('dashboard routes embed the real assets and retain the existing browser gua
   const mount = fs.readFileSync(path.join(root, 'http/remote.rs'), 'utf8');
   const module = fs.readFileSync(path.join(root, 'http/remote/dashboard.rs'), 'utf8');
   assert.match(mount, /routes\.extend\(dashboard::routes\(cx\)\)/);
-  for (const name of ['dashboard.html', 'dashboard.css', 'dashboard-core.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'dashboard.js']) {
+  for (const name of ['dashboard.html', 'dashboard.css', 'dashboard-core.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'announcements.js', 'dashboard-announcements.js', 'dashboard-announcements.css', 'dashboard.js']) {
     assert.ok(module.includes(name), name); assert.ok(fs.statSync(path.join(root, 'remote', name)).size > 0);
   }
   assert.match(module, /asset\(content_type, text\)/); assert.match(module, /microphone=\(self\)/);
@@ -78,7 +78,7 @@ test('production assets have no inline scripts, external dependencies or unsafe 
   const root = path.join(__dirname, '../crates/fsonos-api/src/remote');
   const html = fs.readFileSync(path.join(root, 'dashboard.html'), 'utf8');
   assert.doesNotMatch(html, /<script(?![^>]*src=)[^>]*>|on(?:click|load|error)=/i);
-  for (const file of ['dashboard.js', 'dashboard-core.js', 'dashboard-visualizer.js', 'dashboard-audio.js']) {
+  for (const file of ['dashboard.js', 'dashboard-core.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'announcements.js', 'dashboard-announcements.js']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8');
     assert.doesNotMatch(source.replaceAll('http://www.w3.org/2000/svg', ''), /innerHTML|outerHTML|insertAdjacentHTML|eval\(|https?:\/\//);
   }

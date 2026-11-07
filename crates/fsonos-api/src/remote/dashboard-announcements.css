@@ -1,0 +1,24 @@
+/* Native announcement review and restoration reports. */
+.announcements-dialog{width:min(680px,calc(100vw - 32px));max-height:calc(100dvh - 48px);overflow-y:auto}
+.announcement-context{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:18px}
+.announcement-context p{flex:1;min-width:180px}.announcement-context button{min-height:44px;flex:none}
+.announcement-room-list{border:1px solid var(--line-strong);border-radius:10px;padding:12px 16px;margin:14px 0 20px}
+.announcement-room-list legend{font-size:12px;padding:0 6px;color:var(--muted)}
+#announcement-rooms{display:grid;gap:6px}
+#announcement-rooms label{display:flex;align-items:flex-start;gap:12px;min-height:44px;padding:9px 0;font-size:13px;line-height:1.7}
+#announcement-rooms input{width:18px;height:18px;flex:none;margin-top:3px;accent-color:var(--accent)}
+#announcement-rooms span{min-width:0;overflow-wrap:anywhere}
+.announcement-fields{display:grid;grid-template-columns:minmax(0,2fr) minmax(100px,1fr);gap:16px}
+.announcement-field,.announcement-fields label{display:grid;gap:8px;font-size:12px;margin:14px 0}
+.announcements-dialog input:not([type=checkbox]),.announcements-dialog select,.announcements-dialog textarea{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--raised);color:inherit;border:1px solid var(--line-strong);border-radius:8px;font:inherit;font-size:14px}
+.announcements-dialog textarea{resize:vertical;line-height:1.6;max-height:40vh}
+.announcements-dialog input[type=file]{font-size:12px;overflow:hidden}
+#announcement-review{min-height:44px;margin-top:20px}
+.announcement-preview,.announcement-result{background:var(--raised);border:1px solid var(--line-strong);border-radius:11px;padding:18px;margin-top:20px;overflow-wrap:anywhere}
+.announcement-preview{border-color:var(--accent)}
+.announcement-preview h3,.announcement-result h3{font-size:17px;line-height:1.5;margin:0 0 12px}
+.announcement-preview h4,.announcement-result h4{font-size:13px;line-height:1.7;margin:16px 0 8px}
+.announcement-preview p,.announcement-result p{font-size:12px;line-height:1.75;color:var(--muted);margin:10px 0}
+#announcement-preview-source{white-space:pre-wrap;color:inherit}
+.announcement-result section{border-top:1px solid var(--line);margin-top:12px}
+@media(max-width:600px){.announcements-dialog{padding:20px}.announcement-fields{grid-template-columns:1fr}.announcement-preview,.announcement-result{padding:14px}.announcement-context p{flex-basis:100%}.announcement-context button{margin-left:auto}}

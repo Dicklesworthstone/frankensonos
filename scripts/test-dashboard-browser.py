@@ -12,7 +12,7 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'dashboard.js']
+SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'announcements.js', 'dashboard-announcements.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
   writes: [], calls: [], feeds: [], savedScenes: [], routines: [], nextRoutine:100, offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
@@ -91,6 +91,13 @@ window.fetch=async(url,init)=>{
       if(url.endsWith('/remove'))f.routines.splice(index,1);
       else{data.enabled=url.endsWith('/resume');data.next=data.enabled?'2030-06-18T07:30:00+09:00':null;f.routines[index]=data;}
     }
+    if(url==='/announce'){
+      const households=f.zones.map(zone=>({zone,rooms:zone.members.filter(room=>body.rooms.includes(room+'@'+zone.household))}))
+        .filter(group=>group.rooms.length).map(({rooms})=>({lead:rooms[0],rooms,
+          levels:rooms.map(room=>({room,volume:Math.min(body.volume,30)})),outcome:'finished',not_restored:[]}));
+      data={done:'Fixture announcement played; playback restored',clean:!f.announcementPartial,households};
+      if(f.announcementPartial){households[0].outcome='deadline';households[0].not_restored=['Fixture room: grouping unavailable'];}
+    }
     if(url==='/pause')f.states[target]='paused';
     if(url==='/resume')f.states[target]='playing';
     if(url==='/volume'&&body.volume!==undefined){f.levels[body.zone]=body.volume;data={done:'Room volume changed',changed:true,volume:body.volume};}
@@ -128,7 +135,7 @@ def load(page, preview=False):
     if preview: html=html.replace('<body>','<body data-preview="true">')
     html=re.sub(r'<link[^>]+>|<script[^>]+></script>','',html)
     page.set_content(html)
-    for name in ['dashboard.css','dashboard-queue.css']:
+    for name in ['dashboard.css','dashboard-queue.css','dashboard-announcements.css']:
         page.add_style_tag(content=(ROOT/name).read_text())
     page.add_script_tag(content=FIXTURE)
     for name in SCRIPTS: page.add_script_tag(content=(ROOT/name).read_text())
@@ -352,6 +359,37 @@ def main():
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
         page.locator('#close-routines').click()
         checks.append('persistent scene routines, daemon next-run times and exact-ID pause on mobile')
+        before=page.evaluate('fixture.writes.length')
+        page.locator('#open-announcements').click()
+        page.wait_for_selector('#announcement-rooms input')
+        assert page.locator('#announcement-rooms input:checked').count()==0
+        page.locator('#announcement-rooms input').nth(1).check()
+        page.locator('#announcement-rooms input').nth(2).check()
+        page.locator('#announcement-words').fill('A fixture announcement')
+        page.locator('#announcement-volume').fill('25')
+        page.locator('#announcement-review').click()
+        assert 'Kitchen (S2)' in page.locator('#announcement-preview-rooms').inner_text()
+        assert 'Studio (S1)' in page.locator('#announcement-preview-rooms').inner_text()
+        assert page.evaluate('fixture.writes.length')==before
+        page.locator('#announcement-confirm').click()
+        page.wait_for_selector('#announcement-result:not([hidden])')
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/announce','body':{'rooms':['Kitchen@S2','Studio@S1'],'volume':25,'text':'A fixture announcement'}}
+        assert 'Announcement restored' in page.locator('#announcement-result-title').inner_text()
+        page.wait_for_function("!document.getElementById('announcement-read').disabled")
+        page.locator('#announcement-read').click()
+        page.wait_for_function("!document.getElementById('announcement-review').disabled")
+        page.locator('#announcement-source').select_option('chime')
+        page.locator('#announcement-chime').select_option('rise')
+        page.evaluate('fixture.announcementPartial=true')
+        page.locator('#announcement-review').click()
+        page.locator('#announcement-confirm').click()
+        page.wait_for_function("document.getElementById('announcement-result-title').textContent==='Check announcement results'")
+        assert 'Not restored: Fixture room: grouping unavailable' in page.locator('#announcement-result-detail').inner_text()
+        assert page.evaluate('fixture.writes.at(-1).body.chime')=='rise'
+        assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
+        page.locator('#close-announcements').click()
+        page.evaluate('fixture.announcementPartial=false')
+        checks.append('reviewed physical-room announcements, native speech/chime playback and partial restoration on mobile')
         page.locator('#tab-queue').click()
         page.wait_for_function("document.getElementById('queue-status').textContent.includes('120 tracks')")
         page.locator('.queue-finder summary').click()

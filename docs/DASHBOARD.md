@@ -191,6 +191,42 @@ routines cannot clear an uncertain speaker command. Closed or hidden panels,
 expired reviews and changed definitions prevent unsent actions. Preflight is a
 fresh check, not a server-side lock against another client.
 
+### Announcements
+
+**Announcements** beside the house scenes supports spoken messages, built-in
+bell/beep/rise chimes, and a local WAV upload through the native announcement
+service. Speech is generated on the daemon host, with an optional installed voice
+name. The browser does not synthesize speech or read a daemon filesystem path.
+
+Read the physical rooms and select each target explicitly. Same-name rooms in
+different households remain separate, qualified choices; no rooms are selected
+automatically. Review the message or clip, selected rooms, affected groups and
+requested volume before sending. The daemon applies room limits, handles
+temporary grouping and playback, then attempts to restore the original state.
+
+WAVs are checked locally before review: complete RIFF/WAVE, mono or stereo 16-bit
+PCM, one of the daemon's supported sample rates, at most 16 MiB and five minutes.
+The daemon independently validates uploaded bytes. Replacement, source changes,
+closing or hiding the panel cancel a pending local read and discard its bytes.
+The file is uploaded only after confirmation.
+
+Announcements share the dashboard's single command lane with playback and
+routines. Confirmation rereads the house groups; changed groups, stale reviews,
+closed dialogs and hidden pages prevent an unsent action. Once submitted, closing
+the dialog does not cancel or repeat the announcement. The bounded native request
+allows up to 20 minutes for synthesis, waiting, playback and restoration.
+A missing or malformed reply leaves the command uncertain; inspect playback and
+use explicit Refresh before another action.
+
+The last received result remains available when reopening the dialog. It shows
+each native household report, actual applied levels, playback outcome and every
+reported restoration failure. A valid partial result stays visibly incomplete;
+an incomplete room receipt cannot claim successful restoration. Native results
+omit household IDs, so repeated room names are retained without inventing a
+unique household correspondence. A current, active dashboard view refreshes
+playback after an acknowledged announcement; another room read is required
+before a new review.
+
 ### Sleep timers
 
 **Sleep timer** in Up next reads the selected group's current timer on demand.

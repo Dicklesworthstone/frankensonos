@@ -126,6 +126,30 @@ const AnnouncementRemote = (() => {
     return { done: value.done, clean: value.clean, households };
   }
 
+  function proposal(state) {
+    const rooms = state.rooms.filter((r) => state.selected.has(r.target));
+    if (!rooms.length || rooms.length !== state.selected.size) throw new Error('Select at least one room explicitly.');
+    if (!/^[0-9]{1,3}$/.test(state.volume) || Number(state.volume) > 100) throw new Error('Choose a whole-number volume from 0 to 100.');
+    const body = { rooms: Object.freeze(rooms.map((r) => r.target)), volume: Number(state.volume) };
+    if (new TextEncoder().encode(JSON.stringify(body)).length > 15 * 1024) throw new Error('The selected room names exceed the request budget. Select fewer rooms.');
+    let label;
+    if (state.source === 'speech') {
+      const words = state.words.trim(), voice = state.voice.trim();
+      if (!words || [...words].length > 1000 || !unicode(words)) throw new Error('Enter between 1 and 1,000 valid text characters.');
+      if (voice.length > 256 || /[\u0000-\u001F\u007F]/.test(voice) || !unicode(voice)) throw new Error('The voice name is invalid or too long.');
+      body.text = words;
+      if (voice) body.voice = voice;
+      label = words;
+    } else if (state.source === 'chime' && chimes.includes(state.chime)) {
+      body.chime = state.chime;
+      label = `${state.chime} chime`;
+    } else if (state.source === 'wav' && state.wav) {
+      body.wav_base64 = state.wav.encoded;
+      label = `${state.wav.name} — ${state.wav.seconds.toFixed(2)} seconds, ${state.wav.channels} channel(s), ${state.wav.rate} Hz, ${state.wav.size} bytes`;
+    } else throw new Error('Choose speech, a supported chime, or a valid WAV file.');
+    return Object.freeze({ body: Object.freeze(body), rooms: Object.freeze(rooms), label });
+  }
+
   function model({ call, changed = () => {}, completed = () => {}, readFile = readLocalFile }) {
     let disposed = false, epoch = 0, reading = null;
     const state = { open: false, rooms: [], selected: new Set(), source: 'speech', words: '', voice: '',
@@ -232,27 +256,7 @@ const AnnouncementRemote = (() => {
 
     function selection() {
       if (!ready()) throw new Error('Refresh rooms before reviewing another announcement.');
-      const rooms = state.rooms.filter((r) => state.selected.has(r.target));
-      if (!rooms.length || rooms.length !== state.selected.size) throw new Error('Select at least one room explicitly.');
-      if (!/^[0-9]{1,3}$/.test(state.volume) || Number(state.volume) > 100) throw new Error('Choose a whole-number volume from 0 to 100.');
-      const body = { rooms: Object.freeze(rooms.map((r) => r.target)), volume: Number(state.volume) };
-      if (new TextEncoder().encode(JSON.stringify(body)).length > 15 * 1024) throw new Error('The selected room names exceed the request budget. Select fewer rooms.');
-      let label;
-      if (state.source === 'speech') {
-        const words = state.words.trim(), voice = state.voice.trim();
-        if (!words || [...words].length > 1000 || !unicode(words)) throw new Error('Enter between 1 and 1,000 valid text characters.');
-        if (voice.length > 256 || /[\u0000-\u001F\u007F]/.test(voice) || !unicode(voice)) throw new Error('The voice name is invalid or too long.');
-        body.text = words;
-        if (voice) body.voice = voice;
-        label = words;
-      } else if (state.source === 'chime' && chimes.includes(state.chime)) {
-        body.chime = state.chime;
-        label = `${state.chime} chime`;
-      } else if (state.source === 'wav' && state.wav) {
-        body.wav_base64 = state.wav.encoded;
-        label = `${state.wav.name} — ${state.wav.seconds.toFixed(2)} seconds, ${state.wav.channels} channel(s), ${state.wav.rate} Hz, ${state.wav.size} bytes`;
-      } else throw new Error('Choose speech, a supported chime, or a valid WAV file.');
-      return Object.freeze({ body: Object.freeze(body), rooms: Object.freeze(rooms), label });
+      return proposal(state);
     }
 
     function review() {
@@ -446,11 +450,11 @@ const AnnouncementRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { routes, model, panel, wavInfo, MAX_WAV_BYTES };
+  return { routes, model, panel, proposal, roomsOf, reportOf, chimes, wavInfo, wavBase64, readLocalFile, MAX_WAV_BYTES };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = AnnouncementRemote;
-else {
+else if (typeof ROUTES !== 'undefined') {
   Object.assign(ROUTES, AnnouncementRemote.routes);
   const host = document.getElementById('households');
   if (host) host.before(AnnouncementRemote.panel({ call, el,

@@ -86,7 +86,7 @@
   </div>
   <div class="lower-grid">
 
-    <section id="scene-section" class="scene-section" aria-labelledby="scenes-title"><header class="section-heading"><div><span class="eyebrow">A DIFFERENT SOUND FOR EVERY MOMENT</span><h2 id="scenes-title">One scene. Your whole house.</h2></div><div class="scene-heading-actions"><button id="open-capture-scene" class="outline-button" type="button" aria-haspopup="dialog" aria-controls="capture-scene-dialog" aria-expanded="false" disabled>Save current house</button><button id="open-routines" class="text-button" type="button" aria-haspopup="dialog" aria-controls="routines-dialog" aria-expanded="false">Routines</button><a href="/" class="text-button" aria-label="Manage house scenes">Manage ↗</a></div></header><div id="scenes" class="scene-grid"></div><p id="catalog-error" class="small-note" role="status"></p><div id="scene-result" class="scene-result" role="status"></div></section>
+    <section id="scene-section" class="scene-section" aria-labelledby="scenes-title"><header class="section-heading"><div><span class="eyebrow">A DIFFERENT SOUND FOR EVERY MOMENT</span><h2 id="scenes-title">One scene. Your whole house.</h2></div><div class="scene-heading-actions"><button id="open-capture-scene" class="outline-button" type="button" aria-haspopup="dialog" aria-controls="capture-scene-dialog" aria-expanded="false" disabled>Save current house</button><button id="open-routines" class="text-button" type="button" aria-haspopup="dialog" aria-controls="routines-dialog" aria-expanded="false">Routines</button><button id="open-announcements" class="text-button" type="button" aria-haspopup="dialog" aria-controls="announcements-dialog" aria-expanded="false" disabled>Announcements</button><a href="/" class="text-button" aria-label="Manage house scenes">Manage ↗</a></div></header><div id="scenes" class="scene-grid"></div><p id="catalog-error" class="small-note" role="status"></p><div id="scene-result" class="scene-result" role="status"></div></section>
   </div>
   <section class="recent-section" aria-labelledby="history-title"><header class="section-heading"><div><span class="eyebrow">WORTH ANOTHER LISTEN</span><h2 id="history-title">In recent rotation</h2></div><button id="history-refresh" class="text-button">Refresh history <svg><use href="#i-refresh"/></svg></button></header><div id="history" class="history-grid"></div></section>
   <footer class="page-footer"><span><svg><use href="#i-shield"/></svg>Your speakers. Your rules. Your network.</span><a href="/">Open full remote ↗</a></footer>
@@ -210,6 +210,37 @@
   <p id="routines-message" class="sleep-message" role="status"></p>
   <div id="routines-body"></div>
   <p class="small-note">Runs missed by more than ten minutes are skipped. Pausing or removing a routine does not stop a run already in progress. The creator’s permissions and current house policy still apply.</p>
+</dialog>
+<dialog id="announcements-dialog" class="review-dialog announcements-dialog" aria-labelledby="announcements-title" aria-describedby="announcements-description">
+  <header><span class="eyebrow">A MESSAGE FOR YOUR ROOMS</span><button id="close-announcements" class="icon-button" type="button" aria-label="Close announcements"><svg><use href="#i-close"/></svg></button></header>
+  <h2 id="announcements-title">Let the house know.</h2>
+  <p id="announcements-description" class="small-note">Speak a message, play a chime, or upload a WAV. The house temporarily changes playback and grouping, then attempts to restore them.</p>
+  <div class="announcement-context"><p id="announcement-context" class="small-note"></p><button id="announcement-read" class="text-button" type="button" disabled>Read rooms</button></div>
+  <fieldset class="announcement-room-list"><legend>Choose physical rooms</legend><div id="announcement-rooms"></div></fieldset>
+  <div class="announcement-fields">
+    <label for="announcement-source">What to play<select id="announcement-source"><option value="speech">Speak a message</option><option value="chime">Play a chime</option><option value="wav">Upload a WAV</option></select></label>
+    <label for="announcement-volume">Requested volume<input id="announcement-volume" type="number" min="0" max="100" step="1" value="35" inputmode="numeric"></label>
+  </div>
+  <div id="announcement-speech">
+    <label class="announcement-field" for="announcement-words">Message<textarea id="announcement-words" rows="4" maxlength="2000" placeholder="Dinner is ready…" aria-describedby="announcement-speech-help"></textarea></label>
+    <p id="announcement-speech-help" class="small-note">Up to 1,000 characters. Speech is generated on the house computer.</p>
+    <label class="announcement-field" for="announcement-voice">Voice name, optional<input id="announcement-voice" type="text" maxlength="256" autocomplete="off" placeholder="Use the house default"></label>
+  </div>
+  <div id="announcement-chimes" hidden><label class="announcement-field" for="announcement-chime">Chime<select id="announcement-chime"><option value="bell">Bell</option><option value="beep">Beep</option><option value="rise">Rise</option></select></label></div>
+  <div id="announcement-wav" hidden>
+    <label class="announcement-field" for="announcement-file">Local WAV file<input id="announcement-file" type="file" accept=".wav,audio/wav,audio/x-wav" aria-describedby="announcement-file-info"></label>
+    <p id="announcement-file-info" class="small-note"></p><button id="announcement-clear-file" class="text-button" type="button" disabled>Clear file</button>
+  </div>
+  <button id="announcement-review" class="outline-button" type="button" disabled>Review announcement</button>
+  <section id="announcement-preview" class="announcement-preview" aria-labelledby="announcement-preview-title" tabindex="-1" hidden>
+    <h3 id="announcement-preview-title">Review this announcement</h3>
+    <p id="announcement-preview-source"></p><h4>Selected rooms</h4><p id="announcement-preview-rooms"></p>
+    <h4>Groups involved</h4><p id="announcement-preview-groups"></p><p class="small-note">These groups may be temporarily regrouped for playback.</p>
+    <p id="announcement-preview-level"></p>
+    <footer><button id="announcement-back" class="text-button" type="button">Go back</button><button id="announcement-confirm" class="primary-button" type="button" disabled>Announce</button></footer>
+  </section>
+  <section id="announcement-result" class="announcement-result" aria-labelledby="announcement-result-title" hidden><p class="eyebrow">LAST RECEIVED RESULT</p><h3 id="announcement-result-title"></h3><div id="announcement-result-detail"></div></section>
+  <p id="announcement-message" class="sleep-message" role="status"></p>
 </dialog>
 <dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title"><header><h2 id="shortcuts-title">Less reaching. More listening.</h2><button id="close-shortcuts" class="icon-button" aria-label="Close shortcuts"><svg><use href="#i-close"/></svg></button></header><dl class="shortcut-list"><dt>Search your music</dt><dd><kbd>⌘ / Ctrl K</kbd></dd><dt>Choose a listening group</dt><dd><kbd>R</kbd></dd><dt>Pause or resume</dt><dd><kbd>Space</kbd></dd><dt>Immersive visualization</dt><dd><kbd>V</kbd></dd><dt>Close a dialog or immersive view</dt><dd><kbd>Esc</kbd></dd></dl><p class="small-note">Playback shortcuts are inactive while typing or reviewing an action.</p></dialog>
 <noscript><p class="notice">The dashboard needs JavaScript. The command-line interface remains available.</p></noscript>

@@ -35,6 +35,9 @@ const VOLUME: &str = include_str!("../../remote/dashboard-volume.js");
 const SCENES: &str = include_str!("../../remote/dashboard-scenes.js");
 const SCHEDULES: &str = include_str!("../../remote/schedules.js");
 const ROUTINES: &str = include_str!("../../remote/dashboard-routines.js");
+const ANNOUNCEMENTS: &str = include_str!("../../remote/announcements.js");
+const ANNOUNCEMENTS_PANEL: &str = include_str!("../../remote/dashboard-announcements.js");
+const ANNOUNCEMENTS_STYLE: &str = include_str!("../../remote/dashboard-announcements.css");
 const SCRIPT: &str = include_str!("../../remote/dashboard.js");
 
 fn document(content_type: &str, text: &str) -> Response {
@@ -66,7 +69,9 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |_, _, _| {
                 document(
                     "text/css; charset=utf-8",
-                    &format!("{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}"),
+                    &format!(
+                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}"
+                    ),
                 )
             },
         )
@@ -82,7 +87,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{SCRIPT}"
                     ),
                 )
             },
