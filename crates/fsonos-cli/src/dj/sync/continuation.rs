@@ -605,27 +605,33 @@ impl LibrarySync {
         read: Result<ReadResult, Failure>,
     ) -> Result<(), Failure> {
         let full = kind == PassKind::Full;
-        let attempted = read.is_ok();
-        let (result, retry_after, pending, progress) = match read {
+        let (result, retry_after, pending, progress, progress_observed) = match read {
             Ok(ReadResult {
                 result,
                 retry_after,
                 progress,
+                progress_observed,
             }) => {
                 let pending = matches!(
                     &result,
                     Err(fsonos_spotify::SpotifyError::LibraryPending { .. })
                 );
-                (result.map_err(failure), retry_after, pending, progress)
+                (
+                    result.map_err(failure),
+                    retry_after,
+                    pending,
+                    progress,
+                    progress_observed,
+                )
             }
-            Err(error) => (Err(error), 0, false, None),
+            Err(error) => (Err(error), 0, false, None, false),
         };
         let at = self.now();
         if full {
-            // A completed attempt can invalidate an old account/read receipt.
-            // Its empty report is authoritative; pre-attempt failures have no
-            // new observation and retain the previous compact checkpoint.
-            if attempted {
+            // Starting a worker or calling /me is not an observation of saved
+            // pages. Only a persisted checkpoint or definite invalidation can
+            // replace the compact report retained by the previous attempt.
+            if progress_observed {
                 reserved.intake = progress;
             }
             reserved.intake_error = if pending {

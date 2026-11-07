@@ -23,6 +23,26 @@ pub(super) struct SavedLibrary {
     pub(super) proof: String,
 }
 
+/// An early identity/storage error has not observed the checkpoint. A retained
+/// report or definite conflict/publication result authoritatively replaces it.
+#[derive(Default)]
+pub(super) struct Observation {
+    pub(super) progress: Option<SavedLibraryProgress>,
+    pub(super) observed: bool,
+}
+
+impl Observation {
+    fn retain(&mut self, progress: SavedLibraryProgress) {
+        self.progress = Some(progress);
+        self.observed = true;
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.progress = None;
+        self.observed = true;
+    }
+}
+
 pub(super) fn changed() -> SpotifyError {
     StoreError::Backend(
         "the Spotify account or saved-library read changed during this refresh; refresh again"
@@ -45,19 +65,19 @@ fn save<S: Store + ?Sized>(
     base: Option<&SpotifyLibraryOwner>,
     expected: &mut Option<String>,
     progress: &LibraryProgress,
-    report: &mut Option<SavedLibraryProgress>,
+    report: &mut Observation,
 ) -> Result<(), SpotifyError> {
     let encoded = progress.encode()?;
     if expected.as_deref() == Some(encoded.as_str()) {
-        *report = Some(progress.summary(base));
+        report.retain(progress.summary(base));
         return Ok(());
     }
     if !store.save_spotify_library_progress(owner, base, expected.as_deref(), &encoded)? {
-        *report = None;
+        report.clear();
         return Err(changed());
     }
     *expected = Some(encoded);
-    *report = Some(progress.summary(base));
+    report.retain(progress.summary(base));
     Ok(())
 }
 
@@ -68,7 +88,7 @@ pub(super) async fn read<S: Store + ?Sized>(
     owner: &str,
     base: Option<&SpotifyLibraryOwner>,
     page_budget: usize,
-    report: &mut Option<SavedLibraryProgress>,
+    report: &mut Observation,
 ) -> Result<SavedLibrary, SpotifyError> {
     // Two saved collections can need root checks before any resumed work.
     if page_budget < 3 {

@@ -87,6 +87,7 @@ struct ReadResult {
     result: Result<LibrarySyncDetailed, SpotifyError>,
     retry_after: u64,
     progress: Option<SavedLibraryProgress>,
+    progress_observed: bool,
 }
 
 impl LibrarySync {
@@ -245,6 +246,7 @@ impl LibrarySync {
                     }
                     let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
                     let mut progress = None;
+                    let mut progress_observed = false;
                     let result = match pass {
                         Pass::Full => {
                             let attempt = sync_library_attempt_with_albums(
@@ -255,6 +257,7 @@ impl LibrarySync {
                             )
                             .await;
                             progress = attempt.progress;
+                            progress_observed = attempt.progress_observed;
                             attempt.result
                         }
                         Pass::Playlists(owner) => {
@@ -278,6 +281,7 @@ impl LibrarySync {
                         result,
                         retry_after: session.retry_after_secs(),
                         progress,
+                        progress_observed,
                     })
                 })
             })

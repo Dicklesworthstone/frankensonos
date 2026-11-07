@@ -81,10 +81,15 @@ pub struct LibrarySyncDetailed {
 #[derive(Debug)]
 pub struct LibrarySyncAttempt {
     pub result: Result<LibrarySyncDetailed, SpotifyError>,
-    /// Last successfully saved essential-read checkpoint. An accepted full
-    /// refresh clears it; an ownership conflict invalidates it. Other failures
-    /// retain the last known counts without claiming that a refresh completed.
+    /// Last successfully saved essential-read checkpoint observed by this
+    /// attempt. None replaces a prior report only when progress_observed is
+    /// true: publication or an ownership conflict has cleared the retained work.
     pub progress: Option<SavedLibraryProgress>,
+    /// Whether this attempt observed retained progress or definitively cleared
+    /// it. False means it failed before observing the private checkpoint: keep
+    /// the previous compact report rather than interpreting None as a reset.
+    /// This control signal is not part of public status or persisted metadata.
+    pub progress_observed: bool,
 }
 
 /// Read the owner's whole library from Spotify, add and weigh what their
@@ -171,22 +176,26 @@ async fn attempt_library_pass<S: Store + ?Sized>(
     page_budget: usize,
     previous_albums: Option<&AlbumContinuation>,
 ) -> LibrarySyncAttempt {
-    let mut progress = None;
+    let mut progress = saved::Observation::default();
     let result =
         sync_library_observed(session, cx, store, page_budget, &mut progress, previous_albums)
             .await;
     if result.is_ok() {
-        progress = None;
-    } else if let Some(saved) = &progress
+        progress.clear();
+    } else if let Some(saved) = &progress.progress
         && let Ok(current) = store.spotify_library_owner()
         && (current.as_ref().map(|owner| owner.owner_id.as_str()) != saved.base_owner.as_deref()
             || current.as_ref().map(|owner| owner.generation) != saved.base_generation)
     {
         // A different adoption owns the cache now. Historical counts from a
         // losing reader must not appear to be that account's resumable work.
-        progress = None;
+        progress.clear();
     }
-    LibrarySyncAttempt { result, progress }
+    LibrarySyncAttempt {
+        result,
+        progress: progress.progress,
+        progress_observed: progress.observed,
+    }
 }
 
 #[cfg(test)]
@@ -206,7 +215,7 @@ async fn sync_library_observed<S: Store + ?Sized>(
     cx: &Cx,
     store: &mut S,
     page_budget: usize,
-    progress: &mut Option<SavedLibraryProgress>,
+    progress: &mut saved::Observation,
     previous_albums: Option<&AlbumContinuation>,
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
     let owner = session.read_owner(cx).await?;
@@ -230,10 +239,10 @@ async fn sync_library_observed<S: Store + ?Sized>(
     let Some((receipt, changed_owner)) =
         store.adopt_spotify_library_from_progress(&owner, base.as_ref(), &saved.proof)?
     else {
-        *progress = None;
+        progress.clear();
         return Err(saved::changed());
     };
-    if let Some(progress) = progress {
+    if let Some(progress) = &mut progress.progress {
         // Adoption atomically moves the same retained proof to this receipt.
         progress.base_owner = Some(receipt.owner_id.clone());
         progress.base_generation = Some(receipt.generation);
@@ -290,12 +299,12 @@ async fn sync_library_observed<S: Store + ?Sized>(
     crate::genre_guess::fill(&mut items);
     let Some(mut report) = publish_saved_library(store, &receipt, &saved.proof, &items, &taste)?
     else {
-        *progress = None;
+        progress.clear();
         return Err(saved::changed());
     };
     // Publication consumed the retained proof. Later optional enrichment errors
     // must not advertise these already accepted pages as resumable intake.
-    *progress = None;
+    progress.clear();
     if changed_owner {
         // Adoption retires everything before the new read is published;
         // report only prior candidates absent from this accepted library.

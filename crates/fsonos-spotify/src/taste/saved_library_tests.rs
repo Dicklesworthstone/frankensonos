@@ -99,6 +99,7 @@ fn bounded_liked_library_finishes_across_sqlite_and_session_restarts() {
             let mut verified = false;
             for _ in 0..20 {
                 let attempted = attempt(&server, &cx, &mut store, 4).await;
+                assert!(attempted.progress_observed);
                 match attempted.result {
                     Ok(done) => {
                         assert!(attempted.progress.is_none());
@@ -434,6 +435,7 @@ fn an_account_switch_during_essential_http_cannot_adopt_or_publish_stale_work() 
             ));
             let attempted = attempt(&server, &cx, &mut store, 512).await;
             assert!(matches!(attempted.result, Err(SpotifyError::Store(_))));
+            assert!(attempted.progress_observed);
             assert!(
                 attempted.progress.is_none(),
                 "a losing account cannot advertise resumable work"
@@ -502,6 +504,7 @@ fn same_owner_completed_read_is_fenced_if_another_reader_claims_during_enrichmen
         let mut session = server.session(&cx, "user-top-read");
         let attempted = sync_library_attempt_with_budget(&mut session, &cx, &mut store, 512).await;
         assert!(matches!(attempted.result, Err(SpotifyError::Store(_))));
+        assert!(attempted.progress_observed);
         assert!(
             attempted.progress.is_none(),
             "the other reader owns this progress now"
@@ -534,6 +537,7 @@ fn an_undersized_pass_budget_fails_before_creating_or_changing_progress() {
         for budget in 0..3 {
             let attempted = attempt(&server, &cx, &mut store, budget).await;
             assert!(matches!(attempted.result, Err(SpotifyError::Decode(_))));
+            assert!(!attempted.progress_observed);
             assert!(attempted.progress.is_none());
             assert!(
                 store
@@ -592,3 +596,6 @@ fn a_new_account_keeps_the_old_owner_and_personal_caches_until_complete() {
         assert!(store.spotify_heard().unwrap().is_empty());
     });
 }
+
+#[path = "saved_library_observation_tests.rs"]
+mod observation;

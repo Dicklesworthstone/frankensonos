@@ -82,6 +82,7 @@ fn pending(report: SavedLibraryProgress) -> ReadResult {
         }),
         retry_after: 0,
         progress: Some(report),
+        progress_observed: true,
     }
 }
 
@@ -133,6 +134,7 @@ fn interrupted_verification_retains_the_last_library_error_and_cooldown_across_r
         }),
         retry_after: 3_600,
         progress: Some(progress(SavedLibraryPhase::Verifying)),
+        progress_observed: true,
     };
     assert!(
         sync.finish_pass(
@@ -189,6 +191,7 @@ fn prepared_rows_remain_pending_until_full_publication_then_progress_is_cleared(
         )),
         retry_after: 0,
         progress: Some(progress(SavedLibraryPhase::Ready)),
+        progress_observed: true,
     };
     assert!(
         sync.finish_pass(
@@ -229,6 +232,7 @@ fn prepared_rows_remain_pending_until_full_publication_then_progress_is_cleared(
             result: Ok(read),
             retry_after: 0,
             progress: None,
+            progress_observed: true,
         }),
     )
     .unwrap();
@@ -322,6 +326,7 @@ fn a_losing_read_clears_its_old_counts_without_claiming_publication() {
         )),
         retry_after: 0,
         progress: None,
+        progress_observed: true,
     };
     assert!(
         sync.finish_pass(
@@ -341,4 +346,74 @@ fn a_losing_read_clears_its_old_counts_without_claiming_publication() {
     assert!(status.error.is_some());
     assert_eq!(status.library_intake.unwrap().pages, 0);
     assert!(!sync.take_fresh());
+}
+
+#[test]
+fn an_owner_read_failure_preserves_retained_progress_and_real_errors_across_restart() {
+    for status_code in [503, 429] {
+        for has_previous_library in [false, true] {
+            let dir = directory("owner-read-outage");
+            let sync = controller(dir.clone(), AT);
+            let checkpoint = Checkpoint::default();
+            let before = has_previous_library.then(previous);
+            let retained = progress(SavedLibraryPhase::Verifying);
+            sync.finish_pass(
+                before.clone(),
+                &checkpoint,
+                checkpoint.reserve_full(AT),
+                PassKind::Full,
+                Ok(pending(retained.clone())),
+            )
+            .unwrap();
+            let saved = load(&dir).unwrap();
+            let attempted_at = saved.retry_at;
+            let retry_after = if status_code == 429 { 3_600 } else { 0 };
+            let resumed = controller(dir.clone(), attempted_at);
+            let outcome = ReadResult {
+                result: Err(SpotifyError::Api {
+                    status: status_code,
+                    body: "owner read unavailable".into(),
+                }),
+                retry_after,
+                progress: None,
+                progress_observed: false,
+            };
+            assert!(
+                resumed
+                    .finish_pass(
+                        before.clone(),
+                        &saved,
+                        saved.reserve_full(attempted_at),
+                        PassKind::Full,
+                        Ok(outcome),
+                    )
+                    .is_err()
+            );
+            let durable = load(&dir).unwrap();
+            assert_eq!(durable.intake, Some(retained));
+            assert!(durable.intake_pending && durable.requires_refresh);
+            let restarted = controller(dir, attempted_at + 1);
+            let status = restarted.status();
+            assert_eq!(status.last, before);
+            assert!(status.error.is_some(), "the real outage stays visible");
+            assert!(!status.running);
+            let intake = status.library_intake.as_ref().unwrap();
+            assert_eq!(
+                (intake.pages, intake.tracks, intake.verified_pages),
+                (512, 20_000, 80)
+            );
+            assert_eq!(intake.phase, SavedLibraryIntakePhase::Verifying);
+            assert_eq!(intake.retry_at, Some(durable.retry_at));
+            if status_code == 429 {
+                assert_eq!(intake.not_before, Some(attempted_at + 3_600));
+                assert!(!restarted.due(attempted_at + 3_599));
+            }
+            assert!(!restarted.take_fresh());
+            assert!(
+                !serde_json::to_string(&status)
+                    .unwrap()
+                    .contains("progress_observed")
+            );
+        }
+    }
 }
