@@ -348,6 +348,23 @@ impl Store for SharedStore<'_> {
             .save_spotify_playlist_directory(owner, expected, progress, active)
     }
 
+    fn spotify_followed_directory(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError> {
+        self.lock().spotify_followed_directory(owner)
+    }
+
+    fn save_spotify_followed_directory(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        self.lock()
+            .save_spotify_followed_directory(owner, expected, progress)
+    }
+
     fn save_playlist_contents(&mut self, contents: &CachedPlaylist) -> Result<(), StoreError> {
         self.lock().save_playlist_contents(contents)
     }

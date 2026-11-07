@@ -27,6 +27,10 @@ pub const MAX_PLAYLIST_ENTRIES: u32 = 10_000;
 pub const MAX_PLAYLIST_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum raw entries in a resumable playlist-directory scan.
 pub const MAX_PLAYLIST_DIRECTORY_ENTRIES: u32 = 100_000;
+/// Maximum artists in a resumable followed-artist directory.
+pub const MAX_FOLLOWED_ARTISTS: u32 = 100_000;
+/// Maximum aggregate metadata bytes in a followed-artist checkpoint.
+pub const MAX_FOLLOWED_ARTIST_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum compact state retained for an unfinished essential library read.
 /// The Spotify reader also bounds pages, source items and individual metadata.
 pub const MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES: usize = 64 * 1024 * 1024;
@@ -808,6 +812,27 @@ pub trait Store {
         active: Option<&[String]>,
     ) -> Result<bool, StoreError>;
 
+    /// Private followed-artist directory progress for the current adoption.
+    /// A stale receipt returns no checkpoint, including after switching away
+    /// and back to the same account. The Spotify reader validates its schema,
+    /// cursor chain and artist metadata before reusing any persisted rows.
+    fn spotify_followed_directory(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError>;
+
+    /// Replace bounded private followed-artist progress only while both the
+    /// adoption receipt and exact previous checkpoint match. An absent expected
+    /// value requires no checkpoint. Returns false without writes after a
+    /// competing scan or account switch. This never publishes library or taste
+    /// state, or changes playlist and essential-library checkpoints.
+    fn save_spotify_followed_directory(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError>;
+
     /// Atomically replace one playlist's observed contents. An empty complete
     /// observation is retained as evidence of an empty playlist. This does not
     /// change the separate URI/name listing; callers decide refresh retention.
@@ -951,6 +976,27 @@ fn validate_spotify_library_progress(
     Ok(())
 }
 
+fn validate_spotify_followed_directory(
+    owner: &SpotifyLibraryOwner,
+    expected: Option<&str>,
+    progress: Option<&str>,
+) -> Result<(), StoreError> {
+    validate_spotify_owner(&owner.owner_id)?;
+    if owner.generation == 0 || i64::try_from(owner.generation).is_err() {
+        return Err(StoreError::Backend(
+            "invalid Spotify library ownership generation".into(),
+        ));
+    }
+    if expected.is_some_and(|value| value.len() > MAX_FOLLOWED_ARTIST_BYTES)
+        || progress.is_some_and(|value| value.len() > MAX_FOLLOWED_ARTIST_BYTES)
+    {
+        return Err(StoreError::Backend(
+            "followed-artist directory is too large".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Each track's latest play in `plays`, oldest first (by time, then URI).
 pub(crate) fn latest_plays(plays: &[(String, i64)]) -> Vec<(String, i64)> {
     let mut latest: BTreeMap<&str, i64> = BTreeMap::new();
@@ -985,6 +1031,7 @@ pub struct MemStore {
     album_misses: BTreeMap<String, i64>,
     playlists: Vec<(String, String)>,
     playlist_directories: BTreeMap<String, (u64, String)>,
+    followed_directories: BTreeMap<String, (u64, String)>,
     playlist_contents: BTreeMap<String, CachedPlaylist>,
     playlist_scan_cursors: BTreeMap<String, String>,
     playlist_progress: BTreeMap<(String, String), String>,
@@ -1187,6 +1234,7 @@ impl Store for MemStore {
         self.playlist_progress
             .retain(|(previous, _), _| previous != owner_id);
         self.playlist_directories.remove(owner_id);
+        self.followed_directories.remove(owner_id);
         // Every essential checkpoint was bound to the previous public receipt.
         self.spotify_library_progress.clear();
         self.spotify_library_owner = Some(owner.clone());
@@ -1490,6 +1538,43 @@ impl Store for MemStore {
         if let Some(active) = active {
             self.retain_playlist_progress(&owner.owner_id, active)?;
         }
+        Ok(true)
+    }
+
+    fn spotify_followed_directory(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError> {
+        validate_spotify_followed_directory(owner, None, None)?;
+        if self.spotify_library_owner.as_ref() != Some(owner) {
+            return Ok(None);
+        }
+        Ok(self
+            .followed_directories
+            .get(&owner.owner_id)
+            .filter(|(generation, _)| *generation == owner.generation)
+            .map(|(_, progress)| progress.clone()))
+    }
+
+    fn save_spotify_followed_directory(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        validate_spotify_followed_directory(owner, expected, Some(progress))?;
+        let current = self
+            .followed_directories
+            .get(&owner.owner_id)
+            .filter(|(generation, _)| *generation == owner.generation)
+            .map(|(_, progress)| progress.as_str());
+        if self.spotify_library_owner.as_ref() != Some(owner) || current != expected {
+            return Ok(false);
+        }
+        self.followed_directories.insert(
+            owner.owner_id.clone(),
+            (owner.generation, progress.to_owned()),
+        );
         Ok(true)
     }
 

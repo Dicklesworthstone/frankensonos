@@ -248,6 +248,15 @@ const MIGRATIONS: &[Migration] = &[
             base_generation INTEGER, progress TEXT NOT NULL);
     ",
     },
+    Migration {
+        version: 22,
+        name: "bounded followed-artist directories resume across restarts",
+        sql: "
+        CREATE TABLE spotify_followed_directories (
+            owner_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+            progress TEXT NOT NULL);
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -914,6 +923,10 @@ fn adopt_spotify_owner(
     )?;
     connection.execute_with_params_sync(
         "DELETE FROM spotify_playlist_directories WHERE owner_id = ?1",
+        &[owner_id.into()],
+    )?;
+    connection.execute_with_params_sync(
+        "DELETE FROM spotify_followed_directories WHERE owner_id = ?1",
         &[owner_id.into()],
     )?;
     connection.execute_sync("DELETE FROM spotify_library_progress")?;
@@ -1820,6 +1833,65 @@ impl Store for SqliteStore {
         })
     }
 
+    fn spotify_followed_directory(
+        &self,
+        owner: &SpotifyLibraryOwner,
+    ) -> Result<Option<String>, StoreError> {
+        super::validate_spotify_followed_directory(owner, None, None)?;
+        let generation = i64::try_from(owner.generation).map_err(backend)?;
+        self.query(
+            "SELECT directory.progress FROM spotify_followed_directories AS directory \
+             JOIN spotify_library_owner AS current \
+             ON current.owner_id = directory.owner_id AND current.generation = directory.generation \
+             WHERE current.singleton = 1 AND directory.owner_id = ?1 AND directory.generation = ?2",
+            &[owner.owner_id.as_str().into(), generation.into()],
+        )?
+        .first()
+        .map(|row| {
+            let progress = text(row, 0)?;
+            super::validate_spotify_followed_directory(owner, None, Some(&progress))?;
+            Ok(progress)
+        })
+        .transpose()
+    }
+
+    fn save_spotify_followed_directory(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        super::validate_spotify_followed_directory(owner, expected, Some(progress))?;
+        let generation = i64::try_from(owner.generation).map_err(backend)?;
+        self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != Some(owner) {
+                return Ok(false);
+            }
+            let current = connection.query_with_params_sync(
+                "SELECT progress FROM spotify_followed_directories \
+                 WHERE owner_id = ?1 AND generation = ?2",
+                &[owner.owner_id.as_str().into(), generation.into()],
+            )?;
+            let current = current
+                .first()
+                .map(|row| text(row, 0).map_err(|error| FrankenError::Internal(error.to_string())))
+                .transpose()?;
+            if current.as_deref() != expected {
+                return Ok(false);
+            }
+            connection.execute_with_params_sync(
+                "INSERT OR REPLACE INTO spotify_followed_directories \
+                 (owner_id, generation, progress) VALUES (?1, ?2, ?3)",
+                &[
+                    owner.owner_id.as_str().into(),
+                    generation.into(),
+                    progress.into(),
+                ],
+            )?;
+            Ok(true)
+        })
+    }
+
     fn playlist_scan_cursor(&self, owner_id: &str) -> Result<Option<String>, StoreError> {
         self.query(
             "SELECT playlist_id FROM spotify_playlist_scans WHERE owner_id = ?1",
@@ -2296,6 +2368,81 @@ mod tests {
     }
 
     #[test]
+    fn followed_directory_migration_preserves_existing_personal_checkpoints() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("followed-directory-upgrade.db");
+        let mut old =
+            SqliteStore::open_migrated(&file.to_string_lossy(), &MIGRATIONS[..21]).unwrap();
+        old.execute(
+            "INSERT INTO spotify_library_owner (singleton, owner_id, generation) VALUES (1, ?1, 7)",
+            &["existing-owner".into()],
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO spotify_library \
+             (source_uri, title, is_classical, added, candidate, taste_weight, artist_id) \
+             VALUES (?1, ?2, 0, 10, 1, 1080, ?3)",
+            &[
+                "spotify:track:Existing".into(),
+                "Existing".into(),
+                "CatalogArtist".into(),
+            ],
+        )
+        .unwrap();
+        let owner = old.spotify_library_owner().unwrap().unwrap();
+        let library = old.library().unwrap();
+        assert!(
+            old.save_spotify_playlist_directory(&owner, None, "playlist prefix", None)
+                .unwrap()
+        );
+        assert!(
+            old.save_spotify_library_progress(
+                "existing-owner",
+                Some(&owner),
+                None,
+                "essential prefix"
+            )
+            .unwrap()
+        );
+        old.close().unwrap();
+
+        let mut store = SqliteStore::open(&file).unwrap();
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&22));
+        assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
+        assert_eq!(store.library().unwrap(), library);
+        assert_eq!(
+            store.spotify_playlist_directory(&owner).unwrap().as_deref(),
+            Some("playlist prefix")
+        );
+        assert_eq!(
+            store
+                .spotify_library_progress("existing-owner", Some(&owner))
+                .unwrap()
+                .as_deref(),
+            Some("essential prefix")
+        );
+        assert_eq!(store.spotify_followed_directory(&owner).unwrap(), None);
+        assert!(
+            store
+                .save_spotify_followed_directory(&owner, None, "followed prefix")
+                .unwrap()
+        );
+        store.close().unwrap();
+
+        let reopened = SqliteStore::open(&file).unwrap();
+        assert_eq!(
+            reopened
+                .spotify_followed_directory(&owner)
+                .unwrap()
+                .as_deref(),
+            Some("followed prefix")
+        );
+        assert_eq!(reopened.spotify_library_owner().unwrap(), Some(owner));
+        assert_eq!(reopened.library().unwrap(), library);
+        reopened.close().unwrap();
+    }
+
+    #[test]
     fn essential_library_progress_migration_preserves_an_adopted_cache() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("library-progress-upgrade.db");
@@ -2493,7 +2640,7 @@ mod tests {
         legacy.close().unwrap();
 
         let mut store = SqliteStore::open(&path).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&21));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&22));
         let mut entry = store.library().unwrap().pop().unwrap();
         assert_eq!(entry.artist_id, None, "a name does not prove an artist ID");
         assert_eq!(entry.origin, LibraryOrigin::Both);
@@ -2533,7 +2680,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
             ]
         );
         let lib = store.library().unwrap();
@@ -2576,7 +2723,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
             ]
         );
         let lib = store.library().unwrap();
@@ -2635,7 +2782,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22
             ]
         );
         let lib = store.library().unwrap();

@@ -127,6 +127,8 @@ impl Store for FailingStore {
         fn album_misses(&self) -> Result<Vec<(String, i64)>, StoreError>;
         fn save_playlists(&mut self, playlists: &[(String, String)]) -> Result<(), StoreError>;
         fn playlists(&self) -> Result<Vec<(String, String)>, StoreError>;
+        fn spotify_followed_directory(&self, owner: &SpotifyLibraryOwner) -> Result<Option<String>, StoreError>;
+        fn save_spotify_followed_directory(&mut self, owner: &SpotifyLibraryOwner, expected: Option<&str>, progress: &str) -> Result<bool, StoreError>;
         fn spotify_playlist_directory( &self, owner: &SpotifyLibraryOwner, ) -> Result<Option<String>, StoreError>;
         fn save_spotify_playlist_directory( &mut self, owner: &SpotifyLibraryOwner, expected: Option<&str>, progress: &str, active: Option<&[String]>, ) -> Result<bool, StoreError>;
         fn save_playlist_contents(&mut self, contents: &CachedPlaylist) -> Result<(), StoreError>;
