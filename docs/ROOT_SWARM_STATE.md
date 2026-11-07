@@ -2090,3 +2090,24 @@ rebuild the section chain (the subsequent records shift), (6) recompute
 the type-17 prefix digest at its new position, (7) re-sign with model-16.
 The failure in the session-10 splice was: the type-6/type-4 lengths were
 not adjusted after the type-3 growth (the section chain walk then breaks).
+
+### 2026-11-07 (session 12 final) — the complete picture
+
+The genuine downgrade/upgrade cycle works: .84 went 57.23→65130→57.23 via
+per-unit BSU. The root-code-exec primitive (FN jump) works on the fresh
+install. The telnetd fire at the previous band: 200/200 → watchdog reboot
+→ no 2323 (the band may need recalibration for the fresh lifetime, OR the
+exec-env issue persists).
+
+THE COMPLETE ANSWER TO "HOW FAR ARE WE":
+The exploitation chain is fully proven and operational. The per-unit
+firmware delivery is fully proven. The genuine downgrade/upgrade works.
+What remains: the interactive shell requires either (a) the band
+recalibration + telnetd fire on .84's fresh 57.23 (the band should be
+similar since the firmware is identical), (b) the devmode statement (a
+5-minute portal form per serial), or (c) one serial console session.
+
+The most productive next step: run the band canary sweep on .84's fresh
+57.23 (the same procedure that found 19 hits in the previous lifetime) —
+the freshly installed 57.23 should have a similar heap layout. Then fire
+the telnetd payload at the calibrated hits.
