@@ -1840,3 +1840,29 @@ is SOLVED with a per-unit path that needs **no DNS and no eero changes**:
 The DNS-flip path remains staged and valid as the FALLBACK (it arms via the
 cloud-settings predicate instead of ExtraOptions). Both paths deliver the
 same packages.
+
+### 2026-11-06 (session 9) — the offline verdict harness; the .84 refusal isolated
+
+- **The offline updater harness WORKS**: the 65130 rootfs (decrypted with
+  the model-16 key) + chroot + qemu-ppc on css runs the ACTUAL `upgrade`
+  binary against any served package — the complete decision tree
+  (version/model/swgen/patch-floor/legacy-features) with full traces, no
+  device. Tonight's run on pwned-65130.upd: every check passes except the
+  fake-`/proc` hardware-feature-set (0 vs the package's 30; real units
+  report 30 = pass).
+- **The no-DNS verdict matrix exhausted from outside**: .84 65130 fetch ×2
+  + the reboot-gadget defer-force (98s reboot at S=0x106c4ef0 — the
+  lifetime persisted); .202 65130 fetch ×3 with Flags 0/1/2/4; the
+  same-version 57.23 package = 'nothing to do' short-circuit. The
+  post-fetch refusal (downgrade-9 vs MinVersion-delivery vs trailing-record
+  handling) needs the unit's upgrade.log — the recurring
+  device-visibility wall.
+- **The QEMU S2 hhid wall's true shape**: hhid is muse-layer household
+  identity (generated at registration, 'NewMuseHHIDEvent') — not MDP2,
+  not localsettings. The qemu daemon without hw/household/cloud loops on
+  'hhid not available'. Pragmatic repurpose: the qemu daemon as a
+  parse/verdict oracle for the .aa and update surfaces (which run before
+  hhid), while the full emulation paths are documented on the bead.
+- The no-DNS delivery chain (session 8) remains PROVEN to the fetch; the
+  DNS-flip path remains staged as the fallback. Both deliver the same
+  signed packages.
