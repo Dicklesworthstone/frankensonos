@@ -239,6 +239,15 @@ const MIGRATIONS: &[Migration] = &[
         ALTER TABLE spotify_library ADD COLUMN artist_id TEXT;
     ",
     },
+    Migration {
+        version: 21,
+        name: "essential Spotify library reads resume before account adoption",
+        sql: "
+        CREATE TABLE spotify_library_progress (
+            incoming_id TEXT PRIMARY KEY, base_owner_id TEXT,
+            base_generation INTEGER, progress TEXT NOT NULL);
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -680,6 +689,69 @@ fn heard_rows(plays: &[(String, i64)]) -> Vec<Vec<SqliteValue>> {
         .collect()
 }
 
+struct SpotifyLibraryProjection {
+    library: Vec<Vec<SqliteValue>>,
+    directory: Option<Vec<Vec<SqliteValue>>>,
+    observations: Vec<Vec<SqliteValue>>,
+    listening: Option<Vec<Vec<SqliteValue>>>,
+}
+
+fn prepare_spotify_library(
+    entries: &[LibraryEntry],
+    playlists: Option<&[(String, String)]>,
+    contents: &[CachedPlaylist],
+    heard: Option<&[(String, i64)]>,
+) -> Result<SpotifyLibraryProjection, StoreError> {
+    let observations = contents
+        .iter()
+        .map(|contents| {
+            contents.validate()?;
+            let encoded = serde_json::to_string(contents).map_err(backend)?;
+            Ok(vec![contents.playlist_uri.as_str().into(), encoded.into()])
+        })
+        .collect::<Result<Vec<Vec<SqliteValue>>, StoreError>>()?;
+    Ok(SpotifyLibraryProjection {
+        library: library_rows(entries),
+        directory: playlists.map(playlist_rows),
+        observations,
+        listening: heard.map(heard_rows),
+    })
+}
+
+fn write_spotify_library(
+    connection: &AsyncConnection,
+    projection: &SpotifyLibraryProjection,
+) -> Result<(), FrankenError> {
+    write_library(connection, &projection.library)?;
+    if let Some(rows) = &projection.directory {
+        connection.execute_sync("DELETE FROM spotify_playlists")?;
+        if !rows.is_empty() {
+            connection.execute_many_with_params_in_transaction_sync(
+                "INSERT OR IGNORE INTO spotify_playlists (playlist_uri, name, position) \
+                 VALUES (?1, ?2, ?3)",
+                rows,
+            )?;
+        }
+    }
+    if !projection.observations.is_empty() {
+        connection.execute_many_with_params_in_transaction_sync(
+            "INSERT OR REPLACE INTO spotify_playlist_contents (playlist_uri, observation) \
+             VALUES (?1, ?2)",
+            &projection.observations,
+        )?;
+    }
+    if let Some(rows) = &projection.listening {
+        connection.execute_sync("DELETE FROM spotify_heard")?;
+        if !rows.is_empty() {
+            connection.execute_many_with_params_in_transaction_sync(
+                "INSERT OR REPLACE INTO spotify_heard (source_uri, played_at) VALUES (?1, ?2)",
+                rows,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 fn read_spotify_owner(
     connection: &AsyncConnection,
 ) -> Result<Option<SpotifyLibraryOwner>, FrankenError> {
@@ -702,6 +774,111 @@ fn read_spotify_owner(
         })
         .transpose()
         .map_err(|error: StoreError| FrankenError::Internal(error.to_string()))
+}
+
+/// The caller checks the public receipt in the same transaction.
+fn read_spotify_library_progress(
+    connection: &AsyncConnection,
+    incoming_id: &str,
+    base: Option<&SpotifyLibraryOwner>,
+) -> Result<Option<String>, FrankenError> {
+    let generation = base
+        .map(|owner| i64::try_from(owner.generation))
+        .transpose()
+        .map_err(|error| FrankenError::Internal(error.to_string()))?;
+    let rows = connection.query_with_params_sync(
+        "SELECT base_owner_id, base_generation, progress FROM spotify_library_progress \
+         WHERE incoming_id = ?1",
+        &[incoming_id.into()],
+    )?;
+    rows.first()
+        .map(|row| {
+            if opt_text(row, 0)?.as_deref() != base.map(|owner| owner.owner_id.as_str())
+                || opt_int(row, 1)? != generation
+            {
+                return Ok(None);
+            }
+            let progress = text(row, 2)?;
+            super::validate_spotify_library_progress(incoming_id, None, Some(&progress))?;
+            Ok(Some(progress))
+        })
+        .transpose()
+        .map(Option::flatten)
+        .map_err(|error: StoreError| FrankenError::Internal(error.to_string()))
+}
+
+fn write_spotify_library_progress(
+    connection: &AsyncConnection,
+    incoming_id: &str,
+    base: Option<&SpotifyLibraryOwner>,
+    progress: &str,
+) -> Result<(), FrankenError> {
+    let generation = base
+        .map(|owner| i64::try_from(owner.generation))
+        .transpose()
+        .map_err(|error| FrankenError::Internal(error.to_string()))?;
+    connection
+        .execute_with_params_sync(
+            "INSERT OR REPLACE INTO spotify_library_progress \
+             (incoming_id, base_owner_id, base_generation, progress) VALUES (?1, ?2, ?3, ?4)",
+            &[
+                incoming_id.into(),
+                opt_value(base.map(|owner| owner.owner_id.as_str())),
+                opt_value(generation),
+                progress.into(),
+            ],
+        )
+        .map(drop)
+}
+
+fn adopt_spotify_owner(
+    connection: &AsyncConnection,
+    owner_id: &str,
+) -> Result<(SpotifyLibraryOwner, bool), FrankenError> {
+    let previous = read_spotify_owner(connection)?;
+    if let Some(current) = &previous
+        && current.owner_id == owner_id
+    {
+        return Ok((current.clone(), false));
+    }
+    let generation = previous
+        .as_ref()
+        .map_or(0, |current| current.generation)
+        .checked_add(1)
+        .ok_or_else(|| {
+            FrankenError::Internal("Spotify library ownership generation overflow".into())
+        })?;
+    let stored_generation = i64::try_from(generation).map_err(|_| {
+        FrankenError::Internal("Spotify library ownership generation overflow".into())
+    })?;
+    connection
+        .execute_sync("UPDATE spotify_library SET candidate = 0, taste_weight = NULL")?;
+    connection.execute_sync("DELETE FROM spotify_playlists")?;
+    connection.execute_sync("DELETE FROM spotify_playlist_contents")?;
+    connection.execute_sync("DELETE FROM spotify_heard")?;
+    // Returning to an account cannot treat discarded public contents
+    // as still published merely because its private proof survived.
+    connection.execute_with_params_sync(
+        "DELETE FROM spotify_playlist_progress WHERE owner_id = ?1",
+        &[owner_id.into()],
+    )?;
+    connection.execute_with_params_sync(
+        "DELETE FROM spotify_playlist_directories WHERE owner_id = ?1",
+        &[owner_id.into()],
+    )?;
+    connection.execute_sync("DELETE FROM spotify_library_progress")?;
+    connection.execute_with_params_sync(
+        "INSERT OR REPLACE INTO spotify_library_owner (singleton, owner_id, generation) \
+         VALUES (1, ?1, ?2)",
+        &[owner_id.into(), stored_generation.into()],
+    )?;
+    Ok((
+        SpotifyLibraryOwner {
+            owner_id: owner_id.to_owned(),
+            generation,
+        },
+        true,
+    ))
 }
 
 impl Store for SqliteStore {
@@ -960,55 +1137,64 @@ impl Store for SqliteStore {
         retrying(|| read_spotify_owner(&self.conn)).map_err(engine)
     }
 
+    fn spotify_library_progress(
+        &self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+    ) -> Result<Option<String>, StoreError> {
+        super::validate_spotify_owner(incoming_id)?;
+        self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != base {
+                return Ok(None);
+            }
+            read_spotify_library_progress(connection, incoming_id, base)
+        })
+    }
+
+    fn save_spotify_library_progress(
+        &mut self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        super::validate_spotify_library_progress(incoming_id, expected, Some(progress))?;
+        self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != base
+                || read_spotify_library_progress(connection, incoming_id, base)?.as_deref() != expected
+            {
+                return Ok(false);
+            }
+            write_spotify_library_progress(connection, incoming_id, base, progress)?;
+            Ok(true)
+        })
+    }
+
     fn adopt_spotify_library_owner(
         &mut self,
         owner_id: &str,
     ) -> Result<(SpotifyLibraryOwner, bool), StoreError> {
         super::validate_spotify_owner(owner_id)?;
+        self.in_transaction(|connection| adopt_spotify_owner(connection, owner_id))
+    }
+
+    fn adopt_spotify_library_from_progress(
+        &mut self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+        expected: &str,
+    ) -> Result<Option<(SpotifyLibraryOwner, bool)>, StoreError> {
+        super::validate_spotify_library_progress(incoming_id, Some(expected), None)?;
         self.in_transaction(|connection| {
-            let previous = read_spotify_owner(connection)?;
-            if let Some(current) = &previous
-                && current.owner_id == owner_id
+            if read_spotify_owner(connection)?.as_ref() != base
+                || read_spotify_library_progress(connection, incoming_id, base)?.as_deref()
+                    != Some(expected)
             {
-                return Ok((current.clone(), false));
+                return Ok(None);
             }
-            let generation = previous
-                .as_ref()
-                .map_or(0, |current| current.generation)
-                .checked_add(1)
-                .ok_or_else(|| {
-                    FrankenError::Internal("Spotify library ownership generation overflow".into())
-                })?;
-            let stored_generation = i64::try_from(generation).map_err(|_| {
-                FrankenError::Internal("Spotify library ownership generation overflow".into())
-            })?;
-            connection
-                .execute_sync("UPDATE spotify_library SET candidate = 0, taste_weight = NULL")?;
-            connection.execute_sync("DELETE FROM spotify_playlists")?;
-            connection.execute_sync("DELETE FROM spotify_playlist_contents")?;
-            connection.execute_sync("DELETE FROM spotify_heard")?;
-            // Returning to an account cannot treat discarded public contents
-            // as still published merely because its private proof survived.
-            connection.execute_with_params_sync(
-                "DELETE FROM spotify_playlist_progress WHERE owner_id = ?1",
-                &[owner_id.into()],
-            )?;
-            connection.execute_with_params_sync(
-                "DELETE FROM spotify_playlist_directories WHERE owner_id = ?1",
-                &[owner_id.into()],
-            )?;
-            connection.execute_with_params_sync(
-                "INSERT OR REPLACE INTO spotify_library_owner (singleton, owner_id, generation) \
-                 VALUES (1, ?1, ?2)",
-                &[owner_id.into(), stored_generation.into()],
-            )?;
-            Ok((
-                SpotifyLibraryOwner {
-                    owner_id: owner_id.to_owned(),
-                    generation,
-                },
-                true,
-            ))
+            let (owner, changed) = adopt_spotify_owner(connection, incoming_id)?;
+            write_spotify_library_progress(connection, incoming_id, Some(&owner), expected)?;
+            Ok(Some((owner, changed)))
         })
     }
 
@@ -1020,49 +1206,39 @@ impl Store for SqliteStore {
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
     ) -> Result<bool, StoreError> {
-        // Prepare and validate the whole projection before opening a transaction.
-        let library = library_rows(entries);
-        let directory = playlists.map(playlist_rows);
-        let observations = contents
-            .iter()
-            .map(|contents| {
-                contents.validate()?;
-                let encoded = serde_json::to_string(contents).map_err(backend)?;
-                Ok(vec![contents.playlist_uri.as_str().into(), encoded.into()])
-            })
-            .collect::<Result<Vec<Vec<SqliteValue>>, StoreError>>()?;
-        let listening = heard.map(heard_rows);
+        let projection = prepare_spotify_library(entries, playlists, contents, heard)?;
         self.in_transaction(|connection| {
             if read_spotify_owner(connection)?.as_ref() != Some(owner) {
                 return Ok(false);
             }
-            write_library(connection, &library)?;
-            if let Some(rows) = &directory {
-                connection.execute_sync("DELETE FROM spotify_playlists")?;
-                if !rows.is_empty() {
-                    connection.execute_many_with_params_in_transaction_sync(
-                        "INSERT OR IGNORE INTO spotify_playlists (playlist_uri, name, position) \
-                         VALUES (?1, ?2, ?3)",
-                        rows,
-                    )?;
-                }
+            write_spotify_library(connection, &projection)?;
+            Ok(true)
+        })
+    }
+
+    fn publish_spotify_library_from_progress(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: &str,
+        entries: &[LibraryEntry],
+        playlists: Option<&[(String, String)]>,
+        contents: &[CachedPlaylist],
+        heard: Option<&[(String, i64)]>,
+    ) -> Result<bool, StoreError> {
+        super::validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
+        let projection = prepare_spotify_library(entries, playlists, contents, heard)?;
+        self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != Some(owner)
+                || read_spotify_library_progress(connection, &owner.owner_id, Some(owner))?.as_deref()
+                    != Some(expected)
+            {
+                return Ok(false);
             }
-            if !observations.is_empty() {
-                connection.execute_many_with_params_in_transaction_sync(
-                    "INSERT OR REPLACE INTO spotify_playlist_contents (playlist_uri, observation) \
-                     VALUES (?1, ?2)",
-                    &observations,
-                )?;
-            }
-            if let Some(rows) = &listening {
-                connection.execute_sync("DELETE FROM spotify_heard")?;
-                if !rows.is_empty() {
-                    connection.execute_many_with_params_in_transaction_sync(
-                        "INSERT OR REPLACE INTO spotify_heard (source_uri, played_at) VALUES (?1, ?2)",
-                        rows,
-                    )?;
-                }
-            }
+            write_spotify_library(connection, &projection)?;
+            connection.execute_with_params_sync(
+                "DELETE FROM spotify_library_progress WHERE incoming_id = ?1",
+                &[owner.owner_id.as_str().into()],
+            )?;
             Ok(true)
         })
     }
@@ -2004,6 +2180,58 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
 
+
+    #[test]
+    fn essential_library_progress_migration_preserves_an_adopted_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("library-progress-upgrade.db");
+        let old = SqliteStore::open_migrated(&file.to_string_lossy(), &MIGRATIONS[..20]).unwrap();
+        old.execute(
+            "INSERT INTO spotify_library_owner (singleton, owner_id, generation) VALUES (1, ?1, 7)",
+            &["existing-owner".into()],
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO spotify_library \
+             (source_uri, title, is_classical, added, candidate, taste_weight, artist_id) \
+             VALUES (?1, ?2, 0, 10, 1, 1200, ?3)",
+            &["spotify:track:Existing".into(), "Existing".into(), "CatalogArtist".into()],
+        )
+        .unwrap();
+        let owner = old.spotify_library_owner().unwrap().unwrap();
+        let library = old.library().unwrap();
+        old.close().unwrap();
+
+        let mut store = SqliteStore::open(&file).unwrap();
+        assert!(store.schema_versions().unwrap().contains(&21));
+        assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
+        assert_eq!(store.library().unwrap(), library);
+        assert_eq!(
+            store.spotify_library_progress("incoming-owner", Some(&owner)).unwrap(),
+            None
+        );
+        assert!(
+            store
+                .save_spotify_library_progress("incoming-owner", Some(&owner), None, "prefix")
+                .unwrap()
+        );
+        assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
+        assert_eq!(store.library().unwrap(), library);
+        store.close().unwrap();
+
+        let reopened = SqliteStore::open(&file).unwrap();
+        assert_eq!(
+            reopened
+                .spotify_library_progress("incoming-owner", Some(&owner))
+                .unwrap()
+                .as_deref(),
+            Some("prefix")
+        );
+        assert_eq!(reopened.spotify_library_owner().unwrap(), Some(owner));
+        assert_eq!(reopened.library().unwrap(), library);
+        reopened.close().unwrap();
+    }
+
     #[test]
     fn a_migration_another_connection_applied_is_not_applied_again() {
         let dir = tempfile::tempdir().unwrap();
@@ -2145,7 +2373,7 @@ mod tests {
         legacy.close().unwrap();
 
         let mut store = SqliteStore::open(&path).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&20));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&21));
         let mut entry = store.library().unwrap().pop().unwrap();
         assert_eq!(entry.artist_id, None, "a name does not prove an artist ID");
         assert_eq!(entry.origin, LibraryOrigin::Both);
@@ -2185,7 +2413,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
             ]
         );
         let lib = store.library().unwrap();
@@ -2228,7 +2456,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
             ]
         );
         let lib = store.library().unwrap();
@@ -2287,7 +2515,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21
             ]
         );
         let lib = store.library().unwrap();

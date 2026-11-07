@@ -27,6 +27,9 @@ pub const MAX_PLAYLIST_ENTRIES: u32 = 10_000;
 pub const MAX_PLAYLIST_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum raw entries in a resumable playlist-directory scan.
 pub const MAX_PLAYLIST_DIRECTORY_ENTRIES: u32 = 100_000;
+/// Maximum compact state retained for an unfinished essential library read.
+/// The Spotify reader also bounds pages, source items and individual metadata.
+pub const MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES: usize = 64 * 1024 * 1024;
 
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, Track, ZoneGroup};
@@ -553,6 +556,29 @@ pub trait Store {
     /// A legacy cache has no proved owner until its first complete library read.
     fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError>;
 
+    /// Private essential-read progress for a verified incoming account, bound
+    /// to the public ownership receipt observed before the read began. None
+    /// is the receipt of a cache with no verified owner yet. A stale receipt or
+    /// a checkpoint from another scope returns no progress. The Spotify reader
+    /// validates the opaque checkpoint's schema, endpoints and coverage.
+    fn spotify_library_progress(
+        &self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+    ) -> Result<Option<String>, StoreError>;
+
+    /// Replace bounded private progress only while both the public receipt and
+    /// the exact previous checkpoint match. An absent expected value requires
+    /// no checkpoint for this scope. This never changes public library state.
+    /// A competing read or account switch returns false without any writes.
+    fn save_spotify_library_progress(
+        &mut self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError>;
+
     /// Adopt a verified account only after its essential library read succeeds.
     /// On a different or previously unknown owner, atomically retire candidates,
     /// remove prior taste weights and personal playlist/listening observations,
@@ -565,6 +591,18 @@ pub trait Store {
         owner_id: &str,
     ) -> Result<(SpotifyLibraryOwner, bool), StoreError>;
 
+    /// Adopt an account only while its exact completed checkpoint and the
+    /// pre-adoption public receipt remain current. The caller must first prove
+    /// that the essential read is complete. The checkpoint is retained and
+    /// rebound to the returned receipt so failed enrichment or publication can
+    /// resume it. A mismatch returns None without any public or private writes.
+    fn adopt_spotify_library_from_progress(
+        &mut self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+        expected: &str,
+    ) -> Result<Option<(SpotifyLibraryOwner, bool)>, StoreError>;
+
     /// Publish a prepared library and its personal evidence in one transaction,
     /// only while the receipt still names the current owner and generation.
     /// `None` preserves the directory/heard cache; `Some(&[])` clears it.
@@ -573,6 +611,20 @@ pub trait Store {
     fn publish_spotify_library(
         &mut self,
         owner: &SpotifyLibraryOwner,
+        entries: &[LibraryEntry],
+        playlists: Option<&[(String, String)]>,
+        contents: &[CachedPlaylist],
+        heard: Option<&[(String, i64)]>,
+    ) -> Result<bool, StoreError>;
+
+    /// Publish and consume a completed essential-read checkpoint in one
+    /// transaction, only while both its rebound receipt and exact bytes match.
+    /// A competing reader's new checkpoint must not be consumed or overwritten.
+    /// Any failed fence leaves all public projections and private progress intact.
+    fn publish_spotify_library_from_progress(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: &str,
         entries: &[LibraryEntry],
         playlists: Option<&[(String, String)]>,
         contents: &[CachedPlaylist],
@@ -850,6 +902,20 @@ pub(crate) fn validate_spotify_owner(owner_id: &str) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn validate_spotify_library_progress(
+    incoming_id: &str,
+    expected: Option<&str>,
+    progress: Option<&str>,
+) -> Result<(), StoreError> {
+    validate_spotify_owner(incoming_id)?;
+    if expected.is_some_and(|value| value.len() > MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES)
+        || progress.is_some_and(|value| value.len() > MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES)
+    {
+        return Err(StoreError::Backend("Spotify library progress is too large".into()));
+    }
+    Ok(())
+}
+
 /// Each track's latest play in `plays`, oldest first (by time, then URI).
 pub(crate) fn latest_plays(plays: &[(String, i64)]) -> Vec<(String, i64)> {
     let mut latest: BTreeMap<&str, i64> = BTreeMap::new();
@@ -874,6 +940,7 @@ pub struct MemStore {
     groups: BTreeMap<String, Vec<ZoneGroup>>,
     library: BTreeMap<String, LibraryEntry>,
     spotify_library_owner: Option<SpotifyLibraryOwner>,
+    spotify_library_progress: BTreeMap<String, SpotifyLibraryProgress>,
     render_params: BTreeMap<String, (SpotifyRenderParams, i64)>,
     auth: BTreeMap<String, AuthEntry>,
     dj_sessions: BTreeMap<String, DjSession>,
@@ -891,6 +958,28 @@ pub struct MemStore {
     actions: Vec<LoggedAction>,
     scenes: BTreeMap<String, StoredScene>,
     schedules: BTreeMap<i64, StoredSchedule>,
+}
+
+#[derive(Debug)]
+struct SpotifyLibraryProgress {
+    base: Option<SpotifyLibraryOwner>,
+    progress: String,
+}
+
+impl MemStore {
+    fn library_progress_for(
+        &self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+    ) -> Option<&str> {
+        if self.spotify_library_owner.as_ref() != base {
+            return None;
+        }
+        self.spotify_library_progress
+            .get(incoming_id)
+            .filter(|saved| saved.base.as_ref() == base)
+            .map(|saved| saved.progress.as_str())
+    }
 }
 
 impl Store for MemStore {
@@ -996,6 +1085,38 @@ impl Store for MemStore {
         Ok(self.spotify_library_owner.clone())
     }
 
+    fn spotify_library_progress(
+        &self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+    ) -> Result<Option<String>, StoreError> {
+        validate_spotify_owner(incoming_id)?;
+        Ok(self.library_progress_for(incoming_id, base).map(str::to_owned))
+    }
+
+    fn save_spotify_library_progress(
+        &mut self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        validate_spotify_library_progress(incoming_id, expected, Some(progress))?;
+        if self.spotify_library_owner.as_ref() != base
+            || self.library_progress_for(incoming_id, base) != expected
+        {
+            return Ok(false);
+        }
+        self.spotify_library_progress.insert(
+            incoming_id.to_owned(),
+            SpotifyLibraryProgress {
+                base: base.cloned(),
+                progress: progress.to_owned(),
+            },
+        );
+        Ok(true)
+    }
+
     fn adopt_spotify_library_owner(
         &mut self,
         owner_id: &str,
@@ -1029,8 +1150,31 @@ impl Store for MemStore {
         self.playlist_progress
             .retain(|(previous, _), _| previous != owner_id);
         self.playlist_directories.remove(owner_id);
+        // Every essential checkpoint was bound to the previous public receipt.
+        self.spotify_library_progress.clear();
         self.spotify_library_owner = Some(owner.clone());
         Ok((owner, true))
+    }
+
+    fn adopt_spotify_library_from_progress(
+        &mut self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+        expected: &str,
+    ) -> Result<Option<(SpotifyLibraryOwner, bool)>, StoreError> {
+        validate_spotify_library_progress(incoming_id, Some(expected), None)?;
+        if self.library_progress_for(incoming_id, base) != Some(expected) {
+            return Ok(None);
+        }
+        let (owner, changed) = self.adopt_spotify_library_owner(incoming_id)?;
+        self.spotify_library_progress.insert(
+            incoming_id.to_owned(),
+            SpotifyLibraryProgress {
+                base: Some(owner.clone()),
+                progress: expected.to_owned(),
+            },
+        );
+        Ok(Some((owner, changed)))
     }
 
     fn publish_spotify_library(
@@ -1059,6 +1203,26 @@ impl Store for MemStore {
         if let Some(heard) = heard {
             self.spotify_heard = latest_plays(heard);
         }
+        Ok(true)
+    }
+
+    fn publish_spotify_library_from_progress(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: &str,
+        entries: &[LibraryEntry],
+        playlists: Option<&[(String, String)]>,
+        contents: &[CachedPlaylist],
+        heard: Option<&[(String, i64)]>,
+    ) -> Result<bool, StoreError> {
+        validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
+        if self.library_progress_for(&owner.owner_id, Some(owner)) != Some(expected) {
+            return Ok(false);
+        }
+        if !self.publish_spotify_library(owner, entries, playlists, contents, heard)? {
+            return Ok(false);
+        }
+        self.spotify_library_progress.remove(&owner.owner_id);
         Ok(true)
     }
 

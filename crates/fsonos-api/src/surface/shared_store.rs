@@ -141,11 +141,40 @@ impl Store for SharedStore<'_> {
         self.lock().spotify_library_owner()
     }
 
+    fn spotify_library_progress(
+        &self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+    ) -> Result<Option<String>, StoreError> {
+        self.lock().spotify_library_progress(incoming_id, base)
+    }
+
+    fn save_spotify_library_progress(
+        &mut self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        self.lock()
+            .save_spotify_library_progress(incoming_id, base, expected, progress)
+    }
+
     fn adopt_spotify_library_owner(
         &mut self,
         owner: &str,
     ) -> Result<(SpotifyLibraryOwner, bool), StoreError> {
         self.lock().adopt_spotify_library_owner(owner)
+    }
+
+    fn adopt_spotify_library_from_progress(
+        &mut self,
+        incoming_id: &str,
+        base: Option<&SpotifyLibraryOwner>,
+        expected: &str,
+    ) -> Result<Option<(SpotifyLibraryOwner, bool)>, StoreError> {
+        self.lock()
+            .adopt_spotify_library_from_progress(incoming_id, base, expected)
     }
 
     fn publish_spotify_library(
@@ -158,6 +187,20 @@ impl Store for SharedStore<'_> {
     ) -> Result<bool, StoreError> {
         self.lock()
             .publish_spotify_library(owner, entries, playlists, contents, heard)
+    }
+
+    fn publish_spotify_library_from_progress(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        expected: &str,
+        entries: &[LibraryEntry],
+        playlists: Option<&[(String, String)]>,
+        contents: &[CachedPlaylist],
+        heard: Option<&[(String, i64)]>,
+    ) -> Result<bool, StoreError> {
+        self.lock().publish_spotify_library_from_progress(
+            owner, expected, entries, playlists, contents, heard,
+        )
     }
 
     fn acknowledge_spotify_playlist(
