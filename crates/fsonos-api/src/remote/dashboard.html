@@ -129,14 +129,15 @@
   <header><span class="eyebrow">YOUR ROOMS, TOGETHER</span><button id="close-groups" class="icon-button" type="button" aria-label="Close group controls"><svg><use href="#i-close"/></svg></button></header>
   <h2 id="groups-title">Choose where the music plays.</h2>
   <div class="groups-context"><p id="groups-target" class="review-target"></p><button id="groups-read" class="text-button" type="button" disabled>Read groups</button></div>
-  <p id="groups-description" class="small-note">Add a room to the selected group, separate one, or listen throughout this household.</p>
+  <p id="groups-description" class="small-note">Move or replay music between rooms, or change which rooms play together.</p>
   <div class="groups-fields">
-    <label for="groups-action">Action<select id="groups-action" disabled><option value="join">Add a room to this group</option><option value="leave">Separate a room</option><option value="party">Play throughout this household</option></select></label>
-    <label id="groups-room-field" for="groups-room">Room<select id="groups-room" disabled><option value="">Choose a room</option></select></label>
+    <label for="groups-action">Action<select id="groups-action" disabled><option value="join">Add a room to this group</option><option value="leave">Separate a room</option><option value="party">Play throughout this household</option><option value="move">Move music to another room</option><option value="replay">Replay elsewhere and stop here</option></select></label>
+    <label id="groups-room-field" for="groups-room"><span id="groups-room-label">Room</span><select id="groups-room" disabled><option value="">Choose a room</option></select></label>
+    <label id="groups-destination-field" for="groups-destination" hidden><span id="groups-destination-label">Destination room</span><select id="groups-destination" disabled><option value="">Choose a room</option></select></label>
   </div>
   <p id="groups-note" class="small-note"></p><button id="groups-review" class="outline-button" type="button" disabled>Review group change</button>
   <section id="groups-preview" class="groups-preview" aria-labelledby="groups-preview-title" tabindex="-1" hidden>
-    <h3 id="groups-preview-title"></h3><p id="groups-preview-detail"></p><h4>Current groups affected</h4><ul id="groups-affected"></ul>
+    <h3 id="groups-preview-title"></h3><p id="groups-preview-detail"></p><ul id="groups-audio" aria-label="Playback being transferred" hidden></ul><h4>Current groups affected</h4><ul id="groups-affected"></ul>
     <p class="small-note">House policy applies. Another controller can change rooms between this review and the command.</p>
     <footer><button id="groups-cancel" class="text-button" type="button">Change selection</button><button id="groups-confirm" class="primary-button" type="button" disabled>Confirm group change</button></footer>
   </section>

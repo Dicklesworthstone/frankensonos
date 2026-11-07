@@ -98,7 +98,7 @@ Changed grouping, queue/DJ ownership or an intervening mode change invalidates
 the review. Reads expire after 45 seconds; hidden pages and closed dialogs retire
 unfinished reads. An unconfirmed write is never retried automatically.
 
-### Group rooms and whole-house playback
+### Group rooms and move music
 
 **Group rooms** below the room cards can add a room to the selected listening
 group, separate an individual room, or play that group's music throughout its
@@ -115,6 +115,25 @@ mode discards the review. All operations use the dashboard's shared command lane
 and refresh the whole house after an accepted result. An unconfirmed or partial
 failure is never retried automatically; use **Refresh** to inspect current state
 before another command. Whole-house grouping can complete only partly.
+
+**Move music** chooses the room the music will leave and its destination within
+the same household. The destination joins the source music, then the selected
+source room leaves; other source-group rooms can keep playing. Moving within an
+existing group separates only the selected source room. Coordinator handoff and
+any device fallback use the native move operation.
+
+**Replay elsewhere and stop here** can target another group in either household.
+It replaces that group's source or queue and then stops the entire source group.
+The households remain separate, and paused music is loaded silently. This option
+uses the native replay transfer, including queue and track-position handling.
+
+Transfer reviews read the music in both affected groups and show their playback
+state and reported queue occurrence. Confirmation rechecks membership, source URI,
+queue occurrence, known duration and transport state in both groups. A changed
+duplicate occurrence needs a new review; normal elapsed progress does not.
+Unloaded or unsettled sources cannot be reviewed. Topology is checked again after
+the audio reads, and an expired review cannot dispatch while preflight is pending.
+Other controllers can still act between these observations and the native command.
 
 ## Room scope and keyboard interaction
 

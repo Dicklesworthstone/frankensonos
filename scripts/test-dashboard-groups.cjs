@@ -43,6 +43,8 @@ function fixture({ demo = false, dom = false } = {}) {
     { household: 'Fixture S1', coordinator_room: 'Synthetic main',
       members: ['Synthetic main'], transport_state: 'stopped', degraded: [] },
   ];
+  const tracks = new Map(zones.map(zone => [C.key(zone), { uri: 'fixture:track', title: 'Synthetic song',
+    queue_position: 2, position_secs: 30, duration_secs: 180 }]));
   let time = 1000, reader = null, writer = null, groups;
   const calls = [], doc = dom ? documentFixture() : null;
   const normalRead = url => {
@@ -50,7 +52,7 @@ function fixture({ demo = false, dom = false } = {}) {
     const zone = zones.find(row => url === '/zones/' + encodeURIComponent(C.key(row)) + '/state');
     if (!zone) throw new Error('Unexpected fixture read: ' + url);
     return { zone: copy(zone), transport_state: zone.transport_state, volume: 20,
-      track: { uri: 'fixture:track', title: 'Synthetic song', queue_position: 2, position_secs: 30, duration_secs: 180 } };
+      track: copy(tracks.has(C.key(zone)) ? tracks.get(C.key(zone)) : { uri: 'fixture:new', queue_position: 1 }) };
   };
   const call = async (url, body, options) => {
     calls.push({ url, body, options });
@@ -60,15 +62,17 @@ function fixture({ demo = false, dom = false } = {}) {
   const ctl = C.model({ call, demo, now: () => time, changed: () => groups?.observe() });
   const options = { call, controller: ctl, now: () => time };
   groups = dom ? Groups.panel({ ...options, document: doc }) : Groups.model(options);
-  return { ctl, groups, zones, calls, doc, normalRead,
+  return { ctl, groups, zones, tracks, calls, doc, normalRead,
     writes: () => calls.filter(row => row.body !== undefined).map(({ url, body }) => ({ url, body })),
     read(fn) { reader = fn; }, write(fn) { writer = fn; }, time(value) { time = value; },
     async ready() { assert.equal(await ctl.refresh(), true); ctl.connection(true); return this; },
-    async reviewed(action = 'join', room = 'Synthetic kitchen@Fixture S2') {
+    async reviewed(action = 'join', room = action === 'move' ? 'Synthetic main@Fixture S2' : 'Synthetic kitchen@Fixture S2',
+      destination = action === 'replay' ? 'Synthetic main@Fixture S1' : 'Synthetic kitchen@Fixture S2') {
       assert.equal(await groups.open(), true);
       assert.equal(groups.chooseAction(action), true);
-      if (action !== 'party') assert.equal(groups.chooseRoom(room), true);
-      assert.ok(groups.review());
+      if (!['party', 'replay'].includes(action)) assert.equal(groups.chooseRoom(room), true);
+      if (Groups.transferring(action)) assert.equal(groups.chooseDestination(destination), true);
+      assert.ok(await groups.review());
       return groups.state.pending;
     },
   };
@@ -142,7 +146,7 @@ test('unchanged standalone groups, foreign households and unsupported actions ca
   const f = await fixture().ready(); await f.groups.open();
   assert.equal(f.groups.chooseRoom('Synthetic main@Fixture S1'), false);
   assert.equal(f.groups.review(), null);
-  for (const action of ['__proto__', 'constructor', 'move', 'replay', null]) {
+  for (const action of ['__proto__', 'constructor', 'copy', 'unsupported', null]) {
     assert.equal(f.groups.chooseAction(action), false);
   }
   f.ctl.select('Synthetic main@Fixture S1'); await f.groups.read();
@@ -450,4 +454,340 @@ test('real panel Escape, stale-state and lifecycle handlers retire reviewed acti
     assert.equal(f.writes().length, 0);
     assert.equal(f.groups.state.pending, null);
   }
+});
+
+
+test('native movement offers source rooms in this group and destinations in this household', async () => {
+  const f = await fixture().ready(); await f.groups.open(); f.groups.chooseAction('move');
+  assert.deepEqual(f.groups.choices().map(choice => choice.target), [
+    'Synthetic companion@Fixture S2', 'Synthetic main@Fixture S2',
+  ]);
+  f.groups.chooseRoom('Synthetic main@Fixture S2');
+  assert.ok(f.groups.destinations().some(choice => choice.target === 'Synthetic companion@Fixture S2'));
+  assert.equal(f.groups.destinations().some(choice => choice.target === 'Synthetic main@Fixture S2'), false);
+  assert.equal(f.groups.destinations().some(choice => choice.target.endsWith('@Fixture S1')), false);
+  assert.equal(f.groups.chooseDestination('Synthetic main@Fixture S1'), false);
+  assert.equal(f.groups.review(), null);
+  f.groups.chooseAction('replay');
+  assert.equal(f.groups.choices().length, 0);
+  assert.deepEqual(f.groups.destinations().map(choice => choice.target), [
+    'Synthetic kitchen@Fixture S2', 'Synthetic main@Fixture S1',
+  ]);
+});
+
+test('moving a coordinator captures both groups and sends one native move command', async () => {
+  const f = await fixture().ready(), pending = await f.reviewed('move');
+  assert.ok(Object.isFrozen(pending.audio));
+  assert.ok(Object.isFrozen(pending.audio.source));
+  assert.equal(pending.audio.source.target, 'Synthetic main@Fixture S2');
+  assert.equal(pending.audio.destination.target, 'Synthetic kitchen@Fixture S2');
+  assert.equal(pending.audio.source.position, 2);
+  assert.match(pending.detail, /Coordination moves first/);
+  assert.match(pending.detail, /destination currently coordinates/);
+  assert.equal(f.writes().length, 0);
+  assert.equal(await f.groups.apply(), true);
+  assert.deepEqual(f.writes(), [{ url: '/move', body: {
+    zone: 'Synthetic main@Fixture S2', to: 'Synthetic kitchen@Fixture S2', copy: false,
+  } }]);
+  assert.equal(f.groups.state.result.action, 'move');
+});
+
+test('moving a member reads its coordinator while the native request names the actual rooms', async () => {
+  const f = await fixture().ready(), pending = await f.reviewed('move',
+    'Synthetic companion@Fixture S2', 'Synthetic nook@Fixture S2');
+  assert.equal(pending.audio.source.target, 'Synthetic main@Fixture S2');
+  assert.equal(pending.audio.destination.target, 'Synthetic kitchen@Fixture S2');
+  assert.equal(await f.groups.apply(), true);
+  assert.deepEqual(f.writes()[0].body, {
+    zone: 'Synthetic companion@Fixture S2', to: 'Synthetic nook@Fixture S2', copy: false,
+  });
+});
+
+test('a move within one group reads that playback once and separates the selected source room', async () => {
+  const f = await fixture().ready(), before = f.calls.length;
+  const pending = await f.reviewed('move', 'Synthetic companion@Fixture S2', 'Synthetic main@Fixture S2');
+  assert.equal(pending.affected.length, 1);
+  assert.equal(pending.audio.source, pending.audio.destination);
+  assert.match(pending.detail, /already shares this music/);
+  assert.equal(f.calls.slice(before).filter(row => row.url.endsWith('/state')).length, 1);
+  assert.equal(await f.groups.apply(), true);
+  assert.deepEqual(f.writes(), [{ url: '/move', body: {
+    zone: 'Synthetic companion@Fixture S2', to: 'Synthetic main@Fixture S2', copy: false,
+  } }]);
+});
+
+test('replay across households explicitly replaces the destination and stops the entire source group', async () => {
+  const f = await fixture().ready(), pending = await f.reviewed('replay');
+  assert.match(pending.title, /Replay on .*Fixture S1.* and stop .*Fixture S2/);
+  assert.match(pending.detail, /stops the entire source group/);
+  assert.match(pending.detail, /not synchronized/);
+  assert.equal(pending.affected.length, 2);
+  assert.equal(await f.groups.apply(), true);
+  assert.deepEqual(f.writes(), [{ url: '/move', body: {
+    zone: 'Synthetic main@Fixture S2', to: 'Synthetic main@Fixture S1', copy: true,
+  } }]);
+});
+
+test('replay to a different group in the same household keeps copy semantics', async () => {
+  const f = await fixture().ready(); await f.reviewed('replay', '', 'Synthetic kitchen@Fixture S2');
+  assert.equal(await f.groups.apply(), true);
+  assert.equal(f.writes()[0].body.copy, true);
+  assert.equal(f.writes()[0].body.to, 'Synthetic kitchen@Fixture S2');
+});
+
+test('identical rooms, same-group replay and cross-household native moves cannot be reviewed', async () => {
+  const f = await fixture().ready(), groups = Groups.inventory(f.zones);
+  assert.throws(() => Groups.proposal(groups, 'Synthetic main@Fixture S2', 'move',
+    'Synthetic main@Fixture S2', 'Synthetic main@Fixture S2'), /different destination/);
+  assert.throws(() => Groups.proposal(groups, 'Synthetic main@Fixture S2', 'move',
+    'Synthetic main@Fixture S2', 'Synthetic main@Fixture S1'), /one household/);
+  assert.throws(() => Groups.proposal(groups, 'Synthetic main@Fixture S2', 'replay',
+    '', 'Synthetic companion@Fixture S2'), /already share/);
+  await f.groups.open(); f.groups.chooseAction('replay');
+  assert.equal(f.groups.chooseDestination('Synthetic main@Fixture S2'), false);
+  assert.equal(f.groups.review(), null);
+  assert.equal(f.writes().length, 0);
+});
+
+test('paused sources and direct streams can transfer without an invented resume command', async () => {
+  for (const stream of [false, true]) {
+    const f = await fixture().ready();
+    f.zones[0].transport_state = 'paused';
+    if (stream) f.tracks.set('Synthetic main@Fixture S2', { uri: 'fixture:radio', title: 'Synthetic radio' });
+    f.tracks.set('Synthetic main@Fixture S1', null);
+    const pending = await f.reviewed('replay');
+    assert.equal(pending.audio.source.transport, 'paused');
+    assert.equal(pending.audio.source.position, stream ? null : 2);
+    assert.equal(pending.audio.destination.label, 'Nothing loaded');
+    assert.match(pending.detail, /Paused music is loaded silently/);
+    assert.equal(await f.groups.apply(), true);
+    assert.deepEqual(f.writes().map(row => row.url), ['/move']);
+  }
+});
+
+test('empty or unstable sources and unreadable destination playback create no transfer review', async () => {
+  for (const change of [
+    f => f.tracks.set('Synthetic main@Fixture S2', null),
+    f => { f.tracks.get('Synthetic main@Fixture S2').uri = 'NOT_IMPLEMENTED'; },
+    f => { f.zones[0].transport_state = 'transitioning'; },
+    f => { f.zones[0].transport_state = 'unknown'; },
+    f => { f.zones[1].transport_state = 'transitioning'; },
+  ]) {
+    const f = await fixture().ready();
+    await f.groups.open(); f.groups.chooseAction('move');
+    f.groups.chooseRoom('Synthetic main@Fixture S2'); f.groups.chooseDestination('Synthetic kitchen@Fixture S2');
+    change(f);
+    assert.equal(await f.groups.review(), null);
+    assert.equal(await f.groups.apply(), false);
+    assert.equal(f.groups.state.pending, null);
+    assert.equal(f.writes().length, 0);
+    assert.equal(f.ctl.state.uncertain, false);
+  }
+});
+
+test('invalid queue occurrences in either group are rejected before creating transfer authority', async () => {
+  for (const target of ['Synthetic main@Fixture S2', 'Synthetic kitchen@Fixture S2']) {
+    for (const position of [0, -1, 2.5, 4294967296, '2']) {
+      const f = await fixture().ready();
+      await f.groups.open(); f.groups.chooseAction('move');
+      f.groups.chooseRoom('Synthetic main@Fixture S2'); f.groups.chooseDestination('Synthetic kitchen@Fixture S2');
+      f.tracks.get(target).queue_position = position;
+      assert.equal(await f.groups.review(), null);
+      assert.equal(f.writes().length, 0);
+    }
+  }
+});
+
+test('preflight fences source and destination URI, duplicate occurrence, duration and transport changes', async () => {
+  for (const target of ['Synthetic main@Fixture S2', 'Synthetic kitchen@Fixture S2']) {
+    for (const change of [
+      f => { f.tracks.get(target).uri = 'fixture:changed'; },
+      f => { f.tracks.get(target).queue_position = 3; },
+      f => { delete f.tracks.get(target).queue_position; },
+      f => { f.tracks.get(target).duration_secs = 200; },
+      f => { f.zones.find(zone => C.key(zone) === target).transport_state = 'stopped'; },
+    ]) {
+      const f = await fixture().ready(); await f.reviewed('move'); change(f);
+      assert.equal(await f.groups.apply(), false);
+      assert.equal(f.writes().length, 0);
+      assert.equal(f.ctl.state.uncertain, false);
+    }
+  }
+});
+
+test('an absent occurrence becoming known and an empty destination becoming loaded require a new review', async () => {
+  for (const change of [
+    f => { f.tracks.get('Synthetic main@Fixture S2').queue_position = 2; },
+    f => { f.tracks.set('Synthetic main@Fixture S1', { uri: 'fixture:new', queue_position: 1 }); },
+  ]) {
+    const f = await fixture().ready();
+    delete f.tracks.get('Synthetic main@Fixture S2').queue_position;
+    f.tracks.set('Synthetic main@Fixture S1', null);
+    await f.reviewed('replay'); change(f);
+    assert.equal(await f.groups.apply(), false);
+    assert.equal(f.writes().length, 0);
+  }
+});
+
+test('elapsed progress and cosmetic title changes do not block the same reviewed transfer', async () => {
+  const f = await fixture().ready(); await f.reviewed('move');
+  for (const target of ['Synthetic main@Fixture S2', 'Synthetic kitchen@Fixture S2']) {
+    Object.assign(f.tracks.get(target), { position_secs: 45, title: 'Updated display title' });
+  }
+  assert.equal(await f.groups.apply(), true);
+  assert.equal(f.writes().length, 1);
+});
+
+test('topology is checked again after both playback observations are captured', async () => {
+  const f = await fixture().ready();
+  await f.groups.open(); f.groups.chooseAction('move');
+  f.groups.chooseRoom('Synthetic main@Fixture S2'); f.groups.chooseDestination('Synthetic kitchen@Fixture S2');
+  f.read((url, options, normal) => {
+    if (url === '/zones') { const groups = copy(f.zones); groups[1].members.push('Synthetic arrival'); return groups; }
+    return normal(url);
+  });
+  assert.equal(await f.groups.review(), null);
+  assert.equal(f.writes().length, 0);
+  assert.match(f.groups.state.message, /changed while their music was being read/);
+});
+
+test('closing, hiding or selecting another group while transfer review loads cancels its authority', async () => {
+  for (const interrupt of [
+    f => f.groups.close(),
+    f => f.groups.suspend(),
+    f => f.ctl.select('Synthetic main@Fixture S1'),
+    f => f.ctl.invalidate(['Synthetic kitchen@Fixture S2']),
+  ]) {
+    const f = await fixture().ready();
+    await f.groups.open(); f.groups.chooseAction('move');
+    f.groups.chooseRoom('Synthetic main@Fixture S2'); f.groups.chooseDestination('Synthetic kitchen@Fixture S2');
+    const wait = deferred(); let signal;
+    f.read((url, options, normal) => {
+      if (url.endsWith('/state')) { signal = options.signal; return wait.promise.then(() => normal(url)); }
+      return normal(url);
+    });
+    const pending = f.groups.review();
+    await settled(() => !!signal);
+    interrupt(f); wait.resolve();
+    assert.equal(await pending, null);
+    assert.equal(f.groups.state.pending, null);
+    assert.equal(f.writes().length, 0);
+  }
+});
+
+test('an altered destination cannot reuse the previously captured playback review', async () => {
+  const f = await fixture().ready(), old = await f.reviewed('replay');
+  f.groups.chooseDestination('Synthetic kitchen@Fixture S2');
+  assert.equal(f.groups.state.pending, null);
+  assert.equal(await f.groups.apply(old), false);
+  assert.ok(await f.groups.review());
+  assert.equal(await f.groups.apply(), true);
+  assert.equal(f.writes()[0].body.to, 'Synthetic kitchen@Fixture S2');
+});
+
+test('a transfer review that expires during delayed preflight cannot dispatch without observe running', async () => {
+  const f = await fixture().ready(); await f.reviewed('move');
+  f.time(1000 + Groups.MAX_AGE - 1);
+  const wait = deferred(); let reads = 0;
+  f.read((url, options, normal) => {
+    if (url.endsWith('/state')) { reads++; return wait.promise.then(() => normal(url)); }
+    return normal(url);
+  });
+  const task = f.groups.apply();
+  await settled(() => reads === 2);
+  f.time(1000 + Groups.MAX_AGE);
+  wait.resolve();
+  assert.equal(await task, false);
+  assert.equal(f.writes().length, 0);
+  assert.equal(f.ctl.state.uncertain, false);
+});
+
+test('membership changes during transfer preflight are detected after the audio reads', async () => {
+  const f = await fixture().ready(); await f.reviewed('move');
+  let topologyReads = 0;
+  f.read((url, options, normal) => {
+    if (url === '/zones' && ++topologyReads === 2) {
+      const groups = copy(f.zones); groups[1].members.push('Synthetic arrival'); return groups;
+    }
+    return normal(url);
+  });
+  assert.equal(await f.groups.apply(), false);
+  assert.equal(f.writes().length, 0);
+});
+
+test('transfers keep the shared mutation lane while checking both groups and never repeat uncertain writes', async () => {
+  const f = await fixture().ready(); await f.reviewed('replay');
+  const wait = deferred(); let reads = 0;
+  f.read((url, options, normal) => {
+    if (url.endsWith('/state')) { reads++; return wait.promise.then(() => normal(url)); }
+    return normal(url);
+  });
+  f.write(() => { throw new Error('Replay accepted but reply lost'); });
+  const task = f.groups.apply();
+  await settled(() => reads === 2);
+  assert.equal(await f.ctl.command('next'), false);
+  assert.equal(await f.groups.apply(), false);
+  wait.resolve();
+  assert.equal(await task, false);
+  assert.deepEqual(f.writes().map(row => row.url), ['/move']);
+  assert.equal(f.ctl.state.uncertain, true);
+  assert.equal(f.groups.state.result, null);
+  f.groups.close(); f.groups.resume();
+  assert.equal(await f.groups.apply(), false);
+  assert.equal(f.writes().length, 1);
+});
+
+test('accepted replay refreshes source and destination states across households', async () => {
+  const f = await fixture().ready(); await f.reviewed('replay');
+  f.write(() => {
+    f.zones[0].transport_state = 'stopped'; f.zones[2].transport_state = 'playing';
+    f.tracks.set('Synthetic main@Fixture S1', { ...copy(f.tracks.get('Synthetic main@Fixture S2')), title: 'Transferred fixture' });
+    return { done: 'Replayed and source stopped', changed: true };
+  });
+  const before = f.calls.length;
+  assert.equal(await f.groups.apply(), true);
+  assert.equal(f.ctl.state.items[0].state.transport_state, 'stopped');
+  assert.equal(f.ctl.state.items[2].state.track.title, 'Transferred fixture');
+  assert.equal(f.ctl.state.items[2].state.transport_state, 'playing');
+  const sent = f.calls.findIndex((row, index) => index >= before && row.body !== undefined);
+  assert.deepEqual(f.calls.slice(sent + 1).map(row => row.url), [
+    '/zones', '/zones/Synthetic%20main%40Fixture%20S2/state',
+    '/zones/Synthetic%20kitchen%40Fixture%20S2/state', '/zones/Synthetic%20main%40Fixture%20S1/state',
+  ]);
+});
+
+test('real panel transfer handlers show source and destination audio and dispatch the reviewed operation', async () => {
+  for (const action of ['move', 'replay']) {
+    const f = await fixture({ dom: true }).ready(), $ = id => f.doc.getElementById(id);
+    $('open-groups').fire('click'); await settled(() => !f.groups.state.loading);
+    $('groups-action').value = action; $('groups-action').fire('change');
+    assert.equal($('groups-destination-field').hidden, false);
+    assert.equal($('groups-room-field').hidden, action === 'replay');
+    if (action === 'move') {
+      assert.equal($('groups-room-label').textContent, 'Room the music leaves');
+      $('groups-room').value = 'Synthetic companion@Fixture S2'; $('groups-room').fire('change');
+    }
+    $('groups-destination').value = action === 'move' ? 'Synthetic nook@Fixture S2' : 'Synthetic main@Fixture S1';
+    $('groups-destination').fire('change'); $('groups-review').fire('click');
+    await settled(() => !!f.groups.state.pending);
+    assert.equal($('groups-audio').hidden, false);
+    assert.equal($('groups-audio').children.length, 2);
+    assert.match($('groups-audio').children[0].textContent, /Source: .*playing.*queue #2/);
+    assert.equal($('groups-confirm').disabled, false);
+    $('groups-confirm').fire('click');
+    await settled(() => f.writes().length === 1 && !f.groups.state.writing);
+    assert.equal(f.writes()[0].url, '/move');
+    assert.equal(f.writes()[0].body.copy, action === 'replay');
+  }
+});
+
+test('clearing a destination through the real panel retires its captured transfer review', async () => {
+  const f = await fixture({ dom: true }).ready(), $ = id => f.doc.getElementById(id);
+  await f.reviewed('replay');
+  $('groups-destination').value = ''; $('groups-destination').fire('change');
+  assert.equal(f.groups.state.pending, null);
+  assert.equal($('groups-preview').hidden, true);
+  assert.equal($('groups-confirm').disabled, true);
+  $('groups-confirm').fire('click');
+  assert.equal(f.writes().length, 0);
 });
