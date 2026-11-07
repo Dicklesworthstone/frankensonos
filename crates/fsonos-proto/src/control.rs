@@ -430,7 +430,13 @@ pub fn get_loudness<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<bool, 
         "GetLoudness",
         &[INSTANCE, MASTER],
     )?;
-    Ok(r.require("CurrentLoudness")?.trim() == "1")
+    match r.require("CurrentLoudness")?.trim() {
+        "1" | "true" | "yes" => Ok(true),
+        "0" | "false" | "no" => Ok(false),
+        value => Err(ProtoError::Malformed(format!(
+            "CurrentLoudness is not a boolean: {value:?}"
+        ))),
+    }
 }
 
 /// Turn loudness compensation on or off at `host`.
@@ -810,6 +816,30 @@ mod tests {
             "{:?}",
             t.last()
         );
+    }
+
+    #[test]
+    fn a_loudness_read_requires_a_known_boolean() {
+        for (body, expected) in [
+            ("<CurrentLoudness>1</CurrentLoudness>", true),
+            ("<CurrentLoudness>true</CurrentLoudness>", true),
+            ("<CurrentLoudness>yes</CurrentLoudness>", true),
+            ("<CurrentLoudness>0</CurrentLoudness>", false),
+            ("<CurrentLoudness>false</CurrentLoudness>", false),
+            ("<CurrentLoudness>no</CurrentLoudness>", false),
+        ] {
+            assert_eq!(get_loudness(&Canned::new(body), host()).unwrap(), expected);
+        }
+        for body in [
+            "<CurrentLoudness></CurrentLoudness>",
+            "<CurrentLoudness>2</CurrentLoudness>",
+            "<CurrentLoudness>unknown</CurrentLoudness>",
+        ] {
+            assert!(matches!(
+                get_loudness(&Canned::new(body), host()),
+                Err(ProtoError::Malformed(_))
+            ));
+        }
     }
 
     #[test]

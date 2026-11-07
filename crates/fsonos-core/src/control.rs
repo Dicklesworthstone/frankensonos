@@ -550,7 +550,9 @@ pub fn tone<T: Transport + ?Sized>(
     })
 }
 
-/// Change what `change` names of `player`'s tone.
+/// Change what `change` names of `player`'s tone. A lost acknowledgement is
+/// confirmed by reading that field before continuing with the remaining
+/// changes; an uncertain write is never repeated.
 pub fn set_tone<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -559,15 +561,41 @@ pub fn set_tone<T: Transport + ?Sized>(
 ) -> Result<(), CoreError> {
     let host = addr(households, player)?;
     if let Some(bass) = change.bass {
-        soap::set_bass(t, host, bass)?;
+        confirm_tone_change("SetBass", soap::set_bass(t, host, bass), || {
+            Ok(soap::get_bass(t, host)? == bass.clamp(-10, 10))
+        })?;
     }
     if let Some(treble) = change.treble {
-        soap::set_treble(t, host, treble)?;
+        confirm_tone_change("SetTreble", soap::set_treble(t, host, treble), || {
+            Ok(soap::get_treble(t, host)? == treble.clamp(-10, 10))
+        })?;
     }
     if let Some(loudness) = change.loudness {
-        soap::set_loudness(t, host, loudness)?;
+        confirm_tone_change("SetLoudness", soap::set_loudness(t, host, loudness), || {
+            Ok(soap::get_loudness(t, host)? == loudness)
+        })?;
     }
     Ok(())
+}
+
+fn confirm_tone_change(
+    operation: &'static str,
+    result: Result<(), ProtoError>,
+    observe: impl FnOnce() -> Result<bool, ProtoError>,
+) -> Result<(), ProtoError> {
+    let Err(error) = result else {
+        return Ok(());
+    };
+    if matches!(&error, ProtoError::Network { .. } | ProtoError::Malformed(_))
+        && observe().unwrap_or(false)
+    {
+        tracing::warn!(operation, cause = %error, "tone change confirmed without another write");
+        Ok(())
+    } else {
+        // A definite refusal, a different value or an unreadable field keeps
+        // the original failure and stops the rest of a multi-field change.
+        Err(error)
+    }
 }
 
 /// Move `member` into the group `coordinator` leads. A lost or malformed
