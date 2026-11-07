@@ -471,19 +471,17 @@ fn worker_failure(
 ) -> Option<anyhow::Error> {
     for (role, listeners) in [("HTTP API", http), ("bridge-compatible API", bridge)] {
         for (listener, addr) in listeners {
-            if let Some(error) = supervision::listener_failure(
-                &mut listener.thread,
-                &format!("{role} on {addr}"),
-            ) {
+            if let Some(error) =
+                supervision::listener_failure(&mut listener.thread, &format!("{role} on {addr}"))
+            {
                 return Some(error);
             }
         }
     }
     for (listener, addr) in mcp {
-        if let Some(error) = supervision::listener_failure(
-            &mut listener.thread,
-            &format!("MCP server on {addr}"),
-        ) {
+        if let Some(error) =
+            supervision::listener_failure(&mut listener.thread, &format!("MCP server on {addr}"))
+        {
             return Some(error);
         }
     }

@@ -586,8 +586,10 @@ fn confirm_tone_change(
     let Err(error) = result else {
         return Ok(());
     };
-    if matches!(&error, ProtoError::Network { .. } | ProtoError::Malformed(_))
-        && observe().unwrap_or(false)
+    if matches!(
+        &error,
+        ProtoError::Network { .. } | ProtoError::Malformed(_)
+    ) && observe().unwrap_or(false)
     {
         tracing::warn!(operation, cause = %error, "tone change confirmed without another write");
         Ok(())

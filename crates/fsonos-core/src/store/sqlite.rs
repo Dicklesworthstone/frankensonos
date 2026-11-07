@@ -232,6 +232,13 @@ const MIGRATIONS: &[Migration] = &[
             progress TEXT NOT NULL);
     ",
     },
+    Migration {
+        version: 20,
+        name: "lead artist identity for resumable Spotify genre enrichment",
+        sql: "
+        ALTER TABLE spotify_library ADD COLUMN artist_id TEXT;
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -633,6 +640,7 @@ fn library_rows(entries: &[LibraryEntry]) -> Vec<Vec<SqliteValue>> {
                 i64::from(e.explicit).into(),
                 opt_value(e.candidate.map(i64::from)),
                 opt_value(e.taste_weight.map(i64::from)),
+                opt_value(e.artist_id.as_deref()),
             ]
         })
         .collect()
@@ -650,9 +658,9 @@ fn write_library(
             "INSERT OR REPLACE INTO spotify_library \
              (source_uri, title, artist, album, duration_secs, is_classical, added, \
               album_uri, album_artists, origin, disc_number, track_number, work_key, \
-              genres, release_year, explicit, candidate, taste_weight) \
+              genres, release_year, explicit, candidate, taste_weight, artist_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-              ?16, ?17, ?18)",
+              ?16, ?17, ?18, ?19)",
             rows,
         )
         .map(drop)
@@ -904,7 +912,7 @@ impl Store for SqliteStore {
         self.query(
             "SELECT source_uri, title, artist, album, duration_secs, is_classical, added, \
              album_uri, album_artists, origin, disc_number, track_number, work_key, \
-             genres, release_year, explicit, candidate, taste_weight \
+             genres, release_year, explicit, candidate, taste_weight, artist_id \
              FROM spotify_library ORDER BY added, source_uri",
             &[],
         )?
@@ -930,6 +938,7 @@ impl Store for SqliteStore {
                 explicit: int(r, 15)? != 0,
                 candidate: opt_int(r, 16)?.map(|c| c != 0),
                 taste_weight: small(17, "taste_weight")?,
+                artist_id: opt_text(r, 18)?,
                 track: Track {
                     source_uri: text(r, 0)?,
                     title: text(r, 1)?,
@@ -2118,6 +2127,44 @@ mod tests {
     }
 
     #[test]
+    fn v19_library_migrates_without_inventing_artist_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artist-identity.db");
+        let legacy =
+            SqliteStore::open_migrated(&path.to_string_lossy(), &MIGRATIONS[..19]).unwrap();
+        legacy
+            .execute(
+                "INSERT INTO spotify_library \
+                 (source_uri, title, artist, album, is_classical, added, origin, \
+                  genres, explicit, candidate, taste_weight, work_key) \
+                 VALUES (?1, 'Shared artist name', 'Catalog Artist', 'The Album', \
+                  0, 9, 'both', 'jazz; cool jazz', 1, 1, 1230, 'catalog artist|song')",
+                &["spotify:track:LegacyArtistIdentity".into()],
+            )
+            .unwrap();
+        legacy.close().unwrap();
+
+        let mut store = SqliteStore::open(&path).unwrap();
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&20));
+        let mut entry = store.library().unwrap().pop().unwrap();
+        assert_eq!(entry.artist_id, None, "a name does not prove an artist ID");
+        assert_eq!(entry.origin, LibraryOrigin::Both);
+        assert_eq!(entry.added, 9);
+        assert_eq!(entry.genres, ["jazz", "cool jazz"]);
+        assert!(entry.explicit);
+        assert_eq!(entry.candidate, Some(true));
+        assert_eq!(entry.taste_weight, Some(1230));
+        assert_eq!(entry.work_key.as_deref(), Some("catalog artist|song"));
+        entry.artist_id = Some("CatalogArtistIdentity".into());
+        store.upsert_library(std::slice::from_ref(&entry)).unwrap();
+        store.close().unwrap();
+
+        let reopened = SqliteStore::open(&path).unwrap();
+        assert_eq!(reopened.library().unwrap(), [entry]);
+        reopened.close().unwrap();
+    }
+
+    #[test]
     fn v1_database_upgrades_in_place() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fsonos.db").to_string_lossy().into_owned();
@@ -2138,7 +2185,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
             ]
         );
         let lib = store.library().unwrap();
@@ -2181,7 +2228,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
             ]
         );
         let lib = store.library().unwrap();
@@ -2240,7 +2287,7 @@ mod tests {
         assert_eq!(
             store.schema_versions().unwrap(),
             [
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
             ]
         );
         let lib = store.library().unwrap();

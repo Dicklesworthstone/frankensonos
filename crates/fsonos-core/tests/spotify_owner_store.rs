@@ -23,6 +23,7 @@ fn seed(store: &mut dyn Store) {
                 duration_secs: None,
             },
             candidate: Some(true),
+            artist_id: Some("CatalogArtist".into()),
             taste_weight: Some(1136),
             ..LibraryEntry::default()
         }])
@@ -79,6 +80,7 @@ fn switched(store: &dyn Store) {
     let entries = store.library().unwrap();
     assert_eq!(entries.len(), 1, "retained metadata is not deleted");
     assert!(!entries[0].is_candidate());
+    assert_eq!(entries[0].artist_id.as_deref(), Some("CatalogArtist"));
     assert_eq!(entries[0].taste_weight, None);
     assert!(store.playlists().unwrap().is_empty());
     assert!(store.playlist_contents(PLAYLIST).unwrap().is_none());
@@ -189,6 +191,7 @@ fn candidate(song: &str) -> LibraryEntry {
             duration_secs: Some(180),
         },
         candidate: Some(true),
+        artist_id: Some("CatalogArtist".into()),
         taste_weight: Some(1030),
         ..LibraryEntry::default()
     }

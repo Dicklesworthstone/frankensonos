@@ -396,6 +396,7 @@ pub fn to_entry(item: &LibraryItem, candidate: Option<&ClassicalTrack>) -> Libra
         is_classical: candidate.is_some_and(|t| t.classical),
         added: item.added_at.unwrap_or(0),
         album_uri: item.album_uri.clone(),
+        artist_id: item.artist_id.clone(),
         album_artists: (!item.album_artists.is_empty())
             .then(|| item.album_artists.join(ARTIST_SEPARATOR)),
         origin: match item.origin {
@@ -426,6 +427,7 @@ pub fn from_entry(entry: &LibraryEntry) -> LibraryItem {
     };
     let mut item = LibraryItem::from_track(&entry.track, origin);
     item.album_uri.clone_from(&entry.album_uri);
+    item.artist_id.clone_from(&entry.artist_id);
     item.album_artists = entry.album_artists.as_deref().map_or_default(split_artists);
     item.disc_number = entry.disc_number;
     item.track_number = entry.track_number;

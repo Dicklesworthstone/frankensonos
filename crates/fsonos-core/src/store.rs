@@ -78,6 +78,9 @@ pub struct LibraryEntry {
     pub album_uri: Option<String>,
     /// Album artists, `"; "`-joined like `track.artist`.
     pub album_artists: Option<String>,
+    /// Spotify ID of the lead artist, for resumable catalog genre enrichment.
+    /// Older cache rows have no ID until the next library read.
+    pub artist_id: Option<String>,
     pub origin: LibraryOrigin,
     pub disc_number: Option<u32>,
     pub track_number: Option<u32>,
@@ -266,6 +269,7 @@ impl Default for LibraryEntry {
             added: 0,
             album_uri: None,
             album_artists: None,
+            artist_id: None,
             origin: LibraryOrigin::default(),
             disc_number: None,
             track_number: None,

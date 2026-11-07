@@ -222,7 +222,9 @@ fn shutdown_signals_do_not_turn_expected_worker_exits_into_failures() {
     .unwrap();
 
     let mut running = Running::new(&surface());
-    running.shutdown().expect("the real scheduler stops normally");
+    running
+        .shutdown()
+        .expect("the real scheduler stops normally");
 }
 
 /// Fail only a scheduler tick, leaving its existing state available for
@@ -312,7 +314,10 @@ fn a_panicked_scheduler_restores_an_active_sleep_fade_before_exit() {
     fail.store(true, Ordering::Release);
     let error = format!("{:#}", running.failure());
     assert!(error.contains("scheduler stopped unexpectedly"), "{error}");
-    assert!(error.contains("injected scheduler clock failure"), "{error}");
+    assert!(
+        error.contains("injected scheduler clock failure"),
+        "{error}"
+    );
     assert!(running.stop.load(Ordering::Acquire));
     running
         .shutdown()

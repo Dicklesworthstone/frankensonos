@@ -119,8 +119,8 @@ fn a_definite_refusal_stops_even_when_the_requested_tone_already_matches() {
     for (index, action) in ACTIONS.iter().enumerate() {
         sim.upnp_fault("Kitchen", action, 501).unwrap();
         let before = sim.soap_log().len();
-        let error = control::set_tone(&sim.lan(), &houses, &player, ToneChange::all(flat()))
-            .unwrap_err();
+        let error =
+            control::set_tone(&sim.lan(), &houses, &player, ToneChange::all(flat())).unwrap_err();
         assert!(matches!(
             error,
             CoreError::Proto(ProtoError::SoapFault { code: 501, .. })
@@ -169,9 +169,11 @@ fn an_unconfirmed_field_preserves_the_write_error_and_stops_later_changes() {
                 if detail == "tone write acknowledgement lost"
         ));
         assert_eq!(transport.attempts.get(), 1);
-        assert!(sim.soap_log()[before..].iter().all(|entry| {
-            entry.action != "SetTreble" && entry.action != "SetLoudness"
-        }));
+        assert!(
+            sim.soap_log()[before..]
+                .iter()
+                .all(|entry| { entry.action != "SetTreble" && entry.action != "SetLoudness" })
+        );
         sim.clear_faults("Kitchen").unwrap();
         assert_eq!(
             control::tone(&sim.lan(), &houses, &player).unwrap(),

@@ -211,6 +211,7 @@ fn library_cache(s: &mut dyn Store) {
     let mut movement = entry("spotify:track:m2", 40, Some("Mahler"), true);
     movement.album_uri = Some("spotify:album:sym5".into());
     movement.album_artists = Some("Mahler; Wiener Philharmoniker".into());
+    movement.artist_id = Some("CatalogMovementArtist".into());
     movement.origin = LibraryOrigin::LikedTrack;
     movement.disc_number = Some(1);
     movement.track_number = Some(2);
@@ -230,6 +231,7 @@ fn library_cache(s: &mut dyn Store) {
     assert_eq!(s.library().unwrap().len(), 4);
     // A track known only from the owner's other taste signals.
     let mut heard = entry("spotify:track:heard", 50, Some("Nina Marsh Quartet"), false);
+    heard.artist_id = Some("CatalogTasteArtist".into());
     heard.origin = LibraryOrigin::Taste;
     heard.candidate = Some(true);
     heard.taste_weight = Some(1100);
@@ -899,7 +901,7 @@ fn sqlite_in_memory_conforms() {
     assert_eq!(
         s.schema_versions().unwrap(),
         [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
         ]
     );
     s.close().unwrap();
@@ -1031,7 +1033,7 @@ fn sqlite_file_survives_close_and_reopen() {
     assert_eq!(
         s.schema_versions().unwrap(),
         [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
         ]
     );
     assert_eq!(
@@ -1089,6 +1091,7 @@ fn sqlite_file_survives_close_and_reopen() {
         .find(|e| e.track.source_uri == "spotify:track:m2")
         .unwrap();
     assert_eq!(movement.work_key.as_deref(), Some("mahler|symphony no 5"));
+    assert_eq!(movement.artist_id.as_deref(), Some("CatalogMovementArtist"));
     assert_eq!(recent(&s, None, None, 0).len(), 3);
     assert!(s.last_undoable_action(None).unwrap().is_some());
 
