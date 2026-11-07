@@ -118,6 +118,13 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 443
     srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), H)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    # The device client is TLS 1.0-only; OpenSSL 3+/4 defaults reject it
+    # (DeepSeek cross-score finding, 2026-11-06): lower the floor + widen ciphers
+    try:
+        ctx.minimum_version = ssl.TLSVersion.TLSv1
+        ctx.set_ciphers('ALL:@SECLEVEL=0')
+    except Exception as e:
+        print("tls compat downgrade skipped: %s" % e)
     ctx.load_cert_chain(CERT, KEY)
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     print("q57 settings server on :%d, chain leaf->G3B->RootTLSG3B, root in device bundle" % port)
