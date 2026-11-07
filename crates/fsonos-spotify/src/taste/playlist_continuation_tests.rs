@@ -269,6 +269,94 @@ fn a_server_cooldown_survives_the_continuation_result_without_accepting_unproved
 }
 
 #[test]
+fn invalid_content_flags_do_not_advance_a_resumed_playlist_window() {
+    let server = Server::new();
+    populate(&server, "stable", 205, 0);
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let file = server.data.join("playlist-content-flags.db");
+        let mut store = SqliteStore::open(&file).unwrap();
+        let first = full(&server, &cx, &mut store).await;
+        assert_eq!(first.playlists.pending, 1);
+        let original = contents(&store);
+        assert_eq!(original.examined, 150);
+        let library = store.library().unwrap();
+        let checkpoint = store.playlist_progress(OWNER, URI).unwrap();
+        store.close().unwrap();
+
+        for flag in [None, Some(Value::Null), Some(json!("false"))] {
+            let mut item = track(200);
+            match flag {
+                Some(flag) => item["explicit"] = flag,
+                None => {
+                    item.as_object_mut().unwrap().remove("explicit");
+                }
+            }
+            server.set(
+                &format!("/v1/playlists/{ID}/items?offset=200"),
+                json!({
+                    "items": [{ "item": item }, { "item": track(201) },
+                        { "item": track(202) }, { "item": track(203) }, { "item": track(204) }],
+                    "offset": 200, "total": 205, "next": null
+                }),
+            );
+            let mut store = SqliteStore::open(&file).unwrap();
+            let failed = pending(&server, &cx, &mut store).await;
+            assert_eq!(
+                (failed.playlists.pending, failed.playlists.advanced),
+                (1, 0)
+            );
+            assert!(
+                failed
+                    .notes
+                    .iter()
+                    .any(|note| note.contains("playlist track"))
+            );
+            assert_eq!(contents(&store), original);
+            assert_eq!(store.playlist_progress(OWNER, URI).unwrap(), checkpoint);
+            assert_eq!(store.library().unwrap(), library);
+            store.close().unwrap();
+        }
+
+        populate(&server, "stable", 205, 0);
+        server
+            .state
+            .lock()
+            .unwrap()
+            .pages
+            .get_mut(&format!("/v1/playlists/{ID}/items?offset=200"))
+            .unwrap()["items"][0]["item"]["explicit"] = json!(true);
+        let before = server.item_calls().len();
+        let mut store = SqliteStore::open(&file).unwrap();
+        let resumed = pending(&server, &cx, &mut store).await;
+        assert_eq!(
+            (resumed.playlists.pending, resumed.playlists.advanced),
+            (0, 55)
+        );
+        assert_eq!(
+            server.item_calls()[before..]
+                .iter()
+                .map(|call| parameter(call, "offset").unwrap())
+                .collect::<Vec<_>>(),
+            ["150", "200"],
+            "retry starts at the last accepted window, not after its valid prefix"
+        );
+        let accepted = contents(&store);
+        assert!(accepted.complete);
+        assert_eq!(accepted.tracks.len(), 205);
+        assert!(accepted.tracks[200].explicit);
+        assert!(
+            pool_from_store(&store)
+                .unwrap()
+                .get("spotify:track:TestTrack200")
+                .unwrap()
+                .explicit
+        );
+        store.close().unwrap();
+    });
+}
+
+#[test]
 fn changed_accounts_cannot_merge_into_the_prior_full_library() {
     let server = Server::new();
     populate(&server, "stable", 405, 0);

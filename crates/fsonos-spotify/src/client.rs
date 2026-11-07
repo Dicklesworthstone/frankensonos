@@ -849,16 +849,33 @@ impl PlaylistItem {
     /// episode, a local file or an unrenderable track.
     #[must_use]
     pub fn library_item(&self, origin: Origin) -> Option<LibraryItem> {
-        let value = self.item.as_ref().or(self.track.as_ref())?;
+        self.checked_library_item(origin).ok().flatten()
+    }
+
+    /// Snapshot readers must distinguish unavailable entries from malformed
+    /// playable metadata before replacing an accepted observation.
+    pub(crate) fn checked_library_item(
+        &self,
+        origin: Origin,
+    ) -> Result<Option<LibraryItem>, SpotifyError> {
+        let Some(value) = self.item.as_ref().or(self.track.as_ref()) else {
+            return Ok(None);
+        };
         if value
             .get("type")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|kind| kind != "track")
+            || value.get("is_local").and_then(serde_json::Value::as_bool) == Some(true)
+            || value
+                .get("is_playable")
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
         {
-            return None;
+            return Ok(None);
         }
-        let track: FullTrack = serde_json::from_value(value.clone()).ok()?;
-        track.library_item(origin, unix_seconds(self.added_at.as_deref()))
+        let track: FullTrack = serde_json::from_value(value.clone())
+            .map_err(|error| SpotifyError::Decode(format!("playlist track: {error}")))?;
+        Ok(track.library_item(origin, unix_seconds(self.added_at.as_deref())))
     }
 }
 
@@ -956,7 +973,8 @@ pub struct FullTrack {
     pub disc_number: u32,
     #[serde(default)]
     pub track_number: u32,
-    #[serde(default)]
+    /// Required for liked tracks and taste sources too: absent metadata is
+    /// not evidence that the owner's explicit-content preference allows it.
     pub explicit: bool,
     #[serde(default)]
     pub is_local: bool,
@@ -1918,6 +1936,40 @@ mod tests {
         );
         assert_eq!(clair.origin, Origin::LikedTrack);
         assert!(crate::classical::is_classical(clair));
+    }
+
+    #[test]
+    fn playlist_gaps_are_distinct_from_unknown_explicit_metadata() {
+        use serde_json::json;
+
+        for item in [
+            json!(null),
+            json!({ "type": "episode" }),
+            json!({ "is_local": true }),
+            json!({ "is_playable": false }),
+        ] {
+            let entry: PlaylistItem = serde_json::from_value(json!({ "item": item })).unwrap();
+            assert!(entry.checked_library_item(Origin::Taste).unwrap().is_none());
+        }
+
+        let mut track = json!({
+            "uri": "spotify:track:ContentFlagTest", "name": "Test song",
+            "album": { "name": "Test album" }, "is_playable": true
+        });
+        for field in ["item", "track"] {
+            let entry: PlaylistItem =
+                serde_json::from_value(json!({ field: track.clone() })).unwrap();
+            assert!(entry.checked_library_item(Origin::Taste).is_err());
+        }
+        for explicit in [false, true] {
+            track["explicit"] = json!(explicit);
+            for field in ["item", "track"] {
+                let entry: PlaylistItem =
+                    serde_json::from_value(json!({ field: track.clone() })).unwrap();
+                let item = entry.checked_library_item(Origin::Taste).unwrap().unwrap();
+                assert_eq!(item.explicit, explicit);
+            }
+        }
     }
 
     #[test]

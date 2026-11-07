@@ -4,6 +4,7 @@
 use super::continuation::Readiness;
 use super::paging::Observation;
 use super::{MAX_PLAYLIST_REQUESTS, PlaylistObservation, Reader, valid_taste_track};
+use crate::SpotifyError;
 use crate::client::{PAGE_LIMIT, PlaylistItem, SimplifiedPlaylist};
 use crate::library::{LibraryItem, Origin};
 use fsonos_core::store::{
@@ -96,22 +97,28 @@ impl Progress {
         })
     }
 
-    fn append(&mut self, entries: Observation<serde_json::Value>) {
+    fn append(&mut self, entries: Observation<serde_json::Value>) -> Result<(), SpotifyError> {
+        let mut tracks = Vec::new();
         for (position, entry) in (self.examined + 1..).zip(entries.items) {
-            if entry.get("is_local").and_then(serde_json::Value::as_bool) == Some(true) {
+            if entry.is_null()
+                || entry.get("is_local").and_then(serde_json::Value::as_bool) == Some(true)
+            {
                 continue;
             }
-            if let Some(item) = serde_json::from_value::<PlaylistItem>(entry)
-                .ok()
-                .and_then(|entry| entry.library_item(Origin::Taste))
+            let entry: PlaylistItem = serde_json::from_value(entry)
+                .map_err(|error| SpotifyError::Decode(format!("playlist entry: {error}")))?;
+            if let Some(item) = entry
+                .checked_library_item(Origin::Taste)?
                 .filter(valid_taste_track)
             {
-                self.tracks.push(Occurrence { position, item });
+                tracks.push(Occurrence { position, item });
             }
         }
+        self.tracks.extend(tracks);
         self.examined = entries.examined;
         self.source_total = entries.source_total;
         self.complete = entries.complete;
+        Ok(())
     }
 
     fn observation(&self, now: i64) -> CachedPlaylist {
@@ -332,7 +339,10 @@ impl Reader<'_> {
             return None;
         }
         let failed = entries.failed;
-        progress.append(entries);
+        if let Err(error) = progress.append(entries) {
+            self.playlist_failed(error);
+            return None;
+        }
         progress.applied = false;
         progress.fetched_at = Some(now);
         self.accept_window(store, progress, failed, first).await
@@ -381,7 +391,10 @@ impl Reader<'_> {
             &progress.snapshot_id,
         );
         window.examined = first;
-        window.append(entries);
+        if let Err(error) = window.append(entries) {
+            self.playlist_failed(error);
+            return None;
+        }
         // Raw positions, including null/unavailable entries, define the replaced
         // interval. A track disappearing within it must not survive from cache.
         progress

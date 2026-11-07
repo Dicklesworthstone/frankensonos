@@ -335,6 +335,7 @@ fn fake_track(n: u32, name: &str, artist: u32, artist_name: &str) -> serde_json:
         "duration_ms": 200_000,
         "disc_number": 1,
         "track_number": 1,
+        "explicit": false,
         "is_playable": true,
     })
 }

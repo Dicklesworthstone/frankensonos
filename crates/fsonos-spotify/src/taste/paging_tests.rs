@@ -273,6 +273,9 @@ mod playlist_continuation;
 #[path = "artist_catalog_tests.rs"]
 mod artist_catalog;
 
+#[path = "explicit_metadata_tests.rs"]
+mod explicit_metadata;
+
 impl Drop for Server {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
