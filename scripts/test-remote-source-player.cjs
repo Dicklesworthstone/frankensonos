@@ -86,7 +86,7 @@ function harness(options = {}) {
   return h;
 }
 
-for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) test(`${kind} playback requires a destination and one confirmed policy-path request`, async () => {
+for (const kind of ['track', 'album', 'playlist', 'episode']) test(`${kind} playback requires a destination and one confirmed policy-path request`, async () => {
   const h = harness();
   await h.api.refresh(); h.api.edit('input', `https://open.spotify.com/${kind}/${ID}?si=anything`);
   assert.equal(h.api.state.target, '');
@@ -325,4 +325,18 @@ test('page-cache transitions consume reviews and remove listeners on disposal', 
   const p = panel.state.pending; win.emit('pagehide');
   assert.equal(panel.state.pending, null); assert.equal(await panel.confirm(p), false);
   panel.dispose(); assert.equal(win.events.size, 0); assert.equal(doc.events.size, 0); ui.panel.dispose();
+});
+
+test('artist and show links require an explicit queue mode before any destination read', async () => {
+  for (const kind of ['artist', 'show']) {
+    const h = harness(); await h.open('spotify:' + kind + ':' + ID);
+    const before = h.calls.length;
+    assert.equal(await h.api.review(), false);
+    assert.match(h.api.state.message, /added to the queue/);
+    assert.equal(h.calls.length, before);
+    for (const mode of ['next', 'end']) {
+      const prepared = Player.prepare('spotify:' + kind + ':' + ID, 'A source', mode);
+      assert.equal(prepared.item.kind, kind); assert.equal(prepared.mode, mode);
+    }
+  }
 });

@@ -72,6 +72,7 @@ on:
       - "scripts/test-dashboard-routines.cjs"
       - "scripts/test-dashboard-announcements.cjs"
       - "scripts/test-dashboard-direction.cjs"
+      - "scripts/test-dashboard-source.cjs"
       - "scripts/test-dashboard-http.cjs"
       - "scripts/test-dashboard-queue.cjs"
       - "scripts/test-dashboard-queue-search.cjs"
@@ -182,7 +183,7 @@ jobs:
         run: node --test scripts/test-remote-studio.cjs scripts/test-remote-studio-insights.cjs scripts/test-remote-diagnostics.cjs
       - name: Listening room dashboard regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-dashboard.cjs scripts/test-dashboard-audio.cjs scripts/test-dashboard-seek.cjs scripts/test-dashboard-play-mode.cjs scripts/test-dashboard-groups.cjs scripts/test-dashboard-sleep.cjs scripts/test-dashboard-volume.cjs scripts/test-dashboard-scenes.cjs scripts/test-dashboard-routines.cjs scripts/test-dashboard-announcements.cjs scripts/test-dashboard-direction.cjs scripts/test-dashboard-http.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-queue-search.cjs scripts/test-dashboard-session.cjs scripts/test-dashboard-workspace.cjs
+        run: node --test scripts/test-dashboard.cjs scripts/test-dashboard-audio.cjs scripts/test-dashboard-seek.cjs scripts/test-dashboard-play-mode.cjs scripts/test-dashboard-groups.cjs scripts/test-dashboard-sleep.cjs scripts/test-dashboard-volume.cjs scripts/test-dashboard-scenes.cjs scripts/test-dashboard-routines.cjs scripts/test-dashboard-announcements.cjs scripts/test-dashboard-direction.cjs scripts/test-dashboard-source.cjs scripts/test-dashboard-http.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-queue-search.cjs scripts/test-dashboard-session.cjs scripts/test-dashboard-workspace.cjs
       - name: Listening room action recovery regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-dashboard-activity.cjs scripts/test-dashboard-activity-assets.cjs

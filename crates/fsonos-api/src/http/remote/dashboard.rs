@@ -41,6 +41,9 @@ const ANNOUNCEMENTS_STYLE: &str = include_str!("../../remote/dashboard-announcem
 const STEERING: &str = include_str!("../../remote/dj-steering.js");
 const DIRECTION: &str = include_str!("../../remote/dashboard-direction.js");
 const DIRECTION_STYLE: &str = include_str!("../../remote/dashboard-direction.css");
+const SOURCE_PLAYER: &str = include_str!("../../remote/source-player.js");
+const SOURCE: &str = include_str!("../../remote/dashboard-source.js");
+const SOURCE_STYLE: &str = include_str!("../../remote/dashboard-source.css");
 const SCRIPT: &str = include_str!("../../remote/dashboard.js");
 
 fn document(content_type: &str, text: &str) -> Response {
@@ -73,7 +76,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{DIRECTION_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{DIRECTION_STYLE}\n{SOURCE_STYLE}"
                     ),
                 )
             },
@@ -90,7 +93,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{SOURCE_PLAYER}\n{SOURCE}\n{SCRIPT}"
                     ),
                 )
             },

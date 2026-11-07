@@ -12,7 +12,7 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'announcements.js', 'dashboard-announcements.js', 'dj-steering.js', 'dashboard-direction.js', 'dashboard.js']
+SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'announcements.js', 'dashboard-announcements.js', 'dj-steering.js', 'dashboard-direction.js', 'source-player.js', 'dashboard-source.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
   writes: [], calls: [], feeds: [], savedScenes: [], routines: [], nextRoutine:100, offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement', directions:[null,null],
@@ -98,6 +98,13 @@ window.fetch=async(url,init)=>{
       data={done:'Fixture announcement played; playback restored',clean:!f.announcementPartial,households};
       if(f.announcementPartial){households[0].outcome='deadline';households[0].not_restored=['Fixture room: grouping unavailable'];}
     }
+    if(url==='/play'){f.track=body.source_uri;f.states[target]='playing';}
+    if(url==='/queue'){
+      const first=body.next?3:f.queue.length+1;
+      const added={position:first,title:body.title||'Queued source',creator:'Fixture source',uri:body.source_uri};
+      f.queue.splice(first-1,0,added);f.queue.forEach((row,index)=>row.position=index+1);f.queueRevision+='-source';
+      data={done:'Source added to queue',zone:f.zones[target].coordinator_room,first,count:1,playing_queue:true};
+    }
     if(url==='/pause')f.states[target]='paused';
     if(url==='/resume')f.states[target]='playing';
     if(url==='/volume'&&body.volume!==undefined){f.levels[body.zone]=body.volume;data={done:'Room volume changed',changed:true,volume:body.volume};}
@@ -141,7 +148,7 @@ def load(page, preview=False):
     if preview: html=html.replace('<body>','<body data-preview="true">')
     html=re.sub(r'<link[^>]+>|<script[^>]+></script>','',html)
     page.set_content(html)
-    for name in ['dashboard.css','dashboard-queue.css','dashboard-announcements.css','dashboard-direction.css']:
+    for name in ['dashboard.css','dashboard-queue.css','dashboard-announcements.css','dashboard-direction.css','dashboard-source.css']:
         page.add_style_tag(content=(ROOT/name).read_text())
     page.add_script_tag(content=FIXTURE)
     for name in SCRIPTS: page.add_script_tag(content=(ROOT/name).read_text())
@@ -458,6 +465,48 @@ def main():
         page.locator('#close-direction').click()
         checks.append('advanced DJ filters preserve automatic mood and review exact native direction on desktop and mobile')
         page.close()
+        source=browser.new_page(viewport={'width':1280,'height':1000},reduced_motion='reduce')
+        source.on('pageerror',lambda e:errors.append(str(e)))
+        load(source)
+        source.wait_for_function("!document.getElementById('play').disabled")
+        source.locator('#open-source').click()
+        source.locator('#source-input').fill('https://open.spotify.com/artist/0123456789ABCDEFGHIJKL?si=discarded')
+        source.locator('#source-mode').select_option('end')
+        source.locator('#source-review').click()
+        source.wait_for_selector('#source-preview:not([hidden])')
+        assert 'spotify:artist:0123456789ABCDEFGHIJKL' in source.locator('#source-preview-source').inner_text()
+        assert 'S2' in source.locator('#source-preview-target').inner_text()
+        assert 'without starting or resuming' in source.locator('#source-preview-effect').inner_text()
+        assert source.evaluate('fixture.writes.length')==0
+        source.locator('#source-confirm').click()
+        source.wait_for_selector('#source-result:not([hidden])')
+        assert source.evaluate('fixture.writes')==[{'url':'/queue','body':{'zone':'Studio@S2','source_uri':'spotify:artist:0123456789ABCDEFGHIJKL','next':False}}]
+        assert 'position 121' in source.locator('#source-result-detail').inner_text()
+        assert source.evaluate('fixture.running[0]') is True
+        source.locator('#close-source').click()
+        source.wait_for_function("document.activeElement.id==='open-source'")
+        source.set_viewport_size({'width':390,'height':844})
+        source.locator('#open-source').click()
+        source.locator('#source-input').fill('https://radio.example.invalid/Live%2fRoom?sig=A%2FB&v=2')
+        source.locator('#source-title').fill('<b>Evening stream</b>')
+        source.locator('#source-mode').select_option('play')
+        source.locator('#source-review').click()
+        source.wait_for_selector('#source-preview:not([hidden])')
+        assert '<b>Evening stream</b>' in source.locator('#source-preview-title').inner_text()
+        assert source.locator('#source-preview-title b').count()==0
+        assert 'session can remain stored' in source.locator('#source-preview-effect').inner_text()
+        assert not source.locator('#source-dialog').evaluate('(d)=>d.scrollWidth>d.clientWidth')
+        source.locator('#source-confirm').click()
+        source.wait_for_function("fixture.writes.length===2 && document.getElementById('source-result-title').textContent.includes('Command accepted')")
+        assert source.evaluate('fixture.writes[1]')=={'url':'/play','body':{'zone':'Studio@S2','source_uri':'https://radio.example.invalid/Live%2fRoom?sig=A%2FB&v=2','title':'<b>Evening stream</b>'}}
+        source.locator('#close-source').click()
+        source.locator('#open-source').click()
+        assert source.locator('#source-result').is_visible()
+        assert source.locator('#source-preview').is_hidden()
+        assert source.evaluate('fixture.writes.length')==2
+        source.close()
+        checks.append('reviewed artist queue insertion, signed stream playback and retained receipts on desktop and mobile')
+
         preview=browser.new_page(viewport={'width':1536,'height':1120},reduced_motion='reduce')
         preview.on('pageerror',lambda e:errors.append(str(e)));load(preview,True)
         preview.wait_for_function("document.getElementById('track-title').textContent==='Nocturne in Blue'")
@@ -486,6 +535,11 @@ def main():
         assert preview.locator('#direction-review').is_disabled()
         assert preview.locator('#direction-start').is_disabled()
         preview.locator('#close-direction').click()
+        assert preview.evaluate('fixture.calls.length')==0
+        preview.locator('#open-source').click()
+        preview.locator('#source-input').fill('spotify:track:0123456789ABCDEFGHIJKL')
+        assert preview.locator('#source-review').is_disabled()
+        preview.locator('#close-source').click()
         assert preview.evaluate('fixture.calls.length')==0
         checks.append('preview can explore reviews without contacting any speaker')
         assert preview.locator('#motion').inner_text()=='Resume motion'

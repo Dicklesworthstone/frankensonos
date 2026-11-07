@@ -131,6 +131,21 @@ const SourcePlayerRemote = (() => {
     return [value.done, ...(value.notes || []).map((note) => note.detail)].filter(Boolean).join(' ');
   }
 
+  function prepare(raw, title, mode) {
+    if (!Object.hasOwn(modes, mode)) throw new Error('Choose Play now, Queue next or Queue at end.');
+    const item = source(raw);
+    if (mode === 'play' && ['artist', 'show'].includes(item.kind)) {
+      throw new Error('Spotify artist and show links can be added to the queue. Choose Queue next or Queue at end, then play an entry from the speaker queue.');
+    }
+    if (mode !== 'play' && item.kind === 'stream') {
+      throw new Error('Only Spotify sources can be queued here. Choose Play now for an audio stream.');
+    }
+    if (typeof title !== 'string') throw new Error('The display title is invalid.');
+    title = [...title.trim()].slice(0, MAX_TITLE).join('');
+    if (/[\p{Cc}]/u.test(title)) throw new Error('The display title contains control characters.');
+    return Object.freeze({ item, title, mode });
+  }
+
   function model({ call, changed = () => {}, execute = (_, work) => work() }) {
     let epoch = 0, disposed = false;
     const state = { open: false, groups: [], target: '', input: '', title: '', mode: 'play', pending: null,
@@ -214,10 +229,7 @@ const SourcePlayerRemote = (() => {
       let item, title;
       try {
         if (!group) throw new Error('Choose the group that should play this source.');
-        item = source(state.input);
-        if (mode !== 'play' && item.kind === 'stream') throw new Error('Only Spotify tracks, albums, playlists, artists, episodes and shows can be queued here. Choose Play now for a stream.');
-        title = [...state.title.trim()].slice(0, MAX_TITLE).join('');
-        if (/[\p{Cc}]/u.test(title)) throw new Error('The display title contains control characters.');
+        ({ item, title } = prepare(state.input, state.title, mode));
       } catch (error) { state.message = problem(error); publish(); return false; }
       state.reading = true; state.message = ''; publish();
       try {
@@ -285,7 +297,7 @@ const SourcePlayerRemote = (() => {
     const result = el('p', { role: 'status', 'aria-live': 'polite' });
     const consent = el('div', { class: 'source-review', hidden: true });
     const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Play a link or stream' }),
-      el('div', {}, el('p', { text: 'Play a Spotify track, album, playlist, artist, episode or show without syncing it first, or send a direct audio stream to the speakers.' }),
+      el('div', {}, el('p', { text: 'Play a Spotify track, album, playlist or episode without syncing it first, or send a direct audio stream to the speakers. Artist and show links can be added to the queue.' }),
         el('label', {}, 'Destination ', target), el('label', {}, 'Source ', input), el('label', {}, 'Title ', title), el('label', {}, 'Action ', mode),
         el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
     const node = el('section', { class: 'scenes', 'aria-label': 'Play a link or stream' }, details);
@@ -367,11 +379,11 @@ const SourcePlayerRemote = (() => {
     } };
   }
 
-  return { source, offeredSource, groups, playback, queue, queued, model, panel, routes, modes, MAX_BYTES, MAX_TITLE };
+  return { source, prepare, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SourcePlayerRemote;
-else {
+else if (typeof ROUTES !== 'undefined') {
   Object.assign(ROUTES, SourcePlayerRemote.routes);
   const host = document.getElementById('households');
   if (host) {

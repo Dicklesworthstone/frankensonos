@@ -1,0 +1,20 @@
+/* Pasted sources share the listening stage and its native dialog rhythm. */
+.hero-actions{flex-wrap:wrap}
+.source-dialog{width:min(620px,calc(100vw - 24px))}
+.source-dialog .source-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,.65fr);gap:15px;margin-top:20px}
+.source-fields label{display:grid;align-content:start;gap:8px;font-size:12px;min-width:0}
+.source-fields .source-address,.source-fields>p{grid-column:1/-1}
+.source-fields>p{margin:-7px 0 0}
+.source-fields input,.source-fields select{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--raised);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;font:inherit;font-size:14px}
+.source-fields input:focus-visible,.source-fields select:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.source-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:18px}
+.source-preview,.source-result{background:var(--raised);border:1px solid var(--line-strong);border-radius:11px;padding:17px;margin-top:20px;overflow-wrap:anywhere}
+.source-preview h3,.source-result h3{font-size:14px;line-height:1.5;margin:0 0 12px}
+.source-preview dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px 15px;font-size:12px;line-height:1.6}
+.source-preview dt{color:var(--muted)}
+.source-preview dd{margin:0;min-width:0;white-space:pre-wrap}
+.source-preview>p,.source-result p{font-size:12px;line-height:1.7;margin:12px 0 0;white-space:pre-wrap}
+.source-preview footer{margin-top:17px}
+.source-message{font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:15px}
+.source-message:empty{display:none}
+@media(max-width:480px){.source-dialog .source-fields{grid-template-columns:minmax(0,1fr)}.source-fields .source-address,.source-fields>p{grid-column:auto}.source-preview dl{grid-template-columns:minmax(0,1fr);gap:3px}.source-preview dd{margin-bottom:8px}.source-actions{align-items:stretch}.source-actions .outline-button{flex:1}.source-trigger{white-space:nowrap}}

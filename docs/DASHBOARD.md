@@ -65,6 +65,38 @@ household's favorites, and plays the exact reviewed result rather than a new
 first-ranked match. These workflows share one mutation lane with transport and
 volume, retaining native policy and action logging.
 
+## Play a Spotify link or audio stream
+
+Use **Play a link** beside the stage's playback controls. Paste a Spotify share
+link or URI, or the HTTP(S) address of an audio stream. Spotify tracking parameters
+are removed when the address becomes its native URI; signed stream addresses are
+sent with their original path, escaping and query intact. An optional display
+title travels with the source.
+
+**Play now** supports Spotify tracks, albums, playlists and episodes, plus audio
+streams. Albums and playlists replace the current queue; individual sources
+replace playback while leaving the existing queue available. Artist and show
+addresses support **Queue next** and **Add to end**. These queue actions also
+accept the other Spotify kinds, but never start or resume playback themselves.
+Queue next appends when the group is not currently using its queue.
+
+Review shows the exact canonical source, household-qualified destination, current
+playback and effect. Confirmation rechecks group membership and relevant source,
+queue revision and occurrence before one native command. Appending may proceed
+after ordinary track progress; replacing playback or inserting next requires the
+reviewed playback anchor. Container playback also checks the queue it will replace.
+These browser observations supplement the daemon's own checks; they do not reserve
+speakers against another controller.
+
+Source actions use the same dashboard mutation and uncertainty lane as transport,
+DJ and queue edits. They do not call a separate DJ-stop operation: a DJ session
+can remain stored while a different source plays, and queue additions leave a
+running DJ active. Native receipts show accepted ranges and policy notes. Lost or
+malformed replies are not retried. Closing or hiding retires an unsent review;
+once sent, the original destination and receipt remain available when reopened.
+Typed sources survive refreshes and closing, but changing groups requires a new
+review. Preview mode accepts drafts and never dispatches commands.
+
 ## Advanced direction for the current DJ
 
 **Advanced direction** beside the mood presets reads the selected group's current
@@ -403,6 +435,7 @@ node --test scripts/test-dashboard-session.cjs scripts/test-dashboard-queue.cjs 
 node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs scripts/test-dashboard-volume.cjs
 node --test scripts/test-dashboard-scenes.cjs scripts/test-dashboard-http.cjs
 node --test scripts/test-dashboard-direction.cjs scripts/test-remote-dj-steering.cjs
+node --test scripts/test-dashboard-source.cjs scripts/test-remote-source-player.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-workspace.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preview.py
@@ -415,7 +448,6 @@ The Node suite covers native payloads, immutable reviews, real loopback HTTP
 session dispatch, queue positions, stale/hidden lifetimes and keyboard navigation.
 The preview test serves the actual bundle through a real loopback HTTP listener.
 
-This implementation session ran these checks locally; they do not establish Rust
-workspace compilation, real daemon/GENA integration, physical-speaker operation,
-or actual microphone/fullscreen permission on a user's browser. Those remain
-separate acceptance gates. The implementation environment had no Rust toolchain.
+These client checks do not establish Rust workspace compilation, real daemon/GENA
+integration, physical-speaker operation, or microphone/fullscreen permission on a
+user's browser. Those require their own runtime or hardware checks.
