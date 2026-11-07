@@ -242,7 +242,7 @@ pub trait DjEngine: Send + Sync {
     }
 }
 
-/// Hard filters (and one nudge) on what the DJ may pick: fsonos-spotify's
+/// Steering filters (and one nudge) on what the DJ may pick: fsonos-spotify's
 /// `DjConstraints` field for field, without the expiry a steer sets from
 /// `for_secs`. Every field is optional; the default constrains nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -301,6 +301,11 @@ pub struct SteerConstraints {
     /// Let works past the long-work limit (operas, Passions) in.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub allow_long_works: bool,
+    /// Keep every steering filter when matching music is scarce. If none
+    /// matches, defer new selections instead of relaxing the filters.
+    /// Already queued music and standing-preference fallback are unchanged.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
 }
 
 impl SteerConstraints {
@@ -403,7 +408,8 @@ pub struct DjFactorDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DjSteeringDto {
     /// `session` (set with dj_steer), `program` (the time-of-day program in
-    /// moods.toml) or `none`.
+    /// moods.toml), `none`, or `unavailable` when steering could not be read.
+    /// Unavailable steering defers new selections and retains queued playback.
     pub source: String,
     /// The effective mood, including the time-of-day program when the
     /// session does not select one.
@@ -515,13 +521,17 @@ impl DjSteeringDto {
         } else {
             &self.constraints
         };
-        let steering = describe_steer(self.mood.as_deref(), shown, None);
+        let mut steering = describe_steer(self.mood.as_deref(), shown, None);
+        if self.constraints.strict && !shown.strict {
+            steering.push_str(", strict filters (no fallback)");
+        }
         match self.source.as_str() {
             "session" => match self.expires_in_secs {
                 Some(secs) => format!("steered: {steering}, for another {}", span(secs)),
                 None => format!("steered: {steering}, until cleared"),
             },
             "program" => format!("the time-of-day program: {steering}"),
+            "unavailable" => "unavailable; new selections are deferred".to_owned(),
             _ => "none".to_owned(),
         }
     }
@@ -606,6 +616,9 @@ pub fn describe_steer(mood: Option<&str>, c: &SteerConstraints, for_secs: Option
     }
     if c.allow_long_works {
         parts.push("long works allowed".to_owned());
+    }
+    if c.strict {
+        parts.push("strict filters (no fallback)".to_owned());
     }
     if let Some(secs) = for_secs {
         parts.push(format!("for {}", span(secs)));

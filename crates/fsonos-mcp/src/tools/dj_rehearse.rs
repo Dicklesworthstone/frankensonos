@@ -25,7 +25,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "The set the DJ would play in the group a room plays in, from a given time, planned offline: each work with when it would start, its length, why the DJ would choose it (a summary and the weighted factors), its energy against the energy aimed for, and the mood steering it; then hour by hour, how varied the artists and genres are and how the energy follows the target. It plays, queues and records nothing. `works` (1-500, default 12) or `hours` (1-48) sets the length; `at` is HH:MM (its next time) or an RFC 3339 time (default now); `mood` and the constraint fields of dj_steer (include_/exclude_ artists, genres, composers and keywords, periods, decades, min/max minutes, energy_bias, allow_long) rehearse as if the group were steered so, in place of its steering and the time-of-day program; the same `seed` gives the same set. Use it to answer 'what would the DJ play at 11 tonight?'.",
+    description = "The set the DJ would play in the group a room plays in, from a given time, planned offline: each work with when it would start, its length, why the DJ would choose it (a summary and the weighted factors), its energy against the energy aimed for, and the mood steering it; then hour by hour, how varied the artists and genres are and how the energy follows the target. It plays, queues and records nothing. `works` (1-500, default 12) or `hours` (1-48) sets the length; `at` is HH:MM (its next time) or an RFC 3339 time (default now); `mood` and the constraint fields of dj_steer (include_/exclude_ artists, genres, composers and keywords, periods, decades, min/max minutes, energy_bias, allow_long, strict) rehearse as if the group were steered so, in place of its steering and the time-of-day program; the same `seed` gives the same set. `strict` true keeps every steering filter even for a small matching set and reports no matching works when none qualify; standing-preference fallback is unchanged. Omit it for existing filter relaxation. Use it to answer 'what would the DJ play at 11 tonight?'.",
     annotations(read_only, idempotent)
 )]
 #[allow(clippy::too_many_arguments)] // dj_steer's steering fields, as agents call them
@@ -52,6 +52,7 @@ async fn dj_rehearse(
     max_minutes: Option<u32>,
     energy_bias: Option<i8>,
     allow_long: Option<bool>,
+    strict: Option<bool>,
     seed: Option<u64>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = DjRehearseRequest {
@@ -77,6 +78,7 @@ async fn dj_rehearse(
             max_work_minutes: max_minutes,
             energy_bias: energy_bias.unwrap_or(0),
             allow_long_works: allow_long.unwrap_or(false),
+            strict: strict.unwrap_or(false),
         },
         seed,
     };

@@ -135,6 +135,7 @@ impl From<&DjConstraints> for SteerConstraints {
             max_work_minutes: c.max_work_minutes,
             energy_bias: c.energy_bias,
             allow_long_works: c.allow_long_works,
+            strict: c.strict,
         }
     }
 }
@@ -158,6 +159,7 @@ impl From<&SteerConstraints> for DjConstraints {
             max_work_minutes: c.max_work_minutes,
             energy_bias: c.energy_bias,
             allow_long_works: c.allow_long_works,
+            strict: c.strict,
         }
     }
 }

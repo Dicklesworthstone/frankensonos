@@ -1113,7 +1113,7 @@ async fn dj(
 }
 
 #[tool(
-    description = "Start the DJ in the group a room plays in: it plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. Give a mood (dj_moods lists them), structured constraints, or both to apply them before new picks in this one start request. A fresh session selects its first work under these settings; an existing feed keeps already queued works and uses the new settings for later selections. The constraints match dj_steer: include/exclude artists, genres, composers, periods, decades and keywords; min_minutes/max_minutes bound work length; energy_bias is -2 to 2; allow_long admits long works. For example, 'start jazz from the sixties for two hours' is include_genres [\"jazz\"], decades [1960], for_minutes 120; 'start Miles Davis' is include_artists [\"Miles Davis\"]. A supplied mood or constraints replaces the group's previous session steering. for_minutes requires a mood or nonempty constraints; omit it to keep the new steering until cleared. With no mood, constraints or duration, starts under the group's existing steering or time-of-day program. Selection uses the same documented relaxation and standing preferences as dj_steer."
+    description = "Start the DJ in the group a room plays in: it plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. Give a mood (dj_moods lists them), structured constraints, or both to apply them before new picks in this one start request. A fresh session selects its first work under these settings; an existing feed keeps already queued works and uses the new settings for later selections. The constraints match dj_steer: include/exclude artists, genres, composers, periods, decades and keywords; min_minutes/max_minutes bound work length; energy_bias is -2 to 2; allow_long admits long works. For example, 'start jazz from the sixties for two hours' is include_genres [\"jazz\"], decades [1960], for_minutes 120; 'start Miles Davis' is include_artists [\"Miles Davis\"]. A supplied mood or constraints replaces the group's previous session steering. for_minutes requires a mood or nonempty constraints; omit it to keep the new steering until cleared. With no mood, constraints or duration, starts under the group's existing steering or time-of-day program. `strict` true keeps every steering filter even when few works match; no match defers new selections while queued music continues. Omit strict for the existing filter relaxation. Strict does not change standing-preference fallback. Selection otherwise uses the same standing preferences as dj_steer."
 )]
 #[allow(clippy::too_many_arguments)] // the same optional steering vocabulary as dj_steer
 async fn dj_start(
@@ -1136,6 +1136,7 @@ async fn dj_start(
     max_minutes: Option<u32>,
     energy_bias: Option<i8>,
     allow_long: Option<bool>,
+    strict: Option<bool>,
     for_minutes: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = DjStartRequest {
@@ -1158,6 +1159,7 @@ async fn dj_start(
             max_work_minutes: max_minutes,
             energy_bias: energy_bias.unwrap_or(0),
             allow_long_works: allow_long.unwrap_or(false),
+            strict: strict.unwrap_or(false),
         },
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
     };
@@ -1165,7 +1167,7 @@ async fn dj_start(
 }
 
 #[tool(
-    description = "Steer the DJ in the group a room plays in. Turn the owner's words into these fields; the daemon never parses language. `mood`: a preset (dj_moods lists them: focus, dinner, sunday-morning, bright, calm, and the owner's own). `include_artists` / `exclude_artists`: any credited artist (\"Miles Davis\", \"The Beatles\"; a classical work's performers count, \"Yo-Yo Ma\"). `include_genres` / `exclude_genres`: the genre tags the library read gave (\"jazz\" finds \"cool jazz\"; every classical work is \"classical\"). `include_composers` / `exclude_composers`: classical composers (\"Bach\", \"J.S. Bach\", \"Saint-Saëns\"). `periods`, for classical works only (a song has none): medieval, renaissance, baroque, classical, romantic, late_romantic, impressionist, modern, contemporary. `decades`: release decades, each by its first year (1960 for the sixties). `exclude_decades` / `exclude_periods`: never these ('no 80s tonight' is exclude_decades [1980]; 'no baroque' is exclude_periods [\"baroque\"]). `include_keywords` / `exclude_keywords`: piano, chamber, orchestral, choral, opera, song and vocal find their forms; other words match whole words. `min_minutes` / `max_minutes`: work length. `energy_bias`: -2 (much calmer) to 2 (much brighter). `allow_long`: let operas and Passions in. `for_minutes`: how long, then the time-of-day program returns (omit: until cleared). Examples: 'play some Miles Davis' is include_artists [\"Miles Davis\"]; 'no Beatles today' is exclude_artists [\"The Beatles\"]; 'something calmer for an hour' is energy_bias -1, for_minutes 60; 'no opera' is exclude_keywords [\"opera\"]; 'just piano' is include_keywords [\"piano\"]; 'dinner music' is mood \"dinner\"; 'Bach for the next two hours' is include_composers [\"Bach\"], for_minutes 120; 'jazz from the sixties' is include_genres [\"jazz\"], decades [1960]; 'no classical for now' is exclude_genres [\"classical\"]. A steer replaces the group's previous steering and applies from the DJ's next piece, whether or not it is running. `clear` true, alone, goes back to the time-of-day program. undo_last puts the previous steering back."
+    description = "Steer the DJ in the group a room plays in. Turn the owner's words into these fields; the daemon never parses language. `mood`: a preset (dj_moods lists them: focus, dinner, sunday-morning, bright, calm, and the owner's own). `include_artists` / `exclude_artists`: any credited artist (\"Miles Davis\", \"The Beatles\"; a classical work's performers count, \"Yo-Yo Ma\"). `include_genres` / `exclude_genres`: the genre tags the library read gave (\"jazz\" finds \"cool jazz\"; every classical work is \"classical\"). `include_composers` / `exclude_composers`: classical composers (\"Bach\", \"J.S. Bach\", \"Saint-Saëns\"). `periods`, for classical works only (a song has none): medieval, renaissance, baroque, classical, romantic, late_romantic, impressionist, modern, contemporary. `decades`: release decades, each by its first year (1960 for the sixties). `exclude_decades` / `exclude_periods`: never these ('no 80s tonight' is exclude_decades [1980]; 'no baroque' is exclude_periods [\"baroque\"]). `include_keywords` / `exclude_keywords`: piano, chamber, orchestral, choral, opera, song and vocal find their forms; other words match whole words. `min_minutes` / `max_minutes`: work length. `energy_bias`: -2 (much calmer) to 2 (much brighter). `allow_long`: let operas and Passions in. `strict`: keep all steering filters, even for a small matching set; if none match, defer new selections while queued music continues. Omit strict for the existing filter relaxation. Strict does not change standing-preference fallback. `for_minutes`: how long, then the time-of-day program returns (omit: until cleared). Examples: 'play some Miles Davis' is include_artists [\"Miles Davis\"]; 'no Beatles today' is exclude_artists [\"The Beatles\"]; 'something calmer for an hour' is energy_bias -1, for_minutes 60; 'no opera' is exclude_keywords [\"opera\"]; 'just piano' is include_keywords [\"piano\"]; 'dinner music' is mood \"dinner\"; 'Bach for the next two hours' is include_composers [\"Bach\"], for_minutes 120; 'jazz from the sixties' is include_genres [\"jazz\"], decades [1960]; 'no classical for now' is exclude_genres [\"classical\"]. A steer replaces the group's previous steering and applies from the DJ's next piece, whether or not it is running. `clear` true, alone, goes back to the time-of-day program. undo_last puts the previous steering back."
 )]
 #[allow(clippy::too_many_arguments)] // one optional argument per steering field, as agents call it
 async fn dj_steer(
@@ -1188,6 +1190,7 @@ async fn dj_steer(
     max_minutes: Option<u32>,
     energy_bias: Option<i8>,
     allow_long: Option<bool>,
+    strict: Option<bool>,
     for_minutes: Option<u32>,
     clear: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -1211,6 +1214,7 @@ async fn dj_steer(
             max_work_minutes: max_minutes,
             energy_bias: energy_bias.unwrap_or(0),
             allow_long_works: allow_long.unwrap_or(false),
+            strict: strict.unwrap_or(false),
         },
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
         clear: clear.unwrap_or(false),

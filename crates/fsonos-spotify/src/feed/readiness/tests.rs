@@ -372,3 +372,53 @@ fn a_scene_can_admit_its_future_coordinator_before_regrouping() {
             .all(|call| call.action == "Browse")
     );
 }
+
+#[test]
+fn strict_readiness_and_start_leave_an_existing_queue_untouched_when_no_music_matches() {
+    for s2 in [false, true] {
+        let house = House::new(s2);
+        let lan = house.sim.lan();
+        let speakers = house.speakers(&lan);
+        let pool = works_of(&song_items());
+        let mut store = MemStore::default();
+        let steer = crate::steer::Steer {
+            mood: None,
+            constraints: crate::steer::DjConstraints {
+                include_genres: vec!["absent synthetic genre".into()],
+                strict: true,
+                ..crate::steer::DjConstraints::default()
+            },
+        };
+        let plan = Planning {
+            steer: Some(&steer),
+            ..planning(&pool)
+        };
+        fsonos_core::control::queue_spotify_tracks(
+            &lan,
+            &house.households,
+            &house.coordinator,
+            &[("spotify:track:0000000000000000000001", "Owner's music")],
+        )
+        .unwrap();
+        let calls = house.sim.soap_log().len();
+        let mut feed = QueueFeed::new(&house.coordinator, DjConfig::default(), 41);
+        let before = format!("{feed:?}");
+        let error = feed.start_ready(&speakers, plan, &store).unwrap_err();
+        assert!(
+            matches!(&error, FeedError::NothingAllowed(why) if why.contains("strict steering")),
+            "{error}"
+        );
+        assert_eq!(format!("{feed:?}"), before);
+        let error = feed.start(&speakers, plan, &mut store).unwrap_err();
+        assert!(
+            matches!(&error, FeedError::NothingAllowed(why) if why.contains("strict steering")),
+            "{error}"
+        );
+        assert!(!feed.is_active());
+        assert!(
+            house.sim.soap_log()[calls..]
+                .iter()
+                .all(|call| call.action == "Browse" || call.action.starts_with("Get"))
+        );
+    }
+}

@@ -8,8 +8,9 @@ use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_mcp::tools::dj_feedback::DjFeedback;
 use fsonos_mcp::tools::dj_prefs::{DjPrefer, DjPreferences};
+use fsonos_mcp::tools::dj_rehearse::DjRehearse;
 use fsonos_mcp::tools::dj_sync::DjSyncStatus;
-use fsonos_mcp::tools::{AddToQueue, Backend, Daemon, DjStart, SearchQueue, install};
+use fsonos_mcp::tools::{AddToQueue, Backend, Daemon, DjStart, DjSteer, SearchQueue, install};
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -135,10 +136,22 @@ fn cases() -> Vec<Case> {
                 "periods": ["baroque"], "exclude_periods": ["romantic"],
                 "decades": [1960], "exclude_decades": [1980],
                 "include_keywords": ["piano"], "exclude_keywords": ["vocal"],
-                "min_minutes": 3, "max_minutes": 30, "energy_bias": -1, "allow_long": true
+                "min_minutes": 3, "max_minutes": 30, "energy_bias": -1, "allow_long": true, "strict": true
             }),
             method: "POST",
             path: "/dj/start",
+        },
+        Case {
+            handler: Box::new(DjSteer),
+            arguments: json!({"zone": "Kitchen@S2", "include_genres": ["jazz"], "strict": true}),
+            method: "POST",
+            path: "/dj/steer",
+        },
+        Case {
+            handler: Box::new(DjRehearse),
+            arguments: json!({"zone": "Kitchen@S2", "include_genres": ["jazz"], "strict": true}),
+            method: "POST",
+            path: "/dj/rehearse",
         },
         Case {
             handler: Box::new(SearchQueue),
@@ -227,9 +240,15 @@ fn queue_and_dj_handlers_yield_and_preserve_terminal_daemon_failures_in_both_era
                             "decades": [1960], "exclude_decades": [1980],
                             "include_keywords": ["piano"], "exclude_keywords": ["vocal"],
                             "min_work_minutes": 3, "max_work_minutes": 30,
-                            "energy_bias": -1, "allow_long_works": true
+                            "energy_bias": -1, "allow_long_works": true, "strict": true
                         }
                     }))
+                );
+            }
+            if matches!(case.path, "/dj/start" | "/dj/steer" | "/dj/rehearse") {
+                assert_eq!(
+                    request.body.as_ref().unwrap()["constraints"]["strict"],
+                    true
                 );
             }
             let failure = Failure::new(ErrorCode::PlayerUnreachable, "reply lost after dispatch");
@@ -243,5 +262,24 @@ fn queue_and_dj_handlers_yield_and_preserve_terminal_daemon_failures_in_both_era
                 Err(mpsc::TryRecvError::Empty)
             ));
         }
+    }
+}
+
+#[test]
+fn all_selection_tools_expose_optional_boolean_strict_constraints() {
+    for handler in [&DjStart as &dyn ToolHandler, &DjSteer, &DjRehearse] {
+        let definition = serde_json::to_value(handler.definition()).unwrap();
+        let schema = &definition["inputSchema"];
+        let strict = &schema["properties"]["strict"];
+        assert!(
+            !strict.is_null(),
+            "strict must appear in the generated tool schema"
+        );
+        assert!(strict.to_string().contains("boolean"));
+        assert!(
+            !schema["required"]
+                .as_array()
+                .is_some_and(|fields| fields.iter().any(|field| field == "strict"))
+        );
     }
 }

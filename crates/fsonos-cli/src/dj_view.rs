@@ -76,6 +76,7 @@ pub fn from_dj(c: &DjConstraints) -> SteerConstraints {
         max_work_minutes: c.max_work_minutes,
         energy_bias: c.energy_bias,
         allow_long_works: c.allow_long_works,
+        strict: c.strict,
     }
 }
 
@@ -92,10 +93,10 @@ pub fn steering_of(
     let session = store
         .dj_session(&coordinator.0)
         .map_err(store_failure)?
+        .filter(|row| row.expires == i64::MAX || now < row.expires)
         .map(|row| DjSession::from_store(&row))
         .transpose()
-        .map_err(store_failure)?
-        .filter(|session| !session.expired(now));
+        .map_err(store_failure)?;
     let steer = steering(
         store,
         moods,
@@ -329,6 +330,7 @@ mod tests {
             exclude_keywords: words(&["vocal"]),
             max_work_minutes: Some(30),
             energy_bias: -1,
+            strict: true,
             ..SteerConstraints::default()
         };
         let theirs = to_dj(&ours).unwrap();
@@ -445,6 +447,25 @@ mod tests {
         clock.advance(chrono::TimeDelta::hours(4));
         let shown = steering_of(&store, &moods, &den, &clock).unwrap();
         assert_eq!((shown.source.as_str(), shown.mood), ("none", None));
+    }
+
+    #[test]
+    fn expired_unreadable_session_does_not_hide_the_current_program_in_status() {
+        let clock = FakeClock::new(DateTime::parse_from_rfc3339("2026-10-07T08:00:00Z").unwrap());
+        let den = PlayerId("synthetic-expired-strict-zone".into());
+        let mut store = MemStore::default();
+        store
+            .save_dj_session(&fsonos_core::store::DjSession {
+                coordinator: den.0.clone(),
+                mood: Some("deleted-synthetic-mood".into()),
+                constraints: Some("{".into()),
+                expires: clock.now().timestamp(),
+            })
+            .unwrap();
+        let shown = steering_of(&store, &Moods::builtin(), &den, &clock).unwrap();
+        assert_eq!(shown.source, "program");
+        assert_eq!(shown.mood.as_deref(), Some("bright"));
+        assert!(!shown.constraints.strict);
     }
 
     #[test]

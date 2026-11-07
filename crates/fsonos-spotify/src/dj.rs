@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 use crate::classical::{CandidatePool, ClassicalTrack, EnergyBasis, Period};
 use crate::feedback::FeedbackModel;
 use crate::prefs::{Preferences, Verdict};
-use crate::steer::{Moods, Relaxation, Steer, admit_among, haystack, names};
+use crate::steer::{Moods, Relaxation, Steer, admit_among, admits, haystack, names};
 use crate::works::{Completeness, Work, group_works};
 
 /// A seedable, dependency-free pseudo-random generator (xorshift64*, seeded
@@ -442,15 +442,36 @@ impl WorkPool {
         }
     }
 
-    /// Why no work may play though the library has some: each is banned, or
-    /// explicit while explicit tracks are off (`steer`, active at `now`,
-    /// lets what it names back in). `None` when a work may play, or the
-    /// library is empty.
+    /// Why no work may play though the library has some: preferences exclude
+    /// every work, or strict steering matches none of the permitted works.
+    /// An active named steer retains its precedence over standing bans.
+    /// `None` when a work may play, or the library is empty.
     #[must_use]
     pub fn why_nothing_plays(&self, steer: Option<&Steer>, now: Option<i64>) -> Option<String> {
         let steer = steer.filter(|s| s.constraints.is_active(now));
-        if self.is_empty() || !self.allowed(steer).0.is_empty() {
+        if self.is_empty() {
             return None;
+        }
+        let allowed = self.allowed(steer).0;
+        if !allowed.is_empty() {
+            let constraints = &steer.filter(|s| s.constraints.strict)?.constraints;
+            if allowed
+                .iter()
+                .any(|&w| admits(&self.works[w], &self.haystacks[w], constraints, &[]))
+            {
+                return None;
+            }
+            let filters: Vec<&str> = Relaxation::ORDER
+                .into_iter()
+                .filter(|&family| constraints.constrains(family))
+                .map(Relaxation::label)
+                .collect();
+            return Some(format!(
+                "no music matches strict steering: none of {} permitted works pass the {} filters; \
+                 edit or clear the steering to allow new selections",
+                allowed.len(),
+                filters.join(", ")
+            ));
         }
         let named = |w: usize| steer.is_some_and(|s| names(&self.works[w], &s.constraints));
         let banned = (0..self.len())
@@ -519,7 +540,7 @@ pub fn pick_next<'p>(
         None => (allowed, Vec::new()),
     };
     if admitted.is_empty() {
-        // Everything is banned (or explicit, and that isn't allowed).
+        // Preferences or strict steering can leave no permitted work.
         return None;
     }
     let allow_long =

@@ -47,7 +47,7 @@ const DjSteeringRemote = (() => {
   }
 
   function steeringOf(value) {
-    if (!object(value) || !['session', 'program', 'none'].includes(value.source)
+    if (!object(value) || !['session', 'program', 'none', 'unavailable'].includes(value.source)
         || (value.mood != null && !word(value.mood))
         || (value.expires_at != null && !integer(value.expires_at, -8640000000000, 8640000000000))
         || (value.expires_in_secs != null && !integer(value.expires_in_secs, 0, Number.MAX_SAFE_INTEGER))) {
@@ -311,6 +311,7 @@ const DjSteeringRemote = (() => {
     const energy = el('select', { id: `${id}-energy` }, ...[-2, -1, 0, 1, 2].map((v, i) =>
       el('option', { value: v, text: ['Much calmer', 'Calmer', 'No extra shift', 'Brighter', 'Much brighter'][i] })));
     const long = el('input', { id: `${id}-long`, type: 'checkbox' });
+    const strict = el('input', { id: `${id}-strict`, type: 'checkbox', 'aria-describedby': `${id}-strict-help` });
     const min = el('input', { id: `${id}-min`, type: 'number', min: 1, max: 600, step: 1 });
     const max = el('input', { id: `${id}-max`, type: 'number', min: 1, max: 600, step: 1 });
     const filters = {}, filterBox = el('details', { class: 'dj-direction-filters' }, el('summary', { text: 'Composer, artist, genre, era and keyword filters' }));
@@ -321,10 +322,10 @@ const DjSteeringRemote = (() => {
     }
     filterBox.append(el('p', { text: 'One entry per line, up to 32. Commas stay in names. Decades: 1960, 1970, etc., on separate lines. Periods: ' + periods.join(', ') + '.' }), filterGrid);
     const reviewBox = el('div', { class: 'dj-direction-review', hidden: true, tabindex: -1 });
-    const controls = [mood, expiry, minutes, energy, long, min, max, ...Object.values(filters)];
+    const controls = [mood, expiry, minutes, energy, long, strict, min, max, ...Object.values(filters)];
     function reviewSettings(start = false) {
       try {
-        const constraints = { energy_bias: Number(energy.value), allow_long_works: long.checked };
+        const constraints = { energy_bias: Number(energy.value), allow_long_works: long.checked, strict: strict.checked };
         for (const [key, input] of Object.entries(filters)) {
           const lines = input.value.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
           constraints[key] = key === 'decades' || key === 'exclude_decades'
@@ -347,7 +348,9 @@ const DjSteeringRemote = (() => {
     const editor = model({ call, changed: render });
 
     function describe(c) {
-      return Object.entries(c).map(([key, value]) => `${lists[key] || key.replaceAll('_', ' ')}: ${Array.isArray(value) ? value.join('; ') : value}`).join(' · ') || 'No additional constraints';
+      return Object.entries(c).map(([key, value]) => key === 'strict' && value
+        ? 'Strict filters; new picks wait if none match'
+        : `${lists[key] || key.replaceAll('_', ' ')}: ${Array.isArray(value) ? value.join('; ') : value}`).join(' · ') || 'No additional constraints';
     }
     function workNode(work, heading) {
       const node = el('section', { class: 'dj-direction-work' }, el('h3', { text: heading }),
@@ -384,7 +387,8 @@ const DjSteeringRemote = (() => {
           const s = observed.steering, c = s.source === 'session' ? s.added : {};
           facts.append(el('h3', { text: observed.running ? 'DJ running' : 'DJ not running' }),
             el('p', { text: `Steering source: ${s.source}${s.mood ? ` · Mood: ${s.mood}` : ''}` }),
-            el('p', { text: `Effective filters: ${describe(s.constraints)}` }));
+            el('p', { text: s.source === 'unavailable' ? 'Steering could not be read; new selections are deferred.'
+              : `Effective filters: ${describe(s.constraints)}` }));
           if (s.source === 'session') facts.append(el('p', { text: s.expires_at === null ? 'Session lasts until cleared.' : `Session expires: ${new Date(s.expires_at * 1000).toLocaleString()}` }));
           if (observed.problem) facts.append(el('p', { class: 'dj-direction-warning', text: observed.problem }));
           if (observed.now) facts.append(workNode(observed.now, 'Current DJ work'));
@@ -402,7 +406,7 @@ const DjSteeringRemote = (() => {
           expiry.value = s.source === 'session' && s.expires_at !== null ? 'keep' : 'until';
           expiry.options[0].disabled = s.source !== 'session' || s.expires_at === null;
           minutes.value = s.source === 'session' && s.expires_in_secs !== null ? String(Math.max(1, Math.ceil(s.expires_in_secs / 60))) : '';
-          energy.value = String(c.energy_bias || 0); long.checked = c.allow_long_works || false;
+          energy.value = String(c.energy_bias || 0); long.checked = c.allow_long_works || false; strict.checked = c.strict || false;
           min.value = c.min_work_minutes ?? ''; max.value = c.max_work_minutes ?? '';
           for (const [key, input] of Object.entries(filters)) input.value = (c[key] || []).join('\n');
         }
@@ -413,7 +417,7 @@ const DjSteeringRemote = (() => {
         if (imported) {
           const c = imported.constraints;
           mood.value = JSON.stringify(imported.mood || null);
-          energy.value = String(c.energy_bias || 0); long.checked = c.allow_long_works || false;
+          energy.value = String(c.energy_bias || 0); long.checked = c.allow_long_works || false; strict.checked = c.strict || false;
           min.value = c.min_work_minutes ?? ''; max.value = c.max_work_minutes ?? '';
           for (const [key, input] of Object.entries(filters)) input.value = (c[key] || []).join('\n');
           // Preview hours are not a live expiry. Require an explicit choice.
@@ -438,7 +442,7 @@ const DjSteeringRemote = (() => {
       }
     }
     target.addEventListener('change', () => { void editor.select(target.value); });
-    for (const input of [mood, expiry, minutes, energy, long, min, max, ...Object.values(filters)]) {
+    for (const input of [mood, expiry, minutes, energy, long, strict, min, max, ...Object.values(filters)]) {
       input.addEventListener('input', () => editor.edit()); input.addEventListener('change', () => editor.edit());
     }
     const field = (name, input) => el('div', {}, el('label', { for: input.id, text: name }), input);
@@ -447,7 +451,8 @@ const DjSteeringRemote = (() => {
       field('DJ group', target), status, importedNote, facts,
       el('p', { text: 'Edit the session below. Saving replaces its mood and extra filters. When the DJ is stopped, you can also start it with these settings. Keep the existing deadline, choose a new duration, or keep the session until cleared. Clearing returns to the program. Use DJ taste for persistent preferences across all groups.' }),
       el('div', { class: 'dj-direction-grid' }, field('Mood', mood), field('Expiry', expiry), field('New duration in minutes', minutes),
-        field('Energy shift', energy), field('Allow long works', long), field('Minimum work minutes', min), field('Maximum work minutes', max)),
+        field('Energy shift', energy), field('Allow long works', long), field('Keep selection filters strict', strict), field('Minimum work minutes', min), field('Maximum work minutes', max)),
+      el('p', { id: `${id}-strict-help`, text: 'Strict keeps every selection filter when matching music is scarce. New picks wait if none match; queued music continues. A strict mood stays strict when this option is off. Standing taste preferences keep their existing fallback behavior.' }),
       filterBox, el('div', { class: 'row' }, review, start, clear), reviewBox);
     render(editor.state);
     return { node: el('div', { class: 'dj-direction' }, toggle, box), model: editor,

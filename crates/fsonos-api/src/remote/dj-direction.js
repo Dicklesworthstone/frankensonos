@@ -22,7 +22,7 @@ const DjDirection = (() => {
   // but unknown fields and wrong types must never be silently dropped on edit.
   function constraintsOf(value = {}) {
     if (!object(value)) fail('Constraints must be an object.');
-    const allowed = [...Object.keys(lists), 'min_work_minutes', 'max_work_minutes', 'energy_bias', 'allow_long_works'];
+    const allowed = [...Object.keys(lists), 'min_work_minutes', 'max_work_minutes', 'energy_bias', 'allow_long_works', 'strict'];
     if (Object.keys(value).some((key) => !allowed.includes(key))) fail('Unknown DJ constraint. Refresh or use the current API.');
     const result = {};
     for (const key of Object.keys(lists)) {
@@ -55,6 +55,8 @@ const DjDirection = (() => {
     if (value.energy_bias) result.energy_bias = value.energy_bias;
     if (value.allow_long_works !== undefined && typeof value.allow_long_works !== 'boolean') fail('Long-work permission must be a boolean.');
     if (value.allow_long_works) result.allow_long_works = true;
+    if (value.strict !== undefined && typeof value.strict !== 'boolean') fail('Strict filters must be a boolean.');
+    if (value.strict) result.strict = true;
     return Object.freeze(result);
   }
 
@@ -85,6 +87,7 @@ const DjDirection = (() => {
     if (c.max_work_minutes != null) parts.push(`maximum work length ${c.max_work_minutes} minutes`);
     if (c.energy_bias) parts.push(`energy ${c.energy_bias > 0 ? '+' : ''}${c.energy_bias}`);
     if (c.allow_long_works) parts.push('long works allowed');
+    if (c.strict) parts.push('strict filters; new picks wait if none match');
     if (direction.for_secs != null) {
       const secs = direction.for_secs;
       const [n, unit] = secs % 3600 === 0 ? [secs / 3600, 'hour']
@@ -95,7 +98,7 @@ const DjDirection = (() => {
   }
 
   const defaults = Object.freeze({ ...Object.fromEntries(Object.keys(lists).map((key) => [key, ''])),
-    min_work_minutes: '', max_work_minutes: '', energy_bias: '0', allow_long_works: false, minutes: '' });
+    min_work_minutes: '', max_work_minutes: '', energy_bias: '0', allow_long_works: false, strict: false, minutes: '' });
   const draft = () => Object.freeze({ ...defaults });
   function copyDraft(value) {
     if (!object(value) || Object.keys(value).some((key) => !Object.hasOwn(defaults, key))) {
@@ -103,7 +106,7 @@ const DjDirection = (() => {
     }
     const result = { ...defaults, ...value };
     for (const [key, raw] of Object.entries(result)) {
-      if (key === 'allow_long_works' ? typeof raw !== 'boolean'
+      if (['allow_long_works', 'strict'].includes(key) ? typeof raw !== 'boolean'
         : typeof raw !== 'string' || raw.length > (Object.hasOwn(lists, key) ? 16384 : 16)) {
         fail('The DJ direction draft contains an invalid field.');
       }
@@ -130,6 +133,7 @@ const DjDirection = (() => {
     if (!/^-?[0-2]$/.test(d.energy_bias)) fail('Energy shift must be -2 to 2.');
     constraints.energy_bias = Number(d.energy_bias);
     constraints.allow_long_works = d.allow_long_works;
+    constraints.strict = d.strict;
     const direction = { constraints };
     if (d.minutes !== '') {
       if (!/^\d+$/.test(d.minutes) || !integer(Number(d.minutes), 1, 10080)) {
@@ -179,6 +183,12 @@ const DjDirection = (() => {
     grid.append(el('label', { class: 'dj-direction-check' }, el('input', {
       ...attrs('allow_long_works', 'Allow long works'), type: 'checkbox', checked: d.allow_long_works,
       onchange: (event) => change('allow_long_works', event.target.checked) }), 'Allow long works'));
+    grid.append(el('label', { class: 'dj-direction-check' }, el('input', {
+      ...attrs('strict', 'Keep selection filters strict'), type: 'checkbox', checked: d.strict,
+      'aria-describedby': `${idPrefix}-strict-help`,
+      onchange: (event) => change('strict', event.target.checked) }), 'Keep selection filters strict'));
+    grid.append(el('p', { id: `${idPrefix}-strict-help`, class: 'dj-direction-note',
+      text: 'Strict keeps every selection filter when matching music is scarce. New picks wait if none match; queued music continues. A strict mood stays strict when this option is off. Standing taste preferences keep their existing fallback behavior.' }));
     box.append(el('p', { id: helpId, text: 'One entry per line; commas stay part of a name. Decades use the first year, such as 1960. Leave filters empty to use the selected mood or automatic program.' }),
       grid, el('p', { class: 'dj-direction-note', text: note ?? 'The duration starts afresh each time this scene or routine starts the DJ. With no mood or filters, it clears temporary steering and returns to the automatic program.' }));
     return box;

@@ -546,6 +546,20 @@ skip a batch. Sync notes report deferred samples and explain that another
 `fsonos dj sync` advances the rotation. This is bounded sampling, not complete
 discography coverage; artist-track sampling still runs during full refreshes.
 
+DJ starts, live steering and rehearsals accept `--strict` to keep all requested
+steering filters, including exclusions, even when matching music is scarce.
+A small matching set stays playable; if no permitted work matches, new
+selections wait with an explanation instead of relaxing the filters. Existing
+queued music stays in place. The web remote, HTTP API and MCP tools expose the
+same option, and saved scenes, routines and moods retain it. Existing saved
+directions keep their adaptive behavior unless strictness is requested.
+
+For example, `fsonos dj steer Kitchen --not-genre opera --strict --for 2h` keeps
+that exclusion for new selections during the two-hour session. Clearing the
+steer returns to the time-of-day program. A missing mood or unreadable active
+session now defers refills visibly instead of losing its constraints; an
+expired override no longer blocks the normal program.
+
 Scheduled DJ starts and DJ scenes check their prospective direction, playable
 music, required household Spotify rendering, and current queue prerequisites
 before the occurrence is marked as run. Queue checks cover ownership, readable

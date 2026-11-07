@@ -65,7 +65,7 @@ const DjSessionRemote = (() => {
     include_composers: 'Only composers', exclude_composers: 'Exclude composers',
     periods: 'Only classical periods', exclude_periods: 'Exclude classical periods',
     min_work_minutes: 'Minimum work minutes', max_work_minutes: 'Maximum work minutes',
-    energy_bias: 'Energy shift', allow_long_works: 'Allow long works',
+    energy_bias: 'Energy shift', allow_long_works: 'Allow long works', strict: 'Strict selection filters',
   };
 
   function constraintsText(value) {
@@ -82,7 +82,7 @@ const DjSessionRemote = (() => {
   // remain literal. Only nonempty constraints replace the group's steering.
   function rehearsalConstraints(draft = {}) {
     if (!object(draft)) throw new Error('Temporary filters must be an object.');
-    const allowed = [...REHEARSAL_LISTS, 'min_work_minutes', 'max_work_minutes', 'energy_bias', 'allow_long_works'];
+    const allowed = [...REHEARSAL_LISTS, 'min_work_minutes', 'max_work_minutes', 'energy_bias', 'allow_long_works', 'strict'];
     if (Object.keys(draft).some((key) => !allowed.includes(key))) throw new Error('Unknown temporary filter.');
     const result = {};
     for (const key of REHEARSAL_LISTS) {
@@ -112,6 +112,10 @@ const DjSessionRemote = (() => {
       throw new Error('Long-work permission must be a boolean.');
     }
     if (draft.allow_long_works) result.allow_long_works = true;
+    if (draft.strict !== undefined && typeof draft.strict !== 'boolean') {
+      throw new Error('Strict filters must be a boolean.');
+    }
+    if (draft.strict) result.strict = true;
     return Object.freeze(result);
   }
 
@@ -327,18 +331,21 @@ const DjSessionRemote = (() => {
       ...[-2, -1, 0, 1, 2].map((n) => el('option', { value: n, text: n === 0 ? 'Neutral' : `${n > 0 ? '+' : ''}${n} · ${n > 0 ? 'more energetic' : 'calmer'}` })));
     energy.value = '0';
     const long = el('input', { type: 'checkbox', 'aria-label': 'Rehearsal allow long works' });
+    const strict = el('input', { type: 'checkbox', 'aria-label': 'Rehearsal strict selection filters' });
     const filterDraft = () => ({ ...Object.fromEntries(REHEARSAL_LISTS.map((key) => [key, filterInputs[key].value])),
-      min_work_minutes: minimum.value, max_work_minutes: maximum.value, energy_bias: energy.value, allow_long_works: long.checked });
+      min_work_minutes: minimum.value, max_work_minutes: maximum.value, energy_bias: energy.value, allow_long_works: long.checked, strict: strict.checked });
     const filters = el('details', { class: 'dj-rehearsal-filters' },
       el('summary', { text: 'Temporary filters · this rehearsal only' }),
       el('p', { text: 'A mood or any nonempty filter replaces this group’s current steering and time-of-day program for the preview only. Your library preferences still apply. Leave all filters empty and mood unchanged to rehearse the live steering. Names use one entry per line; commas stay in the name.' }),
       el('div', { class: 'dj-rehearsal-fields' },
         ...REHEARSAL_LISTS.map((key) => el('label', {}, LABELS[key], filterInputs[key])),
         el('label', {}, 'Minimum work minutes', minimum), el('label', {}, 'Maximum work minutes', maximum),
-        el('label', {}, 'Energy shift', energy), el('label', {}, 'Allow long works', long)),
+        el('label', {}, 'Energy shift', energy), el('label', {}, 'Allow long works', long),
+        el('label', {}, 'Keep selection filters strict', strict)),
+      el('p', { text: 'Strict keeps every selection filter when matching music is scarce, so this preview may have no matching works. A strict mood stays strict when this option is off. Standing taste preferences keep their existing fallback behavior.' }),
       el('button', { type: 'button', text: 'Clear temporary filters', onclick: () => {
         for (const input of Object.values(filterInputs)) input.value = '';
-        minimum.value = ''; maximum.value = ''; energy.value = '0'; long.checked = false;
+        minimum.value = ''; maximum.value = ''; energy.value = '0'; long.checked = false; strict.checked = false;
         control.edit();
       } }));
     const fields = el('fieldset', {}, el('legend', { text: 'Plan a set, without changing the DJ' }),
@@ -388,7 +395,9 @@ const DjSessionRemote = (() => {
       }
       if (state.request.hours && sum.works === 500) output.append(el('p', { text: 'The 500-work limit was reached. The requested time window may not be fully covered.' }));
       if (state.request.works && sum.works > 0 && sum.works < state.request.works) output.append(el('p', { text: 'The DJ returned fewer works than requested. This is the available set, not a full-length playlist.' }));
-      if (!sum.works) output.append(el('p', { text: 'No works matched this rehearsal. Try another mood or sync your library.' }));
+      if (!sum.works) output.append(el('p', { text: state.request.constraints?.strict
+        ? 'No works match these strict filters. Change the filters or sync your library; strict mode will not choose music outside them.'
+        : 'No works matched this rehearsal. Try another mood or sync your library.' }));
       if (sum.hours.length) {
         output.append(el('h4', { text: 'Hour-by-hour energy and variety' }),
           el('p', { class: 'by', text: 'Variety is measured in bits: 0 means one artist or genre; higher values mean a more varied mix. Energy is on a 0–100 scale.' }));
@@ -548,7 +557,8 @@ const DjSessionRemote = (() => {
       else observation.append(el('p', { text: 'No DJ work currently reported as playing.' }));
       (value.next || []).forEach((work, index) => observation.append(workNode(work, `Up next ${index + 1}`)));
       const steer = value.steering;
-      const origin = { session: 'Session override', program: 'Time-of-day program', none: 'No active steering' }[steer.source] || steer.source;
+      const origin = { session: 'Session override', program: 'Time-of-day program', none: 'No active steering',
+        unavailable: 'Steering unavailable; new selections are deferred' }[steer.source] || steer.source;
       observation.append(el('h4', { text: 'Steering for the next pick' }),
         el('p', { text: `${origin}${steer.mood ? ` · ${steer.mood}` : ''}` }));
       if (steer.expires_at != null) observation.append(el('p', { text: `Expires ${new Date(steer.expires_at * 1000).toLocaleString()} (this browser’s local time).` }));

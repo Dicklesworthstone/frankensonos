@@ -563,6 +563,20 @@ from a genre the DJ was built around.
   requires a mood or a nonempty constraint; a plain start preserves existing
   steering. These use the same preference and filter-relaxation rules as a
   separate steer, rather than inventing another selection policy.
+- **Optional strict steering.** CLI starts, steers and rehearsals accept
+  `--strict`; HTTP direction constraints and MCP tools expose the same boolean.
+  Every requested filter family, including exclusions and length bounds,
+  remains in force. A small matching pool still rotates; an empty match
+  produces an explained `DjPoolEmpty` without admitting excluded music.
+  Queued works retain their existing behavior. Strictness merges from either
+  the mood or session and persists in scenes, routines and saved sessions.
+  Missing fields retain adaptive defaults, leaving the owner-open default
+  preference policy above unchanged. Failed reads of active steering defer
+  automatic refills with bounded retries and an unavailable status instead of
+  selecting unsteered music. Expired sessions are ignored before decoding,
+  and a future steering failure rejects a rehearsal without publishing a
+  misleading preview. Browser editors and reviewed direction signatures carry
+  the same option.
 - **Multi-movement works stay whole.** Classical tracks on Spotify are
   movements. A DJ that picks tracks independently plays a scherzo, then an
   aria, then the finale of a different symphony, which is the most common way

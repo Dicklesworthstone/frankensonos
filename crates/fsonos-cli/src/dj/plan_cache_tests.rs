@@ -566,3 +566,237 @@ fn clearing_steering_works_without_a_library_or_valid_files_and_keeps_sync_pendi
     assert_eq!(house.sim.soap_log().len(), calls);
     assert!(store.recent_plays(None, 100).unwrap().is_empty());
 }
+
+#[test]
+fn strict_empty_selection_has_the_same_typed_error_in_readiness_start_and_rehearsal() {
+    let house = House::new();
+    let lan = house.sim.lan();
+    let at = house.speakers(&lan);
+    let dj = SpotifyDj::new(None);
+    let clock = clock();
+    let mut store = MemStore::default();
+    apply_library_read(&mut store, &[song(1, "Artist One")]).unwrap();
+    let direction = DjSteer::Set {
+        mood: None,
+        constraints: SteerConstraints {
+            include_genres: vec!["jazz".into()],
+            strict: true,
+            ..SteerConstraints::default()
+        },
+        for_secs: Some(600),
+    };
+    let calls = house.sim.soap_log().len();
+    let ready = dj
+        .start_ready(at, &store, Some(&direction), &clock)
+        .unwrap_err();
+    assert!(store.dj_session(&house.coordinator.0).unwrap().is_none());
+    assert!(dj.state().feeds.is_empty());
+    dj.steer(at, &mut store, &direction, &clock).unwrap();
+    let preview = dj
+        .rehearse(at, &store, &rehearsal(&clock), &clock)
+        .unwrap_err();
+    let started = dj.act(at, &mut store, DjAction::Start, &clock).unwrap_err();
+    for error in [ready, preview, started] {
+        assert_eq!(error.code, fsonos_api::ErrorCode::DjPoolEmpty, "{error:?}");
+        assert!(
+            error.detail.contains("no music matches strict steering"),
+            "{error:?}"
+        );
+    }
+    assert!(dj.state().feeds.is_empty());
+    assert!(
+        house.sim.soap_log()[calls..]
+            .iter()
+            .all(|call| call.action == "Browse" || call.action.starts_with("Get"))
+    );
+    clock.advance(chrono::TimeDelta::seconds(600));
+    dj.start_ready(at, &store, None, &clock).unwrap();
+    dj.act(at, &mut store, DjAction::Start, &clock).unwrap();
+    assert!(
+        dj.feeds(&house.coordinator),
+        "the strict session expired normally"
+    );
+}
+
+#[test]
+#[allow(clippy::field_reassign_with_default)] // Core keeps its interpolation clock private.
+fn invalid_steering_defers_refills_without_touching_the_queue_and_clear_recovers() {
+    for malformed in [false, true] {
+        let house = House::new();
+        let lan = house.sim.lan();
+        let at = house.speakers(&lan);
+        let dj = SpotifyDj::new(None);
+        let clock = clock();
+        let mut store = MemStore::default();
+        apply_library_read(&mut store, &[song(1, "Artist One"), song(2, "Artist Two")]).unwrap();
+        dj.act(at, &mut store, DjAction::Start, &clock).unwrap();
+        let before = dj.state().feeds[&house.coordinator].snapshot();
+        let host = house.sim.player("Den").unwrap().ip;
+        control::next(&lan, host).unwrap();
+        let position = control::get_position_info(&lan, host).unwrap();
+        let mut playback = PlayerPlayback::default();
+        playback.transport = Some(TransportState::Playing);
+        playback.media_uri = Some(control::get_media_info(&lan, host).unwrap().uri);
+        playback.queue_position = Some(position.track);
+        playback.track_uri = Some(position.uri.clone());
+        playback.queue_length = Some(2);
+        store
+            .save_dj_session(&fsonos_core::store::DjSession {
+                coordinator: house.coordinator.0.clone(),
+                mood: (!malformed).then(|| "deleted-synthetic-mood".into()),
+                constraints: Some(if malformed {
+                    "{".into()
+                } else {
+                    r#"{"strict":true}"#.into()
+                }),
+                expires: i64::MAX,
+            })
+            .unwrap();
+        let calls = house.sim.soap_log().len();
+        dj.on_playback(at, &mut store, &playback, &clock);
+        assert_eq!(
+            house.sim.soap_log().len(),
+            calls,
+            "no speaker reads or writes after an unavailable steer"
+        );
+        assert_eq!(dj.state().feeds[&house.coordinator].snapshot(), before);
+        assert!(dj.state().refill_retries.contains_key(&house.coordinator));
+        let status = dj.status(at, &store, Some(position.track), &clock).unwrap();
+        assert!(status.running);
+        assert_eq!(status.steering.source, "unavailable");
+        assert!(
+            status
+                .problem
+                .unwrap()
+                .contains("New selections are deferred")
+        );
+        assert_eq!(
+            control::get_position_info(&lan, host).unwrap().uri,
+            position.uri
+        );
+        dj.steer(at, &mut store, &DjSteer::Clear, &clock).unwrap();
+        dj.on_playback(at, &mut store, &playback, &clock);
+        assert!(!dj.state().refill_retries.contains_key(&house.coordinator));
+        let after = dj.state().feeds[&house.coordinator].snapshot().unwrap();
+        assert_eq!(after.queued.len(), 2, "normal feeding resumes after repair");
+        assert!(
+            dj.status(at, &store, Some(position.track), &clock)
+                .unwrap()
+                .problem
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn a_future_program_conflict_rejects_the_rehearsal_instead_of_dropping_strict_steering() {
+    let house = House::new();
+    let lan = house.sim.lan();
+    let at = house.speakers(&lan);
+    let dj = SpotifyDj::new(None);
+    let clock =
+        FakeClock::new(chrono::DateTime::parse_from_rfc3339("2026-10-22T17:30:00Z").unwrap());
+    let mut store = MemStore::default();
+    let mut long_song = song(1, "Artist One");
+    long_song.duration_secs = Some(3600);
+    apply_library_read(&mut store, &[long_song]).unwrap();
+    dj.steer(
+        at,
+        &mut store,
+        &DjSteer::Set {
+            mood: None,
+            constraints: SteerConstraints {
+                min_work_minutes: Some(40),
+                strict: true,
+                ..SteerConstraints::default()
+            },
+            for_secs: None,
+        },
+        &clock,
+    )
+    .unwrap();
+    let calls = house.sim.soap_log().len();
+    let error = dj
+        .rehearse(at, &store, &rehearsal(&clock), &clock)
+        .unwrap_err();
+    assert_eq!(error.code, fsonos_api::ErrorCode::InvalidArgument);
+    assert!(
+        error
+            .detail
+            .contains("min_work_minutes 40 exceeds max_work_minutes 30"),
+        "{error:?}"
+    );
+    assert_eq!(house.sim.soap_log().len(), calls, "preview remains offline");
+    assert!(store.recent_plays(None, 100).unwrap().is_empty());
+}
+
+#[test]
+#[allow(clippy::field_reassign_with_default)] // Core keeps its interpolation clock private.
+fn strict_top_up_keeps_playing_the_retained_work_when_no_new_work_matches() {
+    let house = House::new();
+    let lan = house.sim.lan();
+    let at = house.speakers(&lan);
+    let dj = SpotifyDj::new(None);
+    let clock = clock();
+    let mut store = MemStore::default();
+    apply_library_read(&mut store, &[song(1, "Artist One"), song(2, "Artist Two")]).unwrap();
+    dj.act(at, &mut store, DjAction::Start, &clock).unwrap();
+    let queued = dj.state().feeds[&house.coordinator]
+        .snapshot()
+        .unwrap()
+        .queued;
+    dj.steer(
+        at,
+        &mut store,
+        &DjSteer::Set {
+            mood: None,
+            constraints: SteerConstraints {
+                exclude_genres: vec!["pop".into()],
+                strict: true,
+                ..SteerConstraints::default()
+            },
+            for_secs: None,
+        },
+        &clock,
+    )
+    .unwrap();
+    assert_eq!(
+        dj.state().feeds[&house.coordinator]
+            .snapshot()
+            .unwrap()
+            .queued,
+        queued
+    );
+    let host = house.sim.player("Den").unwrap().ip;
+    control::next(&lan, host).unwrap();
+    let position = control::get_position_info(&lan, host).unwrap();
+    let mut playback = PlayerPlayback::default();
+    playback.transport = Some(TransportState::Playing);
+    playback.media_uri = Some(control::get_media_info(&lan, host).unwrap().uri);
+    playback.queue_position = Some(position.track);
+    playback.track_uri = Some(position.uri.clone());
+    playback.queue_length = Some(2);
+    let calls = house.sim.soap_log().len();
+    dj.on_playback(at, &mut store, &playback, &clock);
+    let status = dj.status(at, &store, Some(position.track), &clock).unwrap();
+    assert!(status.running);
+    assert!(status.steering.constraints.strict);
+    assert!(
+        status
+            .problem
+            .unwrap()
+            .contains("no music matches strict steering")
+    );
+    assert_eq!(
+        control::get_position_info(&lan, host).unwrap().uri,
+        position.uri
+    );
+    assert!(house.sim.soap_log()[calls..].iter().all(|call| {
+        !call.action.starts_with("Add")
+            && !matches!(call.action.as_str(), "Play" | "Seek" | "SetAVTransportURI")
+    }));
+    assert_eq!(
+        dj.state().feeds[&house.coordinator].queued()[0].work_key,
+        queued[1].work_key
+    );
+}

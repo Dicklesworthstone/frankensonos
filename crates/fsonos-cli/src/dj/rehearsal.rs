@@ -18,6 +18,7 @@ use fsonos_spotify::dj::DjConfig;
 use fsonos_spotify::feed::{Planning, QueueFeed};
 use fsonos_spotify::rehearse::{Rehearsed, Span, summarize};
 use fsonos_spotify::steer::{DjSession, Steer, steering};
+use std::cell::RefCell;
 
 use super::{State, failure, queued_elsewhere, room};
 use crate::dj_view::{self, steer_failure};
@@ -36,6 +37,7 @@ pub(super) fn rehearse(
 ) -> Result<DjRehearsalDto, Failure> {
     let now = clock.now();
     let key = at.coordinator.0.clone();
+    let steering_error = RefCell::new(None);
     let steering_at: Steering<'_> = if let Some((mood, constraints)) = &rehearsal.steer {
         let session = DjSession {
             zone: key,
@@ -65,16 +67,30 @@ pub(super) fn rehearse(
                 "Fix the zone's DJ steering: its bounds clash with the mood's.",
             )
         })?;
+        // The feed's callback is infallible. Retain any future failure and
+        // reject the whole preview before publishing hypothetical picks;
+        // no unavailable steering can become an advertised unsteered set.
+        let failed = &steering_error;
         Box::new(move |t: DateTime<FixedOffset>| {
-            steering(
+            if failed.borrow().is_some() {
+                return None;
+            }
+            match steering(
                 store,
                 &state.moods,
                 &key,
                 t.timestamp(),
                 Some((t.weekday(), t.time())),
-            )
-            .ok()
-            .flatten()
+            ) {
+                Ok(steer) => steer,
+                Err(error) => {
+                    *failed.borrow_mut() = Some(steer_failure(
+                        error,
+                        "Fix the zone's DJ steering: its bounds clash with a mood during this rehearsal.",
+                    ));
+                    None
+                }
+            }
         })
     };
     let elsewhere = queued_elsewhere(&state.feeds, at.coordinator, now.timestamp());
@@ -97,16 +113,18 @@ pub(super) fn rehearse(
         RehearsalLength::Works(n) => Span::Works(usize::try_from(n).unwrap_or(usize::MAX)),
         RehearsalLength::Hours(h) => Span::Minutes(h.saturating_mul(60)),
     };
-    let set = feed
-        .rehearse(
-            store,
-            plan,
-            rehearsal.start,
-            span,
-            &*steering_at,
-            rehearsal.seed,
-        )
-        .map_err(failure)?;
+    let set = feed.rehearse(
+        store,
+        plan,
+        rehearsal.start,
+        span,
+        &*steering_at,
+        rehearsal.seed,
+    );
+    if let Some(error) = steering_error.borrow_mut().take() {
+        return Err(error);
+    }
+    let set = set.map_err(failure)?;
     Ok(dto(room(at), rehearsal, &set))
 }
 

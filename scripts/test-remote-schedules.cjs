@@ -344,7 +344,7 @@ const directionDraft = {
   decades: '1960\n1970', exclude_decades: '1980',
   include_keywords: 'piano', exclude_keywords: 'vocal',
   min_work_minutes: '2', max_work_minutes: '60', energy_bias: '-1',
-  allow_long_works: true, minutes: '90',
+  allow_long_works: true, strict: true, minutes: '90',
 };
 const fullDirection = () => ({ constraints: {
   include_composers: ['Bach'], exclude_composers: ['Wagner'],
@@ -353,7 +353,7 @@ const fullDirection = () => ({ constraints: {
   periods: ['late_romantic'], exclude_periods: ['modern'],
   decades: [1960, 1970], exclude_decades: [1980],
   include_keywords: ['piano'], exclude_keywords: ['vocal'],
-  min_work_minutes: 2, max_work_minutes: 60, energy_bias: -1, allow_long_works: true,
+  min_work_minutes: 2, max_work_minutes: 60, energy_bias: -1, allow_long_works: true, strict: true,
 }, for_secs: 5400 });
 function fillDirection(control) {
   for (const [key, value] of Object.entries(directionDraft)) assert.equal(control.editDirection(key, value), true, key);
@@ -385,7 +385,7 @@ test('new automatic DJ routines explicitly clear earlier steering and remain dis
   assert.equal(Schedules.scheduleOf(f.data.rows[0]).direction, undefined);
 });
 
-test('all sixteen DJ filters and the relative duration are reviewed and sent together once', async () => {
+test('all seventeen DJ filters and the relative duration are reviewed and sent together once', async () => {
   const f = builderFixture(); await draft(f); fillDirection(f.control);
   assert.equal(f.control.reviewCreate(), true);
   const pending = f.control.state.pending;
@@ -404,7 +404,7 @@ test('every direction field consumes a previous review and cannot be edited duri
   for (const field of Object.keys(directionDraft)) {
     const f = builderFixture(); await draft(f); fillDirection(f.control);
     f.control.reviewCreate(); const old = f.control.state.pending;
-    const changed = field === 'allow_long_works' ? false : field === 'energy_bias' ? '2'
+    const changed = ['allow_long_works', 'strict'].includes(field) ? false : field === 'energy_bias' ? '2'
       : ['min_work_minutes', 'max_work_minutes', 'minutes'].includes(field) ? '3'
         : field.includes('decades') ? '1990' : field.includes('periods') ? 'baroque' : 'Another entry';
     assert.equal(f.control.editDirection(field, changed), true, field);
@@ -816,6 +816,7 @@ test('the schedule DOM exposes full direction controls, preserves typing and sen
   assert.equal(dom.document.activeElement.value, 'Earth, Wind & Fire\nMiles Davis');
   control('schedule-direction-minutes').value = '90'; await control('schedule-direction-minutes').dispatch('input');
   control('schedule-direction-allow_long_works').checked = true; await control('schedule-direction-allow_long_works').dispatch('change');
+  control('schedule-direction-strict').checked = true; await control('schedule-direction-strict').dispatch('change');
   control('schedule-direction-energy_bias').value = '-1'; await control('schedule-direction-energy_bias').dispatch('change');
   await control('review-create').dispatch('click');
   assert.match(panel.node.textContent, /Earth, Wind & Fire/);
@@ -829,7 +830,7 @@ test('the schedule DOM exposes full direction controls, preserves typing and sen
   for (const key of Object.keys(directionDraft)) assert.equal(control(`schedule-direction-${key}`).disabled, true, key);
   wait.resolve(); await work;
   assert.deepEqual(f.writes, [{ when: 'weekdays 07:30', action: 'dj_start', zone: 'Studio@S2', direction: {
-    constraints: { include_artists: ['Earth, Wind & Fire', 'Miles Davis'], energy_bias: -1, allow_long_works: true }, for_secs: 5400,
+    constraints: { include_artists: ['Earth, Wind & Fire', 'Miles Davis'], energy_bias: -1, allow_long_works: true, strict: true }, for_secs: 5400,
   } }]);
   assert.match(panel.node.textContent, /Created schedule #99/);
 });

@@ -45,14 +45,14 @@ test('routes reuse the public steering and combined start APIs', () => {
     djSteeringStart: ['POST', '/dj/start'] });
 });
 
-test('all sixteen constraints round-trip canonically without splitting artist names at commas', () => {
+test('all seventeen constraints round-trip canonically without splitting artist names at commas', () => {
   const value = { include_composers: [' Bach '], exclude_composers: ['Wagner'],
     include_artists: ['Earth, Wind & Fire'], exclude_artists: ['Example'], include_genres: ['jazz'], exclude_genres: ['metal'],
     periods: ['Late Romantic'], exclude_periods: ['MODERN'], decades: [1960], exclude_decades: [1980],
     include_keywords: ['piano'], exclude_keywords: ['vocal'], min_work_minutes: 2, max_work_minutes: 60,
-    energy_bias: -2, allow_long_works: true };
+    energy_bias: -2, allow_long_works: true, strict: true };
   const checked = dj.constraintsOf(value);
-  assert.equal(Object.keys(checked).length, 16);
+  assert.equal(Object.keys(checked).length, 17);
   assert.deepEqual(checked.include_artists, ['Earth, Wind & Fire']);
   assert.deepEqual(checked.include_composers, ['Bach']);
   assert.deepEqual(checked.periods, ['late_romantic']);
@@ -69,7 +69,7 @@ test('scene and routine drafts author the full shared vocabulary without mutatin
     include_artists: ['Earth, Wind & Fire', 'Miles Davis'], exclude_artists: ['Example'],
     include_genres: ['jazz'], exclude_genres: ['metal'], periods: ['late_romantic'], exclude_periods: ['modern'],
     decades: [1960, 1970], exclude_decades: [1980], include_keywords: ['piano'], exclude_keywords: ['vocal'],
-    min_work_minutes: 2, max_work_minutes: 60, energy_bias: -2, allow_long_works: true };
+    min_work_minutes: 2, max_work_minutes: 60, energy_bias: -2, allow_long_works: true, strict: true };
   const empty = Direction.draft();
   let draft = empty;
   for (const [field, value] of Object.entries(filters)) draft = Direction.editDraft(draft, field,
@@ -98,7 +98,7 @@ test('direction form parsing rejects typos, coercion, excess names and meaningle
   }
   assert.throws(() => Direction.fromDraft(Direction.editDraft(Direction.draft(), 'minutes', '60')));
   assert.throws(() => Direction.fromDraft({ ...Direction.draft(), min_work_minutes: '40', max_work_minutes: '20' }));
-  for (const value of [null, [], { unknown: 'jazz' }, { allow_long_works: 'false' }, { minutes: 60 }]) {
+  for (const value of [null, [], { unknown: 'jazz' }, { allow_long_works: 'false' }, { strict: 'true' }, { minutes: 60 }]) {
     assert.throws(() => Direction.fromDraft(value));
   }
   assert.throws(() => Direction.editDraft(Direction.draft(), '__proto__', 'x'));
@@ -112,14 +112,14 @@ test('reusable direction controls emit exact field edits and have unique accessi
   const el = (tag, attrs = {}, ...children) => ({ tag, attrs, id: attrs.id, value: attrs.value ?? '',
     children, append(...nodes) { this.children.push(...nodes); } });
   const draft = { ...Direction.draft(), include_artists: '<img src=x>\nEarth, Wind & Fire',
-    minutes: '90', energy_bias: '-1', allow_long_works: true };
+    minutes: '90', energy_bias: '-1', allow_long_works: true, strict: true };
   const view = Direction.editor({ draft, change: (...edit) => edits.push(edit), disabled: true,
     el, idPrefix: 'routine-direction', focusAttribute: 'data-schedule-focus', open: true,
     toggle: (open) => toggles.push(open) });
   const all = (node) => [node, ...node.children.filter((c) => c && typeof c === 'object').flatMap(all)];
   const inputs = all(view).filter((node) => ['input', 'textarea', 'select'].includes(node.tag));
-  assert.equal(inputs.length, 17);
-  assert.equal(new Set(inputs.map((input) => input.id)).size, 17);
+  assert.equal(inputs.length, 18);
+  assert.equal(new Set(inputs.map((input) => input.id)).size, 18);
   for (const input of inputs) {
     assert.ok(input.attrs['aria-label']);
     assert.equal(input.attrs['data-schedule-focus'], input.id);
@@ -132,16 +132,19 @@ test('reusable direction controls emit exact field edits and have unique accessi
   assert.equal(energy.value, '-1'); energy.attrs.onchange({ target: { value: '2' } });
   const long = inputs.find((input) => input.id.endsWith('-allow_long_works'));
   assert.equal(long.attrs.checked, true); long.attrs.onchange({ target: { checked: false } });
+  const strict = inputs.find((input) => input.id.endsWith('-strict'));
+  assert.equal(strict.attrs.checked, true); strict.attrs.onchange({ target: { checked: false } });
+  assert.equal(strict.attrs['aria-describedby'], 'routine-direction-strict-help');
   view.attrs.ontoggle({ target: { open: false } });
-  assert.deepEqual(edits, [['include_artists', 'Miles Davis\nEarth, Wind & Fire'], ['energy_bias', '2'], ['allow_long_works', false]]);
+  assert.deepEqual(edits, [['include_artists', 'Miles Davis\nEarth, Wind & Fire'], ['energy_bias', '2'], ['allow_long_works', false], ['strict', false]]);
   assert.deepEqual(toggles, [false]);
 });
 
 test('constraint defaults are sparse and unknown fields cannot be silently erased', () => {
   assert.deepEqual(dj.constraintsOf(), {});
-  assert.deepEqual(dj.constraintsOf({ energy_bias: 0, allow_long_works: false, include_artists: [], min_work_minutes: null }), {});
+  assert.deepEqual(dj.constraintsOf({ energy_bias: 0, allow_long_works: false, strict: false, include_artists: [], min_work_minutes: null }), {});
   for (const v of [null, [], { new_filter: ['x'] }, { energy_bias: '1' }, { energy_bias: null },
-    { energy_bias: 3 }, { energy_bias: -3 }, { energy_bias: 1.1 }, { allow_long_works: 'false' }]) assert.throws(() => dj.constraintsOf(v));
+    { energy_bias: 3 }, { energy_bias: -3 }, { energy_bias: 1.1 }, { allow_long_works: 'false' }, { strict: 'true' }, { strict: 1 }, { strict: null }]) assert.throws(() => dj.constraintsOf(v));
 });
 
 test('every list enforces 32 entries and string bounds count Unicode scalar characters', () => {
@@ -324,7 +327,7 @@ test('topology preflight rejects changed groups before reading or saving their s
 
 test('preflight rejects changed or expired sessions even when the group is unchanged', async () => {
   for (const mutate of [(s) => { s.mood = 'calm'; }, (s) => { s.added = { include_artists: ['Example'] }; },
-    (s) => { s.constraints = { energy_bias: 2 }; }, (s) => { s.expires_at++; }, (s) => { s.source = 'program'; }]) {
+    (s) => { s.constraints = { energy_bias: 2 }; }, (s) => { s.constraints.strict = true; }, (s) => { s.expires_at++; }, (s) => { s.source = 'program'; }]) {
     const f = fixture(); await f.open(); const newer = status(); mutate(newer.steering); f.replies.djSteeringStatus.push(newer);
     assert.equal(await f.editor.confirm(f.editor.review(draft())), false);
     assert.equal(f.writes().length, 0); assert.match(f.editor.state.message, /changed or expired/);
@@ -497,4 +500,32 @@ test('real loopback dispatch preserves encoded group identity, exact steering an
   assert.deepEqual(JSON.parse(posts[0].body), { zone: name + '@S2', mood: 'calm',
     constraints: { exclude_artists: ['Earth, Wind & Fire'], energy_bias: -1 }, for_secs: 5400 });
   assert.equal(editor.state.status.steering.mood, 'calm'); assert.equal(editor.state.status.running, false);
+});
+
+
+test('strict selection is explicit, sparse and preserved in reviewed live starts and saved directions', async () => {
+  assert.deepEqual(dj.constraintsOf({ strict: false }), {});
+  assert.deepEqual(dj.constraintsOf({ strict: true }), { strict: true });
+  const direction = Direction.fromDraft(Direction.editDraft(Direction.draft(), 'strict', true));
+  assert.deepEqual(direction, { constraints: { strict: true } });
+  assert.match(Direction.describe(direction), /strict filters.*wait/);
+  assert.notEqual(Direction.signature(direction), Direction.signature({}));
+  const f = fixture(); await f.open();
+  const pending = f.editor.review({ constraints: { include_genres: ['jazz'], strict: true } });
+  assert.equal(pending.body.constraints.strict, true);
+  assert.equal(await f.editor.confirm(pending), true);
+  assert.equal(f.writes().length, 1);
+  assert.equal(f.writes()[0][1].body.constraints.strict, true);
+});
+
+test('unavailable steering retains playback and problem observations instead of masquerading as no steering', async () => {
+  const f = fixture();
+  const unavailable = { ...status(), steering: { source: 'unavailable' },
+    problem: 'DJ steering could not be read. New selections are deferred; queued playback continues.' };
+  f.replies.djSteeringStatus.push(unavailable);
+  await f.open();
+  assert.equal(f.editor.state.status.steering.source, 'unavailable');
+  assert.equal(f.editor.state.status.next.length, 1);
+  assert.match(f.editor.state.status.problem, /New selections are deferred/);
+  assert.equal(f.writes().length, 0);
 });

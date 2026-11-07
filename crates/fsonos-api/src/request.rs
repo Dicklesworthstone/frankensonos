@@ -700,6 +700,39 @@ mod tests {
     }
 
     #[test]
+    fn strict_constraints_survive_start_steer_and_rehearsal_normalization() {
+        let body = json!({"zone": "Kitchen", "constraints": {
+            "include_genres": [" jazz "], "strict": true
+        }});
+        let checked = steer(body.clone()).unwrap();
+        assert!(matches!(&checked, DjSteer::Set { constraints, .. }
+            if constraints.strict && constraints.include_genres == ["jazz"]));
+        let start: DjStartRequest = serde_json::from_value(body).unwrap();
+        assert_eq!(start.steer().unwrap(), Some(checked));
+        let strict_only: DjStartRequest = serde_json::from_value(json!({
+            "zone": "Kitchen", "constraints": {"strict": true}
+        }))
+        .unwrap();
+        assert!(
+            matches!(strict_only.steer().unwrap(), Some(DjSteer::Set { constraints, .. }) if constraints.strict)
+        );
+        let legacy: DjStartRequest = serde_json::from_value(json!({
+            "zone": "Kitchen", "constraints": {"strict": false}
+        }))
+        .unwrap();
+        assert_eq!(legacy.steer().unwrap(), None);
+        let rehearsal: crate::surface::dj_rehearse::DjRehearseRequest =
+            serde_json::from_value(json!({"zone": "Kitchen", "constraints": {"strict": true}}))
+                .unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-07T09:00:00+00:00").unwrap();
+        assert!(rehearsal.rehearsal(now).unwrap().steer.unwrap().1.strict);
+        assert!(
+            steer(json!({"zone": "Kitchen", "clear": true, "constraints": {"strict": true}}))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn a_steer_is_trimmed_and_checked() {
         assert_eq!(
             steer(json!({

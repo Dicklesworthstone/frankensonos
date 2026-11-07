@@ -200,6 +200,10 @@ pub struct ConstraintArgs {
     /// Let long works (operas, Passions) in.
     #[arg(long)]
     allow_long: bool,
+    /// Keep every steering filter even with few or no matches. Standing
+    /// preferences keep their existing fallback; queued music is retained.
+    #[arg(long)]
+    strict: bool,
 }
 
 impl ConstraintArgs {
@@ -225,6 +229,7 @@ impl ConstraintArgs {
                 .energy
                 .unwrap_or_else(|| step(self.brighter).saturating_sub(step(self.calmer))),
             allow_long_works: self.allow_long,
+            strict: self.strict,
         }
     }
 }
@@ -566,6 +571,30 @@ mod tests {
     }
 
     #[test]
+    fn strict_flag_reaches_steering_start_and_rehearsal_without_changing_defaults() {
+        assert!(!start_of(&["start", "Den"]).constraints.strict);
+        assert!(
+            start_of(&["start", "Den", "--strict", "--genre", "jazz"])
+                .constraints
+                .strict
+        );
+        let directed = steer_of(&["steer", "Den", "--strict", "--without", "opera"]);
+        assert!(directed.constraints.strict);
+        assert!(directed.steer().is_ok());
+        let DjAction::Rehearse(preview) =
+            parse(&["rehearse", "Den", "--strict", "--genre", "jazz"])
+        else {
+            panic!("not a rehearsal")
+        };
+        assert!(preview.request().constraints.strict);
+        assert!(
+            steer_of(&["steer", "Den", "--clear", "--strict"])
+                .steer()
+                .is_err()
+        );
+    }
+
+    #[test]
     fn start_defaults_preserve_steering_and_a_mood_can_still_expire() {
         let plain = start_of(&["start", "Kitchen"]);
         assert_eq!(plain.zone, "Kitchen");
@@ -619,6 +648,7 @@ mod tests {
             "--energy",
             "-1",
             "--allow-long",
+            "--strict",
             "--for",
             "2h",
         ]);
@@ -644,6 +674,7 @@ mod tests {
             max_work_minutes: Some(30),
             energy_bias: -1,
             allow_long_works: true,
+            strict: true,
         };
         assert_eq!(request.zone, "Kitchen@S2");
         assert_eq!(request.constraints, expected);

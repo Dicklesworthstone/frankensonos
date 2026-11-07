@@ -314,6 +314,7 @@ fn constraints() -> SteerConstraints {
         max_work_minutes: Some(90),
         energy_bias: -1,
         allow_long_works: true,
+        strict: true,
     }
 }
 

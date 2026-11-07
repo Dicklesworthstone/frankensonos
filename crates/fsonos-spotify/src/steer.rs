@@ -8,8 +8,9 @@
 //! When the filters leave too few works they relax in a fixed order —
 //! keywords, then periods, then length — and an explicit composer or artist
 //! request relaxes only if nothing at all matches; the pick's reason reports
-//! every relaxation. The DJ never silently plays nothing. Composers and
-//! periods steer the classical part of the library; artists, genres,
+//! every relaxation. Opt-in strict steering keeps every filter, even with
+//! no matching music; callers report that condition without changing playback.
+//! Composers and periods steer the classical part of the library; artists, genres,
 //! decades and keywords steer any genre.
 
 use std::collections::BTreeMap;
@@ -73,6 +74,10 @@ pub struct DjConstraints {
     pub energy_bias: i8,
     /// Let works past the long-work limit (operas, Passions) in.
     pub allow_long_works: bool,
+    /// Keep every steering filter, even with few or no matching works.
+    /// Does not change the standing preferences' precedence or fallback.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
     /// Unix seconds after which these constraints lapse.
     pub expires_at: Option<i64>,
 }
@@ -98,7 +103,7 @@ impl DjConstraints {
     }
 
     /// `self` with `over` laid on top: lists combine, set values win, and
-    /// the earlier expiry holds.
+    /// the earlier expiry holds. Strict steering holds when either asks for it.
     #[must_use]
     pub fn merged(&self, over: &Self) -> Self {
         let union = |a: &[String], b: &[String]| {
@@ -142,6 +147,7 @@ impl DjConstraints {
                 over.energy_bias
             },
             allow_long_works: self.allow_long_works || over.allow_long_works,
+            strict: self.strict || over.strict,
             expires_at: match (self.expires_at, over.expires_at) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
@@ -190,7 +196,7 @@ impl DjConstraints {
         u8::try_from(biased).ok()
     }
 
-    fn constrains(&self, family: Relaxation) -> bool {
+    pub(crate) fn constrains(&self, family: Relaxation) -> bool {
         match family {
             Relaxation::Keywords => {
                 !self.include_keywords.is_empty() || !self.exclude_keywords.is_empty()
@@ -274,7 +280,8 @@ pub struct Steer {
 /// periods, decades and length relax until at least `min` pass (or every
 /// work, in a smaller pool); genres, composers and artists relax only when
 /// nothing passes, so "just Pärt" rotates the few Pärt works rather than
-/// ignoring the request.
+/// ignoring the request. Strict constraints never relax; a smaller matching
+/// set stays smaller, and no matches returns an empty set.
 /// `haystacks[i]` is [`haystack`]`(&works[i])`.
 #[must_use]
 pub fn admit(
@@ -308,7 +315,7 @@ pub fn admit_among(
             .copied()
             .filter(|&w| admits(&works[w], &haystacks[w], constraints, &relaxed))
             .collect();
-        if admitted.len() >= want {
+        if constraints.strict || admitted.len() >= want {
             return (admitted, relaxed);
         }
         let next = Relaxation::ORDER.into_iter().find(|&r| {
@@ -1156,14 +1163,19 @@ pub fn steering<S: Store + ?Sized>(
     now: i64,
     local: Option<(Weekday, NaiveTime)>,
 ) -> Result<Option<Steer>, SpotifyError> {
-    let session = match store.dj_session(coordinator)? {
-        Some(row) => Some(DjSession::from_store(&row)?),
-        None => None,
-    }
-    .filter(|session| !session.expired(now))
-    .unwrap_or_else(|| DjSession::open(coordinator));
+    let session = store
+        .dj_session(coordinator)?
+        // An expired override no longer controls selection, even if its
+        // obsolete payload cannot be decoded by this process.
+        .filter(|row| row.expires == NEVER || now < row.expires)
+        .map(|row| DjSession::from_store(&row))
+        .transpose()?
+        .unwrap_or_else(|| DjSession::open(coordinator));
     session.steer_at(moods, Some(now), local)
 }
+
+#[cfg(test)]
+mod strict_tests;
 
 #[cfg(test)]
 mod tests {

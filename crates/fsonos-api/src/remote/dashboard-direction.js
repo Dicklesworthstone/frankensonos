@@ -30,6 +30,7 @@ const DashboardDirection = (() => {
     }
     for (const key of ['min_work_minutes', 'max_work_minutes', 'energy_bias']) if (c[key] != null) direction[key] = String(c[key]);
     direction.allow_long_works = c.allow_long_works === true;
+    direction.strict = c.strict === true;
     return Object.freeze({ mood: S.sessionMoodOf(steering),
       expiry: steering.source === 'session' && steering.expires_at !== null ? 'keep' : 'until',
       minutes: '', direction: Object.freeze(direction) });
@@ -39,6 +40,7 @@ const DashboardDirection = (() => {
     return Object.entries(constraints).map(([key, item]) => {
       if (D.lists[key]) return `${D.lists[key]}: ${item.join('; ')}`;
       if (key === 'allow_long_works') return 'Long works allowed';
+      if (key === 'strict') return 'Strict filters; new picks wait if none match';
       if (key === 'energy_bias') return `Energy shift ${item > 0 ? '+' : ''}${item}`;
       return `${key === 'min_work_minutes' ? 'Minimum' : 'Maximum'} work length ${item} minutes`;
     }).join(' · ') || 'No additional filters';
@@ -128,7 +130,7 @@ const DashboardDirection = (() => {
     function proposal(action) {
       if (!ready() || !['save', 'start', 'clear'].includes(action)) fail('Read the current DJ before reviewing this action.');
       if (action === 'start' && state.status.running) fail('The DJ is already running. Save steering for its next picks instead.');
-      if (action === 'clear' && state.status.steering.source !== 'session') fail('This group is already following its program.');
+      if (action === 'clear' && !['session', 'unavailable'].includes(state.status.steering.source)) fail('This group is already following its program.');
       const draft = state.draft, clear = action === 'clear';
       if (!clear && draft.mood === null) fail('Choose whether this session follows the time-of-day mood or pins a named mood. Its effective mood alone cannot tell us.');
       if (!clear && draft.expiry === 'keep' && !canKeep()) fail('The current deadline is too close or unavailable. Choose a new duration or until cleared.');
@@ -245,11 +247,15 @@ const DashboardDirection = (() => {
       $('direction-read').disabled = !control.canRead();
       const status = state.status, steering = status?.steering;
       $('direction-current').textContent = status ? `${status.running ? 'DJ running' : 'DJ stopped'} · ${state.stale ? 'last observation' : 'current observation'}` : 'DJ state not yet read.';
-      $('direction-effective').textContent = steering
-        ? `Effective mood: ${steering.mood || 'none reported'} · ${describeFilters(steering.constraints)}` : '';
-      $('direction-added').textContent = steering ? `Session additions: ${describeFilters(steering.added)}` : '';
-      $('direction-deadline').textContent = !steering ? '' : steering.source !== 'session'
-        ? 'Following the time-of-day program.' : steering.expires_at === null ? 'Session lasts until cleared.' : `Session deadline: ${deadline(steering.expires_at)}`;
+      const unavailable = steering?.source === 'unavailable';
+      $('direction-effective').textContent = !steering ? '' : unavailable
+        ? 'Steering could not be read; new selections are deferred.'
+        : `Effective mood: ${steering.mood || 'none reported'} · ${describeFilters(steering.constraints)}`;
+      $('direction-added').textContent = !steering ? '' : unavailable
+        ? 'Session additions are unavailable.' : `Session additions: ${describeFilters(steering.added)}`;
+      $('direction-deadline').textContent = !steering ? '' : unavailable ? 'Session timing is unavailable.'
+        : steering.source !== 'session' ? 'Following the time-of-day program.'
+          : steering.expires_at === null ? 'Session lasts until cleared.' : `Session deadline: ${deadline(steering.expires_at)}`;
       $('direction-problem').textContent = status?.problem || '';
       $('direction-form').hidden = !state.draft;
       const disabled = !control.editable();
@@ -267,7 +273,9 @@ const DashboardDirection = (() => {
           mood.append(el('option', { value: JSON.stringify(d.mood), text: `${d.mood} (not listed; choose another mood)` }));
         }
         mood.value = d.mood === null ? '' : JSON.stringify(d.mood || null);
-        $('direction-mood-help').textContent = d.mood === null
+        $('direction-mood-help').textContent = unavailable
+          ? 'Choose new settings or clear the unreadable session to return to the program.'
+          : d.mood === null
           ? 'This daemon reports only the effective mood. Choose whether to follow the time-of-day mood or pin a named mood before replacing the session.'
           : d.mood ? 'This named mood stays pinned for the session.' : 'The session follows the house’s time-of-day mood as it changes.';
         for (const field of ['expiry', 'minutes']) {

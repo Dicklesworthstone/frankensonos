@@ -30,7 +30,9 @@
 //! ([`saved`]), so a restarted serve feeds the queues it fed before.
 
 use chrono::{Datelike, Timelike};
-use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
+use fsonos_api::dj::{
+    DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer, DjSteeringDto, SteerConstraints,
+};
 use fsonos_api::plan::DjAction;
 use fsonos_api::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 use fsonos_api::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
@@ -539,6 +541,13 @@ fn no_session(room: &str) -> Failure {
     )
 }
 
+fn steering_problem(failure: &Failure) -> String {
+    format!(
+        "New selections are deferred because DJ steering is unavailable ({}); edit or clear the steering",
+        failure.detail
+    )
+}
+
 fn failure(err: FeedError) -> Failure {
     let detail = err.to_string();
     match err {
@@ -546,9 +555,9 @@ fn failure(err: FeedError) -> Failure {
             "Sign in to Spotify and sync the library: fsonos setup does both, and running it again re-reads a library cached before the DJ played every genre.",
         ),
         FeedError::NothingAllowed(_) => Failure::new(ErrorCode::DjPoolEmpty, detail).with_hint(
-            "fsonos dj prefs show lists the bans and the explicit setting; fsonos dj prefs unset \
-             ban.artists (or ban.albums, ban.tracks) or fsonos dj prefs set explicit true lets \
-             works back in.",
+            "Review the steering with fsonos dj status ROOM; edit its filters or clear them with \
+             fsonos dj steer ROOM --clear. fsonos dj prefs show lists the standing bans and \
+             explicit setting, which can also keep works out.",
         ),
         FeedError::NoRenderParams => Failure::new(ErrorCode::RenderParamsMissing, detail),
         FeedError::Inactive => Failure::new(ErrorCode::NoDjSession, detail),
@@ -809,14 +818,28 @@ impl DjEngine for SpotifyDj {
             initial = read_moods(self.moods_file.as_ref())?;
             &initial
         };
-        let steering = dj_view::steering_of(store, moods, at.coordinator, clock)?;
+        let (steering, problem) = match dj_view::steering_of(store, moods, at.coordinator, clock) {
+            Ok(steering) => (steering, state.problems.get(at.coordinator).cloned()),
+            Err(error) => (
+                DjSteeringDto {
+                    source: "unavailable".into(),
+                    mood: None,
+                    session_mood: None,
+                    constraints: SteerConstraints::default(),
+                    added: SteerConstraints::default(),
+                    expires_at: None,
+                    expires_in_secs: None,
+                },
+                Some(steering_problem(&error)),
+            ),
+        };
         Ok(dj_view::status(
             room(at),
             state.feeds.get(at.coordinator),
             &state.pool,
             queue_position,
             steering,
-            state.problems.get(at.coordinator).cloned(),
+            problem,
         ))
     }
 
@@ -957,17 +980,38 @@ impl DjEngine for SpotifyDj {
         {
             return;
         }
-        // A session that names a mood no longer defined still plays, unsteered.
-        let cx = state
-            .context(store, at.coordinator, clock)
-            .unwrap_or_else(|f| {
-                tracing::warn!(detail = %f.detail, "the DJ plays unsteered");
-                Context {
-                    steer: None,
-                    now: clock.now().timestamp(),
-                    local_hour: u8::try_from(clock.now().hour()).unwrap_or(0),
+        // A missing mood, malformed session or failed store read must not
+        // discard the owner's constraints. Leave queued playback untouched;
+        // selection resumes after a valid read or the session's normal expiry.
+        let cx = match state.context(store, at.coordinator, clock) {
+            Ok(context) => context,
+            Err(error) => {
+                let retry = retry::Retry::failed(
+                    state.refill_retries.get(at.coordinator),
+                    playback,
+                    Instant::now(),
+                );
+                tracing::warn!(
+                    detail = %error.detail,
+                    retry_in_s = retry.delay().as_secs(),
+                    "the DJ defers new selections until its steering can be read"
+                );
+                state.problems.insert(
+                    at.coordinator.clone(),
+                    format!(
+                        "{}; retrying in {} s",
+                        steering_problem(&error),
+                        retry.delay().as_secs()
+                    ),
+                );
+                state.refill_retries.insert(at.coordinator.clone(), retry);
+                if let Some(listening) = state.listening.get_mut(at.coordinator) {
+                    // Missing events cannot count as uninterrupted listening.
+                    listening.interrupt();
                 }
-            });
+                return;
+            }
+        };
         let State {
             feeds,
             refill_retries,

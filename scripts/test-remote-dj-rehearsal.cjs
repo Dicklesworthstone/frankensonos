@@ -251,12 +251,12 @@ test('real loopback JSON uses the public rehearsal route with literal Unicode ro
 test('temporary constraints preserve comma-containing names and Unicode, with sparse immutable wire values', () => {
   const filters = { include_artists: ' Earth, Wind & Fire\r\n  Björk \n', exclude_genres: 'ambient\nspoken word',
     include_composers: 'Example composer', include_keywords: '<Work & title>', min_work_minutes: '3',
-    max_work_minutes: 90, energy_bias: '-2', allow_long_works: true };
+    max_work_minutes: 90, energy_bias: '-2', allow_long_works: true, strict: true };
   const body = rehearsalRequest(zone(), { filters });
   assert.deepEqual(body, { zone: 'Study@S1', works: 12, seed: 1, constraints: {
     include_artists: ['Earth, Wind & Fire', 'Björk'], exclude_genres: ['ambient', 'spoken word'],
     include_composers: ['Example composer'], include_keywords: ['<Work & title>'],
-    min_work_minutes: 3, max_work_minutes: 90, energy_bias: -2, allow_long_works: true,
+    min_work_minutes: 3, max_work_minutes: 90, energy_bias: -2, allow_long_works: true, strict: true,
   } });
   assert.equal(body.mood, undefined, 'constraints without a mood remain an explicit rehearsal override');
   filters.include_artists = 'Other';
@@ -267,7 +267,7 @@ test('temporary constraints preserve comma-containing names and Unicode, with sp
 
 test('blank temporary filters retain the live steering instead of sending an empty override', () => {
   const body = rehearsalRequest(zone(), { filters: { include_artists: '\n \r\n', exclude_genres: '',
-    min_work_minutes: '', max_work_minutes: '', energy_bias: '0', allow_long_works: false } });
+    min_work_minutes: '', max_work_minutes: '', energy_bias: '0', allow_long_works: false, strict: false } });
   assert.deepEqual(body, { zone: 'Study@S1', works: 12, seed: 1 });
   const mood = rehearsalRequest(zone(), { mood: 'focus', filters: { include_genres: 'jazz' } }, ['focus']);
   assert.equal(mood.mood, 'focus');
@@ -279,7 +279,7 @@ test('temporary filter limits reject truncation, wrong types, unsupported fields
     { include_artists: Array(33).fill('artist').join('\n') }, { include_genres: 'x'.repeat(32769) },
     { min_work_minutes: 0 }, { max_work_minutes: 601 }, { min_work_minutes: 20, max_work_minutes: 10 },
     { max_work_minutes: '1e2' }, { min_work_minutes: 1.5 }, { energy_bias: 3 }, { energy_bias: '-1.5' },
-    { energy_bias: false }, { allow_long_works: 'yes' }, { future_constraint: true }, { decades: '1990' }]) {
+    { energy_bias: false }, { allow_long_works: 'yes' }, { strict: 'true' }, { strict: 1 }, { strict: null }, { future_constraint: true }, { decades: '1990' }]) {
     assert.throws(() => rehearsalRequest(zone(), { filters }));
   }
   assert.equal(rehearsalRequest(zone(), { filters: { include_artists: '夜'.repeat(128) } }).constraints.include_artists[0].length, 128);
@@ -317,4 +317,15 @@ test('invalid what-if filters fail before any request, retaining the prior resul
   assert.equal(m.state.report, before);
   assert.equal(calls.length, length);
   assert.match(m.state.message, /Minimum work length exceeds maximum/);
+});
+
+
+test('strict-only rehearsals are explicit temporary constraints and never write live settings', async () => {
+  const { m, calls } = fixture();
+  assert.equal(await m.generate({ filters: { strict: true } }), true);
+  const requests = calls.filter(([name]) => name === 'sessionRehearse');
+  assert.equal(requests.length, 1);
+  assert.deepEqual(requests[0][1].body.constraints, { strict: true });
+  assert.deepEqual(m.state.request.constraints, { strict: true });
+  assert.equal(calls.some(([name]) => /steer|start/i.test(name)), false);
 });

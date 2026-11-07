@@ -13,7 +13,7 @@ const status = () => ({ zone: 'Study', running: true, steering: { source: 'sessi
   expires_at: 1800000600, expires_in_secs: 600 } });
 const settings = () => ({ mood: 'calm', constraints: { include_artists: ['Earth, Wind & Fire', '坂本龍一'],
   exclude_keywords: ['<script>not markup</script>'], min_work_minutes: 2, max_work_minutes: 40,
-  energy_bias: -1, allow_long_works: true } });
+  energy_bias: -1, allow_long_works: true, strict: true } });
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { resolve, reject, promise }; };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function fixture(overrides = {}) {
@@ -205,7 +205,7 @@ test('real localhost JSON uses the existing steering endpoint and sends only rev
 const rehearsal = require('../crates/fsonos-api/src/remote/dj-session.js');
 const previewDraft = () => ({ mood: 'calm', at: '23:00', lengthMode: 'hours', length: '3', seed: '7',
   filters: { include_artists: 'Earth, Wind & Fire\n坂本龍一', exclude_keywords: '<script>not markup</script>',
-    min_work_minutes: '2', max_work_minutes: '40', energy_bias: '-1', allow_long_works: true } });
+    min_work_minutes: '2', max_work_minutes: '40', energy_bias: '-1', allow_long_works: true, strict: true } });
 const report = (body) => {
   const from = '2026-10-18T23:00:00-04:00';
   return { zone: 'Study', from, seed: body.seed,

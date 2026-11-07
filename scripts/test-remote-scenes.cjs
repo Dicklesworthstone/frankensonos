@@ -89,7 +89,7 @@ test('saved DJ directions preserve all filters and exact remaining seconds', () 
     include_artists: ['Earth, Wind & Fire'], exclude_artists: ['Artist B'],
     include_genres: ['jazz'], exclude_genres: ['pop'], periods: ['baroque'], exclude_periods: ['romantic'],
     decades: [1960], exclude_decades: [1980], include_keywords: ['piano'], exclude_keywords: ['vocal'],
-    min_work_minutes: 3, max_work_minutes: 40, energy_bias: -1, allow_long_works: true,
+    min_work_minutes: 3, max_work_minutes: 40, energy_bias: -1, allow_long_works: true, strict: true,
   };
   const value = { constraints, for_secs: 17 };
   const decoded = Scenes.sceneOf(directedRow(value));
@@ -1190,14 +1190,14 @@ const fullDirectionDraft = () => ({
   include_artists: 'Earth, Wind & Fire\nNina Simone', exclude_artists: 'Other artist',
   include_genres: 'jazz', exclude_genres: 'metal', periods: 'baroque', exclude_periods: 'late romantic',
   decades: '1960\n1970', exclude_decades: '1980', include_keywords: 'piano', exclude_keywords: 'opera',
-  min_work_minutes: '2', max_work_minutes: '45', energy_bias: '-1', allow_long_works: true, minutes: '90',
+  min_work_minutes: '2', max_work_minutes: '45', energy_bias: '-1', allow_long_works: true, strict: true, minutes: '90',
 });
 const fullDirection = () => ({ constraints: {
   include_composers: ['Bach'], exclude_composers: ['Wagner'],
   include_artists: ['Earth, Wind & Fire', 'Nina Simone'], exclude_artists: ['Other artist'],
   include_genres: ['jazz'], exclude_genres: ['metal'], periods: ['baroque'], exclude_periods: ['late_romantic'],
   decades: [1960, 1970], exclude_decades: [1980], include_keywords: ['piano'], exclude_keywords: ['opera'],
-  min_work_minutes: 2, max_work_minutes: 45, energy_bias: -1, allow_long_works: true,
+  min_work_minutes: 2, max_work_minutes: 45, energy_bias: -1, allow_long_works: true, strict: true,
 }, for_secs: 5400 });
 function editDirection(f, index = 0, fields = fullDirectionDraft()) {
   for (const [key, value] of Object.entries(fields)) {

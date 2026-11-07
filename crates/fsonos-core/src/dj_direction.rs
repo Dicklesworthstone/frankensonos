@@ -42,6 +42,10 @@ pub struct DjConstraints {
     pub energy_bias: i8,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub allow_long_works: bool,
+    /// Keep steering filters even when few or no works match. Standing
+    /// preferences retain their own precedence and fallback behavior.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
 }
 
 impl DjConstraints {
@@ -78,7 +82,7 @@ mod tests {
                 "decades": [1960], "exclude_decades": [1980],
                 "include_keywords": ["piano"], "exclude_keywords": ["opera"],
                 "min_work_minutes": 2, "max_work_minutes": 45,
-                "energy_bias": -1, "allow_long_works": true
+                "energy_bias": -1, "allow_long_works": true, "strict": true
             },
             "for_secs": 7200
         });
@@ -92,6 +96,15 @@ mod tests {
         let empty: DjDirection = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, DjDirection::default());
         assert!(empty.constraints.is_empty());
+        assert!(
+            !empty.constraints.strict,
+            "older directions remain adaptive"
+        );
+        assert!(
+            serde_json::to_value(&empty).unwrap()["constraints"]
+                .get("strict")
+                .is_none()
+        );
         for json in [
             r#"{"expires_at":123}"#,
             r#"{"constraints":{"expires_at":123}}"#,

@@ -179,7 +179,7 @@ test('one reviewed steer sends every native constraint through the shared lane',
     exclude_genres: ['metal'], include_composers: ['Synthetic composer'], exclude_composers: ['Other composer'],
     periods: ['baroque'], exclude_periods: ['modern'], decades: [1960], exclude_decades: [1980],
     include_keywords: ['piano'], exclude_keywords: ['choral'], min_work_minutes: 2, max_work_minutes: 60,
-    energy_bias: -2, allow_long_works: true };
+    energy_bias: -2, allow_long_works: true, strict: true };
   for (const [key, value] of Object.entries(fields)) assert.equal(f.control.editDirection(key,
     Array.isArray(value) ? value.join('\n') : typeof value === 'boolean' ? value : String(value)), true);
   f.control.edit('mood', 'bright'); f.control.edit('expiry', 'duration'); f.control.edit('minutes', '90');
@@ -381,19 +381,22 @@ test('actual dialog handlers edit shared filters with caret preservation and rev
   input = get('live-direction-include_artists'); assert.equal(f.doc.activeElement, input); assert.equal(input.selectionStart, 9);
   get('direction-expiry').value = 'duration'; get('direction-expiry').fire('change');
   get('direction-minutes').value = '90'; get('direction-minutes').fire('input');
+  get('live-direction-strict').checked = true; get('live-direction-strict').fire('change');
   get('direction-review').fire('click'); assert.equal(f.doc.activeElement, get('direction-preview'));
   assert.match(get('direction-preview-settings').textContent, /Earth, Wind & Fire/);
+  assert.match(get('direction-preview-settings').textContent, /Strict filters/);
   assert.match(get('direction-preview-expiry').textContent, /90 minutes from saving/); assert.equal(f.writes().length, 0);
   get('direction-confirm').fire('click'); await settled(() => f.control.state.result && !f.control.state.loading);
+  assert.equal(f.writes()[0].body.constraints.strict, true);
   assert.equal(f.writes()[0].body.for_secs, 5400); assert.deepEqual(f.writes()[0].body.constraints.include_artists, ['Earth, Wind & Fire']);
   get('direction-dialog').fire('cancel'); assert.equal(get('direction-dialog').open, false);
   assert.equal(f.doc.activeElement, get('open-direction'));
 });
 
-test('the live shared editor contains sixteen filters and no saved-routine duration control or note', async () => {
+test('the live shared editor contains seventeen filters and no saved-routine duration control or note', async () => {
   const f = await (await fixture({ dom: true }).ready()).open(), box = f.doc.getElementById('direction-filters');
   const fields = box.querySelectorAll('[data-direction-focus]');
-  assert.equal(fields.length, 16); assert.equal(new Set(fields.map(field => field.id)).size, 16);
+  assert.equal(fields.length, 17); assert.equal(new Set(fields.map(field => field.id)).size, 17);
   assert.equal(f.doc.getElementById('live-direction-minutes'), null);
   assert.doesNotMatch(box.textContent, /each time this scene or routine/);
   assert.match(box.textContent, /Already queued works stay queued/);
@@ -455,4 +458,52 @@ test('real loopback HTTP sends one native combined start with the reviewed direc
   assert.equal(await f.control.apply(), true);
   assert.deepEqual(received.filter(item => item.method === 'POST'), [{ url: '/dj/start', method: 'POST',
     body: { zone: 'Studio@S2', mood: 'calm', constraints: { include_artists: ['Earth, Wind & Fire'], exclude_artists: ['Synthetic avoid'] }, for_secs: 3600 } }]);
+});
+
+
+test('editing another field preserves strict session filters with a pinned or inherited mood', async () => {
+  for (const sessionMood of ['calm', null]) {
+    const f = await fixture().ready(), current = getStatus(f).steering;
+    current.session_mood = sessionMood;
+    current.constraints.strict = true; current.added.strict = true;
+    await f.open();
+    assert.equal(f.control.state.draft.direction.strict, true);
+    f.control.editDirection('include_artists', 'Another synthetic artist');
+    const pending = review(f);
+    assert.equal(pending.body.constraints.strict, true);
+    assert.equal(pending.body.mood, sessionMood ?? undefined);
+    assert.equal(await f.control.apply(pending), true);
+    assert.equal(f.writes().length, 1);
+    assert.equal(f.writes()[0].body.constraints.strict, true);
+    assert.equal(f.control.state.draft.direction.strict, true);
+  }
+});
+
+test('strict filter summaries describe exhaustion rather than interpreting booleans as durations', () => {
+  assert.equal(Direction.describeFilters({ strict: true }), 'Strict filters; new picks wait if none match');
+  assert.equal(Direction.describeFilters({ strict: false }), 'No additional filters');
+  const described = Direction.describeFilters({ strict: true, max_work_minutes: 20 });
+  assert.match(described, /Strict filters/);
+  assert.match(described, /Maximum work length 20 minutes/);
+  assert.doesNotMatch(described, /true minutes/);
+});
+
+test('unavailable steering remains visible and can be explicitly cleared to recover selection', async () => {
+  const f = await fixture({ dom: true }).ready(), get = id => f.doc.getElementById(id);
+  getStatus(f).steering = { source: 'unavailable', session_mood: null };
+  getStatus(f).problem = 'DJ steering could not be read. New selections are deferred; queued playback continues.';
+  await f.open();
+  assert.match(get('direction-effective').textContent, /new selections are deferred/);
+  assert.match(get('direction-added').textContent, /unavailable/);
+  assert.match(get('direction-deadline').textContent, /unavailable/);
+  assert.doesNotMatch(get('direction-deadline').textContent, /Following the time-of-day program/);
+  assert.match(get('direction-problem').textContent, /queued playback continues/);
+  assert.equal(f.control.state.status.next.length, 1);
+  assert.equal(get('direction-clear').disabled, false);
+  get('direction-clear').fire('click');
+  assert.equal(f.writes().length, 0);
+  get('direction-confirm').fire('click');
+  await settled(() => f.control.state.result && !f.control.state.loading);
+  assert.deepEqual(f.writes(), [{ url: '/dj/steer', body: { zone: 'Studio@S2', clear: true } }]);
+  assert.match(get('direction-deadline').textContent, /Following the time-of-day program/);
 });

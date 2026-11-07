@@ -12,7 +12,7 @@ fn typed_conversion_preserves_every_filter_and_relative_lifetime() {
         "decades": [1960], "exclude_decades": [1980],
         "include_keywords": ["piano"], "exclude_keywords": ["opera"],
         "min_work_minutes": 2, "max_work_minutes": 45,
-        "energy_bias": -1, "allow_long_works": true
+        "energy_bias": -1, "allow_long_works": true, "strict": true
     }, "for_secs": 7200});
     let direction: DjDirectionDto = serde_json::from_value(wire.clone()).unwrap();
     direction.validate(Some("calm")).unwrap();
@@ -96,4 +96,54 @@ fn remaining_seconds_are_exact_and_reuse_start_constraint_validation() {
     };
     assert!(invalid.validate(None).is_err());
     assert!(direction.validate(Some(" ")).is_err());
+}
+
+#[test]
+fn strict_is_opt_in_and_remains_an_explicit_direction_without_other_filters() {
+    let legacy: SteerConstraints = serde_json::from_value(json!({})).unwrap();
+    assert!(!legacy.strict);
+    assert!(legacy.is_empty());
+    assert!(
+        serde_json::to_value(&legacy)
+            .unwrap()
+            .get("strict")
+            .is_none()
+    );
+    let disabled: SteerConstraints = serde_json::from_value(json!({"strict": false})).unwrap();
+    assert_eq!(legacy, disabled);
+    let direction: DjDirectionDto =
+        serde_json::from_value(json!({"constraints": {"strict": true}, "for_secs": 17})).unwrap();
+    let (mood, normalized) = direction.normalized(None).unwrap();
+    assert!(mood.is_none());
+    assert!(normalized.constraints.strict);
+    assert!(DjDirection::from(&normalized).constraints.strict);
+    assert!(
+        matches!(normalized.steer(None).unwrap(), DjSteer::Set { constraints, .. } if constraints.strict)
+    );
+    assert!(normalized.summary(None).contains("strict filters"));
+    for value in [json!("true"), json!(1), json!(null), json!([])] {
+        assert!(serde_json::from_value::<SteerConstraints>(json!({"strict": value})).is_err());
+    }
+}
+
+#[test]
+fn steering_summaries_distinguish_strict_moods_and_unavailable_state() {
+    let mut steering = crate::dj::DjSteeringDto {
+        source: "program".into(),
+        mood: Some("focus".into()),
+        session_mood: None,
+        constraints: SteerConstraints {
+            strict: true,
+            ..SteerConstraints::default()
+        },
+        added: SteerConstraints::default(),
+        expires_at: None,
+        expires_in_secs: None,
+    };
+    assert!(steering.summary().contains("strict filters (no fallback)"));
+    steering.source = "unavailable".into();
+    assert_eq!(
+        steering.summary(),
+        "unavailable; new selections are deferred"
+    );
 }
