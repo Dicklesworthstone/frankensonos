@@ -52,6 +52,8 @@ use crate::config::GlobalArgs;
 use crate::dj_cmd::DjAction;
 use crate::{Command, Switch, announce_cmd, direct, emit, schedule_cmd};
 
+mod transport;
+
 /// The daemon's address file in the data directory.
 pub const DAEMON_FILE: &str = "daemon.json";
 
@@ -62,6 +64,10 @@ pub const PROBE: Duration = Duration::from_millis(150);
 /// How long a command through the daemon may take.
 const CALL: Duration = Duration::from_secs(120);
 
+/// Queue expansion, DJ preparation and whole-house scenes can take longer
+/// than an ordinary transport command. Match the web remote's bounded budget.
+const LONG_CALL: Duration = Duration::from_secs(600);
+
 /// How long a daemon named by URL may take to answer its probe: a TLS
 /// handshake across the tailnet, not a loopback connect.
 const URL_PROBE: Duration = Duration::from_secs(10);
@@ -70,6 +76,22 @@ const URL_PROBE: Duration = Duration::from_secs(10);
 /// twenty-minute request deadline to report its outcome first.
 const ANNOUNCE_CALL: Duration =
     Duration::from_secs(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS + 30);
+
+fn command_timeout(path: &str) -> Duration {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    if path == "/announce" {
+        return ANNOUNCE_CALL;
+    }
+    let scene_apply = path
+        .strip_prefix("/scenes/")
+        .and_then(|tail| tail.strip_suffix("/apply"))
+        .is_some_and(|name| !name.is_empty() && !name.contains('/'));
+    if path == "/queue" || path.starts_with("/dj/") || scene_apply {
+        LONG_CALL
+    } else {
+        CALL
+    }
+}
 
 /// What `fsonos serve` leaves in the data directory for the CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,7 +386,7 @@ impl Daemon {
         path: &str,
         body: &B,
     ) -> Result<T, Failure> {
-        self.post_with_timeout(path, body, CALL)
+        self.post_with_timeout(path, body, command_timeout(path))
     }
 
     /// The announcement response arrives after synthesis, playback, and restore.
@@ -504,13 +526,8 @@ impl Daemon {
                 return exchange_url(url, method, path, body, timeout.max(URL_PROBE));
             }
         };
-        let mut stream = TcpStream::connect_timeout(addr, timeout.min(PROBE))?;
-        stream.set_read_timeout(Some(timeout))?;
-        stream.set_write_timeout(Some(timeout))?;
         let request = self.request(method, path, body.unwrap_or_default(), "application/json");
-        stream.write_all(request.as_bytes())?;
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw)?;
+        let raw = transport::exchange(*addr, request.as_bytes(), timeout, PROBE)?;
         parse_response(&raw)
     }
 
@@ -1153,6 +1170,41 @@ fn control_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_running_commands_share_the_web_remotes_response_budget() {
+        for path in [
+            "/queue",
+            "/queue?trace=1",
+            "/dj/start",
+            "/dj/skip",
+            "/dj/rehearse",
+            "/scenes/Dinner/apply",
+            "/scenes/Evening%20music/apply?trace=1",
+            "/scenes/Evening%2Fquiet/apply?trace=1",
+        ] {
+            assert_eq!(command_timeout(path), LONG_CALL, "{path}");
+        }
+        for path in [
+            "/play",
+            "/pause",
+            "/volume",
+            "/queue/play",
+            "/queue/remove",
+            "/scenes/save",
+            "/scenes/Dinner",
+            "/scenes/Dinner/nested/apply",
+            "/scenes/Dinner/apply/extra",
+            "/scenes//apply",
+            "/dj",
+            "/djs/start",
+        ] {
+            assert_eq!(command_timeout(path), CALL, "{path}");
+        }
+        for path in ["/announce", "/announce?trace=1"] {
+            assert_eq!(command_timeout(path), ANNOUNCE_CALL, "{path}");
+        }
+    }
 
     /// A directory of this test's own: the pid alone recurs across runs on a
     /// worker (and across jobs in other pid namespaces sharing its temp dir).
