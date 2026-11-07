@@ -1883,3 +1883,17 @@ same packages.
 - xnf: the iss inputs (luid/hhid) are pre-auth readable per unit from
   `/status/zp` (`<LocalUID>`, `<HouseholdControlID>`) — the mint claims can
   be exact per unit; only network_hash remains.
+
+### 2026-11-06 (session 11) — the chroot replay reaches the exact verdict point; the hw-set field identified
+
+The 57.23 chroot replay now runs the REAL upgrade binary with a hand-written
+/var/run/upgradeinfo (URL + MinVersion lines) — the exact post-fetch state.
+Result: all gates pass except the compat check, which fails ONLY on the
+chroot's fake hardware-feature-set (0; the field = `param_1[0x88]`, supplied
+on hardware by the anacapad IPC — `warning: init failed` in the chroot).
+Mask semantics: PASS = `mine & ~required == 0`; required = 0x1e.
+On .84 the bits ⊆ 0x1e (the 10-22 accepted-65130 probe) ⇒ on hardware the
+compat passes ⇒ the .84 non-install refusal is NOT the compat check and NOT
+the fetch gate (full 5.6MB reads ×2). It is the MinVersion/deferred/downgrade
+decision — whose trace (upgrade.log) needs one shell. The no-DNS BSU chain
+stands proven to the fetch; every offline oracle now exists.
