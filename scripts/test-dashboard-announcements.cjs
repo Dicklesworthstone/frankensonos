@@ -175,7 +175,8 @@ test('close, suspend and dispose during preflight fence every unsent write', asy
   for (const action of ['close', 'suspend', 'dispose']) {
     const f = await fixture().ready(); await review(f); const gate = deferred();
     f.read(() => gate.promise); const work = f.announcer.apply(); await settled(() => f.ctl.state.busy);
-    f.announcer[action](); gate.resolve(copy(f.zones));
+    const signal = f.calls.at(-1).options.signal;
+    f.announcer[action](); assert.equal(signal.aborted, true); gate.resolve(copy(f.zones));
     assert.equal(await work, false); assert.equal(f.writes().length, 0);
   }
 });

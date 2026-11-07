@@ -52,7 +52,11 @@ fn full_sync_bounds_album_pages_and_background_recovery_resumes_after_restart() 
         let done = finish_with(&server, &cx, &mut store, &previous).await;
         assert_eq!((done.albums.completed, done.albums.pending), (1, 0));
         let calls = server.calls(ROUTE);
-        assert_eq!(calls.len(), 21, "retained pages were verified before publication");
+        assert_eq!(
+            calls.len(),
+            21,
+            "retained pages were verified before publication"
+        );
         assert!(calls[ALBUM_PAGE_BUDGET].contains("offset=0"));
         assert!(calls[ALBUM_PAGE_BUDGET + 1].contains("offset=8"));
         assert_eq!(store.library().unwrap(), accepted);
@@ -95,8 +99,13 @@ fn a_full_refresh_uses_the_previous_album_offset_instead_of_restarting_it() {
         assert_eq!(checking.albums.advanced, ALBUM_PAGE_BUDGET);
         assert_eq!(server.calls(ROUTE).len(), 2 * ALBUM_PAGE_BUDGET);
         let done = sync_library_detailed_with_albums(
-            &mut session, &cx, &mut store, Some(&checking.albums),
-        ).await.unwrap();
+            &mut session,
+            &cx,
+            &mut store,
+            Some(&checking.albums),
+        )
+        .await
+        .unwrap();
         assert_eq!((done.albums.completed, done.albums.pending), (1, 0));
         assert_eq!(server.calls(ROUTE).len(), 21);
         let mut accepted = done.albums.clone();
@@ -156,8 +165,14 @@ fn playlist_windows_bound_album_work_and_resume_without_an_essential_read() {
         assert_eq!(checking.albums.advanced, ALBUM_PAGE_BUDGET);
         assert_eq!(server.calls(ROUTE).len(), 2 * ALBUM_PAGE_BUDGET);
         let done = continue_playlists_with_albums(
-            &mut session, &cx, &mut store, OWNER, Some(&checking.albums),
-        ).await.unwrap();
+            &mut session,
+            &cx,
+            &mut store,
+            OWNER,
+            Some(&checking.albums),
+        )
+        .await
+        .unwrap();
         assert_eq!((done.albums.completed, done.albums.pending), (1, 0));
         assert_eq!(server.calls(ROUTE).len(), 21);
         assert!(server.calls("/v1/me/albums").is_empty());

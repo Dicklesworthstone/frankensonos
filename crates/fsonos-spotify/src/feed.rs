@@ -1013,6 +1013,7 @@ impl QueueFeed {
         }
         let params = render_params(at, store, now)?;
         let host = host_of(at)?;
+        let mut proof = enqueue::Batch::new(at.coordinator);
         while let Some(m) = self.queued[index].movements.iter().position(|m| !m.added) {
             let desired = self.queued[index].last().map_or(0, |last| last + 1);
             let result = add_movement(
@@ -1021,6 +1022,7 @@ impl QueueFeed {
                 &params,
                 &self.queued[index].movements[m],
                 desired,
+                &mut proof,
             )
             .map_err(|e| render_refused(at, e));
             let (position, len) = self.add_result(result)?;
@@ -1078,6 +1080,7 @@ impl QueueFeed {
         let host = host_of(at)?;
         let mut history = self.history(&*store, plan.now)?;
         let elsewhere = self.elsewhere(&*store, &plan)?;
+        let mut proof = enqueue::Batch::new(at.coordinator);
         for _ in 0..count {
             let ctx = PickContext {
                 history: &history,
@@ -1115,7 +1118,7 @@ impl QueueFeed {
                     .iter()
                     .map(|m| PlayRecord::at(m.uri.clone(), plan.now)),
             );
-            let added = self.append(at.transport, host, &params, &mut work);
+            let added = self.append(at.transport, host, &params, &mut work, &mut proof);
             if self.active && work.first().is_some() {
                 self.queued.push(work);
             }
@@ -1132,9 +1135,10 @@ impl QueueFeed {
         host: IpAddr,
         params: &SpotifyRenderParams,
         work: &mut QueuedWork,
+        proof: &mut enqueue::Batch,
     ) -> Result<(), FeedError> {
         for m in work.movements.iter_mut().filter(|m| !m.added) {
-            let result = add_movement(t, host, params, m, 0);
+            let result = add_movement(t, host, params, m, 0, proof);
             let (position, len) = self.add_result(result)?;
             m.position = Some(position);
             m.added = true;
@@ -1342,16 +1346,17 @@ fn host_of<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<IpAddr, FeedEr
 }
 
 /// Add one movement to the queue at position `desired` (0: the end), the
-/// way the Sonos app does (`AddURIToQueue`). Returns where it landed and,
-/// when the player says, the queue's new length.
+/// way the Sonos app does (`AddURIToQueue`). Returns the confirmed occurrence
+/// and observed queue length; the scoped proof can serve the next movement.
 fn add_movement<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
     params: &SpotifyRenderParams,
     m: &Movement,
     desired: u32,
+    proof: &mut enqueue::Batch,
 ) -> Result<(u32, Option<u32>), FeedError> {
-    enqueue::confirmed(t, host, &m.uri, desired, || {
+    proof.confirmed(t, host, &m.uri, desired, || {
         let response = soap::call(
             t,
             host,

@@ -68,19 +68,32 @@ fn verification_keeps_its_cursor_across_another_restart() {
     let endpoints = Endpoints::default();
     let mut part = reopened(&read(10, 10), NOW + 10);
     for index in 0..6 {
-        assert!(part.verify(index, &page(u32::try_from(index).unwrap(), 10), &endpoints).unwrap());
+        assert!(
+            part.verify(index, &page(u32::try_from(index).unwrap(), 10), &endpoints)
+                .unwrap()
+        );
     }
     let mut part = reopened(&part, NOW + 20);
     assert_eq!(part.verification_index(), Some(6));
     assert!(part.verify(0, &page(0, 10), &endpoints).unwrap());
-    assert_eq!(part.verification_index(), Some(6), "root checks do not reset progress");
+    assert_eq!(
+        part.verification_index(),
+        Some(6),
+        "root checks do not reset progress"
+    );
     for index in 6..10 {
-        assert!(part.verify(index, &page(u32::try_from(index).unwrap(), 10), &endpoints).unwrap());
+        assert!(
+            part.verify(index, &page(u32::try_from(index).unwrap(), 10), &endpoints)
+                .unwrap()
+        );
     }
     assert!(part.ready());
     let again = reopened(&part, NOW + 30);
     assert_eq!(again.verification_index(), Some(0));
-    assert!(!again.ready(), "a failed publication must recheck completed evidence");
+    assert!(
+        !again.ready(),
+        "a failed publication must recheck completed evidence"
+    );
 }
 
 #[test]
@@ -98,14 +111,19 @@ fn same_total_root_or_middle_metadata_changes_are_not_accepted() {
             };
             let before = part.clone();
             assert!(
-                !part.verify(
-                    index as usize,
-                    &serde_json::to_vec(&body).unwrap(),
-                    &Endpoints::default(),
-                ).unwrap(),
+                !part
+                    .verify(
+                        index as usize,
+                        &serde_json::to_vec(&body).unwrap(),
+                        &Endpoints::default(),
+                    )
+                    .unwrap(),
                 "accepted a changed {field} at page {index}"
             );
-            assert_eq!(part, before, "rejected evidence does not advance verification");
+            assert_eq!(
+                part, before,
+                "rejected evidence does not advance verification"
+            );
         }
     }
 }
@@ -115,7 +133,8 @@ fn changed_total_is_detected_even_when_the_old_offset_no_longer_exists() {
     let mut part = reopened(&read(3, 3), NOW + 1);
     let body = serde_json::to_vec(&json!({
         "items": [], "offset": 2, "total": 1, "next": null
-    })).unwrap();
+    }))
+    .unwrap();
     assert!(!part.verify(2, &body, &Endpoints::default()).unwrap());
     assert!(!part.ready());
 }
@@ -144,13 +163,21 @@ fn raw_coverage_includes_unavailable_entries_and_detects_new_playability() {
         "items": [unavailable, track(2)], "offset": 0, "total": 3
     });
     let mut part = PartialAlbum::new(ALBUM.into(), NOW);
-    part.ingest(&serde_json::to_vec(&body).unwrap(), &endpoints).unwrap();
+    part.ingest(&serde_json::to_vec(&body).unwrap(), &endpoints)
+        .unwrap();
     assert_eq!(part.offset, 2);
     assert_eq!(part.album_tracks().len(), 1);
     let mut part = reopened(&part, NOW + 1);
-    assert!(part.verify(0, &serde_json::to_vec(&body).unwrap(), &endpoints).unwrap());
+    assert!(
+        part.verify(0, &serde_json::to_vec(&body).unwrap(), &endpoints)
+            .unwrap()
+    );
     body["items"][0]["is_playable"] = json!(true);
-    assert!(!part.verify(0, &serde_json::to_vec(&body).unwrap(), &endpoints).unwrap());
+    assert!(
+        !part
+            .verify(0, &serde_json::to_vec(&body).unwrap(), &endpoints)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -159,7 +186,8 @@ fn omitted_later_totals_keep_the_original_coverage_proof() {
     let mut part = read(1, 2);
     let tail = serde_json::to_vec(&json!({
         "items": [track(2)], "offset": 1
-    })).unwrap();
+    }))
+    .unwrap();
     part.ingest(&tail, &endpoints).unwrap();
     let mut part = reopened(&part, NOW + 1);
     assert!(part.verify(0, &page(0, 2), &endpoints).unwrap());
@@ -181,7 +209,11 @@ fn malformed_pages_never_advance_retained_metadata_or_verification() {
         }),
     ] {
         let mut attempt = part.clone();
-        assert!(attempt.ingest(&serde_json::to_vec(&bad).unwrap(), &endpoints).is_err());
+        assert!(
+            attempt
+                .ingest(&serde_json::to_vec(&bad).unwrap(), &endpoints)
+                .is_err()
+        );
         assert_eq!(attempt, part);
     }
     let mut resumed = reopened(&part, NOW + 1);
@@ -211,7 +243,10 @@ fn old_expired_future_or_corrupted_checkpoints_restart_instead_of_publishing() {
     track_changed["tracks"][0]["explicit"] = json!(true);
     changes.push(track_changed);
     let mut unknown_flag = valid.clone();
-    unknown_flag["tracks"][0].as_object_mut().unwrap().remove("explicit");
+    unknown_flag["tracks"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("explicit");
     changes.push(unknown_flag);
     for (field, value) in [
         ("offset", json!(100)),
@@ -241,7 +276,8 @@ fn oversize_pages_are_rejected_without_discarding_the_previous_prefix() {
     huge["name"] = json!("x".repeat(MAX_BYTES));
     let body = serde_json::to_vec(&json!({
         "items": [huge], "offset": 1, "total": 2
-    })).unwrap();
+    }))
+    .unwrap();
     assert!(part.ingest(&body, &Endpoints::default()).is_err());
     assert_eq!(part, before);
 }

@@ -133,7 +133,8 @@ const DashboardAnnouncements = (() => {
     const canApply = () => !!(ready() && state.pending && state.pending.version === version);
     async function apply(reviewed = state.pending) {
       if (!canApply() || reviewed !== state.pending) return false;
-      const v = version;
+      const v = version, abort = new AbortController();
+      reading = abort;
       let receipt = null;
       state.pending = null; state.writing = true; state.phase = 'checking'; state.message = 'Checking the selected rooms…'; publish();
       try {
@@ -144,12 +145,13 @@ const DashboardAnnouncements = (() => {
                 || now() - readAt >= MAX_AGE) fail('The announcement review is no longer current. Read rooms and review again.');
           };
           valid();
-          const current = roomsOf(await call('/zones'), reviewed.scope); valid();
+          const current = roomsOf(await call('/zones', undefined, { signal: abort.signal }), reviewed.scope); valid();
           if (reviewed.rooms.some(previous => !current.some(room => room.target === previous.target && room.signature === previous.signature))) {
             fail('A selected room or group changed. Read rooms and review again.');
           }
           state.wav = null; state.report = null; state.phase = 'announcing';
           state.message = 'The daemon is preparing, playing, and restoring. This can take several minutes. Do not send the announcement again.'; publish();
+          valid(); reading = null;
           receipt = reportOf(await send('/announce', reviewed.body), reviewed);
           return { done: receipt.clean ? 'Announcement finished; the daemon reports playback restored.'
             : 'The announcement did not complete cleanly. Check playback and restoration details.', changed: true };

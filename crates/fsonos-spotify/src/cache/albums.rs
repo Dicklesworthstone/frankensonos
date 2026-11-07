@@ -84,9 +84,10 @@ impl AlbumContinuation {
         }
         // Retained metadata must match its bounded, unexpired proof before
         // its cursor can be resumed. Legacy unproved checkpoints start again.
-        self.partial = self.partial.take().and_then(|mut part| {
-            (albums.contains(&part.uri) && part.resume(at)).then_some(part)
-        });
+        self.partial = self
+            .partial
+            .take()
+            .and_then(|mut part| (albums.contains(&part.uri) && part.resume(at)).then_some(part));
         if let Some(part) = &self.partial
             && let Some(index) = order.iter().position(|uri| uri == &part.uri)
         {
@@ -332,7 +333,9 @@ async fn read_pages<S: Store + ?Sized>(
                         + part.verified_positions().saturating_sub(previous.1);
                 }
                 Ok(false) => {
-                    notes.push(format!("{uri}: album catalog changed; retained pages discarded"));
+                    notes.push(format!(
+                        "{uri}: album catalog changed; retained pages discarded"
+                    ));
                     // Rotate immediately. A repeatedly changing large album
                     // must not consume every pass ahead of stable recordings.
                     break;

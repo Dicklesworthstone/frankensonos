@@ -150,7 +150,9 @@ impl PartialAlbum {
             || self.pages != self.proofs.len()
             || self.pages > MAX_ALBUM_PAGES
             || self.offset as usize > MAX_ALBUM_ENTRIES
-            || self.total.is_some_and(|total| total as usize > MAX_ALBUM_ENTRIES)
+            || self
+                .total
+                .is_some_and(|total| total as usize > MAX_ALBUM_ENTRIES)
             || self.checked > self.pages
             || (!self.verification_required && self.checked != 0)
             || (!self.complete && self.checked > 1)
@@ -239,24 +241,35 @@ impl PartialAlbum {
     ) -> Result<(), SpotifyError> {
         let id = album_id(&self.uri).ok_or_else(|| invalid("invalid album checkpoint"))?;
         if self.complete || self.pages >= MAX_ALBUM_PAGES {
-            return Err(invalid("album page budget exceeded or read already complete"));
+            return Err(invalid(
+                "album page budget exceeded or read already complete",
+            ));
         }
         let url = endpoints.album_tracks(id, self.offset);
         let page = Page::<SimplifiedTrack>::read(body, &url, endpoints, self.total, |offset| {
             endpoints.album_tracks(id, offset)
         })?;
-        let count = u32::try_from(page.items.len())
-            .map_err(|_| invalid("album page is too large"))?;
-        let offset = self.offset.checked_add(count)
+        let count =
+            u32::try_from(page.items.len()).map_err(|_| invalid("album page is too large"))?;
+        let offset = self
+            .offset
+            .checked_add(count)
             .ok_or_else(|| invalid("album position overflow"))?;
-        let tracks: Vec<PartialTrack> = page.items.iter()
+        let tracks: Vec<PartialTrack> = page
+            .items
+            .iter()
             .filter_map(album_track)
             .map(PartialTrack::from)
             .collect();
-        let bytes = self.retained_bytes.checked_add(PageProof::bytes(&tracks)?)
+        let bytes = self
+            .retained_bytes
+            .checked_add(PageProof::bytes(&tracks)?)
             .ok_or_else(|| invalid("album metadata size overflow"))?;
         if offset as usize > MAX_ALBUM_ENTRIES
-            || page.coverage.total.is_some_and(|total| total as usize > MAX_ALBUM_ENTRIES)
+            || page
+                .coverage
+                .total
+                .is_some_and(|total| total as usize > MAX_ALBUM_ENTRIES)
             || bytes > MAX_BYTES
         {
             return Err(invalid("album checkpoint budget exceeded"));
@@ -290,7 +303,9 @@ impl PartialAlbum {
         body: &[u8],
         endpoints: &Endpoints,
     ) -> Result<bool, SpotifyError> {
-        let proof = self.proofs.get(index)
+        let proof = self
+            .proofs
+            .get(index)
             .ok_or_else(|| invalid("unknown retained album page"))?;
         let reported: Page<SimplifiedTrack> = serde_json::from_slice(body)
             .map_err(|error| invalid(&format!("album verification page: {error}")))?;
@@ -304,7 +319,9 @@ impl PartialAlbum {
         let page = Page::<SimplifiedTrack>::read(body, &url, endpoints, proof.total, |offset| {
             endpoints.album_tracks(id, offset)
         })?;
-        let tracks: Vec<PartialTrack> = page.items.iter()
+        let tracks: Vec<PartialTrack> = page
+            .items
+            .iter()
             .filter_map(album_track)
             .map(PartialTrack::from)
             .collect();
