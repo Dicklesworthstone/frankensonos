@@ -2,7 +2,7 @@
 
 use super::{
     AlbumContinuation, LibrarySync, LibrarySyncDetailed, acknowledge_playlists, from_entry,
-    publish_library_read, sync_notes,
+    sync_notes, to_entry,
 };
 use crate::SpotifyError;
 use crate::classical::CandidatePool;
@@ -11,7 +11,10 @@ use crate::genres::GenreRead;
 use crate::session::Session;
 use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_pending_playlists};
 use asupersync::Cx;
-use fsonos_core::store::{ArtistGenresBatch, Store};
+use fsonos_core::store::{
+    ArtistGenresBatch, SpotifyLibraryOwner, SpotifyPlaylistPublication, Store,
+};
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Finish only unread or unfinished playlist snapshots for the last full
@@ -72,19 +75,14 @@ pub async fn continue_playlists_with_albums<S: Store + ?Sized>(
                 },
             )
         };
-    let mut items = candidate_items(store)?;
-    let mut library = summarize(&items);
     let mut album_notes = Vec::new();
     let mut completion = None;
     if let Some(receipt) = receipt
         .as_ref()
-        .filter(|_| !read.continuation.requires_refresh)
+        .filter(|_| !read.continuation.requires_refresh && taste.directory.is_some())
     {
-        let incoming = incoming_items(store, &taste);
-        items.extend(incoming);
-        if let Some(applied) = publish_library_read(store, receipt, &items, &taste)? {
-            library = applied;
-            acknowledge_playlists(store, receipt, &mut taste, &mut read.continuation)?;
+        if publish_playlist_read(store, receipt, &mut taste)? {
+            acknowledge_playlists(&taste, &mut read.continuation);
             // A directory proof follows a verified identity read. A missing
             // grant or failed identity cannot authorize unrelated album I/O;
             // an API halt also stops later optional reads in this pass.
@@ -102,15 +100,14 @@ pub async fn continue_playlists_with_albums<S: Store + ?Sized>(
                 );
             }
         } else {
-            // Even a switch away and back invalidates the original receipt.
-            // Keep the new adoption's cache and leave this pass unacknowledged.
+            // A newer account, directory or playlist proof owns publication.
+            // Keep its cache and leave this pass's observations unacknowledged.
             read.continuation.requires_refresh = true;
             read.continuation.owner = store.spotify_library_owner()?.map(|owner| owner.owner_id);
             read.failed.push((
                 "playlist continuation".into(),
-                "the Spotify account changed during this pass; a full refresh is needed".into(),
+                "the Spotify account or accepted playlist read changed during this pass; a full refresh is needed".into(),
             ));
-            library = summarize(&candidate_items(store)?);
         }
     }
     let genres = GenreRead::default();
@@ -134,6 +131,9 @@ pub async fn continue_playlists_with_albums<S: Store + ?Sized>(
     genre_continuation.retry_after_secs = session.retry_after_secs();
     let mut playlists = read.continuation;
     playlists.retry_after_secs = session.retry_after_secs();
+    // The accepted transaction can preserve rows published by another process.
+    // Report the durable candidate set, never a pre-publication copy.
+    let library = summarize(&candidate_items(store)?);
     Ok(LibrarySyncDetailed {
         library,
         genres,
@@ -143,6 +143,54 @@ pub async fn continue_playlists_with_albums<S: Store + ?Sized>(
         albums: completion,
         notes,
     })
+}
+
+pub(super) fn publish_playlist_read<S: Store + ?Sized>(
+    store: &mut S,
+    owner: &SpotifyLibraryOwner,
+    taste: &mut Taste,
+) -> Result<bool, SpotifyError> {
+    if taste.directory.is_none() {
+        return Ok(false);
+    }
+    let (fence, directory) = crate::taste::prepare_playlist_publication(
+        owner,
+        taste.directory.as_ref(),
+        None,
+        &taste.playlist_contents,
+    )?;
+    let supported: HashSet<&str> = fence
+        .observations
+        .iter()
+        .flat_map(|observation| observation.contents.tracks.iter())
+        .map(|track| track.source_uri.as_str())
+        .collect();
+    let incoming = incoming_items(store, taste)
+        .into_iter()
+        .filter(|item| supported.contains(item.source_uri.as_str()))
+        .collect::<Vec<_>>();
+    let incoming = crate::library::merge_duplicates(&incoming);
+    let pool = CandidatePool::build(&incoming);
+    let entries = incoming
+        .iter()
+        .filter_map(|item| {
+            pool.get(&item.source_uri)
+                .map(|candidate| to_entry(item, Some(candidate)))
+        })
+        .collect();
+    let publication = SpotifyPlaylistPublication {
+        expected_directory: fence.expected_directory,
+        directory: fence.directory,
+        playlists: taste.playlists.clone(),
+        entries,
+        observations: fence.observations,
+    };
+    if store.publish_spotify_playlist_continuation(owner, &publication)? {
+        taste.directory = directory;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 pub(super) fn candidate_items<S: Store + ?Sized>(
@@ -180,8 +228,8 @@ fn incoming_items<S: Store + ?Sized>(store: &S, taste: &Taste) -> Vec<crate::lib
     let mut incoming = taste.tracks.clone();
     taste.weigh(&mut incoming);
     taste.name_genres(&mut incoming);
-    // Reuse stored genre evidence without adding artist requests to this pass.
-    crate::genres::apply_cached_genres(store, &mut incoming);
+    let genres = crate::genres::cached_genres(store, &incoming);
+    crate::genres::apply_genres(&genres, &mut incoming);
     crate::genre_guess::fill(&mut incoming);
     incoming
 }

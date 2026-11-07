@@ -259,6 +259,9 @@ async fn sync_library_observed<S: Store + ?Sized>(
         progress.base_owner = Some(receipt.owner_id.clone());
         progress.base_generation = Some(receipt.generation);
     }
+    // A failed or missing playlist read still needs to notice another pass's
+    // publication after this full pass snapshots retained taste candidates.
+    let playlist_base = store.spotify_playlist_directory(&receipt)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
@@ -309,10 +312,25 @@ async fn sync_library_observed<S: Store + ?Sized>(
     // the owner's playlists call them first.
     taste.name_genres(&mut items);
     crate::genre_guess::fill(&mut items);
-    let Some(mut report) = publish_saved_library(store, &receipt, &saved.proof, &items, &taste)?
+    let Some(mut report) = publish_saved_library(
+        store,
+        &receipt,
+        &saved.proof,
+        &items,
+        &mut taste,
+        playlist_base.as_deref(),
+    )?
     else {
-        progress.clear();
-        return Err(saved::changed());
+        if store
+            .spotify_library_progress(&owner, Some(&receipt))?
+            .as_deref()
+            != Some(saved.proof.as_str())
+        {
+            progress.clear();
+        }
+        return Err(fsonos_core::store::StoreError::Backend(
+            "the Spotify account or accepted library/playlist read changed during this refresh; refresh again".into(),
+        ).into());
     };
     // Publication consumed the retained proof. Later optional enrichment errors
     // must not advertise these already accepted pages as resumable intake.
@@ -328,7 +346,7 @@ async fn sync_library_observed<S: Store + ?Sized>(
             })
             .count();
     }
-    acknowledge_playlists(store, &receipt, &mut taste, &mut read.continuation)?;
+    acknowledge_playlists(&taste, &mut read.continuation);
     if !read.incomplete() && read.continuation.pending == 0 && read.continuation.limited == 0 {
         crate::taste::finish_reconciliation(store, &receipt, taste.directory.as_ref())?;
         if crate::taste::finish_followed_reconciliation(store, &receipt, taste.followed.as_ref())? {
@@ -359,24 +377,18 @@ async fn sync_library_observed<S: Store + ?Sized>(
     })
 }
 
-fn acknowledge_playlists<S: Store + ?Sized>(
-    store: &mut S,
-    owner: &SpotifyLibraryOwner,
-    taste: &mut Taste,
-    continuation: &mut PlaylistContinuation,
-) -> Result<(), SpotifyError> {
+fn acknowledge_playlists(taste: &Taste, continuation: &mut PlaylistContinuation) {
     for observation in &taste.playlist_contents {
-        if !observation.failed {
-            let (complete, limited) =
-                crate::taste::mark_playlist_applied(store, owner, &observation.contents)?;
+        if !observation.failed && !observation.applied && observation.progress.is_some() {
+            let complete = observation.contents.complete;
+            let limited = !complete
+                && observation.contents.examined >= fsonos_core::store::MAX_PLAYLIST_ENTRIES;
             continuation.pending = continuation
                 .pending
                 .saturating_sub(usize::from(complete || limited));
             continuation.limited += usize::from(limited);
         }
     }
-    crate::taste::remember_versions(store, owner, &mut taste.directory, &taste.playlist_contents)?;
-    Ok(())
 }
 
 fn playlist_publication<S: Store + ?Sized>(
@@ -407,39 +419,30 @@ fn publish_saved_library<S: Store + ?Sized>(
     owner: &SpotifyLibraryOwner,
     proof: &str,
     items: &[LibraryItem],
-    taste: &Taste,
+    taste: &mut Taste,
+    playlist_base: Option<&str>,
 ) -> Result<Option<LibrarySync>, SpotifyError> {
     let prepared = prepare_library_publication(store, items, taste)?;
-    Ok(store
-        .publish_spotify_library_from_progress(
-            owner,
-            proof,
-            &prepared.entries,
-            taste.playlists.as_deref(),
-            &prepared.contents,
-            taste.heard.as_deref(),
-        )?
-        .then_some(prepared.report))
-}
-
-/// Additive playlist windows need the current owner, but neither create nor
-/// consume the proof reserved for an essential saved-library replacement.
-fn publish_library_read<S: Store + ?Sized>(
-    store: &mut S,
-    owner: &SpotifyLibraryOwner,
-    items: &[LibraryItem],
-    taste: &Taste,
-) -> Result<Option<LibrarySync>, SpotifyError> {
-    let prepared = prepare_library_publication(store, items, taste)?;
-    Ok(store
-        .publish_spotify_library(
-            owner,
-            &prepared.entries,
-            taste.playlists.as_deref(),
-            &prepared.contents,
-            taste.heard.as_deref(),
-        )?
-        .then_some(prepared.report))
+    let (fence, directory) = crate::taste::prepare_playlist_publication(
+        owner,
+        taste.directory.as_ref(),
+        playlist_base,
+        &taste.playlist_contents,
+    )?;
+    if store.publish_spotify_library_from_progress(
+        owner,
+        proof,
+        &prepared.entries,
+        taste.playlists.as_deref(),
+        &prepared.contents,
+        taste.heard.as_deref(),
+        Some(&fence),
+    )? {
+        taste.directory = directory;
+        Ok(Some(prepared.report))
+    } else {
+        Ok(None)
+    }
 }
 
 struct LibraryPublication {

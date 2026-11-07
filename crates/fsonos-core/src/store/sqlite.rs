@@ -10,7 +10,9 @@
 use super::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
     CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction,
-    PlayName, PlayRecord, SpotifyLibraryOwner, Store, StoreError, StoredScene, StoredSchedule,
+    PlayName, PlayRecord, SpotifyLibraryOwner, SpotifyPlaylistPublication,
+    SpotifyPlaylistPublicationFence, SpotifyPlaylistPublicationItem, Store, StoreError,
+    StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -812,6 +814,175 @@ fn write_spotify_library(
     Ok(())
 }
 
+fn read_playlist_progress(
+    connection: &AsyncConnection,
+    owner: &SpotifyLibraryOwner,
+    playlist_uri: &str,
+) -> Result<Option<String>, FrankenError> {
+    connection
+        .query_with_params_sync(
+            "SELECT progress FROM spotify_playlist_progress WHERE owner_id = ?1 AND playlist_uri = ?2",
+            &[owner.owner_id.as_str().into(), playlist_uri.into()],
+        )?
+        .first()
+        .map(|row| text(row, 0).map_err(|error| FrankenError::Internal(error.to_string())))
+        .transpose()
+}
+
+fn playlist_evidence_matches(
+    connection: &AsyncConnection,
+    owner: &SpotifyLibraryOwner,
+    expected_directory: Option<&str>,
+    observations: &[SpotifyPlaylistPublicationItem],
+) -> Result<bool, FrankenError> {
+    if read_spotify_owner(connection)?.as_ref() != Some(owner) {
+        return Ok(false);
+    }
+    let generation = i64::try_from(owner.generation)
+        .map_err(|error| FrankenError::Internal(error.to_string()))?;
+    let rows = connection.query_with_params_sync(
+        "SELECT progress FROM spotify_playlist_directories WHERE owner_id = ?1 AND generation = ?2",
+        &[owner.owner_id.as_str().into(), generation.into()],
+    )?;
+    let directory = rows
+        .first()
+        .map(|row| text(row, 0).map_err(|error| FrankenError::Internal(error.to_string())))
+        .transpose()?;
+    if directory.as_deref() != expected_directory {
+        return Ok(false);
+    }
+    for observation in observations {
+        if read_playlist_progress(connection, owner, &observation.contents.playlist_uri)?.as_deref()
+            != Some(observation.expected_progress.as_str())
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn write_playlist_evidence(
+    connection: &AsyncConnection,
+    owner: &SpotifyLibraryOwner,
+    directory: Option<&str>,
+    observations: &[SpotifyPlaylistPublicationItem],
+) -> Result<(), FrankenError> {
+    for observation in observations {
+        connection.execute_with_params_sync(
+            "UPDATE spotify_playlist_progress SET progress = ?3 WHERE owner_id = ?1 AND playlist_uri = ?2",
+            &[
+                owner.owner_id.as_str().into(),
+                observation.contents.playlist_uri.as_str().into(),
+                observation.applied_progress.as_str().into(),
+            ],
+        )?;
+    }
+    if let Some(directory) = directory {
+        let generation = i64::try_from(owner.generation)
+            .map_err(|error| FrankenError::Internal(error.to_string()))?;
+        connection.execute_with_params_sync(
+            "INSERT OR REPLACE INTO spotify_playlist_directories (owner_id, generation, progress) VALUES (?1, ?2, ?3)",
+            &[owner.owner_id.as_str().into(), generation.into(), directory.into()],
+        )?;
+    }
+    Ok(())
+}
+
+/// Read only affected URIs, inside the write transaction. Existing active rows
+/// are never reconstructed from a caller's older snapshot. Chunking bounds SQL
+/// parameters and the temporary row buffers even for long playlists.
+fn merge_playlist_library(
+    connection: &AsyncConnection,
+    entries: &[LibraryEntry],
+) -> Result<(), FrankenError> {
+    for chunk in entries.chunks(400) {
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let values = chunk
+            .iter()
+            .map(|entry| entry.track.source_uri.as_str().into())
+            .collect::<Vec<SqliteValue>>();
+        let rows = connection.query_with_params_sync(
+            &format!("SELECT source_uri, candidate, is_classical, taste_weight FROM spotify_library WHERE source_uri IN ({placeholders})"),
+            &values,
+        )?;
+        let current = rows
+            .iter()
+            .map(|row| {
+                Ok((
+                    text(row, 0)?,
+                    (
+                        opt_int(row, 1)?.unwrap_or(int(row, 2)?) != 0,
+                        opt_int(row, 3)?
+                            .map(|weight| u32_of(weight, "taste_weight"))
+                            .transpose()?,
+                    ),
+                ))
+            })
+            .collect::<Result<std::collections::BTreeMap<_, _>, StoreError>>()
+            .map_err(|error| FrankenError::Internal(error.to_string()))?;
+        let mut inserted = Vec::new();
+        let mut weights = Vec::new();
+        for entry in chunk {
+            if let Some((true, weight)) = current.get(&entry.track.source_uri) {
+                if let Some(stronger) = super::stronger_playlist_weight(*weight, entry.taste_weight)
+                {
+                    weights.push(vec![
+                        entry.track.source_uri.as_str().into(),
+                        i64::from(stronger).into(),
+                    ]);
+                }
+            } else {
+                inserted.extend(library_rows(std::slice::from_ref(entry)));
+            }
+        }
+        write_library(connection, &inserted)?;
+        if !weights.is_empty() {
+            connection.execute_many_with_params_in_transaction_sync(
+                "UPDATE spotify_library SET taste_weight = ?2 WHERE source_uri = ?1",
+                &weights,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn write_playlist_observations(
+    connection: &AsyncConnection,
+    observations: &[SpotifyPlaylistPublicationItem],
+) -> Result<(), FrankenError> {
+    for observation in observations {
+        let incoming = &observation.contents;
+        if !incoming.complete {
+            let rows = connection.query_with_params_sync(
+                "SELECT observation FROM spotify_playlist_contents WHERE playlist_uri = ?1",
+                &[incoming.playlist_uri.as_str().into()],
+            )?;
+            if let Some(row) = rows.first() {
+                let encoded =
+                    text(row, 0).map_err(|error| FrankenError::Internal(error.to_string()))?;
+                let current: CachedPlaylist = serde_json::from_str(&encoded)
+                    .map_err(|error| FrankenError::Internal(error.to_string()))?;
+                current
+                    .validate()
+                    .map_err(|error| FrankenError::Internal(error.to_string()))?;
+                if current.complete {
+                    continue;
+                }
+            }
+        }
+        let encoded = serde_json::to_string(incoming)
+            .map_err(|error| FrankenError::Internal(error.to_string()))?;
+        connection.execute_with_params_sync(
+            "INSERT OR REPLACE INTO spotify_playlist_contents (playlist_uri, observation) VALUES (?1, ?2)",
+            &[incoming.playlist_uri.as_str().into(), encoded.into()],
+        )?;
+    }
+    Ok(())
+}
+
 fn read_spotify_owner(
     connection: &AsyncConnection,
 ) -> Result<Option<SpotifyLibraryOwner>, FrankenError> {
@@ -1280,6 +1451,7 @@ impl Store for SqliteStore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn publish_spotify_library_from_progress(
         &mut self,
         owner: &SpotifyLibraryOwner,
@@ -1288,8 +1460,17 @@ impl Store for SqliteStore {
         playlists: Option<&[(String, String)]>,
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
+        playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
     ) -> Result<bool, StoreError> {
         super::validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
+        if let Some(fence) = playlist_fence {
+            super::validate_spotify_playlist_evidence(
+                owner,
+                fence.expected_directory.as_deref(),
+                fence.directory.as_deref(),
+                &fence.observations,
+            )?;
+        }
         let projection = prepare_spotify_library(entries, playlists, contents, heard)?;
         self.in_transaction(|connection| {
             if read_spotify_owner(connection)?.as_ref() != Some(owner)
@@ -1299,10 +1480,57 @@ impl Store for SqliteStore {
             {
                 return Ok(false);
             }
+            if let Some(fence) = playlist_fence
+                && !playlist_evidence_matches(
+                    connection,
+                    owner,
+                    fence.expected_directory.as_deref(),
+                    &fence.observations,
+                )?
+            {
+                return Ok(false);
+            }
             write_spotify_library(connection, &projection)?;
+            if let Some(fence) = playlist_fence {
+                write_playlist_evidence(
+                    connection,
+                    owner,
+                    fence.directory.as_deref(),
+                    &fence.observations,
+                )?;
+            }
             connection.execute_with_params_sync(
                 "DELETE FROM spotify_library_progress WHERE incoming_id = ?1",
                 &[owner.owner_id.as_str().into()],
+            )?;
+            Ok(true)
+        })
+    }
+
+    fn publish_spotify_playlist_continuation(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        publication: &SpotifyPlaylistPublication,
+    ) -> Result<bool, StoreError> {
+        super::validate_spotify_playlist_publication(owner, publication)?;
+        let projection = prepare_spotify_library(&[], publication.playlists.as_deref(), &[], None)?;
+        self.in_transaction(|connection| {
+            if !playlist_evidence_matches(
+                connection,
+                owner,
+                publication.expected_directory.as_deref(),
+                &publication.observations,
+            )? {
+                return Ok(false);
+            }
+            merge_playlist_library(connection, &publication.entries)?;
+            write_spotify_library(connection, &projection)?;
+            write_playlist_observations(connection, &publication.observations)?;
+            write_playlist_evidence(
+                connection,
+                owner,
+                publication.directory.as_deref(),
+                &publication.observations,
             )?;
             Ok(true)
         })
@@ -1948,6 +2176,28 @@ impl Store for SqliteStore {
              VALUES (?1, ?2, ?3)",
             &[owner_id.into(), playlist_uri.into(), progress.into()],
         )
+    }
+
+    fn save_spotify_playlist_progress(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        playlist_uri: &str,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        super::validate_spotify_playlist_progress(owner, playlist_uri, expected, progress)?;
+        self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != Some(owner)
+                || read_playlist_progress(connection, owner, playlist_uri)?.as_deref() != expected
+            {
+                return Ok(false);
+            }
+            connection.execute_with_params_sync(
+                "INSERT OR REPLACE INTO spotify_playlist_progress (owner_id, playlist_uri, progress) VALUES (?1, ?2, ?3)",
+                &[owner.owner_id.as_str().into(), playlist_uri.into(), progress.into()],
+            )?;
+            Ok(true)
+        })
     }
 
     fn retain_playlist_progress(

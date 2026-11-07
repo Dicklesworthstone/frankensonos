@@ -37,7 +37,7 @@ pub const MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES: usize = 64 * 1024 * 1024;
 
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, Track, ZoneGroup};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 /// One entry of the play history.
@@ -504,6 +504,40 @@ pub struct SpotifyLibraryOwner {
     pub generation: u64,
 }
 
+/// One validated playlist observation and the exact private proof it consumes.
+/// The Spotify reader checks the opaque proof's snapshot and coverage before
+/// preparing this value; the store fences and acknowledges it atomically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpotifyPlaylistPublicationItem {
+    pub contents: CachedPlaylist,
+    pub expected_progress: String,
+    pub applied_progress: String,
+}
+
+/// Playlist evidence used by a full library publication. An optional fence
+/// distinguishes an unobserved directory from a checked absence. The reader
+/// rotates the directory's publication receipt even when membership is equal,
+/// so a later publication of a different playlist also invalidates this fence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpotifyPlaylistPublicationFence {
+    pub expected_directory: Option<String>,
+    pub directory: Option<String>,
+    pub observations: Vec<SpotifyPlaylistPublicationItem>,
+}
+
+/// Additive playlist evidence, never a replacement snapshot of the library.
+/// Entries must be playable taste rows supported by these observations. Active
+/// library rows retain their metadata and provenance; only a stronger taste
+/// weight may be merged. A full read alone can retire current candidates.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpotifyPlaylistPublication {
+    pub expected_directory: Option<String>,
+    pub directory: Option<String>,
+    pub playlists: Option<Vec<(String, String)>>,
+    pub entries: Vec<LibraryEntry>,
+    pub observations: Vec<SpotifyPlaylistPublicationItem>,
+}
+
 /// Persisted state the daemon reads/writes across restarts.
 pub trait Store {
     /// Append a play of `source_uri` in `zone` at `played_at`.
@@ -635,6 +669,9 @@ pub trait Store {
     /// transaction, only while both its rebound receipt and exact bytes match.
     /// A competing reader's new checkpoint must not be consumed or overwritten.
     /// Any failed fence leaves all public projections and private progress intact.
+    /// A supplied playlist fence also checks and acknowledges its exact private
+    /// evidence in this transaction, before another continuation can publish.
+    #[allow(clippy::too_many_arguments)]
     fn publish_spotify_library_from_progress(
         &mut self,
         owner: &SpotifyLibraryOwner,
@@ -643,6 +680,18 @@ pub trait Store {
         playlists: Option<&[(String, String)]>,
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
+        playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
+    ) -> Result<bool, StoreError>;
+
+    /// Add validated playlist candidates while preserving the current library.
+    /// All ownership, directory and per-playlist receipts must still match.
+    /// Contents retention, candidate/weight changes and proof acknowledgement
+    /// commit together; a mismatch or error changes none of them. No candidate
+    /// is retired, and a partial observation cannot replace complete contents.
+    fn publish_spotify_playlist_continuation(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        publication: &SpotifyPlaylistPublication,
     ) -> Result<bool, StoreError>;
 
     /// Acknowledge an already published observation only if both its adoption
@@ -871,6 +920,18 @@ pub trait Store {
         progress: &str,
     ) -> Result<(), StoreError>;
 
+    /// Replace a playlist checkpoint only while its account adoption and exact
+    /// previous bytes are still current. Readers capture `expected` before
+    /// network I/O. A stale reader cannot overwrite a newer snapshot, including
+    /// when an account has been switched away from and adopted again.
+    fn save_spotify_playlist_progress(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        playlist_uri: &str,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError>;
+
     /// Forget this owner's checkpoints absent from a complete readable list.
     /// Callers must not prune from an incomplete directory or another account.
     fn retain_playlist_progress(
@@ -997,6 +1058,115 @@ fn validate_spotify_followed_directory(
     Ok(())
 }
 
+fn validate_spotify_playlist_progress(
+    owner: &SpotifyLibraryOwner,
+    playlist_uri: &str,
+    expected: Option<&str>,
+    progress: &str,
+) -> Result<(), StoreError> {
+    validate_spotify_owner(&owner.owner_id)?;
+    if owner.generation == 0 || i64::try_from(owner.generation).is_err() {
+        return Err(StoreError::Backend(
+            "invalid Spotify library ownership generation".into(),
+        ));
+    }
+    if playlist_uri
+        .strip_prefix("spotify:playlist:")
+        .is_none_or(|id| {
+            id.is_empty() || id.len() > 128 || !id.bytes().all(|b| b.is_ascii_alphanumeric())
+        })
+    {
+        return Err(StoreError::Backend("invalid Spotify playlist URI".into()));
+    }
+    if expected.is_some_and(|value| value.len() > MAX_PLAYLIST_BYTES)
+        || progress.len() > MAX_PLAYLIST_BYTES
+    {
+        return Err(StoreError::Backend("playlist progress is too large".into()));
+    }
+    Ok(())
+}
+
+fn validate_spotify_playlist_evidence(
+    owner: &SpotifyLibraryOwner,
+    expected_directory: Option<&str>,
+    directory: Option<&str>,
+    observations: &[SpotifyPlaylistPublicationItem],
+) -> Result<(), StoreError> {
+    validate_spotify_owner(&owner.owner_id)?;
+    if owner.generation == 0 || i64::try_from(owner.generation).is_err() {
+        return Err(StoreError::Backend(
+            "invalid Spotify library ownership generation".into(),
+        ));
+    }
+    if expected_directory.is_some_and(|value| value.len() > MAX_PLAYLIST_BYTES)
+        || directory.is_some_and(|value| value.len() > MAX_PLAYLIST_BYTES)
+    {
+        return Err(StoreError::Backend(
+            "playlist directory is too large".into(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    for observation in observations {
+        observation.contents.validate()?;
+        validate_spotify_playlist_progress(
+            owner,
+            &observation.contents.playlist_uri,
+            Some(&observation.expected_progress),
+            &observation.applied_progress,
+        )?;
+        if !seen.insert(&observation.contents.playlist_uri) {
+            return Err(StoreError::Backend(
+                "duplicate playlist publication proof".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_spotify_playlist_publication(
+    owner: &SpotifyLibraryOwner,
+    publication: &SpotifyPlaylistPublication,
+) -> Result<(), StoreError> {
+    validate_spotify_playlist_evidence(
+        owner,
+        publication.expected_directory.as_deref(),
+        publication.directory.as_deref(),
+        &publication.observations,
+    )?;
+    let supported: BTreeSet<_> = publication
+        .observations
+        .iter()
+        .flat_map(|observation| &observation.contents.tracks)
+        .map(|track| track.source_uri.as_str())
+        .collect();
+    let mut seen = BTreeSet::new();
+    for entry in &publication.entries {
+        if entry.origin != LibraryOrigin::Taste
+            || entry.candidate != Some(true)
+            || !supported.contains(entry.track.source_uri.as_str())
+            || !seen.insert(entry.track.source_uri.as_str())
+        {
+            return Err(StoreError::Backend(
+                "playlist continuation needs unique candidate taste rows with proved occurrences"
+                    .into(),
+            ));
+        }
+    }
+    if publication.playlists.as_ref().is_some_and(|playlists| {
+        playlists.len() > MAX_PLAYLIST_DIRECTORY_ENTRIES as usize
+            || publication.expected_directory.is_none()
+    }) {
+        return Err(StoreError::Backend(
+            "unproved playlist directory publication".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn stronger_playlist_weight(current: Option<u32>, incoming: Option<u32>) -> Option<u32> {
+    incoming.filter(|weight| *weight > current.unwrap_or(1_000))
+}
+
 /// Each track's latest play in `plays`, oldest first (by time, then URI).
 pub(crate) fn latest_plays(plays: &[(String, i64)]) -> Vec<(String, i64)> {
     let mut latest: BTreeMap<&str, i64> = BTreeMap::new();
@@ -1061,6 +1231,53 @@ impl MemStore {
             .get(incoming_id)
             .filter(|saved| saved.base.as_ref() == base)
             .map(|saved| saved.progress.as_str())
+    }
+
+    fn playlist_evidence_matches(
+        &self,
+        owner: &SpotifyLibraryOwner,
+        expected_directory: Option<&str>,
+        observations: &[SpotifyPlaylistPublicationItem],
+    ) -> bool {
+        self.spotify_library_owner.as_ref() == Some(owner)
+            && self
+                .playlist_directories
+                .get(&owner.owner_id)
+                .filter(|(generation, _)| *generation == owner.generation)
+                .map(|(_, progress)| progress.as_str())
+                == expected_directory
+            && observations.iter().all(|observation| {
+                self.playlist_progress
+                    .get(&(
+                        owner.owner_id.clone(),
+                        observation.contents.playlist_uri.clone(),
+                    ))
+                    .map(String::as_str)
+                    == Some(observation.expected_progress.as_str())
+            })
+    }
+
+    fn apply_playlist_evidence(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        directory: Option<&str>,
+        observations: &[SpotifyPlaylistPublicationItem],
+    ) {
+        for observation in observations {
+            self.playlist_progress.insert(
+                (
+                    owner.owner_id.clone(),
+                    observation.contents.playlist_uri.clone(),
+                ),
+                observation.applied_progress.clone(),
+            );
+        }
+        if let Some(directory) = directory {
+            self.playlist_directories.insert(
+                owner.owner_id.clone(),
+                (owner.generation, directory.to_owned()),
+            );
+        }
     }
 }
 
@@ -1291,6 +1508,7 @@ impl Store for MemStore {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn publish_spotify_library_from_progress(
         &mut self,
         owner: &SpotifyLibraryOwner,
@@ -1299,15 +1517,84 @@ impl Store for MemStore {
         playlists: Option<&[(String, String)]>,
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
+        playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
     ) -> Result<bool, StoreError> {
         validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
+        if let Some(fence) = playlist_fence {
+            validate_spotify_playlist_evidence(
+                owner,
+                fence.expected_directory.as_deref(),
+                fence.directory.as_deref(),
+                &fence.observations,
+            )?;
+            if !self.playlist_evidence_matches(
+                owner,
+                fence.expected_directory.as_deref(),
+                &fence.observations,
+            ) {
+                return Ok(false);
+            }
+        }
         if self.library_progress_for(&owner.owner_id, Some(owner)) != Some(expected) {
             return Ok(false);
         }
         if !self.publish_spotify_library(owner, entries, playlists, contents, heard)? {
             return Ok(false);
         }
+        if let Some(fence) = playlist_fence {
+            self.apply_playlist_evidence(owner, fence.directory.as_deref(), &fence.observations);
+        }
         self.spotify_library_progress.remove(&owner.owner_id);
+        Ok(true)
+    }
+
+    fn publish_spotify_playlist_continuation(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        publication: &SpotifyPlaylistPublication,
+    ) -> Result<bool, StoreError> {
+        validate_spotify_playlist_publication(owner, publication)?;
+        if !self.playlist_evidence_matches(
+            owner,
+            publication.expected_directory.as_deref(),
+            &publication.observations,
+        ) {
+            return Ok(false);
+        }
+        for incoming in &publication.entries {
+            if let Some(current) = self.library.get_mut(&incoming.track.source_uri)
+                && current.is_candidate()
+            {
+                if let Some(weight) =
+                    stronger_playlist_weight(current.taste_weight, incoming.taste_weight)
+                {
+                    current.taste_weight = Some(weight);
+                }
+            } else {
+                self.upsert_library(std::slice::from_ref(incoming))?;
+            }
+        }
+        if let Some(playlists) = &publication.playlists {
+            self.save_playlists(playlists)?;
+        }
+        for observation in &publication.observations {
+            let incoming = &observation.contents;
+            if !incoming.complete
+                && self
+                    .playlist_contents
+                    .get(&incoming.playlist_uri)
+                    .is_some_and(|current| current.complete)
+            {
+                continue;
+            }
+            self.playlist_contents
+                .insert(incoming.playlist_uri.clone(), incoming.clone());
+        }
+        self.apply_playlist_evidence(
+            owner,
+            publication.directory.as_deref(),
+            &publication.observations,
+        );
         Ok(true)
     }
 
@@ -1621,6 +1908,24 @@ impl Store for MemStore {
             progress.to_owned(),
         );
         Ok(())
+    }
+
+    fn save_spotify_playlist_progress(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        playlist_uri: &str,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        validate_spotify_playlist_progress(owner, playlist_uri, expected, progress)?;
+        let key = (owner.owner_id.clone(), playlist_uri.to_owned());
+        if self.spotify_library_owner.as_ref() != Some(owner)
+            || self.playlist_progress.get(&key).map(String::as_str) != expected
+        {
+            return Ok(false);
+        }
+        self.playlist_progress.insert(key, progress.to_owned());
+        Ok(true)
     }
 
     fn retain_playlist_progress(

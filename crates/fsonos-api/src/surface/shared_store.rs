@@ -12,7 +12,8 @@
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
     CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, PlayName,
-    PlayRecord, SpotifyLibraryOwner, Store, StoreError, StoredScene, StoredSchedule,
+    PlayRecord, SpotifyLibraryOwner, SpotifyPlaylistPublication, SpotifyPlaylistPublicationFence,
+    Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, ZoneGroup};
@@ -189,6 +190,7 @@ impl Store for SharedStore<'_> {
             .publish_spotify_library(owner, entries, playlists, contents, heard)
     }
 
+    #[allow(clippy::too_many_arguments)] // Mirror Store's atomic publication contract.
     fn publish_spotify_library_from_progress(
         &mut self,
         owner: &SpotifyLibraryOwner,
@@ -197,10 +199,26 @@ impl Store for SharedStore<'_> {
         playlists: Option<&[(String, String)]>,
         contents: &[CachedPlaylist],
         heard: Option<&[(String, i64)]>,
+        playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
     ) -> Result<bool, StoreError> {
         self.lock().publish_spotify_library_from_progress(
-            owner, expected, entries, playlists, contents, heard,
+            owner,
+            expected,
+            entries,
+            playlists,
+            contents,
+            heard,
+            playlist_fence,
         )
+    }
+
+    fn publish_spotify_playlist_continuation(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        publication: &SpotifyPlaylistPublication,
+    ) -> Result<bool, StoreError> {
+        self.lock()
+            .publish_spotify_playlist_continuation(owner, publication)
     }
 
     fn acknowledge_spotify_playlist(
@@ -401,6 +419,17 @@ impl Store for SharedStore<'_> {
     ) -> Result<(), StoreError> {
         self.lock()
             .save_playlist_progress(owner_id, playlist_uri, progress)
+    }
+
+    fn save_spotify_playlist_progress(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        playlist_uri: &str,
+        expected: Option<&str>,
+        progress: &str,
+    ) -> Result<bool, StoreError> {
+        self.lock()
+            .save_spotify_playlist_progress(owner, playlist_uri, expected, progress)
     }
 
     fn retain_playlist_progress(

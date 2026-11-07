@@ -621,3 +621,6 @@ fn a_failed_late_album_keeps_accepted_playlist_music_and_reports_the_missing_wor
         });
     }
 }
+
+#[path = "playlist_publication_tests.rs"]
+mod publication;

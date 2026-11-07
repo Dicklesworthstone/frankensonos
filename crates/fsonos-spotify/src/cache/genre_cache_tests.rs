@@ -6,7 +6,8 @@ use crate::library::{LibraryItem, Origin};
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
     CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, MemStore,
-    PlayName, PlayRecord, SpotifyLibraryOwner, Store, StoreError, StoredScene, StoredSchedule,
+    PlayName, PlayRecord, SpotifyLibraryOwner, SpotifyPlaylistPublication,
+    SpotifyPlaylistPublicationFence, Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, ZoneGroup};
@@ -36,6 +37,7 @@ macro_rules! forward {
         forward!($($rest)*);
     };
     (fn $name:ident(&mut self $(, $arg:ident: $ty:ty)* $(,)?) -> $result:ty; $($rest:tt)*) => {
+        #[allow(clippy::too_many_arguments, reason = "forward the Store publication contract")]
         fn $name(&mut self, $($arg: $ty),*) -> $result {
             self.inner.$name($($arg),*)
         }
@@ -106,9 +108,11 @@ impl Store for FailingStore {
         fn spotify_library_progress(&self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>) -> Result<Option<String>, StoreError>;
         fn save_spotify_library_progress(&mut self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>, expected: Option<&str>, progress: &str) -> Result<bool, StoreError>;
         fn adopt_spotify_library_from_progress(&mut self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>, expected: &str) -> Result<Option<(SpotifyLibraryOwner, bool)>, StoreError>;
-        fn publish_spotify_library_from_progress(&mut self, owner: &SpotifyLibraryOwner, expected: &str, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>) -> Result<bool, StoreError>;
+        fn publish_spotify_library_from_progress(&mut self, owner: &SpotifyLibraryOwner, expected: &str, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>, playlist_fence: Option<&SpotifyPlaylistPublicationFence>) -> Result<bool, StoreError>;
         fn adopt_spotify_library_owner( &mut self, owner_id: &str, ) -> Result<(SpotifyLibraryOwner, bool), StoreError>;
         fn publish_spotify_library( &mut self, owner: &SpotifyLibraryOwner, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>, ) -> Result<bool, StoreError>;
+        fn publish_spotify_playlist_continuation(&mut self, owner: &SpotifyLibraryOwner, publication: &SpotifyPlaylistPublication) -> Result<bool, StoreError>;
+        fn save_spotify_playlist_progress(&mut self, owner: &SpotifyLibraryOwner, playlist_uri: &str, expected: Option<&str>, progress: &str) -> Result<bool, StoreError>;
         fn acknowledge_spotify_playlist( &mut self, owner: &SpotifyLibraryOwner, playlist_uri: &str, expected: &str, applied: &str, ) -> Result<bool, StoreError>;
         fn save_render_params( &mut self, household: &str, params: &SpotifyRenderParams, learned_at: i64, ) -> Result<(), StoreError>;
         fn render_params( &self, household: &str, ) -> Result<Option<(SpotifyRenderParams, i64)>, StoreError>;

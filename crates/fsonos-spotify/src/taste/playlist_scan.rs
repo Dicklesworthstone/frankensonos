@@ -9,7 +9,7 @@ use crate::client::{PAGE_LIMIT, PlaylistItem, SimplifiedPlaylist};
 use crate::library::{LibraryItem, Origin};
 use fsonos_core::store::{
     CachedPlaylist, MAX_PLAYLIST_BYTES, MAX_PLAYLIST_ENTRIES, PlaylistTrack, SpotifyLibraryOwner,
-    Store, StoreError,
+    SpotifyPlaylistPublicationItem, Store, StoreError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -158,6 +158,14 @@ fn load_progress<S: Store + ?Sized>(
     owner: &str,
     uri: &str,
 ) -> Result<Option<Progress>, StoreError> {
+    load_checkpoint(store, owner, uri).map(|(progress, _)| progress)
+}
+
+fn load_checkpoint<S: Store + ?Sized>(
+    store: &S,
+    owner: &str,
+    uri: &str,
+) -> Result<(Option<Progress>, Option<String>), StoreError> {
     let stored = store.playlist_progress(owner, uri)?;
     match stored
         .as_deref()
@@ -169,7 +177,7 @@ fn load_progress<S: Store + ?Sized>(
                 .as_ref()
                 .is_none_or(|state| state.valid(owner, uri)) =>
         {
-            Ok(previous)
+            Ok((previous, stored))
         }
         _ => Err(StoreError::Backend(
             "stored playlist progress is invalid".into(),
@@ -210,40 +218,48 @@ pub(super) fn readiness<S: Store + ?Sized>(
     })
 }
 
-/// Cache projection is a separate durable step from the snapshot proof. Only
-/// acknowledge the exact observation that was just published and merged.
-/// Returns whether this acknowledgement completes or caps the scan.
-pub(crate) fn mark_applied<S: Store + ?Sized>(
-    store: &mut S,
+/// Prepare an exact read receipt and its acknowledgement for one atomic public
+/// projection. Looking up today's checkpoint here would authorize stale rows.
+pub(super) fn publication(
     owner: &SpotifyLibraryOwner,
-    contents: &CachedPlaylist,
-) -> Result<(bool, bool), StoreError> {
-    let Some(expected) = store.playlist_progress(&owner.owner_id, &contents.playlist_uri)? else {
-        return Ok((false, false));
+    observation: &PlaylistObservation,
+) -> Result<Option<SpotifyPlaylistPublicationItem>, StoreError> {
+    let Some(expected) = observation
+        .progress
+        .as_ref()
+        .filter(|_| !observation.failed)
+    else {
+        return Ok(None);
     };
+    let contents = &observation.contents;
     let mut progress: Progress =
-        serde_json::from_str(&expected).map_err(|error| StoreError::Backend(error.to_string()))?;
+        serde_json::from_str(expected).map_err(|error| StoreError::Backend(error.to_string()))?;
     if !progress.valid(&owner.owner_id, &contents.playlist_uri) {
         return Err(StoreError::Backend(
             "stored playlist progress is invalid".into(),
         ));
     }
-    if progress.applied
-        || progress.limited
+    if progress.limited
         || progress.observation(contents.fetched_at) != *contents
+        || progress.snapshot_id != observation.snapshot_id
     {
-        return Ok((false, false));
+        return Err(StoreError::Backend(
+            "playlist publication differs from its accepted checkpoint".into(),
+        ));
     }
     progress.applied = true;
-    let encoded =
+    let applied =
         serde_json::to_string(&progress).map_err(|error| StoreError::Backend(error.to_string()))?;
-    if !store.acknowledge_spotify_playlist(owner, &contents.playlist_uri, &expected, &encoded)? {
-        return Ok((false, false));
-    }
-    Ok((
-        progress.complete,
-        !progress.complete && progress.examined >= MAX_PLAYLIST_ENTRIES,
-    ))
+    Ok(Some(SpotifyPlaylistPublicationItem {
+        contents: contents.clone(),
+        expected_progress: expected.clone(),
+        applied_progress: applied,
+    }))
+}
+
+struct Checkpoint {
+    owner: Option<SpotifyLibraryOwner>,
+    expected: Option<String>,
 }
 
 impl Reader<'_> {
@@ -251,6 +267,45 @@ impl Reader<'_> {
         self.read
             .failed
             .push(("playlist items".into(), detail.to_string()));
+    }
+
+    fn save_checkpoint<S: Store + ?Sized>(
+        &mut self,
+        store: &mut S,
+        checkpoint: &Checkpoint,
+        progress: &Progress,
+        encoded: &str,
+    ) -> bool {
+        let saved = match checkpoint.owner.as_ref() {
+            Some(owner) => store.save_spotify_playlist_progress(
+                owner,
+                &progress.playlist_uri,
+                checkpoint.expected.as_deref(),
+                encoded,
+            ),
+            // An unadopted taste read is ephemeral. A blind save after I/O
+            // could overwrite a newly adopted account's checkpoint.
+            None => Ok(true),
+        };
+        match saved {
+            Ok(true) => true,
+            Ok(false) => {
+                if let Ok(current) = store.spotify_library_owner()
+                    && current != checkpoint.owner
+                {
+                    self.read.continuation.owner = current.map(|owner| owner.owner_id);
+                    self.read.continuation.requires_refresh = true;
+                }
+                self.playlist_failed(
+                    "the account or playlist checkpoint changed during this read; retry its accepted state",
+                );
+                false
+            }
+            Err(error) => {
+                self.playlist_failed(error);
+                false
+            }
+        }
     }
 
     async fn playlist_snapshot(&mut self, id: &str) -> Option<String> {
@@ -270,14 +325,35 @@ impl Reader<'_> {
         list: &SimplifiedPlaylist,
         now: i64,
         pending_only: bool,
-    ) -> Option<(Progress, bool)> {
+    ) -> Option<(Progress, bool, Option<String>)> {
         let uri = format!("spotify:playlist:{}", list.id);
-        let previous = match load_progress(store, owner, &uri) {
+        let current = match store.spotify_library_owner() {
+            Ok(current) => current,
+            Err(error) => {
+                self.playlist_failed(error);
+                return None;
+            }
+        };
+        let receipt = self.receipt.cloned().or_else(|| current.clone());
+        if receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.owner_id != owner || current.as_ref() != Some(receipt))
+        {
+            self.read.continuation.owner = current.map(|owner| owner.owner_id);
+            self.read.continuation.requires_refresh = true;
+            self.playlist_failed("the Spotify account changed before this playlist read");
+            return None;
+        }
+        let (previous, expected) = match load_checkpoint(store, owner, &uri) {
             Ok(previous) => previous,
             Err(error) => {
                 self.playlist_failed(error);
                 return None;
             }
+        };
+        let checkpoint = Checkpoint {
+            owner: receipt,
+            expected,
         };
         let (snapshot, pages) = match &list.snapshot_id {
             Some(snapshot) if version(snapshot) => (snapshot.clone(), MAX_PLAYLIST_REQUESTS - 1),
@@ -300,7 +376,7 @@ impl Reader<'_> {
         {
             // A prior projection write failed. Reuse its proved local contents,
             // not another Spotify read or a fabricated new fetched-at time.
-            return Some((ready.clone(), false));
+            return Some((ready.clone(), false, checkpoint.expected));
         }
         let previous = match previous {
             Some(progress)
@@ -310,7 +386,7 @@ impl Reader<'_> {
                 // that whole proof instead of turning a long complete list into
                 // a prefix and preventing authoritative library reconciliation.
                 return self
-                    .refresh_snapshot(store, progress, &list.id, pages, now)
+                    .refresh_snapshot(store, &checkpoint, progress, pages, now)
                     .await;
             }
             previous => previous,
@@ -345,19 +421,24 @@ impl Reader<'_> {
         }
         progress.applied = false;
         progress.fetched_at = Some(now);
-        self.accept_window(store, progress, failed, first).await
+        self.accept_window(store, &checkpoint, progress, failed, first)
+            .await
     }
 
     async fn refresh_snapshot<S: Store + ?Sized>(
         &mut self,
         store: &mut S,
+        checkpoint: &Checkpoint,
         mut progress: Progress,
-        id: &str,
         pages: usize,
         now: i64,
-    ) -> Option<(Progress, bool)> {
+    ) -> Option<(Progress, bool, Option<String>)> {
+        let id = progress
+            .playlist_uri
+            .strip_prefix("spotify:playlist:")?
+            .to_owned();
         let first = progress.refresh_offset;
-        let url = self.session.endpoints().playlist_items(id, first);
+        let url = self.session.endpoints().playlist_items(&id, first);
         let entries = self
             .observe_window_from::<serde_json::Value>(
                 &url,
@@ -381,7 +462,7 @@ impl Reader<'_> {
             self.playlist_failed("unchanged playlist snapshot has different source coverage");
             return None;
         }
-        if self.playlist_snapshot(id).await? != progress.snapshot_id {
+        if self.playlist_snapshot(&id).await? != progress.snapshot_id {
             self.playlist_failed("playlist changed during its metadata refresh");
             return None;
         }
@@ -413,10 +494,7 @@ impl Reader<'_> {
                 return None;
             }
         };
-        if let Err(error) =
-            store.save_playlist_progress(&progress.owner_id, &progress.playlist_uri, &encoded)
-        {
-            self.playlist_failed(error);
+        if !self.save_checkpoint(store, checkpoint, &progress, &encoded) {
             return None;
         }
         self.read.continuation.advanced = self
@@ -424,7 +502,7 @@ impl Reader<'_> {
             .continuation
             .advanced
             .saturating_add(window.examined.saturating_sub(first));
-        Some((progress, false))
+        Some((progress, false, checkpoint.owner.as_ref().map(|_| encoded)))
     }
 
     /// Unvisited full-sync lists may contribute their whole proved contents
@@ -441,8 +519,8 @@ impl Reader<'_> {
             .as_deref()
             .filter(|snapshot| version(snapshot))?;
         let uri = format!("spotify:playlist:{}", list.id);
-        let progress = match load_progress(store, owner, &uri) {
-            Ok(progress) => progress?,
+        let (progress, encoded) = match load_checkpoint(store, owner, &uri) {
+            Ok((progress, encoded)) => (progress?, encoded),
             Err(error) => {
                 self.playlist_failed(error);
                 return None;
@@ -451,7 +529,7 @@ impl Reader<'_> {
         if !progress.complete || progress.limited || progress.snapshot_id != snapshot {
             return None;
         }
-        let (tracks, observation) = project(progress, list, named, false);
+        let (tracks, observation) = project(progress, list, named, false, encoded);
         self.read.playlist_tracks += tracks.len();
         Some((tracks, observation))
     }
@@ -459,10 +537,11 @@ impl Reader<'_> {
     async fn accept_window<S: Store + ?Sized>(
         &mut self,
         store: &mut S,
+        checkpoint: &Checkpoint,
         mut progress: Progress,
         failed: bool,
         first: u32,
-    ) -> Option<(Progress, bool)> {
+    ) -> Option<(Progress, bool, Option<String>)> {
         let id = progress.playlist_uri.strip_prefix("spotify:playlist:")?;
         let encoded = serde_json::to_string(&progress).ok();
         let too_large = encoded
@@ -484,13 +563,7 @@ impl Reader<'_> {
             progress.tracks.clear();
             match serde_json::to_string(&progress) {
                 Ok(marker) => {
-                    if let Err(error) = store.save_playlist_progress(
-                        &progress.owner_id,
-                        &progress.playlist_uri,
-                        &marker,
-                    ) {
-                        self.playlist_failed(error);
-                    }
+                    self.save_checkpoint(store, checkpoint, &progress, &marker);
                 }
                 Err(error) => self.playlist_failed(error),
             }
@@ -500,12 +573,12 @@ impl Reader<'_> {
         // A malformed window can still supply a useful first observation,
         // but it must not move the durable restart point past its failure.
         if !failed {
-            if let Err(error) = store.save_playlist_progress(
-                &progress.owner_id,
-                &progress.playlist_uri,
+            if !self.save_checkpoint(
+                store,
+                checkpoint,
+                &progress,
                 encoded.as_deref().unwrap_or(""),
             ) {
-                self.playlist_failed(error);
                 return None;
             }
             self.read.continuation.advanced = self
@@ -528,7 +601,15 @@ impl Reader<'_> {
                 },
             ));
         }
-        Some((progress, failed))
+        Some((
+            progress,
+            failed,
+            if !failed && checkpoint.owner.is_some() {
+                encoded
+            } else {
+                None
+            },
+        ))
     }
 
     pub(super) async fn read_playlist<S: Store + ?Sized>(
@@ -541,13 +622,13 @@ impl Reader<'_> {
         pending_only: bool,
     ) -> (Vec<LibraryItem>, Option<PlaylistObservation>) {
         self.read.playlists += 1;
-        let Some((progress, failed)) = self
+        let Some((progress, failed, encoded)) = self
             .playlist_window(store, owner, list, now, pending_only)
             .await
         else {
             return (Vec::new(), None);
         };
-        let (tracks, observation) = project(progress, list, named, failed);
+        let (tracks, observation) = project(progress, list, named, failed, encoded);
         self.read.playlist_tracks += tracks.len();
         (tracks, Some(observation))
     }
@@ -558,10 +639,13 @@ fn project(
     list: &SimplifiedPlaylist,
     named: &mut HashMap<String, Vec<String>>,
     failed: bool,
+    encoded: Option<String>,
 ) -> (Vec<LibraryItem>, PlaylistObservation) {
     let observation = PlaylistObservation {
         contents: progress.observation(progress.fetched_at.unwrap_or(0)),
         snapshot_id: progress.snapshot_id.clone(),
+        progress: encoded,
+        applied: progress.applied,
         failed,
     };
     let stated = crate::genre_guess::from_name(&list.name);

@@ -52,10 +52,11 @@ mod playlist_scan;
 pub use continuation::PlaylistContinuation;
 use continuation::Scan;
 pub(crate) use continuation::read_pending_playlists;
-pub(crate) use directory::{finish_reconciliation, remember_versions};
+pub(crate) use directory::{
+    finish_reconciliation, prepare_publication as prepare_playlist_publication,
+};
 pub use followed::{FOLLOWED_ARTIST_PAGE_BUDGET, FollowedArtistContinuation, FollowedArtistPhase};
 pub(crate) use followed::{finish_followed_reconciliation, read_pending_followed};
-pub(crate) use playlist_scan::mark_applied as mark_playlist_applied;
 
 /// A top track's weight (per mille).
 pub const TOP_TRACK_PM: u32 = 1080;
@@ -154,6 +155,10 @@ pub struct Taste {
 pub(crate) struct PlaylistObservation {
     pub(crate) contents: CachedPlaylist,
     pub(crate) snapshot_id: String,
+    /// Exact accepted checkpoint, retained from the read rather than fetched
+    /// again when publishing. Failed windows have no publication authority.
+    pub(crate) progress: Option<String>,
+    pub(crate) applied: bool,
     /// A failed refresh preserves the last useful observation. Partial
     /// windows never replace an already complete published observation.
     pub(crate) failed: bool,

@@ -22,7 +22,8 @@ pub struct PlaylistContinuation {
     pub advanced: u32,
     /// Remaining server cooldown, rounded up; never shorten it on restart.
     pub retry_after_secs: u64,
-    /// A changed signed-in account requires a full sync before merging more music.
+    /// A changed account or newer accepted read requires a full union before
+    /// this stale continuation can merge more music.
     pub requires_refresh: bool,
 }
 

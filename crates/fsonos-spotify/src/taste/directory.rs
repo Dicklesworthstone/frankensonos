@@ -7,9 +7,11 @@
 use super::continuation::Scan;
 use super::paging::Observation;
 use super::{MAX_PAGES, PlaylistObservation, Reader};
-use crate::client::{PAGE_LIMIT, SimplifiedPlaylist};
+use crate::SpotifyError;
+use crate::client::{PAGE_LIMIT, SimplifiedPlaylist, random_state};
 use fsonos_core::store::{
-    MAX_PLAYLIST_BYTES, MAX_PLAYLIST_DIRECTORY_ENTRIES, SpotifyLibraryOwner, Store, StoreError,
+    MAX_PLAYLIST_BYTES, MAX_PLAYLIST_DIRECTORY_ENTRIES, SpotifyLibraryOwner,
+    SpotifyPlaylistPublicationFence, Store, StoreError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -44,6 +46,10 @@ struct Progress {
     limited: bool,
     #[serde(default)]
     reconcile: bool,
+    /// Every public acceptance changes the directory receipt, including a
+    /// bounded subset whose Spotify snapshot IDs themselves did not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    publication: Option<String>,
     items: Vec<SimplifiedPlaylist>,
 }
 
@@ -60,6 +66,7 @@ impl Progress {
             complete: false,
             limited: false,
             reconcile: false,
+            publication: None,
             items: Vec::new(),
         }
     }
@@ -76,6 +83,11 @@ impl Progress {
             && (self.examined == 0 || self.last_start < self.examined)
             && self.examined - self.last_start <= PAGE_LIMIT
             && !(self.complete && self.limited)
+            && self.publication.as_ref().is_none_or(|publication| {
+                !publication.is_empty()
+                    && publication.len() <= 128
+                    && !publication.chars().any(char::is_control)
+            })
             && self.source_total.is_none_or(|total| {
                 self.examined <= total && (!self.complete || self.examined == total)
             })
@@ -148,21 +160,38 @@ impl Progress {
     }
 }
 
-/// A proved playlist version may be newer than its retained directory row.
-/// Carry accepted versions forward after publication so the later full union
-/// can reuse completed middle-page proofs without another unbounded scan.
-pub(crate) fn remember_versions<S: Store + ?Sized>(
-    store: &mut S,
+/// Build the exact read fence, accepted versions and acknowledgements without
+/// modifying durable state. The store commits them with the public projection.
+/// A fallback captured before taste/cache reads fences even a failed directory
+/// read against a concurrent background publication.
+pub(crate) fn prepare_publication(
     owner: &SpotifyLibraryOwner,
-    receipt: &mut Option<DirectoryReceipt>,
+    receipt: Option<&DirectoryReceipt>,
+    fallback: Option<&str>,
     observations: &[PlaylistObservation],
-) -> Result<(), StoreError> {
-    let Some(accepted) = receipt.as_ref() else {
-        return Ok(());
+) -> Result<(SpotifyPlaylistPublicationFence, Option<DirectoryReceipt>), SpotifyError> {
+    let expected = receipt.map(|receipt| receipt.encoded.as_str()).or(fallback);
+    let updates = observations
+        .iter()
+        .map(|observation| super::playlist_scan::publication(owner, observation))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut fence = SpotifyPlaylistPublicationFence {
+        expected_directory: expected.map(str::to_owned),
+        directory: None,
+        observations: updates,
+    };
+    let Some(mut progress) = expected
+        .and_then(|encoded| serde_json::from_str::<Progress>(encoded).ok())
+        .filter(|progress| progress.valid(&owner.owner_id, owner.generation))
+    else {
+        return Ok((fence, None));
     };
     let versions: HashMap<_, _> = observations
         .iter()
-        .filter(|observation| !observation.failed)
+        .filter(|observation| !observation.failed && observation.progress.is_some())
         .filter_map(|observation| {
             Some((
                 observation
@@ -173,35 +202,29 @@ pub(crate) fn remember_versions<S: Store + ?Sized>(
             ))
         })
         .collect();
-    if versions.is_empty() {
-        return Ok(());
-    }
-    let mut progress: Progress = serde_json::from_str(&accepted.encoded)
-        .map_err(|error| StoreError::Backend(error.to_string()))?;
-    let mut changed = false;
     for item in &mut progress.items {
         if let Some(version) = versions.get(item.id.as_str())
             && item.snapshot_id.as_deref() != Some(*version)
         {
             item.snapshot_id = Some((*version).to_owned());
-            changed = true;
         }
     }
-    if !changed {
-        return Ok(());
-    }
+    progress.publication = Some(random_state()?);
     let encoded =
         serde_json::to_string(&progress).map_err(|error| StoreError::Backend(error.to_string()))?;
-    if store.save_spotify_playlist_directory(owner, Some(&accepted.encoded), &encoded, None)? {
-        if let Some(receipt) = receipt {
-            receipt.encoded = encoded;
-        }
-    } else {
-        // A newer scan owns its own receipt. This older publication cannot
-        // consume that scan's reconciliation request or replace its versions.
-        *receipt = None;
+    if encoded.len() > MAX_PLAYLIST_BYTES {
+        return Err(SpotifyError::Decode(
+            "playlist publication exceeds its 16 MiB directory limit".into(),
+        ));
     }
-    Ok(())
+    fence.directory = Some(encoded.clone());
+    Ok((
+        fence,
+        Some(DirectoryReceipt {
+            encoded,
+            reconcile: receipt.is_some_and(|receipt| receipt.reconcile),
+        }),
+    ))
 }
 
 /// Called only after an account-fenced full publication and a complete union.
