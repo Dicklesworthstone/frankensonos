@@ -12,13 +12,13 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard.js']
+SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
   writes: [], calls: [], feeds: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
   zones:[{household:'S2',coordinator_room:'Studio',members:['Studio','Kitchen'],transport_state:'playing'},
     {household:'S1',coordinator_room:'Studio',members:['Studio'],transport_state:'paused'}],
-  states:['playing','paused'], running:[true,false], modes:['NORMAL','NORMAL'], timers:[null,null], mood:'focus', track:'fixture:movement',
+  states:['playing','paused'], running:[true,false], modes:['NORMAL','NORMAL'], timers:[null,null], levels:{'Studio@S2':20,'Kitchen@S2':15,'Studio@S1':20}, muted:{}, mood:'focus', track:'fixture:movement',
   work:{composer:'Fixture composer',title:'Three rooms',album:'Fixture recording',performers:['Fixture quartet'],movements:3,movement:2,
     movement_title:'II. Fixture movement',minutes:21,reason:{summary:'Variety and the owner’s preferences.',factors:[{factor:'artist_spacing',weight:1400},{factor:'feedback',weight:800}],relaxed:[]}},
   scene:{name:'Dinner',saved:1700000000,groups:[{coordinator:'Studio@S2',members:['Kitchen@S2'],source:{kind:'dj',mood:'dinner'},playing:true}],volumes:{'Studio@S2':20,'Kitchen@S2':15},mutes:{}},
@@ -29,14 +29,14 @@ window.fetch=async(url,init)=>{
   if(f.offline) throw new Error('Fixture offline');
   let data;
   const room=decodeURIComponent(String(url).split('/')[2]||'');
-  const index=f.zones.findIndex(z=>`${z.coordinator_room}@${z.household}`===room);
+  const index=f.zones.findIndex(z=>z.members.some(member=>`${member}@${z.household}`===room));
   if(url==='/zones') data=f.zones;
   else if(url.startsWith('/sleep?zone=')) {
     const target=new URLSearchParams(url.split('?')[1]).get('zone');
     const index=f.zones.findIndex(z=>`${z.coordinator_room}@${z.household}`===target);
     data=f.timers[index]?[f.timers[index]]:[];
   }
-  else if(url.endsWith('/state')) data={zone:f.zones[index],transport_state:f.states[index],volume:20,group_volume:22,
+  else if(url.endsWith('/state')) data={zone:f.zones[index],transport_state:f.states[index],volume:f.levels[room],mute:!!f.muted[room],group_volume:22,
     track:{uri:f.track,title:f.rawTitle,creator:'Fixture artist',album:'Fixture album',position_secs:20,duration_secs:300,queue_position:2}};
   else if(url.startsWith('/zones/')&&url.endsWith('/play-mode')) data={zone:f.zones[index].coordinator_room,mode:f.modes[index],queue_active:true,dj_active:f.running[index]};
   else if(url.endsWith('/dj')) data={zone:'Studio',running:f.running[index],now:f.running[index]?f.work:null,
@@ -48,10 +48,12 @@ window.fetch=async(url,init)=>{
   else if(url.startsWith('/history')) data=[];
   else if(init.method==='POST'){
     const body=JSON.parse(init.body); f.writes.push({url,body});
-    const target=f.zones.findIndex(z=>`${z.coordinator_room}@${z.household}`===body.zone);
+    const target=f.zones.findIndex(z=>z.members.some(member=>`${member}@${z.household}`===body.zone));
     data={done:'Fixture command accepted',changed:true};
     if(url==='/pause')f.states[target]='paused';
     if(url==='/resume')f.states[target]='playing';
+    if(url==='/volume'&&body.volume!==undefined){f.levels[body.zone]=body.volume;data={done:'Room volume changed',changed:true,volume:body.volume};}
+    if(url==='/mute'){f.muted[body.zone]=body.mute;data={done:body.mute?'Room muted':'Room unmuted',changed:true};}
     if(url==='/sleep'){
       const remaining=body.cancel?null:Number(body.duration.slice(0,-1))*60+(body.extend?f.timers[target].remaining_secs:0);
       data={zone:f.zones[target].coordinator_room,ends:remaining===null?null:new Date(Date.now()+remaining*1000).toISOString(),
@@ -226,6 +228,30 @@ def main():
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
         page.locator('#close-sleep').click()
         checks.append('reviewed sleep timer set, extend and cancel on desktop and mobile')
+        page.locator('.map-select').nth(0).click()
+        page.wait_for_function("document.getElementById('dock-target').textContent.includes('S2')")
+        page.locator('#open-room-volume').click()
+        page.wait_for_function("document.querySelectorAll('.volume-room').length===2")
+        kitchen=page.locator('.volume-room').nth(1)
+        assert 'Kitchen' in kitchen.inner_text()
+        slider=kitchen.locator('input[type=range]')
+        slider.focus();slider.press('ArrowRight')
+        assert '16' in kitchen.locator('output').inner_text()
+        before=page.evaluate('fixture.writes.length')
+        kitchen.get_by_role('button',name='Review level',exact=True).click()
+        assert 'Kitchen: 15 → 16' in page.locator('#room-volume-preview-title').inner_text()
+        assert page.evaluate('fixture.writes.length')==before
+        page.locator('#room-volume-confirm').click()
+        page.wait_for_function("document.getElementById('room-volume-message').textContent==='Room volume changed'")
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/volume','body':{'zone':'Kitchen@S2','volume':16}}
+        assert page.evaluate("fixture.levels['Studio@S2']")==20
+        kitchen.get_by_role('button',name='Mute Kitchen@S2',exact=True).click();page.locator('#room-volume-confirm').click()
+        page.wait_for_function("document.getElementById('room-volume-message').textContent==='Room muted'")
+        assert page.evaluate('fixture.writes.at(-1)')=={'url':'/mute','body':{'zone':'Kitchen@S2','mute':True}}
+        assert kitchen.get_by_role('button',name='Unmute Kitchen@S2',exact=True).get_attribute('aria-pressed')=='true'
+        assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
+        page.locator('#close-room-volume').click()
+        checks.append('physical member volume and mute through reviewed keyboard controls on mobile')
         page.close()
         preview=browser.new_page(viewport={'width':1536,'height':1120},reduced_motion='reduce')
         preview.on('pageerror',lambda e:errors.append(str(e)));load(preview,True)

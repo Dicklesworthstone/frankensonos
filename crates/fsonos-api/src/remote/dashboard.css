@@ -95,6 +95,25 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line-str
 .sleep-message:empty{display:none}
 @media(max-width:600px){.sleep-dialog{padding:20px}.sleep-observation,.sleep-preview{padding:14px}.sleep-actions button{flex:1}.sleep-preview footer button{flex:1}}
 
+.room-volume-dialog{width:min(580px,calc(100vw - 32px))}
+.room-volume-context{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.room-volume-context .review-target{flex:1;min-width:0}
+.room-volume-context button{min-height:44px;flex:none}
+.volume-rooms{display:grid;gap:12px;max-height:44vh;overflow:auto;padding:3px;margin:18px -3px 0;overscroll-behavior:contain}
+.volume-room{padding:14px;border:1px solid var(--line-strong);border-radius:11px;background:var(--raised)}
+.volume-room header{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.volume-room h3{font-size:14px;font-weight:550;line-height:1.5;overflow-wrap:anywhere;margin:0}
+.volume-room-value{font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.volume-room-status{font-size:11px;line-height:1.6;color:var(--muted);margin:6px 0 2px;overflow-wrap:anywhere}
+.volume-room-slider input{width:100%;min-height:44px;accent-color:var(--accent);cursor:pointer;touch-action:pan-y}
+.volume-room-slider input:disabled{opacity:.45;cursor:default}
+.volume-room-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px}
+.volume-room-actions button{min-height:44px;font-size:11px}
+.volume-room-actions button[aria-pressed=true]{color:var(--accent)}
+.room-volume-result{font-size:13px;line-height:1.6;color:var(--text);margin:18px 0 0;overflow-wrap:anywhere}
+.room-volume-result:empty{display:none}
+@media(max-width:600px){.room-volume-dialog{padding:20px}.room-volume-context .review-target{flex-basis:100%}.room-volume-context button{margin-left:auto}.volume-room{padding:12px}.volume-room header{flex-wrap:wrap;gap:4px}.volume-room-value{margin-left:auto}}
+
 /* Native multi-room control, with the same reviewed-command surface as playback. */
 .room-group-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px}
 .room-group-actions button{color:var(--accent)}

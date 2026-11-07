@@ -123,6 +123,31 @@ retry automatically. One fresh timer read follows an accepted change; there is
 no background timer polling. Other controllers can still act between preflight
 and the native command.
 
+### Individual room volume and mute
+
+**Room volume** below the room cards opens a mixer for every member of the selected
+group. Each room has its own 0–100 slider and explicit mute/unmute control. Moving
+a slider only chooses a proposed level; **Review level** names the room and change
+before confirmation. Mute affects that room's audio while the group keeps its
+current playback. The persistent player's existing ±5 controls still adjust the
+group.
+
+The mixer reads physical room state on demand with at most four requests in
+flight. Missing volume and mute observations disable their own controls
+independently, and an unavailable member does not disable another room's valid
+controls. The preflight checks current group membership, coordinator and the
+reviewed room's volume and mute. Different households with identically named
+rooms remain separately addressed.
+
+Changes use one native room command through the dashboard's shared command lane.
+Policy-clamped volume is shown as an accepted actual level, including the native
+policy notes, separately from the next observed level. A clamp never triggers
+another write toward the requested level. There are no deferred slider writes,
+automatic retries, or additional polling. Observations expire after 45 seconds;
+selection changes, hidden pages and closing the mixer retire pending reviews.
+Unconfirmed writes retain the dashboard's global uncertainty until explicit
+**Refresh**.
+
 ### Group rooms and move music
 
 **Group rooms** below the room cards can add a room to the selected listening
@@ -211,7 +236,7 @@ Run the local suites:
 
 ```sh
 node --test scripts/test-dashboard-session.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-workspace.cjs
-node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs
+node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs scripts/test-dashboard-volume.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-workspace.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preview.py
