@@ -323,3 +323,125 @@ fn incomplete_limited_and_changed_owner_passes_cannot_claim_reconciliation() {
     let decoded: Checkpoint = serde_json::from_value(legacy).unwrap();
     assert_eq!(decoded, waiting);
 }
+
+#[test]
+fn a_failed_manual_full_read_remains_due_after_a_recent_success() {
+    let dir = directory("manual-full-retry");
+    let at = 1_790_000_000;
+    write(&dir, Some(&full(at)), &Checkpoint::default()).unwrap();
+    let sync = controller(dir.clone(), at + 10);
+    assert!(!sync.due(sync.now()));
+
+    // The real full-read admission path fails before HTTP because no token
+    // exists. The old success must not make this request disappear.
+    assert_eq!(sync.run().unwrap_err().code, ErrorCode::SpotifyAuthRequired);
+    let saved = load(&dir).unwrap();
+    assert!(saved.requires_refresh);
+    assert_eq!(sync.last(), Some(full(at)));
+    assert!(!sync.take_fresh());
+    assert!(saved.retry_at > sync.now());
+
+    let restarted = controller(dir, saved.retry_at);
+    assert!(!restarted.due(saved.retry_at - 1));
+    assert!(restarted.due(saved.retry_at));
+    assert!(saved.owner_due(i64::MAX).is_none());
+    assert!(!saved.album_due(i64::MAX));
+    assert!(!saved.genre_due(i64::MAX));
+}
+
+#[test]
+fn an_overdue_success_cannot_bypass_a_reserved_full_read_deadline() {
+    let dir = directory("overdue-full-deadline");
+    let at = 1_790_000_000;
+    let day = i64::try_from(MAX_AGE.as_secs()).unwrap();
+    let now = at + day + 10;
+    let mut reserved = Checkpoint::default().reserve_full(now);
+    reserved.cooldown(now, 7_200);
+    write(&dir, Some(&full(at)), &reserved).unwrap();
+
+    let restarted = controller(dir, now);
+    assert!(reserved.requires_refresh);
+    assert!(!restarted.due(now));
+    assert!(!restarted.due(reserved.retry_at - 1));
+    assert!(restarted.due(reserved.retry_at));
+    assert_eq!(restarted.last(), Some(full(at)));
+}
+
+#[test]
+fn healthy_saved_library_progress_continues_without_a_stall_penalty() {
+    let dir = directory("saved-library-progress");
+    let at = 1_790_000_000;
+    let check = i64::try_from(CHECK.as_secs()).unwrap();
+    let previous = Checkpoint {
+        stalled: 8,
+        ..Checkpoint::default().observed(&pending(3, 0), at)
+    };
+    let mut reserved = previous.reserve_full(at);
+    assert!(reserved.retry_at > at + check);
+
+    reserved.continue_full(at + 10);
+    assert!(reserved.requires_refresh);
+    assert_eq!(reserved.stalled, 0);
+    assert_eq!(reserved.retry_at, at + 10 + check);
+    assert_eq!(reserved.owner, previous.owner);
+    assert_eq!(reserved.pending, previous.pending);
+    assert!(reserved.owner_due(i64::MAX).is_none());
+    assert!(!reserved.album_due(i64::MAX));
+    assert!(!reserved.genre_due(i64::MAX));
+
+    // A server-requested cooldown still wins over the next normal check.
+    reserved.cooldown(at + 10, 3_600);
+    assert_eq!(reserved.retry_at, at + 3_610);
+    write(&dir, Some(&full(at)), &reserved).unwrap();
+    let restarted = controller(dir, at + 20);
+    assert_eq!(load(&restarted.data_dir), Some(reserved.clone()));
+    assert!(!restarted.due(reserved.retry_at - 1));
+    assert!(restarted.due(reserved.retry_at));
+    assert_eq!(restarted.last(), Some(full(at)));
+    assert!(!restarted.take_fresh());
+}
+
+#[test]
+fn an_accepted_full_read_consumes_its_durable_refresh_intent() {
+    let dir = directory("accepted-full-intent");
+    let at = 1_790_000_000;
+    let checkpoint = Checkpoint::default().reserve_full(at);
+    write(&dir, Some(&full(at)), &checkpoint).unwrap();
+    let read = LibrarySyncDetailed {
+        library: Counts {
+            tracks: 200,
+            candidates: 195,
+            classical: 5,
+            retired: 2,
+        },
+        genres: GenreRead::default(),
+        genre_continuation: GenreContinuation::default(),
+        playlists: pending(0, 100),
+        albums: AlbumContinuation::default(),
+        notes: Vec::new(),
+    };
+    let sync = controller(dir.clone(), at + 60);
+    let accepted = sync
+        .accepted(Some(full(at)), &checkpoint, &read, PassKind::Full, at + 60)
+        .unwrap();
+    assert_eq!(accepted.at, at + 60);
+    assert_eq!(accepted.tracks, 200);
+    assert!(sync.take_fresh());
+    let saved = load(&dir).unwrap();
+    assert!(!saved.requires_refresh);
+    assert!(!saved.reconcile);
+    assert!(!sync.due(at + 61));
+}
+
+#[test]
+fn a_saved_library_window_reports_progress_without_claiming_success() {
+    let error = failure(fsonos_spotify::SpotifyError::LibraryPending {
+        pages: 512,
+        tracks: 25_600,
+    });
+    assert_eq!(error.code, ErrorCode::NotReady);
+    assert!(error.detail.contains("512 page(s)"));
+    assert!(error.detail.contains("25600 track(s)"));
+    assert!(error.detail.contains("public library is unchanged"));
+    assert!(error.detail.contains("next refresh continues"));
+}

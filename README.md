@@ -485,6 +485,13 @@ the DJ and scenes) to any
 device on your tailnet. The daemon keeps the DJ's library fresh on its own,
 and `fsonos dj sync` refreshes it on demand.
 
+Saved albums, liked tracks, and missing album-track pages now resume from
+private checkpoints after an interrupted read or Spotify cooldown. Each pass
+uses at most 512 page requests; the daemon continues unfinished work at its
+next check. The last complete library remains playable while the scan is
+incomplete. Resumed pages are checked again before publication, and an account
+switch or a competing refresh cannot publish an older prepared result.
+
 Large libraries continue artist genre enrichment in background passes of up to
 50 artists. Progress survives restarts, failed artists yield to later ones,
 and newly learned tags reach the DJ's next selection without rereading saved

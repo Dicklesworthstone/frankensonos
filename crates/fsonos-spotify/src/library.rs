@@ -19,6 +19,9 @@ use crate::client::{Album, Endpoints, SavedAlbum, SavedTrack, SimplifiedTrack};
 mod albums;
 mod coverage;
 mod intake;
+mod progress;
+
+pub(crate) use progress::LibraryProgress;
 
 /// How a track entered the owner's library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -237,8 +240,9 @@ pub const ARTIST_SEPARATOR: &str = "; ";
 /// links when known totals require more entries. Continuations must cover
 /// contiguous raw positions on the same Web API collection; a changed total
 /// fails the read instead of retiring music from an incomplete snapshot.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LibraryRead {
+    #[serde(skip)]
     endpoints: Endpoints,
     pending: VecDeque<Fetch>,
     requested: HashSet<String>,
@@ -246,7 +250,7 @@ pub struct LibraryRead {
     pages: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum Fetch {
     // Carry known totals with the request so failed pages cannot advance them.
     SavedAlbums(String, Option<u32>),

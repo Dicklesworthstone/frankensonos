@@ -7,8 +7,8 @@ use crate::SpotifyError;
 use crate::client::{Endpoints, parse_query};
 use std::collections::{HashSet, VecDeque};
 
-const PAGE_BUDGET: usize = 20_000;
-const ITEM_BUDGET: usize = 1_000_000;
+pub(super) const PAGE_BUDGET: usize = 20_000;
+pub(super) const ITEM_BUDGET: usize = 1_000_000;
 
 pub(super) fn invalid(detail: &str) -> SpotifyError {
     SpotifyError::Decode(detail.into())
@@ -42,7 +42,7 @@ pub(super) fn offset(url: &str) -> Result<u32, SpotifyError> {
         .map_err(|_| invalid("invalid library paging offset"))
 }
 
-fn check_route(endpoints: &Endpoints, fetch: &Fetch) -> Result<(), SpotifyError> {
+pub(super) fn check_route(endpoints: &Endpoints, fetch: &Fetch) -> Result<(), SpotifyError> {
     let expected = match fetch {
         Fetch::SavedAlbums(_, _) => endpoints.saved_albums(0),
         Fetch::SavedTracks(_, _) => endpoints.saved_tracks(0),

@@ -99,6 +99,22 @@ impl Checkpoint {
         reserved
     }
 
+    /// Keep the full-read intent across failures and restarts even when the last
+    /// successful refresh is still recent. It also excludes enrichment passes.
+    fn reserve_full(&self, now: i64) -> Self {
+        let mut reserved = self.reserve(now);
+        reserved.requires_refresh = true;
+        reserved
+    }
+
+    /// A healthy bounded read made progress without publishing a new library.
+    /// Continue at the next check instead of treating its budget as a failure.
+    fn continue_full(&mut self, now: i64) {
+        self.requires_refresh = true;
+        self.stalled = 0;
+        self.retry_at = now.saturating_add(Self::wait(0)).max(self.not_before);
+    }
+
     fn observed(&self, report: &PlaylistContinuation, now: i64) -> Self {
         let progress =
             report.advanced > 0 || report.pending < self.pending || report.owner != self.owner;
@@ -549,15 +565,25 @@ impl LibrarySync {
         let mut reserved = match kind {
             PassKind::Albums => checkpoint.reserve_albums(now),
             PassKind::Genres => checkpoint.reserve_genres(now),
-            PassKind::Full | PassKind::Playlists => checkpoint.reserve(now),
+            PassKind::Full => checkpoint.reserve_full(now),
+            PassKind::Playlists => checkpoint.reserve(now),
         };
         write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
         let read = self.read(pass);
-        let (result, retry_after) = match read {
-            Ok((result, seconds)) => (result.map_err(failure), seconds),
-            Err(error) => (Err(error), 0),
+        let (result, retry_after, pending) = match read {
+            Ok((result, seconds)) => {
+                let pending = matches!(
+                    &result,
+                    Err(fsonos_spotify::SpotifyError::LibraryPending { .. })
+                );
+                (result.map_err(failure), seconds, pending)
+            }
+            Err(error) => (Err(error), 0, false),
         };
         let at = self.now();
+        if full && pending {
+            reserved.continue_full(at);
+        }
         reserved.cooldown(at, retry_after);
         match result {
             Ok(mut read) => {

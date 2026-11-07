@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use asupersync::Cx;
 use fsonos_core::store::{
-    CachedPlaylist, LibraryEntry, LibraryOrigin, SpotifyLibraryOwner, Store, StoreError,
+    CachedPlaylist, LibraryEntry, LibraryOrigin, SpotifyLibraryOwner, Store,
 };
 
 use crate::SpotifyError;
@@ -38,10 +38,12 @@ mod albums;
 mod genre_cache_tests;
 mod genre_completion;
 mod playlists;
+mod saved;
 use crate::works::{Work, group_works};
 pub use albums::{ALBUM_PAGE_BUDGET, AlbumContinuation, continue_albums};
 pub use genre_completion::{GENRE_READ_BUDGET, GenreContinuation, continue_genres};
 pub use playlists::continue_playlists;
+pub use saved::SAVED_LIBRARY_PAGE_BUDGET;
 
 /// What one sync did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -78,7 +80,8 @@ pub struct LibrarySyncDetailed {
 /// tag it all with its artists' genres ([`tag_genres`], guessed where they
 /// have none: [`crate::genre_guess`]), and write it to the
 /// store. The taste and genre reads are best effort (a halted read resumes
-/// next sync); nothing is written unless the library read completes.
+/// next sync); personal projections are written only after the essential
+/// library read completes. Validated page progress is retained privately.
 pub async fn sync_library<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
@@ -93,14 +96,27 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     cx: &Cx,
     store: &mut S,
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
+    sync_library_pass(session, cx, store, SAVED_LIBRARY_PAGE_BUDGET).await
+}
+
+pub(crate) async fn sync_library_pass<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    page_budget: usize,
+) -> Result<LibrarySyncDetailed, SpotifyError> {
     let owner = session.read_owner(cx).await?;
-    let mut items = session.read_library(cx).await?;
+    let base = store.spotify_library_owner()?;
+    let saved = saved::read(session, cx, store, &owner, base.as_ref(), page_budget).await?;
+    let mut items = saved.items;
     // No ownership change, retirement or publication before the essential
     // saved-library read succeeds. Adoption and retiring the prior owner's
     // candidates are atomic, so a crash cannot label old music as the new
     // owner's cache. An unowned legacy cache needs the same fresh proof.
     let previous = store.library()?;
-    let (receipt, changed_owner) = store.adopt_spotify_library_owner(&owner)?;
+    let (receipt, changed_owner) = store
+        .adopt_spotify_library_from_progress(&owner, base.as_ref(), &saved.proof)?
+        .ok_or_else(saved::changed)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
@@ -151,11 +167,8 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     // the owner's playlists call them first.
     taste.name_genres(&mut items);
     crate::genre_guess::fill(&mut items);
-    let mut report = publish_library_read(store, &receipt, &items, &taste)?.ok_or_else(|| {
-        StoreError::Backend(
-            "the Spotify account changed during this library refresh; refresh again".into(),
-        )
-    })?;
+    let mut report = publish_library_read(store, &receipt, &saved.proof, &items, &taste)?
+        .ok_or_else(saved::changed)?;
     if changed_owner {
         // Adoption retires everything before the new read is published;
         // report only prior candidates absent from this accepted library.
@@ -267,14 +280,16 @@ fn playlist_publication<S: Store + ?Sized>(
 fn publish_library_read<S: Store + ?Sized>(
     store: &mut S,
     owner: &SpotifyLibraryOwner,
+    proof: &str,
     items: &[LibraryItem],
     taste: &Taste,
 ) -> Result<Option<LibrarySync>, SpotifyError> {
     let (entries, report) = library_projection(store, items)?;
     let contents = playlist_publication(store, taste)?;
     Ok(store
-        .publish_spotify_library(
+        .publish_spotify_library_from_progress(
             owner,
+            proof,
             &entries,
             taste.playlists.as_deref(),
             &contents,

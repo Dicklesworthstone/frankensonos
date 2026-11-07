@@ -67,6 +67,10 @@ impl Store for FailingStore {
         fn cached_groups(&self, household: &str) -> Result<Vec<ZoneGroup>, StoreError>;
         fn upsert_library(&mut self, entries: &[LibraryEntry]) -> Result<(), StoreError>;
         fn spotify_library_owner(&self) -> Result<Option<SpotifyLibraryOwner>, StoreError>;
+        fn spotify_library_progress(&self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>) -> Result<Option<String>, StoreError>;
+        fn save_spotify_library_progress(&mut self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>, expected: Option<&str>, progress: &str) -> Result<bool, StoreError>;
+        fn adopt_spotify_library_from_progress(&mut self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>, expected: &str) -> Result<Option<(SpotifyLibraryOwner, bool)>, StoreError>;
+        fn publish_spotify_library_from_progress(&mut self, owner: &SpotifyLibraryOwner, expected: &str, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>) -> Result<bool, StoreError>;
         fn adopt_spotify_library_owner( &mut self, owner_id: &str, ) -> Result<(SpotifyLibraryOwner, bool), StoreError>;
         fn publish_spotify_library( &mut self, owner: &SpotifyLibraryOwner, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>, ) -> Result<bool, StoreError>;
         fn acknowledge_spotify_playlist( &mut self, owner: &SpotifyLibraryOwner, playlist_uri: &str, expected: &str, applied: &str, ) -> Result<bool, StoreError>;

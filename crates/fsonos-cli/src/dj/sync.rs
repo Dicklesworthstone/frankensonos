@@ -284,8 +284,8 @@ impl LibrarySync {
             if now < saved.not_before {
                 return false;
             }
-            if (saved.requires_refresh || saved.reconcile) && now >= saved.retry_at {
-                return true;
+            if saved.requires_refresh || saved.reconcile {
+                return now >= saved.retry_at;
             }
         }
         let max = i64::try_from(MAX_AGE.as_secs()).unwrap_or(i64::MAX);
@@ -391,6 +391,13 @@ fn signed_out() -> Failure {
 /// or an outage passes, and the next check resumes.
 fn failure(err: SpotifyError) -> Failure {
     match err {
+        SpotifyError::LibraryPending { pages, tracks } => Failure::new(
+            ErrorCode::NotReady,
+            format!(
+                "the saved-library read retained {pages} page(s) and {tracks} track(s); \
+                 the public library is unchanged and the next refresh continues the read"
+            ),
+        ),
         SpotifyError::Auth(_) => signed_out(),
         SpotifyError::Api { status: 429, .. } => Failure::new(
             ErrorCode::Internal,

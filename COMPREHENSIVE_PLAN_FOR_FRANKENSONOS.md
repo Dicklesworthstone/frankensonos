@@ -370,6 +370,10 @@ Added by §12 (each table is created by the migration of the bead that needs it)
   (migration 14; ordered cached occurrences, original source positions,
   timestamp, raw coverage and a local revision; independent of deduplicated
   library rows).
+- `spotify_library_progress(incoming_id TEXT PK, base_owner_id TEXT,`
+  `base_generation INT, progress TEXT NOT NULL)` (migration 21; private saved
+  music checkpoints fenced to the public account receipt, retained through
+  adoption, and consumed atomically with complete personal projections).
 - `spotify_playlist_directories(owner_id TEXT PK, generation INT, progress TEXT)`
   (migration 19; bounded directory scans resume across restarts, retain raw
   positions, and publish/prune only after completion under the same account
@@ -602,9 +606,20 @@ their standing preferences on every surface and in the daemon. What is on
   classical" and is only a legacy row's candidacy fallback. A running daemon
   keeps the cache fresh: it re-reads the library at start when the last read
   is more than a day old (as after an upgrade), then a day after each success,
-  retrying a failed read at its next 15-minute check, on a thread of its own.
+  continuing unfinished bounded reads at the next 15-minute check and backing
+  off failures while honoring Spotify cooldowns, on a thread of its own.
   `fsonos dj sync` (`POST /dj/sync`, MCP `dj_sync`) asks for a read now, and
   `GET /dj/sync` (`dj_sync_status`) says where it stands.
+- Essential saved-library reads resume across restarts and long rate limits.
+  Migration 21 stores private, account-bound progress for saved albums, liked
+  tracks, and album hydration. A pass spends at most 512 page requests,
+  including verification. Checkpoints retain validated metadata for seven
+  days, bounded to 64 MiB, and compare exact ownership and read receipts before
+  adoption or publication. A resumed scan rechecks its root pages and verifies
+  every retained page before publishing; changed collections restart private
+  intake. These checks detect changes but do not claim an atomic Spotify
+  snapshot. Partial scans never replace the public library or advance its
+  success timestamp. A completed proof survives failed publication.
 - Artist genre enrichment has its own durable continuation. Migration 20
   retains lead artist IDs with cached library rows. Background passes read up
   to 50 artists, rotate past failed artists, retain accepted tags, and share

@@ -279,6 +279,9 @@ mod explicit_metadata;
 #[path = "genre_continuation_tests.rs"]
 mod genre_continuation;
 
+#[path = "saved_library_tests.rs"]
+mod saved_library;
+
 impl Drop for Server {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {

@@ -731,7 +731,7 @@ impl Endpoints {
 
 /// A Web API paging object. Follow `next` (after [`Endpoints::is_api_url`])
 /// until `None`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Paging<T> {
     pub items: Vec<T>,
     #[serde(default)]
@@ -888,7 +888,7 @@ pub struct SavedAlbum {
     pub album: Album,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Album {
     pub id: String,
     pub uri: String,
@@ -909,7 +909,7 @@ pub struct Album {
     pub tracks: Option<Paging<SimplifiedTrack>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimplifiedArtist {
     #[serde(default)]
     pub id: Option<String>,
@@ -918,7 +918,7 @@ pub struct SimplifiedArtist {
     pub uri: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimplifiedTrack {
     #[serde(default)]
     pub id: Option<String>,
