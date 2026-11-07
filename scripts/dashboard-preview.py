@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 ASSETS = Path(__file__).resolve().parents[1] / "crates/fsonos-api/src/remote"
-SCRIPTS = ["event-feed.js", "dashboard-core.js", "dashboard-live.js", "dashboard-visualizer.js",
+SCRIPTS = ["event-feed.js", "dashboard-core.js", "dashboard-seek.js", "dashboard-live.js", "dashboard-visualizer.js",
            "dashboard-audio.js", "scene-queue.js", "dj-direction.js", "playlist-contents.js",
            "dashboard-library.js", "dashboard-session.js", "dashboard-queue.js",
            "dashboard-library-panel.js", "dashboard-activity.js", "dashboard-activity-panel.js",

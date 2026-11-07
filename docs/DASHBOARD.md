@@ -42,6 +42,16 @@ Ordinary Next advances one track; Skip whole work invokes the native DJ operatio
 Unknown track positions remain unknown; estimated elapsed time is labelled and
 stops advancing when state is stale.
 
+Choose a position on the persistent player's timeline, or use its **Seek within
+track** button on desktop and mobile. The position dialog supports keyboard
+scrubbing and 15-second steps, shows the exact track and listening group, and
+sends one native seek only after confirmation. Seeking a paused track leaves it
+paused. Streams without a known duration, stale observations and the design
+preview cannot seek. A changed group, track, duplicate queue occurrence or
+play/pause state discards the review. A fresh state read checks the same identity
+immediately before dispatch; the speaker does not provide an atomic seek
+precondition. An unconfirmed request is never retried automatically.
+
 Your personal DJ shows its real explanation and selection multipliers. These
 are not confidence percentages: ×1 is neutral. Mood presets come from the daemon,
 including custom presets, and may be applied for 30 minutes, one or two hours,

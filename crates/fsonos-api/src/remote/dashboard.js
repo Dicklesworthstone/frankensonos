@@ -76,7 +76,7 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   let active = !document.hidden, disposed = false, immersive = false, lastFocus = null, motionPaused = reduced.matches;
   let artKey = '', visualKey = '', roomKey = '', mapKey = '', sessionKey = '', sceneKey = '', reviewed = null, selectedKey = '';
-  let workspace, controller, session, live, clockTimer = null;
+  let workspace, controller, session, live, seek, clockTimer = null;
   let reviewReading = false, searchTimer = null, historyVersion = 0, historyRunning = false, catalogsDirty = true;
   const renderer = DashboardVisualizer.create($('visualizer'), { reduced: reduced.matches });
   const audio = DashboardAudio.create({ changed(s) {
@@ -88,6 +88,7 @@
   } });
   controller = C.model({ call, demo, changed: render });
   session = S.model({ call, controller, demo, changed: renderSession });
+  seek = DashboardSeek.create({ call, controller });
   workspace = DashboardWorkspace.create({ call, controller, session, el, icon, openSearch,
     native: (...args) => native(...args), immerse });
   const resize = () => { const box = $('stage').getBoundingClientRect(); renderer.resize(box.width, box.height, devicePixelRatio || 1); };
@@ -125,6 +126,7 @@
     $('stage').classList.toggle('immersive', value); document.body.classList.toggle('is-immersive', value); $('exit-immerse').hidden = !value;
     for (const n of document.querySelectorAll('.sidebar,.topbar,.greeting,.demo-banner,#summary,#error,#room-section,.intelligence-column,.lower-grid,.recent-section,.page-footer,.player-dock,.outcome,.mobile-nav')) n.inert = value;
     workspace?.immerse(value); renderer.immersive(value); resize();
+    if (value) seek?.suspend(); else if (active) seek?.resume();
     if (value) {
       $('exit-immerse').focus();
       try { Promise.resolve($('stage').requestFullscreen?.()).catch(() => {}); } catch (_) { /* Full-window view remains. */ }
@@ -167,6 +169,7 @@
     $('dj-start-stop').disabled = !sessionReady; $('dj-clear').disabled = !sessionReady || !d.dj.running;
     for (const b of document.querySelectorAll('.mood-chip')) b.disabled = !sessionReady;
     for (const b of document.querySelectorAll('.scene-card')) b.disabled = reviewReading || !active || (!demo && !can);
+    seek?.observe();
   }
   function render(state) {
     if (disposed) return;
@@ -402,8 +405,7 @@
   function timing() {
     const item = controller.selected(), at = C.elapsed(item, performance.now()), duration = item?.state?.track?.duration_secs;
     $('elapsed').textContent = `${item?.fresh && item?.state?.transport_state === 'playing' && at !== null ? '≈' : ''}${C.clock(at)}`;
-    $('duration').textContent = C.clock(duration); $('progress').max = duration > 0 ? duration : 1; $('progress').value = at !== null && duration > 0 ? at : 0;
-    $('progress').setAttribute('aria-label', at === null ? 'Position unavailable' : `Estimated track position ${C.clock(at)} of ${C.clock(duration)}`);
+    $('duration').textContent = C.clock(duration);
   }
   live = DashboardLive.create({
     demo,
@@ -437,12 +439,14 @@
     clearTimeout(clockTimer); clockTimer = null; clearTimeout(searchTimer); searchTimer = null;
     live.suspend(); request.cancelReads();
     audio.stop('Microphone stopped while hidden. Enable it again explicitly to resume.');
-    workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
+    seek?.suspend(); workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
   }
   function clockLoop() { if (!active || disposed) return; timing(); controls(); clockTimer = setTimeout(clockLoop, 1000); }
   function resume() {
     if (document.hidden || disposed) return;
-    active = true; catalogsDirty = true; workspace?.resume(); controller.resume(); session.resume(); renderer.visible(true); live.resume();
+    active = true; catalogsDirty = true; workspace?.resume(); controller.resume(); session.resume();
+    if (!immersive) seek?.resume();
+    renderer.visible(true); live.resume();
     if (clockTimer === null) clockLoop();
   }
   document.addEventListener('visibilitychange', () => document.hidden ? suspend() : resume());

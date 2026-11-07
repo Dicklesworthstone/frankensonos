@@ -151,7 +151,7 @@ test('the served asset order installs heartbeat delivery and recovery before pag
   const rust=fs.readFileSync(path.join(__dirname,'../crates/fsonos-api/src/http/remote/dashboard.rs'),'utf8');
   assert.match(rust,/const EVENTS: &str = include_str!\("\.\.\/\.\.\/remote\/event-feed\.js"\);/);
   assert.match(rust,/const LIVE: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-live\.js"\);/);
-  assert.ok(rust.includes('{EVENTS}\\n{CORE}\\n{LIVE}\\n{VISUALIZER}'));
+  assert.ok(rust.includes('{EVENTS}\\n{CORE}\\n{SEEK}\\n{LIVE}\\n{VISUALIZER}'));
   assert.match(script,/live\.suspend\(\); request\.cancelReads\(\);/);
   assert.match(script,/live\.resume\(\)/);
   assert.doesNotMatch(script,/schedule\(changedDuringRead \? 500 : wait\)/);

@@ -33,3 +33,22 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line-str
 /* Outcome messages must not cover the user's open volume controls. */
 .player-dock.volume-open{z-index:45}
 @media(max-width:600px){.mode-tabs button{min-height:40px}.mood-chip,.queue-tabs button{min-height:44px}.top-actions>.icon-button,.search-trigger{width:40px;min-height:40px}.player-dock{grid-template-columns:minmax(0,1fr) auto 40px}.mobile-volume{width:40px;min-height:44px}.transport .icon-button{width:36px;min-height:44px}.transport .play-button{width:40px;height:40px}.mobile-nav a,.mobile-nav button{min-height:44px}.player-dock.volume-open .dock-volume>button{width:44px;min-height:44px}}
+
+/* Track-position changes are previewed before the native seek is sent. */
+.timeline input[type=range]{min-width:0;width:100%;height:24px;margin:0;accent-color:var(--accent);cursor:pointer;touch-action:pan-y}
+.timeline input[type=range]:disabled{opacity:.45;cursor:default}
+.seek-dialog{width:min(460px,calc(100vw - 32px))}
+.seek-dialog h2{margin:8px 0 20px}
+.seek-track{font-size:16px;font-weight:600;line-height:1.45;overflow-wrap:anywhere;margin-bottom:5px}
+.seek-dialog #seek-group{margin-top:0;overflow-wrap:anywhere}
+.seek-time{display:flex;align-items:baseline;gap:12px;margin:24px 0 12px;font-variant-numeric:tabular-nums}
+.seek-time output{font-size:44px;letter-spacing:-2px;font-weight:600}
+.seek-time>span{font-size:13px;color:var(--muted)}
+.seek-dialog input[type=range]{display:block;width:100%;height:44px;margin:0;accent-color:var(--accent);cursor:pointer;touch-action:pan-y}
+.seek-dialog input[type=range]:disabled{opacity:.45;cursor:default}
+.seek-steps{display:flex;justify-content:space-between;gap:12px;margin:0 0 20px}
+.seek-steps button{min-height:44px}
+.seek-status{padding:12px;border:1px solid var(--line-strong);border-radius:10px;color:var(--text);font-size:13px;line-height:1.5}
+.seek-dialog footer{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}
+.seek-dialog footer button{min-height:44px}
+@media(max-width:600px){.transport #open-seek{width:36px;min-height:44px}.seek-dialog{padding:20px}.seek-time{margin-top:20px}.seek-time output{font-size:38px}}

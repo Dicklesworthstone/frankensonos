@@ -15,6 +15,7 @@ const LIBRARY_STYLE: &str = include_str!("../../remote/dashboard-library.css");
 const EVENTS: &str = include_str!("../../remote/event-feed.js");
 const LIVE: &str = include_str!("../../remote/dashboard-live.js");
 const CORE: &str = include_str!("../../remote/dashboard-core.js");
+const SEEK: &str = include_str!("../../remote/dashboard-seek.js");
 const VISUALIZER: &str = include_str!("../../remote/dashboard-visualizer.js");
 const AUDIO: &str = include_str!("../../remote/dashboard-audio.js");
 const SESSION: &str = include_str!("../../remote/dashboard-session.js");
@@ -73,7 +74,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{SCRIPT}"
                     ),
                 )
             },
