@@ -73,7 +73,10 @@ fn a_checkpoint_resumes_the_next_offset_with_complete_track_metadata() {
     let again = restored(&resumed);
     let item = &again.read.items[1];
     assert_eq!(item.artist_id.as_deref(), Some("ProgressArtist"));
-    assert_eq!(item.album_uri.as_deref(), Some("spotify:album:ProgressAlbum"));
+    assert_eq!(
+        item.album_uri.as_deref(),
+        Some("spotify:album:ProgressAlbum")
+    );
     assert_eq!((item.disc_number, item.track_number), (Some(1), Some(2)));
     assert_eq!(item.added_at, Some(1_736_973_062));
     assert_eq!(item.release_year, Some(1982));
@@ -87,8 +90,7 @@ fn proof_ignores_unused_fields_and_query_spelling_but_not_music_metadata() {
     let mut equivalent = liked(0, 3);
     equivalent["items"][0]["track"]["popularity"] = json!(42);
     equivalent["items"][0]["track"]["images"] = json!([{ "url": "ignored" }]);
-    equivalent["next"] =
-        json!("https://api.spotify.com/v1/me/tracks?limit=1&%6Fffset=1");
+    equivalent["next"] = json!("https://api.spotify.com/v1/me/tracks?limit=1&%6Fffset=1");
     assert!(progress.matches(1, &bytes(&equivalent)).unwrap());
     // Reformatting or object key order has no bearing on accepted evidence.
     let pretty = serde_json::to_vec_pretty(&equivalent).unwrap();
@@ -100,7 +102,10 @@ fn proof_ignores_unused_fields_and_query_spelling_but_not_music_metadata() {
     ] {
         let mut replacement = equivalent.clone();
         replacement["items"][0]["track"][field] = changed;
-        assert!(!progress.matches(1, &bytes(&replacement)).unwrap(), "{field}");
+        assert!(
+            !progress.matches(1, &bytes(&replacement)).unwrap(),
+            "{field}"
+        );
     }
 }
 
@@ -134,7 +139,11 @@ fn verification_cursor_survives_a_restart_and_ready_proofs_are_rechecked() {
     resumed.checked();
     let mut later = restored(&resumed);
     later.claim().unwrap();
-    assert_eq!(later.next_check(), Some(1), "verification makes durable progress");
+    assert_eq!(
+        later.next_check(),
+        Some(1),
+        "verification makes durable progress"
+    );
     for index in 1..4 {
         assert_eq!(later.next_check(), Some(index));
         later.checked();
@@ -142,7 +151,11 @@ fn verification_cursor_survives_a_restart_and_ready_proofs_are_rechecked() {
     assert!(later.finish());
     assert!(restored(&later).ready);
     later.claim().unwrap();
-    assert_eq!(later.next_check(), Some(0), "unpublished completed reads age too");
+    assert_eq!(
+        later.next_check(),
+        Some(0),
+        "unpublished completed reads age too"
+    );
 }
 
 #[test]
@@ -150,7 +163,10 @@ fn owner_endpoint_version_and_age_are_part_of_checkpoint_identity() {
     let encoded = prefix().encode().unwrap();
     let endpoints = Endpoints::default();
     assert!(LibraryProgress::restore(&encoded, "other-owner", &endpoints, NOW).is_none());
-    let other = Endpoints { api: "https://example.invalid/v1".into(), ..endpoints.clone() };
+    let other = Endpoints {
+        api: "https://example.invalid/v1".into(),
+        ..endpoints.clone()
+    };
     assert!(LibraryProgress::restore(&encoded, OWNER, &other, NOW).is_none());
     assert!(LibraryProgress::restore(&encoded, OWNER, &endpoints, NOW + MAX_AGE_SECS).is_none());
     assert!(LibraryProgress::restore(&encoded, OWNER, &endpoints, NOW - 301).is_none());
@@ -170,13 +186,19 @@ fn corrupt_retained_items_are_rejected_before_any_request_can_use_them() {
             _ => json!("changed"),
         };
         assert!(
-            LibraryProgress::restore(&changed.to_string(), OWNER, &Endpoints::default(), NOW).is_none(),
+            LibraryProgress::restore(&changed.to_string(), OWNER, &Endpoints::default(), NOW)
+                .is_none(),
             "{field}"
         );
     }
     let mut missing = snapshot;
-    missing["read"]["items"][0].as_object_mut().unwrap().remove("explicit");
-    assert!(LibraryProgress::restore(&missing.to_string(), OWNER, &Endpoints::default(), NOW).is_none());
+    missing["read"]["items"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("explicit");
+    assert!(
+        LibraryProgress::restore(&missing.to_string(), OWNER, &Endpoints::default(), NOW).is_none()
+    );
 }
 
 #[test]
@@ -191,13 +213,16 @@ fn outstanding_fetches_cannot_be_redirected_skipped_or_invented() {
         let mut changed = snapshot.clone();
         changed["read"]["pending"][0]["SavedTracks"][0] = json!(url);
         assert!(
-            LibraryProgress::restore(&changed.to_string(), OWNER, &Endpoints::default(), NOW).is_none(),
+            LibraryProgress::restore(&changed.to_string(), OWNER, &Endpoints::default(), NOW)
+                .is_none(),
             "{url}"
         );
     }
     let mut missing = snapshot;
     missing["read"]["pending"] = json!([]);
-    assert!(LibraryProgress::restore(&missing.to_string(), OWNER, &Endpoints::default(), NOW).is_none());
+    assert!(
+        LibraryProgress::restore(&missing.to_string(), OWNER, &Endpoints::default(), NOW).is_none()
+    );
 }
 
 #[test]
@@ -205,7 +230,10 @@ fn a_rejected_page_cannot_change_the_durable_accepted_prefix() {
     let mut progress = prefix();
     let before = progress.encode().unwrap();
     let mut missing_flag = liked(1, 3);
-    missing_flag["items"][0]["track"].as_object_mut().unwrap().remove("explicit");
+    missing_flag["items"][0]["track"]
+        .as_object_mut()
+        .unwrap()
+        .remove("explicit");
     assert!(progress.ingest(&bytes(&missing_flag)).is_err());
     assert_eq!(progress.encode().unwrap(), before);
     let mut wrong_route = liked(1, 3);
@@ -233,15 +261,18 @@ fn saved_album_hydration_retains_save_metadata_and_checked_coverage() {
     resumed.claim().unwrap();
     let first = Endpoints::default().album_tracks("ProgressAlbum", 0);
     assert_eq!(resumed.next_url(), Some(first.as_str()));
-    resumed.ingest(&bytes(&json!({
-        "items": [track(0)], "offset": 0, "total": 2, "next": null
-    }))).unwrap();
+    resumed
+        .ingest(&bytes(&json!({
+            "items": [track(0)], "offset": 0, "total": 2, "next": null
+        })))
+        .unwrap();
     let mut last = restored(&resumed);
     let next = Endpoints::default().album_tracks("ProgressAlbum", 1);
     assert_eq!(last.next_url(), Some(next.as_str()));
     last.ingest(&bytes(&json!({
         "items": [track(1)], "offset": 1, "total": 2, "next": null
-    }))).unwrap();
+    })))
+    .unwrap();
     assert!(last.next_url().is_none());
     let item = &last.read.items[1];
     assert_eq!(item.album.as_deref(), Some("Saved Album"));
@@ -257,12 +288,14 @@ fn saved_album_hydration_retains_save_metadata_and_checked_coverage() {
 #[test]
 fn changed_hydration_totals_restart_instead_of_wedging_the_old_continuation() {
     let mut progress = fresh();
-    progress.ingest(&bytes(&json!({
-        "items": [{ "album": {
-            "id": "ProgressAlbum", "uri": "spotify:album:ProgressAlbum",
-            "name": "Saved Album", "total_tracks": 2
-        }}], "offset": 0, "total": 1, "next": null
-    }))).unwrap();
+    progress
+        .ingest(&bytes(&json!({
+            "items": [{ "album": {
+                "id": "ProgressAlbum", "uri": "spotify:album:ProgressAlbum",
+                "name": "Saved Album", "total_tracks": 2
+            }}], "offset": 0, "total": 1, "next": null
+        })))
+        .unwrap();
     progress.ingest(&bytes(&empty())).unwrap();
     let changed = bytes(&json!({
         "items": [track(0)], "offset": 0, "total": 3, "next": null
@@ -275,5 +308,8 @@ fn changed_hydration_totals_restart_instead_of_wedging_the_old_continuation() {
     progress.ingest(&original).unwrap();
     assert!(progress.matches(2, &original).unwrap());
     assert!(!progress.matches(2, &changed).unwrap());
-    assert!(progress.matches(2, b"{").is_err(), "malformed data remains an error");
+    assert!(
+        progress.matches(2, b"{").is_err(),
+        "malformed data remains an error"
+    );
 }

@@ -66,15 +66,12 @@ fn seed(store: &mut dyn Store) {
     store
         .save_spotify_heard(&[(old.track.source_uri.clone(), 10)])
         .unwrap();
-    store.record_play("Kitchen", &old.track.source_uri, 10).unwrap();
+    store
+        .record_play("Kitchen", &old.track.source_uri, 10)
+        .unwrap();
 }
 
-fn publish(
-    store: &mut dyn Store,
-    owner: &SpotifyLibraryOwner,
-    proof: &str,
-    name: &str,
-) -> bool {
+fn publish(store: &mut dyn Store, owner: &SpotifyLibraryOwner, proof: &str, name: &str) -> bool {
     let song = entry(name);
     let heard = [(song.track.source_uri.clone(), 20)];
     store
@@ -116,7 +113,10 @@ fn stage_before_adoption(store: &mut dyn Store) -> SpotifyLibraryOwner {
     );
     assert_eq!(public(store), before, "unfinished reads must stay private");
     assert_eq!(
-        store.spotify_library_progress(OTHER, None).unwrap().as_deref(),
+        store
+            .spotify_library_progress(OTHER, None)
+            .unwrap()
+            .as_deref(),
         Some("other prefix")
     );
     assert!(
@@ -141,18 +141,26 @@ fn stage_before_adoption(store: &mut dyn Store) -> SpotifyLibraryOwner {
     assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
     assert_eq!(store.spotify_library_progress(OWNER, None).unwrap(), None);
     assert_eq!(
-        store.spotify_library_progress(OWNER, Some(&owner)).unwrap().as_deref(),
+        store
+            .spotify_library_progress(OWNER, Some(&owner))
+            .unwrap()
+            .as_deref(),
         Some(COMPLETE),
         "adoption must retain and rebind the completed proof"
     );
-    assert_eq!(store.spotify_library_progress(OTHER, Some(&owner)).unwrap(), None);
+    assert_eq!(
+        store.spotify_library_progress(OTHER, Some(&owner)).unwrap(),
+        None
+    );
     assert!(
         !store
             .save_spotify_library_progress(OWNER, None, None, "stale unknown owner")
             .unwrap()
     );
     assert_eq!(
-        store.adopt_spotify_library_from_progress(OWNER, None, COMPLETE).unwrap(),
+        store
+            .adopt_spotify_library_from_progress(OWNER, None, COMPLETE)
+            .unwrap(),
         None
     );
     owner
@@ -196,12 +204,18 @@ fn publish_after_claim(store: &mut dyn Store, owner: &SpotifyLibraryOwner) {
     );
     assert_eq!(public(store), before);
     assert_eq!(
-        store.spotify_library_progress(OWNER, Some(owner)).unwrap().as_deref(),
+        store
+            .spotify_library_progress(OWNER, Some(owner))
+            .unwrap()
+            .as_deref(),
         Some(CLAIMED),
         "failed publication must preserve resumable essential work"
     );
     assert!(publish(store, owner, CLAIMED, "Published"));
-    assert_eq!(store.spotify_library_progress(OWNER, Some(owner)).unwrap(), None);
+    assert_eq!(
+        store.spotify_library_progress(OWNER, Some(owner)).unwrap(),
+        None
+    );
     let after = public(store);
     assert_eq!(after.owner, Some(owner.clone()));
     assert_eq!(after.playlists, [(PLAYLIST.into(), "Published".into())]);
@@ -225,8 +239,16 @@ fn reject_changed_receipts(store: &mut dyn Store) {
     store.adopt_spotify_library_owner(OTHER).unwrap();
     let returning = store.adopt_spotify_library_owner(OWNER).unwrap().0;
     assert_eq!(returning.generation, first.generation + 2);
-    assert_eq!(store.spotify_library_progress(OWNER, Some(&first)).unwrap(), None);
-    assert_eq!(store.spotify_library_progress(OWNER, Some(&returning)).unwrap(), None);
+    assert_eq!(
+        store.spotify_library_progress(OWNER, Some(&first)).unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .spotify_library_progress(OWNER, Some(&returning))
+            .unwrap(),
+        None
+    );
     assert!(
         store
             .save_spotify_library_progress(OWNER, Some(&returning), None, COMPLETE)
@@ -238,7 +260,10 @@ fn reject_changed_receipts(store: &mut dyn Store) {
     };
     let before = public(store);
     for stale in [&first, &wrong_identity] {
-        assert_eq!(store.spotify_library_progress(OWNER, Some(stale)).unwrap(), None);
+        assert_eq!(
+            store.spotify_library_progress(OWNER, Some(stale)).unwrap(),
+            None
+        );
         assert!(
             !store
                 .save_spotify_library_progress(OWNER, Some(stale), None, "late prefix")
@@ -254,7 +279,10 @@ fn reject_changed_receipts(store: &mut dyn Store) {
     }
     assert_eq!(public(store), before);
     assert_eq!(
-        store.spotify_library_progress(OWNER, Some(&returning)).unwrap().as_deref(),
+        store
+            .spotify_library_progress(OWNER, Some(&returning))
+            .unwrap()
+            .as_deref(),
         Some(COMPLETE)
     );
 }
@@ -268,8 +296,17 @@ fn reject_invalid_progress(store: &mut dyn Store) {
             .unwrap()
     );
     let before = public(store);
-    for invalid in [String::new(), "  ".into(), "bad\nowner".into(), "x".repeat(1025)] {
-        assert!(store.spotify_library_progress(&invalid, Some(&owner)).is_err());
+    for invalid in [
+        String::new(),
+        "  ".into(),
+        "bad\nowner".into(),
+        "x".repeat(1025),
+    ] {
+        assert!(
+            store
+                .spotify_library_progress(&invalid, Some(&owner))
+                .is_err()
+        );
         assert!(
             store
                 .save_spotify_library_progress(&invalid, Some(&owner), None, PREFIX)
@@ -299,12 +336,22 @@ fn reject_invalid_progress(store: &mut dyn Store) {
     );
     assert!(
         store
-            .publish_spotify_library_from_progress(&owner, &oversized, &[], Some(&[]), &[], Some(&[]))
+            .publish_spotify_library_from_progress(
+                &owner,
+                &oversized,
+                &[],
+                Some(&[]),
+                &[],
+                Some(&[])
+            )
             .is_err()
     );
     assert_eq!(public(store), before);
     assert_eq!(
-        store.spotify_library_progress(OWNER, Some(&owner)).unwrap().as_deref(),
+        store
+            .spotify_library_progress(OWNER, Some(&owner))
+            .unwrap()
+            .as_deref(),
         Some(COMPLETE)
     );
 }
@@ -343,13 +390,27 @@ fn sqlite_progress_survives_restarts_before_and_after_adoption() {
     let mut store = SqliteStore::open(&file).unwrap();
     seed(&mut store);
     let original = public(&store);
-    assert!(store.save_spotify_library_progress(OWNER, None, None, PREFIX).unwrap());
+    assert!(
+        store
+            .save_spotify_library_progress(OWNER, None, None, PREFIX)
+            .unwrap()
+    );
     store.close().unwrap();
 
     let mut store = SqliteStore::open(&file).unwrap();
     assert_eq!(public(&store), original);
-    assert_eq!(store.spotify_library_progress(OWNER, None).unwrap().as_deref(), Some(PREFIX));
-    assert!(store.save_spotify_library_progress(OWNER, None, Some(PREFIX), COMPLETE).unwrap());
+    assert_eq!(
+        store
+            .spotify_library_progress(OWNER, None)
+            .unwrap()
+            .as_deref(),
+        Some(PREFIX)
+    );
+    assert!(
+        store
+            .save_spotify_library_progress(OWNER, None, Some(PREFIX), COMPLETE)
+            .unwrap()
+    );
     let owner = store
         .adopt_spotify_library_from_progress(OWNER, None, COMPLETE)
         .unwrap()
@@ -360,7 +421,10 @@ fn sqlite_progress_survives_restarts_before_and_after_adoption() {
     let mut store = SqliteStore::open(&file).unwrap();
     assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
     assert_eq!(
-        store.spotify_library_progress(OWNER, Some(&owner)).unwrap().as_deref(),
+        store
+            .spotify_library_progress(OWNER, Some(&owner))
+            .unwrap()
+            .as_deref(),
         Some(COMPLETE)
     );
     assert!(publish(&mut store, &owner, COMPLETE, "AfterRestart"));
@@ -369,7 +433,10 @@ fn sqlite_progress_survives_restarts_before_and_after_adoption() {
 
     let store = SqliteStore::open(&file).unwrap();
     assert_eq!(public(&store), published);
-    assert_eq!(store.spotify_library_progress(OWNER, Some(&owner)).unwrap(), None);
+    assert_eq!(
+        store.spotify_library_progress(OWNER, Some(&owner)).unwrap(),
+        None
+    );
     store.close().unwrap();
 }
 
@@ -381,11 +448,25 @@ fn competing_sqlite_handles_cannot_adopt_or_publish_a_superseded_claim() {
     let mut second = SqliteStore::open(&file).unwrap();
     seed(&mut first);
     let original = public(&first);
-    assert!(first.save_spotify_library_progress(OWNER, None, None, PREFIX).unwrap());
-    assert!(!second.save_spotify_library_progress(OWNER, None, None, "loser").unwrap());
-    assert!(second.save_spotify_library_progress(OWNER, None, Some(PREFIX), COMPLETE).unwrap());
+    assert!(
+        first
+            .save_spotify_library_progress(OWNER, None, None, PREFIX)
+            .unwrap()
+    );
+    assert!(
+        !second
+            .save_spotify_library_progress(OWNER, None, None, "loser")
+            .unwrap()
+    );
+    assert!(
+        second
+            .save_spotify_library_progress(OWNER, None, Some(PREFIX), COMPLETE)
+            .unwrap()
+    );
     assert_eq!(
-        first.adopt_spotify_library_from_progress(OWNER, None, PREFIX).unwrap(),
+        first
+            .adopt_spotify_library_from_progress(OWNER, None, PREFIX)
+            .unwrap(),
         None
     );
     assert_eq!(public(&first), original);
@@ -395,16 +476,32 @@ fn competing_sqlite_handles_cannot_adopt_or_publish_a_superseded_claim() {
         .unwrap()
         .0;
     let adopted = public(&second);
-    assert!(first.save_spotify_library_progress(OWNER, Some(&owner), Some(COMPLETE), CLAIMED).unwrap());
-    assert!(!second.save_spotify_library_progress(OWNER, Some(&owner), Some(COMPLETE), "loser").unwrap());
+    assert!(
+        first
+            .save_spotify_library_progress(OWNER, Some(&owner), Some(COMPLETE), CLAIMED)
+            .unwrap()
+    );
+    assert!(
+        !second
+            .save_spotify_library_progress(OWNER, Some(&owner), Some(COMPLETE), "loser")
+            .unwrap()
+    );
     assert!(!publish(&mut second, &owner, COMPLETE, "StalePrepared"));
     assert_eq!(public(&second), adopted);
     assert_eq!(
-        second.spotify_library_progress(OWNER, Some(&owner)).unwrap().as_deref(),
+        second
+            .spotify_library_progress(OWNER, Some(&owner))
+            .unwrap()
+            .as_deref(),
         Some(CLAIMED)
     );
     assert!(publish(&mut first, &owner, CLAIMED, "Winner"));
-    assert_eq!(second.spotify_library_progress(OWNER, Some(&owner)).unwrap(), None);
+    assert_eq!(
+        second
+            .spotify_library_progress(OWNER, Some(&owner))
+            .unwrap(),
+        None
+    );
     first.close().unwrap();
     second.close().unwrap();
 }
@@ -434,7 +531,10 @@ fn failed_sqlite_adoption_restores_the_previous_cache_and_private_prefix() {
     assert_eq!(store.playlists().unwrap(), before.playlists);
     assert_eq!(store.playlist_contents(PLAYLIST).unwrap(), before.contents);
     assert_eq!(
-        store.spotify_library_progress(OTHER, Some(&owner)).unwrap().as_deref(),
+        store
+            .spotify_library_progress(OTHER, Some(&owner))
+            .unwrap()
+            .as_deref(),
         Some(COMPLETE)
     );
 }
@@ -461,7 +561,14 @@ fn failed_sqlite_publication_retains_completed_progress_and_rolls_back_all_earli
                 COMPLETE,
                 &[entry("MustRollBack")],
                 Some(&[(PLAYLIST.into(), "Must roll back".into())]),
-                &[CachedPlaylist::new(PLAYLIST.into(), 30, Some(0), 0, true, Vec::new())],
+                &[CachedPlaylist::new(
+                    PLAYLIST.into(),
+                    30,
+                    Some(0),
+                    0,
+                    true,
+                    Vec::new()
+                )],
                 Some(&[]),
             )
             .is_err()
@@ -471,7 +578,10 @@ fn failed_sqlite_publication_retains_completed_progress_and_rolls_back_all_earli
     assert_eq!(store.playlists().unwrap(), before.playlists);
     assert_eq!(store.playlist_contents(PLAYLIST).unwrap(), before.contents);
     assert_eq!(
-        store.spotify_library_progress(OWNER, Some(&owner)).unwrap().as_deref(),
+        store
+            .spotify_library_progress(OWNER, Some(&owner))
+            .unwrap()
+            .as_deref(),
         Some(COMPLETE)
     );
 }

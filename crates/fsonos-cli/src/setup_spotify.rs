@@ -21,9 +21,9 @@
 
 use asupersync::Cx;
 use asupersync::http::Client;
+use fsonos_api::surface::dj_sync::LibrarySyncDto;
 use fsonos_core::doctor::Status;
-use fsonos_core::store::SqliteStore;
-use fsonos_spotify::cache::{LibrarySync, sync_library};
+use fsonos_spotify::cache::LibrarySync;
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
 use std::io::{BufRead as _, Read as _, Write as _};
@@ -100,9 +100,13 @@ pub enum SignIn {
     /// As `Synced`, but the running daemon has no Spotify app: it started
     /// before one was saved, and reads it only when it starts again.
     SyncedRestartDaemon(LibrarySync),
-    /// Signed in through the daemon, but this run has no client id to read
-    /// the library with.
-    DaemonOnly,
+    /// Authentication succeeded; a bounded library read still needs work.
+    LibraryPending {
+        detail: String,
+        restart_daemon: bool,
+    },
+    /// Authentication succeeded, but the subsequent library update failed.
+    LibraryFailed(String),
     Failed(String),
 }
 
@@ -150,14 +154,19 @@ pub fn verdict(result: SignIn, redirect_uri: &str) -> StepOutcome {
                     .to_owned(),
             ),
         ),
-        SignIn::DaemonOnly => (
+        SignIn::LibraryPending { detail, restart_daemon } => (
             Status::Warn,
-            "signed in through the daemon, but setup has no app client id to read the library with"
-                .to_owned(),
-            Some(
-                "Set FSONOS_SPOTIFY_CLIENT_ID here too (the daemon's), and run fsonos setup again."
-                    .to_owned(),
-            ),
+            format!("signed in; {detail}"),
+            Some(if restart_daemon {
+                "Restart fsonos serve so it reads the saved Spotify app and continues the library intake. Check retained progress with fsonos dj sync --status.".to_owned()
+            } else {
+                "The daemon continues pending intake after its saved retry deadline. Check fsonos dj sync --status; without a daemon, run fsonos dj sync to continue. Signing in again is unnecessary.".to_owned()
+            }),
+        ),
+        SignIn::LibraryFailed(why) => (
+            Status::Fail,
+            format!("signed in, but the library update failed: {why}"),
+            Some("Check fsonos dj sync --status for retained progress and the retry deadline. The next library read resumes saved progress; rerun fsonos dj sync when eligible.".to_owned()),
         ),
         SignIn::Failed(why) => (
             Status::Fail,
@@ -194,9 +203,12 @@ pub fn sign_in(global: &GlobalArgs, serve: &ServeArgs, prompt: Option<&Prompt>) 
                 return SignIn::Failed(why);
             }
         }
-        if saved.is_none() {
-            return SignIn::DaemonOnly;
-        }
+        // The daemon already has its app configuration and owns admission,
+        // retained progress and cooldowns. Setup needs no duplicate client id.
+        return match daemon.post::<_, LibrarySyncDto>("/dj/sync", &serde_json::json!({})) {
+            Ok(status) => library_result(status, false),
+            Err(error) => SignIn::LibraryFailed(error.detail),
+        };
     }
     // A daemon that answered without a sign-in route has no Spotify app.
     let restart_daemon = matches!(status, Some(Err(_)));
@@ -213,45 +225,81 @@ pub fn sign_in(global: &GlobalArgs, serve: &ServeArgs, prompt: Option<&Prompt>) 
         Ok(rt) => rt,
         Err(e) => return SignIn::Failed(format!("{e:#}")),
     };
-    runtime.block_on(async move {
+    let authorized = runtime.block_on(async {
         let Some(cx) = Cx::current() else {
-            return SignIn::Failed("no async context".to_owned());
+            return Err(SignIn::Failed("no async context".to_owned()));
         };
         let redirect = config.redirect_uri.clone();
         let mut session = match Session::open(
-            config,
+            config.clone(),
             TokenCache::in_data_dir(&data_dir),
             Client::default_for_runtime(&cx),
         ) {
             Ok(session) => session,
-            Err(e) => return SignIn::Failed(e.to_string()),
-        };
-        let mut store = match SqliteStore::open(&data_dir.join(crate::daemon::DB_FILE)) {
-            Ok(store) => store,
-            Err(e) => return SignIn::Failed(format!("the store: {e}")),
+            Err(e) => return Err(SignIn::Failed(e.to_string())),
         };
         if !session.is_authorized() {
             let Some(prompt) = prompt else {
-                return SignIn::NeedsTerminal;
+                return Err(SignIn::NeedsTerminal);
             };
             let pending = match session.begin_authorization() {
                 Ok(pending) => pending,
-                Err(e) => return SignIn::Failed(e.to_string()),
+                Err(e) => return Err(SignIn::Failed(e.to_string())),
             };
             let landed = match redirect_landing(&redirect, pending.url(), prompt) {
                 Ok(landed) => landed,
-                Err(why) => return SignIn::Failed(why),
+                Err(why) => return Err(SignIn::Failed(why)),
             };
             if let Err(e) = session.complete_authorization(&cx, &pending, &landed).await {
-                return SignIn::Failed(e.to_string());
+                return Err(SignIn::Failed(e.to_string()));
             }
         }
-        match sync_library(&mut session, &cx, &mut store).await {
-            Ok(sync) if restart_daemon => SignIn::SyncedRestartDaemon(sync),
-            Ok(sync) => SignIn::Synced(sync),
-            Err(e) => SignIn::Failed(format!("signed in, but the library read failed: {e}")),
-        }
-    })
+        Ok(())
+    });
+    if let Err(result) = authorized {
+        return result;
+    }
+    let Some(sync) = crate::dj::sync::LibrarySync::new(config, data_dir) else {
+        return SignIn::Failed("the Spotify app configuration is invalid".into());
+    };
+    match sync.run() {
+        Ok(status) => library_result(status, restart_daemon),
+        Err(error) => SignIn::LibraryFailed(error.detail),
+    }
+}
+
+fn library_result(status: LibrarySyncDto, restart_daemon: bool) -> SignIn {
+    if let Some(error) = status.error {
+        return SignIn::LibraryFailed(error);
+    }
+    if status.running
+        || status
+            .library_intake
+            .as_ref()
+            .is_some_and(|intake| intake.pending)
+    {
+        return SignIn::LibraryPending {
+            detail: status.done,
+            restart_daemon,
+        };
+    }
+    let Some(last) = status.last else {
+        return SignIn::LibraryPending {
+            detail: status.done,
+            restart_daemon,
+        };
+    };
+    let sync = LibrarySync {
+        tracks: last.tracks,
+        candidates: last.candidates,
+        classical: last.classical,
+        retired: last.retired,
+    };
+    if restart_daemon {
+        SignIn::SyncedRestartDaemon(sync)
+    } else {
+        SignIn::Synced(sync)
+    }
 }
 
 /// Ask on the terminal for the client id of the owner's Spotify app, and
@@ -497,11 +545,70 @@ mod tests {
                 .contains("120 library track(s), 95 in the DJ's pool (80 classical)")
         );
         assert!(synced.remedies.is_empty());
-        let daemon_only = verdict(SignIn::DaemonOnly, uri);
-        assert_eq!(daemon_only.status, Status::Warn);
-        assert!(daemon_only.remedies[0].contains("FSONOS_SPOTIFY_CLIENT_ID"));
         let failed = verdict(SignIn::Failed("invalid_grant".into()), uri);
         assert_eq!(failed.status, Status::Fail);
         assert!(failed.summary.contains("invalid_grant"));
+    }
+
+    #[test]
+    fn retained_library_intake_is_a_waiting_setup_step_even_with_an_older_success() {
+        use fsonos_api::surface::dj_sync::{
+            SavedLibraryIntakeDto, SavedLibraryIntakePhase, SyncedDto,
+        };
+        let uri = "http://127.0.0.1:8099/auth/spotify/callback";
+        for last in [
+            None,
+            Some(SyncedDto {
+                at: 1_790_000_000,
+                tracks: 12,
+                candidates: 10,
+                classical: 2,
+                retired: 0,
+                genre_artists_pending: 0,
+                genre_stalled: 0,
+                notes: Vec::new(),
+            }),
+        ] {
+            let status = LibrarySyncDto::new(false, last, None).with_library_intake(Some(
+                SavedLibraryIntakeDto {
+                    pending: true,
+                    phase: SavedLibraryIntakePhase::Verifying,
+                    pages: 512,
+                    tracks: 20_000,
+                    verified_pages: 80,
+                    retry_at: Some(1_790_000_900),
+                    ..Default::default()
+                },
+            ));
+            let waiting = verdict(library_result(status, false), uri);
+            assert_eq!(waiting.status, Status::Warn);
+            assert!(waiting.summary.starts_with("signed in;"));
+            assert!(waiting.summary.contains("unfinished"));
+            assert!(waiting.remedies[0].contains("fsonos dj sync --status"));
+            assert!(!waiting.remedies[0].contains("client id"));
+            assert!(!waiting.remedies[0].contains("redirect URI"));
+        }
+        let active = LibrarySyncDto::new(true, None, None);
+        let waiting = verdict(library_result(active, true), uri);
+        assert_eq!(waiting.status, Status::Warn);
+        assert!(waiting.remedies[0].contains("Restart fsonos serve"));
+    }
+
+    #[test]
+    fn a_failed_library_update_does_not_send_a_signed_in_owner_back_to_oauth_setup() {
+        let status = LibrarySyncDto::new(false, None, Some("Spotify cooldown is active".into()));
+        let outcome = verdict(
+            library_result(status, false),
+            "http://127.0.0.1:8099/auth/spotify/callback",
+        );
+        assert_eq!(outcome.status, Status::Fail);
+        assert!(
+            outcome
+                .summary
+                .starts_with("signed in, but the library update failed")
+        );
+        assert!(outcome.remedies[0].contains("retained progress"));
+        assert!(!outcome.remedies[0].contains("client id"));
+        assert!(!outcome.remedies[0].contains("redirect URI"));
     }
 }

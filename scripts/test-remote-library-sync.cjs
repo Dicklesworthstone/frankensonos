@@ -10,6 +10,8 @@ const completed = (overrides = {}) => ({ at: 1790000000, tracks: 100, candidates
 const status = (overrides = {}) => ({ done: 'Library read.', running: false, last: completed(), ...overrides });
 const genres = (overrides = {}) => ({ pending: 12, completed: 7, running: false,
   retry_at: 1790000900, not_before: 1790003600, requires_refresh: false, ...overrides });
+const intake = (overrides = {}) => ({ pending: true, phase: 'reading', pages: 512, tracks: 24500,
+  verified_pages: 0, running: false, retry_at: 1790000900, not_before: 1790003600, ...overrides });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -30,8 +32,75 @@ test('opening only observes; neither construction nor observation starts a refre
 test('old completed DTOs keep omitted notes and pending genres at their defaults', () => {
   const s = remote.statusOf(status()); assert.deepEqual(s.last.notes, []); assert.equal(s.last.genre_artists_pending, 0);
   assert.equal(s.genre_enrichment, null);
+  assert.equal(s.library_intake, null);
   assert.equal(remote.statusOf({ done: 'Not read yet', running: false }).last, null);
   assert.ok(Object.isFrozen(s) && Object.isFrozen(s.last) && Object.isFrozen(s.last.notes));
+});
+
+test('saved intake retains its exact progress without inventing a full refresh', () => {
+  const raw = status({ last: null, library_intake: intake({ phase: 'verifying', verified_pages: 100 }) });
+  const parsed = remote.statusOf(raw); raw.library_intake.tracks = 1;
+  assert.deepEqual(parsed.library_intake, intake({ phase: 'verifying', verified_pages: 100 }));
+  assert.ok(Object.isFrozen(parsed.library_intake)); assert.equal(parsed.last, null); assert.equal(parsed.error, null);
+  const ready = remote.statusOf(status({ library_intake: intake({ phase: 'ready', verified_pages: 512 }) }));
+  assert.equal(ready.library_intake.pending, true); assert.equal(ready.last.at, completed().at);
+});
+
+test('malformed or contradictory saved intake never authorizes a refresh', async () => {
+  for (const value of [[], {}, intake({ pending: 1 }), intake({ phase: 'complete' }), intake({ phase: null }),
+    intake({ pages: -1 }), intake({ tracks: 2 ** 53 }), intake({ verified_pages: 513 }),
+    intake({ verified_pages: 1.2 }), intake({ running: 'yes' }), intake({ running: true }),
+    intake({ retry_at: 'later' }), intake({ not_before: 8640000000001 })]) {
+    const raw = status({ library_intake: value });
+    assert.throws(() => remote.statusOf(raw)); const h = harness(() => raw);
+    assert.equal(await h.model.open(), false); assert.equal(await h.model.start(), false);
+    assert.equal(h.calls.length, 1); h.model.dispose();
+  }
+  assert.throws(() => remote.statusOf(status({ running: true,
+    library_intake: intake({ running: true }), genre_enrichment: genres({ running: true }) })));
+});
+
+test('a first bounded sync keeps observing through waits and reconstructed progress until publication', async () => {
+  let answer = status({ running: true, last: null,
+    library_intake: intake({ running: true, pages: 0, tracks: 0, retry_at: null, not_before: null }) });
+  const h = harness(() => answer); await h.model.open();
+  assert.equal(h.fire(), remote.POLL_MS); await settle();
+  answer = status({ last: null, library_intake: intake() });
+  h.fire(); await settle();
+  assert.equal(h.model.state.status.error, null);
+  assert.equal([...h.timers.values()][0].delay, remote.PENDING_POLL_MS);
+  assert.ok(remote.PENDING_POLL_MS >= 30000);
+  h.model.close(); assert.equal(h.timers.size, 0);
+  answer = JSON.parse(JSON.stringify(answer));
+  await h.model.open(); assert.equal(h.model.state.status.library_intake.pages, 512);
+  assert.equal(h.fire(), remote.PENDING_POLL_MS); await settle();
+  answer = status({ last: null, library_intake: intake({ phase: 'ready', verified_pages: 512 }) });
+  h.fire(); await settle(); assert.equal(h.timers.size, 1);
+  assert.equal(h.model.state.status.last, null);
+  answer = status(); h.fire(); await settle();
+  assert.equal(h.model.state.status.library_intake, null); assert.equal(h.timers.size, 0);
+  assert.ok(h.calls.every(([name]) => name === 'librarySyncStatus')); h.model.dispose();
+});
+
+test('saved intake and genres share one observer and wait quietly while hidden', async () => {
+  let answer = status({ library_intake: intake(), genre_enrichment: genres() });
+  const h = harness(() => answer); await h.model.open(); assert.equal(h.timers.size, 1);
+  h.model.setVisible(false); assert.equal(h.timers.size, 0);
+  h.model.setVisible(true); await settle(); assert.equal(h.timers.size, 1);
+  answer = status({ genre_enrichment: genres() }); h.fire(); await settle();
+  assert.equal([...h.timers.values()][0].delay, remote.PENDING_POLL_MS);
+  answer = status({ genre_enrichment: genres({ pending: 0, completed: 12, retry_at: null, not_before: null }) });
+  h.fire(); await settle(); assert.equal(h.timers.size, 0);
+  assert.ok(h.calls.every(([name]) => name === 'librarySyncStatus')); h.model.dispose();
+});
+
+test('real saved-library errors stay visible while retained work continues to be observed', async () => {
+  const h = harness(() => status({ error: 'Spotify is unavailable', library_intake: intake() }));
+  await h.model.open(); assert.equal(h.model.state.status.error, 'Spotify is unavailable');
+  assert.equal(h.model.state.status.library_intake.pending, true);
+  assert.equal(h.fire(), remote.PENDING_POLL_MS); await settle();
+  assert.equal(h.calls.length, 2); assert.equal(h.timers.size, 1);
+  assert.ok(h.calls.every(([name]) => name === 'librarySyncStatus')); h.model.dispose();
 });
 
 test('current genre progress and cooldowns survive parsing independently of the full refresh', () => {
@@ -233,7 +302,7 @@ test('the registered routes dispatch through actual loopback HTTP with JSON', as
   assert.deepEqual(requests, [['GET', '/dj/sync', undefined, ''], ['POST', '/dj/sync', 'application/json', '{}']]);
 });
 
-test('the panel shows current genre counts and cooldown instead of a stale full-refresh count', async (t) => {
+function panelHarness(t, initial) {
   class Element {
     constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.textContent = ''; }
     append(...children) { this.children.push(...children); }
@@ -252,9 +321,15 @@ test('the panel shows current genre counts and cooldown instead of a stale full-
   const previous = global.document; let panel;
   global.document = { hidden: false, addEventListener() {}, removeEventListener() {} };
   t.after(() => { panel?.dispose(); if (previous === undefined) delete global.document; else global.document = previous; });
-  let answer = status({ last: completed({ genre_artists_pending: 99 }), genre_enrichment: genres() });
-  panel = remote.panel({ call: async () => answer, el }); await panel.model.open();
-  let nodes = all(panel.node);
+  let answer = initial;
+  panel = remote.panel({ call: async () => answer, el });
+  return { panel, nodes: () => all(panel.node), answer: (value) => { answer = value; return panel.model.refresh(); } };
+}
+
+test('the panel shows current genre counts and cooldown instead of a stale full-refresh count', async (t) => {
+  const h = panelHarness(t, status({ last: completed({ genre_artists_pending: 99 }), genre_enrichment: genres() }));
+  await h.panel.model.open();
+  let nodes = h.nodes();
   const counts = nodes.filter((node) => node.tag === 'dl').map((node) => node.children.map((child) => child.textContent));
   assert.ok(counts.some((items) => items.join('|') === 'Artist lookups pending|12|Completed in the latest pass|7'));
   assert.ok(!nodes.some((node) => node.textContent === '99' || node.textContent === 'Artist genres pending'));
@@ -262,10 +337,32 @@ test('the panel shows current genre counts and cooldown instead of a stale full-
   assert.equal(retry.children[1].datetime, new Date(genres().not_before * 1000).toISOString());
   assert.ok(nodes.some((node) => node.textContent === 'Last completed full refresh'));
 
-  answer = status({ genre_enrichment: genres({ pending: 0, completed: 12, not_before: null, retry_at: null }) });
-  await panel.model.refresh(); nodes = all(panel.node);
+  await h.answer(status({ genre_enrichment: genres({ pending: 0, completed: 12, not_before: null, retry_at: null }) }));
+  nodes = h.nodes();
   assert.ok(nodes.some((node) => node.textContent === 'Artist genres are complete for the cached library.'));
   assert.ok(!nodes.some((node) => node.textContent === 'Spotify cooldown ends at '));
+});
+
+test('the panel explains saved progress before first completion and keeps verification distinct', async (t) => {
+  const h = panelHarness(t, status({ last: null, library_intake: intake() }));
+  await h.panel.model.open(); let nodes = h.nodes();
+  assert.ok(nodes.some((node) => node.textContent === 'Saved music refresh'));
+  assert.ok(nodes.some((node) => node.textContent.includes('progress') && node.textContent.includes('unchanged')));
+  assert.ok(!nodes.some((node) => node.textContent.includes('Last reported failure')));
+  assert.ok(!nodes.some((node) => node.textContent === 'Last completed full refresh'));
+  const counts = nodes.find((node) => node.tag === 'dl').children.map((child) => child.textContent);
+  assert.deepEqual(counts, ['Validated pages retained', '512', 'Tracks retained', (24500).toLocaleString(), 'Retained pages rechecked', '0']);
+  const retry = nodes.find((node) => node.tag === 'p' && node.children[0]?.textContent === 'Next library pass no earlier than ');
+  assert.equal(retry.children[1].datetime, new Date(intake().not_before * 1000).toISOString());
+
+  await h.answer(status({ running: true, last: null,
+    library_intake: intake({ phase: 'verifying', verified_pages: 100, running: true }) }));
+  nodes = h.nodes();
+  assert.ok(nodes.some((node) => node.textContent === 'Checking retained pages before they can replace the published library.'));
+  assert.ok(!nodes.some((node) => node.textContent === 'Next library pass no earlier than '));
+  await h.answer(status({ library_intake: null })); nodes = h.nodes();
+  assert.ok(nodes.some((node) => node.textContent === 'Last completed full refresh'));
+  assert.ok(!nodes.some((node) => node.textContent === 'Saved music refresh'));
 });
 
 test('the write error hint survives a subsequent successful observation', async () => {

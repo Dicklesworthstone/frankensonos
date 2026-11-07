@@ -12,12 +12,16 @@
 //! Artist genre enrichment continues in bounded passes of its own. Its
 //! current pending work and retry deadlines are separate from the last
 //! full refresh, so a saved library does not imply every genre was read.
+//! Essential saved-library intake also has durable progress: a bounded pause
+//! is unfinished work, and never replaces the last complete public library.
 
 pub mod library;
 pub mod playlist;
 
 mod genres;
 pub use genres::GenreEnrichmentDto;
+mod intake;
+pub use intake::{SavedLibraryIntakeDto, SavedLibraryIntakePhase};
 
 use std::fmt::Write as _;
 
@@ -48,6 +52,10 @@ pub struct LibrarySyncDto {
     /// Absent for older daemons or before progress has been observed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub genre_enrichment: Option<GenreEnrichmentDto>,
+    /// Retained private saved-library progress and its retry deadlines. This
+    /// can exist before the first completed refresh, and survives restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_intake: Option<SavedLibraryIntakeDto>,
 }
 
 /// One completed refresh.
@@ -99,6 +107,7 @@ impl LibrarySyncDto {
             last,
             error,
             genre_enrichment: None,
+            library_intake: None,
         };
         state.done = state.text();
         state
@@ -114,6 +123,15 @@ impl LibrarySyncDto {
         self
     }
 
+    /// Add saved-library progress without presenting it as a completed refresh
+    /// or treating a normal bounded pause as a failed read.
+    #[must_use]
+    pub fn with_library_intake(mut self, intake: Option<SavedLibraryIntakeDto>) -> Self {
+        self.library_intake = intake;
+        self.done = self.text();
+        self
+    }
+
     fn text(&self) -> String {
         if self.running
             && let Some(genres) = &self.genre_enrichment
@@ -121,19 +139,49 @@ impl LibrarySyncDto {
         {
             return genres.text();
         }
+        if self.running
+            && let Some(intake) = &self.library_intake
+            && intake.running
+        {
+            return intake.text();
+        }
+        let pending = self
+            .library_intake
+            .as_ref()
+            .is_some_and(|intake| intake.pending);
         let mut text = match (self.running, &self.last, &self.error) {
             (true, _, _) => {
                 "Refreshing the library from Spotify; GET /dj/sync (fsonos dj sync --status) \
                  shows when it is done."
                     .to_owned()
             }
-            (false, _, Some(error)) if self.genre_enrichment.is_some() => {
+            (false, _, Some(error))
+                if self.genre_enrichment.is_some() || self.library_intake.is_some() =>
+            {
                 format!("The last library update failed: {error}")
             }
             (false, _, Some(error)) => format!("The last library refresh failed: {error}"),
+            (false, _, None) if pending => String::new(),
             (false, Some(last), None) => last.text_with_genres(self.genre_enrichment.is_none()),
             (false, None, None) => "The library has not been refreshed by this daemon yet.".into(),
         };
+        if let Some(intake) = &self.library_intake {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&intake.text());
+            if pending
+                && !self.running
+                && self.error.is_none()
+                && let Some(last) = &self.last
+            {
+                let _ = write!(
+                    text,
+                    " {}",
+                    last.text_with_genres(self.genre_enrichment.is_none())
+                );
+            }
+        }
         if let Some(genres) = &self.genre_enrichment {
             let _ = write!(text, " {}", genres.text());
         }

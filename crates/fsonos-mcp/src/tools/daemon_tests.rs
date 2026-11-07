@@ -181,6 +181,52 @@ fn sync_tools_preserve_genre_progress_cooldowns_and_completion_from_the_daemon()
 }
 
 #[test]
+fn sync_tools_preserve_saved_intake_without_turning_a_pause_into_a_failed_result() {
+    use fsonos_api::surface::dj_sync::{
+        LibrarySyncDto, SavedLibraryIntakeDto, SavedLibraryIntakePhase,
+    };
+
+    for phase in [
+        SavedLibraryIntakePhase::Reading,
+        SavedLibraryIntakePhase::Verifying,
+        SavedLibraryIntakePhase::Ready,
+    ] {
+        let state = LibrarySyncDto::new(false, None, None).with_library_intake(Some(
+            SavedLibraryIntakeDto {
+                pending: true,
+                phase,
+                pages: 512,
+                tracks: 24_500,
+                verified_pages: 96,
+                retry_at: Some(1_790_000_900),
+                not_before: Some(1_790_003_600),
+                ..Default::default()
+            },
+        ));
+        let answer = serde_json::to_value(&state).unwrap();
+        let (backend, reply) = fixture(Some(Ok(answer.clone())));
+        let result = backend.dj_sync_status().unwrap();
+        assert!(!result.is_error);
+        assert_eq!(text(&result), state.done);
+        assert_eq!(result.structured_content, Some(answer.clone()));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["GET", "/dj/sync", null])]
+        );
+        let result = backend.dj_sync().unwrap();
+        assert!(!result.is_error);
+        assert_eq!(result.structured_content, Some(answer));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [
+                json!(["GET", "/dj/sync", null]),
+                json!(["POST", "/dj/sync", {}])
+            ]
+        );
+    }
+}
+
+#[test]
 fn every_control_error_and_malformed_success_is_terminal() {
     for answer in [
         Err(Failure::new(ErrorCode::PlayerUnreachable, "reply lost")),

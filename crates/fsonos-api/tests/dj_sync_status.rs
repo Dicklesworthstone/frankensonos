@@ -8,7 +8,9 @@ use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use fastapi::{ServerConfig, TcpServer};
 use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::DjAction;
-use fsonos_api::surface::dj_sync::{GenreEnrichmentDto, LibrarySyncDto, SyncedDto};
+use fsonos_api::surface::dj_sync::{
+    GenreEnrichmentDto, LibrarySyncDto, SavedLibraryIntakeDto, SavedLibraryIntakePhase, SyncedDto,
+};
 use fsonos_api::{Failure, Identity, OutcomeDto, Surface, WebPolicy};
 use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::playback::PlayerPlayback;
@@ -274,7 +276,58 @@ fn sync_http_preserves_current_progress_and_last_full_refresh_separately() {
             schema["properties"].get("genre_enrichment").is_some(),
             "{schema}"
         );
+        assert!(
+            schema["properties"].get("library_intake").is_some(),
+            "{schema}"
+        );
     }
+}
+
+#[test]
+fn saved_intake_is_observable_before_first_publication_and_during_recovery() {
+    let api = Api::start(Client::Unknown);
+    let mut intake = SavedLibraryIntakeDto {
+        pending: true,
+        phase: SavedLibraryIntakePhase::Reading,
+        pages: 512,
+        tracks: 24_500,
+        retry_at: Some(1_790_000_900),
+        not_before: Some(1_790_003_600),
+        ..Default::default()
+    };
+    for phase in [
+        SavedLibraryIntakePhase::Reading,
+        SavedLibraryIntakePhase::Verifying,
+        SavedLibraryIntakePhase::Ready,
+    ] {
+        intake.phase = phase;
+        intake.verified_pages = match phase {
+            SavedLibraryIntakePhase::Reading => 0,
+            SavedLibraryIntakePhase::Verifying => 100,
+            SavedLibraryIntakePhase::Ready => intake.pages,
+        };
+        let expected =
+            LibrarySyncDto::new(false, None, None).with_library_intake(Some(intake.clone()));
+        *api.status.lock().unwrap() = expected.clone();
+        let (status, body) = api.request("GET", "/dj/sync");
+        assert_eq!(status, 200);
+        assert!(body.get("last").is_none());
+        assert!(body.get("error").is_none());
+        assert_eq!(
+            serde_json::from_value::<LibrarySyncDto>(body).unwrap(),
+            expected
+        );
+        assert_eq!(api.requests.load(Ordering::SeqCst), 0);
+    }
+    let completed = state(GenreEnrichmentDto::default());
+    *api.status.lock().unwrap() = completed.clone();
+    let (_, body) = api.request("GET", "/dj/sync");
+    assert!(body.get("library_intake").is_none());
+    assert_eq!(
+        serde_json::from_value::<LibrarySyncDto>(body).unwrap(),
+        completed
+    );
+    assert_eq!(api.requests.load(Ordering::SeqCst), 0);
 }
 
 #[test]

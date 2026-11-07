@@ -35,8 +35,8 @@ use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::cache::{
-    LibrarySyncDetailed, continue_albums, continue_genres, continue_playlists,
-    sync_library_detailed,
+    LibrarySyncDetailed, SavedLibraryProgress, continue_albums, continue_genres,
+    continue_playlists, sync_library_attempt,
 };
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
@@ -75,11 +75,18 @@ pub struct LibrarySync {
     clock: Box<dyn Clock>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Running {
     running: bool,
     genres: bool,
+    intake: bool,
     error: Option<String>,
+}
+
+struct ReadResult {
+    result: Result<LibrarySyncDetailed, SpotifyError>,
+    retry_after: u64,
+    progress: Option<SavedLibraryProgress>,
 }
 
 impl LibrarySync {
@@ -148,13 +155,8 @@ impl LibrarySync {
     /// Where it stands.
     #[must_use]
     pub fn status(&self) -> LibrarySyncDto {
-        let (running, genres, error) = {
-            let state = self.running();
-            (state.running, state.genres, state.error.clone())
-        };
-        LibrarySyncDto::new(running, self.last(), error).with_genre_enrichment(
-            continuation::genre_status(&self.data_dir, genres, self.now()),
-        )
+        let state = self.running().clone();
+        continuation::status(&self.data_dir, &state, self.now())
     }
 
     /// Claim the one refresh slot. Admission happens before a worker is
@@ -166,6 +168,7 @@ impl LibrarySync {
         }
         state.running = true;
         state.genres = false;
+        state.intake = true;
         state.error = None;
         true
     }
@@ -192,15 +195,17 @@ impl LibrarySync {
             let failure = Failure::new(ErrorCode::Internal, format!("start the refresh: {e}"));
             let mut state = self.running();
             state.running = false;
+            state.intake = false;
             state.error = Some(failure.detail.clone());
             return Err(failure);
         }
         Ok(self.status())
     }
 
-    /// Refresh now, on this thread (which must not be in a runtime);
-    /// what it found. A second caller while one runs is told to wait.
-    pub fn run(&self) -> Result<SyncedDto, Failure> {
+    /// Read one bounded pass on this thread (which must not be in a runtime).
+    /// A retained, unfinished read returns pending status; only a published
+    /// full result advances `last`. A concurrent caller is told to wait.
+    pub fn run(&self) -> Result<LibrarySyncDto, Failure> {
         if !self.claim() {
             return Err(
                 Failure::new(ErrorCode::NotReady, "a library refresh is already running")
@@ -211,16 +216,13 @@ impl LibrarySync {
     }
 
     /// Perform a full refresh whose slot was already claimed.
-    fn run_claimed(&self) -> Result<SyncedDto, Failure> {
+    fn run_claimed(&self) -> Result<LibrarySyncDto, Failure> {
         self.run_pass(Pass::Full)
     }
 
     /// Read Spotify into a store of its own. Keep the session's server
     /// cooldown even when the read fails before producing a library result.
-    fn read(
-        &self,
-        pass: Pass,
-    ) -> Result<(Result<LibrarySyncDetailed, SpotifyError>, u64), Failure> {
+    fn read(&self, pass: Pass) -> Result<ReadResult, Failure> {
         let (config, dir) = (self.config.clone(), self.data_dir.clone());
         thread::Builder::new()
             .stack_size(STACK)
@@ -238,8 +240,13 @@ impl LibrarySync {
                         return Err(SpotifyError::Auth("not signed in to Spotify".into()));
                     }
                     let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
+                    let mut progress = None;
                     let result = match pass {
-                        Pass::Full => sync_library_detailed(&mut session, &cx, &mut store).await,
+                        Pass::Full => {
+                            let attempt = sync_library_attempt(&mut session, &cx, &mut store).await;
+                            progress = attempt.progress;
+                            attempt.result
+                        }
                         Pass::Playlists(owner) => {
                             continue_playlists(&mut session, &cx, &mut store, &owner).await
                         }
@@ -250,7 +257,11 @@ impl LibrarySync {
                             continue_genres(&mut session, &cx, &mut store, previous.as_ref()).await
                         }
                     };
-                    Ok((result, session.retry_after_secs()))
+                    Ok(ReadResult {
+                        result,
+                        retry_after: session.retry_after_secs(),
+                        progress,
+                    })
                 })
             })
             .map_err(|e| Failure::new(ErrorCode::Internal, format!("start the refresh: {e}")))?
@@ -335,7 +346,7 @@ pub fn watch(sync: Option<Arc<LibrarySync>>, stop: Arc<AtomicBool>) {
                         && let Some(result) = sync.background()
                     {
                         match result {
-                            Ok(synced) => eprintln!("fsonos serve: {}", synced.text()),
+                            Ok(status) => eprintln!("fsonos serve: {}", status.done),
                             Err(f) => tracing::warn!("library refresh: {}", f.detail),
                         }
                     }
@@ -441,9 +452,7 @@ pub fn run(global: &GlobalArgs, args: &SyncArgs) -> anyhow::Result<()> {
             // Without a daemon nothing refreshes in the background.
             None => {
                 let dir = crate::daemon::data_dir(global)?;
-                LibrarySyncDto::new(false, last_synced(&dir), None).with_genre_enrichment(
-                    continuation::genre_status(&dir, false, SystemClock.now().timestamp()),
-                )
+                continuation::status(&dir, &Running::default(), SystemClock.now().timestamp())
             }
         };
         return crate::emit(global.json, &state, |s| format!("{}\n", s.done));
@@ -481,8 +490,7 @@ pub fn run(global: &GlobalArgs, args: &SyncArgs) -> anyhow::Result<()> {
     if !sync.signed_in() {
         return Err(signed_out().into());
     }
-    sync.run()?;
-    let state = sync.status();
+    let state = sync.run()?;
     crate::emit(global.json, &state, |s| format!("{}\n", s.done))
 }
 

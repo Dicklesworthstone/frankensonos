@@ -620,6 +620,14 @@ their standing preferences on every surface and in the daemon. What is on
   intake. These checks detect changes but do not claim an atomic Spotify
   snapshot. Partial scans never replace the public library or advance its
   success timestamp. A completed proof survives failed publication.
+- A full-read attempt also returns a compact account-bound progress report:
+  retained pages and track rows, rechecked pages, and reading/verifying/ready
+  phase. The daemon persists this report with admission, retry deadlines and
+  actual failures; status reads need no access to the large private payload.
+  Healthy bounded pauses are successful pending responses across CLI, HTTP,
+  MCP and web, including before the first published library. Ready rows still
+  await full publication. Setup uses the same daemon worker and distinguishes
+  unfinished intake from authentication failure.
 - Artist genre enrichment has its own durable continuation. Migration 20
   retains lead artist IDs with cached library rows. Background passes read up
   to 50 artists, rotate past failed artists, retain accepted tags, and share
@@ -628,6 +636,11 @@ their standing preferences on every surface and in the daemon. What is on
   evidence reaches new DJ picks without rewriting personal library rows;
   newly recognized classical works enter album completion. HTTP, MCP, CLI and
   the web sync panel expose current pending work, progress and retry deadlines.
+  Artist cache reads deduplicate and batch up to 400 IDs per SQL query, retaining
+  healthy results alongside individual failures. A genre pass takes fresh
+  candidate snapshots before and after network reads and shares the latter
+  across progress, summary and album discovery. The API store wrapper forwards
+  artist and album batches to preserve these bounds.
 - Taste beyond the library is read with the owner's grant
   (`user-follow-read`, `user-top-read`, `user-read-recently-played`,
   `playlist-read-private`: owner-authorized, requested at sign-in, listed in

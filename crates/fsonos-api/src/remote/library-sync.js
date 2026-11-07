@@ -7,7 +7,7 @@ const LibrarySyncRemote = (() => {
     librarySyncStart: ['POST', '/dj/sync'],
   };
   const POLL_MS = 3000;
-  const GENRE_POLL_MS = 60000;
+  const PENDING_POLL_MS = 60000;
   const MAX_BACKOFF_MS = 60000;
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const count = (v) => Number.isSafeInteger(v) && v >= 0;
@@ -47,8 +47,23 @@ const LibrarySyncRemote = (() => {
       genres = Object.freeze({ pending: v.pending, completed: v.completed, running: v.running,
         retry_at: v.retry_at ?? null, not_before: v.not_before ?? null, requires_refresh: v.requires_refresh });
     }
+    let intake = null;
+    if (value.library_intake != null) {
+      const v = value.library_intake;
+      if (!object(v) || typeof v.pending !== 'boolean' || typeof v.running !== 'boolean'
+          || !['reading', 'verifying', 'ready'].includes(v.phase)
+          || !['pages', 'tracks', 'verified_pages'].every((key) => count(v[key]))
+          || v.verified_pages > v.pages || (v.running && (!value.running || genres?.running))
+          || (v.retry_at != null && !timestamp(v.retry_at))
+          || (v.not_before != null && !timestamp(v.not_before))) {
+        throw new Error('The saved library progress is unreadable. Check status again.');
+      }
+      intake = Object.freeze({ pending: v.pending, phase: v.phase, pages: v.pages, tracks: v.tracks,
+        verified_pages: v.verified_pages, running: v.running,
+        retry_at: v.retry_at ?? null, not_before: v.not_before ?? null });
+    }
     return Object.freeze({ done: value.done, running: value.running, last,
-      error: value.error ?? null, genre_enrichment: genres });
+      error: value.error ?? null, genre_enrichment: genres, library_intake: intake });
   }
 
   function model({ call, changed = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
@@ -64,10 +79,10 @@ const LibrarySyncRemote = (() => {
     function arm() {
       stopTimer();
       const genres = state.status?.genre_enrichment;
-      const pending = genres && (genres.pending > 0 || genres.requires_refresh);
+      const pending = state.status?.library_intake?.pending || (genres && (genres.pending > 0 || genres.requires_refresh));
       if (!active() || state.busy || readFlight || (!failures && !state.status?.running && !pending)) return;
       const delay = failures ? Math.min(MAX_BACKOFF_MS, POLL_MS * 2 ** Math.min(failures, 5))
-        : state.status?.running ? POLL_MS : GENRE_POLL_MS;
+        : state.status?.running ? POLL_MS : PENDING_POLL_MS;
       timer = schedule(() => { timer = null; void refresh(); }, delay);
     }
 
@@ -169,8 +184,34 @@ const LibrarySyncRemote = (() => {
       if (observed !== state.status) {
         observed = state.status; facts.replaceChildren();
         if (observed) {
+          const deadline = (label, seconds) => {
+            if (seconds === null) return;
+            const at = new Date(seconds * 1000);
+            facts.append(el('p', {}, el('span', { text: `${label} ` }),
+              el('time', { datetime: at.toISOString(), text: `${at.toLocaleString()} (browser local time)` })));
+          };
           if (observed.running) facts.append(el('p', { text: 'A library update is running on the daemon. Status is checked while this panel is visible; closing it does not stop the update.' }));
           if (observed.error) facts.append(el('p', { class: 'library-sync-warning', text: `Last reported failure: ${observed.error}` }));
+          if (observed.library_intake) {
+            const intake = observed.library_intake;
+            const phase = { reading: 'Reading saved albums, liked tracks and album tracks.',
+              verifying: 'Checking retained pages before they can replace the published library.',
+              ready: 'Saved music is retained; the full refresh still needs to finish before publication.' };
+            facts.append(el('h3', { text: 'Saved music refresh' }),
+              el('p', { text: intake.running ? phase[intake.phase]
+                : intake.pending ? 'The saved music refresh is unfinished. Progress is saved, and the daemon will continue in bounded passes.'
+                  : 'Saved music intake is complete.' }));
+            facts.append(el('dl', { class: 'library-sync-counts' },
+              el('dt', { text: 'Validated pages retained' }), el('dd', { text: intake.pages.toLocaleString() }),
+              el('dt', { text: 'Tracks retained' }), el('dd', { text: intake.tracks.toLocaleString() }),
+              el('dt', { text: 'Retained pages rechecked' }), el('dd', { text: intake.verified_pages.toLocaleString() })));
+            if (intake.pending) facts.append(el('p', { text: 'These counts describe saved progress, including repeated tracks across collections. The public library is unchanged until this read finishes.' }));
+            deadline('Spotify cooldown ends at', intake.not_before);
+            if (!intake.running && intake.pending) {
+              const deadlines = [intake.retry_at, intake.not_before].filter((at) => at !== null);
+              if (deadlines.length) deadline('Next library pass no earlier than', Math.max(...deadlines));
+            }
+          }
           if (!observed.last) facts.append(el('p', { text: 'No completed full refresh reported by this daemon yet.' }));
           else {
             const last = observed.last, at = new Date(last.at * 1000);
@@ -199,13 +240,7 @@ const LibrarySyncRemote = (() => {
             facts.append(el('dl', { class: 'library-sync-counts' },
               el('dt', { text: 'Artist lookups pending' }), el('dd', { text: genres.pending.toLocaleString() }),
               el('dt', { text: 'Completed in the latest pass' }), el('dd', { text: genres.completed.toLocaleString() })));
-            const deadline = (label, seconds) => {
-              if (seconds === null) return;
-              const at = new Date(seconds * 1000);
-              facts.append(el('p', {}, el('span', { text: `${label} ` }),
-                el('time', { datetime: at.toISOString(), text: `${at.toLocaleString()} (browser local time)` })));
-            };
-            deadline('Spotify cooldown ends at', genres.not_before);
+            if (genres.not_before !== observed.library_intake?.not_before) deadline('Spotify cooldown ends at', genres.not_before);
             if (!genres.running && genres.pending && !genres.requires_refresh) {
               const deadlines = [genres.retry_at, genres.not_before].filter((at) => at !== null);
               if (deadlines.length) deadline('Next genre pass no earlier than', Math.max(...deadlines));
@@ -232,7 +267,7 @@ const LibrarySyncRemote = (() => {
         document.removeEventListener('visibilitychange', visibility); control.dispose();
       } };
   }
-  return { routes, statusOf, model, panel, POLL_MS, GENRE_POLL_MS, MAX_BACKOFF_MS };
+  return { routes, statusOf, model, panel, POLL_MS, PENDING_POLL_MS, GENRE_POLL_MS: PENDING_POLL_MS, MAX_BACKOFF_MS };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = LibrarySyncRemote;

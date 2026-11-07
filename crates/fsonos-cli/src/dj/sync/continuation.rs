@@ -2,11 +2,11 @@
 //! timestamp remains the last full sync, while private state survives restarts.
 
 use super::{
-    CHECK, ErrorCode, Failure, LibrarySync, LibrarySyncDetailed, MAX_AGE, Path, STAMP, SyncedDto,
-    failure, stalled,
+    CHECK, ErrorCode, Failure, LibrarySync, LibrarySyncDetailed, LibrarySyncDto, MAX_AGE, Path,
+    ReadResult, Running, STAMP, SyncedDto, failure, stalled,
 };
 use fsonos_api::surface::dj_sync::GenreEnrichmentDto;
-use fsonos_spotify::cache::{AlbumContinuation, GenreContinuation};
+use fsonos_spotify::cache::{AlbumContinuation, GenreContinuation, SavedLibraryProgress};
 use fsonos_spotify::taste::PlaylistContinuation;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
@@ -14,6 +14,9 @@ use std::sync::atomic::Ordering;
 const NOTE: &str = "Playlist continuation: ";
 const ALBUM_NOTE: &str = "Album completion: ";
 const GENRE_NOTE: &str = "Genre enrichment: ";
+
+mod intake;
+pub(super) use intake::status;
 
 pub(super) enum Pass {
     Full,
@@ -73,6 +76,14 @@ pub(super) struct Checkpoint {
     /// Rotate the three independent readers; old stamps retain album_turn.
     #[serde(default)]
     next_enrichment: Option<PassKind>,
+    /// A full read has been admitted, but has not published a complete library.
+    #[serde(default)]
+    intake_pending: bool,
+    /// Compact metadata only; retained page bodies stay in the private store.
+    #[serde(default)]
+    intake: Option<SavedLibraryProgress>,
+    #[serde(default)]
+    intake_error: Option<String>,
 }
 
 impl Checkpoint {
@@ -104,6 +115,8 @@ impl Checkpoint {
     fn reserve_full(&self, now: i64) -> Self {
         let mut reserved = self.reserve(now);
         reserved.requires_refresh = true;
+        reserved.intake_pending = true;
+        reserved.intake_error = None;
         reserved
     }
 
@@ -148,6 +161,9 @@ impl Checkpoint {
                 self.genre_retry_at
             },
             next_enrichment: self.next_enrichment,
+            intake_pending: self.intake_pending,
+            intake: self.intake.clone(),
+            intake_error: self.intake_error.clone(),
         };
         next.cooldown(now, report.retry_after_secs);
         next
@@ -403,8 +419,7 @@ pub(super) fn load(data_dir: &Path) -> Option<Checkpoint> {
         .playlist_continuation
 }
 
-pub(super) fn genre_status(data_dir: &Path, running: bool, now: i64) -> Option<GenreEnrichmentDto> {
-    let saved = load(data_dir)?;
+fn genre_status(saved: &Checkpoint, running: bool, now: i64) -> Option<GenreEnrichmentDto> {
     let genres = saved.genres.as_ref()?;
     Some(GenreEnrichmentDto {
         pending: genres.pending,
@@ -503,7 +518,7 @@ fn legacy_genre_note(note: &str) -> bool {
 }
 
 impl LibrarySync {
-    pub(super) fn background(&self) -> Option<Result<SyncedDto, Failure>> {
+    pub(super) fn background(&self) -> Option<Result<LibrarySyncDto, Failure>> {
         {
             let mut state = self.running();
             if state.running {
@@ -529,17 +544,24 @@ impl LibrarySync {
         Some(self.run_pass(pass))
     }
 
-    pub(super) fn run_pass(&self, pass: Pass) -> Result<SyncedDto, Failure> {
-        self.running().genres = matches!(pass, Pass::Genres(_));
+    pub(super) fn run_pass(&self, pass: Pass) -> Result<LibrarySyncDto, Failure> {
+        {
+            let mut state = self.running();
+            state.genres = matches!(pass, Pass::Genres(_));
+            state.intake = matches!(pass, Pass::Full);
+        }
         let result = self.perform_pass(pass);
-        let mut state = self.running();
-        state.running = false;
-        state.genres = false;
-        state.error = result.as_ref().err().map(|error| error.detail.clone());
-        result
+        {
+            let mut state = self.running();
+            state.running = false;
+            state.genres = false;
+            state.intake = false;
+            state.error = result.as_ref().err().map(|error| error.detail.clone());
+        }
+        result.map(|()| self.status())
     }
 
-    fn perform_pass(&self, pass: Pass) -> Result<SyncedDto, Failure> {
+    fn perform_pass(&self, pass: Pass) -> Result<(), Failure> {
         let kind = pass.kind();
         let full = kind == PassKind::Full;
         let before = self.last();
@@ -562,7 +584,7 @@ impl LibrarySync {
         }
         // Persist admission before network I/O: interrupted processes retain
         // their unfinished work and cannot restart the retry clock at zero.
-        let mut reserved = match kind {
+        let reserved = match kind {
             PassKind::Albums => checkpoint.reserve_albums(now),
             PassKind::Genres => checkpoint.reserve_genres(now),
             PassKind::Full => checkpoint.reserve_full(now),
@@ -570,27 +592,62 @@ impl LibrarySync {
         };
         write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
         let read = self.read(pass);
-        let (result, retry_after, pending) = match read {
-            Ok((result, seconds)) => {
+        self.finish_pass(before, &checkpoint, reserved, kind, read)
+    }
+
+    fn finish_pass(
+        &self,
+        before: Option<SyncedDto>,
+        checkpoint: &Checkpoint,
+        mut reserved: Checkpoint,
+        kind: PassKind,
+        read: Result<ReadResult, Failure>,
+    ) -> Result<(), Failure> {
+        let full = kind == PassKind::Full;
+        let attempted = read.is_ok();
+        let (result, retry_after, pending, progress) = match read {
+            Ok(ReadResult {
+                result,
+                retry_after,
+                progress,
+            }) => {
                 let pending = matches!(
                     &result,
                     Err(fsonos_spotify::SpotifyError::LibraryPending { .. })
                 );
-                (result.map_err(failure), seconds, pending)
+                (result.map_err(failure), retry_after, pending, progress)
             }
-            Err(error) => (Err(error), 0, false),
+            Err(error) => (Err(error), 0, false, None),
         };
         let at = self.now();
+        if full {
+            // A completed attempt can invalidate an old account/read receipt.
+            // Its empty report is authoritative; pre-attempt failures have no
+            // new observation and retain the previous compact checkpoint.
+            if attempted {
+                reserved.intake = progress;
+            }
+            reserved.intake_error = if pending {
+                None
+            } else {
+                result.as_ref().err().map(|error| error.detail.clone())
+            };
+        }
         if full && pending {
             reserved.continue_full(at);
         }
         reserved.cooldown(at, retry_after);
+        if full && pending {
+            write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
+            return Ok(());
+        }
         match result {
             Ok(mut read) => {
                 read.albums.retry_after_secs = read.albums.retry_after_secs.max(retry_after);
                 read.genre_continuation.retry_after_secs =
                     read.genre_continuation.retry_after_secs.max(retry_after);
-                self.accepted(before, &checkpoint, &read, kind, at)
+                self.accepted(before, checkpoint, &read, kind, at)
+                    .map(|_| ())
             }
             Err(error) => {
                 write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
@@ -617,6 +674,11 @@ impl LibrarySync {
         } else {
             checkpoint.completed(&read.playlists, at, !full)
         };
+        if full {
+            next.intake_pending = false;
+            next.intake = None;
+            next.intake_error = None;
+        }
         // New artist tags can reveal a classical movement whose whole album
         // is still missing. This is a local observation, not an album read.
         next.observed_albums(&read.albums, at, !album_pass);

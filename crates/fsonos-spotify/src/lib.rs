@@ -100,7 +100,9 @@ pub enum SpotifyError {
     #[error("http error: {0}")]
     Http(String),
     /// A bounded essential read retained private progress, but published no library.
-    #[error("saved library refresh retained {pages} validated page(s), {tracks} track(s); the next refresh continues before publishing")]
+    #[error(
+        "saved library refresh retained {pages} validated page(s), {tracks} track(s); the next refresh continues before publishing"
+    )]
     LibraryPending { pages: usize, tracks: usize },
     #[error("store error: {0}")]
     Store(#[from] fsonos_core::store::StoreError),

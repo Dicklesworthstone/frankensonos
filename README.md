@@ -492,6 +492,14 @@ next check. The last complete library remains playable while the scan is
 incomplete. Resumed pages are checked again before publication, and an account
 switch or a competing refresh cannot publish an older prepared result.
 
+The sync panel and CLI/HTTP/MCP status distinguish reading, verification, and
+prepared music waiting for publication. Retained page and track counts, retry
+deadlines, and actual failures survive daemon restart, including before the
+first completed library. A normal bounded pause returns pending status, and
+the web panel keeps observing it. `fsonos setup` shares the daemon's refresh
+worker when available and explains unfinished intake without asking you to
+repeat a successful Spotify sign-in.
+
 Large libraries continue artist genre enrichment in background passes of up to
 50 artists. Progress survives restarts, failed artists yield to later ones,
 and newly learned tags reach the DJ's next selection without rereading saved
@@ -499,6 +507,9 @@ music. `fsonos dj sync --status`, the HTTP and MCP status tools, and the web
 sync panel show current progress and Spotify cooldowns separately from the last
 full refresh. New genre evidence that reveals a classical work also feeds the
 existing whole-work album completion queue.
+Catalog cache reads are batched, so rebuilding a large DJ pool avoids one
+database call per artist. Failed metadata rows preserve the tracks' stored
+tags while healthy entries remain usable.
 
 Next:
 
