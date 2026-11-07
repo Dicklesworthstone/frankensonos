@@ -1866,3 +1866,20 @@ same packages.
 - The no-DNS delivery chain (session 8) remains PROVEN to the fetch; the
   DNS-flip path remains staged as the fallback. Both deliver the same
   signed packages.
+
+### 2026-11-06 (session 10) — the verdict oracle completed for 57.23; the compat semantics pinned
+
+- The 57.23 rootfs (pre-extracted) chrooted on css; the REAL 57.23 `upgrade`
+  binary ran against `pwned-nodns.upd`: version/model/swgen/floor all pass;
+  the only failure = the fake hw feature set (0) — traced to
+  `param_1[0x88]` in the compat fn (0x10007768): PASS = `mine & ~required ==
+  0`; required=0x1e from the package's compat section. On .84 (the 10-22
+  accepted-65130 probe) the bits ⊆ 30 ⇒ the compat check CANNOT be the .84
+  non-install reason. The .84 refusal = the MinVersion/deferred/downgrade
+  logic — exactly the answer the offline harness was built to isolate.
+- The Ghidra kit gained `FindStr.java` (string→xref→function) and
+  `DecFn.java` (by-address decompile) — the ppcproj now contains BOTH the
+  anacapad and the `upgrade` binary.
+- xnf: the iss inputs (luid/hhid) are pre-auth readable per unit from
+  `/status/zp` (`<LocalUID>`, `<HouseholdControlID>`) — the mint claims can
+  be exact per unit; only network_hash remains.
