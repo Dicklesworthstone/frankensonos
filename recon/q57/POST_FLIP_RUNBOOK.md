@@ -45,3 +45,17 @@ or any LAN device whose traffic actually traverses en0) — Mac-local curl
 bypasses en0 and hits whatever binds wildcard :443 directly. After the
 flip, verify with `sudo pfctl -s info | grep -A2 rdr` (counter deltas) or
 simply the requests.log HIT lines.
+
+## The no-DNS path (primary now)
+Per-unit `BeginSoftwareUpdate(URL, Flags, ExtraOptions=&#10;MinVersion:[...])`
+via ZoneGroupTopology — no DNS, no eero. Packages:
+- `pwned-nodns.upd` = genuine 57.23-74170-1-16 + trailing type-3 preinstall
+- `pwned-65130.upd` = genuine 57.22-65130-1-16 + the same trailing record
+Both: verify_upd VERDICT PASS (prefix byte-identical → digest+signature
+valid). Both fetched IN FULL by .84/.202 root updaters (http8899.log).
+OFFLINE VERDICT HARNESS (css): /tmp/65130rootfs chroot + qemu-ppc runs the
+actual `upgrade` binary against any served package — the full decision tree
+(version/model/swgen/floor/hw-features) without a device. Tonight: all
+checks pass except the fake-proc hw-feature-set (fake /proc = 0; real units
+= 30 = pass). The .84 non-install verdict is the one open binary answer
+(upgrade.log needed).
