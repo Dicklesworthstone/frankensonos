@@ -107,7 +107,9 @@ The Up next panel has two keyboard-accessible tabs:
   the entire Sonos queue.
 - **Speaker queue**: native `/zones/{room}/queue` pages, forty entries at a time,
   showing total count, exact positions and the reported playing entry. Duplicate
-  URIs remain separate tracks. No queue writes or speculative item jumps are added.
+  URIs remain separate tracks. The native editor reviews playback, removal, and
+  moves of one entry or a consecutive range; each command rechecks its revision
+  and exact renderer identities before dispatch.
 
 Queue reads are lazy: no requests until the tab is opened. Pages are replaced,
 never combined across revisions. A removed tail page triggers at most one read
@@ -117,6 +119,28 @@ refresh invalidates visible queue observations without adding another stream or
 a queue polling loop. Only one queue read can be in flight. Closing the tab,
 changing groups, hiding the page or entering immersive mode fences late replies.
 Read-only queue inspection cannot replay a command or mutate playback.
+
+### Find and navigate a long queue
+
+**Find or jump in this queue** searches titles, artists and albums through the
+native `GET /zones/{room}/queue/search` endpoint. One explicit search returns at
+most 50 matching occurrences and shows the exact range examined. **Search next
+section** continues with the returned offset and the same queue revision; each
+section replaces the previous results so large queues do not grow browser memory
+without a bound. Matching and the scan budget remain the daemon's responsibility.
+
+**Show in queue** rereads the result's forty-entry page and verifies its position,
+metadata, renderer URI, revision and queue length. Repeated tracks remain separate
+occurrences. A changed result becomes stale and cannot select or play a different
+entry. **Show position** jumps to a known absolute position, and **Show playing
+#…** opens the last reported playing position. These controls open pages without
+changing playback; the existing queue controls review any subsequent action.
+
+Search shares the queue's single read lane, can be cancelled, and is retired by
+query edits, group changes, live invalidation, closing the queue or hiding the
+page. A slow bounded search gets a 60-second request deadline while ordinary
+dashboard reads keep their 10-second deadline. No browser polling or automatic
+continuation is added.
 
 ### Shuffle and repeat
 

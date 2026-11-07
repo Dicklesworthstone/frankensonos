@@ -1,7 +1,7 @@
 // Native speaker-queue pages. DJ selections are a separate view, never a substitute.
 'use strict';
 const DashboardQueue = (() => {
-  const LIMIT = 40;
+  const LIMIT = 40, SEARCH_LIMIT = 50;
   const uint = (n) => Number.isInteger(n) && n >= 0 && n <= 0xffffffff;
   const text = (s) => typeof s === 'string' && s.length <= 65536;
   const group = (z) => JSON.stringify([z.household, z.coordinator_room, [...z.members].sort()]);
@@ -29,6 +29,45 @@ const DashboardQueue = (() => {
   const nonempty = (s) => text(s) && s.trim() !== '';
   const revisionOf = (s) => nonempty(s) && new TextEncoder().encode(s).length <= 1024;
   const playable = (row) => nonempty(row.uri) && row.uri !== 'NOT_IMPLEMENTED';
+  const sameQueue = (a, b) => !!a && !!b && revisionOf(a.revision) && a.revision === b.revision && a.total === b.total;
+  const sameRow = (a, b) => !!a && !!b && ['position', 'title', 'creator', 'album', 'uri'].every((key) => a[key] === b[key]);
+  const pagePath = (zone, offset) => `/zones/${encodeURIComponent(address(zone))}/queue?offset=${offset}&limit=${Math.min(LIMIT, 0xffffffff - offset)}`;
+  const pageOffset = (position) => Math.floor((position - 1) / LIMIT) * LIMIT;
+  const queryOf = (value) => {
+    if (typeof value !== 'string' || new TextEncoder().encode(value).length > 1024
+        || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) return null;
+    const query = value.trim();
+    return query && query.split(/\s+/u).length <= 32 ? query : null;
+  };
+  // Search is a single bounded native read. Keep its exact coverage and every
+  // positional occurrence; a matching URI is not a unique queue identity.
+  function decodeSearch(value, zone, expected, query, offset) {
+    const end = offset + (value?.examined ?? NaN);
+    if (!value || value.zone !== zone.coordinator_room || value.query !== query
+        || !sameQueue(value, expected) || value.offset !== offset || !uint(value.examined)
+        || !uint(end) || end > value.total || offset > value.total
+        || typeof value.complete !== 'boolean' || value.complete !== (end === value.total)
+        || (value.complete ? value.next_offset != null : value.next_offset !== end || end <= offset)
+        || !Array.isArray(value.items) || value.items.length > SEARCH_LIMIT || value.items.length > value.examined) {
+      throw new Error('The queue search response is incomplete or belongs to a different queue. Refresh and search again.');
+    }
+    let previous = offset;
+    const items = value.items.map((row) => {
+      if (!row || !uint(row.position) || row.position <= previous || row.position > end
+          || !text(row.title) || ['title', 'creator', 'album', 'uri'].some((key) => row[key] != null
+            && (!text(row[key]) || new TextEncoder().encode(row[key]).length > 16384))) {
+        throw new Error('The queue search positions or metadata are unreadable. Refresh and search again.');
+      }
+      previous = row.position;
+      const item = Object.freeze({ position: row.position, title: row.title, creator: row.creator ?? '',
+        album: row.album ?? '', uri: row.uri ?? null });
+      const shown = expected.items?.find((entry) => entry.position === item.position);
+      if (shown && !sameRow(shown, item)) throw new Error('A search result disagrees with the visible queue. Refresh and search again.');
+      return item;
+    });
+    return Object.freeze({ query, total: value.total, revision: value.revision, offset, examined: value.examined,
+      next_offset: value.next_offset ?? null, complete: value.complete, items: Object.freeze(items) });
+  }
   const frozen = (v) => { Object.values(v).forEach((item) => {
     if (item && typeof item === 'object' && !Object.isFrozen(item)) frozen(item);
   }); return Object.freeze(v); };
@@ -76,8 +115,8 @@ const DashboardQueue = (() => {
   async function verify(call, operation, check = () => {}) {
     if (!plans.has(operation)) throw unavailable();
     check();
-    const choice = choiceOf(operation.choice), { zone, page, rows, target } = choice;
-    const read = decode(await call(`/zones/${encodeURIComponent(target)}/queue?offset=${page.offset}&limit=${LIMIT}`), zone, page.offset);
+    const choice = choiceOf(operation.choice), { zone, page, rows } = choice;
+    const read = decode(await call(pagePath(zone, page.offset)), zone, page.offset);
     check(); choiceOf(choice);
     const offset = rows[0].position - page.offset - 1;
     if (read.revision !== page.revision || read.total !== page.total
@@ -119,31 +158,103 @@ const DashboardQueue = (() => {
   function model({ call, changed = () => {} }) {
     let selected = null, identity = '', generation = 0, disposed = false, active = true;
     let dirty = true, inFlight = null;
-    const state = { open: false, target: '', loading: false, stale: true, page: null, error: '', selection: null };
+    const state = { open: false, target: '', loading: false, stale: true, page: null, error: '', selection: null,
+      query: '', searching: false, search: null, searchError: '', found: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
     const current = (v) => !disposed && active && state.open && generation === v;
-    async function read(offset = state.page?.offset ?? 0) {
+    const ready = () => current(generation) && selected?.fresh && !state.stale && !state.loading && !inFlight && state.page;
+    const clearSearch = () => { state.search = null; state.searchError = ''; state.found = null; };
+    const retireSearch = () => {
+      clearSearch();
+      if (inFlight?.kind === 'search') { ++generation; inFlight.abort.abort(); }
+    };
+    async function readPage(offset = state.page?.offset ?? 0, expected = null) {
       if (disposed || !active || !state.open || !selected?.fresh || !uint(offset)
-          || offset > 0xffffffff - LIMIT || inFlight) return false;
+          || offset === 0xffffffff || inFlight) return false;
       const z = selected.zone, version = ++generation;
-      const flight = {}; inFlight = flight; dirty = false;
+      const flight = { kind: 'page' }; inFlight = flight; dirty = false;
+      const previousSearch = state.search;
+      state.found = null; state.searchError = '';
       state.loading = true; state.stale = true; state.selection = null; state.error = ''; publish();
       try {
-        let page = decode(await call(`/zones/${encodeURIComponent(address(z))}/queue?offset=${offset}&limit=${LIMIT}`), z, offset);
+        let page = decode(await call(pagePath(z, offset)), z, offset);
         if (!current(version)) return false;
+        if (expected && (!sameQueue(expected, page)
+            || (expected.search && expected.search !== state.search)
+            || (expected.item && !sameRow(page.items.find((row) => row.position === expected.item.position), expected.item)))) {
+          throw new Error('The queue or located entry changed. Refresh and locate it again before using it.');
+        }
         // Removing the tail can invalidate a page. One bounded read returns to the start.
         if (offset && offset >= page.total) {
-          page = decode(await call(`/zones/${encodeURIComponent(address(z))}/queue?offset=0&limit=${LIMIT}`), z, 0);
+          page = decode(await call(pagePath(z, 0)), z, 0);
           if (!current(version)) return false;
         }
-        state.page = page; state.stale = dirty; return true;
+        state.page = page; state.stale = dirty;
+        if (dirty || !sameQueue(previousSearch, page)) clearSearch();
+        if (!dirty && expected?.position) state.found = expected.position;
+        return !dirty;
       } catch (error) {
-        if (current(version)) state.error = [error?.message || 'Queue unavailable.', error?.hint].filter(Boolean).join(' ');
+        if (current(version)) {
+          clearSearch();
+          state.error = [error?.message || 'Queue unavailable.', error?.hint].filter(Boolean).join(' ');
+        }
         return false;
       } finally {
         if (inFlight === flight) inFlight = null;
         if (current(version)) { state.loading = false; publish(); }
       }
+    }
+    async function search(value = state.query, continuation = null) {
+      const page = ready(), query = queryOf(value);
+      if (!page || !revisionOf(page.revision)) return false;
+      if (continuation && (continuation !== state.search || continuation.complete
+          || continuation.query !== query || !sameQueue(continuation, page))) return false;
+      state.selection = null; clearSearch();
+      if (!query) {
+        state.searchError = 'Search for 1–32 words of a title, artist or album, at most 1024 bytes, without control characters.';
+        publish(); return false;
+      }
+      const offset = continuation ? continuation.next_offset : 0;
+      const z = selected.zone, version = ++generation, flight = { kind: 'search', abort: new AbortController() };
+      inFlight = flight; state.query = query; state.loading = true; state.searching = true;
+      state.error = ''; publish();
+      const valid = () => current(version) && selected?.fresh && !state.stale && !dirty && state.page === page;
+      try {
+        const url = `/zones/${encodeURIComponent(address(z))}/queue/search?q=${encodeURIComponent(query)}&offset=${offset}&limit=${SEARCH_LIMIT}&expected_revision=${encodeURIComponent(page.revision)}`;
+        const value = await call(url, undefined, { signal: flight.abort.signal });
+        if (!valid()) return false;
+        state.search = decodeSearch(value, z, page, query, offset);
+        return true;
+      } catch (error) {
+        if (valid()) {
+          state.search = null; state.stale = true; dirty = true;
+          state.searchError = [error?.message || 'Queue search unavailable.', error?.hint].filter(Boolean).join(' ');
+        }
+        return false;
+      } finally {
+        if (inFlight === flight) {
+          inFlight = null; state.loading = false; state.searching = false;
+          if (flight.cancelled && state.searchError === 'Search cancelled. Waiting for the outstanding read to finish.') state.searchError = 'Search cancelled.';
+          publish();
+        }
+      }
+    }
+    function cancelSearch() {
+      if (disposed || inFlight?.kind !== 'search' || !state.searching) return false;
+      inFlight.cancelled = true;
+      retireSearch(); state.searchError = 'Search cancelled. Waiting for the outstanding read to finish.';
+      publish(); return true;
+    }
+    function jump(position) {
+      const page = ready();
+      if (!page || !revisionOf(page.revision) || !uint(position) || !position || position > page.total) return Promise.resolve(false);
+      return readPage(pageOffset(position), { revision: page.revision, total: page.total, position });
+    }
+    function openMatch(row, result = state.search) {
+      const page = ready();
+      if (!page || !result || result !== state.search || !result.items.includes(row) || !playable(row)
+          || result.query !== state.query || !sameQueue(result, page)) return Promise.resolve(false);
+      return readPage(pageOffset(row.position), { revision: result.revision, total: result.total, item: row, search: result, position: row.position });
     }
     function select(position, count = 1, expected = state.page) {
       if (!current(generation) || !selected?.fresh || state.loading || state.stale || !expected
@@ -170,33 +281,37 @@ const DashboardQueue = (() => {
       });
       state.selection = choice; publish(); return choice;
     }
-    return { state, read, select,
+    return { state, read: (offset) => readPage(offset), select, search, cancelSearch, jump, openMatch,
+      setQuery(value) {
+        if (disposed || typeof value !== 'string' || value === state.query) return false;
+        retireSearch(); state.query = value; publish(); return true;
+      },
       clearSelection() { state.selection = null; publish(); },
       observe(item) {
         if (disposed) return;
         const next = item ? group(item.zone) : '';
         selected = item;
         if (identity !== next) {
-          identity = next; ++generation; dirty = true;
+          retireSearch(); identity = next; ++generation; dirty = true;
           state.target = item ? address(item.zone) : '';
-          state.page = null; state.selection = null; state.loading = false; state.stale = true; state.error = ''; publish();
+          state.page = null; state.selection = null; state.loading = false; state.searching = false; state.stale = true; state.error = ''; publish();
         }
-        if (!item?.fresh) { state.selection = null; state.stale = true; dirty = true; publish(); return; }
-        if (state.open && active && dirty && !inFlight) void read();
+        if (!item?.fresh) { retireSearch(); state.selection = null; state.stale = true; dirty = true; publish(); return; }
+        if (state.open && active && dirty && !inFlight) void readPage();
       },
-      open() { if (disposed) return; state.open = true; state.selection = null; dirty = true; publish(); void read(); },
-      close() { ++generation; state.selection = null; state.open = false; state.loading = false; state.stale = true; dirty = true; publish(); },
-      invalidate() { if (!disposed) { state.selection = null; dirty = true; state.stale = true; publish(); } },
+      open() { if (disposed) return; retireSearch(); state.open = true; state.selection = null; dirty = true; publish(); void readPage(); },
+      close() { retireSearch(); ++generation; state.selection = null; state.open = false; state.loading = false; state.searching = false; state.stale = true; dirty = true; publish(); },
+      invalidate() { if (!disposed) { retireSearch(); state.selection = null; dirty = true; state.stale = true; publish(); } },
       navigate(direction) {
         const p = state.page;
         if (state.loading || state.stale || !p || ![-1, 1].includes(direction)) return false;
         const offset = p.offset + direction * LIMIT;
         if (offset < 0 || offset >= p.total) return false;
-        void read(offset); return true;
+        void readPage(offset); return true;
       },
-      suspend() { active = false; state.selection = null; ++generation; state.loading = false; dirty = true; state.stale = true; publish(); },
+      suspend() { retireSearch(); active = false; state.selection = null; ++generation; state.loading = false; state.searching = false; dirty = true; state.stale = true; publish(); },
       resume() { if (!disposed) { active = true; dirty = true; } },
-      dispose() { disposed = true; active = false; ++generation; },
+      dispose() { retireSearch(); disposed = true; active = false; ++generation; },
     };
   }
   // Reuse the page's shared session review; this component never sends a write.
@@ -310,6 +425,102 @@ const DashboardQueue = (() => {
     return { node, update, rowControls, resetRows() { rows = []; } };
   }
 
-  return { LIMIT, decode, model, choiceOf, plan, verify, receipt, submitted, editor };
+  // The finder opens a verified page; only the existing editor can review a
+  // play, move or removal. Search and navigation never submit a command.
+  function finder({ queue, controller, session, el }) {
+    const node = el('details', 'queue-finder');
+    node.append(el('summary', '', 'Find or jump in this queue'));
+    const searchForm = el('form', 'queue-find-form'), queryLabel = el('label', 'queue-edit-field', 'Title, artist or album');
+    const query = el('input'); query.type = 'search'; query.maxLength = 1024;
+    query.setAttribute('aria-label', 'Find in speaker queue'); query.dataset.queueFind = 'query';
+    queryLabel.append(query);
+    const button = (label, key) => {
+      const b = el('button', 'outline-button', label); b.type = 'button'; b.dataset.queueFind = key; return b;
+    };
+    const find = button('Find', 'submit'); find.type = 'submit';
+    const cancel = button('Cancel search', 'cancel'), more = button('Search next section', 'more');
+    searchForm.append(queryLabel, find, cancel);
+    const status = el('p', 'queue-find-status'); status.setAttribute('role', 'status');
+    const results = el('ol', 'queue-find-results'); results.setAttribute('aria-label', 'Matching queue occurrences');
+    const jumpForm = el('form', 'queue-find-form'), jumpLabel = el('label', 'queue-edit-field', 'Queue position');
+    const position = el('input'); position.type = 'text'; position.inputMode = 'numeric'; position.maxLength = 10;
+    position.setAttribute('aria-label', 'Jump to queue position'); position.dataset.queueFind = 'position'; jumpLabel.append(position);
+    const jump = button('Show position', 'jump'); jump.type = 'submit';
+    const playing = button('Show playing entry', 'playing');
+    const jumpStatus = el('p', 'queue-find-status'); jumpStatus.setAttribute('role', 'status');
+    jumpForm.append(jumpLabel, jump, playing);
+    node.append(searchForm, status, results, more, jumpForm, jumpStatus);
+    let displayed = undefined, displayReady = false, notice = '', seenPage = null;
+    const available = () => !document.hidden && queue.state.open && !controller.state.busy && !session.state.pending;
+    const readable = () => available() && !queue.state.stale && !queue.state.loading
+      && !!queue.state.page && revisionOf(queue.state.page.revision);
+    const integer = () => /^[1-9][0-9]{0,9}$/.test(position.value) && uint(Number(position.value)) ? Number(position.value) : null;
+    query.addEventListener('input', () => { if (available()) queue.setQuery(query.value); });
+    searchForm.addEventListener('submit', (event) => {
+      event.preventDefault(); if (readable()) void queue.search(query.value);
+    });
+    cancel.addEventListener('click', () => { if (available()) queue.cancelSearch(); });
+    more.addEventListener('click', () => {
+      if (readable() && displayed && displayed === queue.state.search) void queue.search(displayed.query, displayed);
+    });
+    jumpForm.addEventListener('submit', (event) => {
+      event.preventDefault(); if (!readable()) return;
+      const at = integer();
+      if (at === null || at > queue.state.page.total) { notice = `Choose a position from 1 to ${queue.state.page.total}.`; update(); return; }
+      notice = ''; void queue.jump(at);
+    });
+    position.addEventListener('input', () => { notice = ''; update(); });
+    playing.addEventListener('click', () => {
+      const at = queue.state.page?.playing;
+      if (readable() && at) { position.value = String(at); notice = ''; void queue.jump(at); }
+    });
+    function update() {
+      const state = queue.state, page = state.page, result = state.search, usable = readable();
+      if (seenPage !== page) { seenPage = page; notice = ''; }
+      if (query.value !== state.query) query.value = state.query;
+      query.disabled = !available() || (state.loading && !state.searching);
+      find.disabled = !usable || !queryOf(query.value);
+      cancel.hidden = !state.searching; cancel.disabled = !available();
+      more.hidden = !result || result.complete; more.disabled = !usable;
+      position.disabled = !available() || state.loading;
+      jump.disabled = !usable || !page.total;
+      playing.disabled = !usable || !page?.playing;
+      playing.textContent = page?.playing ? `Show playing #${page.playing}` : 'No playing entry reported';
+      const at = integer();
+      position.setAttribute('aria-invalid', String(!!position.value && (at === null || !page || at > page.total)));
+      jumpStatus.textContent = notice || (state.found ? `Showing position #${state.found} below. Use its ordinary controls to review a change.`
+        : 'Jumping opens a queue page without changing playback.');
+      results.setAttribute('aria-busy', String(state.searching));
+      if (displayed !== result || displayReady !== usable) {
+        const focused = results.contains(document.activeElement) ? document.activeElement?.dataset?.queueMatch : null;
+        displayed = result; displayReady = usable; results.replaceChildren();
+        for (const row of result?.items || []) {
+          const li = el('li'), copy = el('div'), show = button('Show in queue', 'show');
+          copy.append(el('strong', '', `#${row.position} · ${row.title || 'Untitled track'}`),
+            el('small', '', [row.creator, row.album].filter(Boolean).join(' · ')));
+          show.dataset.queueMatch = String(row.position);
+          show.setAttribute('aria-label', `Show queue position ${row.position}: ${row.title || 'Untitled track'}`);
+          show.disabled = !usable || !playable(row);
+          show.addEventListener('click', () => { if (readable()) void queue.openMatch(row, result); });
+          li.append(copy, show);
+          if (!playable(row)) li.append(el('small', '', 'No renderer identity was reported for this occurrence.'));
+          results.append(li);
+        }
+        if (focused) [...results.querySelectorAll('button')].find((b) => b.dataset.queueMatch === focused && !b.disabled)?.focus({ preventScroll: true });
+      }
+      status.textContent = state.searchError || (state.searching ? 'Searching this queue. You can cancel the read.'
+        : !page ? 'Open a fresh queue before searching.'
+        : state.stale ? 'Refresh the queue before searching or opening a result.'
+        : !revisionOf(page.revision) ? 'The speaker did not report a usable revision for searching or jumping.'
+        : result ? `${result.items.length} matches for “${result.query}”. ${result.examined
+          ? `Examined positions ${result.offset + 1}–${result.offset + result.examined} of ${result.total}.` : 'The queue is empty.'} ${result.complete
+            ? result.offset === 0 ? 'The entire observed queue was searched.' : 'This section reached the end of the queue.'
+            : 'More entries remain; search the next section to continue.'}`
+        : 'Search titles, artists and albums. Each section returns up to 50 occurrences; repeated tracks keep their own positions.');
+    }
+    update(); return { node, update };
+  }
+
+  return { LIMIT, SEARCH_LIMIT, decode, decodeSearch, model, choiceOf, plan, verify, receipt, submitted, editor, finder };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardQueue;

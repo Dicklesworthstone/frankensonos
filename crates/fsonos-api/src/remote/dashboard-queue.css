@@ -15,3 +15,15 @@
 .queue-edit-actions button { min-height: 2.75rem; white-space: normal; }
 .queue-edit-status, .queue-editor .small-note, #review-description { overflow-wrap: anywhere; }
 .queue-editor button:focus-visible, .queue-entry-actions button:focus-visible, .queue-edit-field input:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+.queue-finder { min-width: 0; margin-block: .8rem; }
+.queue-finder summary { cursor: pointer; padding-block: .5rem; min-height: 2.75rem; }
+.queue-find-form { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; margin-block: .8rem; }
+.queue-find-form label { flex: 1 1 12rem; }
+.queue-find-form button, .queue-find-results button, .queue-finder > button { min-height: 2.75rem; white-space: normal; }
+.queue-find-results { display: grid; gap: .65rem; list-style: none; padding: 0; max-height: 22rem; overflow: auto; }
+.queue-find-results li { display: flex; align-items: start; flex-wrap: wrap; gap: .5rem; min-width: 0; padding-block: .4rem; border-bottom: 1px solid var(--border, #777); }
+.queue-find-results li > div { flex: 1 1 12rem; min-width: 0; }
+.queue-find-results strong, .queue-find-results small { display: block; overflow-wrap: anywhere; }
+.queue-find-status { overflow-wrap: anywhere; }
+.queue-finder button:focus-visible, .queue-finder summary:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+#queue-items > li[data-found="true"] { outline: 2px solid currentColor; outline-offset: -2px; }

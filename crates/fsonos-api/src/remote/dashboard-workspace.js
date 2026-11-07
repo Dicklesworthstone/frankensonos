@@ -17,9 +17,11 @@ const DashboardWorkspace = (() => {
   }
   function create({ call, controller, session, el, icon, openSearch, native, immerse }) {
     const $ = (id) => document.getElementById(id);
-    let active = true, immersive = false, chosenTab = 'picks', roomKey = '';
+    let active = true, immersive = false, chosenTab = 'picks', roomKey = '', locatedPosition = null;
     const queue = DashboardQueue.model({ call, changed: paintQueue });
     const queueEditor = DashboardQueue.editor({ queue, controller, session, el });
+    const queueFinder = DashboardQueue.finder({ queue, controller, session, el });
+    $('queue-items').before(queueFinder.node);
     $('queue-items').after(queueEditor.node);
     const library = typeof DashboardLibraryPanel !== 'undefined'
       ? DashboardLibraryPanel.create({ call, controller, session }) : null;
@@ -30,19 +32,28 @@ const DashboardWorkspace = (() => {
       const focus = container.contains(document.activeElement) ? document.activeElement?.dataset?.queueFocus : null;
       queueEditor.resetRows();
       container.replaceChildren(); container.setAttribute('aria-busy', String(state.loading));
-      $('queue-status').textContent = state.error || (state.loading ? 'Reading the speaker queue…'
+      $('queue-status').textContent = state.error || (state.searching ? 'Searching the speaker queue…' : state.loading ? 'Reading the speaker queue…'
         : !p ? 'Waiting for a fresh listening group.' : state.stale ? 'Last observation · refresh to update'
           : `${p.total} tracks · ${p.playing ? `playing #${p.playing}` : 'not playing from queue'}`);
       for (const row of p?.items || []) {
         const li = el('li');
+        li.dataset.queuePosition = String(row.position);
+        if (state.found === row.position) { li.dataset.found = 'true'; li.tabIndex = -1; }
         if (p.playing === row.position) li.setAttribute('aria-current', 'true');
         const copy = el('div'); copy.append(el('strong', '', row.title || 'Untitled track'), el('small', '', row.creator || row.album));
         li.append(el('span', 'queue-position', p.playing === row.position ? '▶' : row.position), copy, queueEditor.rowControls(row, p)); container.append(li);
       }
       if (p && !p.total) container.append(el('li', 'empty', 'The speaker queue is empty. Choose music from your collection.'));
       queueEditor.update();
+      queueFinder.update();
       if (focus) [...container.querySelectorAll('[data-queue-focus]')].find((n) => n.dataset.queueFocus === focus && !n.disabled)?.focus({ preventScroll: true });
       container.scrollTop = scroll;
+      if (state.found && state.found !== locatedPosition) {
+        const located = [...container.children].find((node) => node.dataset.queuePosition === String(state.found));
+        located?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+        located?.focus({ preventScroll: true });
+      }
+      locatedPosition = state.found;
       $('queue-page').textContent = p?.total ? `${p.offset + 1}–${p.offset + p.items.length} of ${p.total}` : '';
       queueNavigation();
     }
@@ -151,6 +162,7 @@ const DashboardWorkspace = (() => {
       observe(state) {
         queue.observe(controller.selected());
         queueEditor.update();
+        queueFinder.update();
         queueNavigation();
         library?.observe();
         activity?.observe();

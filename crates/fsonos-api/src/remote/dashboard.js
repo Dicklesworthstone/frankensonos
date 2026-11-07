@@ -50,13 +50,23 @@
         track: index === 0 ? { uri: 'demo:movement2', title: 'II. Glass & Rain', creator: 'Adrian Vale · Northlight Ensemble', album: 'Rooms of Memory', position_secs: 154, duration_secs: 486, queue_position: 2 }
           : index === 1 ? { uri: 'demo:terrace', title: 'After Hours', creator: 'Mira Sol', album: 'Side Streets', position_secs: 54, duration_secs: 273 } : null };
     }
-    if (url.includes('/queue?')) {
+    if (url.includes('/queue?') || url.includes('/queue/search?')) {
       const zone = fixtureZones.find((z) => url.includes(encodeURIComponent(C.key(z))));
-      const offset = Number(new URLSearchParams(url.split('?')[1]).get('offset'));
+      const params = new URLSearchParams(url.split('?')[1]), offset = Number(params.get('offset') || 0);
       const titles = ['I. Still Water', 'II. Glass & Rain', 'III. First Light', 'Kind of Somewhere', 'The Long Way Home'];
-      return { zone: zone.coordinator_room, total: titles.length, playing: zone === fixtureZones[0] ? 2 : null,
-        revision: 'fictional-queue', items: titles.slice(offset, offset + 40).map((title, n) => ({ position: offset + n + 1,
-          title, creator: offset + n < 3 ? 'Adrian Vale · Northlight Ensemble' : offset + n === 3 ? 'Mira Sol' : 'Canopy', uri: `demo:queued${offset + n}` })) };
+      const items = titles.map((title, index) => ({ position: index + 1, title,
+        creator: index < 3 ? 'Adrian Vale · Northlight Ensemble' : index === 3 ? 'Mira Sol' : 'Canopy', uri: `demo:queued${index}` }));
+      if (url.includes('/queue/search?')) {
+        const query = (params.get('q') || '').trim(), terms = query.toLowerCase().split(/\s+/);
+        const limit = Number(params.get('limit') || 50);
+        const matches = items.filter((row) => row.position > offset
+          && terms.every((term) => `${row.title} ${row.creator}`.toLowerCase().includes(term))).slice(0, limit);
+        const end = matches.length === limit ? matches.at(-1).position : items.length;
+        return { zone: zone.coordinator_room, query, total: items.length, revision: 'fictional-queue',
+          offset, examined: end - offset, next_offset: end < items.length ? end : null, complete: end === items.length, items: matches };
+      }
+      return { zone: zone.coordinator_room, total: items.length, playing: zone === fixtureZones[0] ? 2 : null,
+        revision: 'fictional-queue', items: items.slice(offset, offset + 40) };
     }
     if (url.endsWith('/play-mode')) {
       const zone = fixtureZones.find((z) => url.includes(encodeURIComponent(C.key(z))));

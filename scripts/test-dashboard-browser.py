@@ -18,6 +18,9 @@ window.fixture = {
   writes: [], calls: [], feeds: [], savedScenes: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
   zones:[{household:'S2',coordinator_room:'Studio',members:['Studio','Kitchen'],transport_state:'playing'},
     {household:'S1',coordinator_room:'Studio',members:['Studio'],transport_state:'paused'}],
+  queueRevision:'fixture-queue',
+  queue:Array.from({length:120},(_,i)=>({position:i+1,title:[41,97].includes(i)?'A fugue':`Queue track ${i+1}`,
+    creator:'Fixture artist',album:'Fixture album',uri:[41,97].includes(i)?'same:duplicate':`fixture:queue:${i+1}`})),
   states:['playing','paused'], running:[true,false], modes:['NORMAL','NORMAL'], timers:[null,null], levels:{'Studio@S2':20,'Kitchen@S2':15,'Studio@S1':20}, muted:{}, mood:'focus', track:'fixture:movement',
   work:{composer:'Fixture composer',title:'Three rooms',album:'Fixture recording',performers:['Fixture quartet'],movements:3,movement:2,
     movement_title:'II. Fixture movement',minutes:21,reason:{summary:'Variety and the owner’s preferences.',factors:[{factor:'artist_spacing',weight:1400},{factor:'feedback',weight:800}],relaxed:[]}},
@@ -38,6 +41,17 @@ window.fetch=async(url,init)=>{
   }
   else if(url.endsWith('/state')) data={zone:f.zones[index],transport_state:f.states[index],volume:f.levels[room],mute:!!f.muted[room],group_volume:22,
     track:{uri:f.track,title:f.rawTitle,creator:'Fixture artist',album:'Fixture album',position_secs:20,duration_secs:300,queue_position:2}};
+  else if(url.includes('/queue?')||url.includes('/queue/search?')){
+    const params=new URLSearchParams(url.split('?')[1]),offset=Number(params.get('offset')||0),limit=Number(params.get('limit')||40);
+    if(url.includes('/queue/search?')){
+      if(params.get('expected_revision')!==f.queueRevision)throw new Error('Fixture queue changed');
+      const query=(params.get('q')||'').trim(),terms=query.toLowerCase().split(/\s+/);
+      const items=f.queue.filter(row=>row.position>offset&&terms.every(term=>[row.title,row.creator,row.album].join(' ').toLowerCase().includes(term))).slice(0,limit);
+      const end=items.length===limit?items.at(-1).position:f.queue.length;
+      data={zone:f.zones[index].coordinator_room,query,total:f.queue.length,revision:f.queueRevision,
+        offset,examined:end-offset,next_offset:end<f.queue.length?end:null,complete:end===f.queue.length,items};
+    }else data={zone:f.zones[index].coordinator_room,total:f.queue.length,playing:2,revision:f.queueRevision,items:f.queue.slice(offset,offset+limit)};
+  }
   else if(url.startsWith('/zones/')&&url.endsWith('/play-mode')) data={zone:f.zones[index].coordinator_room,mode:f.modes[index],queue_active:true,dj_active:f.running[index]};
   else if(url.endsWith('/dj')) data={zone:'Studio',running:f.running[index],now:f.running[index]?f.work:null,
     next:f.running[index]?[{...f.work,movement:undefined,title:'The next work'}]:[],steering:{source:'session',mood:f.mood,constraints:{energy_bias:-1},added:{}}};
@@ -101,7 +115,8 @@ def load(page, preview=False):
     if preview: html=html.replace('<body>','<body data-preview="true">')
     html=re.sub(r'<link[^>]+>|<script[^>]+></script>','',html)
     page.set_content(html)
-    page.add_style_tag(content=(ROOT/'dashboard.css').read_text())
+    for name in ['dashboard.css','dashboard-queue.css']:
+        page.add_style_tag(content=(ROOT/name).read_text())
     page.add_script_tag(content=FIXTURE)
     for name in SCRIPTS: page.add_script_tag(content=(ROOT/name).read_text())
     page.wait_for_selector('.room-card')
@@ -302,6 +317,30 @@ def main():
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
         page.locator('#close-capture-scene').click()
         checks.append('whole-house scene capture, queue backup, reviewed recall and explicit replacement on desktop and mobile')
+        page.locator('#tab-queue').click()
+        page.wait_for_function("document.getElementById('queue-status').textContent.includes('120 tracks')")
+        page.locator('.queue-finder summary').click()
+        before=page.evaluate('fixture.writes.length')
+        page.locator('[data-queue-find="query"]').fill('fugue')
+        page.locator('[data-queue-find="submit"]').click()
+        page.wait_for_function("document.querySelector('.queue-find-status').textContent.includes('2 matches')")
+        assert page.locator('[data-queue-match]').count()==2
+        page.locator('[data-queue-match="98"]').click()
+        page.wait_for_function("document.querySelector('#queue-items li[data-found]')?.textContent.includes('98')")
+        assert '81–120 of 120' in page.locator('#queue-page').inner_text()
+        assert page.evaluate('fixture.writes.length')==before
+        page.locator('[data-queue-focus="play-98"]').click()
+        page.wait_for_selector('#review-dialog[open]')
+        assert '#98' in page.locator('#review-title').inner_text()
+        assert page.evaluate('fixture.writes.length')==before
+        page.locator('#close-review').click()
+        page.locator('[data-queue-find="position"]').fill('3')
+        page.locator('[data-queue-find="jump"]').click()
+        page.wait_for_function("document.querySelector('#queue-items li[data-found]')?.textContent.includes('3')")
+        assert '1–40 of 120' in page.locator('#queue-page').inner_text()
+        assert not page.evaluate('document.documentElement.scrollWidth>innerWidth')
+        assert page.evaluate('fixture.writes.length')==before
+        checks.append('native queue search, duplicate occurrences, reviewed playback and direct position navigation on mobile')
         page.close()
         preview=browser.new_page(viewport={'width':1536,'height':1120},reduced_motion='reduce')
         preview.on('pageerror',lambda e:errors.append(str(e)));load(preview,True)
@@ -317,6 +356,15 @@ def main():
         assert preview.locator('#capture-scene-review').is_disabled()
         preview.locator('#close-capture-scene').click()
         assert preview.evaluate('fixture.calls.length')==0
+        preview.locator('#tab-queue').click()
+        preview.wait_for_function("document.getElementById('queue-status').textContent.includes('5 tracks')")
+        preview.locator('.queue-finder summary').click()
+        preview.locator('[data-queue-find="query"]').fill('Canopy')
+        preview.locator('[data-queue-find="submit"]').click()
+        preview.wait_for_function("document.querySelector('.queue-find-status').textContent.includes('1 matches')")
+        assert preview.locator('[data-queue-match="5"]').count()==1
+        assert preview.evaluate('fixture.calls.length')==0
+        preview.locator('#tab-picks').click()
         checks.append('preview can explore reviews without contacting any speaker')
         assert preview.locator('#motion').inner_text()=='Resume motion'
         frames=[]
