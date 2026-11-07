@@ -318,7 +318,15 @@ fn aliases_and_client_defaults_wait_for_every_explicit_member() {
     assert!(plan::resolve_set(&rooms, "night").is_ok());
     assert!(targets_ready(&rooms, "night", false).is_err());
     assert!(targets_ready(&rooms, "here", false).is_err());
-    let both = Aliases::parse("[aliases]\nkitchens = ['Kitchen']\n").unwrap();
+    let ambiguous = Aliases::parse("[aliases]\nkitchens = ['Kitchen']\n").unwrap();
+    let rooms = plan::Rooms {
+        households: &houses,
+        aliases: Some(&ambiguous),
+        client: Some("cli"),
+    };
+    assert!(plan::resolve_set(&rooms, "kitchens").is_err());
+    assert!(targets_ready(&rooms, "kitchens", false).is_err());
+    let both = Aliases::parse("[aliases]\nkitchens = ['Kitchen@S1', 'Kitchen@S2']\n").unwrap();
     let rooms = plan::Rooms {
         households: &houses,
         aliases: Some(&both),

@@ -2,15 +2,16 @@
 //! An unfinished album stays in the private scheduler checkpoint. Only a
 //! complete, validated list enters the album cache the selector consumes.
 
+use super::LibrarySyncDetailed;
 use super::playlists::{candidate_items, summarize};
-use super::{LibrarySyncDetailed, pool_from_store};
 use crate::SpotifyError;
+use crate::classical::CandidatePool;
 use crate::client::{Endpoints, SimplifiedTrack};
 use crate::expand::{
     AlbumMisses, MAX_ALBUM_ENTRIES, MAX_ALBUM_PAGES, album_id, album_track, halts,
 };
 use crate::genres::GenreRead;
-use crate::library::Page;
+use crate::library::{LibraryItem, Page};
 use crate::session::Session;
 use crate::taste::PlaylistContinuation;
 use crate::works::group_works;
@@ -222,7 +223,15 @@ fn now() -> i64 {
 /// Missing lists, excluding albums whose established miss backoff still runs.
 /// Sorting makes the durable cursor independent of library row order.
 fn missing<S: Store + ?Sized>(store: &S, at: i64) -> Result<Vec<String>, SpotifyError> {
-    let works = group_works(pool_from_store(store)?.tracks());
+    missing_for_items(store, &candidate_items(store)?, at)
+}
+
+fn missing_for_items<S: Store + ?Sized>(
+    store: &S,
+    items: &[LibraryItem],
+    at: i64,
+) -> Result<Vec<String>, SpotifyError> {
+    let works = group_works(CandidatePool::build(items).tracks());
     let mut albums: Vec<String> = works
         .iter()
         .filter(|work| work.needs_expansion())
@@ -258,6 +267,30 @@ pub(super) fn status<S: Store + ?Sized>(
         return Ok(state);
     }
     state.pending = missing(store, at)?.len();
+    if store.spotify_library_owner()?.as_ref() != Some(receipt) {
+        state.changed_owner();
+    }
+    Ok(state)
+}
+
+/// Discover newly classical works from the same enriched candidate snapshot
+/// used by a genre continuation, without rereading the whole artist cache.
+pub(super) fn status_for_items<S: Store + ?Sized>(
+    store: &S,
+    receipt: &SpotifyLibraryOwner,
+    items: &[LibraryItem],
+    at: i64,
+) -> Result<AlbumContinuation, SpotifyError> {
+    let mut state = AlbumContinuation {
+        owner: Some(receipt.owner_id.clone()),
+        generation: Some(receipt.generation),
+        ..AlbumContinuation::default()
+    };
+    if store.spotify_library_owner()?.as_ref() != Some(receipt) {
+        state.changed_owner();
+        return Ok(state);
+    }
+    state.pending = missing_for_items(store, items, at)?.len();
     if store.spotify_library_owner()?.as_ref() != Some(receipt) {
         state.changed_owner();
     }

@@ -12,10 +12,10 @@
 //! a bounded [`crate::cache::continue_genres`] pass. Its durable cursor
 //! keeps failed artists from starving later ones in a large library.
 
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{HashMap, HashSet};
 
 use asupersync::Cx;
-use fsonos_core::store::Store;
+use fsonos_core::store::{ArtistGenresBatch, Store};
 
 use crate::SpotifyError;
 use crate::expand::halts;
@@ -61,20 +61,21 @@ pub async fn tag_genres<S: Store + ?Sized>(
         .filter_map(|i| i.artist_id.clone())
         .filter(|id| seen.insert(id.clone()))
         .collect();
+    let mut cached = store.artist_genres_many(&ids.iter().map(String::as_str).collect::<Vec<_>>());
     let mut genres: HashMap<String, Vec<String>> = HashMap::new();
     let mut reads = 0;
     for id in ids {
-        let stale = match store.artist_genres(&id) {
-            Ok(Some((tags, at))) if now.saturating_sub(at) < REFRESH_SECS => {
+        if let Some(error) = cached.failed.remove(&id) {
+            report.failed.push((id, error));
+            continue;
+        }
+        let stale = match cached.cached.remove(&id) {
+            Some((tags, at)) if now.saturating_sub(at) < REFRESH_SECS => {
                 report.cached += 1;
                 genres.insert(id, tags);
                 continue;
             }
-            Ok(cached) => cached.map(|(tags, _)| tags),
-            Err(e) => {
-                report.failed.push((id, SpotifyError::from(e).to_string()));
-                continue;
-            }
+            cached => cached.map(|(tags, _)| tags),
         };
         if report.halted.is_some() || reads >= MAX_READS_PER_SYNC {
             report.deferred += 1;
@@ -127,31 +128,37 @@ pub async fn tag_genres<S: Store + ?Sized>(
 /// Artist cache failures are optional metadata failures: retain the stored
 /// tags and report the failure without making an otherwise usable pool fail.
 pub(crate) fn apply_cached_genres<S: Store + ?Sized>(store: &S, items: &mut [LibraryItem]) {
-    let mut genres = HashMap::new();
-    let mut failures = 0usize;
-    let mut first_failure = None;
-    for id in items.iter().filter_map(|item| item.artist_id.as_ref()) {
-        if let Entry::Vacant(entry) = genres.entry(id.clone()) {
-            let tags = match store.artist_genres(id) {
-                Ok(cached) => cached.map_or_default(|(tags, _)| tags),
-                Err(error) => {
-                    failures += 1;
-                    first_failure.get_or_insert(error);
-                    Vec::new()
-                }
-            };
-            entry.insert(tags);
-        }
-    }
-    if let Some(error) = first_failure {
+    apply_genres(&cached_genres(store, items), items);
+}
+
+/// One optional cache read for the whole candidate snapshot, shared by the
+/// overlay and continuation accounting. A failed bulk read never falls back
+/// to thousands of individual database calls.
+pub(crate) fn cached_genres<S: Store + ?Sized>(
+    store: &S,
+    items: &[LibraryItem],
+) -> ArtistGenresBatch {
+    let mut ids = items
+        .iter()
+        .filter_map(|item| item.artist_id.as_deref())
+        .filter(|id| !id.trim().is_empty())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    let genres = store.artist_genres_many(&ids);
+    if let Some(error) = genres.failed.values().next() {
         tracing::warn!(
-            failed_artists = failures,
+            failed_artists = genres.failed.len(),
             %error,
             "artist genre cache unavailable; retaining stored library genres"
         );
     }
+    genres
+}
+
+pub(crate) fn apply_genres(genres: &ArtistGenresBatch, items: &mut [LibraryItem]) {
     for item in items {
-        if let Some(tags) = item.artist_id.as_ref().and_then(|id| genres.get(id)) {
+        if let Some((tags, _)) = item.artist_id.as_ref().and_then(|id| genres.cached.get(id)) {
             for tag in tags {
                 if !item.genres.contains(tag) {
                     item.genres.push(tag.clone());

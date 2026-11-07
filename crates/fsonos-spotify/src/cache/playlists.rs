@@ -12,7 +12,7 @@ use crate::session::Session;
 use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_pending_playlists};
 use crate::works::group_works;
 use asupersync::Cx;
-use fsonos_core::store::Store;
+use fsonos_core::store::{ArtistGenresBatch, Store};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -129,14 +129,21 @@ pub async fn continue_playlists<S: Store + ?Sized>(
 pub(super) fn candidate_items<S: Store + ?Sized>(
     store: &S,
 ) -> Result<Vec<crate::library::LibraryItem>, SpotifyError> {
+    candidate_items_with_genres(store).map(|(items, _)| items)
+}
+
+pub(super) fn candidate_items_with_genres<S: Store + ?Sized>(
+    store: &S,
+) -> Result<(Vec<crate::library::LibraryItem>, ArtistGenresBatch), SpotifyError> {
     let mut items = store
         .library()?
         .iter()
         .filter(|entry| entry.is_candidate())
         .map(from_entry)
         .collect::<Vec<_>>();
-    crate::genres::apply_cached_genres(store, &mut items);
-    Ok(items)
+    let genres = crate::genres::cached_genres(store, &items);
+    crate::genres::apply_genres(&genres, &mut items);
+    Ok((items, genres))
 }
 
 pub(super) fn summarize(items: &[crate::library::LibraryItem]) -> LibrarySync {

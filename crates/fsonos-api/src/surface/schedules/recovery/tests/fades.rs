@@ -503,7 +503,9 @@ impl Transport for HoldWrite<'_> {
 fn new_group_playback_waits_out_owned_writes_including_a_joined_rooms_fade() {
     for joined in [false, true] {
         let h = House::new(true);
-        playing(&h);
+        if !joined {
+            playing(&h);
+        }
         let surface = h.surface();
         let session = sleep(&surface);
         let households = h.rooms.lock().unwrap().clone();
@@ -519,6 +521,12 @@ fn new_group_playback_waits_out_owned_writes_including_a_joined_rooms_fade() {
                 Utc::now(),
             )
             .unwrap();
+        // Arm a coordinator while it is standalone, then join its room to
+        // the playing group. A follower cannot configure a native timer.
+        if joined {
+            playing(&h);
+        }
+        let households = h.rooms.lock().unwrap().clone();
         session.save();
         let ticket = session.timers.due_runs(timer.ends, 1).remove(0);
         let (arrived, entered) = mpsc::sync_channel(1);

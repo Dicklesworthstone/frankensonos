@@ -331,10 +331,34 @@ fn failed_catalog_refreshes_retain_previous_artist_music_and_rate_limits_stop_re
             assert!(!result.notes.is_empty());
             if status == 429 {
                 assert!(result.playlists.retry_after_secs > 0);
-                let last = server.calls("/v1/").last().unwrap().clone();
-                assert!(path(&last).ends_with("/tracks"));
-                let after = server.calls("/v1/").len();
-                assert_eq!(after - calls, 6, "no request after the rate limit");
+                let observed = server.calls("/v1/");
+                let attempted: Vec<_> = observed[calls..].iter().map(|call| path(call)).collect();
+                // Account proof precedes the library and taste reads. The
+                // catalog's refused track page must still be the final request.
+                let top = format!("/v1/artists/{ARTIST}/top-tracks");
+                let albums = format!("/v1/artists/{ARTIST}/albums");
+                let limited = format!("/v1/albums/{ALBUM}/tracks");
+                assert_eq!(
+                    attempted,
+                    [
+                        "/v1/me",
+                        "/v1/me/albums",
+                        "/v1/me/tracks",
+                        "/v1/me/following",
+                        top.as_str(),
+                        albums.as_str(),
+                        limited.as_str(),
+                    ]
+                );
+                assert!(matches!(
+                    session.read_owner(&cx).await,
+                    Err(crate::SpotifyError::Api { status: 429, .. })
+                ));
+                assert_eq!(
+                    server.calls("/v1/"),
+                    observed,
+                    "even a fresh identity check must honor the existing cooldown"
+                );
             }
         });
     }

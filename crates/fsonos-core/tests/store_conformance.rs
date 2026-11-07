@@ -690,6 +690,22 @@ fn artist_genres(s: &mut dyn Store) {
         s.artist_genres("FakeArtist01").unwrap(),
         Some((tags[..1].to_vec(), 2_000))
     );
+    let batch = s.artist_genres_many(&[
+        "FakeArtist02",
+        "FakeMissingArtist",
+        "FakeArtist01",
+        "FakeArtist01",
+    ]);
+    assert!(batch.failed.is_empty());
+    assert_eq!(
+        batch.cached.len(),
+        2,
+        "missing and repeated IDs add no rows"
+    );
+    assert_eq!(batch.cached["FakeArtist01"], (tags[..1].to_vec(), 2_000));
+    assert_eq!(batch.cached["FakeArtist02"], (Vec::new(), 1_001));
+    let empty = s.artist_genres_many(&[]);
+    assert!(empty.cached.is_empty() && empty.failed.is_empty());
 }
 
 fn album_misses(s: &mut dyn Store) {

@@ -151,7 +151,12 @@ fn controller_connection(listener: &TcpListener, controller: &mut Owned) -> TcpS
     let deadline = Instant::now() + DEADLINE;
     loop {
         match listener.accept() {
-            Ok((connection, _)) => return connection,
+            Ok((connection, _)) => {
+                // BSD sockets can inherit the listener's nonblocking mode.
+                // The receipt reader below uses a blocking, bounded wait.
+                connection.set_nonblocking(false).unwrap();
+                return connection;
+            }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => panic!("accept controller receipt: {error}"),
         }

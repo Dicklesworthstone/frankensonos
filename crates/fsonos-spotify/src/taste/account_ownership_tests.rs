@@ -93,9 +93,22 @@ fn same_owner_partial_reads_keep_taste_but_a_new_owner_never_inherits_it_after_r
         // Optional failure on the same proved account retains its prior
         // candidates, their account weights, and last-good observations.
         server.set("/v1/me/playlists", json!({ "items": "bad directory" }));
+        // A retained directory can still refresh known playlist contents.
+        // Fail that read too, so this checks retention of an unsuccessful
+        // observation rather than its wall-clock-dependent refreshed revision.
+        server.set(
+            &format!("/v1/playlists/Account{OLD:05}/items"),
+            json!({ "items": "bad playlist" }),
+        );
         let mut store = SqliteStore::open(&file).unwrap();
         let partial = sync(&server, &cx, &mut store).await;
         assert_eq!(partial.library.retired, 0);
+        assert!(
+            partial
+                .notes
+                .iter()
+                .any(|note| note.contains("playlist items"))
+        );
         assert!(pool_from_store(&store).unwrap().get(&uri(OLD)).is_some());
         assert_eq!(store.playlist_contents(&old_playlist).unwrap(), observation);
         assert_eq!(store.spotify_heard().unwrap(), [(uri(OLD), 100)]);

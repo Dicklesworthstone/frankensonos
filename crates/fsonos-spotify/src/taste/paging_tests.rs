@@ -609,8 +609,19 @@ fn a_changed_directory_total_keeps_earlier_pages_but_cannot_replace_cached_names
         let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), &[], 1).await;
         assert!(read.incomplete());
         assert_eq!(taste.playlists, None);
-        assert_eq!(read.failed.len(), 1);
-        assert!(read.failed[0].1.contains("changed total"));
+        assert!(
+            read.failed.iter().any(|(source, reason)| {
+                source == "playlists" && reason.contains("changed total")
+            })
+        );
+        assert_eq!(
+            read.continuation.pending, 1,
+            "the directory remains unfinished"
+        );
+        assert_eq!(
+            read.continuation.advanced, 1,
+            "only the valid first page is retained"
+        );
     });
     assert_eq!(server.calls("/v1/me/playlists").len(), 2);
 }
@@ -783,6 +794,17 @@ fn clean_playlist_budget_prefix_waits_behind_previous_complete_contents() {
             .playlist_contents("spotify:playlist:TestList0")
             .unwrap()
             .unwrap();
+        // Membership changes carry a new Spotify snapshot. Reusing the old
+        // version would correctly reject these pages as inconsistent coverage.
+        let mut changed = playlist(0, true);
+        changed["snapshot_id"] = "test-version-2".into();
+        server.set("/v1/me/playlists", page(vec![changed], 0, None));
+        server.set(
+            "/v1/playlists/TestList0",
+            json!({
+                "id": "TestList0", "snapshot_id": "test-version-2"
+            }),
+        );
         for n in 0..(super::super::MAX_PLAYLIST_REQUESTS - 1) {
             let route = if n == 0 {
                 "/v1/playlists/TestList0/items".into()
@@ -810,6 +832,7 @@ fn clean_playlist_budget_prefix_waits_behind_previous_complete_contents() {
         .unwrap();
         assert_eq!(progress["examined"], 3);
         assert_eq!(progress["complete"], false);
+        assert_eq!(progress["snapshot_id"], "test-version-2");
     });
     assert_eq!(
         server.item_calls().len(),

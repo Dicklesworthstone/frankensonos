@@ -182,7 +182,11 @@ fn failed_or_invalid_resume_pages_preserve_the_last_checkpoint_and_published_dir
         let mut store = MemStore::default();
         let owner = seed(&mut store);
         full(&server, &cx, &mut store).await;
-        let before = store.spotify_playlist_directory(&owner).unwrap();
+        let mut before = checkpoint(&store, &owner);
+        assert_eq!(before["reconcile"], false);
+        // A background attempt records the full reconciliation it will owe,
+        // even when no additional directory page can be accepted this time.
+        before["reconcile"] = true.into();
         let listed = store.playlists().unwrap();
         let route = format!("/v1/me/playlists?offset={WINDOW}");
         let good = server.state.lock().unwrap().pages[&route].clone();
@@ -218,7 +222,7 @@ fn failed_or_invalid_resume_pages_preserve_the_last_checkpoint_and_published_dir
                 (failed.playlists.pending, failed.playlists.advanced),
                 (1, 0)
             );
-            assert_eq!(store.spotify_playlist_directory(&owner).unwrap(), before);
+            assert_eq!(checkpoint(&store, &owner), before);
             assert_eq!(store.playlists().unwrap(), listed);
             assert!(store.playlist_progress(OWNER, PREVIOUS).unwrap().is_some());
             assert!(!failed.notes.is_empty());

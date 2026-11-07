@@ -440,6 +440,16 @@ pub struct CachedAlbum {
     pub fetched_at: i64,
 }
 
+/// A batch of optional artist metadata. Missing artists are absent from both
+/// maps; an empty genre list in `cached` is a successful, reusable answer.
+/// Failures stay per artist so healthy rows can still enrich the DJ's pool.
+#[derive(Debug, Default)]
+pub struct ArtistGenresBatch {
+    pub cached: BTreeMap<String, (Vec<String>, i64)>,
+    /// Diagnostic messages for artists whose cache entries could not be read.
+    pub failed: BTreeMap<String, String>,
+}
+
 /// A mutating request, as the action log records it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
@@ -737,6 +747,29 @@ pub trait Store {
     /// An artist's cached genre tags and when they were read.
     fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError>;
 
+    /// Read each distinct artist once. Optional cache failures are returned
+    /// alongside healthy answers, rather than discarding the whole batch.
+    /// Backing stores can read bounded chunks without retrying failed chunks
+    /// as one query per artist; this default preserves small custom stores.
+    fn artist_genres_many(&self, artist_ids: &[&str]) -> ArtistGenresBatch {
+        let mut ids = artist_ids.to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut out = ArtistGenresBatch::default();
+        for id in ids {
+            match self.artist_genres(id) {
+                Ok(Some(cached)) => {
+                    out.cached.insert(id.to_owned(), cached);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    out.failed.insert(id.to_owned(), error.to_string());
+                }
+            }
+        }
+        out
+    }
+
     /// Replace the albums whose track lists couldn't be had (not there, or
     /// nothing in them playable), each with when it may be read again. A
     /// repeated album keeps the last time given.
@@ -911,7 +944,9 @@ fn validate_spotify_library_progress(
     if expected.is_some_and(|value| value.len() > MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES)
         || progress.is_some_and(|value| value.len() > MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES)
     {
-        return Err(StoreError::Backend("Spotify library progress is too large".into()));
+        return Err(StoreError::Backend(
+            "Spotify library progress is too large".into(),
+        ));
     }
     Ok(())
 }
@@ -1091,7 +1126,9 @@ impl Store for MemStore {
         base: Option<&SpotifyLibraryOwner>,
     ) -> Result<Option<String>, StoreError> {
         validate_spotify_owner(incoming_id)?;
-        Ok(self.library_progress_for(incoming_id, base).map(str::to_owned))
+        Ok(self
+            .library_progress_for(incoming_id, base)
+            .map(str::to_owned))
     }
 
     fn save_spotify_library_progress(

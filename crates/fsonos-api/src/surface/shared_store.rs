@@ -10,9 +10,9 @@
 //! store no longer kept the DJ out of.
 
 use fsonos_core::store::{
-    Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, CachedPlaylist,
-    DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, PlayName, PlayRecord,
-    SpotifyLibraryOwner, Store, StoreError, StoredScene, StoredSchedule,
+    Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
+    CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, PlayName,
+    PlayRecord, SpotifyLibraryOwner, Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, ZoneGroup};
@@ -289,6 +289,13 @@ impl Store for SharedStore<'_> {
         self.lock().album_tracks(album_uri)
     }
 
+    fn album_tracks_many(
+        &self,
+        album_uris: &[&str],
+    ) -> Result<Vec<(String, CachedAlbum)>, StoreError> {
+        self.lock().album_tracks_many(album_uris)
+    }
+
     fn save_artist_genres(
         &mut self,
         artist_id: &str,
@@ -301,6 +308,10 @@ impl Store for SharedStore<'_> {
 
     fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError> {
         self.lock().artist_genres(artist_id)
+    }
+
+    fn artist_genres_many(&self, artist_ids: &[&str]) -> ArtistGenresBatch {
+        self.lock().artist_genres_many(artist_ids)
     }
 
     fn save_album_misses(&mut self, misses: &[(String, i64)]) -> Result<(), StoreError> {

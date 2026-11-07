@@ -8,9 +8,9 @@
 //! method call.
 
 use super::{
-    Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, CachedPlaylist,
-    DjSession, Feedback, FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayName,
-    PlayRecord, SpotifyLibraryOwner, Store, StoreError, StoredScene, StoredSchedule,
+    Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
+    CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction,
+    PlayName, PlayRecord, SpotifyLibraryOwner, Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -260,6 +260,57 @@ fn split_genres(joined: Option<String>) -> Vec<String> {
             .map(str::to_string)
             .collect()
     })
+}
+
+/// Read bounded artist chunks while isolating optional cache failures.
+fn artist_genres_batch(
+    artist_ids: &[&str],
+    mut query: impl FnMut(&str, &[SqliteValue]) -> Result<Vec<Row>, StoreError>,
+) -> ArtistGenresBatch {
+    let mut ids = artist_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut out = ArtistGenresBatch::default();
+    for chunk in ids.chunks(400) {
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT artist_id, genres, fetched_at FROM artist_genres \
+             WHERE artist_id IN ({placeholders})"
+        );
+        let params = chunk.iter().map(|&id| id.into()).collect::<Vec<_>>();
+        // Keep the identity decode fallible for the whole chunk: without
+        // it we cannot safely assign either tags or a failure to a row.
+        let rows = query(&sql, &params).and_then(|rows| {
+            rows.into_iter()
+                .map(|row| Ok((text(&row, 0)?, row)))
+                .collect::<Result<Vec<_>, StoreError>>()
+        });
+        match rows {
+            Ok(rows) => {
+                for (id, row) in rows {
+                    let cached =
+                        opt_text(&row, 1).and_then(|tags| Ok((split_genres(tags), int(&row, 2)?)));
+                    match cached {
+                        Ok(cached) => {
+                            out.cached.insert(id, cached);
+                        }
+                        Err(error) => {
+                            out.failed.insert(id, error.to_string());
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                out.failed
+                    .extend(chunk.iter().map(|&id| (id.to_owned(), message.clone())));
+            }
+        }
+    }
+    out
 }
 
 /// The durable store: one fsqlite database file in the daemon's data dir.
@@ -851,8 +902,7 @@ fn adopt_spotify_owner(
     let stored_generation = i64::try_from(generation).map_err(|_| {
         FrankenError::Internal("Spotify library ownership generation overflow".into())
     })?;
-    connection
-        .execute_sync("UPDATE spotify_library SET candidate = 0, taste_weight = NULL")?;
+    connection.execute_sync("UPDATE spotify_library SET candidate = 0, taste_weight = NULL")?;
     connection.execute_sync("DELETE FROM spotify_playlists")?;
     connection.execute_sync("DELETE FROM spotify_playlist_contents")?;
     connection.execute_sync("DELETE FROM spotify_heard")?;
@@ -1161,7 +1211,8 @@ impl Store for SqliteStore {
         super::validate_spotify_library_progress(incoming_id, expected, Some(progress))?;
         self.in_transaction(|connection| {
             if read_spotify_owner(connection)?.as_ref() != base
-                || read_spotify_library_progress(connection, incoming_id, base)?.as_deref() != expected
+                || read_spotify_library_progress(connection, incoming_id, base)?.as_deref()
+                    != expected
             {
                 return Ok(false);
             }
@@ -1229,7 +1280,8 @@ impl Store for SqliteStore {
         let projection = prepare_spotify_library(entries, playlists, contents, heard)?;
         self.in_transaction(|connection| {
             if read_spotify_owner(connection)?.as_ref() != Some(owner)
-                || read_spotify_library_progress(connection, &owner.owner_id, Some(owner))?.as_deref()
+                || read_spotify_library_progress(connection, &owner.owner_id, Some(owner))?
+                    .as_deref()
                     != Some(expected)
             {
                 return Ok(false);
@@ -1607,6 +1659,10 @@ impl Store for SqliteStore {
             return Ok(None);
         };
         Ok(Some((split_genres(opt_text(row, 0)?), int(row, 1)?)))
+    }
+
+    fn artist_genres_many(&self, artist_ids: &[&str]) -> ArtistGenresBatch {
+        artist_genres_batch(artist_ids, |sql, params| self.query(sql, params))
     }
 
     fn save_album_misses(&mut self, misses: &[(String, i64)]) -> Result<(), StoreError> {
@@ -2180,6 +2236,64 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
 
+    #[test]
+    fn artist_cache_batches_are_bounded_and_isolate_failed_rows_and_chunks() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let ids = (0..805)
+            .map(|id| format!("Artist{id:04}"))
+            .collect::<Vec<_>>();
+        let rows = ids
+            .iter()
+            .map(|id| vec![id.as_str().into(), "jazz".into(), 1_000i64.into()])
+            .collect::<Vec<Vec<SqliteValue>>>();
+        store
+            .in_transaction(|connection| {
+                connection.execute_many_with_params_in_transaction_sync(
+                "INSERT INTO artist_genres (artist_id, genres, fetched_at) VALUES (?1, ?2, ?3)",
+                &rows,
+            ).map(drop)
+            })
+            .unwrap();
+        store
+            .execute(
+                "UPDATE artist_genres SET fetched_at = ?1 WHERE artist_id = ?2",
+                &["invalid-timestamp".into(), ids[401].as_str().into()],
+            )
+            .unwrap();
+        let mut requested = ids.iter().map(String::as_str).collect::<Vec<_>>();
+        requested.extend([ids[0].as_str(), "Unknown'Artist"]);
+        let mut queries = 0;
+        let batch = artist_genres_batch(&requested, |sql, params| {
+            queries += 1;
+            assert!(params.len() <= 400);
+            store.query(sql, params)
+        });
+        assert_eq!(queries, 3);
+        assert_eq!(batch.cached.len(), 804);
+        assert_eq!(batch.failed.len(), 1);
+        assert!(batch.failed.contains_key(&ids[401]));
+        assert!(!batch.cached.contains_key("Unknown'Artist"));
+        assert_eq!(batch.cached[&ids[402]], (vec!["jazz".to_owned()], 1_000));
+
+        let mut queries = 0;
+        let failed_chunk = artist_genres_batch(&requested, |sql, params| {
+            queries += 1;
+            if queries == 2 {
+                Err(StoreError::Backend("chunk unavailable".into()))
+            } else {
+                store.query(sql, params)
+            }
+        });
+        assert_eq!(
+            queries, 3,
+            "a failed batch must not fan out into single reads"
+        );
+        assert_eq!(failed_chunk.failed.len(), 400);
+        assert_eq!(failed_chunk.cached.len(), 405);
+        assert!(failed_chunk.cached.contains_key(&ids[804]));
+        let empty = artist_genres_batch(&[], |_, _| panic!("empty batches need no query"));
+        assert!(empty.cached.is_empty() && empty.failed.is_empty());
+    }
 
     #[test]
     fn essential_library_progress_migration_preserves_an_adopted_cache() {
@@ -2195,7 +2309,11 @@ mod tests {
             "INSERT INTO spotify_library \
              (source_uri, title, is_classical, added, candidate, taste_weight, artist_id) \
              VALUES (?1, ?2, 0, 10, 1, 1200, ?3)",
-            &["spotify:track:Existing".into(), "Existing".into(), "CatalogArtist".into()],
+            &[
+                "spotify:track:Existing".into(),
+                "Existing".into(),
+                "CatalogArtist".into(),
+            ],
         )
         .unwrap();
         let owner = old.spotify_library_owner().unwrap().unwrap();
@@ -2207,7 +2325,9 @@ mod tests {
         assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
         assert_eq!(store.library().unwrap(), library);
         assert_eq!(
-            store.spotify_library_progress("incoming-owner", Some(&owner)).unwrap(),
+            store
+                .spotify_library_progress("incoming-owner", Some(&owner))
+                .unwrap(),
             None
         );
         assert!(

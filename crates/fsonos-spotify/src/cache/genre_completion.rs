@@ -2,15 +2,16 @@
 //! The scheduler retains an owner-bound cursor; accepted artist tags live in
 //! the public catalog cache and are overlaid when the DJ rebuilds its pool.
 
-use super::playlists::{candidate_items, summarize};
+use super::playlists::{candidate_items_with_genres, summarize};
 use super::{AlbumContinuation, LibrarySyncDetailed, sync_notes};
 use crate::SpotifyError;
 use crate::expand::{Expansion, halts};
 use crate::genres::{GenreRead, REFRESH_SECS};
+use crate::library::LibraryItem;
 use crate::session::Session;
 use crate::taste::{PlaylistContinuation, TasteRead};
 use asupersync::Cx;
-use fsonos_core::store::{SpotifyLibraryOwner, Store};
+use fsonos_core::store::{ArtistGenresBatch, SpotifyLibraryOwner, Store};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -90,48 +91,31 @@ struct Pending {
 
 /// Only current candidates create work. Missing artist IDs are legitimate
 /// metadata gaps, not requests to guess an artist or force endless full syncs.
-fn missing<S: Store + ?Sized>(store: &S, at: i64) -> Result<Pending, SpotifyError> {
-    let mut artists: Vec<String> = store
-        .library()?
-        .into_iter()
-        .filter(|entry| entry.is_candidate())
-        .filter_map(|entry| entry.artist_id)
+fn missing(items: &[LibraryItem], genres: &ArtistGenresBatch, at: i64) -> Pending {
+    let mut artists: Vec<&str> = items
+        .iter()
+        .filter_map(|item| item.artist_id.as_deref())
         .filter(|id| !id.trim().is_empty())
         .collect();
     artists.sort_unstable();
     artists.dedup();
     let mut pending = Vec::new();
     let mut cached = 0;
-    let mut failures = 0usize;
-    let mut first_failure = None;
     for id in artists {
-        let fresh = match store.artist_genres(&id) {
-            Ok(cached) => {
-                cached.is_some_and(|(_, fetched_at)| at.saturating_sub(fetched_at) < REFRESH_SECS)
-            }
-            Err(error) => {
-                failures += 1;
-                first_failure.get_or_insert(error);
-                false
-            }
-        };
+        let fresh = genres
+            .cached
+            .get(id)
+            .is_some_and(|(_, fetched_at)| at.saturating_sub(*fetched_at) < REFRESH_SECS);
         if fresh {
             cached += 1;
         } else {
-            pending.push(id);
+            pending.push(id.to_owned());
         }
     }
-    if let Some(error) = first_failure {
-        tracing::warn!(
-            failed_artists = failures,
-            %error,
-            "artist genre cache unavailable; keeping those artists pending"
-        );
-    }
-    Ok(Pending {
+    Pending {
         artists: pending,
         cached,
-    })
+    }
 }
 
 /// Discover work after an accepted full or playlist-only library update.
@@ -149,7 +133,8 @@ pub(super) fn status<S: Store + ?Sized>(
         state.changed_owner();
         return Ok(state);
     }
-    state.pending = missing(store, at)?.artists.len();
+    let (items, genres) = candidate_items_with_genres(store)?;
+    state.pending = missing(&items, &genres, at).artists.len();
     if store.spotify_library_owner()?.as_ref() != Some(receipt) {
         state.changed_owner();
     }
@@ -179,7 +164,10 @@ pub async fn continue_genres<S: Store + ?Sized>(
             state.owner = Some(receipt.owner_id.clone());
             state.generation = Some(receipt.generation);
             state.requires_refresh = false;
-            let pending = missing(store, at)?;
+            let pending = {
+                let (items, cached) = candidate_items_with_genres(store)?;
+                missing(&items, &cached, at)
+            };
             genres.cached = pending.cached;
             if store.spotify_library_owner()?.as_ref() != Some(receipt) {
                 state.changed_owner();
@@ -212,23 +200,29 @@ pub async fn continue_genres<S: Store + ?Sized>(
             }
             if store.spotify_library_owner()?.as_ref() != Some(receipt) {
                 state.changed_owner();
-            } else if !state.requires_refresh {
-                state.pending = missing(store, at)?.artists.len();
             }
         }
     } else {
         state.changed_owner();
     }
     state.retry_after_secs = session.retry_after_secs();
-    let library = summarize(&candidate_items(store)?);
+    // Refresh after network I/O: a concurrent same-owner library publication
+    // may have added candidates. Share this snapshot across pending counts,
+    // the library summary and album discovery, including the newly read tags.
+    let (items, cached) = candidate_items_with_genres(store)?;
+    if !state.requires_refresh {
+        state.pending = missing(&items, &cached, at).artists.len();
+    }
+    let library = summarize(&items);
     // Newly learned genres may reveal classical works needing album lists.
     // Discovery is local; album requests retain their separate pass budget.
-    let albums = match receipt.as_ref().filter(|_| !state.requires_refresh) {
-        Some(receipt) => super::albums::status(store, receipt, at)?,
+    let mut albums = match receipt.as_ref().filter(|_| !state.requires_refresh) {
+        Some(receipt) => super::albums::status_for_items(store, receipt, &items, at)?,
         None => AlbumContinuation::refresh_required(),
     };
     if store.spotify_library_owner()? != receipt {
         state.changed_owner();
+        albums = AlbumContinuation::refresh_required();
     }
     genres.deferred = state.pending.saturating_sub(genres.failed.len());
     let mut notes = sync_notes(&TasteRead::default(), &genres, &Expansion::default());
