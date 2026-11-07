@@ -72,6 +72,13 @@ def handle(data, addr, sock, attacker_ip, upstream):
     i += 4
     name = ".".join(labels).lower()
     hdr = b""
+    if qtype == 28 and name in NAMES:  # AAAA: answer empty (no IPv6) so units fall back to our A record
+        hdr = tid + struct.pack(">HHHHH", 0x8180, 1, 0, 0, 0)
+        question = data[12:i]
+        sock.sendto(hdr + question, addr)
+        with open("/tmp/q57-serve/dns.log", "a") as f:
+            f.write("AAAA %s (empty) from %s\n" % (name, addr[0]))
+        return
     if qtype == 1 and name in NAMES:  # A
         hdr = tid + struct.pack(">HHHHH", 0x8180, 1, 1, 0, 0)
         question = data[12:i]
