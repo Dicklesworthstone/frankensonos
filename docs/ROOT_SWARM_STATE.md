@@ -2125,3 +2125,24 @@ This is a checked null: the parsers need binary-level RE of the parse code
 (the Ghidra ppcproj has the upgrade binary imported) to identify the
 exact code paths before deeper mutation. The devmode statement lane and
 the S2 86.11 upgrade are the practical routes.
+
+### 2026-11-07 (sessions 13-15) — the complete campaign state
+
+DELIVERED:
+- Per-unit BSU delivery of VALIDLY SIGNED packages (the genuine downgrade/upgrade cycle proven on .84)
+- The offline verdict harness (chroot + qemu-ppc/css) — 300-mutant fuzz, checked null on the pre-signature parsers
+- The devmode portal inputs collected for all 3 units
+- The 86.11-82170 S2 upgrade downloaded from the CDN and delivered via BSU to .135 (fetched fully)
+- The type-3 exec wall fully mapped (trailing records after type-17 never execute, regardless of encryption)
+- The MOR analysis framework applied (decision contract, neutral case, operator passes)
+
+REMAINING (2 blockers, both requiring device-side visibility):
+- S1: the post-fetch install verdict (the upgrade.log on the unit)
+- S2: the exec-env child failure (the child's stderr)
+Both yield to one serial-console session.
+
+THE PRACTICAL PATHS (ranked):
+1. The devmode portal (5 min/serial, the owner fills the form) — the zero-exploit shell
+2. The band recalibration on .84's fresh 57.23 + the telnetd fire (the .aa exec primitive)
+3. The deep RE of the notify-thread's system() child environment
+4. The 86.11 upgrade as a new base for the type-3 modification (the S2 is on 86.10; the 86.11 upgrade was fetched but not installed — the BSU + deferred path needs investigation)
