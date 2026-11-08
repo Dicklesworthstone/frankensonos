@@ -2401,3 +2401,21 @@ values the daemon later parses (the URL fields, the SMAPI XML triad). The
 SMAPI XML parsers are the untested memory-surface behind it — reachable when
 a service session exists (the hhid chain) or via a second-order bug that
 mints one.
+
+### 2026-11-08 (session 19 final cont.) — the pre-mixer stall; the emulation state preserved
+
+After the clone patch, every daemon run reaches mod_zp then STALLS before the
+mixer thread (the audio HAL init wait). The one run that passed (21:36,
+'Running with audio output disabled') vs the stalls: no config difference
+found after the state audit (the mtd0 v3/v4, the audioctl/leds/chk present
+and absent, the flag, the fastdiag, the shim) — likely a race in the HAL
+init under emulation. Each iteration costs 10+ min of emulation wall time.
+
+The preserved state on css: /tmp/s23_anacapad_nopark (the daemon patches),
+/tmp/s23_anacapad_fastdiag (the +diag-retry 512→2), /tmp/s23_libc_v5 (the
+clone flags patch), /tmp/ledshim3.c, /tmp/launchd.py (the daemon fork
+launcher), the chroot /tmp/s23rootfs with the dev fakes + the jffs flag.
+The next session's entry: the pre-mixer stall — strace a stalled run, find
+the blocking futex/poll, and satisfy it; OR the full-system path
+(qemu-system-ppc + the S1 kernel.uImage, the mpc8544ds board — the kernel
+boots were not attempted to completion).
