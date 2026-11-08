@@ -111,6 +111,7 @@ const DashboardCore = (() => {
           try { data = JSON.parse(raw); } catch (_) { throw new Error('The daemon returned an unreadable response.'); }
           if (!response.ok) {
             const e = new Error(data?.detail || `Request failed (${response.status}).`);
+            if (typeof data?.code === 'string') e.code = data.code;
             e.hint = data?.hint; e.status = response.status;
             const retry = response.headers?.get('retry-after');
             e.retryAfter = retry && /^\d+$/.test(retry) ? Number(retry) * 1000

@@ -50,6 +50,10 @@ const REHEARSAL_STYLE: &str = include_str!("../../remote/dashboard-rehearsal.css
 const SOURCE_PLAYER: &str = include_str!("../../remote/source-player.js");
 const SOURCE: &str = include_str!("../../remote/dashboard-source.js");
 const SOURCE_STYLE: &str = include_str!("../../remote/dashboard-source.css");
+const SPOTIFY_CONNECT: &str = include_str!("../../remote/spotify-connect.js");
+const LIBRARY_SYNC: &str = include_str!("../../remote/library-sync.js");
+const MUSIC: &str = include_str!("../../remote/dashboard-music.js");
+const MUSIC_STYLE: &str = include_str!("../../remote/dashboard-music.css");
 const SCRIPT: &str = include_str!("../../remote/dashboard.js");
 
 fn document(content_type: &str, text: &str) -> Response {
@@ -82,7 +86,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{DIRECTION_STYLE}\n{PREFERENCES_STYLE}\n{REHEARSAL_STYLE}\n{SOURCE_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{DIRECTION_STYLE}\n{PREFERENCES_STYLE}\n{REHEARSAL_STYLE}\n{SOURCE_STYLE}\n{MUSIC_STYLE}"
                     ),
                 )
             },
@@ -99,7 +103,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{SOURCE_PLAYER}\n{SOURCE}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{SOURCE_PLAYER}\n{SOURCE}\n{SPOTIFY_CONNECT}\n{LIBRARY_SYNC}\n{MUSIC}\n{SCRIPT}"
                     ),
                 )
             },

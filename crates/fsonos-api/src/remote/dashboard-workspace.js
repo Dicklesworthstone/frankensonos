@@ -159,6 +159,7 @@ const DashboardWorkspace = (() => {
       if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) $(id).close();
     });
     return {
+      browseLibrary() { if (active && !immersive) { openSearch(); library?.open(); } },
       observe(state) {
         queue.observe(controller.selected());
         queueEditor.update();

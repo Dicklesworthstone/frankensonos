@@ -69,6 +69,36 @@ household's favorites, and plays the exact reviewed result rather than a new
 first-ranked match. These workflows share one mutation lane with transport and
 volume, retaining native policy and action logging.
 
+## Connect Spotify and refresh the music library
+
+Open **Music library** in the sidebar, or **Manage library** inside collection
+search. The **Library refresh** and **Spotify connection** tabs use the daemon's existing
+connection and refresh operations. They work before any speakers are discovered;
+choosing a room is only needed when you play or queue music.
+
+In **Spotify connection**, read the current status and review a new sign-in. Open the
+validated Spotify consent link, allow read-only access to library and taste, then
+return and check status. When using a phone or another computer, the completion
+form accepts the full callback address from the Spotify tab and submits only the
+required callback fields to this daemon. The form clears the pasted address
+after submission or when closed or hidden. Sign-in status reports cached
+credentials, not a live Spotify access check. Spotify must also be linked to
+each Sonos household through its Sonos app.
+
+Signing in does not automatically load music. Continue to **Library refresh** and
+explicitly request a refresh. The panel distinguishes the last completed full
+refresh from retained intake pages, artist genre enrichment and followed-artist
+progress. It shows daemon-reported cooldowns, pending work, limits and partial
+results without presenting retained pages as a complete public cache.
+**Browse cached music** returns to collection search and reads the selected
+category again; music selection keeps its existing playback review.
+
+Status observation runs only for the visible tab while the panel is open.
+Closing it, hiding the page or entering immersive mode stops those observations;
+a refresh already accepted by the daemon continues there. Unconfirmed requests
+are not replayed automatically. The design preview makes no connection or
+refresh requests. Connecting and refreshing do not start or skip music.
+
 ## Play a Spotify link or audio stream
 
 Use **Play a link** beside the stage's playback controls. Paste a Spotify share

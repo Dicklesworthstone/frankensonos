@@ -106,7 +106,12 @@ const DashboardLibraryPanel = (() => {
         }
         row.append(info, actions); rows.append(row);
       }
-      if (p && !p.items.length) rows.append(el('li', 'No cached matches. Try another category or sync the library in the full remote.', 'empty'));
+      if (p && !p.items.length) {
+        const empty = el('li', 'No cached matches. Try another category or refresh your Spotify library.', 'empty');
+        const manage = button('Connect or refresh Spotify', () => {}, 'manage-library');
+        manage.dataset.openMusic = 'library'; manage.setAttribute('aria-haspopup', 'dialog'); manage.setAttribute('aria-controls', 'music-dialog');
+        empty.append(manage); rows.append(empty);
+      }
       rows.scrollTop = scroll;
       if (focusAlbum && !state.loading) { focusAlbum = false; if (visible()) status.focus({ preventScroll: true }); }
       else if (focus && visible()) [...rows.querySelectorAll('button')].find(b => b.dataset.catalogKey === focus)?.focus({ preventScroll: true });
@@ -124,7 +129,12 @@ const DashboardLibraryPanel = (() => {
     });
     form.addEventListener('submit', e => { e.preventDefault(); if (visible()) { clearTimer(); void control.refresh(); } });
     render(control.state);
-    return { node, model: control, observe() { render(control.state); },
+    return { node, model: control, open() {
+      if (disposed || doc.hidden || !dialog.open) return;
+      clearTimer();
+      if (node.open) void control.refresh(); else node.open = true;
+      node.querySelector('summary')?.focus();
+    }, observe() { render(control.state); },
       suspend() { close(); control.suspend(); }, resume() { control.resume(); },
       dispose() { disposed = true; clearTimer(); control.dispose(); node.removeEventListener('toggle', toggle); dialog.removeEventListener('close', close); node.remove(); },
     };

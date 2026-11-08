@@ -1,0 +1,29 @@
+/* The dashboard music workflow uses the existing listening-room theme. */
+.music-dialog { width: min(820px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow: auto; }
+.music-header, .music-actions, .music-tabs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.music-header { justify-content: space-between; margin-bottom: 12px; }
+.music-header h2 { margin: 0; }
+.music-tabs { margin: 22px 0 18px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.music-tabs [aria-selected="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.music-section[hidden], .music-dialog [hidden] { display: none !important; }
+.music-actions { margin: 18px 0 12px; }
+.music-status { min-height: 1.5em; overflow-wrap: anywhere; }
+.music-notice { border-left: 3px solid var(--accent); padding: 10px 14px; background: var(--raised); line-height: 1.6; }
+.music-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
+.music-facts > .music-notice, .music-facts > .small-note { grid-column: 1 / -1; }
+.music-card, .music-review { border: 1px solid var(--line); background: var(--panel); border-radius: 12px; padding: 16px; min-width: 0; }
+.music-card h3 { margin: 0 0 12px; font-size: 1rem; }
+.music-card p, .music-card li { line-height: 1.55; overflow-wrap: anywhere; }
+.music-counts { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 14px; font-size: .88rem; }
+.music-counts dt { color: var(--muted); }
+.music-counts dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.music-review { margin: 16px 0; }
+.music-review button { margin: 4px 8px 0 0; }
+.music-address { display: block; padding: 12px; margin: 8px 0 16px; background: var(--raised); border-radius: 8px; overflow-wrap: anywhere; }
+.music-callback { margin: 20px 0; }
+.music-callback summary { cursor: pointer; }
+.music-callback label { display: block; margin: 14px 0 8px; }
+.music-callback textarea { display: block; box-sizing: border-box; width: 100%; resize: vertical; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; margin-bottom: 10px; }
+.music-manage { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.music-dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 600px) { .music-facts { grid-template-columns: minmax(0, 1fr); } .music-actions > button { flex: 1 1 180px; } }
