@@ -31,9 +31,11 @@ function fixture({demo=false,dom=false,network}={}) {
     track:{uri:'fixture:current',title:'Current song',queue_position:3,position_secs:20,duration_secs:300}}]));
   const queues=new Map(zones.map(zone=>[C.key(zone),{zone:zone.coordinator_room,total:12,revision:'queue:'+zone.household,playing:3,
     items:[{position:1,uri:'fixture:first',title:'First song'}]}]));
+  const catalogs=new Map(['S1','S2'].map(home=>['Den@'+home,[{id:'SQ:7',title:'Evening & Friends '+home}]]));
   let time=1000,reader=null,writer=null,onComplete=null,source;
   const calls=[],completed=[],read=url=>{
     if(url==='/zones')return copy(zones);
+    if(url.startsWith('/sonos/playlists?'))return copy(catalogs.get(new URLSearchParams(url.split('?')[1]).get('zone')));
     const target=decodeURIComponent(url.split('/')[2]||'');
     if(url.endsWith('/state'))return copy(rows.get(target));
     if(url.endsWith('/queue?offset=0&limit=1'))return copy(queues.get(target));
@@ -41,8 +43,8 @@ function fixture({demo=false,dom=false,network}={}) {
     throw new Error('Unexpected read '+url);
   };
   const write=(url,body)=>{
-    if(url==='/play')return {done:'Playback accepted',changed:true,notes:[{detail:'Volume capped.'}]};
-    assert.equal(url,'/queue');const q=queues.get(body.zone),count=body.source_uri.includes(':track:')?1:3;
+    if(url==='/play'||url==='/sonos/playlists/play')return {done:'Playback accepted',changed:true,notes:[{detail:'Volume capped.'}]};
+    assert.equal(url,'/queue');const q=queues.get(body.zone),count=body.playlist?3:body.source_uri.includes(':track:')?1:3;
     const first=body.next&&q.playing!==null?q.playing+1:q.total+1;
     q.total+=count;q.revision+=':added';
     return {done:'Source queued',zone:q.zone,first,count,playing_queue:q.playing!==null};
@@ -57,7 +59,7 @@ function fixture({demo=false,dom=false,network}={}) {
   const options={call,controller,now:()=>time,completed:async result=>{completed.push(result);if(onComplete)await onComplete(result);}};
   const doc=dom?documentFixture():null;
   source=dom?Source.panel({...options,document:doc}):Source.model(options);
-  return {controller,source,zones,rows,queues,calls,completed,doc,
+  return {controller,source,zones,rows,queues,catalogs,calls,completed,doc,
     read(fn){reader=fn;},write(fn){writer=fn;},after(fn){onComplete=fn;},time(n){time=n;},
     writes:()=>calls.filter(row=>row.body!==undefined),
     async ready(){assert.equal(await controller.refresh(),true);controller.connection(true);return this;}};
@@ -292,4 +294,108 @@ test('real HTTP adapter sends the reviewed source once and validates the native 
   const writes=received.filter(row=>row.method!=='GET');assert.equal(writes.length,1);
   assert.deepEqual(writes[0],{url:'/queue',method:'POST',body:{zone:'Den@S2',source_uri:uri('artist'),next:false},contentType:'application/json'});
   assert.equal(f.source.state.result.status,'accepted');
+});
+
+async function reviewSaved(f,mode='play') {
+  f.source.open();f.source.edit('sourceType','playlist');assert.equal(await f.source.loadPlaylists(),true);
+  assert.equal(f.source.edit('playlist','SQ:7'),true);f.source.edit('mode',mode);
+  const p=await f.source.review();assert.ok(p);return p;
+}
+
+for(const home of ['S1','S2'])for(const mode of ['play','next','end'])test('dashboard saved playlist '+mode+' stays within '+home,async()=>{
+  const f=await fixture().ready();f.controller.select('Den@'+home);const p=await reviewSaved(f,mode);
+  assert.equal(p.title,'Evening & Friends '+home);assert.equal(p.item.kind,'sonos_playlist');assert.equal(p.before.queue.total,12);
+  assert.equal(f.writes().length,0);assert.equal(await f.source.apply(p),true);assert.equal(await f.source.apply(p),false);
+  assert.deepEqual(f.writes().map(({url,body})=>({url,body})),[{url:mode==='play'?'/sonos/playlists/play':'/queue',
+    body:{zone:'Den@'+home,playlist:'SQ:7',...(mode==='play'?{}:{next:mode==='next'})}}]);
+  const catalogs=f.calls.filter(({url})=>url.startsWith('/sonos/playlists?'));
+  assert.equal(catalogs.length,3);assert.ok(catalogs.every(({url})=>url==='/sonos/playlists?zone=Den%40'+home));
+});
+
+test('dashboard selection change cannot carry the same saved id between households',async()=>{
+  const f=await fixture().ready(),p=await reviewSaved(f);f.controller.select('Den@S1');
+  assert.equal(f.source.state.playlist,'');assert.deepEqual(f.source.state.playlists,[]);
+  assert.equal(await f.source.apply(p),false);assert.equal(await f.source.review(),null);assert.equal(f.source.edit('playlist','SQ:7'),false);
+  assert.equal(await f.source.loadPlaylists(),true);assert.equal(f.source.state.playlist,'');
+  f.source.edit('playlist','SQ:7');const next=await f.source.review();assert.equal(next.title,'Evening & Friends S1');
+  assert.equal(await f.source.apply(next),true);assert.equal(f.writes()[0].body.zone,'Den@S1');
+});
+
+test('dashboard saved catalog changes or permission errors invalidate review without a write',async()=>{
+  for(const catalog of [[],[{id:'SQ:7',title:'Renamed'}]]){
+    const f=await fixture().ready(),p=await reviewSaved(f);f.catalogs.set('Den@S2',catalog);
+    assert.equal(await f.source.apply(p),false);assert.equal(f.writes().length,0);assert.equal(f.source.state.result.status,'not_sent');
+  }
+  const f=await fixture().ready();await reviewSaved(f);f.read((url,options,normal)=>{
+    if(url.startsWith('/sonos/playlists?'))throw Object.assign(new Error('Not allowed'),{hint:'Ask the owner to allow listing favorites.'});
+    return normal(url);
+  });
+  assert.equal(await f.source.loadPlaylists(),false);assert.equal(f.source.state.playlistStatus,'error');
+  assert.match(f.source.state.message,/Ask the owner/);assert.equal(f.source.state.playlist,'');assert.equal(f.source.state.pending,null);
+});
+
+test('late dashboard playlist reads are aborted and cannot revive a prior destination',async()=>{
+  const f=await fixture().ready();await reviewSaved(f);const gate=deferred();
+  f.read((url,options,normal)=>url.startsWith('/sonos/playlists?')?gate.promise:normal(url));
+  const work=f.source.loadPlaylists();await settled(()=>f.source.state.loading);
+  const signal=f.calls.at(-1).options.signal;f.controller.select('Den@S1');assert.equal(signal.aborted,true);
+  gate.resolve(f.catalogs.get('Den@S2'));assert.equal(await work,false);
+  assert.deepEqual(f.source.state.playlists,[]);assert.equal(f.source.state.playlist,'');assert.equal(f.writes().length,0);
+});
+
+test('native playlist replacement preserves queue and playback preflight guards',async()=>{
+  for(const change of [f=>{f.queues.get('Den@S2').revision='changed';},f=>{f.rows.get('Den@S2').track.uri='sample:other';},
+    f=>{f.zones[0].members.push('Other');}]){
+    const f=await fixture().ready(),p=await reviewSaved(f);change(f);
+    assert.equal(await f.source.apply(p),false);assert.equal(f.writes().length,0);
+  }
+});
+
+test('saved playlist confirmation shares the command lane and never retries an ambiguous reply',async()=>{
+  const f=await fixture().ready(),p=await reviewSaved(f),gate=deferred();f.write(()=>gate.promise);
+  const work=f.source.apply(p);await settled(()=>f.writes().length===1);
+  assert.equal(await f.source.apply(p),false);assert.equal(await f.controller.command('pause'),false);
+  f.source.close();gate.reject(new Error('Reply lost'));assert.equal(await work,false);
+  f.source.open();assert.equal(await f.source.apply(p),false);assert.equal(f.writes().length,1);
+  assert.equal(f.source.state.result.status,'uncertain');assert.equal(f.writes()[0].url,'/sonos/playlists/play');
+});
+
+test('dashboard playlist picker uses text labels and an explicit review for the selected group',async()=>{
+  const f=await fixture({dom:true}).ready(),$=id=>f.doc.getElementById(id),title='<script>Evening & Friends</script>';
+  f.catalogs.set('Den@S2',[{id:'SQ:7',title}]);$('open-source').fire('click');
+  $('source-type').value='playlist';$('source-type').fire('change');await settled(()=>f.source.state.playlistStatus==='ready');
+  assert.equal($('source-link-field').hidden,true);assert.equal($('source-playlist-field').hidden,false);
+  assert.equal($('source-playlist').children[1].textContent,title);assert.equal($('source-playlist').children[1].tag,'option');
+  $('source-playlist').value='SQ:7';$('source-playlist').fire('change');$('source-review').fire('click');
+  await settled(()=>!!f.source.state.pending);assert.match($('source-preview-title').textContent,/<script>Evening & Friends/);
+  assert.match($('source-preview-effect').textContent,/saved Sonos playlist/);assert.match($('source-preview-target').textContent,/S2/);
+  assert.equal(f.writes().length,0);$('source-confirm').fire('click');await settled(()=>!!f.source.state.result);
+  assert.deepEqual(f.writes()[0].body,{zone:'Den@S2',playlist:'SQ:7'});
+});
+
+test('dashboard playlist catalog uses an explicit encoded group over real HTTP',async t=>{
+  let raw,origin;const received=[];
+  const server=http.createServer(async(request,response)=>{
+    const chunks=[];for await(const chunk of request)chunks.push(chunk);
+    const body=chunks.length?JSON.parse(Buffer.concat(chunks).toString('utf8')):undefined;
+    received.push({url:request.url,method:request.method,body});
+    try{const value=await raw(request.url,body);response.writeHead(200,{'Content-Type':'application/json'});response.end(JSON.stringify(value));}
+    catch(error){response.writeHead(500,{'Content-Type':'application/json'});response.end(JSON.stringify({detail:error.message}));}
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));origin='http://127.0.0.1:'+server.address().port;
+  t.after(()=>{server.closeAllConnections();server.close();});
+  const f=await fixture({network(fn){raw=fn;return C.request({fetcher:(url,options)=>fetch(origin+url,options)});}}).ready();
+  await reviewSaved(f,'next');assert.equal(await f.source.apply(),true);
+  assert.deepEqual(received.filter(row=>row.method==='POST'),[{url:'/queue',method:'POST',body:{zone:'Den@S2',playlist:'SQ:7',next:true}}]);
+  assert.equal(received.filter(row=>row.url==='/sonos/playlists?zone=Den%40S2').length,3);
+});
+
+
+test('saved playlist expansion gets the long command deadline without a retry',async()=>{
+  let expire,budget,calls=0,cancelled=false;
+  const request=C.request({fetcher:async()=>{calls++;return{ok:true,text:()=>new Promise(()=>{})};},
+    schedule:(fn,ms)=>{expire=fn;budget=ms;return 1;},cancel:()=>{cancelled=true;}});
+  const waiting=request('/sonos/playlists/play',{zone:'Den@S2',playlist:'SQ:7'});
+  assert.equal(budget,600000);expire();await assert.rejects(waiting,/No command confirmation/);
+  assert.equal(calls,1);assert.equal(cancelled,true);
 });

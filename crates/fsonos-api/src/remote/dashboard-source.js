@@ -1,4 +1,4 @@
-// Direct sources use native playback/queue commands and the shared dashboard lane.
+// Links and saved Sonos playlists share the dashboard command lane.
 'use strict';
 const DashboardSource = (() => {
   const C = typeof DashboardCore !== 'undefined' ? DashboardCore : require('./dashboard-core.js');
@@ -16,6 +16,9 @@ const DashboardSource = (() => {
   }
   function effect(review) {
     const q = review.before.queue;
+    if (review.mode === 'play' && review.item.kind === 'sonos_playlist') {
+      return 'Replace the current queue with this saved Sonos playlist and start playback. The speakers supply its current contents.';
+    }
     if (review.mode === 'play') return review.item.container
       ? 'Replace the current queue with this album or playlist and start playback. The live source can contain music that is not in the local cache.'
       : 'Replace the current source and start playback. The existing queue remains available; any DJ session can remain stored while this source plays.';
@@ -26,7 +29,8 @@ const DashboardSource = (() => {
 
   function model({ call, controller, changed = () => {}, completed = () => {}, now = () => performance.now() }) {
     let version = 0, active = true, disposed = false, reading = null;
-    const state = { open: false, target: '', scope: '', group: null, input: '', title: '', mode: 'play',
+    const state = { open: false, target: '', scope: '', group: null, sourceType: 'link', input: '', title: '', mode: 'play',
+      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle',
       loading: false, writing: false, pending: null, result: null, message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const live = () => !disposed && active && state.open;
@@ -38,9 +42,12 @@ const DashboardSource = (() => {
       && controller.state.topologyFresh && controller.canControl());
     function retire(message) {
       ++version; reading?.abort(); reading = null; state.loading = false; state.pending = null;
+      if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (message) state.message = message;
     }
+    const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; };
     function destination() {
+      if (!matching()) clearPlaylists();
       state.target = target(); state.scope = scope();
       try { state.group = controller.selected() ? P.groups([controller.selected().zone])[0] : null; }
       catch (error) { state.group = null; state.message = C.problem(error); }
@@ -58,15 +65,42 @@ const DashboardSource = (() => {
       publish();
     }
     function edit(field, value) {
-      if (!editable() || typeof value !== 'string' || !['input', 'title', 'mode'].includes(field)
+      if (!editable() || typeof value !== 'string' || !['sourceType', 'playlist', 'input', 'title', 'mode'].includes(field)
           || (field === 'mode' && !Object.hasOwn(P.modes, value))) return false;
-      retire(); state[field] = value; state.message = ''; publish(); return true;
+      if (field === 'sourceType' && !['link', 'playlist'].includes(value)) return false;
+      if (field === 'playlist' && (state.playlistStatus !== 'ready' || state.playlistTarget !== state.target
+          || !state.playlists.some(item => item.id === value))) return false;
+      retire(); if (field === 'sourceType') clearPlaylists();
+      state[field] = value; state.message = ''; publish(); return true;
     }
+    async function loadPlaylists() {
+      if (!editable() || state.sourceType !== 'playlist' || !state.group || !matching()
+          || !controller.state.topologyFresh || !controller.canControl()) return false;
+      retire(); clearPlaylists();
+      const v = version, selected = state.target, abort = new AbortController();
+      reading = abort; state.loading = true; state.playlistStatus = 'loading'; state.message = 'Reading saved Sonos playlists…'; publish();
+      try {
+        const value = await call('/sonos/playlists?zone=' + encodeURIComponent(selected), undefined, { signal: abort.signal });
+        if (!live() || v !== version || abort.signal.aborted || !matching()) return false;
+        state.playlists = P.playlists(value); state.playlistTarget = selected; state.playlistStatus = 'ready'; state.message = '';
+        return true;
+      } catch (error) {
+        if (live() && v === version) { state.playlistStatus = 'error'; state.message = C.problem(error); }
+        return false;
+      } finally {
+        if (reading === abort) { reading = null; state.loading = false; publish(); }
+      }
+    }
+
     async function inspect(reviewed, options, valid) {
       valid();
       const groups = P.groups(C.zones(await call('/zones', undefined, options))); valid();
       if (!groups.some(group => group.target === reviewed.target && group.signature === reviewed.group.signature)) {
         fail('The destination group changed. Refresh playback and review again.');
+      }
+      if (reviewed.item.kind === 'sonos_playlist') {
+        const catalog = await call('/sonos/playlists?zone=' + encodeURIComponent(reviewed.target), undefined, options); valid();
+        P.verifyPlaylist(catalog, reviewed.item);
       }
       const base = '/zones/' + encodeURIComponent(reviewed.target);
       const queueNeeded = reviewed.mode !== 'play' || reviewed.item.container;
@@ -77,13 +111,15 @@ const DashboardSource = (() => {
       valid();
       return observation(playback, queue, reviewed.zone, reviewed.group, reviewed.mode);
     }
-    const canReview = () => !!(ready() && state.input.trim());
+    const canReview = () => !!(ready() && (state.sourceType === 'playlist'
+      ? state.playlist && state.playlistStatus === 'ready' && state.playlistTarget === state.target : state.input.trim()));
     async function review() {
       if (!canReview()) return null;
       retire();
       const v = version, at = now(), abort = new AbortController();
       let choice;
-      try { choice = P.prepare(state.input, state.title, state.mode); }
+      try { choice = state.sourceType === 'playlist' ? P.preparePlaylist(state.playlist, state.playlists, state.mode)
+        : P.prepare(state.input, state.title, state.mode); }
       catch (error) { state.message = C.problem(error); publish(); return null; }
       const proposed = { ...choice, target: state.target, scope: state.scope, group: state.group,
         zone: controller.selected().zone, version: v, at };
@@ -96,8 +132,7 @@ const DashboardSource = (() => {
       };
       try {
         const before = await inspect(proposed, { signal: abort.signal }, valid); valid();
-        const body = { zone: proposed.target, source_uri: proposed.item.uri,
-          ...(proposed.title ? { title: proposed.title } : {}), ...(proposed.mode === 'play' ? {} : { next: proposed.mode === 'next' }) };
+        const body = P.commandBody(proposed, proposed.target);
         state.pending = Object.freeze({ ...proposed, before, body: Object.freeze(body) });
         state.message = ''; return state.pending;
       } catch (error) {
@@ -129,14 +164,15 @@ const DashboardSource = (() => {
           }
           state.message = reviewed.mode === 'play' ? 'Starting the reviewed source…' : 'Adding the reviewed source to the queue…'; publish();
           valid(); reading = null;
-          const value = await send(reviewed.mode === 'play' ? '/play' : '/queue', reviewed.body);
+          const route = reviewed.mode === 'play' ? reviewed.item.kind === 'sonos_playlist' ? '/sonos/playlists/play' : '/play' : '/queue';
+          const value = await send(route, reviewed.body);
           if (reviewed.mode === 'play') { detail = P.outcome(value); return value; }
           detail = P.queued(value, reviewed.group);
           return { done: detail, changed: true };
         }, { wholeHouse: false });
         if (!disposed) {
           state.result = Object.freeze({ status: ok ? 'accepted' : controller.state.uncertain ? 'uncertain' : 'not_sent',
-            mode: reviewed.mode, target: reviewed.group.label, source: reviewed.item.uri, title: reviewed.title,
+            mode: reviewed.mode, target: reviewed.group.label, source: reviewed.item.id || reviewed.item.uri, title: reviewed.title,
             detail: ok ? detail : controller.state.message || 'No command was sent. Review the source again.' });
           state.message = state.result.detail;
         }
@@ -160,11 +196,11 @@ const DashboardSource = (() => {
       }
       publish(); return true;
     }
-    return { state, observe, editable, edit, canReview, review, canApply, apply, open,
+    return { state, observe, editable, edit, loadPlaylists, canReview, review, canApply, apply, open,
       cancelReview() { if (state.writing) return false; retire(); state.message = ''; publish(); return true; },
       clearDraft() {
         if (!editable()) return false;
-        retire(); state.input = ''; state.title = ''; state.mode = 'play';
+        retire(); clearPlaylists(); state.sourceType = 'link'; state.input = ''; state.title = ''; state.mode = 'play';
         state.message = 'Source draft cleared. No playback command was sent.'; publish(); return true;
       },
       offer(value) {
@@ -172,10 +208,10 @@ const DashboardSource = (() => {
         let offered;
         try { offered = P.offeredSource(value); }
         catch (error) { state.message = C.problem(error); publish(); return false; }
-        if (state.loading || state.pending || state.input.trim() || state.title.trim()) {
+        if (state.loading || state.pending || state.input.trim() || state.title.trim() || state.playlist) {
           state.open = true; state.message = 'Finish this source action, or clear its draft before importing another source.'; publish(); return false;
         }
-        open(); state.input = offered.input; state.title = offered.title; state.mode = 'play'; publish(); return true;
+        open(); clearPlaylists(); state.sourceType = 'link'; state.input = offered.input; state.title = offered.title; state.mode = 'play'; publish(); return true;
       },
       close() { state.open = false; retire(); publish(); },
       suspend() { active = false; state.open = false; retire(); publish(); },
@@ -186,7 +222,7 @@ const DashboardSource = (() => {
 
   function panel({ call, controller, completed, document: doc = document, now }) {
     const $ = id => doc.getElementById(id), dialog = $('source-dialog'), trigger = $('open-source'), preview = $('source-preview');
-    let opener = null, reviewFocus = null, shown = null;
+    let opener = null, reviewFocus = null, shown = null, shownPlaylists = null, shownPlaylistStatus = '';
     const control = model({ call, controller, completed, now, changed: render });
     function render(s) {
       trigger.disabled = !controller.state.active || (controller.state.busy && !s.writing) || (!controller.selected() && !s.result);
@@ -197,6 +233,29 @@ const DashboardSource = (() => {
         const input = $('source-' + field); input.disabled = !control.editable();
         if (input.value !== s[field]) input.value = s[field];
       }
+      $('source-type').value = s.sourceType; $('source-type').disabled = !control.editable();
+      const saved = s.sourceType === 'playlist';
+      for (const id of ['source-link-field', 'source-title-field', 'source-kinds']) $(id).hidden = saved;
+      for (const id of ['source-playlist-field', 'source-playlist-controls']) $(id).hidden = !saved;
+      if (shownPlaylists !== s.playlists || shownPlaylistStatus !== s.playlistStatus) {
+        shownPlaylists = s.playlists; shownPlaylistStatus = s.playlistStatus;
+        const caption = s.playlistStatus === 'loading' ? 'Loading playlists…'
+          : s.playlistStatus === 'ready' ? s.playlists.length ? 'Choose a playlist…' : 'No saved Sonos playlists'
+            : 'Refresh playlists for this group';
+        const placeholder = doc.createElement('option'); placeholder.value = ''; placeholder.textContent = caption; placeholder.disabled = true;
+        $('source-playlist').replaceChildren(placeholder);
+        for (const item of s.playlists) {
+          const option = doc.createElement('option'); option.value = item.id; option.textContent = item.title || item.id;
+          $('source-playlist').append(option);
+        }
+      }
+      $('source-playlist').value = s.playlist;
+      $('source-playlist').disabled = !control.editable() || s.playlistStatus !== 'ready' || !s.playlists.length;
+      $('source-playlist-refresh').disabled = !control.editable() || s.loading || !s.group || !controller.canControl();
+      $('source-playlist-help').textContent = s.playlistStatus === 'ready' ? s.playlists.length
+        ? 'Saved on the speakers in this household. Their current contents are read when you play or queue a playlist.'
+        : 'This household has no saved Sonos playlists. Save a playlist in Sonos, then refresh here.'
+        : s.group ? 'Read saved playlists for the selected group.' : 'Select a listening group first.';
       $('source-context').textContent = s.group ? 'Destination: ' + s.group.label : 'Select a listening group first.';
       $('source-review').textContent = s.mode === 'play' ? 'Review playback' : 'Review queue addition';
       $('source-review').disabled = !control.canReview(); $('source-clear').disabled = !control.editable();
@@ -206,7 +265,7 @@ const DashboardSource = (() => {
       if (s.pending) {
         const p = s.pending, q = p.before.queue;
         $('source-preview-title').textContent = P.modes[p.mode] + ': ' + (p.title || p.item.uri);
-        $('source-preview-source').textContent = p.item.uri;
+        $('source-preview-source').textContent = p.item.kind === 'sonos_playlist' ? 'Saved Sonos playlist · ' + p.item.id : p.item.uri;
         $('source-preview-target').textContent = p.group.label;
         $('source-preview-current').textContent = p.before.label;
         $('source-preview-effect').textContent = effect(p);
@@ -226,7 +285,15 @@ const DashboardSource = (() => {
       else if (!s.pending && shown && s.open && reviewFocus && !reviewFocus.disabled) reviewFocus.focus();
       shown = s.pending;
     }
-    trigger.addEventListener('click', () => { opener = doc.activeElement; control.open(); });
+    trigger.addEventListener('click', () => {
+      opener = doc.activeElement;
+      if (control.open() && control.state.sourceType === 'playlist') void control.loadPlaylists();
+    });
+    $('source-type').addEventListener('change', event => {
+      if (control.edit('sourceType', event.target.value) && control.state.sourceType === 'playlist') void control.loadPlaylists();
+    });
+    $('source-playlist').addEventListener('change', event => control.edit('playlist', event.target.value));
+    $('source-playlist-refresh').addEventListener('click', () => { void control.loadPlaylists(); });
     for (const field of ['input', 'title', 'mode']) {
       $('source-' + field).addEventListener(field === 'mode' ? 'change' : 'input', event => control.edit(field, event.target.value));
     }

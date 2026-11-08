@@ -870,7 +870,7 @@ the house to agents they can bound and reverse. The guardrails live in
   `fsonos log`, `fsonos undo`, MCP `recent_actions` and `undo_last`. Undo says
   what it could not restore (for example, a queue that was replaced since).
 
-### 12.6 Favorites and library search as play sources
+### 12.6 Favorites, saved Sonos playlists and library search as play sources
 
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
@@ -878,6 +878,19 @@ earliest real playback on both S1 and S2, and the fallback §6 calls for when a
 Spotify track won't enqueue. Library search is token-scored fuzzy matching over
 the cached library and favorites (title, composer, performer, album). The
 surfaces are in 12.3.
+
+Native saved Sonos playlists are also readable and playable directly from the
+household's `SQ:` catalog, independent of favorites or Spotify's cached library.
+`fsonos playlists <room>` lists them; `play <room> --playlist <name-or-id>`
+replaces the current queue, while `--next` / `--queue` use confirmed native
+container insertion and exact-range undo. The phone remote and desktop dashboard
+offer the same saved catalog with play/next/append controls. HTTP and MCP share
+the catalog, permissions, volume caps and action log. Both Sonos DIDL element forms are
+preserved, playlist ids stay household-local, and an uncertain enqueue is not
+automatically replayed. Native saved-playlist favorites also expand as
+containers, including file-backed resources. See
+[`docs/SONOS_PLAYLISTS.md`](docs/SONOS_PLAYLISTS.md) for the interface and failure
+contract; simulator coverage is separate from physical-speaker acceptance.
 
 ### 12.7 Scenes
 

@@ -184,7 +184,8 @@ test('source imports cannot carry a destination, queue position, action or unkno
   }
 });
 
-for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) for (const gen of ['S1', 'S2']) for (const mode of ['play', 'next', 'end']) {
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) for (const gen of ['S1', 'S2'])
+  for (const mode of ['artist', 'show'].includes(kind) ? ['next', 'end'] : ['play', 'next', 'end']) {
   test(`recorded ${kind} reaches ${gen} ${mode} only after selecting, reviewing and confirming`, async () => {
     const f = playerFixture(), row = play({ room: 'Study', source_uri: `spotify:${kind}:0000000000000000000001` });
     assert.equal(await f.m.offer(history.replayOf(row, sourcePlayer.source)), true);
@@ -200,6 +201,21 @@ for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) 
       zone: `Study@${gen}`, source_uri: row.source_uri, title: row.title, ...(mode === 'play' ? {} : { next: mode === 'next' }),
     } }]);
     assert.ok(f.calls.filter(([n]) => n === 'state').every(([, a]) => a.params.room === `Study@${gen}`));
+  });
+}
+
+for (const kind of ['artist', 'show']) for (const gen of ['S1', 'S2']) {
+  test(`recorded ${kind} cannot bypass the direct-play refusal in ${gen}`, async () => {
+    const f = playerFixture(), row = play({ room: 'Study', source_uri: `spotify:${kind}:0000000000000000000001` });
+    assert.equal(await f.m.offer(history.replayOf(row, sourcePlayer.source)), true);
+    assert.equal(f.m.edit('target', `Study@${gen}`), true);
+    const before = f.calls.length;
+    assert.equal(await f.m.review(), false);
+    assert.equal(f.calls.length, before, 'unsupported direct playback fails before any destination reads');
+    assert.equal(f.m.state.pending, null); assert.equal(await f.m.confirm(f.m.state.pending), false);
+    assert.equal(f.writes().length, 0, 'history import cannot silently queue or dispatch a playback fallback');
+    assert.equal(f.m.state.input, row.source_uri); assert.equal(f.m.state.mode, 'play');
+    assert.match(f.m.state.message, /Choose Queue next or Queue at end/);
   });
 }
 

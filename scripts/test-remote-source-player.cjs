@@ -66,19 +66,24 @@ test('groups distinguish households and reject missing or contradictory membersh
 });
 
 function harness(options = {}) {
-  const h = { zones: [zone()], now: state(), calls: [], custom: null, changes: 0, executions: 0 };
+  const h = { zones: [zone()], now: state(), calls: [], custom: null, changes: 0, executions: 0,
+    catalogs: new Map(['S1', 'S2'].map(home => ['Den@' + home, [{ id: 'SQ:7', title: 'Evening & Friends ' + home }]])),
+    queue: { zone: 'Den', total: 12, playing: 3, revision: 'sample-revision-1', items: [{ position: 1 }] } };
   h.api = Player.model({
     call: async (name, args) => {
       h.calls.push([name, args]);
       if (h.custom) { const answer = h.custom(name, args); if (answer !== undefined) return answer; }
       if (name === 'zones') return structuredClone(h.zones);
       if (name === 'state') return structuredClone(h.now);
-      if (name === 'sourcePlay') return { done: 'Playback accepted', changed: true, notes: [{ detail: 'Volume capped.' }] };
+      if (name === 'sourcePlay' || name === 'sourcePlaylistPlay') return { done: 'Playback accepted', changed: true, notes: [{ detail: 'Volume capped.' }] };
+      if (name === 'sourcePlaylists') return structuredClone(h.catalogs.get(args.query.zone));
+      if (name === 'sourceQueueState') return structuredClone(h.queue);
+      if (name === 'sourceQueue') return { done: 'Queued playlist', zone: 'Den', first: args.body.next ? 4 : 13, count: 3, playing_queue: true };
       throw new Error(`Unexpected call ${name}`);
     },
     changed: () => { h.changes++; }, execute: async (_, work) => { h.executions++; return work(); }, ...options,
   });
-  h.writes = () => h.calls.filter(([name]) => name === 'sourcePlay');
+  h.writes = () => h.calls.filter(([name]) => ['sourcePlay', 'sourcePlaylistPlay', 'sourceQueue'].includes(name));
   h.open = async (input = `spotify:track:${ID}`) => {
     await h.api.refresh(); h.api.edit('target', `${h.zones[0].coordinator_room}@${h.zones[0].household}`); h.api.edit('input', input);
   };
@@ -339,4 +344,104 @@ test('artist and show links require an explicit queue mode before any destinatio
       assert.equal(prepared.item.kind, kind); assert.equal(prepared.mode, mode);
     }
   }
+});
+
+async function savedPlaylistReview(h, mode = 'play', target = 'Den@S2') {
+  await h.api.refresh(); h.api.edit('target', target); h.api.edit('sourceType', 'playlist');
+  assert.equal(await h.api.loadPlaylists(), true); assert.equal(h.api.edit('playlist', 'SQ:7'), true);
+  h.api.edit('mode', mode); assert.equal(await h.api.review(), true); return h.api.state.pending;
+}
+
+for (const home of ['S1', 'S2']) for (const mode of ['play', 'next', 'end']) {
+  test(`saved Sonos playlists ${mode} through one reviewed ${home} command`, async () => {
+    const h = harness(); h.zones = [zone('S1'), zone('S2')]; h.now = state(zone(home));
+    const target = 'Den@' + home, p = await savedPlaylistReview(h, mode, target);
+    assert.equal(p.item.kind, 'sonos_playlist'); assert.equal(p.title, 'Evening & Friends ' + home);
+    assert.equal(p.before.queue.total, 12); assert.equal(h.writes().length, 0);
+    assert.equal(await h.api.confirm(p), true); assert.equal(await h.api.confirm(p), false);
+    assert.deepEqual(h.writes(), [[mode === 'play' ? 'sourcePlaylistPlay' : 'sourceQueue', {
+      body: { zone: target, playlist: 'SQ:7', ...(mode === 'play' ? {} : { next: mode === 'next' }) },
+    }]]);
+    assert.equal(h.calls.filter(([name]) => name === 'sourcePlaylists').length, 3, 'list, review and confirmation each read the catalog');
+    assert.ok(h.calls.filter(([name]) => name === 'sourcePlaylists').every(([, args]) => args.query.zone === target));
+  });
+}
+
+test('switching households retires the saved playlist and never carries a matching SQ id across', async () => {
+  const h = harness(); h.zones = [zone('S1'), zone('S2')]; const p = await savedPlaylistReview(h);
+  h.api.edit('target', 'Den@S1'); h.now = state(zone('S1'));
+  assert.equal(h.api.state.playlist, ''); assert.deepEqual(h.api.state.playlists, []);
+  assert.equal(await h.api.confirm(p), false); assert.equal(await h.api.review(), false);
+  assert.equal(h.api.edit('playlist', 'SQ:7'), false); assert.equal(await h.api.loadPlaylists(), true);
+  assert.equal(h.api.state.playlist, '', 'a fresh catalog still requires an explicit selection');
+  h.api.edit('playlist', 'SQ:7'); await h.api.review(); assert.equal(h.api.state.pending.title, 'Evening & Friends S1');
+  assert.equal(await h.api.confirm(h.api.state.pending), true); assert.equal(h.writes()[0][1].body.zone, 'Den@S1');
+});
+
+test('renamed or removed saved playlists prevent writes after review', async () => {
+  for (const catalog of [[], [{ id: 'SQ:7', title: 'A different playlist' }]]) {
+    const h = harness(), p = await savedPlaylistReview(h); h.catalogs.set('Den@S2', catalog);
+    assert.equal(await h.api.confirm(p), false); assert.equal(h.writes().length, 0);
+    assert.equal(h.api.state.result.status, 'not_sent'); assert.match(h.api.state.result.detail, /changed or disappeared/);
+  }
+});
+
+test('failed and malformed saved catalogs are distinct from an empty household', async () => {
+  for (const value of [null, {}, [{ id: 'SQ:7', title: null }], [{ id: ['SQ:7'], title: 'Invalid' }],
+    [{ id: 'FV:2/7', title: 'Favorite' }], [{ id: 'SQ:7', title: 'A' }, { id: 'SQ:7', title: 'B' }]]) {
+    const h = harness(); await savedPlaylistReview(h); h.custom = name => name === 'sourcePlaylists' ? value : undefined;
+    assert.equal(await h.api.loadPlaylists(), false); assert.equal(h.api.state.playlistStatus, 'error');
+    assert.equal(h.api.state.pending, null); assert.equal(h.api.state.playlist, ''); assert.equal(h.writes().length, 0);
+  }
+  const h = harness(); await savedPlaylistReview(h); h.catalogs.set('Den@S2', []);
+  assert.equal(await h.api.loadPlaylists(), true); assert.equal(h.api.state.playlistStatus, 'ready');
+  assert.deepEqual(h.api.state.playlists, []); assert.equal(await h.api.review(), false);
+});
+
+test('a delayed saved catalog cannot populate another household or a closed panel', async () => {
+  for (const cancel of [h => h.api.edit('target', 'Den@S1'), h => h.api.close()]) {
+    const h = harness(); h.zones = [zone('S1'), zone('S2')]; await savedPlaylistReview(h);
+    const wait = defer(); h.custom = name => name === 'sourcePlaylists' ? wait.promise : undefined;
+    const read = h.api.loadPlaylists(); await settle(); cancel(h); wait.resolve(h.catalogs.get('Den@S2'));
+    assert.equal(await read, false); assert.deepEqual(h.api.state.playlists, []); assert.equal(h.api.state.playlist, '');
+    assert.equal(h.api.state.pending, null); assert.equal(h.writes().length, 0);
+  }
+});
+
+test('saved playlist replacement binds the old queue and never replaces a changed queue', async () => {
+  const h = harness(), p = await savedPlaylistReview(h); h.queue.revision = 'changed';
+  assert.equal(await h.api.confirm(p), false); assert.equal(h.writes().length, 0); assert.equal(h.api.state.result.status, 'not_sent');
+});
+
+test('uncertain native playlist replies consume consent without replay or direct-link fallback', async () => {
+  for (const response of [{}, new Error('reply lost')]) {
+    const h = harness(), p = await savedPlaylistReview(h); h.custom = name => {
+      if (name !== 'sourcePlaylistPlay') return undefined;
+      if (response instanceof Error) throw response;
+      return response;
+    };
+    assert.equal(await h.api.confirm(p), false); assert.equal(h.api.state.result.status, 'uncertain');
+    h.api.close(); await h.api.refresh(); assert.equal(await h.api.confirm(p), false);
+    assert.equal(h.writes().length, 1); assert.equal(h.writes()[0][0], 'sourcePlaylistPlay');
+  }
+});
+
+test('phone playlist picker renders untrusted titles as text and reviews before playing', async () => {
+  const calls = [], title = '<img src=x onerror=alert(1)> & Friends';
+  const ui = panelFixture(async (name, args) => {
+    calls.push([name, args]);
+    return name === 'zones' ? [zone()] : name === 'state' ? state()
+      : name === 'sourcePlaylists' ? [{ id: 'SQ:7', title }]
+      : name === 'sourceQueueState' ? { zone: 'Den', total: 0, playing: null, revision: 'empty', items: [] }
+      : { done: 'Playlist playing', changed: true };
+  });
+  await ui.panel.refresh(); ui.panel.edit('target', 'Den@S2');
+  const kind = ui.field('Music source'); kind.value = 'playlist'; kind.emit('change'); await settle();
+  const select = ui.field('Saved Sonos playlist'); assert.equal(select.children[1].textContent, title);
+  assert.ok(descendants(ui.panel.node).every(node => node.tag !== 'img'));
+  select.value = 'SQ:7'; select.emit('change'); ui.find('Review playback').emit('click'); await settle();
+  assert.equal(calls.filter(([name]) => name === 'sourcePlaylistPlay').length, 0);
+  assert.ok(ui.panel.state.pending); ui.find('Play now').emit('click'); await settle();
+  assert.deepEqual(calls.filter(([name]) => name === 'sourcePlaylistPlay'), [['sourcePlaylistPlay', { body: { zone: 'Den@S2', playlist: 'SQ:7' } }]]);
+  ui.panel.dispose();
 });

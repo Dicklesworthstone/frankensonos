@@ -1,4 +1,4 @@
-/* Pasted sources share the listening stage and its native dialog rhythm. */
+/* Links and saved Sonos playlists share the native source review dialog. */
 .hero-actions{flex-wrap:wrap}
 .source-dialog{width:min(620px,calc(100vw - 24px))}
 .source-dialog .source-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(150px,.65fr);gap:15px;margin-top:20px}
@@ -18,3 +18,7 @@
 .source-message{font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:15px}
 .source-message:empty{display:none}
 @media(max-width:480px){.source-dialog .source-fields{grid-template-columns:minmax(0,1fr)}.source-fields .source-address,.source-fields>p{grid-column:auto}.source-preview dl{grid-template-columns:minmax(0,1fr);gap:3px}.source-preview dd{margin-bottom:8px}.source-actions{align-items:stretch}.source-actions .outline-button{flex:1}.source-trigger{white-space:nowrap}}
+
+.source-catalog-controls{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px}
+.source-catalog-controls p{flex:1;min-width:180px;margin:0}
+.source-fields [hidden]{display:none}
