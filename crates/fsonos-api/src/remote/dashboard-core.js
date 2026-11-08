@@ -145,19 +145,29 @@ const DashboardCore = (() => {
     const stores = {
       schedules: { path: '/schedules', label: 'routines', observed: 'stored list', route: /^\/schedules(?:\/(?:pause|resume|remove))?$/ },
       preferences: { path: '/dj/preferences', label: 'preferences', observed: 'standing taste', route: /^\/dj\/preferences$/ },
+      playlists: { path: target => `/sonos/playlists?zone=${encodeURIComponent(target)}`, scoped: true,
+        label: 'saved playlists', observed: 'original household catalog', route: /^\/sonos\/playlists\/save$/ },
     };
+    const qualified = target => text(target) && !/[\u0000-\u001f\u007f]/.test(target)
+      && target.lastIndexOf('@') > 0 && target.lastIndexOf('@') < target.length - 1;
+    const storeIdentity = (store, target) => stores[store].scoped ? JSON.stringify([store, target]) : store;
     // House settings remain readable without online speakers. Only a current,
-    // explicit reread of the same store acknowledges its uncertain write.
-    async function refreshStored(store, decode, { explicit = false, signal } = {}) {
+    // explicit reread of the same store and target acknowledges its uncertain
+    // write. A saved Sonos catalog belongs to its original household even if
+    // the owner has selected another group since the command was submitted.
+    async function refreshStored(store, decode, { explicit = false, signal, storeTarget } = {}) {
       const config = Object.hasOwn(stores, store) ? stores[store] : null;
-      if (!config || typeof decode !== 'function' || disposed || !state.active || state.busy) return null;
-      const version = lifetime, before = doubt;
-      const value = await call(config.path, undefined, { signal });
+      if (!config || typeof decode !== 'function' || disposed || !state.active || state.busy
+          || (config.scoped ? !qualified(storeTarget) : storeTarget !== undefined)) return null;
+      const version = lifetime, before = doubt, identity = storeIdentity(store, storeTarget);
+      const path = config.scoped ? config.path(storeTarget) : config.path;
+      const value = await call(path, undefined, { signal });
       if (disposed || !state.active || version !== lifetime || state.busy || signal?.aborted) return null;
       const result = decode(value);
-      if (explicit && state.uncertain && uncertainStore === store && before === doubt) {
+      if (disposed || !state.active || version !== lifetime || state.busy || signal?.aborted) return null;
+      if (explicit && state.uncertain && uncertainStore === identity && before === doubt) {
         state.uncertain = false; uncertainStore = null;
-        state.message = `${config.label === 'routines' ? 'Routines' : 'Preferences'} refreshed. Review the ${config.observed} before another command.`; emit();
+        state.message = `${config.label[0].toUpperCase() + config.label.slice(1)}${config.scoped ? ` for ${storeTarget}` : ''} refreshed. Review the ${config.observed} before another command.`; emit();
       }
       return result;
     }
@@ -253,9 +263,11 @@ const DashboardCore = (() => {
     }
     // One mutation lane for transport, the DJ, search and house scenes. A
     // retained callback cannot dispatch after its operation/lifetime ended.
-    async function mutate(operation, { wholeHouse = true, stored } = {}) {
+    async function mutate(operation, { wholeHouse = true, stored, storeTarget } = {}) {
       const config = Object.hasOwn(stores, stored) ? stores[stored] : null, storage = !!config;
-      if ((stored !== undefined && !storage) || !(storage ? canManage() : canControl())) return false;
+      const scoped = storage && config.scoped;
+      if ((stored !== undefined && !storage) || (scoped ? !qualified(storeTarget) || storeTarget !== state.selected
+        : storeTarget !== undefined) || !(storage && !scoped ? canManage() : canControl())) return false;
       if (reading) {
         // Controls for an unchanged group take priority over background reads
         // of other rooms. Retire that batch before claiming the mutation lane;
@@ -266,10 +278,10 @@ const DashboardCore = (() => {
         obsolete.abort.abort();
       }
       const item = selected(), version = epoch, life = lifetime;
-      const target = storage ? null : key(item.zone), stamp = revision(target);
+      const target = scoped ? storeTarget : storage ? null : key(item.zone), stamp = revision(target);
       let sent = false, accepted = false, open = true;
       const valid = () => open && !disposed && state.active && life === lifetime
-        && (storage || (version === epoch && stamp === revision(target) && state.selected === target));
+        && ((storage && !scoped) || (version === epoch && stamp === revision(target) && state.selected === target));
       const check = () => { if (!valid()) throw new Error('The view changed. Review this action again.'); };
       state.busy = true; state.message = ''; emit();
       try {
@@ -278,7 +290,8 @@ const DashboardCore = (() => {
             check();
             if (sent) throw new Error('This action already dispatched its one command.');
             if (storage && (!config.route.test(url)
-                || body == null || (options?.method != null && options.method !== 'POST'))) {
+                || body == null || (options?.method != null && options.method !== 'POST')
+                || (scoped && (typeof body !== 'object' || Array.isArray(body) || body.zone !== target)))) {
               throw new Error(`Stored ${config.label} actions must use their native POST endpoints.`);
             }
             sent = true;
@@ -292,7 +305,7 @@ const DashboardCore = (() => {
         state.message = [result.done, ...(result.notes || []).map((n) => n.detail)].join(' ');
         return true;
       } catch (e) {
-        if (sent) { state.uncertain = true; uncertainStore = storage ? stored : null; ++doubt; }
+        if (sent) { state.uncertain = true; uncertainStore = storage ? storeIdentity(stored, target) : null; ++doubt; }
         if (!storage) item.fresh = false;
         state.message = `${problem(e)} ${sent ? storage
           ? `Outcome uncertain; no retry was sent. Use Refresh ${config.label} and inspect the ${config.observed} before another command.`

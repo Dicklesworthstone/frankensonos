@@ -893,7 +893,8 @@ containers, including file-backed resources. See
 contract; simulator coverage is separate from physical-speaker acceptance.
 
 Native queue creation is available through `fsonos playlist-save <room> <title>`,
-`POST /sonos/playlists/save` and MCP `save_sonos_playlist`. It saves a nonempty
+`POST /sonos/playlists/save`, MCP `save_sonos_playlist`, and the dashboard's
+**Speaker queue → Save queue as playlist** review. It saves a nonempty
 queue on the selected Sonos household without changing playback, queue contents,
 volume or the DJ, including a retained queue while radio plays. Titles are
 trimmed, nonblank, free of control characters and at most 1023 UTF-8 bytes.
@@ -909,6 +910,13 @@ confirmation remain uncertain and are never automatically retried; callers
 reread that household's saved catalog before another save. The new Rust save
 regressions still require execution; local compilation stopped at
 `asupersync` with SIGKILL before tests ran.
+
+The dashboard captures a bounded queue observation and rechecks the selected
+group, revision and entry count before its single save request. Its shared
+command lane associates uncertain saves with the original qualified room.
+Only an explicit, valid catalog read for that target releases the uncertainty;
+playback refreshes, other households and obsolete reads do not. Confirmed
+receipts retain the native id and offer a separate catalog-browsing handoff.
 
 ### 12.7 Scenes
 

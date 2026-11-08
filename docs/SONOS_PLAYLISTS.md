@@ -76,6 +76,20 @@ the same `SQ:` id. The speakers supply the playlist's current saved contents
 when the command runs. A failed or incomplete write reply is shown as uncertain
 and is not automatically retried.
 
+In the desktop dashboard, open **Speaker queue → Save queue as playlist**.
+Read the selected group's queue, enter a name, review its destination and entry
+count, then confirm **Create Sonos playlist**. The group and queue revision are
+checked again immediately before the native save. The confirmed receipt keeps
+its original household and `SQ:` id; **Browse saved playlists** opens that
+household's existing source selector for a separate playback review.
+
+A lost or malformed save reply blocks further dashboard commands until an
+explicit **Check saved playlists** reads the original household's catalog.
+Switching rooms or refreshing playback cannot acknowledge that save. Matching
+names are shown as catalog observations, since duplicate names cannot prove
+which request created a playlist. Any subsequent save requires a new queue
+read and review.
+
 ## HTTP and MCP
 
 | Operation | HTTP | MCP |
@@ -136,6 +150,12 @@ households, persisted replay, unchanged playback, permissions and uncertain
 replies. They have not been executed in this session: local Rust builds stopped
 while compiling `asupersync` with SIGKILL, before test execution. Physical-speaker
 save acceptance remains separate.
+
+The dashboard save model, scoped command store and panel have Node coverage in
+`test-dashboard-playlist-save.cjs`, `test-dashboard-playlist-store.cjs` and
+`test-dashboard-playlist-save-panel.cjs`. They exercise native JSON routes,
+bounded queue reads, changed-group and queue fences, private household
+identities, duplicate titles, uncertain replies, and explicit catalog recovery.
 
 The protocol follows the native catalog and enqueue operations documented in
 [SoCo's music-library implementation](https://github.com/SoCo/SoCo/blob/master/soco/music_library.py)

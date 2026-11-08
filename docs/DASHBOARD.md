@@ -313,6 +313,37 @@ a queue polling loop. Only one queue read can be in flight. Closing the tab,
 changing groups, hiding the page or entering immersive mode fences late replies.
 Read-only queue inspection cannot replay a command or mutate playback.
 
+### Save a queue as a Sonos playlist
+
+Open **Speaker queue → Save queue as playlist** to keep the selected group's
+retained queue on its household's speakers. The dialog reads the current group
+and a bounded queue observation, shows the entry count, and asks for a title.
+Titles are trimmed and may contain up to 1,023 UTF-8 bytes; control characters
+are rejected. **Review new playlist** shows the exact title and listening group
+before **Create Sonos playlist** sends one native save.
+
+Every save creates a new playlist, including when the title already exists.
+You can save a nonempty retained queue while radio or another source plays.
+Saving leaves playback, queue order, volume and the DJ unchanged. Confirmation
+rechecks group membership and the queue's count and revision, but these reads
+do not lock the queue: Sonos copies its contents when the save command runs.
+
+A confirmed receipt keeps the original group, title and native `SQ:` playlist
+identity. If action logging fails, the playlist is still saved and the dialog
+warns against repeating the save. **Browse saved playlists** reads the native
+catalog and selects the confirmed identity in the existing source drawer;
+playback still requires its separate review. An existing source draft is
+preserved, and browsing a receipt requires selecting its original group.
+
+An unconfirmed save blocks further writes until **Check saved playlists** reads
+the catalog for the original qualified room, even if you have since selected a
+different group. Playback refreshes do not acknowledge this storage outcome.
+The returned catalog is an observation: matching titles cannot prove which
+request created an entry, and a delayed save may still complete. Nothing is
+retried automatically. Any deliberate new save needs another queue read and
+review. Closing, hiding or entering immersive mode cancels unsent observations;
+a submitted save retains its eventual receipt without replaying the request.
+
 ### Find and navigate a long queue
 
 **Find or jump in this queue** searches titles, artists and albums through the
@@ -562,6 +593,7 @@ node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs scri
 node --test scripts/test-dashboard-scenes.cjs scripts/test-dashboard-http.cjs
 node --test scripts/test-dashboard-direction.cjs scripts/test-remote-dj-steering.cjs
 node --test scripts/test-dashboard-source.cjs scripts/test-remote-source-player.cjs
+node --test scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-playlist-save-panel.cjs
 node --test scripts/test-dashboard-preferences.cjs scripts/test-remote-dj-preferences.cjs
 node --test scripts/test-dashboard-rehearsal.cjs scripts/test-remote-dj-rehearsal.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium

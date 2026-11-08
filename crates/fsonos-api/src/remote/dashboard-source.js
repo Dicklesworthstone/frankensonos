@@ -254,7 +254,7 @@ const DashboardSource = (() => {
       $('source-playlist-refresh').disabled = !control.editable() || s.loading || !s.group || !controller.canControl();
       $('source-playlist-help').textContent = s.playlistStatus === 'ready' ? s.playlists.length
         ? 'Saved on the speakers in this household. Their current contents are read when you play or queue a playlist.'
-        : 'This household has no saved Sonos playlists. Save a playlist in Sonos, then refresh here.'
+        : 'This household has no saved Sonos playlists. Open Speaker queue → Save queue as playlist, then refresh here.'
         : s.group ? 'Read saved playlists for the selected group.' : 'Select a listening group first.';
       $('source-context').textContent = s.group ? 'Destination: ' + s.group.label : 'Select a listening group first.';
       $('source-review').textContent = s.mode === 'play' ? 'Review playback' : 'Review queue addition';
