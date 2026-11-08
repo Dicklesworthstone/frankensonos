@@ -2313,3 +2313,36 @@ The qemu-ppc anacapad progress (all under systemd units on css):
   with the original preserved as anacapad.orig).
 - Next session: the assert at 0x10008a1c (break there, single-step to the
   failing directive), or seed the missing device state it checks.
+
+### 2026-11-08 (session 19) — the qemu-ppc thread wall BROKEN; the daemon fully unparks
+
+The exec-env root cause at the DAEMON level: under qemu-ppc the S1 57.23
+daemon's clone() failed with EINVAL — libc's <clone> wrapper (0xfb8ee58,
+fixed base 0xfac4000) passes flags=0xF00 (linuxthreads' CLONE_VM|FS|FILES|
+SIGHAND), which qemu-ppc 10.2.1 rejects. THE THREADS NEVER SPAWNED in every
+previous chroot attempt — the notify thread, the workers, all dead. This is
+also why every status page returns empty on the healthy units' pages that
+fork/exec (the threads that run them never start in emulation; on hardware
+the equivalent failure is what the .aa child inherits).
+
+THE WORKING PATCH (libc.so.6, file offset = vaddr − 0xfac4000):
+- 0xCAE90: `mr r6,r8` → `li r6,0`        (child_tidptr = NULL)
+- 0xCAE94: `mr r7,r9` → `oris r3,r3,5`   (flags += CLONE_THREAD|CLONE_SYSVSEM)
+  Encoding note: `oris ra,rs,imm` = 0x64000000|(rs<<21)|(ra<<16)|imm —
+  'oris r3,r3,5' = 0x64630005 (the first attempt 0x64E30005 was
+  `oris r7,r3,5` — the rs/ra fields swapped, which silently clobbered r7).
+Result: `clone(...|CLONE_THREAD|CLONE_SYSVSEM ...) = pid` SUCCESS — threads
+spawn; the init runs through dropout_event_logging and the mixthrd audio
+adjustment. The next gate: a silent assert abort in the audio HAL path
+(/dev/audioctl) — the next session's first action.
+
+Daemon patches (all in /tmp/s23_anacapad_nopark + staged as
+/tmp/s23rootfs/opt/bin/anacapad):
+- 0x10007710: `li r3,1; blr` (force the /dev/chk 6550 check to pass)
+- 0x1036bab4: nop (the diag-collection `http://localhost:%d/raw/%s`
+  512-retry abort at 0x1036bab4)
+With: /ramdisk/optlog created, DiagLevel default=9 in anacapa.conf.
+
+Breakpoint caveat: qemu-ppc's gdb stub does NOT reliably hit software or
+hardware breakpoints on this mapping — single-step from a confirmed bp
+(0x1028d1dc hits) or catch-signal + python sleep/interrupt instead.
