@@ -2189,3 +2189,23 @@ THE WORKING PATH: the per-unit BSU delivery of a GENUINE package (the
 requires a different entry vector: the devmode statement, the type-3
 in-place modification (requires the signing key), or a different .aa
 overflow target that doesn't corrupt the session.
+
+### 2026-11-07 (session 13 cont.) — the devmode path: the owner's 5-minute action
+
+The devmode statement is the ZERO-EXPLOIT path to root on all units.
+The procedure (from RE_DEVMODE.md):
+1. The owner opens https://developer.sonos.com/devmode/ in a browser
+2. Signs in with the Sonos account
+3. For each unit: submits the Device ID (12 hex chars from /status/zp)
+4. Gets a base64 statement blob back
+5. We POST it to the unit's /devmode endpoint with the csrfToken
+6. The unit unlocks telnetd 2323 + dropbear 22 on the next boot
+7. We get an interactive root shell — the campaign is complete
+
+The portal inputs for all 3 units (collected via devmode_submit.py):
+- .84: Model 16, Device ID 000E5880108A, Version 57.23
+- .202: Model 16, Device ID 000E585D8C10, Version 57.23  
+- .135: Model 20, Device ID 949F3EFD9AA8, Version 86.10
+
+The devmode_submit.py script prints these + the csrfToken for the POST.
+The POST procedure is: POST /devmode with statement=<base64>&csrfToken=<token>&button=submit
