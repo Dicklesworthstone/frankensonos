@@ -40,6 +40,14 @@ const DashboardCore = (() => {
     }
     return Object.freeze({ ...value, zone, track: t == null ? null : Object.freeze({ ...t }) });
   }
+  // GENA can report playing/paused before it supplies a track URI. Those
+  // states still authorize play/pause; track navigation needs a known track.
+  function transportAvailable(state, verb) {
+    if (!state || !['playing', 'paused', 'stopped'].includes(state.transport_state)) return false;
+    if (verb === 'pause') return true;
+    if (verb === 'resume') return state.transport_state === 'paused' || !!state.track;
+    return ['next', 'previous'].includes(verb) && !!state.track;
+  }
   function elapsed(item, now) {
     const t = item?.state?.track;
     if (!t || !seconds(t.position_secs)) return null;
@@ -294,6 +302,7 @@ const DashboardCore = (() => {
     async function command(verb, change = {}) {
       if (!['pause', 'resume', 'next', 'previous', 'volume'].includes(verb)) return false;
       if (verb === 'volume' && (!Number.isInteger(change.delta) || ![-5, 5].includes(change.delta))) return false;
+      if (verb !== 'volume' && !transportAvailable(selected()?.state, verb)) return false;
       return mutate(async ({ item, target, check, send }) => {
         const fresh = playback(await call(`/zones/${encodeURIComponent(target)}/state`), item.zone);
         check();
@@ -331,6 +340,6 @@ const DashboardCore = (() => {
       resume() { if (!disposed) { state.active = true; emit(); } },
       dispose() { disposed = true; suspend(); } };
   }
-  return { STATES, EVENTS, zones, playback, key, shape, elapsed, clock, hash, each, request, model, problem };
+  return { STATES, EVENTS, zones, playback, transportAvailable, key, shape, elapsed, clock, hash, each, request, model, problem };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardCore;

@@ -87,6 +87,42 @@ test('next performs an exact-group preflight and sends one native command withou
   const f = fixture(), m = await f.ready(); assert.equal(await m.command('next'), true);
   assert.deepEqual(f.writes(), [{ url: '/next', body: { zone: 'Studio@S2' } }]);
 });
+test('play and pause remain available when transport is known but track metadata is absent', async () => {
+  for (const [transport_state, verb] of [['playing', 'pause'], ['paused', 'resume']]) {
+    for (const track of [null, undefined]) {
+      const f = fixture(); f.setPlayback(p(z(), { transport_state, track }));
+      const m = await f.ready();
+      assert.equal(C.transportAvailable(m.selected().state, verb), true);
+      for (const skip of ['next', 'previous']) {
+        assert.equal(C.transportAvailable(m.selected().state, skip), false);
+        assert.equal(await m.command(skip), false);
+      }
+      assert.equal(f.writes().length, 0);
+      assert.equal(await m.command(verb), true);
+      assert.deepEqual(f.writes(), [{ url: `/${verb}`, body: { zone: 'Studio@S2' } }]);
+    }
+  }
+});
+test('missing track details do not turn stopped, unknown or transitioning states into resume commands', async () => {
+  for (const transport_state of ['stopped', 'unknown', 'transitioning']) {
+    const f = fixture(); f.setPlayback(p(z(), { transport_state, track: null }));
+    const m = await f.ready();
+    for (const verb of ['resume', 'next', 'previous']) {
+      assert.equal(C.transportAvailable(m.selected().state, verb), false);
+      assert.equal(await m.command(verb), false);
+    }
+    assert.equal(f.writes().length, 0);
+  }
+});
+test('metadata-less transport still rechecks the observed state and never repeats an uncertain pause', async () => {
+  const f = fixture(); f.setPlayback(p(z(), { track: null })); const m = await f.ready();
+  f.setPlayback(p(z(), { track: null, transport_state: 'paused' }));
+  assert.equal(await m.command('pause'), false); assert.equal(f.writes().length, 0);
+  f.setPlayback(p(z(), { track: null })); await m.refresh();
+  f.hook((url, body) => body ? null : p(z(), { track: null }));
+  assert.equal(await m.command('pause'), false); assert.equal(m.state.uncertain, true);
+  assert.equal(await m.command('pause'), false); assert.equal(f.writes().length, 1);
+});
 test('group volume steps use native policy and ignore unexpected input properties', async () => {
   const f = fixture(), m = await f.ready();
   assert.equal(await m.command('volume', { delta: 200 }), false);

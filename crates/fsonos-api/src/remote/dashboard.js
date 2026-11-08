@@ -185,15 +185,15 @@
   });
   function controls() {
     const item = controller.selected(), can = controller.canControl(), playing = item?.state?.transport_state === 'playing';
-    const hasTrack = !!item?.state?.track;
-    for (const id of ['play', 'previous', 'next']) $(id).disabled = !can || !hasTrack;
+    const toggle = playing ? 'pause' : 'resume';
+    for (const id of ['play', 'previous', 'next']) $(id).disabled = !can || !C.transportAvailable(item?.state, id === 'play' ? toggle : id);
     $('play-icon').firstElementChild.setAttribute('href', playing ? '#i-pause' : '#i-play');
     $('play').setAttribute('aria-label', `${playing ? 'Pause' : 'Resume'} ${item?.zone.members.join(' + ') || 'selected group'}`);
     const volume = item?.zone.members.length === 1 ? item?.state?.volume : item?.state?.group_volume;
     $('group-volume').textContent = Number.isInteger(volume) ? volume : '—';
     $('volume-down').disabled = $('volume-up').disabled = !can || !Number.isInteger(volume);
     for (const b of document.querySelectorAll('[data-command]')) {
-      b.disabled = !can || !hasTrack;
+      b.disabled = !can || !C.transportAvailable(item?.state, b.dataset.command === 'toggle' ? toggle : b.dataset.command);
       if (b.dataset.command === 'toggle') { b.querySelector('use').setAttribute('href', playing ? '#i-pause' : '#i-play'); b.setAttribute('aria-label', $('play').getAttribute('aria-label')); const label = b.querySelector('[data-transport-label]'); if (label) label.textContent = playing ? 'Pause' : 'Play'; }
     }
     const d = session?.state, sessionReady = d?.dj && d.target === controller.state.selected && !d.loading && !reviewReading && active && (demo || can);
@@ -220,7 +220,7 @@
     $('scope').title = $('scope').textContent;
     $('stage-status').textContent = demo ? 'PREVIEW SESSION' : !item?.fresh ? 'WAITING FOR FRESH STATE' : item.state.transport_state.toUpperCase();
     $('target').textContent = item ? `${item.zone.coordinator_room}${item.zone.members.length > 1 ? ` + ${item.zone.members.length - 1}` : ''} · ${item.zone.household}` : 'Pick a group to begin';
-    $('dock-title').textContent = track?.title || 'Your next listen is waiting'; $('dock-target').textContent = item ? `${item.zone.members.join(' + ')} · ${item.zone.household}` : 'Choose a listening group';
+    $('dock-title').textContent = track?.title || (['playing', 'paused'].includes(item?.state?.transport_state) ? 'Track details unavailable' : 'Your next listen is waiting'); $('dock-target').textContent = item ? `${item.zone.members.join(' + ')} · ${item.zone.household}` : 'Choose a listening group';
     $('dock-title').title = $('dock-title').textContent; $('dock-target').title = $('dock-target').textContent;
     const art = !demo && track ? `/art?${new URLSearchParams({ zone: selected, v: C.hash(`${track.uri}|${track.title}`).toString(36) })}` : '';
     if (art !== artKey) { artKey = art; for (const id of ['art', 'dock-art']) { $(id).hidden = true; if (art) $(id).src = art; else $(id).removeAttribute('src'); } }
@@ -235,11 +235,12 @@
     // A delayed DJ response must not relabel another controller's source.
     const whole = current && current.movements > 1 && typeof current.movement_title === 'string'
       && current.movement_title === track?.title;
-    $('hero-kicker').textContent = whole ? `A WHOLE WORK · ${current.minutes ? `${current.minutes} MINUTES` : 'IN SEQUENCE'}` : track ? 'ON YOUR SPEAKERS' : 'YOUR NEXT GREAT LISTEN';
-    $('track-title').textContent = whole ? current.title : track?.title || (controller.state.initialized ? 'A little room for music.' : 'Let the music find you.');
+    const withoutDetails = !track && ['playing', 'paused'].includes(item?.state?.transport_state);
+    $('hero-kicker').textContent = whole ? `A WHOLE WORK · ${current.minutes ? `${current.minutes} MINUTES` : 'IN SEQUENCE'}` : track || withoutDetails ? 'ON YOUR SPEAKERS' : 'YOUR NEXT GREAT LISTEN';
+    $('track-title').textContent = whole ? current.title : track?.title || (withoutDetails ? item.state.transport_state === 'playing' ? 'Music is playing.' : 'Playback is paused.' : controller.state.initialized ? 'A little room for music.' : 'Let the music find you.');
     $('track-title').title = $('track-title').textContent;
-    $('track-by').textContent = whole ? current.composer : track?.creator || 'Your taste. Your next discovery.';
-    $('track-album').textContent = whole ? current.performers?.join(' · ') || current.album || 'The complete recording' : track?.album || 'Pick from your collection to begin';
+    $('track-by').textContent = whole ? current.composer : track?.creator || (withoutDetails ? 'Track details are unavailable.' : 'Your taste. Your next discovery.');
+    $('track-album').textContent = whole ? current.performers?.join(' · ') || current.album || 'The complete recording' : track?.album || (withoutDetails ? 'Play and pause follow the speaker’s reported state.' : 'Pick from your collection to begin');
     $('whole-work').hidden = !whole;
     if (whole) {
       $('work-detail').textContent = current.movement_title || track?.title || 'Movement title not reported';
@@ -259,7 +260,7 @@
       b.setAttribute('aria-pressed', String(C.key(z) === state.selected)); b.setAttribute('aria-label', `Select ${z.members.join(' + ')} in ${z.household}`);
       const top = el('div', 'room-top'), symbol = el('span', 'room-icon'); symbol.append(icon('speaker'));
       top.append(symbol, el('span', `room-state${item.fresh ? '' : ' stale'}`, item.fresh ? item.state.transport_state : 'stale'));
-      b.append(top, el('strong', '', z.coordinator_room), el('p', '', item.state?.track?.title || 'Nothing playing'),
+      b.append(top, el('strong', '', z.coordinator_room), el('p', '', item.state?.track?.title || (['playing', 'paused'].includes(item.state?.transport_state) ? 'Track details unavailable' : 'Nothing playing')),
         el('p', 'room-meta', `${z.household} · ${z.members.length === 1 ? 'Independent room' : `${z.members.length} linked rooms`}${z.degraded.length ? ' · Bonded player missing' : ''}`));
       b.addEventListener('click', () => { session.cancel(); controller.select(C.key(z)); }); $('rooms').append(b);
     }
