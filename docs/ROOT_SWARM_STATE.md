@@ -2265,3 +2265,29 @@ MDP2 + the anacapad IPC) that the fake /dev/mtd* files don't satisfy. This is
 the SAME gap as the S1: **the verdict harness needs real MDP2 bytes from a
 live unit** (or a working anacapad-IPC fake). The harness itself is complete
 and reproducible: scripts/s2_verdict_chroot.sh.
+
+### 2026-11-08 (session 17 final) — the exfil variant closes the exec question from every angle
+
+Three more precision-overflow fires (the dd exfil to /tmp/upgrade.log,
+/etc/resolv.conf, /jffs/upgrade.log — each targeted at a file whose
+/status route is in the compiled status table): every fire 200/200 →
+watchdog reboot → the routes stay EMPTY after the reboot. Combined with the
+6-shape matrix: the `system()` child never produces file-side effects
+either (not just listeners). The status-table file routes THEMSELVES work
+(/status/VERSION returns content) — the child's writes never land.
+
+The status-page exec routes (ps/netstat/ifconfig/free/mount/lsmod...) are
+EMPTY on HEALTHY units (.84/.135) — the daemon's fork/exec output capture
+fails UNIT-WIDE, independent of any overflow. The .aa child failure and the
+status-page failure share one root cause inside the daemon's exec
+environment. Reading it requires device-side visibility (serial) or the
+qemu-ppc daemon repro (ppcd3 running; the init takes ~30 min wall-clock
+under emulation — the 100%-CPU 'spin' was a SLOW INIT, not a hang: the
+in_asm trace showed continuous NEW code, ~2000 unique TBs in 15 s).
+
+CONVERGENCE: every lane (the S1 shell, the S2 install verdict, the MDP
+read, the exec-env diagnosis) now terminates at exactly ONE of:
+  1. the devmode statement — the owner's 5-min portal form (inputs and the
+     proven 403 pipeline ready for all three units), or
+  2. one serial-console session.
+Everything else is built, verified, and waiting.
