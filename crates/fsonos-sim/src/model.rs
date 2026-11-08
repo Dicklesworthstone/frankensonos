@@ -68,12 +68,28 @@ pub(crate) struct Favorite {
     pub description: String,
 }
 
+/// A native `SQ:` container, independent of the household's favorites.
+#[derive(Debug, Clone)]
+pub(crate) struct SavedPlaylist {
+    pub id: u32,
+    pub title: String,
+    pub tag: &'static str,
+    pub tracks: Vec<QueueItem>,
+}
+
+impl SavedPlaylist {
+    pub(crate) fn uri(&self) -> String {
+        format!("file:///jffs/settings/savedqueues.rsq#{}", self.id)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct Household {
     pub id: String,
     pub sw_gen: u8,
     pub params: SpotifyRenderParams,
     pub favorites: Vec<Favorite>,
+    pub saved_playlists: Vec<SavedPlaylist>,
     /// The software version an `AvailableSoftwareUpdate` offers, if any
     /// (see [`crate::SimHandle::offer_update`]).
     pub offered_update: Option<String>,
@@ -826,7 +842,29 @@ impl State {
                 let desired: usize = args.num("DesiredFirstTrackNumberEnqueued")?;
                 let as_next = args.get("EnqueueAsNext")? == "1";
                 self.check_renderable(p, &uri, &metadata)?;
-                let items = expand(&self.queued_uri(p, &uri), &metadata);
+                let items = if uri.starts_with("file:///jffs/settings/savedqueues.rsq#") {
+                    let saved = self.households[self.players[p].household]
+                        .saved_playlists
+                        .iter()
+                        .find(|saved| saved.uri() == uri)
+                        .ok_or(TRANSITION_NOT_AVAILABLE)?;
+                    let objects = parse_didl(&metadata).map_err(|_| INVALID_ARGS)?;
+                    if objects.len() != 1
+                        || objects[0].kind
+                            != if saved.tag == "item" {
+                                fsonos_proto::didl::DidlKind::Item
+                            } else {
+                                fsonos_proto::didl::DidlKind::Container
+                            }
+                        || objects[0].id != format!("SQ:{}", saved.id)
+                        || objects[0].class != "object.container.playlistContainer"
+                    {
+                        return Err(INVALID_ARGS);
+                    }
+                    saved.tracks.clone()
+                } else {
+                    expand(&self.queued_uri(p, &uri), &metadata)
+                };
                 let t = &mut self.players[p].transport;
                 let at = if as_next && t.track > 0 {
                     t.track + 1
@@ -1365,6 +1403,16 @@ impl State {
                     docs::favorite_items(&favs[from..to], from),
                     to - from,
                     favs.len(),
+                    1,
+                )
+            }
+            "SQ:" => {
+                let saved = &self.households[self.players[p].household].saved_playlists;
+                let (from, to) = window(saved.len());
+                (
+                    docs::saved_playlist_items(&saved[from..to]),
+                    to - from,
+                    saved.len(),
                     1,
                 )
             }

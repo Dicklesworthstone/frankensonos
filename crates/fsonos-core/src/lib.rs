@@ -14,6 +14,7 @@
 //! * [`heal`] retries a command once after a player moved or its coordinator changed.
 //! * [`live`] keeps the model current in the background: surveys, events, health.
 //! * [`favorites`] lists, finds, and plays Sonos favorites.
+//! * [`playlists`] reads native saved Sonos playlists for the same playback path.
 //! * [`favorite_queue`] queues native favorites without interrupting playback.
 //! * [`search`] ranks the cached library and favorites against a query.
 //! * [`control`] carries out a player-addressed command over a
@@ -47,6 +48,7 @@ pub mod inventory;
 pub mod live;
 pub mod moving;
 pub mod playback;
+pub mod playlists;
 pub mod policy;
 mod queue_source;
 pub mod reconcile;

@@ -77,6 +77,7 @@ pub fn classify(o: &DidlObject) -> Favorite {
         {
             FavoriteKind::Stream
         }
+        Some(_) if is_queue_container_class(&item_class) => FavoriteKind::Container,
         Some(_) => FavoriteKind::Track,
     };
     Favorite {
@@ -88,6 +89,25 @@ pub fn classify(o: &DidlObject) -> Favorite {
         description: o.favorite_description.clone(),
         art_uri: o.album_art_uri.clone(),
     }
+}
+
+// Saved Sonos playlists use file:///…/savedqueues.rsq resources, and local
+// library albums can use other resource schemes. Their DIDL class, rather
+// than the URI scheme, establishes that AddURIToQueue must expand them.
+// UPnP classes are hierarchical; require a class boundary so an unrelated
+// name with the same prefix cannot accidentally become a queue replacement.
+fn is_queue_container_class(class: &str) -> bool {
+    [
+        "object.container.album.musicAlbum",
+        "object.container.playlistContainer",
+    ]
+    .iter()
+    .any(|base| {
+        class == *base
+            || class
+                .strip_prefix(*base)
+                .is_some_and(|suffix| suffix.starts_with('.'))
+    })
 }
 
 /// The favorites of the household `coordinator` belongs to.

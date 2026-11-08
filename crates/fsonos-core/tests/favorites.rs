@@ -3,6 +3,7 @@
 
 use fsonos_core::HouseholdState;
 use fsonos_core::favorites::{self, Favorite, FavoriteError, FavoriteKind};
+use fsonos_proto::didl::{parse_didl, xml_escape};
 use fsonos_proto::{ProtoError, Transport, content, soap, topology};
 use fsonos_types::PlayerId;
 use std::cell::RefCell;
@@ -61,6 +62,95 @@ fn every_fixture_favorite_gets_the_kind_its_uri_implies() {
     ] {
         assert!(all.contains(&kind), "{kind:?} missing from the fixtures");
     }
+}
+
+fn favorite_with_metadata(uri: &str, class: &str) -> Favorite {
+    let tag = if class.starts_with("object.container.") {
+        "container"
+    } else {
+        "item"
+    };
+    let mut object = parse_didl(&format!(
+        "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">\
+         <item id=\"FV:2/7\"><dc:title>Evening Mix</dc:title>\
+         <upnp:class>object.item.sonos-favorite</upnp:class>\
+         <res>{}</res></item></DIDL-Lite>",
+        xml_escape(uri)
+    ))
+    .unwrap()
+    .remove(0);
+    object.res_md = Some(format!(
+        "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">\
+         <{tag} id=\"SQ:7\"><dc:title>Evening Mix</dc:title>\
+         <upnp:class>{class}</upnp:class><res>{}</res></{tag}></DIDL-Lite>",
+        xml_escape(uri)
+    ));
+    favorites::classify(&object)
+}
+
+#[test]
+fn saved_playlists_and_music_albums_are_containers_without_a_service_uri() {
+    for (uri, class) in [
+        (
+            "file:///jffs/settings/savedqueues.rsq#7",
+            "object.container.playlistContainer",
+        ),
+        (
+            "x-file-cifs://library/album/",
+            "object.container.album.musicAlbum",
+        ),
+        (
+            "file:///jffs/settings/savedqueues.rsq#7",
+            "object.container.playlistContainer.sonos",
+        ),
+    ] {
+        let favorite = favorite_with_metadata(uri, class);
+        assert_eq!(favorite.kind, FavoriteKind::Container, "{uri}: {class}");
+        assert_eq!(favorite.uri.as_deref(), Some(uri));
+        let metadata = parse_didl(&favorite.metadata).unwrap();
+        assert_eq!(metadata[0].class, class);
+        assert_eq!(metadata[0].res.as_ref().unwrap().uri, uri);
+    }
+}
+
+#[test]
+fn container_metadata_does_not_turn_empty_shortcuts_or_tracks_into_playlists() {
+    assert_eq!(
+        favorite_with_metadata("", "object.container.playlistContainer").kind,
+        FavoriteKind::Unplayable,
+        "a container without a resource still cannot be played"
+    );
+    for class in [
+        "object.item.audioItem.musicTrack",
+        "object.container.playlistContainerOther",
+        "object.container.album.musicAlbumOther",
+    ] {
+        assert_eq!(
+            favorite_with_metadata("x-file-cifs://library/track.flac", class).kind,
+            FavoriteKind::Track,
+            "{class} is not a playable album or playlist class"
+        );
+    }
+    assert_eq!(
+        favorite_with_metadata(
+            "https://radio.invalid/live",
+            "object.item.audioItem.audioBroadcast"
+        )
+        .kind,
+        FavoriteKind::Stream,
+        "broadcast metadata continues to identify direct streams"
+    );
+    assert_eq!(
+        favorite_with_metadata(
+            "x-sonosapi-radio:station?sid=9",
+            "object.container.playlistContainer"
+        )
+        .kind,
+        FavoriteKind::Stream,
+        "an explicit radio scheme retains direct playback"
+    );
 }
 
 fn fav(title: &str, kind: FavoriteKind) -> Favorite {
@@ -286,6 +376,35 @@ fn each_kind_plays_with_the_right_soap() {
         Err(FavoriteError::Unplayable { .. })
     ));
     assert!(t.actions().is_empty(), "nothing is sent for a shortcut");
+}
+
+#[test]
+fn a_native_saved_playlist_favorite_is_expanded_before_playback() {
+    let uri = "file:///jffs/settings/savedqueues.rsq#7";
+    let favorite = favorite_with_metadata(uri, "object.container.playlistContainer");
+    let transport = Recorder::default();
+    favorites::play(&transport, &house(), &coordinator(), &favorite).unwrap();
+    assert_eq!(
+        transport.writes(),
+        ["AddURIToQueue", "SetAVTransportURI", "Seek", "Play"],
+        "the saved playlist expands into the guarded replacement queue"
+    );
+    let calls = transport.0.borrow();
+    let enqueue = calls
+        .iter()
+        .find(|(_, action, _)| action == "AddURIToQueue")
+        .unwrap();
+    assert!(enqueue.2.contains(uri));
+    assert!(enqueue.2.contains("object.container.playlistContainer"));
+    let select = calls
+        .iter()
+        .find(|(_, action, _)| action == "SetAVTransportURI")
+        .unwrap();
+    assert!(select.2.contains("x-rincon-queue:"));
+    assert!(
+        !select.2.contains(uri),
+        "the saved-queue file is not a single playable track"
+    );
 }
 
 #[test]

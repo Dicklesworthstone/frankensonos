@@ -23,17 +23,21 @@ pub fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
-/// Serialize the playback metadata represented by one item in the protocol
-/// model, including its service descriptor and resource attributes. Queue
+/// Serialize the playback metadata represented by one item or container in
+/// the protocol model, including its service descriptor and resource attributes. Queue
 /// IDs remain metadata; callers must not use them as stable track identities.
 #[must_use]
 pub fn item_metadata(item: &DidlObject) -> String {
+    let element = match item.kind {
+        DidlKind::Item => "item",
+        DidlKind::Container => "container",
+    };
     let mut xml = format!(
         "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" \
          xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
          xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
          xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">\
-         <item id=\"{}\" parentID=\"{}\" restricted=\"{}\">",
+         <{element} id=\"{}\" parentID=\"{}\" restricted=\"{}\">",
         xml_escape(&item.id),
         xml_escape(&item.parent_id),
         item.restricted,
@@ -70,7 +74,7 @@ pub fn item_metadata(item: &DidlObject) -> String {
             xml_escape(&desc.value)
         );
     }
-    xml.push_str("</item></DIDL-Lite>");
+    let _ = write!(xml, "</{element}></DIDL-Lite>");
     xml
 }
 

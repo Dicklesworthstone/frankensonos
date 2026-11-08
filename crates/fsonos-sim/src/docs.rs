@@ -3,7 +3,7 @@
 //! same escaping layers) but built from synthetic identifiers.
 
 use crate::SimModel;
-use crate::model::{Favorite, Player, QueueItem, State};
+use crate::model::{Favorite, Player, QueueItem, SavedPlaylist, State};
 use fsonos_proto::didl::xml_escape;
 use std::fmt::Write as _;
 
@@ -290,6 +290,25 @@ pub(crate) fn favorite_items(favorites: &[Favorite], start: usize) -> String {
             kind = f.kind,
             desc = xml_escape(&f.description),
             md = xml_escape(&f.metadata),
+        );
+    }
+    out
+}
+
+/// The native saved-playlist (`SQ:`) DIDL containers.
+pub(crate) fn saved_playlist_items(playlists: &[SavedPlaylist]) -> String {
+    let mut out = String::new();
+    for saved in playlists {
+        let _ = write!(
+            out,
+            "<{tag} id=\"SQ:{}\" parentID=\"SQ:\" restricted=\"true\" childCount=\"{}\">\
+             <dc:title>{}</dc:title><upnp:class>object.container.playlistContainer</upnp:class>\
+             <res protocolInfo=\"file:*:audio/mpegurl:*\">{}</res></{tag}>",
+            saved.id,
+            saved.tracks.len(),
+            xml_escape(&saved.title),
+            xml_escape(&saved.uri()),
+            tag = saved.tag,
         );
     }
     out

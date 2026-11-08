@@ -50,7 +50,7 @@ use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_proto::ssdp::{Advert, m_search, parse_response};
 use fsonos_proto::{HttpBody, ProtoError, Transport};
-use model::{Favorite, Household, State};
+use model::{Favorite, Household, QueueItem, SavedPlaylist, State};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -489,11 +489,37 @@ fn household(sw_gen: u8) -> Household {
     for (id, favorite) in favorites.iter_mut().enumerate() {
         favorite.id = id;
     }
+    let saved_track = |index: usize| {
+        let favorite = &favorites[index];
+        QueueItem {
+            uri: favorite.uri.clone(),
+            metadata: favorite.metadata.clone(),
+            title: favorite.title.clone(),
+            creator: Some("Sim Saved Artist".into()),
+            album: Some(format!("S{sw_gen} Saved Album")),
+            duration_ms: 180_000,
+        }
+    };
+    let saved_playlists = vec![
+        SavedPlaylist {
+            id: 1,
+            title: format!("Saved Mix S{sw_gen}"),
+            tag: "container",
+            tracks: vec![saved_track(0), saved_track(1)],
+        },
+        SavedPlaylist {
+            id: 7,
+            title: format!("Evening & Friends S{sw_gen}"),
+            tag: "item",
+            tracks: vec![saved_track(1), saved_track(0), saved_track(1)],
+        },
+    ];
     Household {
         id: format!("SIM_HOUSEHOLD_S{sw_gen}"),
         sw_gen,
         params,
         favorites,
+        saved_playlists,
         offered_update: None,
     }
 }
