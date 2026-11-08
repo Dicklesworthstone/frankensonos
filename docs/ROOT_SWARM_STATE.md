@@ -2248,3 +2248,20 @@ type-3 (after type-17, sig untouched) — which never executed on hardware.
 The .84 wide band sweep (0x108E0000-0x10C00000 @ 0x2000) is running
 (canary_wide84c.log; ~150/1536 candidates at the time of writing, auto-fires
 the telnetd payload at any canary hit).
+
+### 2026-11-08 (session 17 cont.) — the (10) verdict decoded; the S2 chroot limit reached
+
+The `(10) attempted to upgrade to an incompatible version` in the chroot fires
+after EXACTLY 216 bytes of the stream (= the type-1 + type-21 + the first
+type-2 records). The error string table (0x417af0, the S2 86.10 upgrade
+binary) decodes: [0]=unknown region, [5]=success, [6]=format unknown,
+[11]=signature verification failed, [14]=downgrade blocked, [15]=incompatible
+version, [16]=download failed...
+
+The package headers are FINE (the 86.10-80260 package that .135's current
+version installed from has the identical type-2 compat shape). The chroot
+abort = the device-side state (current version/model/hw-features from the
+MDP2 + the anacapad IPC) that the fake /dev/mtd* files don't satisfy. This is
+the SAME gap as the S1: **the verdict harness needs real MDP2 bytes from a
+live unit** (or a working anacapad-IPC fake). The harness itself is complete
+and reproducible: scripts/s2_verdict_chroot.sh.
