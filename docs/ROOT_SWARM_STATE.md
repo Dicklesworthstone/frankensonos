@@ -2209,3 +2209,42 @@ The portal inputs for all 3 units (collected via devmode_submit.py):
 
 The devmode_submit.py script prints these + the csrfToken for the POST.
 The POST procedure is: POST /devmode with statement=<base64>&csrfToken=<token>&button=submit
+
+### 2026-11-08 (session 17) — the S2 86.10 verdict harness: FULL fetch+verdict chain reconstructed
+
+The S2 (86.10) `upgrade` binary now runs to the verdict under qemu-mips on css:
+- The binary + its libs pushed to /tmp/s86sys; the FULL sysroot restored (34 libs)
+  after an x86-lib contamination was swept out.
+- **The upgradeinfo format is now REVERSE-ENGINEERED exactly**
+  (libsonosminiutils `sonosSettingsFileLoad` decompiled via Ghidra headless):
+  `Key: [value]` lines; `#`/empty lines skipped; the first `:` must be followed
+  by ` ` then `[`; a `]` must terminate the value; the upgrade binary's callback
+  matches Report/SonosID/HouseholdID/CurrentVersion/SystemVersion/UpdateID/
+  Timestamp/URL. Earlier failures were caused by `URL=` (no brackets/colon-space)
+  and by the URL being read from the FILE — **the S2 binary takes the URL from
+  ARGV** (the file's URL branch has an extra getter that fails the whole parse
+  when the value is non-empty; passing the URL as argv1 works).
+- **The Sonos wget dialect decoded** (from the child's argv, logged by a wrapper):
+  `wget -qC <reportfile> -T 300 -O - <URL>` — `-C <reportfile>` is the Sonos
+  continue-report flag (no GNU equivalent). A sh wrapper at sysroot
+  `/usr/bin/wget` maps it to GNU wget (drop -C's arg, keep -q -T -O -) and the
+  download streams to the upgrade binary's stdout.
+- The chroot needs: /bin/sh (host dash) + /lib64/ld-linux-x86-64.so.2 + the x86
+  wget.real + the x86 libs in /usr/lib (LD_LIBRARY_PATH in the wrapper).
+- **The verdict now reaches `(10) attempted to upgrade to an incompatible version`
+  after reading exactly 216 bytes** — the header/compat gate. Current version +
+  hw features come from the device MDP (the anacapad IPC init fails in the
+  chroot: `warning: init failed`; fake /dev/mtd0-8 files with the MDP2 magic
+  don't satisfy the parse yet). The next discriminator: real MDP2 bytes from
+  .135 (same gap as the S1) or the anacapad-IPC fake server.
+
+KEYRING FACT (definitive, byte-level): all 4 SPKIs at 0xD8B8/0xDAE0/0xDC08/
+0xDED8 are IDENTICAL between the 57.23 and 65130 libsonoscrypto.so.1 — one
+vendor signing key for both builds. The model-16 key ≠ that key ⇒ ALL
+pre-type-17 content modifications (version bump, in-place type-3) are dead
+without the vendor key. The signing-free lane remains ONLY the trailing
+type-3 (after type-17, sig untouched) — which never executed on hardware.
+
+The .84 wide band sweep (0x108E0000-0x10C00000 @ 0x2000) is running
+(canary_wide84c.log; ~150/1536 candidates at the time of writing, auto-fires
+the telnetd payload at any canary hit).
