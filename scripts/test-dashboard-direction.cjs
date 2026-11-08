@@ -9,6 +9,7 @@ const C = require('../crates/fsonos-api/src/remote/dashboard-core.js');
 const D = require('../crates/fsonos-api/src/remote/dj-direction.js');
 const S = require('../crates/fsonos-api/src/remote/dj-steering.js');
 const Direction = require('../crates/fsonos-api/src/remote/dashboard-direction.js');
+const Rehearsal = require('../crates/fsonos-api/src/remote/dashboard-rehearsal.js');
 const copy = value => structuredClone(value);
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const settled = async predicate => {
@@ -32,7 +33,8 @@ function documentFixture() {
       set textContent(value) { this._text = String(value); this.children = []; },
       setAttribute(name, value) { this.attributes[name] = String(value); if (['id', 'type'].includes(name)) this[name] = String(value); },
       getAttribute(name) { return this.attributes[name] ?? null; },
-      append(...children) { this.children.push(...children); }, replaceChildren(...children) { this._text = ''; this.children = children; },
+      append(...children) { this.children.push(...children); }, prepend(...children) { this.children.unshift(...children); },
+      replaceChildren(...children) { this._text = ''; this.children = children; },
       querySelectorAll(selector) { const key = selector.slice(1, -1); return descendants(this).filter(node => node.getAttribute(key) !== null); },
       addEventListener(name, listener) { const list = listeners.get(name) || []; list.push(listener); listeners.set(name, list); },
       fire(name) { if (!this.disabled) for (const listener of listeners.get(name) || []) listener({ target: this, preventDefault() {} }); },
@@ -89,7 +91,7 @@ function fixture({ demo = false, dom = false, network } = {}) {
   const doc = dom ? documentFixture() : null, args = { call, controller: ctl, now: () => now,
     updated: async () => { updates.push(true); if (updater) await updater(); } };
   control = dom ? Direction.panel({ ...args, document: doc }) : Direction.model(args);
-  return { ctl, control, doc, calls, zones, states, statuses, moods, updates, normalRead,
+  return { ctl, control, doc, calls, call, zones, states, statuses, moods, updates, normalRead,
     writes: () => calls.filter(item => item.body !== undefined).map(({ url, body }) => ({ url, body })),
     read(fn) { reader = fn; }, write(fn) { writer = fn; }, time(value) { now = value; }, updated(fn) { updater = fn; },
     async ready() { assert.equal(await ctl.refresh(), true); ctl.connection(true); return this; },
@@ -98,6 +100,139 @@ function fixture({ demo = false, dom = false, network } = {}) {
 const getStatus = f => f.statuses.get(f.ctl.state.selected);
 const getState = f => f.states.get(f.ctl.state.selected);
 const review = (f, action = 'save') => { const value = f.control.review(action); assert.ok(value, f.control.state.message); return value; };
+const rehearsalSettings = () => ({ mood: 'bright', constraints: { include_artists: ['Earth, Wind & Fire'],
+  exclude_keywords: ['Live, at home'], max_work_minutes: 45, energy_bias: -1, allow_long_works: true, strict: true } });
+const rehearsalFor = (f, settings = rehearsalSettings()) => ({ target: f.ctl.state.selected,
+  signature: C.shape(f.ctl.selected().zone), settings });
+
+for (const household of ['S1', 'S2']) test(`rehearsal import reads the exact ${household} group and requires an explicit lifetime without writing`, async () => {
+  const f = await fixture().ready(); f.ctl.select('Studio@' + household);
+  const before = f.calls.length, observed = copy(getStatus(f));
+  assert.equal(await f.control.importRehearsal(rehearsalFor(f)), true);
+  assert.deepEqual(f.calls.slice(before).map(row => row.url).sort(), ['/dj/moods', '/zones', `/zones/Studio%40${household}/dj`]);
+  assert.deepEqual(getStatus(f), observed, 'importing does not change the observed native steering');
+  assert.equal(f.control.state.draft.mood, 'bright');
+  assert.equal(f.control.state.draft.direction.include_artists, 'Earth, Wind & Fire');
+  assert.equal(f.control.state.draft.direction.exclude_keywords, 'Live, at home');
+  assert.equal(f.control.state.draft.direction.strict, true);
+  assert.equal(f.control.state.draft.direction.exclude_artists, '', 'prior live extras are replaced only in the draft');
+  assert.equal(f.control.state.draft.expiry, 'choose'); assert.equal(f.control.state.draft.minutes, '');
+  assert.equal(f.control.state.draft.direction.minutes, ''); assert.equal(f.control.state.dirty, true);
+  assert.equal(f.control.review('save'), null); assert.match(f.control.state.message, /Choose how long/);
+  assert.equal(await f.control.apply(), false); assert.deepEqual(f.writes(), []);
+});
+
+test('rehearsal import rejects commands, timing and unsupported fields before reads or draft replacement', async () => {
+  const f = await (await fixture().ready()).open();
+  f.control.editDirection('include_genres', 'Keep my jazz draft'); const draft = f.control.state.draft;
+  const before = f.calls.length, good = rehearsalFor(f);
+  for (const incoming of [null, { ...good, seed: 5 }, { ...good, at: '23:00' }, { ...good, works: 12 },
+    { ...good, settings: { ...good.settings, zone: 'Elsewhere@S2' } },
+    { ...good, settings: { ...good.settings, for_secs: 3600 } },
+    { ...good, settings: { ...good.settings, clear: true } },
+    { ...good, settings: { constraints: {} } },
+    { ...good, settings: { constraints: { include_artists: ['One\nTwo'] } } }]) {
+    assert.equal(await f.control.importRehearsal(incoming), false);
+  }
+  assert.equal(f.calls.length, before); assert.equal(f.control.state.draft, draft);
+  assert.deepEqual(f.writes(), []);
+});
+
+test('same-name rooms and changed membership cannot redirect rehearsal settings', async () => {
+  const f = await fixture().ready(), intended = rehearsalFor(f);
+  f.ctl.select('Studio@S1'); const before = f.calls.length;
+  assert.equal(await f.control.importRehearsal(intended), false);
+  assert.equal(f.ctl.state.selected, 'Studio@S1'); assert.equal(f.calls.length, before);
+  f.ctl.select('Studio@S2'); f.zones[0].members.push('New member');
+  assert.equal(await f.control.importRehearsal(intended), false);
+  assert.equal(f.control.state.imported, null); assert.equal(f.control.canReview('save'), false);
+  assert.match(f.control.state.message, /group changed/); assert.deepEqual(f.writes(), []);
+});
+
+test('a removed rehearsed mood cannot silently import automatic or different steering', async () => {
+  const f = await fixture().ready(); f.moods.moods = f.moods.moods.filter(mood => mood.name !== 'bright');
+  assert.equal(await f.control.importRehearsal(rehearsalFor(f)), false);
+  assert.equal(f.control.state.imported, null); assert.equal(f.control.state.draft, null);
+  assert.match(f.control.state.message, /rehearsed mood is no longer available/); assert.deepEqual(f.writes(), []);
+});
+
+test('rehearsal imports cannot overwrite an existing edit or reviewed direction', async () => {
+  for (const mode of ['edit', 'review']) {
+    const f = await (await fixture().ready()).open();
+    if (mode === 'edit') f.control.editDirection('include_artists', 'My unfinished direction'); else review(f);
+    const draft = f.control.state.draft, pending = f.control.state.pending, before = f.calls.length;
+    assert.equal(await f.control.importRehearsal(rehearsalFor(f)), false);
+    assert.equal(f.control.state.draft, draft); assert.equal(f.control.state.pending, pending);
+    assert.equal(f.calls.length, before); assert.match(f.control.state.message, /unfinished draft or review/);
+  }
+});
+
+test('rehearsal settings are copied before asynchronous reads and kept during ordinary rereads', async () => {
+  const f = await fixture().ready(), gate = deferred(), incoming = rehearsalFor(f);
+  f.read((url, options, read) => url.endsWith('/dj') ? gate.promise : read(url));
+  const loading = f.control.importRehearsal(incoming);
+  incoming.settings.constraints.include_artists[0] = 'Changed after the click'; incoming.settings.mood = 'calm';
+  gate.resolve(f.normalRead('/zones/Studio%40S2/dj')); assert.equal(await loading, true);
+  assert.equal(f.control.state.draft.mood, 'bright');
+  assert.equal(f.control.state.draft.direction.include_artists, 'Earth, Wind & Fire');
+  assert.equal(Object.isFrozen(f.control.state.imported.constraints.include_artists), true);
+  f.read(null); const imported = f.control.state.imported, draft = f.control.state.draft;
+  f.ctl.invalidate(['Studio@S2']); await f.ctl.refresh(); assert.equal(await f.control.read(), true);
+  assert.equal(f.control.state.imported, imported); assert.equal(f.control.state.draft, draft);
+  assert.equal(f.control.state.draft.expiry, 'choose'); assert.deepEqual(f.writes(), []);
+});
+
+test('a later rehearsal import supersedes an unfinished read without reviving the old draft', async () => {
+  const f = await fixture().ready(), gate = deferred(); let first = true, signal;
+  f.read((url, options, read) => {
+    if (url.endsWith('/dj') && first) { first = false; signal = options.signal; return gate.promise; }
+    return read(url);
+  });
+  const old = f.control.importRehearsal(rehearsalFor(f));
+  assert.equal(await f.control.importRehearsal(rehearsalFor(f, { mood: 'calm', constraints: { include_genres: ['jazz'] } })), true);
+  assert.equal(signal.aborted, true); gate.resolve(f.normalRead('/zones/Studio%40S2/dj'));
+  assert.equal(await old, false); assert.equal(f.control.state.draft.mood, 'calm');
+  assert.equal(f.control.state.draft.direction.include_genres, 'jazz');
+  assert.equal(f.control.state.draft.direction.include_artists, ''); assert.deepEqual(f.writes(), []);
+});
+
+for (const action of ['close', 'suspend', 'dispose', 'select']) test(`${action} prevents a late rehearsal import`, async () => {
+  const f = await fixture().ready(), gate = deferred();
+  f.read((url, options, read) => url.endsWith('/dj') ? gate.promise : read(url));
+  const pending = f.control.importRehearsal(rehearsalFor(f));
+  if (action === 'select') f.ctl.select('Studio@S1'); else f.control[action]();
+  gate.resolve(f.normalRead('/zones/Studio%40S2/dj'));
+  assert.equal(await pending, false); assert.equal(f.control.state.imported, null);
+  assert.equal(f.control.state.draft, null); assert.deepEqual(f.writes(), []);
+});
+
+test('filter-only rehearsals keep automatic mood and preserve a deadline only when explicitly chosen', async () => {
+  const f = await fixture().ready();
+  assert.equal(await f.control.importRehearsal(rehearsalFor(f, { constraints: { include_genres: ['jazz'], strict: true } })), true);
+  assert.equal(f.control.state.draft.mood, '', 'do not pin the currently effective or saved mood');
+  assert.equal(f.control.state.draft.expiry, 'choose');
+  f.control.edit('expiry', 'keep'); const pending = review(f);
+  getStatus(f).steering.expires_in_secs = 6117;
+  assert.equal(await f.control.apply(pending), true);
+  assert.deepEqual(f.writes(), [{ url: '/dj/steer', body: { zone: 'Studio@S2', constraints: { include_genres: ['jazz'], strict: true }, for_secs: 6117 } }]);
+  assert.equal(f.control.state.imported, null);
+});
+
+test('the imported dialog explains its unsaved scope and focuses a required lifetime before review', async () => {
+  const f = await fixture({ dom: true }).ready(), get = id => f.doc.getElementById(id);
+  get('open-direction').focus(); assert.equal(await f.control.importRehearsal(rehearsalFor(f)), true);
+  assert.equal(get('direction-dialog').open, true); assert.equal(get('direction-rehearsal-note').hidden, false);
+  assert.match(get('direction-rehearsal-note').textContent, /exact set, seed, start time, length/);
+  assert.equal(get('direction-expiry').value, 'choose'); assert.equal(f.doc.activeElement, get('direction-expiry'));
+  assert.equal(get('direction-review').disabled, true); assert.equal(get('direction-confirm').disabled, true);
+  get('direction-expiry').value = 'until'; get('direction-expiry').fire('change');
+  assert.equal(get('direction-review').disabled, false); assert.equal(get('direction-start').disabled, true);
+  get('direction-review').fire('click'); assert.deepEqual(f.writes(), []);
+  assert.match(get('direction-preview-settings').textContent, /Earth, Wind & Fire/);
+  assert.equal(get('direction-preview-expiry').textContent, 'Until cleared.');
+  get('direction-confirm').fire('click'); await settled(() => !f.control.state.writing && f.writes().length === 1);
+  assert.equal(f.writes()[0].url, '/dj/steer'); assert.equal(f.writes()[0].body.for_secs, undefined);
+});
 
 test('direction reads on demand and imports only session extras instead of copying mood filters', async () => {
   const f = await fixture().ready(); assert.equal(f.calls.some(item => item.url.endsWith('/dj')), false);
@@ -458,6 +593,45 @@ test('real loopback HTTP sends one native combined start with the reviewed direc
   assert.equal(await f.control.apply(), true);
   assert.deepEqual(received.filter(item => item.method === 'POST'), [{ url: '/dj/start', method: 'POST',
     body: { zone: 'Studio@S2', mood: 'calm', constraints: { include_artists: ['Earth, Wind & Fire'], exclude_artists: ['Synthetic avoid'] }, for_secs: 3600 } }]);
+});
+
+for (const action of ['save', 'start']) test(`real HTTP rehearsal handoff requires explicit ${action} and sends only the reviewed direction`, async t => {
+  let backend; const received = [];
+  const server = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const body = raw ? JSON.parse(raw) : undefined; received.push({ url: req.url, method: req.method, body });
+    const value = await backend(req.url, body); res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const f = await fixture({ network(raw) { backend = raw; return C.request({
+    fetcher: (url, init) => fetch(`http://127.0.0.1:${server.address().port}${url}`, init) }); } }).ready();
+  f.ctl.select('Studio@S1'); getStatus(f).running = action !== 'start';
+  f.write((url, body, native) => {
+    if (url !== '/dj/rehearse') return native(url, body);
+    const from = '2026-11-08T23:40:00-04:00';
+    return { zone: 'Studio', from, seed: body.seed, works: [{ at: from, work: work('Rehearsed whole work'), energy: 40, explicit: false }],
+      summary: { works: 1, minutes: 5, distinct_artists: 1, explicit: 0,
+        hours: [{ from, works: 1, energy: 40, artist_entropy: 0, genre_entropy: 0 }] } };
+  });
+  const rehearsal = Rehearsal.model({ call: f.call, controller: f.ctl });
+  rehearsal.open(); await rehearsal.loadMoods();
+  assert.equal(await rehearsal.generate({ lengthMode: 'hours', length: '2', at: '23:40', seed: '7', mood: 'bright',
+    filters: { include_artists: 'Earth, Wind & Fire', strict: true } }), true);
+  const captured = rehearsal.handoff(); rehearsal.close();
+  assert.equal(await f.control.importRehearsal(captured), true);
+  assert.equal(f.control.review(action), null, 'planning duration does not become a live expiry');
+  assert.equal(received.filter(row => row.method === 'POST').length, 1, 'only the read-only rehearsal was posted');
+  f.control.edit('expiry', 'duration'); f.control.edit('minutes', '90'); review(f, action);
+  assert.equal(received.filter(row => row.method === 'POST').length, 1, 'review still sends nothing');
+  assert.equal(await f.control.apply(), true);
+  assert.deepEqual(received.filter(row => row.method === 'POST'), [
+    { url: '/dj/rehearse', method: 'POST', body: { zone: 'Studio@S1', hours: 2, seed: 7, at: '23:40', mood: 'bright',
+      constraints: { include_artists: ['Earth, Wind & Fire'], strict: true } } },
+    { url: action === 'start' ? '/dj/start' : '/dj/steer', method: 'POST', body: { zone: 'Studio@S1', mood: 'bright',
+      constraints: { include_artists: ['Earth, Wind & Fire'], strict: true }, for_secs: 5400 } },
+  ]);
+  assert.equal(f.control.state.imported, null); assert.equal(f.ctl.state.uncertain, false);
 });
 
 

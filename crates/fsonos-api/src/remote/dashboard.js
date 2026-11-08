@@ -121,7 +121,7 @@
   announcements = DashboardAnnouncements.panel({ call, controller });
   direction = DashboardDirection.panel({ call, controller, updated: () => session.load() });
   preferences = DashboardPreferences.panel({ call, controller });
-  rehearsal = DashboardRehearsal.panel({ call, controller, demo });
+  rehearsal = DashboardRehearsal.panel({ call, controller, demo, onedit: draft => direction.importRehearsal(draft) });
   sourcePlayer = DashboardSource.panel({ call, controller, completed: async ({ target }) => {
     workspace?.invalidate([target]);
     if (active && controller.state.selected === target) await session.load();

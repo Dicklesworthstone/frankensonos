@@ -48,7 +48,7 @@ function documentFixture() {
   return doc;
 }
 
-function fixture({ dom = false, remote, demo = false } = {}) {
+function fixture({ dom = false, remote, demo = false, onedit } = {}) {
   const inventory = zones(), calls = [];
   let planner = null, reader = null, preview;
   const raw = async (url, body, options) => {
@@ -66,7 +66,7 @@ function fixture({ dom = false, remote, demo = false } = {}) {
   const call = remote ? remote(raw) : raw;
   const controller = C.model({ call, demo, changed: () => preview?.observe() });
   const doc = dom ? documentFixture() : null;
-  const panel = dom ? Rehearsal.panel({ call, controller, document: doc, now: () => 1234, demo }) : null;
+  const panel = dom ? Rehearsal.panel({ call, controller, document: doc, now: () => 1234, demo, onedit }) : null;
   preview = panel ? panel.control : Rehearsal.model({ call, controller, now: () => 1234, demo });
   return { calls, inventory, controller, preview, panel, doc, raw,
     planner(value) { planner = value; }, reader(value) { reader = value; },
@@ -228,13 +228,85 @@ test('C.request HTTP errors keep their server detail and hint instead of a trans
   assert.equal(f.controller.state.uncertain, false); assert.equal(f.preview.state.report, null);
 });
 
-test('editing after planning keeps the captured request and marks its snapshot without live steering handoff', async () => {
+test('editing after planning keeps the captured request and disables the live direction handoff', async () => {
   const f = await fixture().ready(); f.preview.open(); await f.preview.loadMoods();
   assert.equal(await f.preview.generate({ mood: 'focus' }), true);
   const planned = f.preview.state.report, captured = f.preview.state.request;
   f.preview.edit(); assert.equal(f.preview.state.edited, true); assert.equal(f.preview.state.report, planned);
   assert.equal(f.preview.state.request, captured); assert.equal(captured.mood, 'focus');
-  assert.equal(f.preview.handoff, undefined); assert.equal(f.posts().length, 1);
+  assert.equal(f.preview.handoff(), null); assert.equal(f.posts().length, 1);
+});
+
+test('handoff exposes only captured requested settings and the exact group, without planning or writing again', async () => {
+  const f = await fixture().ready(); f.preview.open(); await f.preview.loadMoods();
+  assert.equal(await f.preview.generate({ lengthMode: 'hours', length: '2', at: '23:40', seed: '7', mood: 'focus',
+    filters: { include_artists: 'Earth, Wind & Fire', exclude_keywords: 'Live, at home', strict: true } }), true);
+  const before = f.calls.length, handed = f.preview.handoff();
+  assert.deepEqual(handed, { target: 'Studio@S2', signature: C.shape(f.inventory[0]), settings: { mood: 'focus',
+    constraints: { include_artists: ['Earth, Wind & Fire'], exclude_keywords: ['Live, at home'], strict: true } } });
+  assert.equal(f.calls.length, before); assert.equal(f.posts().length, 1);
+  assert.equal(Object.isFrozen(handed), true); assert.equal(Object.isFrozen(handed.settings.constraints.include_artists), true);
+  assert.equal(Object.hasOwn(handed.settings, 'seed'), false); assert.equal(Object.hasOwn(handed.settings, 'at'), false);
+  assert.equal(Object.hasOwn(handed.settings, 'hours'), false); assert.equal(Object.hasOwn(handed.settings, 'relaxed'), false);
+});
+
+test('inherited and empty rehearsals have no temporary live settings to transfer', async () => {
+  const f = await fixture().ready(); f.preview.open(); await f.preview.loadMoods();
+  assert.equal(f.preview.handoff(), null); assert.equal(await f.preview.generate({}), true);
+  assert.equal(f.preview.handoff(), null);
+  f.planner(body => ({ ...report(body.seed), works: [], summary: { works: 0, minutes: 0, distinct_artists: 0, explicit: 0, hours: [] } }));
+  assert.equal(await f.preview.generate({ mood: 'focus' }), true); assert.equal(f.preview.handoff(), null);
+  assert.equal(f.posts().length, 2);
+});
+
+test('transient staleness and the shared command lane gate handoff without erasing the completed snapshot', async () => {
+  const f = await fixture().ready(); f.preview.open();
+  assert.equal(await f.preview.generate({ filters: { include_genres: 'jazz' } }), true);
+  const report = f.preview.state.report;
+  f.controller.invalidate(['Studio@S2']); assert.equal(f.preview.handoff(), null); assert.equal(f.preview.state.report, report);
+  await f.controller.refresh(); assert.ok(f.preview.handoff());
+  f.controller.state.busy = true; assert.equal(f.preview.handoff(), null); f.controller.state.busy = false;
+  f.controller.state.loading = true; assert.equal(f.preview.handoff(), null); f.controller.state.loading = false;
+  f.controller.select('Studio@S1'); assert.equal(f.preview.handoff(), null); assert.equal(f.posts().length, 1);
+});
+
+test('the transfer button closes rehearsal and passes its captured draft without an automatic native action', async () => {
+  const handed = []; let f;
+  f = await fixture({ dom: true, onedit(value) {
+    assert.equal(f.doc.getElementById('rehearsal-dialog').open, false, 'the two modals are not stacked');
+    handed.push(value); return true;
+  } }).ready();
+  const $ = id => f.doc.getElementById(id);
+  $('open-rehearsal').fire('click'); await settled(() => !f.preview.state.loadingMoods);
+  $('rehearsal-mood').value = 'focus'; $('rehearsal-include_artists').value = 'Earth, Wind & Fire';
+  $('rehearsal-form').fire('submit'); await settled(() => f.preview.state.report !== null);
+  assert.equal($('rehearsal-transfer-box').hidden, false); assert.equal($('rehearsal-transfer').disabled, false);
+  assert.match($('rehearsal-transfer-hint').textContent, /unsaved direction draft.*lifetime/);
+  const before = f.calls.length;
+  $('rehearsal-transfer').fire('click'); $('rehearsal-transfer').fire('click');
+  await settled(() => handed.length === 1);
+  assert.deepEqual(handed[0].settings, { mood: 'focus', constraints: { include_artists: ['Earth, Wind & Fire'] } });
+  assert.equal(f.calls.length, before); assert.equal(f.posts().length, 1);
+});
+
+test('edited previews keep their snapshot and explain why transferring is disabled', async () => {
+  const handed = [], f = await fixture({ dom: true, onedit: value => handed.push(value) }).ready();
+  const $ = id => f.doc.getElementById(id);
+  $('open-rehearsal').fire('click'); await settled(() => !f.preview.state.loadingMoods);
+  $('rehearsal-mood').value = 'focus'; $('rehearsal-form').fire('submit'); await settled(() => f.preview.state.report !== null);
+  $('rehearsal-seed').value = '2'; $('rehearsal-form').fire('input');
+  assert.equal($('rehearsal-transfer').disabled, true); assert.match($('rehearsal-transfer-hint').textContent, /Generate the edited settings again/);
+  $('rehearsal-transfer').fire('click'); assert.deepEqual(handed, []); assert.equal($('rehearsal-output').hidden, false);
+});
+
+test('a rejected editor handoff reopens the unchanged snapshot only when no editor took over', async () => {
+  const f = await fixture({ dom: true, onedit: async () => false }).ready(), $ = id => f.doc.getElementById(id);
+  $('open-rehearsal').fire('click'); await settled(() => !f.preview.state.loadingMoods);
+  $('rehearsal-mood').value = 'focus'; $('rehearsal-form').fire('submit'); await settled(() => f.preview.state.report !== null);
+  const captured = f.preview.state.report; $('rehearsal-transfer').fire('click');
+  await settled(() => $('rehearsal-dialog').open);
+  assert.equal(f.preview.state.report, captured); assert.match($('rehearsal-message').textContent, /could not open these settings/);
+  assert.equal(f.posts().length, 1);
 });
 
 test('the actual HTTP adapter sends the read-only POST once between independent group reads', async t => {

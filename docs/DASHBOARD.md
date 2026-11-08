@@ -218,6 +218,16 @@ can be in flight. Closing, hiding or entering immersive mode fences late
 results, and there is no rehearsal polling or automatic retry. A failed planning
 request does not make playback uncertain because it sends no playback command.
 
+**Review settings for live DJ** carries a completed, unchanged rehearsal's
+requested mood and temporary filters into **Advanced direction** as an unsaved
+draft. The editor rereads the same group's current DJ and mood definitions,
+then requires you to choose a lifetime and review **Save direction** or
+**Start DJ with settings** before any write. A named mood uses its current
+definition. The exact planned sequence, seed, start time, length and relaxed
+selection filters are not transferred. Empty previews, edited settings and
+previews that only inherited current steering have no transferable draft.
+An existing unsaved direction draft or review is preserved until you close it.
+
 ## Save the current house and its queues
 
 **Save current house** in the scene section captures every listening group, its

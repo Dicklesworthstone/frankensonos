@@ -20,8 +20,8 @@ const DashboardDirection = (() => {
       return Object.freeze({ name: mood.name, constraints, signature: JSON.stringify([mood.name, constraints]) });
     }));
   }
-  function draftOf(steering) {
-    const c = steering.source === 'session' ? steering.added : {}, direction = { ...D.draft() };
+  function filterDraftOf(c) {
+    const direction = { ...D.draft() };
     for (const key of Object.keys(D.lists)) {
       if ((c[key] || []).some(value => typeof value === 'string' && /[\r\n]/.test(value))) {
         fail('A saved filter contains a line break and cannot be edited without changing its meaning. Use the native API to replace it.');
@@ -31,9 +31,21 @@ const DashboardDirection = (() => {
     for (const key of ['min_work_minutes', 'max_work_minutes', 'energy_bias']) if (c[key] != null) direction[key] = String(c[key]);
     direction.allow_long_works = c.allow_long_works === true;
     direction.strict = c.strict === true;
+    return Object.freeze(direction);
+  }
+  function draftOf(steering) {
     return Object.freeze({ mood: S.sessionMoodOf(steering),
       expiry: steering.source === 'session' && steering.expires_at !== null ? 'keep' : 'until',
-      minutes: '', direction: Object.freeze(direction) });
+      minutes: '', direction: filterDraftOf(steering.source === 'session' ? steering.added : {}) });
+  }
+  function rehearsalOf(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).some(key => !['target', 'signature', 'settings'].includes(key))
+        || typeof value.target !== 'string' || !value.target.trim()
+        || typeof value.signature !== 'string' || !value.signature) {
+      fail('The rehearsal settings do not identify a complete listening group.');
+    }
+    return Object.freeze({ target: value.target, signature: value.signature, settings: S.settingsOf(value.settings) });
   }
   function describeFilters(value) {
     const constraints = D.constraintsOf(value);
@@ -50,7 +62,7 @@ const DashboardDirection = (() => {
   function model({ call, controller, changed = () => {}, updated = () => {}, now = () => performance.now() }) {
     let version = 0, active = true, disposed = false, reading = null, readAt = 0;
     const state = { open: false, target: '', scope: '', label: '', group: null, status: null, moods: [],
-      draft: null, dirty: false, stale: true, loading: false, writing: false, pending: null, result: null, message: '' };
+      draft: null, imported: null, dirty: false, stale: true, loading: false, writing: false, pending: null, result: null, message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const live = () => !disposed && active && state.open && controller.state.active;
     const scope = () => controller.selected() ? C.shape(controller.selected().zone) : '';
@@ -67,7 +79,7 @@ const DashboardDirection = (() => {
     };
     function retire(message, discard = false) {
       ++version; reading?.abort(); reading = null; state.loading = false; state.pending = null; state.stale = true;
-      if (discard) { state.group = null; state.status = null; state.moods = []; state.draft = null; state.dirty = false; state.result = null; readAt = 0; }
+      if (discard) { state.group = null; state.status = null; state.moods = []; state.draft = null; state.imported = null; state.dirty = false; state.result = null; readAt = 0; }
       if (message) state.message = message;
     }
     function observe() {
@@ -83,9 +95,10 @@ const DashboardDirection = (() => {
       }
       publish();
     }
-    async function read({ preserveDraft = state.dirty, keepResult = false } = {}) {
+    async function read({ preserveDraft = state.dirty, keepResult = false } = {}, incoming = null) {
       if (!canRead()) return false;
       const previous = preserveDraft && matching() ? state.draft : null, dirty = previous ? state.dirty : false;
+      const imported = previous ? state.imported : null;
       const receipt = keepResult ? state.result?.done || '' : '';
       retire(); state.target = controller.state.selected; state.scope = scope();
       if (!keepResult) state.result = null;
@@ -101,10 +114,20 @@ const DashboardDirection = (() => {
           call('/dj/moods', undefined, options), call(`/zones/${encodeURIComponent(target)}/dj`, undefined, options)]);
         valid();
         const group = groupOf(zones, target, expected), catalog = moodsOf(moods), current = S.statusOf(status, group);
-        const draft = previous || draftOf(current.steering);
+        if (incoming) {
+          if (incoming.target !== target || incoming.signature !== expected) fail('The rehearsed group changed. Generate another preview for this group.');
+          if (incoming.settings.mood && !catalog.some(mood => mood.name === incoming.settings.mood)) {
+            fail('The rehearsed mood is no longer available. Choose a current mood and rehearse again.');
+          }
+          S.requestOf(target, incoming.settings, catalog.map(mood => mood.name));
+        }
+        const draft = incoming ? Object.freeze({ mood: incoming.settings.mood || '', expiry: 'choose', minutes: '',
+          direction: filterDraftOf(incoming.settings.constraints) }) : previous || draftOf(current.steering);
         state.group = group; state.label = group.label; state.moods = catalog; state.status = current;
-        state.draft = draft; state.dirty = dirty; state.stale = false; readAt = started;
-        state.message = receipt || (previous ? 'Current DJ state refreshed. Your edited draft is kept; review it against the settings shown above.' : '');
+        state.draft = draft; state.imported = incoming?.settings || imported; state.dirty = incoming ? true : dirty;
+        state.stale = false; readAt = started;
+        state.message = incoming ? 'Rehearsal settings copied as an unsaved draft. Choose how long they should apply, then review before saving or starting the DJ.'
+          : receipt || (previous ? 'Current DJ state refreshed. Your edited draft is kept; review it against the settings shown above.' : '');
         return true;
       } catch (error) {
         if (live() && v === version) state.message = (receipt ? receipt + ' Current DJ state could not be read. ' : '') + C.problem(error);
@@ -112,6 +135,23 @@ const DashboardDirection = (() => {
       } finally {
         if (reading === abort) { reading = null; state.loading = false; publish(); }
       }
+    }
+    async function importRehearsal(value) {
+      if (disposed || !active || !controller.state.active || state.writing || controller.state.busy) return false;
+      let incoming;
+      try {
+        incoming = rehearsalOf(value);
+        if (incoming.target !== controller.state.selected || incoming.signature !== scope()) {
+          fail('The selected group differs from this rehearsal. Return to its unchanged group or generate a new preview.');
+        }
+        if (state.dirty || state.pending) fail('The direction editor has an unfinished draft or review. Close it to discard that draft before copying rehearsal settings.');
+      } catch (error) { state.message = C.problem(error); publish(); return false; }
+      state.open = true;
+      // A newer deliberate import may supersede an unfinished observation,
+      // but never an edited draft, review, or submitted command.
+      retire(); observe();
+      if (!canRead()) { state.message = 'Refresh playback before copying settings from this rehearsal.'; publish(); return false; }
+      return read({ preserveDraft: false }, incoming);
     }
     function edit(field, value) {
       if (!editable() || !['mood', 'expiry', 'minutes'].includes(field) || typeof value !== 'string'
@@ -133,6 +173,7 @@ const DashboardDirection = (() => {
       if (action === 'clear' && !['session', 'unavailable'].includes(state.status.steering.source)) fail('This group is already following its program.');
       const draft = state.draft, clear = action === 'clear';
       if (!clear && draft.mood === null) fail('Choose whether this session follows the time-of-day mood or pins a named mood. Its effective mood alone cannot tell us.');
+      if (!clear && !['keep', 'duration', 'until'].includes(draft.expiry)) fail('Choose how long these settings should apply before reviewing them.');
       if (!clear && draft.expiry === 'keep' && !canKeep()) fail('The current deadline is too close or unavailable. Choose a new duration or until cleared.');
       if (!clear && draft.expiry === 'duration' && !draft.minutes) fail('Enter the new duration in whole minutes.');
       const direction = clear ? null : D.fromDraft({ ...draft.direction, minutes: draft.expiry === 'duration' ? draft.minutes : '' }, draft.mood || null);
@@ -196,7 +237,7 @@ const DashboardDirection = (() => {
           if (ok) {
             const done = [answer.done, ...(answer.notes || []).map(note => note.detail)].join(' ');
             state.result = Object.freeze({ action: reviewed.action, target: reviewed.target, done });
-            state.message = done; state.dirty = false;
+            state.message = done; state.dirty = false; state.imported = null;
           } else state.message = controller.state.message || 'No direction was saved. Refresh playback and read the DJ again.';
         }
       } finally {
@@ -209,7 +250,7 @@ const DashboardDirection = (() => {
       }
       return ok;
     }
-    return { state, canRead, editable, canKeep, canReview, review, canApply, read, edit, editDirection, apply, observe,
+    return { state, canRead, editable, canKeep, canReview, review, canApply, read, importRehearsal, edit, editDirection, apply, observe,
       cancelReview() { if (state.writing) return false; ++version; state.pending = null; publish(); return true; },
       open() {
         if (disposed || !active || state.writing) return Promise.resolve(false);
@@ -237,6 +278,11 @@ const DashboardDirection = (() => {
       }
       node.append(...children); return node;
     };
+    const importedNote = el('p', { id: 'direction-rehearsal-note', class: 'small-note',
+      text: 'Copied from the rehearsal’s requested mood and filters. This draft uses the current mood definition. Choose a lifetime and review before applying; the exact set, seed, start time, length and any relaxed filters are not copied.' });
+    importedNote.hidden = true; $('direction-form').prepend(importedNote);
+    const expiryChoice = el('option', { value: 'choose', disabled: true, text: 'Choose how long to use these settings' });
+    expiryChoice.hidden = true; $('direction-expiry').append(expiryChoice);
     const control = model({ call, controller, updated, now, changed: render });
     function render(state) {
       trigger.disabled = !controller.selected() || !controller.state.active || controller.state.busy;
@@ -258,6 +304,8 @@ const DashboardDirection = (() => {
           : steering.expires_at === null ? 'Session lasts until cleared.' : `Session deadline: ${deadline(steering.expires_at)}`;
       $('direction-problem').textContent = status?.problem || '';
       $('direction-form').hidden = !state.draft;
+      importedNote.hidden = !state.imported;
+      expiryChoice.hidden = state.draft?.expiry !== 'choose';
       const disabled = !control.editable();
       for (const field of ['mood', 'expiry', 'minutes']) $('direction-' + field).disabled = disabled;
       if (catalog !== state.moods) {
@@ -340,8 +388,14 @@ const DashboardDirection = (() => {
     $('direction-back').addEventListener('click', () => control.cancelReview());
     dialog.addEventListener('cancel', event => { event.preventDefault(); control.close(); });
     dialog.addEventListener('close', () => { if (control.state.open) control.close(); });
-    render(control.state); return control;
+    render(control.state);
+    return { ...control, async importRehearsal(value) {
+      opener = doc.activeElement;
+      const accepted = await control.importRehearsal(value);
+      if (accepted && control.state.open && dialog.open && control.editable()) $('direction-expiry').focus();
+      return accepted;
+    } };
   }
-  return { MAX_AGE, groupOf, moodsOf, draftOf, describeFilters, model, panel };
+  return { MAX_AGE, groupOf, moodsOf, draftOf, rehearsalOf, describeFilters, model, panel };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardDirection;

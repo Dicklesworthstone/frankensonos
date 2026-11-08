@@ -58,14 +58,15 @@ const DashboardRehearsal = (() => {
       loadMoods() { return available() && engine.state.open ? engine.loadMoods() : Promise.resolve(false); },
       edit() { if (active && !disposed && engine.state.open) engine.edit(); },
       generate(draft) { return canGenerate() ? engine.generate(draft) : Promise.resolve(false); },
+      handoff() { return canGenerate() ? engine.handoff() : null; },
       suspend() { active = false; close(); engine.context(null); },
       resume() { if (!disposed) { active = true; observe(); } },
       dispose() { disposed = true; active = false; engine.dispose(); } };
   }
 
-  function panel({ call, controller, document: doc = document, now, demo = false }) {
+  function panel({ call, controller, document: doc = document, now, demo = false, onedit = null }) {
     const $ = id => doc.getElementById(id), dialog = $('rehearsal-dialog'), trigger = $('open-rehearsal');
-    let control, rendered = null, renderedMoods = null, visibleWorks = 24;
+    let control, rendered = null, renderedMoods = null, visibleWorks = 24, transferProblem = '';
     const el = (tag, cls, text) => {
       const node = doc.createElement(tag);
       if (cls) node.className = cls;
@@ -119,7 +120,11 @@ const DashboardRehearsal = (() => {
     const message = el('p', 'rehearsal-message'); message.id = 'rehearsal-message'; message.setAttribute('role', 'status'); message.setAttribute('aria-live', 'polite');
     const output = el('section', 'rehearsal-output'); output.id = 'rehearsal-output'; output.setAttribute('aria-label', 'Rehearsal result');
     const snapshot = el('p', 'rehearsal-snapshot'); snapshot.id = 'rehearsal-snapshot';
-    const result = el('div'); result.id = 'rehearsal-result'; output.append(snapshot, result);
+    const transfer = button('Review settings for live DJ', 'outline-button'); transfer.id = 'rehearsal-transfer';
+    const transferHint = el('p', 'small-note'); transferHint.id = 'rehearsal-transfer-hint';
+    transfer.setAttribute('aria-describedby', transferHint.id);
+    const transferBox = el('section'); transferBox.id = 'rehearsal-transfer-box'; transferBox.append(transfer, transferHint);
+    const result = el('div'); result.id = 'rehearsal-result'; output.append(snapshot, transferBox, result);
     dialog.replaceChildren(header, heading, context, introduction, form, moodsMessage, message, output);
 
     const draft = () => ({ lengthMode: mode.value, length: length.value, at: at.value, seed: seed.value, mood: mood.value,
@@ -216,8 +221,16 @@ const DashboardRehearsal = (() => {
       }
       moodsMessage.textContent = state.loadingMoods ? 'Reading available moods…' : state.moodError;
       message.textContent = demo ? 'Connect to your running house to rehearse from its library.'
-        : state.busy ? 'Planning from the current library and history. Playback continues as it is.' : state.message;
+        : transferProblem || (state.busy ? 'Planning from the current library and history. Playback continues as it is.' : state.message);
       output.hidden = !state.report;
+      transferBox.hidden = typeof onedit !== 'function' || !state.report;
+      transfer.disabled = !control.handoff();
+      transferHint.textContent = state.edited ? 'Generate the edited settings again before copying them to live direction.'
+        : !state.report?.works.length ? 'An empty rehearsal has no tested choices to review.'
+          : !state.request?.mood && !Object.keys(state.request?.constraints || {}).length
+            ? 'This preview inherited current steering. Use Advanced direction to edit it; no temporary settings were created.'
+            : !control.canGenerate() ? 'Refresh playback for this unchanged listening group before copying its settings.'
+              : 'Opens an unsaved direction draft for this group. Choose its lifetime, then review saving or starting the DJ. It does not copy the exact playlist, seed, start time, length or relaxed filters.';
       snapshot.textContent = state.edited
         ? 'Settings changed. This result still uses the captured settings below. Generate again to compare.'
         : 'Snapshot of the library, history and preferences when generated. Future picks can change as you listen or edit settings.';
@@ -232,13 +245,29 @@ const DashboardRehearsal = (() => {
     close.addEventListener('click', control.close);
     dialog.addEventListener('cancel', event => { event.preventDefault(); control.close(); });
     dialog.addEventListener('close', () => { if (control.state.open) control.close(); });
-    form.addEventListener('submit', event => { event.preventDefault(); void control.generate(draft()); });
+    form.addEventListener('submit', event => { event.preventDefault(); transferProblem = ''; void control.generate(draft()); });
     form.addEventListener('input', control.edit); form.addEventListener('change', control.edit);
     mode.addEventListener('change', () => { length.max = mode.value === 'hours' ? '48' : '500'; length.value = mode.value === 'hours' ? '2' : '12'; control.edit(); });
     refresh.addEventListener('click', () => { void control.loadMoods(); });
     clear.addEventListener('click', () => {
       for (const node of Object.values(filterInputs)) node.value = '';
       minimum.value = ''; maximum.value = ''; energy.value = '0'; long.checked = false; strict.checked = false; control.edit();
+    });
+    transfer.addEventListener('click', async () => {
+      const captured = control.handoff();
+      if (!captured || typeof onedit !== 'function') return;
+      transferProblem = ''; control.close();
+      const failed = () => {
+        const item = controller.selected();
+        // The editor normally explains a rejected import itself. Only reopen
+        // this snapshot if no editor opened and its original group still fits.
+        if (!control.available() || $('direction-dialog')?.open || !item
+            || controller.state.selected !== captured.target || C.shape(item.zone) !== captured.signature) return;
+        transferProblem = 'The direction editor could not open these settings. Refresh playback or finish its current draft, then try again.';
+        control.open();
+      };
+      try { if (await onedit(captured) === false) failed(); }
+      catch (_) { failed(); }
     });
     control.observe();
     return { control, observe: control.observe, suspend: control.suspend, resume: control.resume, dispose: control.dispose };
