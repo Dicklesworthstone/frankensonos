@@ -2291,3 +2291,25 @@ read, the exec-env diagnosis) now terminates at exactly ONE of:
      proven 403 pipeline ready for all three units), or
   2. one serial-console session.
 Everything else is built, verified, and waiting.
+
+### 2026-11-08 (session 18) — the PPC daemon unparked; the init gates mapped
+
+The qemu-ppc anacapad progress (all under systemd units on css):
+- The 100%-CPU 'spin' decoded: main → 0x100078b8 → 0x10007710 (/dev/chk
+  open + ioctl 0x4004F301, the out-value must equal 6550) returns 0 →
+  0x100078e0 → **0x100078e4 `b 0x100078e4` = a deliberate park loop**.
+  The daemon was NOT spinning on an error — it parked by design.
+- A forced-check patch (0x10007710 → `li r3,1; blr`) unparks it; the init
+  then fails on real config errors, fixed in order: /ramdisk/optlog (the
+  /opt/log symlink target), then **DiagLevel default=9** → the modules
+  LOAD: `ap_static_module: loaded: mod_zp`, `anacapa is starting on port
+  1400/1443/1843`.
+- The remaining abort = an assert in the config/device-state path
+  (0x1036bab8 ← 0x1036c418 ← 0x1028d208 ← 0x10008a1c) that logs nothing
+  even at DiagLevel 9. Artifacts: /tmp/ledshim2.c (the 0x4004F301→6550
+  shim; NOTE the LD_PRELOAD-on-qemu trick does NOT intercept guest
+  ioctl(2) — qemu emulates syscalls directly), the patched binary
+  (/tmp/s23_anacapad_forcechk, also staged in the chroot as anacapad.forced
+  with the original preserved as anacapad.orig).
+- Next session: the assert at 0x10008a1c (break there, single-step to the
+  failing directive), or seed the missing device state it checks.
