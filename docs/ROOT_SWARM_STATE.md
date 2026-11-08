@@ -2376,3 +2376,28 @@ architectures, every fire 200/200, every observable negative. The
 conclusion stands unchanged: the child cannot produce effects before the
 watchdog kills the daemon family; device-side visibility (serial) or the
 devmode statement closes the campaign.
+
+### 2026-11-08 (session 19 addendum) — /customsd: a pre-auth config-write primitive
+
+The mod_zp route table (decoded from the binary at 0x1052c60c+) exposed
+/customsd — a FULL pre-auth service registration form (GET serves the form
++ a fresh csrfToken; POST with that token writes the service config —
+'Success!'). Fields: sid (240-253/255), name, uri, secureUri, stringsUri,
+presentationMapUri, manifestUri, authType (DeviceLink/AppLink), pollInterval,
+caps. The registered service is advertised pre-auth via the unauthenticated
+MusicServices/Control ListAvailableServices SOAP (verified: my 'pwn' service
+with PollInterval=30 + the manifest cap came back in the descriptor list).
+
+Robustness: the oversized-name (200B) and negative pollInterval posts return
+200; the uri-length variants 500'd only on a STALE csrfToken (each POST
+rotates it) — no crash found at the form layer. The daemon did NOT fetch the
+registered URLs at registration time; the SMAPI triad (strings/presentation/
+manifest) is fetched only inside the session flow, which gates on the
+household identity (the 401/806 codes) — the same hhid wall as everywhere
+else.
+
+The offensive value: a pre-auth, CSRF-token-mintable config write whose
+values the daemon later parses (the URL fields, the SMAPI XML triad). The
+SMAPI XML parsers are the untested memory-surface behind it — reachable when
+a service session exists (the hhid chain) or via a second-order bug that
+mints one.
