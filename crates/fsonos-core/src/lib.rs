@@ -14,7 +14,7 @@
 //! * [`heal`] retries a command once after a player moved or its coordinator changed.
 //! * [`live`] keeps the model current in the background: surveys, events, health.
 //! * [`favorites`] lists, finds, and plays Sonos favorites.
-//! * [`playlists`] reads native saved Sonos playlists for the same playback path.
+//! * [`playlists`] reads native Sonos playlists and saves queues for later playback.
 //! * [`favorite_queue`] queues native favorites without interrupting playback.
 //! * [`search`] ranks the cached library and favorites against a query.
 //! * [`control`] carries out a player-addressed command over a

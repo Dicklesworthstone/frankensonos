@@ -90,6 +90,7 @@ pub(crate) struct Household {
     pub params: SpotifyRenderParams,
     pub favorites: Vec<Favorite>,
     pub saved_playlists: Vec<SavedPlaylist>,
+    pub saved_playlists_update_id: u32,
     /// The software version an `AvailableSoftwareUpdate` offers, if any
     /// (see [`crate::SimHandle::offer_update`]).
     pub offered_update: Option<String>,
@@ -731,6 +732,7 @@ impl State {
         match action {
             "SetAVTransportURI"
             | "SetPlayMode"
+            | "SaveQueue"
             | "AddURIToQueue"
             | "RemoveTrackFromQueue"
             | "RemoveAllTracksFromQueue"
@@ -790,6 +792,40 @@ impl State {
         Ok(Vec::new())
     }
 
+    fn save_queue(&mut self, p: usize, args: &Args<'_>) -> Result<Out, Fault> {
+        self.require_coordinator(p)?;
+        let title = args.get("Title")?;
+        // This fixture implements the create-only operation used by the
+        // controller, never an implicit update of an existing SQ object.
+        if !args.get("ObjectID")?.is_empty()
+            || title.trim().is_empty()
+            || title.len() > 1023
+            || title.chars().any(char::is_control)
+        {
+            return Err(INVALID_ARGS);
+        }
+        if self.players[p].transport.queue.is_empty() {
+            return Err(Fault(811));
+        }
+        let house = &mut self.households[self.players[p].household];
+        let id = house
+            .saved_playlists
+            .iter()
+            .map(|saved| saved.id)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(SONOS_FAILURE)?;
+        house.saved_playlists.push(SavedPlaylist {
+            id,
+            title: title.into(),
+            tag: "container",
+            tracks: self.players[p].transport.queue.clone(),
+        });
+        house.saved_playlists_update_id = house.saved_playlists_update_id.wrapping_add(1);
+        Ok(vec![("AssignedObjectID", format!("SQ:{id}"))])
+    }
+
     /// What the transport plays from: its URI and its queue.
     fn av_sources(
         &mut self,
@@ -800,6 +836,7 @@ impl State {
     ) -> Result<Out, Fault> {
         match action {
             "SetPlayMode" => self.set_play_mode(p, args),
+            "SaveQueue" => self.save_queue(p, args),
             "SetAVTransportURI" => {
                 // The hidden half of a pair follows its primary.
                 self.require_not_secondary(p)?;
@@ -1407,13 +1444,14 @@ impl State {
                 )
             }
             "SQ:" => {
-                let saved = &self.households[self.players[p].household].saved_playlists;
+                let house = &self.households[self.players[p].household];
+                let saved = &house.saved_playlists;
                 let (from, to) = window(saved.len());
                 (
                     docs::saved_playlist_items(&saved[from..to]),
                     to - from,
                     saved.len(),
-                    1,
+                    house.saved_playlists_update_id,
                 )
             }
             "Q:0" => {

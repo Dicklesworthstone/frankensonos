@@ -122,3 +122,83 @@ fn invalid_playlists_are_not_sent_and_unknown_local_callers_are_denied() {
     );
     assert_eq!(reply.calls.lock().unwrap().len(), 1);
 }
+
+fn save_request() -> SaveSonosPlaylistRequest {
+    SaveSonosPlaylistRequest {
+        zone: "Den@S2".into(),
+        title: "Evening & Friends".into(),
+    }
+}
+
+#[test]
+fn saving_forwards_once_and_preserves_the_confirmed_native_identity_and_log_status() {
+    for logged in [false, true] {
+        let outcome = json!({
+            "done":"saved the queue as a new Sonos playlist", "zone":"Den",
+            "playlist":{"id":"SQ:8", "title":"Evening & Friends"}, "logged":logged
+        });
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Ok(outcome.clone())),
+        });
+        let result = backend(&reply)
+            .save_sonos_playlist(&save_request())
+            .unwrap();
+        assert!(!result.is_error);
+        assert_eq!(result.structured_content, Some(outcome));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/sonos/playlists/save", save_request()])]
+        );
+    }
+}
+
+#[test]
+fn uncertain_refused_or_malformed_saves_never_create_a_second_playlist() {
+    for answer in [
+        Err(Failure::new(ErrorCode::OutcomeUncertain, "save reply lost")),
+        Err(Failure::new(ErrorCode::PlayerUnreachable, "unreachable")),
+        Err(Failure::new(ErrorCode::PolicyDenied, "save not allowed")),
+        Err(Failure::new(ErrorCode::UpnpFault, "refused save")),
+        Ok(json!({"done":"missing the saved identity"})),
+        Ok(json!({"done":"saved", "zone":"Den", "playlist":{"id":"SQ:8"}, "logged":true})),
+    ] {
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(answer),
+        });
+        assert!(
+            backend(&reply)
+                .save_sonos_playlist(&save_request())
+                .is_err()
+        );
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/sonos/playlists/save", save_request()])]
+        );
+    }
+}
+
+#[test]
+fn invalid_save_titles_are_not_forwarded_and_standalone_saves_still_require_permission() {
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: None,
+    });
+    for title in ["".into(), "A\nB".into(), "é".repeat(512)] {
+        let request = SaveSonosPlaylistRequest {
+            title,
+            ..save_request()
+        };
+        assert!(backend(&reply).save_sonos_playlist(&request).is_err());
+    }
+    assert!(reply.calls.lock().unwrap().is_empty());
+    assert!(
+        backend(&reply)
+            .save_sonos_playlist(&save_request())
+            .unwrap_err()
+            .message
+            .contains("POLICY_DENIED")
+    );
+    assert_eq!(reply.calls.lock().unwrap().len(), 1);
+}

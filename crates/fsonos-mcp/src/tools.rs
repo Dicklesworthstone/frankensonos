@@ -53,7 +53,7 @@ mod queue_search;
 pub use queue_search::SearchQueue;
 
 mod sonos_playlists;
-pub use sonos_playlists::{ListSonosPlaylists, PlaySonosPlaylist};
+pub use sonos_playlists::{ListSonosPlaylists, PlaySonosPlaylist, SaveSonosPlaylist};
 
 mod controls;
 mod documents;

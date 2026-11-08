@@ -105,6 +105,7 @@ pub const CLASSES: [(&str, &[&str]); 10] = [
     (
         "house-config",
         &[
+            "save_sonos_playlist",
             "save_scene",
             "delete_scene",
             "add_schedule",
@@ -1726,6 +1727,9 @@ deny = ["volume"]
 
 [clients.reader]
 allow = ["read", "playback"]
+
+[clients.catalog_reader]
+deny = ["house-config"]
 "#,
         )
         .unwrap();
@@ -1772,6 +1776,19 @@ allow = ["read", "playback"]
         ));
         assert_eq!(class_of("fade_volume"), Some("volume"));
         assert_eq!(class_of("list_zones"), None);
+        assert_eq!(class_of("save_sonos_playlist"), Some("house-config"));
+        assert!(matches!(
+            p.authorize(call("save_sonos_playlist", false), &who("catalog_reader")),
+            Decision::Deny { .. }
+        ));
+        assert_eq!(
+            p.authorize(call("list_favorites", true), &who("catalog_reader")),
+            Decision::Allow
+        );
+        assert!(matches!(
+            p.authorize(call("save_sonos_playlist", false), &reader),
+            Decision::Deny { .. }
+        ));
     }
 
     #[test]

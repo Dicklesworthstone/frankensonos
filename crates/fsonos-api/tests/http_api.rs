@@ -411,6 +411,33 @@ fn bad_requests_are_coded() {
 }
 
 #[test]
+fn playlist_save_rejects_overwrite_payloads_bad_titles_and_unknown_callers_before_speaker_io() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    for body in [
+        json!({"zone":"Kitchen", "title":"Mix", "object_id":"SQ:1"}),
+        json!({"zone":"Kitchen", "title":"Mix", "overwrite":true}),
+        json!({"zone":"Kitchen", "title":"Mix", "metadata":"untrusted"}),
+        json!({"zone":"Kitchen", "title":""}),
+        json!({"zone":"Kitchen", "title":"A\nB"}),
+        json!({"zone":"Kitchen", "title":"é".repeat(512)}),
+        json!({"zone":" ", "title":"Mix"}),
+    ] {
+        let (status, failure) = api.post("/sonos/playlists/save", &body);
+        assert_eq!(status, 422, "{body}: {failure}");
+        assert_eq!(failure["code"], "INVALID_ARGUMENT");
+    }
+    assert!(api.actions().is_empty());
+    let unknown = Api::start("", &Client::Unknown);
+    let (status, failure) = unknown.post(
+        "/sonos/playlists/save",
+        &json!({"zone":"Kitchen", "title":"Mix"}),
+    );
+    assert_eq!(status, 403, "{failure}");
+    assert_eq!(failure["code"], "POLICY_DENIED");
+    assert!(unknown.actions().is_empty());
+}
+
+#[test]
 fn unknown_callers_may_read_but_not_control() {
     let api = Api::start("", &Client::Unknown);
     let (status, _) = api.get("/zones");
@@ -550,14 +577,7 @@ fn the_openapi_document_describes_every_route() {
         doc["paths"]["/zones/{room}/state"]["get"]["operationId"],
         "get_zone_state"
     );
-    assert_eq!(
-        doc["paths"]["/sonos/playlists"]["get"]["operationId"],
-        "list_sonos_playlists"
-    );
-    assert_eq!(
-        doc["paths"]["/sonos/playlists/play"]["post"]["operationId"],
-        "play_sonos_playlist"
-    );
+    assert_native_playlist_openapi(&doc);
 
     // Bodies have their schemas, with the required fields.
     let body = &doc["paths"]["/volume"]["post"]["requestBody"];
@@ -571,23 +591,6 @@ fn the_openapi_document_describes_every_route() {
         assert!(volume["properties"][field].is_object(), "{field}: {volume}");
     }
     assert_eq!(volume["required"], json!(["zone"]), "{volume}");
-
-    let schema = &doc["paths"]["/sonos/playlists/play"]["post"]["requestBody"]["content"]["application/json"]
-        ["schema"];
-    let playlist = schema["$ref"]
-        .as_str()
-        .and_then(|r| r.rsplit('/').next())
-        .map_or(schema, |name| &doc["components"]["schemas"][name]);
-    assert_eq!(playlist["required"], json!(["zone", "playlist"]));
-    assert!(playlist["properties"].get("metadata").is_none());
-    let schema =
-        &doc["paths"]["/queue"]["post"]["requestBody"]["content"]["application/json"]["schema"];
-    let queue = schema["$ref"]
-        .as_str()
-        .and_then(|r| r.rsplit('/').next())
-        .map_or(schema, |name| &doc["components"]["schemas"][name]);
-    assert!(queue["properties"]["playlist"].is_object());
-    assert_eq!(queue["required"], json!(["zone"]));
 
     let schema =
         &doc["paths"]["/announce"]["post"]["requestBody"]["content"]["application/json"]["schema"];
@@ -626,6 +629,45 @@ fn the_openapi_document_describes_every_route() {
         "",
     );
     assert_eq!(status, 403);
+}
+
+fn assert_native_playlist_openapi(doc: &Value) {
+    assert_eq!(
+        doc["paths"]["/sonos/playlists"]["get"]["operationId"],
+        "list_sonos_playlists"
+    );
+    assert_eq!(
+        doc["paths"]["/sonos/playlists/play"]["post"]["operationId"],
+        "play_sonos_playlist"
+    );
+    assert_eq!(
+        doc["paths"]["/sonos/playlists/save"]["post"]["operationId"],
+        "save_sonos_playlist"
+    );
+    let schema = &doc["paths"]["/sonos/playlists/play"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    let playlist = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    assert_eq!(playlist["required"], json!(["zone", "playlist"]));
+    assert!(playlist["properties"].get("metadata").is_none());
+    let schema = &doc["paths"]["/sonos/playlists/save"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    let save = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    assert_eq!(save["required"], json!(["zone", "title"]));
+    assert_eq!(save["properties"].as_object().unwrap().len(), 2);
+    let schema =
+        &doc["paths"]["/queue"]["post"]["requestBody"]["content"]["application/json"]["schema"];
+    let queue = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    assert!(queue["properties"]["playlist"].is_object());
+    assert_eq!(queue["required"], json!(["zone"]));
 }
 
 /// http.rs's route table names every route the app serves (8hhv.2): a

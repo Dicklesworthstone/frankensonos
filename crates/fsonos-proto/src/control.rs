@@ -169,6 +169,27 @@ pub fn remove_all_tracks_from_queue<T: Transport + ?Sized>(
     .map(drop)
 }
 
+/// Save the coordinator's current queue as a new native Sonos playlist.
+/// `ObjectID` is deliberately empty: this operation never requests an
+/// overwrite. The returned `AssignedObjectID` identifies the new `SQ:` entry.
+/// A missing reply must not cause the caller to send this write again.
+/// See the [device-derived AVTransport schema](https://github.com/svrooij/sonos-api-docs/blob/main/docs/services/av-transport.md#savequeue).
+pub fn save_queue<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    title: &str,
+) -> Result<String, ProtoError> {
+    call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "SaveQueue",
+        &[INSTANCE, ("Title", title), ("ObjectID", "")],
+    )?
+    .require("AssignedObjectID")
+    .map(str::to_string)
+}
+
 /// What an enqueue added: the queue position of its first track, and how
 /// many tracks (an album or playlist adds its tracks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -786,6 +807,26 @@ mod tests {
         assert!(action.ends_with("#SetPlayMode\""), "{action}");
         assert!(body.contains("<InstanceID>0</InstanceID>"), "{body}");
         assert!(body.contains("<NewPlayMode>NORMAL</NewPlayMode>"), "{body}");
+    }
+
+    #[test]
+    fn saving_a_queue_creates_a_playlist_and_requires_its_assigned_identity() {
+        let t = Canned::new("<AssignedObjectID>SQ:8</AssignedObjectID>");
+        assert_eq!(save_queue(&t, host(), "Evening & Friends").unwrap(), "SQ:8");
+        let (path, action, body) = t.last();
+        assert_eq!(path, "/MediaRenderer/AVTransport/Control");
+        assert!(action.ends_with("#SaveQueue\""), "{action}");
+        assert!(body.contains("<InstanceID>0</InstanceID>"), "{body}");
+        assert!(
+            body.contains("<Title>Evening &amp; Friends</Title>"),
+            "{body}"
+        );
+        assert!(body.contains("<ObjectID></ObjectID>"), "{body}");
+        assert_eq!(t.sent.borrow().len(), 1);
+        assert!(matches!(
+            save_queue(&Canned::new(""), host(), "Evening"),
+            Err(ProtoError::Malformed(_))
+        ));
     }
 
     #[test]

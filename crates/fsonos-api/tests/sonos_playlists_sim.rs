@@ -2,16 +2,16 @@
 //! action-log boundary and real localhost simulator sockets.
 
 use fsonos_api::surface::queue::QueueRequest;
-use fsonos_api::surface::sonos_playlists::PlaySonosPlaylistRequest;
+use fsonos_api::surface::sonos_playlists::{PlaySonosPlaylistRequest, SaveSonosPlaylistRequest};
 use fsonos_api::{ErrorCode, Surface};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{ActionFilter, MemStore};
-use fsonos_core::{HouseholdState, inventory, resolve_room};
+use fsonos_core::{HouseholdState, control, inventory, resolve_room};
 use fsonos_proto::content::{QUEUE, browse_all};
 use fsonos_proto::control as soap;
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::TransportState;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -238,5 +238,232 @@ fn unknown_native_selections_do_not_lower_volume_or_replace_the_queue() {
         s.recent_actions(&Client::Cli, &ActionFilter::default())
             .unwrap()
             .is_empty()
+    );
+}
+
+fn save(zone: &str, title: &str) -> SaveSonosPlaylistRequest {
+    SaveSonosPlaylistRequest {
+        zone: zone.into(),
+        title: title.into(),
+    }
+}
+
+fn seed_native_queue(s: &Surface, zone: &str) {
+    s.queue_request(
+        &Client::McpStdio,
+        &QueueRequest {
+            zone: zone.into(),
+            playlist: Some("SQ:7".into()),
+            ..QueueRequest::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn saves_resolve_new_grouping_and_log_only_the_new_household_catalog_item() {
+    for generation in ["S1", "S2"] {
+        let sim = sim();
+        sim.retain_favorites(1, |_| false).unwrap();
+        sim.retain_favorites(2, |_| false).unwrap();
+        let zone = format!("Den@{generation}");
+        let member_zone = format!("Office@{generation}");
+        let initial = households(&sim);
+        let lead = resolve_room(&initial, &zone).unwrap();
+        let member = resolve_room(&initial, &member_zone).unwrap();
+        soap::join_group(&sim.lan(), member.player.ip, &lead.coordinator.id).unwrap();
+        let mut policy = Policy::default();
+        policy.defaults.max_volume = 20;
+        // Deliberately supply topology from before Office joined Den. The save
+        // must resolve Office's current coordinator before reading its queue.
+        let s = surface(Box::new(sim.lan()), &initial, policy);
+        seed_native_queue(&s, &zone);
+        control::play_queue_from(&sim.lan(), &initial, &lead.coordinator.id, 2).unwrap();
+        soap::seek_position(&sim.lan(), lead.coordinator.ip, 37).unwrap();
+        soap::set_volume(&sim.lan(), lead.coordinator.ip, 85).unwrap();
+        soap::set_volume(&sim.lan(), member.player.ip, 80).unwrap();
+        let before = control::playback(&sim.lan(), &initial, &lead.coordinator.id).unwrap();
+        let contents = queue(&sim, &initial, &zone);
+        let undo = s.preview_undo(&Client::McpStdio).unwrap().unwrap().id;
+        let start = sim.soap_log().len();
+        let saved = s
+            .save_sonos_playlist(
+                &Client::McpStdio,
+                &save(&member_zone, "  Evening & Friends  "),
+            )
+            .unwrap();
+        assert!(saved.logged);
+        assert_eq!(saved.zone, "Den");
+        assert_eq!(saved.playlist.id, "SQ:8");
+        assert_eq!(saved.playlist.title, "Evening & Friends");
+        let writes: Vec<_> = sim.soap_log()[start..]
+            .iter()
+            .filter(|entry| !matches!(entry.action.as_str(), "GetZoneGroupState" | "Browse"))
+            .cloned()
+            .collect();
+        assert_eq!(writes.len(), 1, "{writes:?}");
+        assert_eq!(writes[0].action, "SaveQueue");
+        assert_eq!(writes[0].player, lead.coordinator.id.0);
+        assert_eq!(
+            control::playback(&sim.lan(), &initial, &lead.coordinator.id).unwrap(),
+            before
+        );
+        assert_eq!(queue(&sim, &initial, &zone), contents);
+        assert_eq!(
+            soap::get_volume(&sim.lan(), lead.coordinator.ip).unwrap(),
+            85
+        );
+        assert_eq!(soap::get_volume(&sim.lan(), member.player.ip).unwrap(), 80);
+        assert_eq!(s.preview_undo(&Client::McpStdio).unwrap().unwrap().id, undo);
+        let log = s
+            .recent_actions(&Client::Cli, &ActionFilter::default())
+            .unwrap();
+        let entry = log
+            .iter()
+            .find(|row| row.action.intent.starts_with("save_sonos_playlist:"))
+            .unwrap();
+        assert_eq!(entry.action.client, "mcp-stdio");
+        assert_eq!(entry.action.decision, "allow");
+        assert!(entry.action.before_state.is_none());
+        assert!(entry.action.result.contains(&saved.playlist.id));
+        let other = if generation == "S1" {
+            "Den@S2"
+        } else {
+            "Den@S1"
+        };
+        assert_eq!(s.sonos_playlists(&Client::Cli, other).unwrap().len(), 2);
+        // A new Surface still sees the playlist: the catalog lives on Sonos.
+        let reopened = surface(Box::new(sim.lan()), &initial, Policy::default());
+        assert!(
+            reopened
+                .sonos_playlists(&Client::Cli, &zone)
+                .unwrap()
+                .contains(&saved.playlist)
+        );
+    }
+}
+
+#[test]
+fn save_permission_and_title_validation_precede_all_speaker_io() {
+    for rule in [
+        "deny = ['save_sonos_playlist']",
+        "deny = ['house-config']",
+        "allow = ['read']",
+    ] {
+        let policy = Policy::from_toml(&format!("[clients.\"mcp-stdio\"]\n{rule}\n")).unwrap();
+        let s = surface(Box::new(NoSpeakerIo), &[], policy);
+        let failure = s
+            .save_sonos_playlist(&Client::McpStdio, &save("Den", "Evening"))
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::PolicyDenied);
+        let log = s
+            .recent_actions(&Client::Cli, &ActionFilter::default())
+            .unwrap();
+        assert_eq!(log.len(), 1);
+        assert!(log[0].action.decision.starts_with("deny:"));
+    }
+    let s = surface(Box::new(NoSpeakerIo), &[], Policy::default());
+    for request in [save("Den", ""), save("Den", "A\nB"), save(" ", "Evening")] {
+        assert_eq!(
+            s.save_sonos_playlist(&Client::Cli, &request)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+    }
+}
+
+struct LoseSaveReply(SimLan);
+
+impl Transport for LoseSaveReply {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let response = self.0.soap_post(host, path, action, body)?;
+        if action.ends_with("#SaveQueue\"") {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "save reply lost after persisting".into(),
+            });
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn an_unconfirmed_save_is_logged_without_retry_or_playback_undo_barriers() {
+    let sim = sim();
+    let houses = households(&sim);
+    let s = surface(
+        Box::new(LoseSaveReply(sim.lan())),
+        &houses,
+        Policy::default(),
+    );
+    seed_native_queue(&s, "Den@S2");
+    let undo = s.preview_undo(&Client::McpStdio).unwrap().unwrap().id;
+    let failure = s
+        .save_sonos_playlist(&Client::McpStdio, &save("Den@S2", "Keep this set"))
+        .unwrap_err();
+    assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
+    assert!(!failure.retryable());
+    assert!(failure.hint.contains("saved Sonos playlists"));
+    assert_eq!(
+        sim.soap_log()
+            .iter()
+            .filter(|entry| entry.action == "SaveQueue")
+            .count(),
+        1
+    );
+    let catalog = s.sonos_playlists(&Client::Cli, "Den@S2").unwrap();
+    assert_eq!(
+        catalog
+            .iter()
+            .filter(|item| item.title == "Keep this set")
+            .count(),
+        1
+    );
+    assert_eq!(s.preview_undo(&Client::McpStdio).unwrap().unwrap().id, undo);
+    let log = s
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    let entry = log
+        .iter()
+        .find(|row| row.action.intent.starts_with("save_sonos_playlist:"))
+        .unwrap();
+    assert!(entry.action.result.starts_with("failed:"));
+    assert!(entry.action.before_state.is_none());
+}
+
+#[test]
+fn without_a_local_log_the_native_save_still_returns_its_confirmed_identity() {
+    let sim = sim();
+    let houses = households(&sim);
+    let known = houses.clone();
+    let s = Surface::new(
+        Box::new(sim.lan()),
+        Box::new(move |_| Ok(known.clone())),
+        Policy::default(),
+        Box::new(SystemClock),
+    );
+    seed_native_queue(&s, "Den@S1");
+    let saved = s
+        .save_sonos_playlist(&Client::Cli, &save("Den@S1", "Saved without a log"))
+        .unwrap();
+    assert!(!saved.logged);
+    assert!(
+        s.sonos_playlists(&Client::Cli, "Den@S1")
+            .unwrap()
+            .contains(&saved.playlist)
+    );
+    assert_eq!(
+        sim.soap_log()
+            .iter()
+            .filter(|entry| entry.action == "SaveQueue")
+            .count(),
+        1
     );
 }

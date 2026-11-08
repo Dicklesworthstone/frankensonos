@@ -5,9 +5,10 @@ mod e2e;
 
 use e2e::{Run, Scenario};
 use fsonos_api::surface::queue::QueueAddedDto;
-use fsonos_api::surface::sonos_playlists::SonosPlaylistDto;
+use fsonos_api::surface::sonos_playlists::{SavedSonosPlaylistDto, SonosPlaylistDto};
 use fsonos_proto::content::{QUEUE, browse_all};
 use fsonos_proto::control as soap;
+use fsonos_proto::didl::DidlObject;
 use fsonos_sim::SimHousehold;
 use fsonos_types::TransportState;
 use std::time::Duration;
@@ -107,7 +108,60 @@ fn exercise(s: &mut Scenario, route: &str) {
             undone.ok() && browse_all(&s.lan(), host, QUEUE).unwrap() == selected,
             format!("{} {}", undone.stdout, undone.stderr),
         );
+
+        save_and_recall(s, route, room, generation, &selected);
     }
+}
+
+fn save_and_recall(
+    s: &mut Scenario,
+    route: &str,
+    room: &str,
+    generation: &str,
+    selected: &[DidlObject],
+) {
+    let host = s.ip(room);
+    let title = format!("Saved from CLI {generation}");
+    let before_save = soap::get_position_info(&s.lan(), host).unwrap();
+    let save = call(s, route, "native-save", &["playlist-save", room, &title]);
+    assert!(save.ok(), "{save:?}");
+    let saved: SavedSonosPlaylistDto = serde_json::from_str(&save.stdout).unwrap();
+    s.check(
+        "native-save",
+        "cli",
+        "saving confirms a new native playlist without interrupting the playing queue",
+        saved.logged
+            && saved.playlist.id == "SQ:8"
+            && saved.playlist.title == title
+            && browse_all(&s.lan(), host, QUEUE).unwrap() == selected
+            && soap::get_position_info(&s.lan(), host).unwrap() == before_save,
+        &save.stdout,
+    );
+    let catalog = call(s, route, "native-saved-catalog", &["playlists", room]);
+    assert!(catalog.ok(), "{catalog:?}");
+    let listed: Vec<SonosPlaylistDto> = serde_json::from_str(&catalog.stdout).unwrap();
+    assert!(listed.contains(&saved.playlist));
+
+    let replace = call(
+        s,
+        route,
+        "native-replace",
+        &["play", room, "--playlist", "SQ:7"],
+    );
+    assert!(replace.ok(), "{replace:?}");
+    let recall = call(
+        s,
+        route,
+        "native-recall-saved",
+        &["play", room, "--playlist", &saved.playlist.id],
+    );
+    s.check(
+        "native-recall-saved",
+        "cli",
+        "the newly saved playlist replays its original ordered queue",
+        recall.ok() && browse_all(&s.lan(), host, QUEUE).unwrap() == selected,
+        format!("{} {}", recall.stdout, recall.stderr),
+    );
 }
 
 #[test]
@@ -132,7 +186,9 @@ fn native_playlists_use_the_daemons_http_catalog_control_and_action_log() {
         "native-log",
         "cli",
         "the daemon records native playlist commands",
-        log.ok() && log.stdout.contains("Sonos playlist"),
+        log.ok()
+            && log.stdout.contains("Sonos playlist")
+            && log.stdout.contains("save_sonos_playlist"),
         format!("{} {}", log.stdout, log.stderr),
     );
     drop(daemon);

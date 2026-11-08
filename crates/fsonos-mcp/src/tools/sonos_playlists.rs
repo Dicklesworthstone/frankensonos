@@ -2,7 +2,11 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::sonos_playlists::{self, PlaySonosPlaylistRequest, SonosPlaylistDto};
+use fsonos_api::surface::sonos_playlists::{
+    self, PlaySonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto,
+    SonosPlaylistDto,
+};
+use fsonos_api::{ErrorCode, Failure};
 use serde::Serialize;
 
 use super::{Backend, respond, said, segment, with_backend_off_thread};
@@ -41,6 +45,31 @@ impl Backend {
             })
         })
     }
+
+    /// Create on the selected daemon once; an uncertain or malformed reply
+    /// cannot cause a second save through the local speakers.
+    pub fn save_sonos_playlist(
+        &self,
+        req: &SaveSonosPlaylistRequest,
+    ) -> McpResult<FinalCallToolResult> {
+        req.validate()
+            .map_err(|failure| crate::tool_error(&failure))?;
+        let body = serde_json::to_value(req).map_err(|error| {
+            crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
+        })?;
+        if let Some(result) = self.on_daemon::<SavedSonosPlaylistDto>(
+            "POST",
+            "/sonos/playlists/save",
+            Some(&body),
+            SavedSonosPlaylistDto::text,
+        ) {
+            return result;
+        }
+        respond(|| {
+            let saved = self.surface.save_sonos_playlist(&self.client, req)?;
+            Ok((saved.text(), saved))
+        })
+    }
 }
 
 #[tool(
@@ -64,6 +93,20 @@ async fn play_sonos_playlist(
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |backend| {
         backend.play_sonos_playlist(&PlaySonosPlaylistRequest { zone, playlist })
+    })
+    .await
+}
+
+#[tool(
+    description = "Save the current queue of a room's group as a new playlist on its Sonos household. Give zone (Room@S1 or Room@S2 disambiguates names) and title (nonblank, no control characters, at most 1023 UTF-8 bytes after trimming). The queue must contain tracks. Always creates a new native SQ: id; it cannot overwrite or delete a playlist. Does not start, stop or change playback, queue contents, volume or the DJ. Returns the playlist confirmed in that household's catalog and whether the separate action log was saved. Uses save_sonos_playlist / house-config permission; no Spotify sign-in is needed. Not undoable through action history. Never automatically retry an uncertain response: read list_sonos_playlists for this household first."
+)]
+async fn save_sonos_playlist(
+    ctx: &McpContext,
+    zone: String,
+    title: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |backend| {
+        backend.save_sonos_playlist(&SaveSonosPlaylistRequest { zone, title })
     })
     .await
 }

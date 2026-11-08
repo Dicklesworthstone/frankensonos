@@ -19,6 +19,7 @@
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /sonos/playlists?zone=<room>` | | native saved Sonos playlists, with household-local SQ: ids |
 //! | `POST /sonos/playlists/play` | [`crate::surface::sonos_playlists::PlaySonosPlaylistRequest`] | [`crate::OutcomeDto`]: replaces the queue and plays the saved playlist |
+//! | `POST /sonos/playlists/save` | [`crate::surface::sonos_playlists::SaveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::SavedSonosPlaylistDto`]: saves the current queue as a new native playlist |
 //! | `POST /library/play` | [`crate::SearchPlayRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /library/search?q=<text>&zone=<room>&limit=<n>` | | `[HitDto]`: the owner's library, and the room's favorites |
 //! | `GET /library/browse` | | the synced library's tracks, albums or playlists, with no Spotify or speaker request |

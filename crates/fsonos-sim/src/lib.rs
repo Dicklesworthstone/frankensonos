@@ -520,6 +520,7 @@ fn household(sw_gen: u8) -> Household {
         params,
         favorites,
         saved_playlists,
+        saved_playlists_update_id: 1,
         offered_update: None,
     }
 }

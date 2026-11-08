@@ -221,6 +221,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "playlist_contents",
         "list_sonos_playlists",
         "play_sonos_playlist",
+        "save_sonos_playlist",
         "add_to_queue",
         "announce",
     ] {
@@ -265,17 +266,24 @@ fn control_tools_are_advertised_with_their_arguments() {
         &["playlist_uri", "offset", "limit", "q", "expected_revision"],
         &["playlist_uri"],
     );
-    let native = tool("list_sonos_playlists");
-    assert_eq!(native["annotations"]["readOnlyHint"], true);
-    assert_eq!(native["annotations"]["idempotentHint"], true);
-    assert_tool_arguments(native, &["zone"], &["zone"]);
-    assert_tool_arguments(
+    assert_native_playlist_schemas(
+        tool("list_sonos_playlists"),
         tool("play_sonos_playlist"),
-        &["zone", "playlist"],
-        &["zone", "playlist"],
-    );
-    assert_tool_arguments(
+        tool("save_sonos_playlist"),
         tool("add_to_queue"),
+    );
+}
+
+fn assert_native_playlist_schemas(list: &Value, play: &Value, save: &Value, queue: &Value) {
+    assert_eq!(list["annotations"]["readOnlyHint"], true);
+    assert_eq!(list["annotations"]["idempotentHint"], true);
+    assert_tool_arguments(list, &["zone"], &["zone"]);
+    assert_tool_arguments(play, &["zone", "playlist"], &["zone", "playlist"]);
+    assert_tool_arguments(save, &["zone", "title"], &["zone", "title"]);
+    assert_ne!(save["annotations"]["readOnlyHint"], true);
+    assert_ne!(save["annotations"]["idempotentHint"], true);
+    assert_tool_arguments(
+        queue,
         &[
             "zone",
             "source_uri",

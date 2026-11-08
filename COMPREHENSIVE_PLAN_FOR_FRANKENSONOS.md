@@ -892,6 +892,24 @@ containers, including file-backed resources. See
 [`docs/SONOS_PLAYLISTS.md`](docs/SONOS_PLAYLISTS.md) for the interface and failure
 contract; simulator coverage is separate from physical-speaker acceptance.
 
+Native queue creation is available through `fsonos playlist-save <room> <title>`,
+`POST /sonos/playlists/save` and MCP `save_sonos_playlist`. It saves a nonempty
+queue on the selected Sonos household without changing playback, queue contents,
+volume or the DJ, including a retained queue while radio plays. Titles are
+trimmed, nonblank, free of control characters and at most 1023 UTF-8 bytes.
+Each save creates a new id, even for an existing title; no overwrite, rename or
+delete operation is exposed. Fresh topology resolves the room's coordinator,
+one native save is sent, and a catalog read confirms its new id and title.
+SaveQueue has no queue-revision compare-and-set, so the saved contents are those
+Sonos handles at dispatch, not a locked preview. The `save_sonos_playlist`
+permission belongs to `house-config`; the action log records the catalog change
+without taking over playback undo. A confirmed native save remains successful
+when local logging fails (`logged: false`). Lost replies and failed
+confirmation remain uncertain and are never automatically retried; callers
+reread that household's saved catalog before another save. The new Rust save
+regressions still require execution; local compilation stopped at
+`asupersync` with SIGKILL before tests ran.
+
 ### 12.7 Scenes
 
 [`b-scenes`, `d-scenes-surface`] Named, declarative house states: group layout,

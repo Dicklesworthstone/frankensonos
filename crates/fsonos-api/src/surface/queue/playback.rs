@@ -208,7 +208,7 @@ impl Surface {
 
     /// Warm discovery locates a peer; fresh topology determines every room
     /// that may sound. Cached grouping alone cannot establish the volume caps.
-    pub(super) fn queue_households(
+    pub(in crate::surface) fn queue_households(
         &self,
         client: &Client,
         zone: &str,
@@ -234,7 +234,7 @@ impl Surface {
         Ok((households, group))
     }
 
-    pub(super) fn queue_group_unchanged(
+    pub(in crate::surface) fn queue_group_unchanged(
         &self,
         host: IpAddr,
         group: &ZoneGroupInfo,

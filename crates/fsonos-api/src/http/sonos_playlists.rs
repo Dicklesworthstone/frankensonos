@@ -4,7 +4,9 @@ use fastapi::core::RouteEntry;
 use fastapi::{JsonSchema, Request, fastapi_openapi};
 
 use super::{Ctx, Op, answer, body, query_param};
-use crate::surface::sonos_playlists::{PlaySonosPlaylistRequest, SonosPlaylistDto};
+use crate::surface::sonos_playlists::{
+    PlaySonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto, SonosPlaylistDto,
+};
 use crate::{Failure, OutcomeDto};
 
 const TAG: &str = "sonos-playlists";
@@ -30,6 +32,16 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<PlaySonosPlaylistRequest>(true)
         .response_schema::<OutcomeDto>(200, "The native playlist is playing"),
+        cx.route(
+            &Op::post(
+                "/sonos/playlists/save", "save_sonos_playlist", TAG,
+                "Save the current group queue as a new native playlist without changing playback (house-config permission)",
+            ),
+            |s, c, req| answer(body::<SaveSonosPlaylistRequest>(req)
+                .and_then(|r| s.save_sonos_playlist(c, &r))),
+        )
+        .request_schema::<SaveSonosPlaylistRequest>(true)
+        .response_schema::<SavedSonosPlaylistDto>(200, "A new playlist confirmed on the Sonos household"),
     ]
 }
 

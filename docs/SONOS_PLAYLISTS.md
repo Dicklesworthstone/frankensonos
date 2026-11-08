@@ -1,6 +1,6 @@
 # Saved Sonos playlists
 
-FrankenSonos can list and play playlists saved on the Sonos household, including
+FrankenSonos can list, play and create playlists saved on the Sonos household, including
 ones that are not in My Sonos favorites. These are the native `SQ:` saved queues,
 separate from the Spotify account's cached playlists.
 
@@ -9,6 +9,7 @@ separate from the Spotify account's cached playlists.
 ```sh
 fsonos playlists Kitchen
 fsonos --json playlists Kitchen
+fsonos playlist-save Kitchen 'Evening Mix'
 fsonos play Kitchen --playlist 'Evening Mix'
 fsonos play Kitchen --playlist SQ:7 --next
 fsonos play Kitchen --playlist SQ:7 --queue
@@ -33,6 +34,33 @@ need no Spotify Web API sign-in or learned Spotify favorite template. The
 speakers still need access to whatever music services or local files the saved
 playlist contains.
 
+## Save the current queue
+
+`fsonos playlist-save <room> <title>` saves the current group's nonempty queue
+as a new native playlist. It leaves playback, the queue, volume and the DJ alone.
+A retained queue can also be saved while radio or another source is playing;
+the saved content is the queue, not the active radio stream.
+
+Titles are trimmed, must be nonblank and contain no control characters, and
+may contain at most **1023 UTF-8 bytes** after trimming. Saving the same title
+again creates a distinct `SQ:` id. Existing playlists are never overwritten;
+use the returned id to distinguish equal titles. Editing, renaming and deleting
+saved playlists are not exposed, and creating one is not an action-history undo
+operation.
+
+The native save has no queue-revision compare-and-set argument. Sonos copies
+the queue when it handles the request; a prior queue read does not lock out
+another controller or a DJ top-up. The controller checks the current group and
+confirms the newly assigned id and title by reading the saved catalog afterward.
+It does not claim a previewed track count as an atomic saved snapshot.
+
+A successful response includes the confirmed `playlist`, the coordinator's
+room as `zone`, a `done` message, and `logged`. If `logged` is false, the
+playlist is still saved on Sonos; only the separate local action log failed.
+Do not repeat the save to repair logging. A lost write reply or failed
+confirmation returns `OUTCOME_UNCERTAIN` and is never retried automatically.
+Read this household's saved catalog before deciding whether to save again.
+
 ## Phone remote and desktop dashboard
 
 Open **Play a link or Sonos playlist** in the phone remote, or the source dialog
@@ -53,19 +81,23 @@ and is not automatically retried.
 | Operation | HTTP | MCP |
 |---|---|---|
 | List the selected household's saved playlists | `GET /sonos/playlists?zone=Kitchen` | `list_sonos_playlists(zone="Kitchen")` |
+| Save the current queue as a new playlist | `POST /sonos/playlists/save` with `{"zone":"Kitchen","title":"Evening Mix"}` | `save_sonos_playlist(zone="Kitchen", title="Evening Mix")` |
 | Replace the queue and play | `POST /sonos/playlists/play` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `play_sonos_playlist(zone="Kitchen", playlist="SQ:7")` |
 | Append | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `add_to_queue(zone="Kitchen", playlist="SQ:7")` |
 | Play next in the queue | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7","next":true}` | `add_to_queue(zone="Kitchen", playlist="SQ:7", next=true)` |
 
 Listings return `id`, `title`, and optional `art_uri`. A queue request accepts
-exactly one of `playlist`, `favorite`, or `source_uri`. The playlist operations
+exactly one of `playlist`, `favorite`, or `source_uri`. Playback and queue operations
 take a catalog selection, not caller-supplied renderer metadata or a file URI.
 They resolve the selection from the target household again before execution.
 
 The existing permissions apply: `list_favorites` for listing, `play_favorite`
 for starting, and `add_to_queue` for append/next. Playback uses the same volume
 caps, DJ handoff, action history, and coordinator resolution as native container
-favorites. This keeps existing client allowlists effective.
+favorites. This keeps existing client allowlists effective. Saving requires
+`save_sonos_playlist`, in the `house-config` class; it records the catalog change
+without a DJ handoff, volume changes or a playback undo record. The save body
+accepts only `zone` and `title`, never an existing playlist id or overwrite flag.
 
 ## Playback and failure behavior
 
@@ -88,9 +120,6 @@ Their DIDL playlist or music-album class identifies them even when their URI
 uses a native saved-queue or local-library scheme. Explicit radio sources keep
 their direct-stream behavior.
 
-This feature reads and recalls existing playlists; it does not create, edit,
-rename, or delete saved playlists on the speakers.
-
 ## Verification
 
 `fsonos-core/tests/sonos_playlists_sim.rs` exercises real loopback SOAP for both
@@ -100,6 +129,13 @@ The surface tests cover routing, policy, and caller input. Browser harnesses
 cover the phone and dashboard controls, household changes, stale observations,
 and one-shot submission over loopback HTTP. These simulator checks do not
 establish physical-speaker playback acceptance.
+
+Save regressions were added in `fsonos-core/tests/sonos_playlist_save_sim.rs`,
+`fsonos-api/tests/sonos_playlists_sim.rs` and the CLI/MCP tests for both
+households, persisted replay, unchanged playback, permissions and uncertain
+replies. They have not been executed in this session: local Rust builds stopped
+while compiling `asupersync` with SIGKILL, before test execution. Physical-speaker
+save acceptance remains separate.
 
 The protocol follows the native catalog and enqueue operations documented in
 [SoCo's music-library implementation](https://github.com/SoCo/SoCo/blob/master/soco/music_library.py)

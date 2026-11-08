@@ -9,6 +9,7 @@
 //!   status     what a room is doing (track, transport, volume)
 //!   favorites  the household's Sonos favorites, numbered
 //!   playlists  playlists saved on the Sonos household, with native ids
+//!   playlist-save save the current group queue as a new Sonos playlist
 //!   log / undo the action log, and undoing the newest action
 //!   policy     the house policy in effect (show), and whether policy.toml
 //!              can be used (check)
@@ -49,6 +50,7 @@ mod eq_cmd;
 mod events_cmd;
 mod known_players;
 mod play_mode_cmd;
+mod playlist_cmd;
 mod policy_cmd;
 mod queue_edit_cmd;
 mod queue_play_cmd;
@@ -123,6 +125,9 @@ enum Command {
     Favorites { zone: String },
     /// List playlists saved on a room's Sonos household, with native SQ: ids.
     Playlists { zone: String },
+    /// Save the current group queue as a new Sonos playlist. Playback continues;
+    /// existing playlists are never overwritten. No Spotify sign-in is needed.
+    PlaylistSave(playlist_cmd::PlaylistSaveArgs),
     /// What played lately, newest first: when, the room whose group played
     /// it, and what.
     History {
@@ -533,6 +538,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::QueueRemove(args) => queue_edit_cmd::remove(global, &args),
         Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
         Command::PlayMode(args) => play_mode_cmd::run(global, &args),
+        Command::PlaylistSave(args) => playlist_cmd::run(global, &args),
         Command::Events(args) => events_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
         Command::Mcp { profile } => run_mcp_stdio(global, profile.into()),
@@ -1051,6 +1057,7 @@ fn plan_for<'a>(
         | Command::Status { .. }
         | Command::Favorites { .. }
         | Command::Playlists { .. }
+        | Command::PlaylistSave(_)
         | Command::Queue { .. }
         | Command::QueuePlay(_)
         | Command::QueueSearch(_)
