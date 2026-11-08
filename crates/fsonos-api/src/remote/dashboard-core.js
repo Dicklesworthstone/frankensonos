@@ -141,18 +141,22 @@ const DashboardCore = (() => {
       && (!reading || reading.retained.has(state.selected))
       && !state.uncertain && selected()?.fresh && (state.connected || now() - selected().at < 30000));
     const canManage = () => !demo && !disposed && state.active && !state.busy && !state.uncertain;
-    // Routine storage remains readable without any online speaker. Only a
-    // current, explicit reread can acknowledge an uncertain schedule write;
-    // reading schedules can never clear uncertainty from a speaker command.
+    const stores = {
+      schedules: { path: '/schedules', label: 'routines', observed: 'stored list', route: /^\/schedules(?:\/(?:pause|resume|remove))?$/ },
+      preferences: { path: '/dj/preferences', label: 'preferences', observed: 'standing taste', route: /^\/dj\/preferences$/ },
+    };
+    // House settings remain readable without online speakers. Only a current,
+    // explicit reread of the same store acknowledges its uncertain write.
     async function refreshStored(store, decode, { explicit = false, signal } = {}) {
-      if (store !== 'schedules' || typeof decode !== 'function' || disposed || !state.active || state.busy) return null;
+      const config = Object.hasOwn(stores, store) ? stores[store] : null;
+      if (!config || typeof decode !== 'function' || disposed || !state.active || state.busy) return null;
       const version = lifetime, before = doubt;
-      const value = await call('/schedules', undefined, { signal });
+      const value = await call(config.path, undefined, { signal });
       if (disposed || !state.active || version !== lifetime || state.busy || signal?.aborted) return null;
       const result = decode(value);
       if (explicit && state.uncertain && uncertainStore === store && before === doubt) {
         state.uncertain = false; uncertainStore = null;
-        state.message = 'Routines refreshed. Review the stored list before another command.'; emit();
+        state.message = `${config.label === 'routines' ? 'Routines' : 'Preferences'} refreshed. Review the ${config.observed} before another command.`; emit();
       }
       return result;
     }
@@ -227,7 +231,7 @@ const DashboardCore = (() => {
         state.initialized = true;
         // Scoped/event recovery is never the explicit acknowledgement of a
         // previously uncertain command, even when it observes its effect.
-        if (explicit && scope === null && selected()?.fresh && uncertainStore !== 'schedules') {
+        if (explicit && scope === null && selected()?.fresh && uncertainStore === null) {
           state.uncertain = false; state.message = 'Playback refreshed. Review the current state before acting.';
         }
         return jobs.every((i) => i.fresh);
@@ -249,7 +253,7 @@ const DashboardCore = (() => {
     // One mutation lane for transport, the DJ, search and house scenes. A
     // retained callback cannot dispatch after its operation/lifetime ended.
     async function mutate(operation, { wholeHouse = true, stored } = {}) {
-      const storage = stored === 'schedules';
+      const config = Object.hasOwn(stores, stored) ? stores[stored] : null, storage = !!config;
       if ((stored !== undefined && !storage) || !(storage ? canManage() : canControl())) return false;
       if (reading) {
         // Controls for an unchanged group take priority over background reads
@@ -272,9 +276,9 @@ const DashboardCore = (() => {
           async send(url, body, options) {
             check();
             if (sent) throw new Error('This action already dispatched its one command.');
-            if (storage && (!/^\/schedules(?:\/(?:pause|resume|remove))?$/.test(url)
+            if (storage && (!config.route.test(url)
                 || body == null || (options?.method != null && options.method !== 'POST'))) {
-              throw new Error('Stored routine actions must use the native schedule endpoints.');
+              throw new Error(`Stored ${config.label} actions must use their native POST endpoints.`);
             }
             sent = true;
             return call(url, body, options);
@@ -290,7 +294,7 @@ const DashboardCore = (() => {
         if (sent) { state.uncertain = true; uncertainStore = storage ? stored : null; ++doubt; }
         if (!storage) item.fresh = false;
         state.message = `${problem(e)} ${sent ? storage
-          ? 'Outcome uncertain; no retry was sent. Use Refresh routines and inspect the stored list before another command.'
+          ? `Outcome uncertain; no retry was sent. Use Refresh ${config.label} and inspect the ${config.observed} before another command.`
           : 'Outcome uncertain; no retry was sent. Use Refresh before another command.' : 'No command was sent.'}`;
         return false;
       } finally {

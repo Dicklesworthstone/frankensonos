@@ -1,0 +1,30 @@
+/* Standing taste is house-wide, separate from the current group's direction. */
+.standing-taste{margin-top:18px;padding-top:15px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.standing-taste p{margin:0;font-size:11px;color:var(--muted);line-height:1.6}
+.standing-taste button{min-height:44px;flex:none;font-size:12px;color:var(--accent)}
+.preferences-dialog{width:min(800px,calc(100vw - 32px));max-height:calc(100dvh - 48px);overflow-y:auto}
+.preferences-scope{margin:16px 0;padding:14px 16px;border:1px solid var(--line-strong);border-radius:10px;background:var(--accent-soft)}
+.preferences-scope strong{font-size:13px;color:var(--accent)}
+.preferences-scope p{margin:6px 0 0;font-size:12px;line-height:1.7;color:var(--muted)}
+.preferences-context{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:18px 0}
+.preferences-context p{margin:0;flex:1;min-width:180px}.preferences-context button{min-height:44px;flex:none}
+.preferences-defaults{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.preference-default,.preferences-add{border:1px solid var(--line);border-radius:11px;background:var(--raised);padding:17px}
+.preference-default label,.preferences-add label{display:grid;gap:9px;font-size:12px;font-weight:550}
+.preference-default .small-note{margin-top:10px}.preferences-dialog input,.preferences-dialog select{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--panel);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;font:inherit;font-size:14px}
+.preferences-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}.preferences-actions button{min-height:44px;font-size:11px}
+.preferences-add{display:grid;grid-template-columns:minmax(150px,.8fr) minmax(0,1.2fr);gap:14px;margin:18px 0}
+.preferences-add .small-note{margin:0;grid-column:1/-1}.preferences-add>.outline-button{grid-column:1/-1;justify-self:start;min-height:44px}
+.preferences-lists{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:20px}
+.preference-group{min-width:0;border:1px solid var(--line);border-radius:11px;padding:16px}.preference-group h3{margin:0;font-size:17px}
+.preference-group>.small-note{margin:7px 0 12px}.preference-items{list-style:none;margin:0;padding:0;max-height:330px;overflow:auto;scrollbar-width:thin}
+.preference-items li{display:flex;align-items:center;gap:10px;border-top:1px solid var(--line);padding:8px 0}
+.preference-item-copy{flex:1;min-width:0;display:grid;gap:3px;font-size:12px;overflow-wrap:anywhere}.preference-item-copy small{color:var(--faint);font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+.preference-items button{flex:none;font-size:11px;min-height:44px}.preference-empty{font-size:12px;color:var(--faint)}
+.preference-group[data-kind=favor] h3,.preference-group[data-kind=pin] h3{color:var(--accent)}
+.preferences-preview{margin:18px 0;padding:18px;background:var(--raised);border:1px solid var(--accent);border-radius:11px;overflow-wrap:anywhere}
+.preferences-preview h3{font-size:17px;margin:0 0 12px;line-height:1.5}.preferences-preview p{font-size:12px;color:var(--muted);line-height:1.75}
+.preferences-preview footer{margin-top:16px}.preferences-preview footer button{min-height:44px}
+.preferences-message{font-size:12px;line-height:1.75;overflow-wrap:anywhere}.preferences-message:empty{display:none}
+.preferences-result{margin:18px 0;padding:14px;background:var(--accent-soft);border-radius:9px;font-size:12px;line-height:1.7;overflow-wrap:anywhere}
+@media(max-width:600px){.preferences-dialog{padding:20px}.preferences-defaults,.preferences-lists,.preferences-add{grid-template-columns:1fr}.preferences-add>*{grid-column:1!important}.preference-default,.preferences-add,.preference-group,.preferences-preview{padding:14px}.preferences-dialog input,.preferences-dialog select{font-size:16px}.preferences-context p{flex-basis:100%}.preferences-context button{margin-left:auto}.preferences-actions button{flex:1}.standing-taste{align-items:flex-start}.standing-taste p{max-width:190px}}

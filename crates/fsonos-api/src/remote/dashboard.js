@@ -79,6 +79,10 @@
       return { zone: zone.coordinator_room, running, now: running ? fixtureWork : null, next: running ? fixtureNext : [],
         steering: { source: running ? 'session' : 'program', mood: running ? 'focus' : 'calm', session_mood: running ? 'focus' : null, constraints: { energy_bias: -1 }, added: {}, expires_at: null, expires_in_secs: null } };
     }
+    if (url === '/dj/preferences') return { energy: null, explicit: false,
+      favor: { genres: ['jazz', 'ambient'], artists: ['Adrian Vale'], eras: [], moods: [] },
+      avoid: { genres: [], artists: [], eras: [], moods: [] },
+      pin: { artists: [], albums: [], tracks: [] }, ban: { artists: [], albums: [], tracks: [] } };
     if (url === '/dj/moods') return { moods: ['focus', 'dinner', 'calm', 'bright', 'sunday-morning'].map((name) => ({ name, constraints: { energy_bias: name === 'bright' ? 1 : -1 } })) };
     if (url === '/schedules') return [{ id: 7, when: 'weekdays 07:30', action: 'apply_scene', scene: 'Deep focus',
       summary: 'Apply scene Deep focus', creator: 'Preview household', enabled: true, next: '2030-06-17T07:30:00-04:00', last_fired: null }];
@@ -95,7 +99,7 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   let active = !document.hidden, disposed = false, immersive = false, lastFocus = null, motionPaused = reduced.matches;
   let artKey = '', visualKey = '', roomKey = '', mapKey = '', sessionKey = '', sceneKey = '', reviewed = null, selectedKey = '';
-  let workspace, controller, session, live, seek, playMode, roomGroups, sleepTimer, roomVolume, sceneCapture, routines, announcements, direction, sourcePlayer, clockTimer = null;
+  let workspace, controller, session, live, seek, playMode, roomGroups, sleepTimer, roomVolume, sceneCapture, routines, announcements, direction, preferences, sourcePlayer, clockTimer = null;
   let reviewReading = false, searchTimer = null, historyVersion = 0, historyRunning = false, catalogsDirty = true;
   const renderer = DashboardVisualizer.create($('visualizer'), { reduced: reduced.matches });
   const audio = DashboardAudio.create({ changed(s) {
@@ -116,6 +120,7 @@
   routines = DashboardRoutines.panel({ call, controller });
   announcements = DashboardAnnouncements.panel({ call, controller });
   direction = DashboardDirection.panel({ call, controller, updated: () => session.load() });
+  preferences = DashboardPreferences.panel({ call, controller });
   sourcePlayer = DashboardSource.panel({ call, controller, completed: async ({ target }) => {
     workspace?.invalidate([target]);
     if (active && controller.state.selected === target) await session.load();
@@ -157,8 +162,8 @@
     $('stage').classList.toggle('immersive', value); document.body.classList.toggle('is-immersive', value); $('exit-immerse').hidden = !value;
     for (const n of document.querySelectorAll('.sidebar,.topbar,.greeting,.demo-banner,#summary,#error,#room-section,.intelligence-column,.lower-grid,.recent-section,.page-footer,.player-dock,.outcome,.mobile-nav')) n.inert = value;
     workspace?.immerse(value); renderer.immersive(value); resize();
-    if (value) { seek?.suspend(); playMode?.suspend(); roomGroups?.suspend(); sleepTimer?.suspend(); roomVolume?.suspend(); sceneCapture?.suspend(); routines?.suspend(); announcements?.suspend(); direction?.suspend(); sourcePlayer?.suspend(); }
-    else if (active) { seek?.resume(); playMode?.resume(); roomGroups?.resume(); sleepTimer?.resume(); roomVolume?.resume(); sceneCapture?.resume(); routines?.resume(); announcements?.resume(); direction?.resume(); sourcePlayer?.resume(); }
+    if (value) { seek?.suspend(); playMode?.suspend(); roomGroups?.suspend(); sleepTimer?.suspend(); roomVolume?.suspend(); sceneCapture?.suspend(); routines?.suspend(); announcements?.suspend(); direction?.suspend(); preferences?.suspend(); sourcePlayer?.suspend(); }
+    else if (active) { seek?.resume(); playMode?.resume(); roomGroups?.resume(); sleepTimer?.resume(); roomVolume?.resume(); sceneCapture?.resume(); routines?.resume(); announcements?.resume(); direction?.resume(); preferences?.resume(); sourcePlayer?.resume(); }
     if (value) {
       $('exit-immerse').focus();
       try { Promise.resolve($('stage').requestFullscreen?.()).catch(() => {}); } catch (_) { /* Full-window view remains. */ }
@@ -201,7 +206,7 @@
     $('dj-start-stop').disabled = !sessionReady; $('dj-clear').disabled = !sessionReady || !d.dj.running;
     for (const b of document.querySelectorAll('.mood-chip')) b.disabled = !sessionReady;
     for (const b of document.querySelectorAll('.scene-card')) b.disabled = reviewReading || !active || (!demo && !can);
-    seek?.observe(); playMode?.observe(); roomGroups?.observe(); sleepTimer?.observe(); roomVolume?.observe(); sceneCapture?.observe(); routines?.observe(); announcements?.observe(); direction?.observe(); sourcePlayer?.observe();
+    seek?.observe(); playMode?.observe(); roomGroups?.observe(); sleepTimer?.observe(); roomVolume?.observe(); sceneCapture?.observe(); routines?.observe(); announcements?.observe(); direction?.observe(); preferences?.observe(); sourcePlayer?.observe();
   }
   function render(state) {
     if (disposed) return;
@@ -472,13 +477,13 @@
     clearTimeout(clockTimer); clockTimer = null; clearTimeout(searchTimer); searchTimer = null;
     live.suspend(); request.cancelReads();
     audio.stop('Microphone stopped while hidden. Enable it again explicitly to resume.');
-    seek?.suspend(); playMode?.suspend(); roomGroups?.suspend(); sleepTimer?.suspend(); roomVolume?.suspend(); sceneCapture?.suspend(); routines?.suspend(); announcements?.suspend(); direction?.suspend(); sourcePlayer?.suspend(); workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
+    seek?.suspend(); playMode?.suspend(); roomGroups?.suspend(); sleepTimer?.suspend(); roomVolume?.suspend(); sceneCapture?.suspend(); routines?.suspend(); announcements?.suspend(); direction?.suspend(); preferences?.suspend(); sourcePlayer?.suspend(); workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
   }
   function clockLoop() { if (!active || disposed) return; timing(); controls(); clockTimer = setTimeout(clockLoop, 1000); }
   function resume() {
     if (document.hidden || disposed) return;
     active = true; catalogsDirty = true; workspace?.resume(); controller.resume(); session.resume();
-    if (!immersive) { seek?.resume(); playMode?.resume(); roomGroups?.resume(); sleepTimer?.resume(); roomVolume?.resume(); sceneCapture?.resume(); routines?.resume(); announcements?.resume(); direction?.resume(); sourcePlayer?.resume(); }
+    if (!immersive) { seek?.resume(); playMode?.resume(); roomGroups?.resume(); sleepTimer?.resume(); roomVolume?.resume(); sceneCapture?.resume(); routines?.resume(); announcements?.resume(); direction?.resume(); preferences?.resume(); sourcePlayer?.resume(); }
     renderer.visible(true); live.resume();
     if (clockTimer === null) clockLoop();
   }

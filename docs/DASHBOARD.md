@@ -42,6 +42,10 @@ Ordinary Next advances one track; Skip whole work invokes the native DJ operatio
 Unknown track positions remain unknown; estimated elapsed time is labelled and
 stops advancing when state is stale.
 
+Play/pause follows the observed transport state and remains usable when a
+playing or paused source has no track metadata. Next and Previous still need a
+known track; unknown or transitioning transport disables these playback buttons.
+
 Choose a position on the persistent player's timeline, or use its **Seek within
 track** button on desktop and mobile. The position dialog supports keyboard
 scrubbing and 15-second steps, shows the exact track and listening group, and
@@ -131,6 +135,37 @@ drafts survive an on-demand reread in the same group, while changing groups,
 closing or hiding the dialog discards them. One native command uses the shared
 dashboard lane, retains uncertain outcomes until explicit **Refresh**, and is
 never retried automatically. There is no added DJ polling or hidden writer.
+
+## Standing taste for every DJ
+
+**Standing taste** in the Personal DJ panel edits the daemon’s persistent
+preferences for every listening group. It works even when no speakers are online
+or selected. Choose default energy from 0 to 100, return to the time-of-day
+program, or allow/exclude explicit tracks. Favor or avoid genres, artists,
+decades/classical eras and named moods; pin or ban artists, albums and tracks.
+Each entry has its own removal control. Artist names containing commas remain
+one value, and album/track pins and bans accept exact titles or Spotify URIs.
+
+Favor increases selection weight. Avoid can relax if no other music fits; a ban
+does not relax. Pins outweigh avoids. Temporary group steering takes precedence,
+including an explicit request for otherwise banned music. These controls change
+future DJ selections without starting, skipping or restarting playback, changing
+queued music, or modifying the Spotify account. Preferences stay saved after the
+browser closes. Speaker undo does not reverse them; edit or remove a value here.
+
+Review shows one exact setting and its current value. Confirmation rereads that
+setting before one native `POST /dj/preferences`; it never sends an old copy of
+all preferences. Concurrent changes to other settings are retained. This is a
+fresh check, not an atomic lock against other controllers. Reads are on demand,
+expire after one minute, and stop when the dialog closes or the page is hidden.
+The read-only preview shows fictional taste and cannot save.
+
+Preferences use the dashboard’s shared command lane. An uncertain save blocks
+further commands until **Refresh preferences** explicitly rereads current stored
+taste. Refreshing playback or routines cannot acknowledge it, and preference
+reads cannot clear uncertainty from those other commands. A submitted save is
+never repeated automatically; its receipt remains available after closing or
+hiding the panel.
 
 ## Save the current house and its queues
 
@@ -436,7 +471,9 @@ node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs scri
 node --test scripts/test-dashboard-scenes.cjs scripts/test-dashboard-http.cjs
 node --test scripts/test-dashboard-direction.cjs scripts/test-remote-dj-steering.cjs
 node --test scripts/test-dashboard-source.cjs scripts/test-remote-source-player.cjs
+node --test scripts/test-dashboard-preferences.cjs scripts/test-remote-dj-preferences.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium
+python3 scripts/test-dashboard-preferences-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-workspace.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preview.py
 ```
