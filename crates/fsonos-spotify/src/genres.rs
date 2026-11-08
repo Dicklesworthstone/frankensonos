@@ -120,17 +120,6 @@ pub async fn tag_genres<S: Store + ?Sized>(
     report
 }
 
-/// Overlay the latest available artist evidence without rewriting personal
-/// library rows. A continuation can enrich the DJ immediately, including after
-/// restart, without replacing a newer library snapshot or its taste weights.
-/// Keep album, playlist and heuristic tags, and retain stale artist evidence
-/// until a later successful read replaces it in the public catalog cache.
-/// Artist cache failures are optional metadata failures: retain the stored
-/// tags and report the failure without making an otherwise usable pool fail.
-pub(crate) fn apply_cached_genres<S: Store + ?Sized>(store: &S, items: &mut [LibraryItem]) {
-    apply_genres(&cached_genres(store, items), items);
-}
-
 /// One optional cache read for the whole candidate snapshot, shared by the
 /// overlay and continuation accounting. A failed bulk read never falls back
 /// to thousands of individual database calls.
@@ -156,6 +145,13 @@ pub(crate) fn cached_genres<S: Store + ?Sized>(
     genres
 }
 
+/// Overlay the latest available artist evidence without rewriting personal
+/// library rows. A continuation can enrich the DJ immediately, including after
+/// restart, without replacing a newer library snapshot or its taste weights.
+/// Keep album, playlist and heuristic tags, and retain stale artist evidence
+/// until a later successful read replaces it in the public catalog cache.
+/// Artist cache failures are optional metadata failures: retain the stored
+/// tags without making an otherwise usable pool fail.
 pub(crate) fn apply_genres(genres: &ArtistGenresBatch, items: &mut [LibraryItem]) {
     for item in items {
         if let Some((tags, _)) = item.artist_id.as_ref().and_then(|id| genres.cached.get(id)) {

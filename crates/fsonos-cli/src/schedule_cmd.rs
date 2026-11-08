@@ -546,6 +546,7 @@ mod tests {
                 max_work_minutes: Some(40),
                 energy_bias: -1,
                 allow_long_works: true,
+                strict: false,
             }
         );
         let automatic = add("daily 07:30", "dj start Kitchen --automatic").unwrap();
