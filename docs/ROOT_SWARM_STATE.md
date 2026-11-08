@@ -2419,3 +2419,25 @@ The next session's entry: the pre-mixer stall — strace a stalled run, find
 the blocking futex/poll, and satisfy it; OR the full-system path
 (qemu-system-ppc + the S1 kernel.uImage, the mpc8544ds board — the kernel
 boots were not attempted to completion).
+
+### 2026-11-08 (session 19 final cont. 2) — the hhid deadlock identified precisely + the synthetic-HHID lead
+
+The stalled daemon's threads decoded from /proc: the main = sigsuspend (the
+anacapa signal pump), the single spawned thread = futex_do_wait (the
+linuxthreads manager). The web listener never binds because the mod_zp init
+waits on the hhid — the MUSE household identity generated at REGISTRATION
+('NewMuseHHIDEvent'), not a file. This is the documented S2 wall, now
+confirmed for the S1: the emulation has no cloud pairing, so the muse layer
+never yields the hhid, so the init deadlocks between the main (waiting for
+the init-done signal) and the manager (waiting on the futex).
+
+THE LEAD for the next session: the daemon binary contains a SYNTHETIC
+household identity template — `HHID_111111111111111111111111111` at vaddr
+0x104909b4, next to the `cloud_rcvd_muse_hhid` state-flag string at 0x10491df8
+and the `urn:sonos:hhid` registration constant. A factory/dev path exists
+that mints the synthetic HHID. Next moves: (1) find the xref through the GOT
+(the lis/addi hunt failed — the string is table-referenced), (2) in the gdb
+session, break at the muse state machine and force the
+cloud_rcvd_muse_hhid flag + write the synthetic HHID into the state global,
+letting the init proceed to the port binds. With :1400 live under the
+debugger, the .aa child strace = the exec-env answer.
