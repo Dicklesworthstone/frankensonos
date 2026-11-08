@@ -39,7 +39,14 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
         Command::PlayFavorite {
             coordinator,
             favorite,
-        } => format!("play favorite {} in {}", favorite.title, room(coordinator)),
+        } => {
+            let kind = if favorite.id.starts_with("SQ:") {
+                "Sonos playlist"
+            } else {
+                "favorite"
+            };
+            format!("play {kind} {} in {}", favorite.title, room(coordinator))
+        }
         Command::Transport {
             coordinator,
             action,

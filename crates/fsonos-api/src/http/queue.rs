@@ -26,7 +26,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/queue",
                 ADD,
                 CONTROL,
-                "Queue a Spotify source or native household favorite at the end or next, without starting playback (undoable)",
+                "Queue a Spotify source, native favorite or saved Sonos playlist at the end or next, without starting playback (undoable)",
             ),
             |s, c, req| answer(body::<QueueRequest>(req).and_then(|r| s.queue_request(c, &r))),
         )

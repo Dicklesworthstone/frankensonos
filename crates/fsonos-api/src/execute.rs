@@ -106,8 +106,13 @@ pub fn execute<T: Transport + ?Sized>(
             favorite,
         } => {
             fsonos_core::favorites::play(transport, households, coordinator, favorite)?;
+            let kind = if favorite.id.starts_with("SQ:") {
+                "Sonos playlist"
+            } else {
+                "favorite"
+            };
             OutcomeDto::sent(format!(
-                "playing the favorite {:?} in {}'s group",
+                "playing the {kind} {:?} in {}'s group",
                 favorite.title,
                 room(coordinator)
             ))

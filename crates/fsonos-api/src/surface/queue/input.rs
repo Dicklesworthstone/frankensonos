@@ -1,20 +1,21 @@
-//! One queue-add contract for native household favorites and Spotify sources.
+//! One queue-add contract for native favorites, saved Sonos playlists and Spotify sources.
 //! The original `QueueAddRequest` remains source-compatible for Rust callers.
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
 use fsonos_core::favorites::{self, FavoriteKind};
 use fsonos_core::policy::Client;
-use fsonos_core::{control, favorite_queue};
+use fsonos_core::{control, favorite_queue, playlists};
 use fsonos_proto::didl::{SpotifyBare, SpotifyContainer};
 use serde::{Deserialize, Serialize};
 
 use super::{ADD, QueueAddRequest, QueueAddedDto, Surface};
 use crate::failure::{ErrorCode, Failure};
 use crate::request::{PlayFavoriteRequest, PlayRequest, zone_name};
+use crate::surface::sonos_playlists;
 
 /// `POST /queue` and MCP `add_to_queue`: give exactly one of `source_uri`
-/// (Spotify) and `favorite` (resolved only within the target household).
+/// (Spotify), `favorite` or `playlist` (resolved only within the target household).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueueRequest {
@@ -24,6 +25,9 @@ pub struct QueueRequest {
     /// A native favorite's id, numbered position or unambiguous title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub favorite: Option<String>,
+    /// A saved Sonos playlist's SQ: id, numbered position or title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<String>,
     /// Cosmetic title for a Spotify source; native metadata is kept intact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -38,6 +42,7 @@ impl From<&QueueAddRequest> for QueueRequest {
             zone: req.zone.clone(),
             source_uri: Some(req.source_uri.clone()),
             favorite: None,
+            playlist: None,
             title: req.title.clone(),
             next: req.next,
         }
@@ -48,8 +53,8 @@ impl QueueRequest {
     /// Validate the mutually exclusive source choice before discovery or I/O.
     pub fn validate(&self) -> Result<(), Failure> {
         zone_name("zone", &self.zone)?;
-        match (&self.source_uri, &self.favorite) {
-            (Some(uri), None) => {
+        match (&self.source_uri, &self.favorite, &self.playlist) {
+            (Some(uri), None, None) => {
                 let normalized = PlayRequest {
                     zone: self.zone.clone(),
                     source_uri: uri.clone(),
@@ -63,11 +68,11 @@ impl QueueRequest {
                     Ok(())
                 } else {
                     Err(Failure::invalid(
-                        "source_uri must name a Spotify track, album, playlist, artist, episode or show; use favorite for native sources",
+                        "source_uri must name a Spotify track, album, playlist, artist, episode or show; use favorite or playlist for native sources",
                     ))
                 }
             }
-            (None, Some(favorite)) => {
+            (None, Some(favorite), None) => {
                 if self.title.is_some() {
                     return Err(Failure::invalid(
                         "title is only valid with source_uri; a favorite keeps its native metadata",
@@ -75,9 +80,33 @@ impl QueueRequest {
                 }
                 validate_favorite(&self.zone, favorite)
             }
+            (None, None, Some(playlist)) => {
+                if self.title.is_some() {
+                    return Err(Failure::invalid(
+                        "title is only valid with source_uri; a Sonos playlist keeps its native metadata",
+                    ));
+                }
+                sonos_playlists::playlist_name(playlist)?;
+                Ok(())
+            }
             _ => Err(Failure::invalid(
-                "give exactly one of source_uri or favorite for the queue",
+                "give exactly one of source_uri, favorite or playlist for the queue",
             )),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NativeCatalog {
+    Favorites,
+    Playlists,
+}
+
+impl NativeCatalog {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Favorites => "favorite",
+            Self::Playlists => "Sonos playlist",
         }
     }
 }
@@ -106,8 +135,8 @@ impl Surface {
     ) -> Result<QueueAddedDto, Failure> {
         self.authorize_logged(client, ADD)?;
         req.validate()?;
-        match (&req.source_uri, &req.favorite) {
-            (Some(uri), None) => self.queue_add(
+        match (&req.source_uri, &req.favorite, &req.playlist) {
+            (Some(uri), None, None) => self.queue_add(
                 client,
                 &QueueAddRequest {
                     zone: req.zone.clone(),
@@ -116,9 +145,14 @@ impl Surface {
                     next: req.next,
                 },
             ),
-            (None, Some(favorite)) => self.queue_favorite(client, &req.zone, favorite, req.next),
+            (None, Some(favorite), None) => {
+                self.queue_favorite(client, &req.zone, favorite, req.next)
+            }
+            (None, None, Some(playlist)) => {
+                self.queue_sonos_playlist(client, &req.zone, playlist, req.next)
+            }
             _ => Err(Failure::invalid(
-                "give exactly one of source_uri or favorite",
+                "give exactly one of source_uri, favorite or playlist",
             )),
         }
     }
@@ -133,19 +167,59 @@ impl Surface {
         favorite: &str,
         next: bool,
     ) -> Result<QueueAddedDto, Failure> {
+        self.queue_native(client, zone, favorite, next, NativeCatalog::Favorites)
+    }
+
+    /// Add a playlist saved on the target Sonos household, keeping its trusted
+    /// native metadata and the same confirmed-range undo as native favorites.
+    pub fn queue_sonos_playlist(
+        &self,
+        client: &Client,
+        zone: &str,
+        playlist: &str,
+        next: bool,
+    ) -> Result<QueueAddedDto, Failure> {
+        self.queue_native(client, zone, playlist, next, NativeCatalog::Playlists)
+    }
+
+    fn queue_native(
+        &self,
+        client: &Client,
+        zone: &str,
+        query: &str,
+        next: bool,
+        catalog: NativeCatalog,
+    ) -> Result<QueueAddedDto, Failure> {
         self.authorize_logged(client, ADD)?;
-        validate_favorite(zone, favorite)?;
+        match catalog {
+            NativeCatalog::Favorites => validate_favorite(zone, query)?,
+            NativeCatalog::Playlists => {
+                zone_name("zone", zone)?;
+                sonos_playlists::playlist_name(query)?;
+            }
+        }
         let zone = zone.trim();
-        let query = favorite.trim();
-        let intent = format!("{ADD}: {zone} favorite {query:?} next={next}");
+        let query = query.trim();
+        let label = catalog.label();
+        let intent = format!("{ADD}: {zone} {label} {query:?} next={next}");
         // Whether the add failed after tracks may have been queued.
         let uncertain = std::cell::Cell::new(false);
         let result = (|| {
             let (households, group) = self.queue_households(client, zone)?;
             let coordinator = group.coordinator.clone();
             let player = control::locate(&households, &coordinator)?;
-            let favorites = favorites::list(&*self.transport, &households, &coordinator)?;
-            let selected = favorites::find(&favorites, query)?;
+            let listed = match catalog {
+                NativeCatalog::Favorites => {
+                    favorites::list(&*self.transport, &households, &coordinator)?
+                }
+                NativeCatalog::Playlists => {
+                    playlists::list(&*self.transport, &households, &coordinator)?
+                }
+            };
+            let selected = match catalog {
+                NativeCatalog::Favorites => favorites::find(&listed, query)?,
+                NativeCatalog::Playlists => sonos_playlists::find(&listed, query)?,
+            };
             if !matches!(selected.kind, FavoriteKind::Track | FavoriteKind::Container) {
                 return Err(Failure::invalid(format!(
                     "favorite {:?} is not a track, album or playlist and cannot be queued",
@@ -165,9 +239,9 @@ impl Surface {
             )
             .map_err(|error| {
                 uncertain.set(favorite_queue::is_uncertain(&error));
-                Failure::from(error).with_hint(
-                    "Read the queue before another add; the favorite was not automatically retried.",
-                )
+                Failure::from(error).with_hint(format!(
+                    "Read the queue before another add; the {label} was not automatically retried.",
+                ))
             })?;
             let count = u32::try_from(queued.uris.len()).map_err(|_| {
                 Failure::new(
@@ -176,7 +250,7 @@ impl Surface {
                 )
             })?;
             let mut done = format!(
-                "queued {count} track(s) from favorite {:?} in {zone} at position {}",
+                "queued {count} track(s) from {label} {:?} in {zone} at position {}",
                 selected.title, queued.first
             );
             if !queued.playing_queue {
@@ -260,6 +334,18 @@ mod tests {
     }
 
     #[test]
+    fn saved_sonos_playlists_are_an_independent_native_source() {
+        for playlist in ["SQ:1", "2", "Dvořák & friends"] {
+            let req: QueueRequest =
+                serde_json::from_value(json!({"zone": "Den@S1", "playlist": playlist})).unwrap();
+            req.validate().unwrap();
+            assert!(!req.next);
+            assert!(req.favorite.is_none() && req.source_uri.is_none());
+            assert_eq!(req.playlist.as_deref(), Some(playlist));
+        }
+    }
+
+    #[test]
     fn ambiguous_sources_and_silently_ignored_fields_are_refused() {
         for body in [
             json!({"zone": "Den"}),
@@ -271,6 +357,12 @@ mod tests {
             json!({"zone": "Den", "favorite": "FV:2/1", "source_uri": "spotify:track:0SimQueueTrack00000021"}),
             json!({"zone": "Den", "source_uri": ""}),
             json!({"zone": "Den", "source_uri": "x-rincon-mp3radio://example.invalid/radio"}),
+            json!({"zone": "Den", "playlist": ""}),
+            json!({"zone": "Den", "playlist": "x\ny"}),
+            json!({"zone": "Den", "playlist": "x".repeat(1025)}),
+            json!({"zone": "Den", "playlist": "SQ:1", "title": "ignored"}),
+            json!({"zone": "Den", "playlist": "SQ:1", "favorite": "FV:2/1"}),
+            json!({"zone": "Den", "playlist": "SQ:1", "source_uri": "spotify:track:0SimQueueTrack00000021"}),
         ] {
             let req: QueueRequest = serde_json::from_value(body.clone()).unwrap();
             assert!(req.validate().is_err(), "{body}");

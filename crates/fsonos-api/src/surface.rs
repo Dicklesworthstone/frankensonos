@@ -59,6 +59,7 @@ mod relocation_tests;
 mod resource_changes_tests;
 pub mod scenes;
 pub mod schedules;
+pub mod sonos_playlists;
 pub mod spotify_auth;
 
 pub mod announce;

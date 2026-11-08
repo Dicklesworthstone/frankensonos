@@ -550,6 +550,14 @@ fn the_openapi_document_describes_every_route() {
         doc["paths"]["/zones/{room}/state"]["get"]["operationId"],
         "get_zone_state"
     );
+    assert_eq!(
+        doc["paths"]["/sonos/playlists"]["get"]["operationId"],
+        "list_sonos_playlists"
+    );
+    assert_eq!(
+        doc["paths"]["/sonos/playlists/play"]["post"]["operationId"],
+        "play_sonos_playlist"
+    );
 
     // Bodies have their schemas, with the required fields.
     let body = &doc["paths"]["/volume"]["post"]["requestBody"];
@@ -563,6 +571,23 @@ fn the_openapi_document_describes_every_route() {
         assert!(volume["properties"][field].is_object(), "{field}: {volume}");
     }
     assert_eq!(volume["required"], json!(["zone"]), "{volume}");
+
+    let schema = &doc["paths"]["/sonos/playlists/play"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    let playlist = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    assert_eq!(playlist["required"], json!(["zone", "playlist"]));
+    assert!(playlist["properties"].get("metadata").is_none());
+    let schema =
+        &doc["paths"]["/queue"]["post"]["requestBody"]["content"]["application/json"]["schema"];
+    let queue = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    assert!(queue["properties"]["playlist"].is_object());
+    assert_eq!(queue["required"], json!(["zone"]));
 
     let schema =
         &doc["paths"]["/announce"]["post"]["requestBody"]["content"]["application/json"]["schema"];

@@ -9,7 +9,7 @@ use fsonos_api::{ErrorCode, Failure};
 use super::super::{Backend, respond};
 
 impl Backend {
-    /// Queue a Spotify source or a native household favorite on the daemon
+    /// Queue a Spotify source, native favorite or saved Sonos playlist on the daemon
     /// when present. The original `add_to_queue` Rust helper delegates here.
     pub fn queue_request(&self, req: &QueueRequest) -> McpResult<FinalCallToolResult> {
         req.validate()

@@ -216,6 +216,8 @@ fn configured_server(
             .tool(tools::ListRooms)
             .tool(tools::ListPlayers)
             .tool(tools::GetZone)
+            .tool(tools::ListSonosPlaylists)
+            .tool(tools::PlaySonosPlaylist)
             .tool(tools::RecentActions)
             .tool(reviewed_undo::PreviewUndo)
             .tool(reviewed_undo::UndoChecked)

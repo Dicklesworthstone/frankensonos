@@ -7,6 +7,7 @@ use fsonos_api::surface::eq::{EqDto, EqRequest, EqSetDto};
 use fsonos_api::surface::players::{PlayerDto, player_views};
 use fsonos_api::surface::queue::{QueueAddedDto, QueueDto, QueueRequest};
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
+use fsonos_api::surface::sonos_playlists::{PlaySonosPlaylistRequest, SonosPlaylistDto};
 use fsonos_api::{
     ActionDto, ActionsQuery, Command, DjMoodsDto, DjStatusDto, ErrorCode, Failure, FavoriteDto,
     HitDto, OutcomeDto, PlayDto, PlayFavoriteRequest, RoomDto, SearchPlayRequest, SearchRequest,
@@ -291,6 +292,12 @@ impl Direct {
         self.surface.favorites(&Client::Cli, zone)
     }
 
+    /// Playlists saved on the selected Sonos household.
+    pub fn sonos_playlists(&self, zone: &str) -> Result<Vec<SonosPlaylistDto>, Failure> {
+        self.households()?;
+        self.surface.sonos_playlists(&Client::Cli, zone)
+    }
+
     /// The doctor's report, even when nothing answered.
     pub fn doctor(&self, client: &Client) -> Result<fsonos_core::doctor::Report, Failure> {
         self.surface.doctor(client)
@@ -322,6 +329,14 @@ impl Direct {
     pub fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure> {
         self.households()?;
         self.surface.play_favorite(&Client::Cli, req)
+    }
+
+    pub fn play_sonos_playlist(
+        &self,
+        req: &PlaySonosPlaylistRequest,
+    ) -> Result<OutcomeDto, Failure> {
+        self.households()?;
+        self.surface.play_sonos_playlist(&Client::Cli, req)
     }
 
     /// Every player found, by household then room.

@@ -3,7 +3,8 @@
 //! a time, how many there are, and which one plays; and adding a Spotify
 //! track, album or playlist to it, at its end or next (`add_to_queue`,
 //! `POST /queue`, `fsonos play --queue|--next`), logged so `undo` takes the
-//! tracks off again. [`QueueRequest`] also accepts a native household favorite.
+//! tracks off again. [`QueueRequest`] also accepts native household favorites
+//! and saved Sonos playlists.
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};

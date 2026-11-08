@@ -34,6 +34,7 @@ use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
 use fsonos_api::surface::queue::{QueueAddedDto, QueueDto};
 use fsonos_api::surface::schedules::{FadePauseRequest, SleepTimerDto};
+use fsonos_api::surface::sonos_playlists::{self, PlaySonosPlaylistRequest, SonosPlaylistDto};
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, MoveRequest,
     MuteRequest, OutcomeDto, PartyRequest, PlayDto, PlayFavoriteRequest, PlayRequest, RoomDto,
@@ -64,7 +65,7 @@ pub const PROBE: Duration = Duration::from_millis(150);
 /// How long a command through the daemon may take.
 const CALL: Duration = Duration::from_secs(120);
 
-/// Queue expansion, DJ preparation and whole-house scenes can take longer
+/// Queue/playlist expansion, DJ preparation and whole-house scenes can take longer
 /// than an ordinary transport command. Match the web remote's bounded budget.
 const LONG_CALL: Duration = Duration::from_secs(600);
 
@@ -86,7 +87,11 @@ fn command_timeout(path: &str) -> Duration {
         .strip_prefix("/scenes/")
         .and_then(|tail| tail.strip_suffix("/apply"))
         .is_some_and(|name| !name.is_empty() && !name.contains('/'));
-    if path == "/queue" || path.starts_with("/dj/") || scene_apply {
+    if path == "/queue"
+        || path == "/sonos/playlists/play"
+        || path.starts_with("/dj/")
+        || scene_apply
+    {
         LONG_CALL
     } else {
         CALL
@@ -776,6 +781,7 @@ fn routable(command: &Command) -> bool {
             | Command::Status { .. }
             | Command::Rooms { alias: None }
             | Command::Favorites { .. }
+            | Command::Playlists { .. }
             | Command::Queue { .. }
             | Command::Eq(_)
             | Command::History { .. }
@@ -824,6 +830,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         | Command::Status { .. }
         | Command::Rooms { alias: None }
         | Command::Favorites { .. }
+        | Command::Playlists { .. }
         | Command::Queue { .. }
         | Command::History { .. }
         | Command::Log { .. } => read(&daemon, global, command)?,
@@ -882,6 +889,21 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             let outcome: OutcomeDto = daemon.post("/play/favorite", &req)?;
             emit(json, &outcome, done)?;
         }
+        Command::Play {
+            zone,
+            playlist: Some(playlist),
+            next: false,
+            queue: false,
+            ..
+        } => {
+            let req = PlaySonosPlaylistRequest {
+                zone: zone.clone(),
+                playlist: playlist.clone(),
+            };
+            req.validate()?;
+            let outcome: OutcomeDto = daemon.post("/sonos/playlists/play", &req)?;
+            emit(json, &outcome, done)?;
+        }
         command => {
             if let Some(req) = crate::queue_request(command) {
                 let added: QueueAddedDto = daemon.post("/queue", &req)?;
@@ -897,7 +919,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
 }
 
 /// The house's reads through the daemon: the players, zones and rooms, a
-/// room's state, favorites, queue and history, and the action log.
+/// room's state, favorites, saved Sonos playlists, queue and history, and the action log.
 fn read(daemon: &Daemon, global: &GlobalArgs, command: &Command) -> anyhow::Result<()> {
     let json = global.json;
     match command {
@@ -935,6 +957,11 @@ fn read(daemon: &Daemon, global: &GlobalArgs, command: &Command) -> anyhow::Resu
             let favorites: Vec<FavoriteDto> =
                 daemon.get(&format!("/favorites?zone={}", pct(zone)))?;
             emit(json, &favorites, |f| direct::favorites_text(f))?;
+        }
+        Command::Playlists { zone } => {
+            let playlists: Vec<SonosPlaylistDto> =
+                daemon.get(&format!("/sonos/playlists?zone={}", pct(zone)))?;
+            emit(json, &playlists, |p| sonos_playlists::text(p))?;
         }
         Command::Queue {
             zone,
@@ -1085,7 +1112,7 @@ fn control_request(
         } => {
             let source_uri = source_uri.clone().ok_or_else(|| {
                 Failure::invalid("nothing to play")
-                    .with_hint("Give a source URI, or --favorite <name> (see fsonos favorites).")
+                    .with_hint("Give a source URI, --favorite <name> or --playlist <name>; see fsonos favorites and fsonos playlists.")
             })?;
             (
                 "/play",
@@ -1176,6 +1203,8 @@ mod tests {
         for path in [
             "/queue",
             "/queue?trace=1",
+            "/sonos/playlists/play",
+            "/sonos/playlists/play?trace=1",
             "/dj/start",
             "/dj/skip",
             "/dj/rehearse",

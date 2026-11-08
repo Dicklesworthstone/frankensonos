@@ -52,6 +52,9 @@ pub use queue_add::AddToQueue;
 mod queue_search;
 pub use queue_search::SearchQueue;
 
+mod sonos_playlists;
+pub use sonos_playlists::{ListSonosPlaylists, PlaySonosPlaylist};
+
 mod controls;
 mod documents;
 

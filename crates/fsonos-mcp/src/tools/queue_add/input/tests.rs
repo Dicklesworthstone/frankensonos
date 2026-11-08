@@ -74,6 +74,26 @@ fn a_native_favorite_is_forwarded_once_with_no_caller_metadata() {
 }
 
 #[test]
+fn a_saved_sonos_playlist_keeps_its_distinct_selector_through_the_daemon() {
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: Some(Ok(outcome())),
+    });
+    let req = QueueRequest {
+        zone: "Den@S1".into(),
+        playlist: Some("SQ:7".into()),
+        next: true,
+        ..QueueRequest::default()
+    };
+    assert!(!backend(&reply).queue_request(&req).unwrap().is_error);
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["POST", "/queue",
+        {"zone":"Den@S1", "playlist":"SQ:7", "next":true}])]
+    );
+}
+
+#[test]
 fn the_original_spotify_rust_helper_uses_the_daemons_action_log() {
     let reply = Arc::new(Reply {
         calls: Mutex::default(),

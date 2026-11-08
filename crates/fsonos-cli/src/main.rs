@@ -8,12 +8,14 @@
 //!   zones      show the zone groups and what each is doing
 //!   status     what a room is doing (track, transport, volume)
 //!   favorites  the household's Sonos favorites, numbered
+//!   playlists  playlists saved on the Sonos household, with native ids
 //!   log / undo the action log, and undoing the newest action
 //!   policy     the house policy in effect (show), and whether policy.toml
 //!              can be used (check)
 //!   doctor     diagnose the setup (exit 0 / 6 warnings / 7 failures)
 //!   setup      a guided first run on the doctor's checks (--yes for scripts)
-//!   play       play a source URI, or `--favorite <name>`, in a room's group
+//!   play       play a source URI, `--favorite <name>` or `--playlist <name>`
+//!              in a room's group
 //!   pause / resume / next / previous   transport for a room's group
 //!   queue-play play an existing queue position without adding tracks
 //!   seek       move within the track a room's group is on (1:30, +30, -15)
@@ -119,6 +121,8 @@ enum Command {
     Status { zone: String },
     /// List the Sonos favorites of a room's household, numbered.
     Favorites { zone: String },
+    /// List playlists saved on a room's Sonos household, with native SQ: ids.
+    Playlists { zone: String },
     /// What played lately, newest first: when, the room whose group played
     /// it, and what.
     History {
@@ -215,10 +219,9 @@ enum Command {
         #[command(subcommand)]
         action: policy_cmd::PolicyAction,
     },
-    /// Play a source URI, or one of the household's favorites, in a room's
-    /// group.
-    // What --next and --queue add: a source URI or a favorite.
-    #[command(group(clap::ArgGroup::new("item").args(["source_uri", "favorite"])))]
+    /// Play a source URI, favorite or saved Sonos playlist in a room's group.
+    // What --next and --queue add: one source URI, favorite or saved playlist.
+    #[command(group(clap::ArgGroup::new("item").args(["source_uri", "favorite", "playlist"])))]
     Play {
         /// Room name (`Room@S1` / `Room@S2` picks a household).
         zone: String,
@@ -230,9 +233,13 @@ enum Command {
         /// words will do), its number from `fsonos favorites`, or an id.
         #[arg(long, conflicts_with = "source_uri")]
         favorite: Option<String>,
+        /// Play a saved Sonos playlist by title, number from `fsonos playlists`,
+        /// or SQ: id. Its saved tracks replace the group's current queue.
+        #[arg(long, conflicts_with_all = ["source_uri", "favorite", "search", "pick", "title"])]
+        playlist: Option<String>,
         /// Search the library and the room's favorites, and play the best
         /// match (title words, a composer or performer, "bwv 988").
-        #[arg(long, value_name = "QUERY", conflicts_with_all = ["source_uri", "favorite"])]
+        #[arg(long, value_name = "QUERY", conflicts_with_all = ["source_uri", "favorite", "playlist"])]
         search: Option<String>,
         /// With --search: list the matches instead (`--pick`), or play the
         /// Nth of them (`--pick 3`).
@@ -244,7 +251,7 @@ enum Command {
             long,
             value_name = "N",
             requires = "search",
-            conflicts_with_all = ["source_uri", "favorite"],
+            conflicts_with_all = ["source_uri", "favorite", "playlist"],
             num_args = 0..=1,
             default_missing_value = "0"
         )]
@@ -252,7 +259,7 @@ enum Command {
         /// Title to show for a source URI.
         #[arg(long)]
         title: Option<String>,
-        /// Add the Spotify track, album or playlist, or the favorite, to the
+        /// Add the Spotify source, favorite or saved Sonos playlist to the
         /// group's queue, right after the track playing, instead of playing
         /// it now (`fsonos undo` takes it off again).
         #[arg(long, requires = "item", conflicts_with_all = ["queue", "search"])]
@@ -550,6 +557,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let favorites = Direct::survey(global)?.favorites(&zone)?;
             emit(global.json, &favorites, |f| direct::favorites_text(f))
         }
+        Command::Playlists { zone } => {
+            let playlists = Direct::survey(global)?.sonos_playlists(&zone)?;
+            emit(global.json, &playlists, |p| {
+                fsonos_api::surface::sonos_playlists::text(p)
+            })
+        }
         Command::Queue {
             zone,
             offset,
@@ -600,6 +613,18 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let req = PlayFavoriteRequest { zone, favorite };
             let outcome = Direct::survey(global)?.play_favorite(&req)?;
+            emit(global.json, &outcome, outcome_text)
+        }
+        Command::Play {
+            zone,
+            playlist: Some(playlist),
+            next: false,
+            queue: false,
+            ..
+        } => {
+            let req =
+                fsonos_api::surface::sonos_playlists::PlaySonosPlaylistRequest { zone, playlist };
+            let outcome = Direct::survey(global)?.play_sonos_playlist(&req)?;
             emit(global.json, &outcome, outcome_text)
         }
         Command::Say(args) => announce_cmd::run_and_emit(global, &args.request()),
@@ -692,22 +717,26 @@ fn outcome_text(outcome: &OutcomeDto) -> String {
     text
 }
 
-/// `fsonos play <room> <link> --next|--queue`: what to add to the queue.
+/// `fsonos play <room> <link>|--favorite|--playlist --next|--queue`: what to add.
 fn queue_request(command: &Command) -> Option<QueueRequest> {
     match command {
         Command::Play {
             zone,
             source_uri,
             favorite,
+            playlist,
             title,
             next,
             queue,
             ..
-        } if (*next || *queue) && (source_uri.is_some() || favorite.is_some()) => {
+        } if (*next || *queue)
+            && (source_uri.is_some() || favorite.is_some() || playlist.is_some()) =>
+        {
             Some(QueueRequest {
                 zone: zone.clone(),
                 source_uri: source_uri.clone(),
                 favorite: favorite.clone(),
+                playlist: playlist.clone(),
                 title: title.clone(),
                 next: *next,
             })
@@ -974,7 +1003,7 @@ fn plan_for<'a>(
         } => {
             let source_uri = source_uri.clone().ok_or_else(|| {
                 Failure::invalid("nothing to play")
-                    .with_hint("Give a source URI, or --favorite <name> (see fsonos favorites).")
+                    .with_hint("Give a source URI, --favorite <name> or --playlist <name>; see fsonos favorites and fsonos playlists.")
             })?;
             plan::plan_play(
                 households,
@@ -1637,6 +1666,34 @@ mod tests {
             parse(&["play", "Den", "--search", "bwv 988", "--pick", "2"]),
             Command::Play { pick: Some(2), .. }
         ));
+    }
+
+    #[test]
+    fn saved_sonos_playlist_flags_preserve_native_selection_and_reject_ignored_arguments() {
+        assert!(
+            matches!(parse(&["playlists", "Den@S1"]), Command::Playlists { zone } if zone == "Den@S1")
+        );
+        assert!(matches!(parse(&["play", "Den", "--playlist", "SQ:7"]),
+            Command::Play { playlist: Some(playlist), next: false, queue: false, .. } if playlist == "SQ:7"));
+        for flag in ["--queue", "--next"] {
+            let req =
+                queue_request(&parse(&["play", "Den", "--playlist", "Evening", flag])).unwrap();
+            assert_eq!(req.playlist.as_deref(), Some("Evening"));
+            assert!(req.source_uri.is_none() && req.favorite.is_none());
+            assert_eq!(req.next, flag == "--next");
+        }
+        for extra in [
+            vec!["spotify:track:abc"],
+            vec!["--favorite", "Evening"],
+            vec!["--search", "Evening"],
+            vec!["--pick", "1"],
+            vec!["--title", "ignored"],
+            vec!["--next", "--queue"],
+        ] {
+            let mut args = vec!["fsonos", "play", "Den", "--playlist", "SQ:7"];
+            args.extend(extra);
+            assert!(Cli::try_parse_from(args.clone()).is_err(), "{args:?}");
+        }
     }
 
     #[test]

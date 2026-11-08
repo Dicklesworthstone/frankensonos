@@ -73,7 +73,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "Add to a room's group queue without starting or replacing playback. Give exactly one of source_uri (a Spotify track, album, playlist, artist, episode or show URI/link) or favorite (a native Sonos favorite id, numbered position or unambiguous title from that room's household). Native tracks, albums and playlists retain their original service metadata and need no Spotify library sign-in; stations and browse shortcuts cannot be queued. next=true inserts after the playing queue track, otherwise appends. title is for Spotify sources only. Uses the running daemon's policy and undo log when available; an uncertain request is never automatically repeated. zone is a room, Room@S1 / Room@S2, or an alias."
+    description = "Add to a room's group queue without starting or replacing playback. Give exactly one of source_uri (a Spotify track, album, playlist, artist, episode or show URI/link), favorite (a native Sonos favorite id, numbered position or unambiguous title) or playlist (a saved Sonos playlist SQ: id, number or title from list_sonos_playlists). Native favorites and playlists resolve only within that room's household, retain their service metadata and need no Spotify library sign-in; stations and browse shortcuts cannot be queued. next=true inserts after the playing queue track, otherwise appends. title is for Spotify sources only. Uses the running daemon's policy and undo log when available; an uncertain request is never automatically repeated. zone is a room, Room@S1 / Room@S2, or an alias."
 )]
 async fn add_to_queue(
     ctx: &McpContext,
@@ -82,12 +82,14 @@ async fn add_to_queue(
     title: Option<String>,
     next: Option<bool>,
     favorite: Option<String>,
+    playlist: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |b| {
         b.queue_request(&QueueRequest {
             zone,
             source_uri,
             favorite,
+            playlist,
             title,
             next: next.unwrap_or(false),
         })

@@ -17,6 +17,8 @@
 //! | `GET /zones/{room}/play-mode` | | the group's shuffle and repeat, and whether the DJ owns its queue |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
+//! | `GET /sonos/playlists?zone=<room>` | | native saved Sonos playlists, with household-local SQ: ids |
+//! | `POST /sonos/playlists/play` | [`crate::surface::sonos_playlists::PlaySonosPlaylistRequest`] | [`crate::OutcomeDto`]: replaces the queue and plays the saved playlist |
 //! | `POST /library/play` | [`crate::SearchPlayRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /library/search?q=<text>&zone=<room>&limit=<n>` | | `[HitDto]`: the owner's library, and the room's favorites |
 //! | `GET /library/browse` | | the synced library's tracks, albums or playlists, with no Spotify or speaker request |
@@ -30,7 +32,7 @@
 //! | `POST /undo/checked` | the previewed action's id | [`crate::UndoDto`]: undoes it only while it is still the newest |
 //! | `GET /policy` | | [`crate::surface::house_policy::PolicyDto`]: the house policy, and the caller under it |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
-//! | `POST /queue` | [`crate::surface::queue::QueueAddRequest`] | [`crate::surface::queue::QueueAddedDto`] |
+//! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
 //! | `POST /queue/play`, `/queue/remove`, `/queue/move` | the entries, by position and URI, at the queue's revision | play one, remove a run, or move them without restarting playback; edits report whether a complete undo backup was saved |
 //! | `POST /play-mode` | the zone and its shuffle and repeat | [`crate::OutcomeDto`], undoable |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
@@ -122,6 +124,7 @@ mod dj_prefs;
 mod dj_sync;
 mod schedules;
 
+mod sonos_playlists;
 mod spotify_auth;
 
 mod scenes;
@@ -210,6 +213,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(dj_sync::routes(cx));
     routes.extend(schedules::routes(cx));
     routes.extend(spotify_auth::routes(cx));
+    routes.extend(sonos_playlists::routes(cx));
     routes.extend(remote::routes(cx));
     routes
 }

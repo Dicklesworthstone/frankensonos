@@ -219,6 +219,9 @@ fn control_tools_are_advertised_with_their_arguments() {
         "search_queue",
         "browse_library",
         "playlist_contents",
+        "list_sonos_playlists",
+        "play_sonos_playlist",
+        "add_to_queue",
         "announce",
     ] {
         let t = tool(name);
@@ -261,6 +264,27 @@ fn control_tools_are_advertised_with_their_arguments() {
         playlist,
         &["playlist_uri", "offset", "limit", "q", "expected_revision"],
         &["playlist_uri"],
+    );
+    let native = tool("list_sonos_playlists");
+    assert_eq!(native["annotations"]["readOnlyHint"], true);
+    assert_eq!(native["annotations"]["idempotentHint"], true);
+    assert_tool_arguments(native, &["zone"], &["zone"]);
+    assert_tool_arguments(
+        tool("play_sonos_playlist"),
+        &["zone", "playlist"],
+        &["zone", "playlist"],
+    );
+    assert_tool_arguments(
+        tool("add_to_queue"),
+        &[
+            "zone",
+            "source_uri",
+            "favorite",
+            "playlist",
+            "title",
+            "next",
+        ],
+        &["zone"],
     );
 }
 
