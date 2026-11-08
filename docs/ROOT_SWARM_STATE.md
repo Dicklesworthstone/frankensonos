@@ -2169,3 +2169,23 @@ the session state while corrupting only the observer cell.
 
 This is the fundamental insight that unlocks the entire S1+S2 shell: the
 overflow must be surgical, not spray-and-pray.
+
+### 2026-11-07 (session 13 final) — the precision overflow: the watchdog is structural
+
+The precision overflow (6408 bytes = 73% less corruption) produced the SAME
+result: fire 200/200 → watchdog reboot (96s) → no 2323. The watchdog is
+STRUCTURAL — any overflow of the session struct at +6380 triggers it,
+regardless of the amount. The .aa overflow mechanism inherently causes
+the reboot.
+
+THE IMPLICATION: the .aa exec primitive CANNOT produce a persistent shell
+in a single fire — the overflow always triggers the watchdog before the
+child can establish a listener. The child must SURVIVE the reboot (write
+to /jffs) or the .aa must be fired in a way that doesn't corrupt the
+session (a different overflow target, a different vulnerability).
+
+THE WORKING PATH: the per-unit BSU delivery of a GENUINE package (the
+65130 install) works. The 57.23→65130→57.23 cycle is proven. The shell
+requires a different entry vector: the devmode statement, the type-3
+in-place modification (requires the signing key), or a different .aa
+overflow target that doesn't corrupt the session.
