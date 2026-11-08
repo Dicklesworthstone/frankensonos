@@ -2364,3 +2364,15 @@ Artifacts on css: /tmp/ledshim3.c (the /dev/chk 6550 + audioctl 12-byte
 shim), /tmp/s23_libc_v5 (the working clone-patch libc), the daemon patches
 in /tmp/s23_anacapad_nopark. The full session notes: /tmp/s2decode/
 ppc_clone_notes.md.
+
+### 2026-11-08 (session 19 final) — the 8th exec shape; the matrix is truly complete
+
+The fd-disconnect variant (`exec 0<&- 1>&- 2>&-; telnetd -p 2323 -l /bin/sh`
+at the proven band 0x106c4ef0): fire 200/200 → watchdog reboot → the unit
+healthy on 57.23 → 2323 closed. Every exec shape now tested: direct,
+`;`-prefix, beacon-first, persistent-loop, file-write, setsid+detach,
+setsid+nohup+stdio-detach, fd-table-disconnect — 8 shapes × the two
+architectures, every fire 200/200, every observable negative. The
+conclusion stands unchanged: the child cannot produce effects before the
+watchdog kills the daemon family; device-side visibility (serial) or the
+devmode statement closes the campaign.
