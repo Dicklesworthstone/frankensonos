@@ -1050,6 +1050,7 @@ fn plan_for<'a>(
         | Command::Doctor(_)
         | Command::Status { .. }
         | Command::Favorites { .. }
+        | Command::Playlists { .. }
         | Command::Queue { .. }
         | Command::QueuePlay(_)
         | Command::QueueSearch(_)
