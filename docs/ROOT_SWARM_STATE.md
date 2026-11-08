@@ -2346,3 +2346,21 @@ With: /ramdisk/optlog created, DiagLevel default=9 in anacapa.conf.
 Breakpoint caveat: qemu-ppc's gdb stub does NOT reliably hit software or
 hardware breakpoints on this mapping — single-step from a confirmed bp
 (0x1028d1dc hits) or catch-signal + python sleep/interrupt instead.
+
+### 2026-11-08 (session 19 cont.) — the thread spawn → the event loop; the remaining gate
+
+With v5 (the clone flags patch), the daemon's threads spawn and the init runs
+past dropout_event_logging + mixthrd. With the shim3 audio values
+(audioctl ioctl 0x800cfc9b → 12-byte zeroed struct with [2]=750) the daemon
+reaches a QUIESCENT state: the main thread sits in sigsuspend (the anacapa
+signal-pump event loop — CORRECT behavior), but only ONE guest thread runs
+(the host shows 2 tasks) and :1400 never binds — the web-server threads
+don't complete their spawn cycle. The next session: trace the SECOND clone
+(the manager/worker) and the pthread_join/manager handshake; likely one more
+flags detail (the linuxthreads manager clone uses a different arg pattern)
+or a blocking futex the v5 flags break.
+
+Artifacts on css: /tmp/ledshim3.c (the /dev/chk 6550 + audioctl 12-byte
+shim), /tmp/s23_libc_v5 (the working clone-patch libc), the daemon patches
+in /tmp/s23_anacapad_nopark. The full session notes: /tmp/s2decode/
+ppc_clone_notes.md.
