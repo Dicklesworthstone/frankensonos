@@ -2146,3 +2146,26 @@ THE PRACTICAL PATHS (ranked):
 2. The band recalibration on .84's fresh 57.23 + the telnetd fire (the .aa exec primitive)
 3. The deep RE of the notify-thread's system() child environment
 4. The 86.11 upgrade as a new base for the type-3 modification (the S2 is on 86.10; the 86.11 upgrade was fetched but not installed — the BSU + deferred path needs investigation)
+
+### 2026-11-07 (session 15, key insight) — the watchdog reboot is CAUSED BY THE OVERFLOW DAMAGE, not by system()
+
+The 'true' A/B (a no-op command that completes in <1ms) still produced the
+98-second watchdog reboot. This means the reboot is NOT caused by the notify
+thread blocking in system(). The reboot is caused by the OVERFLOW DAMAGE
+itself — the .aa payload overwrites 30KB of the session struct, corrupting
+state that the daemon needs. The watchdog fires because the daemon is
+operating on corrupted data, regardless of what command system() runs.
+
+THE FIX: a precision overflow. Instead of writing the full 24000-byte node
+buffer, write ONLY the specific offsets that matter (the observer cell at
++30000, the chain at 108/200/628/6404). The current payload writes the full
+buffer including all the zero bytes between the chain entries — these zeros
+overwrite LIVE DATA in the session struct.
+
+The precision payload: a .aa file where the type-2 section body contains
+ONLY the bytes at the chain offsets, with the rest being the ORIGINAL
+session content (read from a previous session's live dump). This preserves
+the session state while corrupting only the observer cell.
+
+This is the fundamental insight that unlocks the entire S1+S2 shell: the
+overflow must be surgical, not spray-and-pray.
