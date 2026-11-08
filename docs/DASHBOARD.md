@@ -167,6 +167,57 @@ reads cannot clear uncertainty from those other commands. A submitted save is
 never repeated automatically; its receipt remains available after closing or
 hiding the panel.
 
+## Rehearse a DJ set
+
+Select a listening group and open **Rehearse a set** beside **Advanced direction**.
+**Generate preview** calls the daemon's real planner through
+`POST /dj/rehearse`, using its library, listening history, standing taste and
+group steering. It shows what the DJ would choose without starting music,
+changing the queue, saving steering or recording those hypothetical plays in
+listening history. A stopped DJ can be rehearsed too.
+
+The design preview lets you browse these settings, but generating a set requires
+the running daemon and its actual library; it does not fabricate a rehearsal.
+
+Choose 1–500 works or a window of 1–48 hours. The hour option includes works
+whose starts fall inside that window, so a final whole work can finish later;
+every preview is bounded to 500 works. Blank start means now. `HH:MM` selects
+that time's next occurrence on the house's clock, including tomorrow when it
+has already passed. An RFC 3339 date/time with an explicit UTC offset fixes an
+exact start. Results keep the returned date and offset, including midnight
+crossings, rather than converting them to the browser's timezone. Repeating a
+seed reproduces the set only while the start time and other planning inputs
+remain the same.
+
+Leave the mood and temporary filters empty to follow the group's current
+steering and time-of-day program as they change through the set. A named mood
+or any nonempty temporary filter replaces that steering for this preview;
+filters supplied with a mood are combined with its definition. Standing taste
+continues to apply under the DJ's usual precedence rules. Temporary filters
+include or exclude artists, genres, composers and keywords, with one literal
+name per line. They also support work length bounds, an energy shift, long
+works and strict selection. Strictness from either the mood or the checkbox
+keeps filters in force when matching music is scarce; a preview can be empty.
+These drafts do not change the group's live direction.
+
+The result shows the whole-work sequence, start times, selection reasons,
+relaxed filters and actual selection multipliers, plus energy targets and
+explicit-content markers when reported. Hourly rows group works by their start
+hour on the house clock. Their energy is the mean for those works; their target
+is the first work's target. Artist and genre variety use Shannon entropy in
+bits: zero means one artist or genre, and higher values mean more variety.
+**Show more works** reveals another 24 already returned works without making a
+new request.
+
+A result is a snapshot, not a promise about future playback. Editing the form
+labels the existing result with its captured settings until explicitly generated
+again. Ordinary playback updates retain that snapshot; changing the selected
+group or its membership retires it. New generation requires a fresh selected
+group, and membership is checked before and after planning. Only one generation
+can be in flight. Closing, hiding or entering immersive mode fences late
+results, and there is no rehearsal polling or automatic retry. A failed planning
+request does not make playback uncertain because it sends no playback command.
+
 ## Save the current house and its queues
 
 **Save current house** in the scene section captures every listening group, its
@@ -472,17 +523,25 @@ node --test scripts/test-dashboard-scenes.cjs scripts/test-dashboard-http.cjs
 node --test scripts/test-dashboard-direction.cjs scripts/test-remote-dj-steering.cjs
 node --test scripts/test-dashboard-source.cjs scripts/test-remote-source-player.cjs
 node --test scripts/test-dashboard-preferences.cjs scripts/test-remote-dj-preferences.cjs
+node --test scripts/test-dashboard-rehearsal.cjs scripts/test-remote-dj-rehearsal.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preferences-browser.py --browser-executable /path/to/chromium
+python3 scripts/test-dashboard-rehearsal-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-workspace.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preview.py
 ```
 
 The browser suites require Python Playwright and Chromium. They exercise the
 production assets with explicitly synthetic API responses, not physical speakers.
-Use `--screenshots-dir /path/to/output` to capture the rendered interface.
+The rehearsal browser suite accepts `--screenshots /path/to/output`; the other
+browser suites use `--screenshots-dir /path/to/output` to capture the interface.
 The Node suite covers native payloads, immutable reviews, real loopback HTTP
 session dispatch, queue positions, stale/hidden lifetimes and keyboard navigation.
+Rehearsal cases cover native planning requests, captured filters, midnight
+offsets, whole-work reasons, group changes, retained snapshots during playback
+updates and late-result handling. The browser rehearsal fixture exercises the
+actual form and result rendering at desktop and mobile sizes, including mobile
+dark and light themes.
 The preview test serves the actual bundle through a real loopback HTTP listener.
 
 These client checks do not establish Rust workspace compilation, real daemon/GENA

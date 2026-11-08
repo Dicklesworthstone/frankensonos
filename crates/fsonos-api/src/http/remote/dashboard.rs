@@ -44,6 +44,9 @@ const DIRECTION_STYLE: &str = include_str!("../../remote/dashboard-direction.css
 const DJ_PREFERENCES: &str = include_str!("../../remote/dj-preferences.js");
 const PREFERENCES: &str = include_str!("../../remote/dashboard-preferences.js");
 const PREFERENCES_STYLE: &str = include_str!("../../remote/dashboard-preferences.css");
+const DJ_SESSION: &str = include_str!("../../remote/dj-session.js");
+const REHEARSAL: &str = include_str!("../../remote/dashboard-rehearsal.js");
+const REHEARSAL_STYLE: &str = include_str!("../../remote/dashboard-rehearsal.css");
 const SOURCE_PLAYER: &str = include_str!("../../remote/source-player.js");
 const SOURCE: &str = include_str!("../../remote/dashboard-source.js");
 const SOURCE_STYLE: &str = include_str!("../../remote/dashboard-source.css");
@@ -79,7 +82,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{DIRECTION_STYLE}\n{PREFERENCES_STYLE}\n{SOURCE_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}\n{ACTIVITY_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{DIRECTION_STYLE}\n{PREFERENCES_STYLE}\n{REHEARSAL_STYLE}\n{SOURCE_STYLE}"
                     ),
                 )
             },
@@ -96,7 +99,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{SOURCE_PLAYER}\n{SOURCE}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{SOURCE_PLAYER}\n{SOURCE}\n{SCRIPT}"
                     ),
                 )
             },

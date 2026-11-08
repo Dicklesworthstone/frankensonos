@@ -999,7 +999,17 @@ only as JSON. A single static page served by the daemon
 over the tailnet, with no app store and no account. *As built:* the daemon
 serves two pages, the remote at `/` and the listening room at `/dashboard`,
 which cover the queue, the library, scenes, schedules, sleep, announcements
-and the DJ too. Native iOS and macOS remotes (`apps/apple`) speak the same
+and the DJ too. The dashboard's **Standing taste** editor manages persistent
+preferences for every group through `GET`/`POST /dj/preferences`, including
+when no speakers are online. Its **Rehearse a set** view calls the existing
+read-only `POST /dj/rehearse` planner for a selected group, start time, work/hour
+limit, seed and optional temporary mood or filters. It shows whole works,
+selection reasons, house-time dates and offsets, and hourly energy and variety
+without changing playback, queues, steering or listening history. Results are
+explicit snapshots; ordinary playback updates retain them, and changed groups
+or membership retire them. Neither workflow adds background polling. See
+[`docs/DASHBOARD.md`](docs/DASHBOARD.md) for usage and validation commands.
+Native iOS and macOS remotes (`apps/apple`) speak the same
 HTTP API over the tailnet; whether they are a first-class surface of this
 plan is the owner's open decision (bead 8hhv.13).
 

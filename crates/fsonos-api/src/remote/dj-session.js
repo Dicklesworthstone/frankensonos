@@ -585,7 +585,7 @@ const DjSessionRemote = (() => {
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = DjSessionRemote;
-else {
+else if (typeof document !== 'undefined' && typeof ROUTES !== 'undefined') {
   Object.assign(ROUTES, DjSessionRemote.routes);
   const sessionPanel = DjSessionRemote.panel({ call, el, onedit: (zone) =>
     document.dispatchEvent(new CustomEvent('fsonos:dj-edit', { detail: { target: zone.target,

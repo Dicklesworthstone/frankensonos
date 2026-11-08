@@ -12,7 +12,7 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'announcements.js', 'dashboard-announcements.js', 'dj-steering.js', 'dashboard-direction.js', 'dj-preferences.js', 'dashboard-preferences.js', 'source-player.js', 'dashboard-source.js', 'dashboard.js']
+SCRIPTS = ['event-feed.js', 'dashboard-core.js', 'dashboard-seek.js', 'dashboard-live.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dj-direction.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard-play-mode.js', 'dashboard-groups.js', 'timers.js', 'dashboard-sleep.js', 'dashboard-volume.js', 'dashboard-scenes.js', 'schedules.js', 'dashboard-routines.js', 'announcements.js', 'dashboard-announcements.js', 'dj-steering.js', 'dashboard-direction.js', 'dj-preferences.js', 'dashboard-preferences.js', 'dj-session.js', 'dashboard-rehearsal.js', 'source-player.js', 'dashboard-source.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
   writes: [], calls: [], feeds: [], savedScenes: [], routines: [], nextRoutine:100, offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement', directions:[null,null],
@@ -148,7 +148,7 @@ def load(page, preview=False):
     if preview: html=html.replace('<body>','<body data-preview="true">')
     html=re.sub(r'<link[^>]+>|<script[^>]+></script>','',html)
     page.set_content(html)
-    for name in ['dashboard.css','dashboard-queue.css','dashboard-announcements.css','dashboard-direction.css','dashboard-preferences.css','dashboard-source.css']:
+    for name in ['dashboard.css','dashboard-queue.css','dashboard-announcements.css','dashboard-direction.css','dashboard-preferences.css','dashboard-rehearsal.css','dashboard-source.css']:
         page.add_style_tag(content=(ROOT/name).read_text())
     page.add_script_tag(content=FIXTURE)
     for name in SCRIPTS: page.add_script_tag(content=(ROOT/name).read_text())

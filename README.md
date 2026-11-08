@@ -488,6 +488,14 @@ the DJ and scenes) to any
 device on your tailnet. The daemon keeps the DJ's library fresh on its own,
 and `fsonos dj sync` refreshes it on demand.
 
+The graphical [Listening Studio](docs/DASHBOARD.md) at `/dashboard` also offers
+**Standing taste** for persistent DJ preferences across every group, including
+favored and avoided music, default energy, explicit content, pins and bans.
+**Rehearse a set** uses the real planner to preview whole works, reasons and
+hourly energy and variety for a chosen group and start time. Its temporary mood
+and filters affect only that preview; rehearsing never starts music, edits a
+queue, saves steering or records hypothetical listening history.
+
 Saved albums, liked tracks, and missing album-track pages now resume from
 private checkpoints after an interrupted read or Spotify cooldown. Each pass
 uses at most 512 page requests; the daemon continues unfinished work at its

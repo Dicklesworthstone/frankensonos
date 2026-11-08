@@ -34,7 +34,7 @@ def main():
             assert page.locator("#dock-title").inner_text() == "Track details unavailable"
             assert "Nothing playing" not in page.locator(".room-card").first.inner_text()
             assert page.evaluate("fixture.writes.length") == 0
-            controls = "#play" if width > 600 else '[data-command="toggle"]'
+            controls = "#play" if width > 600 else '.hero-play[data-command="toggle"]'
             page.locator(controls).click()
             page.wait_for_function("document.getElementById('track-title').textContent==='Playback is paused.'")
             assert page.evaluate("fixture.writes") == [{"url": "/pause", "body": {"zone": "Studio@S2"}}]
