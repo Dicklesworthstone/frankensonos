@@ -173,3 +173,188 @@ fn queued_announcements_use_the_latest_room_caps() {
         queued_cap(s2, true);
     }
 }
+
+fn finished_job(surface: &Surface, id: &str) -> AnnouncementJobDto {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let job = surface.get_announcement(&Client::Cli, id).unwrap();
+        if matches!(
+            job.phase,
+            AnnouncementJobPhase::Completed
+                | AnnouncementJobPhase::Cancelled
+                | AnnouncementJobPhase::Failed
+        ) && surface.announcements_pending() == 0
+        {
+            return job;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "announcement did not finish: {job:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_background_job_rechecks_its_creator_after_waiting_for_the_household() {
+    let sim = SimHousehold::builder()
+        .s2([SimPlayerSpec::new("Kitchen", SimModel::One)])
+        .spawn()
+        .unwrap();
+    let host = sim.player("Kitchen").unwrap().ip;
+    let mut house = HouseholdState::default();
+    house.apply_topology(&get_zone_group_state(&sim.lan(), host).unwrap());
+    let (entered, playing) = mpsc::channel();
+    let (release, waiting) = mpsc::channel();
+    let initial = "[clients.mcp-stdio]\nallow = [\"announce_start\"]\n";
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(data.path().join("policy.toml"), initial).unwrap();
+    let mut announcements = Announcements::new(
+        MediaStore::new(data.path()),
+        Box::new(|| Some("http://192.0.2.250:3400".into())),
+    );
+    announcements.announcer =
+        Announcer::with_timing(Duration::from_millis(5), Duration::from_millis(100));
+    let surface = Arc::new(
+        Surface::new(
+            Box::new(QueuedClips {
+                lan: sim.lan(),
+                in_clip: AtomicBool::new(false),
+                reads: AtomicUsize::new(0),
+                first: Mutex::new(Some((entered, waiting))),
+            }),
+            Box::new(move |_| Ok(vec![house.clone()])),
+            Policy::from_toml(initial).unwrap(),
+            Box::new(fsonos_core::clock::SystemClock),
+        )
+        .with_policy_file(data.path().to_path_buf())
+        .with_announcements(announcements),
+    );
+    let request = AnnounceRequest {
+        chime: Some("bell".into()),
+        rooms: vec!["Kitchen".into()],
+        ..AnnounceRequest::default()
+    };
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| surface.announce(&Client::LoopbackHttp, &request));
+        playing.recv_timeout(WAIT).unwrap();
+        let second = surface
+            .start_announcement(&Client::McpStdio, &request)
+            .unwrap();
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let observed = surface.get_announcement(&Client::Cli, &second.id).unwrap();
+            if observed.progress.iter().any(|row| row.phase == "queued") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "second job never reached the household wait: {observed:?}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::write(
+            data.path().join("policy.toml"),
+            "[clients.mcp-stdio]\nallow = [\"list_zones\"]\n",
+        )
+        .unwrap();
+        release.send(()).unwrap();
+        assert!(first.join().unwrap().unwrap().clean);
+        let stopped = finished_job(&surface, &second.id);
+        assert_eq!(stopped.phase, AnnouncementJobPhase::Failed, "{stopped:?}");
+        let report = stopped.result.unwrap();
+        assert!(!report.clean);
+        assert!(
+            report.households[0].levels.is_empty(),
+            "a revoked queued job must not interrupt fades or prepare levels"
+        );
+        assert!(
+            report.households[0]
+                .error
+                .as_deref()
+                .is_some_and(|why| why.contains("announce_start")),
+            "{report:?}"
+        );
+        assert_eq!(surface.announcements_pending(), 0);
+    });
+    sim.shutdown();
+}
+
+#[cfg(unix)]
+#[test]
+fn slow_speech_cannot_retain_a_grant_revoked_during_synthesis() {
+    use fsonos_core::announce::speech::{BackendKind, SpeechConfig};
+    struct NoSpeakerIo;
+    impl Transport for NoSpeakerIo {
+        fn soap_post(&self, _: IpAddr, _: &str, _: &str, _: &str) -> Result<String, ProtoError> {
+            panic!("a grant revoked during synthesis must fail before speaker I/O")
+        }
+    }
+    for background in [false, true] {
+        let operation = if background {
+            "announce_start"
+        } else {
+            "announce"
+        };
+        let data = tempfile::tempdir().unwrap();
+        let initial = format!("[clients.mcp-stdio]\nallow = [\"{operation}\"]\n");
+        let policy = data.path().join("policy.toml");
+        std::fs::write(&policy, &initial).unwrap();
+        let wav = data.path().join("voice.wav");
+        std::fs::write(&wav, Chime::Beep.wav()).unwrap();
+        // The configured local engine revokes the test caller while rendering
+        // valid WAV output; no timing-dependent race or installed TTS is needed.
+        let media = MediaStore::new(data.path()).with_speech_config(SpeechConfig {
+            backend: BackendKind::Command,
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "cat >/dev/null; printf '%s' \"$1\" >\"$2\"; cp \"$3\" \"$4\"".into(),
+                "test-speech".into(),
+                "[clients.mcp-stdio]\nallow = [\"list_zones\"]\n".into(),
+                policy.display().to_string(),
+                wav.display().to_string(),
+                "{output}".into(),
+            ],
+            timeout_secs: 5,
+            ..SpeechConfig::default()
+        });
+        let houses = crate::zones::fixtures::households();
+        let surface = Arc::new(
+            Surface::new(
+                Box::new(NoSpeakerIo),
+                Box::new(move |_| Ok(houses.clone())),
+                Policy::from_toml(&initial).unwrap(),
+                Box::new(fsonos_core::clock::SystemClock),
+            )
+            .with_policy_file(data.path().to_path_buf())
+            .with_announcements(Announcements::new(
+                media,
+                Box::new(|| Some("http://192.0.2.250:3400".into())),
+            )),
+        );
+        let request = AnnounceRequest {
+            text: Some("Test announcement".into()),
+            rooms: vec!["Patio".into()],
+            ..AnnounceRequest::default()
+        };
+        if background {
+            let accepted = surface
+                .start_announcement(&Client::McpStdio, &request)
+                .unwrap();
+            let stopped = finished_job(&surface, &accepted.id);
+            assert_eq!(stopped.phase, AnnouncementJobPhase::Failed);
+            assert_eq!(stopped.error.unwrap().code, ErrorCode::PolicyDenied);
+            assert!(stopped.result.is_none());
+        } else {
+            assert_eq!(
+                surface
+                    .announce(&Client::McpStdio, &request)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PolicyDenied
+            );
+        }
+        assert_eq!(surface.announcements_pending(), 0);
+    }
+}

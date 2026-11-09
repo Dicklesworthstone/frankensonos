@@ -60,7 +60,9 @@ function fixture({ demo = false, dom = false, network, readFile } = {}) {
   const ctl = C.model({ call, demo, now: () => time, changed: () => announcer?.observe() });
   const options = { call, controller: ctl, now: () => time, readFile: readFile || (() => ({ promise: Promise.resolve(wav()), cancel() {} })) };
   const doc = dom ? documentFixture() : null;
-  announcer = dom ? Announcements.panel({ ...options, document: doc }) : Announcements.model(options);
+  // These fixtures exercise the retained synchronous embedding contract. The
+  // production job-backed panels have separate lifecycle/one-shot coverage.
+  announcer = dom ? Announcements.panel({ ...options, document: doc, trackJobs: false }) : Announcements.model(options);
   return { ctl, announcer, zones, rows, answer, calls, doc, call,
     writes: () => calls.filter(row => row.body !== undefined),
     read(fn) { reader = fn; }, write(fn) { writer = fn; }, time(value) { time = value; },

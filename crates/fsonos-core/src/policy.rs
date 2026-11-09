@@ -114,7 +114,10 @@ pub const CLASSES: [(&str, &[&str]); 10] = [
             "resume_schedule",
         ],
     ),
-    ("announce", &["announce"]),
+    (
+        "announce",
+        &["announce", "announce_start", "cancel_announcement"],
+    ),
     (
         "dj",
         &[

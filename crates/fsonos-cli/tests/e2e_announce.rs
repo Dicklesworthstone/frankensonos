@@ -892,6 +892,194 @@ fn daemon_speech_preserves_text_and_voice_and_uses_the_announcement_pipeline() {
     s.finish();
 }
 
+#[test]
+fn announcement_jobs_cancel_a_waiter_and_active_clip_then_restore_the_house() {
+    let mut s = Scenario::start("announce-job-cancel");
+    s.sim(SimHousehold::standard());
+    let (kitchen_before, office_before) = set_the_scene(&mut s);
+    let mut daemon = s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
+    let ready = daemon
+        .wait_line("fsonos serve: ready", Duration::from_secs(20))
+        .unwrap_or_default();
+    let api = ready
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("http=http://"))
+        .unwrap_or_default()
+        .to_string();
+    let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
+    s.check(
+        "live",
+        "daemon",
+        "announcement jobs use a live daemon",
+        !api.is_empty() && live.is_some(),
+        daemon.seen.join("\n"),
+    );
+
+    // The simulator's clock stays still: this clip cannot finish before the
+    // explicit cancellation, and the second job must wait for its household.
+    let mut request = AnnounceRequest::from_wav(&silence(60)).unwrap();
+    request.rooms = vec!["Kitchen".into()];
+    request.volume = Some(30);
+    let (status, _, body) = http(
+        &api,
+        "POST",
+        "/announcements",
+        &[("Content-Type", "application/json")],
+        &serde_json::to_string(&request).unwrap(),
+    )
+    .unwrap();
+    let admitted = json(&body);
+    let id = admitted["id"].as_str().unwrap_or_default();
+    s.check(
+        "admitted",
+        "http",
+        "starting returns a job before playback completes",
+        status == 200
+            && id.len() == 32
+            && admitted["phase"] == "queued"
+            && admitted["result"].is_null(),
+        &body,
+    );
+    let path = format!("/announcements/{id}");
+    let get_job =
+        || http(&api, "GET", &path, &[], "").map_or(Value::Null, |(_, _, body)| json(&body));
+    let playing = within(Duration::from_secs(15), || get_job()["phase"] == "playing");
+    s.check(
+        "playing",
+        "http",
+        "the admitted job publishes active playback",
+        playing,
+        get_job().to_string(),
+    );
+
+    let queued = s.cli(
+        "background-chime",
+        &[
+            "chime",
+            "bell",
+            "--rooms",
+            "Kitchen",
+            "--background",
+            "--json",
+        ],
+    );
+    let queued_job = json(&queued.stdout);
+    let queued_id = queued_job["id"].as_str().unwrap_or_default().to_owned();
+    s.check(
+        "background",
+        "cli",
+        "the CLI returns a distinct retained job immediately",
+        queued.ok() && queued_id.len() == 32 && queued_id != id,
+        &queued.stdout,
+    );
+    let waiting = within(Duration::from_secs(10), || {
+        let status = s.cli(
+            "waiting-status",
+            &["announcements", "status", &queued_id, "--json"],
+        );
+        json(&status.stdout)["progress"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["phase"] == "queued"))
+    });
+    s.check(
+        "waiting",
+        "cli",
+        "the second job waits for the same household",
+        waiting,
+        "",
+    );
+    let cancelled = s.cli(
+        "cancel-waiter",
+        &["announcements", "cancel", &queued_id, "--json"],
+    );
+    s.check(
+        "cancel-waiter",
+        "cli",
+        "cancellation is acknowledged by exact job id",
+        cancelled.ok() && json(&cancelled.stdout)["cancel_requested"] == true,
+        &cancelled.stdout,
+    );
+    let waiter_done = within(Duration::from_secs(10), || {
+        let status = s.cli(
+            "cancelled-status",
+            &["announcements", "status", &queued_id, "--json"],
+        );
+        json(&status.stdout)["phase"] == "cancelled"
+    });
+    s.check(
+        "waiter-done",
+        "cli",
+        "a cancelled waiter finishes before the active clip and never fetches audio",
+        waiter_done && get_job()["phase"] == "playing" && clip_fetches(&s).len() == 1,
+        format!("{:?}", clip_fetches(&s)),
+    );
+
+    let (status, _, cancel_body) = http(
+        &api,
+        "POST",
+        &format!("{path}/cancel"),
+        &[("Content-Type", "application/json")],
+        "{}",
+    )
+    .unwrap();
+    s.check(
+        "cancel-active",
+        "http",
+        "active cancellation is requested once",
+        status == 200 && json(&cancel_body)["cancel_requested"] == true,
+        cancel_body,
+    );
+    let restored = within(Duration::from_secs(15), || {
+        get_job()["phase"] == "cancelled"
+    });
+    let final_job = get_job();
+    s.check(
+        "active-done",
+        "http",
+        "terminal cancellation retains the restoration report",
+        restored
+            && final_job["can_cancel"] == false
+            && final_job["result"]["households"][0]["outcome"] == "cancelled",
+        final_job.to_string(),
+    );
+    s.check(
+        "restored",
+        "sim",
+        "original music, volume and untouched rooms are restored",
+        room(&s, s.ip("Kitchen")) == kitchen_before && room(&s, s.ip("Office")) == office_before,
+        format!("{:?}", room(&s, s.ip("Kitchen"))),
+    );
+    let (_, _, repeated) = http(
+        &api,
+        "POST",
+        &format!("{path}/cancel"),
+        &[("Content-Type", "application/json")],
+        "{}",
+    )
+    .unwrap();
+    s.check(
+        "late-cancel",
+        "http",
+        "a repeated cancel returns the same terminal receipt",
+        json(&repeated) == final_job && clip_fetches(&s).len() == 1,
+        repeated,
+    );
+    let list = s.cli("jobs", &["announcements", "list", "--json"]);
+    let jobs = json(&list.stdout);
+    s.check(
+        "list",
+        "cli",
+        "the owner sees both completed cancellation receipts",
+        list.ok()
+            && jobs.as_array().is_some_and(|jobs| {
+                jobs.len() == 2 && jobs.iter().all(|job| job["phase"] == "cancelled")
+            }),
+        &list.stdout,
+    );
+    drop(daemon);
+    s.finish();
+}
+
 /// `secs` seconds of 8 kHz mono 16-bit silence, as a WAV file.
 fn silence(secs: u32) -> Vec<u8> {
     let data = secs * 8_000 * 2;

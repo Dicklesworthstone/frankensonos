@@ -1098,6 +1098,17 @@ reach on the LAN; control endpoints never move onto that listener. Regression
 and simulator checks remain separate from opt-in real speech and physical-Sonos
 acceptance.
 
+Announcements also expose bounded process-local jobs through CLI `--background`
+and `announcements`, HTTP `/announcements`, and MCP start/list/get/cancel tools.
+The phone remote and dashboard share job observation and cancellation, release
+their creation flow after admission, and show each household's final restoration
+receipt. Synchronous, scheduled, and background delivery share capacity; queued
+cancellation sends no speaker writes, and active cancellation preserves newer
+manual playback or group ownership. A cancellation request is distinct from
+completed restoration. Exact admitted room identities survive alias edits;
+ordinary callers see their own jobs and the configured owner can inspect all.
+See [Announcement jobs](docs/ANNOUNCEMENT_JOBS.md).
+
 ### 12.13 Live events and a web remote
 
 [`d-events-sse`, `d-web-remote`, `d-http-hardening`] `GET /events` streams zone-state deltas, DJ

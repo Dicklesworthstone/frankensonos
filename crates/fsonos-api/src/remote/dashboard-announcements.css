@@ -22,3 +22,7 @@
 #announcement-preview-source{white-space:pre-wrap;color:inherit}
 .announcement-result section{border-top:1px solid var(--line);margin-top:12px}
 @media(max-width:600px){.announcements-dialog{padding:20px}.announcement-fields{grid-template-columns:1fr}.announcement-preview,.announcement-result{padding:14px}.announcement-context p{flex-basis:100%}.announcement-context button{margin-left:auto}}
+.announcement-jobs { border-top: 1px solid var(--line); padding-top: 12px; overflow-wrap: anywhere; }
+.announcement-job-list { display: grid; gap: 12px; margin-top: 12px; }
+.announcement-job { border: 1px solid var(--line); border-radius: 8px; padding: 12px; min-width: 0; }
+.announcement-job h4 { margin: 0 0 8px; }

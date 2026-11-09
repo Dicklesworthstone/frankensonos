@@ -16,8 +16,8 @@ use fsonos_core::announce::clip::{
     Chime, ClipError, ClipSource, MAX_WAV_BYTES, MediaStore, wav_info,
 };
 use fsonos_core::announce::{
-    AnnounceReport, AnnouncementCallbacks, Announcer, Clip, DEFAULT_VOLUME, Ending,
-    HouseholdAnnouncement,
+    AnnounceReport, AnnouncementCallbacks, AnnouncementControl, Announcer, Clip, DEFAULT_VOLUME,
+    Ending, HouseholdAnnouncement,
 };
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::{ControlTarget, ResolveContext, resolve_targets};
@@ -26,12 +26,15 @@ use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
 use super::{Surface, room_view};
 use crate::failure::{ErrorCode, Failure};
 use crate::plan::Rooms;
+
+mod jobs;
+pub use jobs::{AnnouncementJobDto, AnnouncementJobPhase, AnnouncementProgressDto};
 
 /// The tool name announcements are authorized and logged under.
 pub const TOOL: &str = "announce";
@@ -64,14 +67,14 @@ struct Turns {
 
 /// One announcement's place in [`Turns`], given back when it is dropped:
 /// played, failed or refused later on.
-struct Turn<'a> {
-    turns: &'a Turns,
+struct Turn {
+    turns: Arc<Turns>,
     client: String,
 }
 
 /// A scheduler reserves capacity before claiming an occurrence; delivery
 /// consumes this same lease so another caller cannot take its place.
-pub(super) struct AnnouncementPermit<'a>(Turn<'a>);
+pub(super) struct AnnouncementPermit(Turn);
 
 impl Turns {
     fn held(&self) -> std::sync::MutexGuard<'_, HashMap<String, usize>> {
@@ -81,7 +84,7 @@ impl Turns {
     /// A place for one more announcement from `client`, or `NOT_READY`
     /// (retryable) while it already has [`MAX_PER_CLIENT`], or everyone
     /// together [`MAX_PENDING`].
-    fn take(&self, client: &Client) -> Result<Turn<'_>, Failure> {
+    fn take(self: &Arc<Self>, client: &Client) -> Result<Turn, Failure> {
         let mut held = self.held();
         let mine = held.get(client.key()).copied().unwrap_or(0);
         let all: usize = held.values().sum();
@@ -96,13 +99,13 @@ impl Turns {
         }
         *held.entry(client.key().to_owned()).or_default() += 1;
         Ok(Turn {
-            turns: self,
+            turns: Arc::clone(self),
             client: client.key().to_owned(),
         })
     }
 }
 
-impl Drop for Turn<'_> {
+impl Drop for Turn {
     fn drop(&mut self) {
         let mut held = self.turns.held();
         if let Some(count) = held.get_mut(&self.client) {
@@ -125,7 +128,8 @@ pub struct Announcements {
     announcer: Announcer,
     media: MediaStore,
     base: MediaBase,
-    turns: Turns,
+    turns: Arc<Turns>,
+    jobs: jobs::Jobs,
 }
 
 impl Announcements {
@@ -135,7 +139,8 @@ impl Announcements {
             announcer: Announcer::new(),
             media,
             base,
-            turns: Turns::default(),
+            turns: Arc::new(Turns::default()),
+            jobs: jobs::Jobs::default(),
         }
     }
 }
@@ -292,7 +297,7 @@ impl Surface {
     pub fn announcements_pending(&self) -> u64 {
         self.announcements
             .as_ref()
-            .map_or(0, |with| with.announcer.pending())
+            .map_or(0, |with| with.turns.held().values().sum::<usize>() as u64)
     }
 
     /// Check listener readiness without generating a clip or reserving a turn.
@@ -313,7 +318,7 @@ impl Surface {
     pub(super) fn reserve_announcement(
         &self,
         client: &Client,
-    ) -> Result<AnnouncementPermit<'_>, Failure> {
+    ) -> Result<AnnouncementPermit, Failure> {
         self.announcement_ready()?;
         let with = self.announcements.as_ref().expect("readiness checked");
         with.turns.take(client).map(AnnouncementPermit)
@@ -332,13 +337,30 @@ impl Surface {
         &self,
         client: &Client,
         req: &AnnounceRequest,
-        permit: Option<AnnouncementPermit<'_>>,
+        permit: Option<AnnouncementPermit>,
     ) -> Result<AnnounceDto, Failure> {
+        let (prepared, turn, job) = self.prepare_announcement(client, req, permit, TOOL)?;
+        job.preparing();
+        let result = self.deliver_announcement(client, prepared, &job.control);
+        job.finish(&result, self.clock.now().timestamp());
+        drop(turn);
+        result
+    }
+
+    /// Admit both synchronous and background delivery through the same bounded
+    /// capacity and resolve aliases once before the job can wait its turn.
+    fn prepare_announcement(
+        &self,
+        client: &Client,
+        req: &AnnounceRequest,
+        permit: Option<AnnouncementPermit>,
+        operation: &'static str,
+    ) -> Result<(PreparedAnnouncement, Turn, Arc<jobs::Job>), Failure> {
         let guard = self.guard(client);
-        if let Err(denied) = guard.authorize(TOOL, false) {
+        if let Err(denied) = guard.authorize(operation, false) {
             self.record(
                 client,
-                TOOL.to_string(),
+                operation.into(),
                 format!("deny: {}", denied.detail),
                 denied.detail.clone(),
                 None,
@@ -346,17 +368,22 @@ impl Surface {
             return Err(denied);
         }
         let source = req.source()?;
+        match &source {
+            ClipSource::Tts { text, voice } => {
+                fsonos_core::announce::clip::check_speech(text, voice.as_deref())
+                    .map_err(|e| clip_failure(&e))?
+            }
+            ClipSource::Chime { name } => {
+                name.parse::<Chime>().map_err(|e| clip_failure(&e))?;
+            }
+            ClipSource::Wav { .. } => {}
+        }
         let volume = req.volume()?;
-        let Some(with) = &self.announcements else {
-            return Err(Failure::new(
-                ErrorCode::NotImplemented,
-                "announcements need a media listener the speakers can fetch the clip from, \
-                 which this surface does not run",
-            ));
-        };
-        let _turn = match permit {
+        self.announcement_ready()?;
+        let with = self.announcements.as_ref().expect("readiness checked");
+        let turn = match permit {
             Some(AnnouncementPermit(turn)) => {
-                if !std::ptr::eq(turn.turns, &with.turns) || turn.client != client.key() {
+                if !Arc::ptr_eq(&turn.turns, &with.turns) || turn.client != client.key() {
                     return Err(Failure::new(
                         ErrorCode::Internal,
                         "announcement reservation belongs to another caller or surface",
@@ -366,21 +393,90 @@ impl Surface {
             }
             None => with.turns.take(client)?,
         };
-        let base = (with.base)().ok_or_else(|| {
-            Failure::new(
-                ErrorCode::NotReady,
-                "the media listener is not up yet; retry in a few seconds",
-            )
-        })?;
         let households = self.households()?;
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
-        let targets = targets(&rooms, &req.rooms).map_err(|f| self.explain(f))?;
+        let selected = targets(&rooms, &req.rooms).map_err(|f| self.explain(f))?;
+        let players = selected
+            .iter()
+            .map(|target| {
+                (
+                    households
+                        .iter()
+                        .position(|household| std::ptr::eq(household, target.household))
+                        .expect("resolved household"),
+                    target.room.primary.clone(),
+                )
+            })
+            .collect();
+        let labels = fsonos_core::rooms::household_labels(&households);
+        let named: Vec<String> = selected
+            .iter()
+            .map(|target| {
+                let index = households
+                    .iter()
+                    .position(|household| std::ptr::eq(household, target.household))
+                    .expect("resolved household");
+                format!("{}@{}", target.room.name, labels[index])
+            })
+            .collect();
+        let kind = match &source {
+            ClipSource::Tts { .. } => "speech",
+            ClipSource::Chime { .. } => "chime",
+            ClipSource::Wav { .. } => "wav",
+        };
+        let job = with
+            .jobs
+            .insert(client, kind, named, self.clock.now().timestamp())?;
+        Ok((
+            PreparedAnnouncement {
+                operation,
+                source,
+                volume,
+                households,
+                players,
+            },
+            turn,
+            job,
+        ))
+    }
 
+    fn deliver_announcement(
+        &self,
+        client: &Client,
+        prepared: PreparedAnnouncement,
+        control: &AnnouncementControl,
+    ) -> Result<AnnounceDto, Failure> {
+        let PreparedAnnouncement {
+            operation,
+            source,
+            volume,
+            households,
+            players,
+        } = prepared;
+        let with = self
+            .announcements
+            .as_ref()
+            .expect("announcement was admitted");
+        let targets = admitted_targets(&households, &players)?;
+        if control.is_cancelled() {
+            return Ok(cancelled_before_playback(&households, &targets));
+        }
+        // Recheck the creator's grant when the background worker begins.
+        self.guard(client).authorize(operation, false)?;
+        let base = (with.base)().ok_or_else(|| {
+            Failure::new(ErrorCode::NotReady, "the media listener is unavailable")
+        })?;
         if let Err(e) = with.media.prune(SystemTime::now()) {
             tracing::debug!(error = %e, "old clips not pruned");
         }
         let stored = with.media.make(&source).map_err(|e| clip_failure(&e))?;
+        if control.is_cancelled() {
+            return Ok(cancelled_before_playback(&households, &targets));
+        }
+        // Local synthesis can be slow. A revoked grant cannot survive it and
+        // reach a speaker merely because admission happened earlier.
+        self.guard(client).authorize(operation, false)?;
         let clip = Clip {
             url: stored.url(&base),
             title: title(&source),
@@ -392,6 +488,11 @@ impl Surface {
         // back (see `announcing`). Read the policy and clock at that boundary:
         // a queued clip may have waited across quiet hours or a policy edit.
         let sleeping = std::sync::Mutex::new(Vec::new());
+        let authorize = || {
+            self.guard(client)
+                .authorize(operation, false)
+                .map_err(|error| error.to_string())
+        };
         let cap = |room: &Room| {
             if let Some(receipt) = self.announcing(room) {
                 sleeping
@@ -422,16 +523,18 @@ impl Surface {
         let live = self.live();
         let report = with
             .announcer
-            .announce_with_callbacks(
+            .announce_controlled(
                 &*self.transport,
                 &targets,
                 &clip,
                 volume,
                 live.as_deref(),
                 &AnnouncementCallbacks {
+                    authorize: &authorize,
                     cap: &cap,
                     completed: &completed,
                 },
+                control,
             )
             .map_err(|e| Failure::invalid(e.to_string()))?;
 
@@ -454,6 +557,74 @@ impl Surface {
         self.record(client, intent, decision, dto.done.clone(), None);
         Ok(dto)
     }
+}
+
+struct PreparedAnnouncement {
+    operation: &'static str,
+    source: ClipSource,
+    volume: u8,
+    households: Vec<HouseholdState>,
+    players: Vec<(usize, PlayerId)>,
+}
+
+fn admitted_targets<'a>(
+    households: &'a [HouseholdState],
+    players: &[(usize, PlayerId)],
+) -> Result<Vec<ControlTarget<'a>>, Failure> {
+    players
+        .iter()
+        .map(|(index, id)| {
+            let invalid = || {
+                Failure::new(
+                    ErrorCode::Internal,
+                    "admitted announcement room is missing from its retained household",
+                )
+            };
+            let household = households.get(*index).ok_or_else(invalid)?;
+            let room = household
+                .rooms
+                .iter()
+                .find(|room| room.primary == *id)
+                .ok_or_else(invalid)?;
+            Ok(ControlTarget {
+                household,
+                room,
+                player: household.player(id).ok_or_else(invalid)?,
+                coordinator: household.player(&room.coordinator).ok_or_else(invalid)?,
+            })
+        })
+        .collect()
+}
+
+fn cancelled_before_playback(
+    households: &[HouseholdState],
+    targets: &[ControlTarget<'_>],
+) -> AnnounceDto {
+    let mut report = AnnounceReport {
+        households: Vec::new(),
+    };
+    for household in households {
+        let rooms: Vec<_> = targets
+            .iter()
+            .filter(|target| std::ptr::eq(target.household, household))
+            .collect();
+        if let Some(first) = rooms.first() {
+            report.households.push(HouseholdAnnouncement {
+                lead: first.room.primary.clone(),
+                rooms: rooms
+                    .iter()
+                    .map(|target| target.room.name.clone())
+                    .collect(),
+                levels: Vec::new(),
+                outcome: Ok(Ending::Cancelled),
+                restored: Vec::new(),
+                restore_failed: Vec::new(),
+            });
+        }
+    }
+    let mut dto = AnnounceDto::from_report(households, &report);
+    dto.done = "announcement cancelled before playback; no speaker state was changed".into();
+    dto
 }
 
 /// Only a fully restored original zone retains permission to resume its
@@ -603,6 +774,7 @@ impl AnnounceDto {
                 (Some(why), _) => write!(done, "; {} failed: {why}", h.lead),
                 (None, "never_started") => write!(done, "; {} could not fetch the clip", h.lead),
                 (None, "deadline") => write!(done, "; {} was stopped at the clip's end", h.lead),
+                (None, "cancelled") => write!(done, "; {} cancelled", h.lead),
                 _ => Ok(()),
             };
             for problem in &h.not_restored {
@@ -624,6 +796,46 @@ mod policy_tests;
 mod tests {
     use super::*;
     use crate::failure::ErrorCode;
+
+    #[test]
+    fn retained_announcement_targets_use_exact_household_and_player_identity() {
+        use fsonos_types::{Generation, Player};
+        let id = PlayerId("RINCON_SELECTED".into());
+        let other = PlayerId("RINCON_OTHER".into());
+        let make = |id: &PlayerId, name: &str| {
+            (
+                Player {
+                    id: id.clone(),
+                    room_name: name.into(),
+                    ip: "192.0.2.10".parse().unwrap(),
+                    model: String::new(),
+                    generation: Generation::S2,
+                },
+                Room {
+                    name: name.into(),
+                    primary: id.clone(),
+                    players: vec![id.clone()],
+                    missing: Vec::new(),
+                    coordinator: id.clone(),
+                },
+            )
+        };
+        let (selected, selected_room) = make(&id, "Kitchen");
+        let (shadow, shadow_room) = make(&other, &id.0);
+        let house = HouseholdState {
+            players: vec![selected, shadow],
+            rooms: vec![selected_room, shadow_room],
+            ..HouseholdState::default()
+        };
+        let mut first = house.clone();
+        first.rooms[0].name = "Other household".into();
+        let houses = [first, house];
+        let targets = admitted_targets(&houses, &[(1, id.clone())]).unwrap();
+        assert!(std::ptr::eq(targets[0].household, &houses[1]));
+        assert_eq!(targets[0].room.name, "Kitchen");
+        assert_eq!(targets[0].player.id, id);
+        assert!(admitted_targets(&houses, &[(2, other)]).is_err());
+    }
 
     fn req(text: Option<&str>, chime: Option<&str>) -> AnnounceRequest {
         AnnounceRequest {
@@ -773,7 +985,7 @@ mod tests {
 
     #[test]
     fn each_client_and_the_daemon_have_a_bounded_number_of_turns() {
-        let turns = Turns::default();
+        let turns = Arc::new(Turns::default());
         let agent = Client::Tailnet("agent@example.com".into());
         let first = turns.take(&agent).unwrap();
         let second = turns.take(&agent).unwrap();
@@ -797,7 +1009,7 @@ mod tests {
         let clients: Vec<Client> = (0..MAX_PENDING)
             .map(|n| Client::Tailnet(format!("agent{n}@example.com")))
             .collect();
-        let all: Vec<Turn<'_>> = clients.iter().map(|c| turns.take(c).unwrap()).collect();
+        let all: Vec<Turn> = clients.iter().map(|c| turns.take(c).unwrap()).collect();
         let full = turns.take(&Client::Cli).err().unwrap();
         assert_eq!(full.code, ErrorCode::NotReady);
         assert!(

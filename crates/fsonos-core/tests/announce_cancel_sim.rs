@@ -1,5 +1,8 @@
 //! Cancellation owns only its queued turn or still-confirmed announcement clip.
 
+#[path = "announce_cancel_sim/admission.rs"]
+mod admission;
+
 use fsonos_core::announce::{
     AnnounceReport, AnnouncementCallbacks, AnnouncementControl, AnnouncementPhase, Announcer, Clip,
     Ending,
@@ -256,6 +259,7 @@ fn run(s2: bool, at: CancelAt, owner: Owner, stop_reply: StopReply) -> ResultOf 
             25,
             None,
             &AnnouncementCallbacks {
+                authorize: &|| Ok(()),
                 cap: &|_| 25,
                 completed: &|_, _| {
                     assert_eq!(control.progress()[0].phase, AnnouncementPhase::Restoring);
@@ -338,6 +342,7 @@ fn cancellation_before_admission_is_read_only_and_never_calls_boundary_hooks() {
                 25,
                 None,
                 &AnnouncementCallbacks {
+                    authorize: &|| panic!("cancelled queued work never reaches admission"),
                     cap: &|_| panic!("cancelled queued work must not suspend a fade"),
                     completed: &|_, _| panic!("there is no effect to restore"),
                 },
@@ -357,6 +362,7 @@ fn cancellation_before_admission_is_read_only_and_never_calls_boundary_hooks() {
                     25,
                     None,
                     &AnnouncementCallbacks {
+                        authorize: &|| Ok(()),
                         cap: &|_| 25,
                         completed: &|_, _| {}
                     },

@@ -357,6 +357,8 @@ enum Command {
     Chime(announce_cmd::ChimeArgs),
     /// Play a local WAV in rooms, then put the music back.
     Announce(announce_cmd::AnnounceArgs),
+    /// Inspect active/recent announcement jobs, or cancel one explicitly.
+    Announcements(announce_cmd::JobsArgs),
     /// A completion script for your shell, completing room names too:
     /// `fsonos completions zsh > ~/.zfunc/_fsonos`.
     Completions { shell: completions::Shell },
@@ -548,6 +550,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::PlaylistSave(args) => playlist_cmd::run(global, &args),
         Command::PlaylistContents(args) => playlist_cmd::contents(global, &args),
         Command::PlaylistTrack(args) => playlist_cmd::track(global, &args),
+        Command::Announcements(args) => announce_cmd::jobs(global, &args),
         Command::Events(args) => events_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
         Command::Mcp { profile } => run_mcp_stdio(global, profile.into()),
@@ -642,9 +645,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let outcome = Direct::survey(global)?.play_sonos_playlist(&req)?;
             emit(global.json, &outcome, outcome_text)
         }
-        Command::Say(args) => announce_cmd::run_and_emit(global, &args.request()),
-        Command::Chime(args) => announce_cmd::run_and_emit(global, &args.request()),
-        Command::Announce(args) => announce_cmd::run_and_emit(global, &args.request()?),
+        Command::Say(args) => {
+            announce_cmd::run_and_emit(global, &args.request(), args.at.background)
+        }
+        Command::Chime(args) => {
+            announce_cmd::run_and_emit(global, &args.request(), args.at.background)
+        }
+        Command::Announce(args) => {
+            announce_cmd::run_and_emit(global, &args.request()?, args.at.background)
+        }
         Command::Stream(args) => streaming::run(global, &args),
         control => run_control(global, &control),
     }
@@ -1093,6 +1102,7 @@ fn plan_for<'a>(
         | Command::Say(_)
         | Command::Chime(_)
         | Command::Announce(_)
+        | Command::Announcements(_)
         | Command::Stream(_)
         | Command::Completions { .. }
         | Command::CompleteRooms
@@ -1753,6 +1763,52 @@ mod tests {
         assert_eq!(args.file, std::path::Path::new("clip.wav"));
         assert_eq!(args.at.rooms, ["Kitchen", "Office"]);
         assert_eq!(args.at.volume, Some(25));
+    }
+
+    #[test]
+    fn announcement_jobs_parse_background_sources_and_exact_job_commands() {
+        for args in [
+            vec![
+                "say",
+                "Dinner is ready",
+                "--rooms",
+                "Kitchen",
+                "--background",
+            ],
+            vec!["chime", "bell", "--background"],
+            vec!["announce", "--file", "clip.wav", "--background"],
+        ] {
+            let background = match parse(&args) {
+                Command::Say(args) => args.at.background,
+                Command::Chime(args) => args.at.background,
+                Command::Announce(args) => args.at.background,
+                other => panic!("unexpected command: {other:?}"),
+            };
+            assert!(background);
+        }
+        assert!(matches!(
+            parse(&["announcements"]),
+            Command::Announcements(announce_cmd::JobsArgs { action: None })
+        ));
+        assert!(matches!(
+            parse(&["announcements", "list"]),
+            Command::Announcements(announce_cmd::JobsArgs {
+                action: Some(announce_cmd::JobsCommand::List)
+            })
+        ));
+        let id = "0123456789abcdef0123456789abcdef";
+        for action in ["status", "cancel"] {
+            let Command::Announcements(args) = parse(&["announcements", action, id]) else {
+                panic!("job command")
+            };
+            let actual = match args.action.unwrap() {
+                announce_cmd::JobsCommand::Status { id }
+                | announce_cmd::JobsCommand::Cancel { id } => id,
+                announce_cmd::JobsCommand::List => panic!("exact job action"),
+            };
+            assert_eq!(actual, id);
+        }
+        assert!(Cli::try_parse_from(["fsonos", "announcements", "cancel"]).is_err());
     }
 
     #[test]

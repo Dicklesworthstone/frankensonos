@@ -59,6 +59,7 @@
 //! | `GET /zones/{room}/dj` | | [`crate::DjStatusDto`] |
 //! | `GET /dj/moods?zone=<room>` | | [`crate::DjMoodsDto`] (`now` is the room's steering, else the house's program) |
 //! | `GET`/`POST /sleep`, `GET`/`POST /schedules`, `POST /schedules/remove`, `/schedules/pause`, `/schedules/resume` | | sleep timers and schedules: see [`schedules`] |
+//! | `GET`/`POST /announcements`, `GET /announcements/{id}`, `POST /announcements/{id}/cancel` | announcement request, or `{}` to cancel | bounded job status and ownership-checked cancellation; asynchronous delivery |
 //! | `POST /announce` | [`crate::surface::announce::AnnounceRequest`] | [`crate::surface::announce::AnnounceDto`] |
 //! | `POST /dj/feedback` | [`crate::surface::dj_feedback::DjFeedbackRequest`] | [`crate::surface::dj_feedback::DjFeedbackDto`] |
 //! | `GET /dj/preferences` | | [`crate::surface::dj_prefs::PreferencesDto`] |
@@ -649,6 +650,16 @@ impl Ctx<'_> {
     fn route<F>(&self, op: &Op, work: F) -> RouteEntry
     where
         F: Fn(&Surface, &Client, &mut Request) -> Response + Send + Sync + 'static,
+    {
+        self.route_shared(op, move |surface, client, request| {
+            work(surface, client, request)
+        })
+    }
+
+    /// A bounded background operation retains the admitted shared surface.
+    fn route_shared<F>(&self, op: &Op, work: F) -> RouteEntry
+    where
+        F: Fn(&Arc<Surface>, &Client, &mut Request) -> Response + Send + Sync + 'static,
     {
         let (surface, identity) = (Arc::clone(self.surface), self.identity.clone());
         op.entry(
