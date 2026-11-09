@@ -2860,3 +2860,17 @@ Also falsified while chasing the load: `protocolInfo` alternatives
 `/tools` host validation: only `[A-Za-z0-9.-]`, but a leading `-` passes, so
 ping options are reachable (`-c1` → 200); spaces and every metacharacter are
 400.
+
+**After a clean reboot, from css, with the file actually served (a 404 had
+been confusing the recent runs):** `SetAVTransportURI` 200, the fetch lands
+in the journal (`GET /jffsex.aa 200` from the home IP), `Play` 200 — and the
+daemon still never dispatches (`/status` healthy throughout). The very next
+fire in the same boot already answers `Play` 500, so **the transport tolerates
+roughly one .aa load per daemon lifetime**; batch tests must reboot between
+attempts.
+
+Net for the lane: fetch and Play can be made to work, the parse still does
+not reach the notify, and the dispatcher is provably never entered
+(`0xDEADBEEF` inert with the fetch in the journal). The blocker is the load
+itself — an all-zero CELP body — and the next lever is a real chime payload,
+synthesised or captured.
