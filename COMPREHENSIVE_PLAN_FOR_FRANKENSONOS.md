@@ -929,6 +929,21 @@ browsing never changes the active queue, playback, volume or DJ. These are
 consistency checks, not a lock on the speaker's saved playlist. See
 `docs/SONOS_PLAYLISTS.md` for continuation and validation status.
 
+An exact observed track can now be played or queued independently through
+`fsonos playlist-track`, `POST /sonos/playlists/track`, MCP
+`sonos_playlist_track`, and each browser preview row. The request carries its
+native playlist id, one-based occurrence, expected revision and explicit mode
+(`play`, `next`, or `append`); no client renderer URI or metadata is accepted.
+The server preserves the native track's DIDL, including service descriptors,
+and refuses unavailable entries, containers and stale observations. Play
+retains the existing queue, applies caps and rechecks the group and selection
+around snapshot/policy reads without redirecting or replaying on another
+coordinator. Queue modes insert one confirmed occurrence without starting or
+resuming playback, with the existing exact-range undo. The browser reviews
+and rechecks both the selected track and destination, consumes each submission
+once, and retains uncertain outcomes. Browser regressions execute under Node;
+the added Rust/simulator cases still await a successful dependency build.
+
 ### 12.7 Scenes
 
 [`b-scenes`, `d-scenes-surface`] Named, declarative house states: group layout,

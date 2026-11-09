@@ -275,3 +275,12 @@ household changes, empty playlists and text-only metadata rendering. Rust
 execution remains blocked in this environment by a SIGKILL while compiling
 the pinned `asupersync` dependency. Node contents and existing source-player
 regressions pass; physical-speaker contents acceptance remains separate.
+
+Selected-track browser coverage runs with
+`node --test scripts/test-sonos-playlist-track-actions.cjs`. It exercises all
+three modes on both shipped command models, exact duplicate positions, stale
+catalog and destination observations, missing resources, changed households,
+late reads, one-shot submissions, lost replies and mismatched receipts. The
+27 new cases and the existing source/contents suites pass together (164 tests).
+The corresponding core/API/CLI/MCP Rust regressions are added but have not run
+past the dependency-build resource limit described above.

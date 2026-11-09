@@ -16,3 +16,5 @@
 .source-track-list li + li { border-top: 1px solid var(--line); }
 .source-track-list strong, .source-track-list span { display: block; }
 .source-track-list span { margin-top: .25rem; color: var(--muted); font-size: .85rem; }
+.source-track-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
+.source-track-actions button { min-height: 2.5rem; padding: .35rem .65rem; font-size: .85rem; }

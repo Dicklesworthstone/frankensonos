@@ -30,4 +30,7 @@
 .source-track-list li+li{border-top:1px solid var(--line-strong)}
 .source-track-list strong,.source-track-list span{display:block;line-height:1.6}
 .source-track-list span{color:var(--muted);margin-top:3px}
+.source-track-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.source-track-actions button{min-height:36px;padding:6px 10px;border:1px solid var(--line-strong);border-radius:6px;background:var(--raised);color:var(--text);font:inherit;cursor:pointer}
+.source-track-actions button:disabled{opacity:.45;cursor:default}
 .source-fields .source-contents[hidden]{display:none}
