@@ -45,9 +45,7 @@ use fsonos_core::store::{Action, LoggedAction, Store};
 use fsonos_core::{CoreError, control};
 use fsonos_spotify::cache::works_from_store;
 use fsonos_spotify::dj::{DjConfig, PlayRecord, WorkPool};
-use fsonos_spotify::feed::{
-    FeedError, Planning, QueueFeed, QueuedWork, RecoveryNotice, Speakers,
-};
+use fsonos_spotify::feed::{FeedError, Planning, QueueFeed, QueuedWork, RecoveryNotice, Speakers};
 use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
 use fsonos_spotify::steer::{DjSession, Moods, Steer, steering};
 use fsonos_types::PlayerId;

@@ -7,6 +7,7 @@ use super::{Ctx, Op, answer, body, query_param, whole_number};
 use crate::surface::sonos_playlists::{
     PlaySonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto,
     SonosPlaylistContentsDto, SonosPlaylistContentsRequest, SonosPlaylistDto,
+    SonosPlaylistTrackDto, SonosPlaylistTrackRequest,
 };
 use crate::{Failure, OutcomeDto};
 
@@ -32,6 +33,16 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .query_schema::<ContentsQuery>(true)
         .response_schema::<SonosPlaylistContentsDto>(200, "A coherent native playlist page with its continuation revision"),
+        cx.route(
+            &Op::post(
+                "/sonos/playlists/track", "sonos_playlist_track", TAG,
+                "Play or queue one revision-bound native saved playlist occurrence (play_favorite or add_to_queue permission)",
+            ),
+            |s, c, req| answer(body::<SonosPlaylistTrackRequest>(req)
+                .and_then(|r| s.sonos_playlist_track(c, &r))),
+        )
+        .request_schema::<SonosPlaylistTrackRequest>(true)
+        .response_schema::<SonosPlaylistTrackDto>(200, "The selected native track's playback or confirmed queue insertion"),
         cx.route(
             &Op::post(
                 "/sonos/playlists/play", "play_sonos_playlist", TAG,

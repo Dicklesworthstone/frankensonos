@@ -6,7 +6,8 @@ mod e2e;
 use e2e::{Run, Scenario};
 use fsonos_api::surface::queue::QueueAddedDto;
 use fsonos_api::surface::sonos_playlists::{
-    SavedSonosPlaylistDto, SonosPlaylistContentsDto, SonosPlaylistDto,
+    SavedSonosPlaylistDto, SonosPlaylistContentsDto, SonosPlaylistDto, SonosPlaylistTrackDto,
+    SonosPlaylistTrackMode,
 };
 use fsonos_proto::content::{QUEUE, browse_all};
 use fsonos_proto::control as soap;
@@ -114,7 +115,105 @@ fn exercise(s: &mut Scenario, route: &str) {
         );
 
         save_and_recall(s, route, room, generation, &selected);
+        select_native_track(s, route, room);
     }
+}
+
+fn select_native_track(s: &mut Scenario, route: &str, room: &str) {
+    let host = s.ip(room);
+    let read = call(
+        s,
+        route,
+        "native-track-read",
+        &["playlist-contents", room, "SQ:7"],
+    );
+    assert!(read.ok(), "{read:?}");
+    let page: SonosPlaylistContentsDto = serde_json::from_str(&read.stdout).unwrap();
+    let original = browse_all(&s.lan(), host, QUEUE).unwrap();
+    let before = soap::get_position_info(&s.lan(), host).unwrap();
+    for (mode, expected) in [("next", 2), ("append", original.len() as u32 + 1)] {
+        let added = call(
+            s,
+            route,
+            "native-track-queue",
+            &[
+                "playlist-track",
+                room,
+                &page.playlist.id,
+                "3",
+                "--expected-revision",
+                &page.revision,
+                "--mode",
+                mode,
+            ],
+        );
+        assert!(added.ok(), "{added:?}");
+        let result: SonosPlaylistTrackDto = serde_json::from_str(&added.stdout).unwrap();
+        let current = browse_all(&s.lan(), host, QUEUE).unwrap();
+        s.check(
+            "native-track-queue",
+            "cli",
+            "one exact saved occurrence is queued silently",
+            result.position == 3
+                && result.first == Some(expected)
+                && result.count == Some(1)
+                && current.len() == original.len() + 1
+                && current[expected as usize - 1]
+                    .res
+                    .as_ref()
+                    .map(|resource| &resource.uri)
+                    == page.items[2].uri.as_ref()
+                && soap::get_position_info(&s.lan(), host).unwrap() == before,
+            &added.stdout,
+        );
+        let undone = call(s, route, "native-track-undo", &["undo"]);
+        assert!(undone.ok(), "{undone:?}");
+        assert_eq!(browse_all(&s.lan(), host, QUEUE).unwrap(), original);
+    }
+    let stale = call(
+        s,
+        route,
+        "native-track-stale",
+        &[
+            "playlist-track",
+            room,
+            &page.playlist.id,
+            "3",
+            "--expected-revision",
+            "obsolete",
+        ],
+    );
+    assert!(!stale.ok(), "{stale:?}");
+    assert_eq!(soap::get_position_info(&s.lan(), host).unwrap(), before);
+    let played = call(
+        s,
+        route,
+        "native-track-play",
+        &[
+            "playlist-track",
+            room,
+            &page.playlist.id,
+            "3",
+            "--expected-revision",
+            &page.revision,
+        ],
+    );
+    assert!(played.ok(), "{played:?}");
+    let result: SonosPlaylistTrackDto = serde_json::from_str(&played.stdout).unwrap();
+    s.check(
+        "native-track-play",
+        "cli",
+        "single-track play retains the queue and uses its native resource",
+        result.mode == SonosPlaylistTrackMode::Play
+            && result.position == 3
+            && result.playlist == page.playlist.id
+            && result.count.is_none()
+            && soap::get_media_info(&s.lan(), host).unwrap().uri
+                == *page.items[2].uri.as_ref().unwrap()
+            && soap::get_transport_info(&s.lan(), host).unwrap().state == TransportState::Playing
+            && browse_all(&s.lan(), host, QUEUE).unwrap() == original,
+        &played.stdout,
+    );
 }
 
 fn inspect_saved_contents(

@@ -55,6 +55,7 @@ pub use queue_search::SearchQueue;
 mod sonos_playlists;
 pub use sonos_playlists::{
     ListSonosPlaylists, PlaySonosPlaylist, SaveSonosPlaylist, SonosPlaylistContents,
+    SonosPlaylistTrack,
 };
 
 mod controls;

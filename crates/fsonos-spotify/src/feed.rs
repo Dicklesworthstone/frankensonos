@@ -1481,8 +1481,8 @@ mod tests {
     use crate::test_shelf::{MIDNIGHT, shelf_items, song_items, works_of};
 
     mod history;
-    mod recovery;
     mod navigation;
+    mod recovery;
     mod source;
 
     const ROOM: &str = "Living Room";

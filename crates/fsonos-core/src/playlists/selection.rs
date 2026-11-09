@@ -121,19 +121,28 @@ fn track_resource(uri: &str) -> bool {
             | "x-sonosapi-radio"
             | "x-sonosapi-hls"
             | "aac"
+            | "spotify"
     ) {
         return false;
     }
-    let spotify = match scheme.as_str() {
-        "spotify" => Some(uri.to_owned()),
-        "x-sonos-spotify" => spotify_uri_from_renderer_uri(uri),
-        _ => return true,
-    };
-    spotify.as_deref().is_some_and(|uri| {
-        ["spotify:track:", "spotify:episode:"]
-            .iter()
-            .any(|&prefix| uri.strip_prefix(prefix).is_some_and(|id| !id.is_empty()))
-    })
+    if scheme == "file"
+        && resource
+            .split(['?', '#'])
+            .next()
+            .is_some_and(|path| path.to_ascii_lowercase().ends_with(".rsq"))
+    {
+        return false;
+    }
+    if scheme != "x-sonos-spotify" {
+        return true;
+    }
+    spotify_uri_from_renderer_uri(uri)
+        .as_deref()
+        .is_some_and(|uri| {
+            ["spotify:track:", "spotify:episode:"]
+                .iter()
+                .any(|&prefix| uri.strip_prefix(prefix).is_some_and(|id| !id.is_empty()))
+        })
 }
 
 fn invalid(detail: &str) -> CoreError {
@@ -222,6 +231,7 @@ mod tests {
             "x-rincon:another-player",
             "x-rincon-queue:player#0",
             "x-rincon-cpcontainer:playlist",
+            "file:///jffs/settings/savedqueues.rsq#7",
             "x-rincon-stream:player",
             "x-sonos-htastream:player:spdif",
             "x-sonos-vli:player:2,spotify:session",
@@ -231,6 +241,7 @@ mod tests {
             "x-sonosapi-hls:station",
             "aac://station.invalid/live",
             "spotify:album:Album",
+            "spotify:track:Track",
             "spotify:track:",
             "x-sonos-spotify:spotify%3aplaylist%3aList?sid=1",
             "x-sonos-spotify:unknown",

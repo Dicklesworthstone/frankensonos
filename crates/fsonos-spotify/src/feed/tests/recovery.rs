@@ -35,23 +35,13 @@ fn started(s2: bool, lookahead: usize) -> (Rig, WorkPool, MemStore, QueueFeed) {
     let mut store = MemStore::default();
     let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
     feed.lookahead = lookahead;
-    feed.start(
-        &rig.speakers(&rig.lan),
-        plan(&pool, MIDNIGHT),
-        &mut store,
-    )
-    .unwrap();
+    feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+        .unwrap();
     let event = sample(&rig);
     assert_eq!(event.transport, Some(TransportState::Playing));
     assert_eq!(event.transport_status.as_deref(), Some("OK"));
     deliver(
-        &rig,
-        &mut feed,
-        &pool,
-        &mut store,
-        &rig.lan,
-        &event,
-        MIDNIGHT,
+        &rig, &mut feed, &pool, &mut store, &rig.lan, &event, MIDNIGHT,
     )
     .unwrap();
     assert_eq!(plays(&store).len(), 1);
@@ -156,12 +146,7 @@ fn recovery_starts_the_next_whole_work_without_replacing_the_queue_or_inventing_
         let heard = plays(&store);
         // Select a later movement, then fail before any Playing observation
         // can count it. Recovery must skip the rest of this entire work.
-        transport::seek_track(
-            &rig.lan,
-            rig.host(),
-            failed.movements[1].position.unwrap(),
-        )
-        .unwrap();
+        transport::seek_track(&rig.lan, rig.host(), failed.movements[1].position.unwrap()).unwrap();
         rig.sim.playback_error(ROOM).unwrap();
         let error = sample(&rig);
         assert_eq!(error.transport_status.as_deref(), Some("ERROR_OCCURRED"));
@@ -181,7 +166,11 @@ fn recovery_starts_the_next_whole_work_without_replacing_the_queue_or_inventing_
             0
         );
         assert_eq!(observed.writes(), ["Seek", "Play"]);
-        assert_eq!(rig.queue(), queue, "recovery adds, removes and replaces nothing");
+        assert_eq!(
+            rig.queue(),
+            queue,
+            "recovery adds, removes and replaces nothing"
+        );
         assert_eq!(rig.position(), next.first().unwrap());
         assert_eq!(plays(&store), heard, "recovery commands are not listens");
         let notice = feed.take_recovery_notice().unwrap();
@@ -242,7 +231,12 @@ fn stale_errors_and_unknown_statuses_never_authorize_recovery_writes() {
     assert!(observed.writes().is_empty());
 
     rig.sim.playback_error(ROOM).unwrap();
-    for status in [None, Some("vendor-waiting"), Some("error_occurred"), Some("OK")] {
+    for status in [
+        None,
+        Some("vendor-waiting"),
+        Some("error_occurred"),
+        Some("OK"),
+    ] {
         let mut event = sample(&rig);
         event.transport_status = status.map(str::to_owned);
         assert_eq!(
@@ -349,7 +343,10 @@ fn a_failure_without_a_waiting_whole_work_stops_management_without_queue_mutatio
         &event,
         MIDNIGHT + 1,
     );
-    assert!(matches!(result, Err(FeedError::RecoveryStopped(_))), "{result:?}");
+    assert!(
+        matches!(result, Err(FeedError::RecoveryStopped(_))),
+        "{result:?}"
+    );
     assert!(!feed.is_active());
     assert!(feed.snapshot().is_none());
     assert!(observed.writes().is_empty());
@@ -462,7 +459,11 @@ fn an_owner_seek_during_the_post_seek_status_read_prevents_play() {
             "{owner_seek:?}: {result:?}"
         );
         assert!(observed.injected.get());
-        assert_eq!(observed.writes(), ["Seek"], "Play must not follow the owner's seek");
+        assert_eq!(
+            observed.writes(),
+            ["Seek"],
+            "Play must not follow the owner's seek"
+        );
         assert!(!feed.is_active());
         let actual = transport::get_position_info(&rig.lan, rig.host()).unwrap();
         match owner_seek {
@@ -473,7 +474,9 @@ fn an_owner_seek_during_the_post_seek_status_read_prevents_play() {
             }
         }
         assert_eq!(
-            transport::get_transport_info(&rig.lan, rig.host()).unwrap().state,
+            transport::get_transport_info(&rig.lan, rig.host())
+                .unwrap()
+                .state,
             TransportState::Stopped
         );
         assert_eq!(rig.queue(), queue);
@@ -530,7 +533,10 @@ fn recovery_budget_survives_feed_snapshot_restarts_and_exhaustion_sends_no_comma
         &event,
         MIDNIGHT + 4,
     );
-    assert!(matches!(result, Err(FeedError::RecoveryStopped(_))), "{result:?}");
+    assert!(
+        matches!(result, Err(FeedError::RecoveryStopped(_))),
+        "{result:?}"
+    );
     assert!(!feed.is_active());
     assert!(feed.snapshot().is_none());
     assert_eq!(observed.writes(), before);

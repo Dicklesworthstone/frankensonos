@@ -563,7 +563,12 @@ mod tests {
             "zone": zone(&["Den"], "stopped", &[]),
             "transport_state": "stopped"
         });
-        for status in [None, Some("OK"), Some("ERROR_OCCURRED"), Some("FUTURE_STATUS")] {
+        for status in [
+            None,
+            Some("OK"),
+            Some("ERROR_OCCURRED"),
+            Some("FUTURE_STATUS"),
+        ] {
             value["transport_status"] = serde_json::json!(status);
             let state: ZoneStateDto = serde_json::from_value(value.clone()).unwrap();
             let text = status_text(&state);

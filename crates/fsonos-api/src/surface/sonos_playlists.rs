@@ -18,6 +18,9 @@ use crate::request::zone_name;
 mod contents;
 pub use contents::{SonosPlaylistContentsDto, SonosPlaylistContentsRequest, SonosPlaylistItemDto};
 
+mod track;
+pub use track::{SonosPlaylistTrackDto, SonosPlaylistTrackMode, SonosPlaylistTrackRequest};
+
 /// Saving a queue changes the household's catalog, not playback.
 pub const SAVE: &str = "save_sonos_playlist";
 

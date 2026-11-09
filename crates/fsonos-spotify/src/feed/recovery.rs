@@ -219,7 +219,7 @@ fn track(value: &str) -> Option<String> {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte)))
-        .then_some(decoded)
+    .then_some(decoded)
 }
 
 fn occurrence<T: Transport + ?Sized>(
@@ -301,11 +301,9 @@ fn start_next<T: Transport + ?Sized>(
             )
         })();
         if !matches!(ready, Ok(true)) {
-            return Err(
-                "the failed occurrence changed after setting queue order; \
+            return Err("the failed occurrence changed after setting queue order; \
                  recovery was not continued"
-                    .into(),
-            );
+                .into());
         }
     }
     let target = proof.target;
@@ -333,11 +331,9 @@ fn start_next<T: Transport + ?Sized>(
         occurrence(at, host, target.next, &target.next_uri, proof.length)
     })();
     let Ok(Some(after)) = after else {
-        return Err(
-            "the recovery outcome could not be confirmed; \
+        return Err("the recovery outcome could not be confirmed; \
              the queue and playback were left alone"
-                .into(),
-        );
+            .into());
     };
     if !matches!(
         after.state,
@@ -372,7 +368,10 @@ pub(super) fn recover<T: Transport + ?Sized>(
     let Some(length) = feed.left_at() else {
         return Ok(());
     };
-    if event.queue_length.is_some_and(|observed| observed != length) {
+    if event
+        .queue_length
+        .is_some_and(|observed| observed != length)
+    {
         return Ok(());
     }
     let host = host_of(at)?;
@@ -417,8 +416,8 @@ pub(super) fn recover<T: Transport + ?Sized>(
         ));
     };
     feed.dry_end = None;
-    let after = start_next(at, &proof, normal, position, uri)
-        .map_err(|detail| halt(feed, detail))?;
+    let after =
+        start_next(at, &proof, normal, position, uri).map_err(|detail| halt(feed, detail))?;
     feed.playing = Some(target.next);
     feed.jumped = true;
     feed.recovery_notice = Some(RecoveryNotice {

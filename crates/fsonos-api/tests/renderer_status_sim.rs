@@ -39,7 +39,8 @@ fn direct_state_reports_a_failure_and_an_ordinary_stop_on_both_generations() {
     let lan = sim.lan();
     for room in ["First", "Second"] {
         let host = sim.player(room).unwrap().ip;
-        soap::set_av_transport_uri(&lan, host, "https://audio.example.invalid/track.mp3", "").unwrap();
+        soap::set_av_transport_uri(&lan, host, "https://audio.example.invalid/track.mp3", "")
+            .unwrap();
         soap::play(&lan, host).unwrap();
         assert_eq!(
             surface
@@ -68,8 +69,14 @@ fn direct_state_reports_a_failure_and_an_ordinary_stop_on_both_generations() {
         // An intentional Stop resets the playback clock. It must retain
         // the selected source and occurrence while clearing the error.
         assert_eq!(
-            failed.track.as_ref().map(|track| (&track.uri, track.queue_position)),
-            stopped.track.as_ref().map(|track| (&track.uri, track.queue_position))
+            failed
+                .track
+                .as_ref()
+                .map(|track| (&track.uri, track.queue_position)),
+            stopped
+                .track
+                .as_ref()
+                .map(|track| (&track.uri, track.queue_position))
         );
     }
 }
@@ -78,11 +85,7 @@ fn status_event(surface: &Surface, since: &mut u64, room: &str, expected: &str) 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let reply = surface
-            .events_after(
-                &Client::LoopbackHttp,
-                Some(*since),
-                Duration::from_secs(1),
-            )
+            .events_after(&Client::LoopbackHttp, Some(*since), Duration::from_secs(1))
             .unwrap();
         *since = reply.last_id;
         if let Some(event) = reply.events.into_iter().find(|event| {

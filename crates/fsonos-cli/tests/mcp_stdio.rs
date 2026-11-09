@@ -221,6 +221,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "playlist_contents",
         "list_sonos_playlists",
         "sonos_playlist_contents",
+        "sonos_playlist_track",
         "play_sonos_playlist",
         "save_sonos_playlist",
         "add_to_queue",
@@ -281,6 +282,14 @@ fn control_tools_are_advertised_with_their_arguments() {
         &["zone", "playlist", "offset", "limit", "expected_revision"],
         &["zone", "playlist"],
     );
+    let selected = tool("sonos_playlist_track");
+    assert_tool_arguments(
+        selected,
+        &["zone", "playlist", "position", "expected_revision", "mode"],
+        &["zone", "playlist", "position", "expected_revision", "mode"],
+    );
+    assert_ne!(selected["annotations"]["readOnlyHint"], true);
+    assert_ne!(selected["annotations"]["idempotentHint"], true);
 }
 
 fn assert_native_playlist_schemas(list: &Value, play: &Value, save: &Value, queue: &Value) {

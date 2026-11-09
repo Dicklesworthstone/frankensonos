@@ -71,6 +71,57 @@ against another controller or make all pages an atomic snapshot. Browsing does
 not select a track or send a playback command. Whole-playlist play/next/append
 still uses the speaker's current saved contents when that separate action runs.
 
+## Play or queue one saved track
+
+An inspected occurrence can be selected without loading its entire playlist:
+
+```sh
+fsonos playlist-contents Kitchen SQ:7
+fsonos playlist-track Kitchen SQ:7 3 --expected-revision '<revision from that page>'
+fsonos playlist-track Kitchen SQ:7 3 --expected-revision '<revision from that page>' --mode next
+fsonos playlist-track Kitchen SQ:7 3 --expected-revision '<revision from that page>' --mode append
+```
+
+The exact native playlist id, original one-based position and observed revision
+are mandatory. A repeated song remains a separate occurrence at each position.
+Titles, catalog numbers, raw renderer URIs and caller-supplied metadata cannot
+substitute for this selection. Positions are bounded to 100,000, matching the
+native contents reader's maximum catalog size.
+
+`play` starts just the selected track and retains the existing queue. It uses
+the speaker's native metadata, applies the usual playback volume caps, and
+hands playback away from an active DJ as an ordinary explicit source change
+does. A single track plays to its end; it does not schedule the remainder of
+the playlist. `next` inserts one occurrence immediately after the current queue
+track; when the group is not using its queue, it appends. `append` always adds
+at the end. Both queue modes keep playback, volume and the current source
+unchanged. Their confirmed one-track insertion can be removed with the usual
+action-history undo.
+
+The server reads the selected occurrence again at its expected revision and
+retains its native service resource and DIDL. A missing resource, stream,
+container or unavailable entry is refused. The play path rechecks the selected
+track and group around snapshot and policy reads, then sends each native
+playback stage once. It never redirects an old selection to a new coordinator
+after a refusal. Queue writes use the existing native-track insertion path,
+which confirms the inserted occurrence and its neighbors before recording undo.
+Changed saved contents or player identity require a fresh contents read. These
+checks detect changes; they do not lock Sonos against other controllers.
+
+HTTP uses `POST /sonos/playlists/track` with
+`{"zone":"Kitchen","playlist":"SQ:7","position":3,"expected_revision":"…","mode":"next"}`.
+All five fields are required; `mode` is exactly `play`, `next` or `append`.
+MCP `sonos_playlist_track` takes those same fields. CLI defaults `--mode` to
+`play` and uses the selected daemon when available, with explicit `--direct`
+and `--daemon` support. Playback requires `play_favorite`; queue modes require
+`add_to_queue`, checked before any native catalog reads.
+
+The result retains `playlist`, `position`, `title` and `mode`, names the
+coordinator room in `zone`, and includes `done`, `changed` and policy/logging
+`notes`. Queue receipts additionally report `first`, `count: 1` and
+`playing_queue`. A failed or uncertain write is never automatically repeated;
+inspect current playback or the queue before issuing another action.
+
 ## Save the current queue
 
 `fsonos playlist-save <room> <title>` saves the current group's nonempty queue
@@ -112,6 +163,11 @@ Changing the selected group, household or playlist clears the preview, and a
 late response from the old selection cannot replace it. Reads are explicit and
 do not add background polling or contact the track's media URL.
 
+Track rows offer separate play/next/append actions. Their review retains the
+saved occurrence and revision, and rechecks the destination and selected track
+before sending. An obsolete selection requires another explicit read. Playing
+one row retains the queue; whole-playlist controls keep their existing behavior.
+
 The review shows the destination and the effect on its current queue. Before
 sending, the controller reads the catalog and destination again; a renamed or
 removed selection, regrouped destination, or changed queue requires a fresh
@@ -140,6 +196,7 @@ read and review.
 |---|---|---|
 | List the selected household's saved playlists | `GET /sonos/playlists?zone=Kitchen` | `list_sonos_playlists(zone="Kitchen")` |
 | Inspect ordered saved tracks | `GET /sonos/playlists/contents?zone=Kitchen&playlist=SQ:7&offset=0&limit=100` | `sonos_playlist_contents(zone="Kitchen", playlist="SQ:7", offset=0, limit=100)` |
+| Play or queue one observed track | `POST /sonos/playlists/track` with `zone`, exact `playlist`, `position`, `expected_revision`, and `mode` | `sonos_playlist_track` with the same fields |
 | Save the current queue as a new playlist | `POST /sonos/playlists/save` with `{"zone":"Kitchen","title":"Evening Mix"}` | `save_sonos_playlist(zone="Kitchen", title="Evening Mix")` |
 | Replace the queue and play | `POST /sonos/playlists/play` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `play_sonos_playlist(zone="Kitchen", playlist="SQ:7")` |
 | Append | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `add_to_queue(zone="Kitchen", playlist="SQ:7")` |
