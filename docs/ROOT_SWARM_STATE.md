@@ -2934,3 +2934,24 @@ The lane is now sitting on the codec/record semantics: to reach the notify the
 decodable frames, which is exactly what no artefact on hand has. The three
 handler facts worth carrying forward: `type 2 == node metadata`, the
 `1024`/`4096` strlens, and `strlcpy`'s NUL-bounded copy.
+
+### 2026-11-09 (session 20l) — route inventory re-run; the tools surface is real but not injectable
+
+- `/tools` ping/traceroute/nslookup all reject `;`, `|`, `&`, backticks, `$()`,
+  spaces and newlines (400). A leading `-` is accepted, so ping options are
+  reachable (`-c1` 200), and `/traceroute` is the GNU binary (`-c1` →
+  "invalid option -- c"), whose *stderr* is captured too. Host length is
+  capped: 300 and 1000 chars 200, 2000 and 4000 chars 400.
+- `/info` is a working local-API document and hands out the real
+  `householdId` (`Sonos_qN6H…`), `groupId`, and the `wss://…:1443/websocket/api`
+  + `https://…:1443/api` endpoints — the modern API's `platformInternal/reboot`
+  is reachable in principle from here.
+- `/unlock` is devmode-gated (403/423); `/mtmhhsetup` answers 405 to GET and
+  405 to a bare POST; `/wifictrl` is a static note; `/getsetting` and `/udplog`
+  are 403.
+- The whole `.aa` behaviour is *identical* on the S2 unit (`.135`), so this is
+  not an S1 quirk.
+- `SetAVTransportURI`/`Play` are flaky on state, not on file: the same file
+  gives 200 then 500 then 200 with no change on our side.
+
+All three units left settled (`Stop` 200, `/status/VERSION` 200).
