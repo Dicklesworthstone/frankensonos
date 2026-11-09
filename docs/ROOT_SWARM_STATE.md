@@ -2631,3 +2631,47 @@ verified structurally this session.
    channel.
 3. Then two-stage with the canary and re-calibrate; only then re-test the
    `dd`/telnetd payloads.
+
+### 2026-11-09 (session 20d) — exec works on the device; the `.aa` container is the blocker; `/tools` is a pre-auth exec primitive
+
+**Revision to the earlier `access()` inference.** The device *can* exec with
+captured stdout. `GET /tools` (unauthenticated) serves a form page with a
+fresh `csrfToken`; `POST /ping` with that token and a `host` runs the daemon's
+ping and **returns its output**:
+
+```
+PING 127.0.0.1 (127.0.0.1): 56 data bytes
+64 bytes from 127.0.0.1: ... 
+3 packets transmitted, 3 received
+```
+
+So fork/exec AND stdout capture are healthy, and the empty `/status/<exec>`
+pages are a defect *of those routes specifically*, not of the exec
+environment. `/tools` also exposes `/traceroute`, `/nslookup`,
+`/mdnsannounce`. Mechanics: the token is base64 and **single-use**, so it must
+be URL-encoded (`--data-urlencode`) and refetched per request; the `host`
+field is charset-validated — a space and a `;` are both rejected (`400`), so
+it is not directly injectable.
+
+**The `.aa` never decodes — eight falsifications.** Nothing here is a
+theoretical concern; each was run against .84 and failed:
+1. bare `http://` URI → SetAV 200, Play **701**, STOPPED, no fetch;
+2. `x-rincon-mp3radio://http://…` (the shim) → Play 200 but stuck TRANSITIONING;
+3. served from css over the WAN → fetches, never transitions;
+4. served from the LAN → TRANSITIONING, `GetMediaInfo` `Duration 0:00:00`,
+   `TransportStatus NETWORK`, never PLAYING;
+5. `Content-Type: audio/aac` → unchanged;
+6. HTTP `Range`/`Accept-Ranges` (a dedicated 206-capable server) → unchanged;
+7. MP3 **and** AAC internet streams both reach PLAYING, so the network and
+   both decoders are healthy — it is the container;
+8. a stage 1 of a *real stream* (PLAYING) then the payload → still no chain
+   (the observer cell `0x55000000` held 100 s with no crash, where the
+   campaign recorded a crash at 54.8 s).
+
+Both rootfs images on the box (S1 `rootfs.bin`, S2 `65130_rootfs.squashfs`)
+contain **no** `.aa` at all (`celp` magic scan), and the `.upd` images are
+encrypted, so there is no genuine chime on hand to diff against.
+
+**Still no reboot route:** `/reboot` is 403 on GET and POST (hhid gate),
+`/status/reboot` is just another empty file route, `/api/reboot` exists but
+answers 400 to a bare GET. `/tools` has no reboot form.
