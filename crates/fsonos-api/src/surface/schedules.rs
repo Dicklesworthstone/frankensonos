@@ -1468,6 +1468,10 @@ impl Surface {
         req: &ScheduleRequest,
     ) -> Result<ScheduleDto, Failure> {
         self.authorize_write(client, "add_schedule")?;
+        let _configuration = self
+            .dj_configuration_gate
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let action = req.action()?;
         self.authorize_write(client, action_tool(&action))?;
         if matches!(

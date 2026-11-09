@@ -465,7 +465,7 @@ fn steer_set(
 
 /// `constraints` with every entry trimmed (periods also lowercased, `-` and
 /// spaces as `_`), or the first value the DJ can't honor.
-fn checked(c: &SteerConstraints) -> Result<SteerConstraints, Failure> {
+pub(crate) fn checked(c: &SteerConstraints) -> Result<SteerConstraints, Failure> {
     if !(-2..=2).contains(&c.energy_bias) {
         return Err(Failure::invalid(format!(
             "energy_bias {} is outside -2..=2",
@@ -528,7 +528,7 @@ fn checked(c: &SteerConstraints) -> Result<SteerConstraints, Failure> {
     })
 }
 
-fn steer_list(
+pub(crate) fn steer_list(
     field: &str,
     items: &[String],
     fold: impl Fn(&str) -> String,

@@ -904,6 +904,10 @@ impl Surface {
     ) -> Result<SceneDto, Failure> {
         let tool = "save_scene";
         self.authorize_logged(client, tool)?;
+        let _configuration = self
+            .dj_configuration_gate
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A bad name fails before the speakers are read.
         let length = name.trim().chars().count();
         if length == 0 || length > scenes::MAX_NAME {
@@ -932,6 +936,10 @@ impl Surface {
     ) -> Result<SceneDto, Failure> {
         let tool = "save_scene";
         self.authorize_logged(client, tool)?;
+        let _configuration = self
+            .dj_configuration_gate
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let length = name.trim().chars().count();
         if length == 0 || length > scenes::MAX_NAME {
             return Err(scene_failure(SceneError::BadName));

@@ -144,7 +144,7 @@ impl<T: Transport + ?Sized> Watch<'_, T> {
             TransportState::Paused => Err(Interrupted::LeaveAlone(
                 "announcement was paused; cancellation left the newer intent alone".into(),
             )),
-            _ => Err(Interrupted::LeaveAlone(
+            TransportState::Unknown => Err(Interrupted::LeaveAlone(
                 "announcement transport is unknown; cancellation left playback alone".into(),
             )),
         }

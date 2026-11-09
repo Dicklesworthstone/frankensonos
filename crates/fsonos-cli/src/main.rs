@@ -1782,7 +1782,7 @@ mod tests {
                 Command::Say(args) => args.at.background,
                 Command::Chime(args) => args.at.background,
                 Command::Announce(args) => args.at.background,
-                other => panic!("unexpected command: {other:?}"),
+                _ => panic!("unexpected command"),
             };
             assert!(background);
         }

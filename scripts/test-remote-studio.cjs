@@ -26,9 +26,18 @@ test('arbitrary room punctuation cannot collide in the selection key', () => {
   assert.equal(studio.choose([zone('S2', '<b>Den</b>')], null), '["S2","<b>Den</b>"]');
 });
 test('native music capabilities land in Music and DJ, not a settings pile', () => {
-  for (const label of ['Music library', 'DJ session', 'DJ steering', 'DJ direction and explanations', 'DJ preferences', 'Play a link or stream', 'Spotify connection', 'Library sync']) {
+  for (const label of ['Music library', 'DJ session', 'DJ steering', 'DJ direction and explanations', 'DJ preferences', 'Reusable DJ moods and daily programs', 'Play a link or stream', 'Spotify connection', 'Library sync']) {
     assert.equal(studio.identify(node(label)).workspace, 'music', label);
   }
+});
+test('reusable configuration has its own discoverable tool rather than sharing the unknown-panel identity', () => {
+  const configuration = studio.identify(node('Reusable DJ moods and daily programs'));
+  assert.equal(configuration.id, 'dj-configuration');
+  assert.equal(configuration.workspace, 'music');
+  for (const query of ['daily program', 'reusable mood', 'factory defaults', 'overnight']) {
+    assert.ok(studio.search(query, [configuration]).some(tool => tool.id === 'dj-configuration'), query);
+  }
+  assert.notEqual(studio.identify(node('New native capability')).id, configuration.id);
 });
 test('grouping, sound, routines and recovery have deterministic destinations', () => {
   for (const [label, expected] of [['Room grouping', 'house'], ['Copy speaker sound', 'house'], ['Speaker sound', 'house'], ['Play mode', 'house'], ['Fades', 'routines'], ['Scenes', 'routines'], ['Sleep timers', 'routines'], ['Scheduled routines', 'routines'], ['Announcements', 'routines'], ['Action history', 'activity']]) {

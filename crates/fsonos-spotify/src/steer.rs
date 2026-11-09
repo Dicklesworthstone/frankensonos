@@ -28,6 +28,8 @@ use crate::classical::{Period, composer_matches, has_phrase, normalize};
 use crate::library::split_artists;
 use crate::works::Work;
 
+pub mod config;
+
 /// Hard filters (and one nudge) on what the DJ may pick. Every field is
 /// optional; the default constrains nothing.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

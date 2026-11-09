@@ -92,11 +92,13 @@ pub enum ErrorCode {
     /// A write may have taken effect: the speaker's reply was lost, or the
     /// read-back after it disagrees. It was not sent again.
     OutcomeUncertain,
+    /// The stored configuration changed after the caller read it.
+    ConfigChanged,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -126,6 +128,7 @@ impl ErrorCode {
         Self::QueueChanged,
         Self::DjPoolEmpty,
         Self::OutcomeUncertain,
+        Self::ConfigChanged,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -161,6 +164,7 @@ impl ErrorCode {
             Self::QueueChanged => "QUEUE_CHANGED",
             Self::DjPoolEmpty => "DJ_POOL_EMPTY",
             Self::OutcomeUncertain => "OUTCOME_UNCERTAIN",
+            Self::ConfigChanged => "CONFIG_CHANGED",
         }
     }
 
@@ -185,6 +189,7 @@ impl ErrorCode {
             | Self::SpotifyAuthRequired
             | Self::AmbiguousFavorite
             | Self::QueueChanged
+            | Self::ConfigChanged
             | Self::DjPoolEmpty => 409,
             Self::PolicyDenied | Self::UntrustedOrigin => 403,
             Self::UnsupportedMediaType => 415,
@@ -224,6 +229,7 @@ impl ErrorCode {
             | Self::Internal
             | Self::NotImplemented
             | Self::QueueChanged
+            | Self::ConfigChanged
             | Self::DjPoolEmpty
             | Self::OutcomeUncertain => 1,
         }
@@ -305,6 +311,9 @@ impl ErrorCode {
             }
             Self::OutcomeUncertain => {
                 "The speaker may have done it: read its state (get_queue, get_zone_state) before sending it again."
+            }
+            Self::ConfigChanged => {
+                "Read the configuration again, merge your edits, and save with its new revision; do not resend unchanged."
             }
         }
     }

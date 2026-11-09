@@ -116,7 +116,9 @@ fn fixture(policy: Policy, store: MemStore) -> (SimHandle, Arc<Surface>, Arc<Ato
                         id: Some(HouseholdId(id.clone())),
                         ..HouseholdState::default()
                     };
-                    house.apply_topology(&get_zone_group_state(t, *host)?);
+                    house.apply_topology(
+                        &get_zone_group_state(t, *host).map_err(fsonos_core::CoreError::from)?,
+                    );
                     Ok(house)
                 })
                 .collect()

@@ -371,7 +371,7 @@ impl Surface {
         match &source {
             ClipSource::Tts { text, voice } => {
                 fsonos_core::announce::clip::check_speech(text, voice.as_deref())
-                    .map_err(|e| clip_failure(&e))?
+                    .map_err(|e| clip_failure(&e))?;
             }
             ClipSource::Chime { name } => {
                 name.parse::<Chime>().map_err(|e| clip_failure(&e))?;
@@ -441,6 +441,7 @@ impl Surface {
         ))
     }
 
+    #[allow(clippy::too_many_lines)] // Keep admission, delivery and completion in execution order.
     fn deliver_announcement(
         &self,
         client: &Client,
@@ -841,7 +842,10 @@ mod tests {
         first.rooms[0].name = "Other household".into();
         let houses = [first, house];
         let targets = admitted_targets(&houses, &[(1, id.clone())]).unwrap();
-        assert!(std::ptr::eq(targets[0].household, &houses[1]));
+        assert!(std::ptr::eq(
+            targets[0].household,
+            std::ptr::from_ref(&houses[1])
+        ));
         assert_eq!(targets[0].room.name, "Kitchen");
         assert_eq!(targets[0].player.id, id);
         assert!(admitted_targets(&houses, &[(2, other)]).is_err());

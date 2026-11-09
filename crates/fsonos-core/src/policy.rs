@@ -127,6 +127,7 @@ pub const CLASSES: [(&str, &[&str]); 10] = [
             "dj_steer",
             "dj_feedback",
             "dj_prefer",
+            "dj_configure",
             "dj_sync",
         ],
     ),

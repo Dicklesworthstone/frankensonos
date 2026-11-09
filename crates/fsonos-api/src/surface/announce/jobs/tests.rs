@@ -114,7 +114,7 @@ fn a_late_cancellation_neither_changes_the_terminal_receipt_nor_sets_the_token()
 fn cancellation_that_cannot_restore_remains_a_failed_job_with_its_details() {
     let surface = surface(Policy::default());
     let job = insert(&surface, &Client::McpStdio, 10);
-    job.control.cancel();
+    assert!(job.control.cancel());
     job.finish(&Ok(report("cancelled", false)), 20);
     let status = job.view();
     assert_eq!(status.phase, AnnouncementJobPhase::Failed);

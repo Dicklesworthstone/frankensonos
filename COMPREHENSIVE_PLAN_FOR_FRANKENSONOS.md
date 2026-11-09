@@ -610,6 +610,18 @@ from a genre the DJ was built around.
   apply to every session. Agents turn language into these arguments through
   MCP `dj_steer`; the daemon never parses natural language.
 
+Reusable moods and automatic daily programs are also editable through
+`dj configuration`, HTTP `GET`/`POST /dj/configuration`, MCP
+`dj_configuration`/`dj_configure`, and the shared phone/dashboard editor.
+Reads separate owner overrides, factory definitions, and effective definitions.
+Atomic, revision-checked saves preserve every stored constraint field, retain
+file comments on no-op saves, and protect active sessions and reusable routines
+from removed or incompatible moods. The editor supports ordered overnight
+windows, default restoration, disabled programs, day/time previews, and retained
+drafts after conflicts or uncertain replies. Existing host-side `moods.toml`
+files continue to work; changes affect future picks without replacing queued
+music. See [DJ configuration](docs/DJ_CONFIGURATION.md).
+
 **Current state (2026-10-08): the genre-agnostic DJ has shipped.** It plays the
 owner's whole library in any genre, learns from their taste signals, and takes
 their standing preferences on every surface and in the daemon. What is on

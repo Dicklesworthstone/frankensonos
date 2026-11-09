@@ -1,0 +1,37 @@
+.dj-config-dialog { width: min(76rem, calc(100vw - 2rem)); max-width: none; max-height: calc(100dvh - 2rem); overflow: auto; padding: clamp(1rem, 3vw, 2rem); border: 1px solid var(--line, #394151); border-radius: 1rem; color: var(--text, #eceef5); background: var(--card, #171b26); box-sizing: border-box; }
+.dj-config-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.dj-config-heading, .dj-config-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }
+.dj-config-heading { align-items: flex-start; justify-content: space-between; }
+.dj-config-heading h2 { margin: 0; font-size: clamp(1.4rem, 3vw, 2rem); }
+.dj-config-heading p { max-width: 48rem; }
+.dj-config-actions { margin: .8rem 0; }
+.dj-config-dialog button, .dj-config-dialog input, .dj-config-dialog textarea, .dj-config-dialog select { font: inherit; }
+.dj-config-dialog button { min-height: 2.6rem; border: 1px solid var(--line, #394151); border-radius: .6rem; padding: .5rem .8rem; color: inherit; background: var(--card, #222938); cursor: pointer; }
+.dj-config-dialog button:disabled { opacity: .45; cursor: default; }
+.dj-config-dialog .primary-button { background: var(--accent, #92bdf5); color: #111721; font-weight: 650; }
+.dj-config-dialog :is(input:not([type=checkbox]), textarea, select) { display: block; width: 100%; min-width: 0; min-height: 2.6rem; border: 1px solid var(--line, #394151); border-radius: .5rem; margin-top: .35rem; padding: .5rem; color: inherit; background: var(--bg, #10151e); box-sizing: border-box; }
+.dj-config-dialog input[type=checkbox] { width: 1.1rem; height: 1.1rem; accent-color: var(--accent, #92bdf5); }
+.dj-config-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.6rem; margin: 1rem 0; }
+.dj-config-columns > section { min-width: 0; }
+.dj-config-columns h3 { margin: 1.2rem 0 .8rem; }
+.dj-config-dialog label { display: block; font-size: .9rem; }
+.dj-config-create { display: flex; align-items: end; gap: .5rem; margin: .8rem 0; }
+.dj-config-create label { flex: 1; min-width: 0; }
+.dj-config-note, .dj-config-status { font-size: .88rem; line-height: 1.5; overflow-wrap: anywhere; }
+.dj-config-status { border-left: 3px solid var(--accent, #92bdf5); padding-left: .7rem; }
+.dj-config-status:empty { display: none; }
+.dj-config-extra { display: grid; gap: .4rem; margin-top: .8rem; }
+.dj-config-dialog details { margin: .8rem 0; }
+.dj-config-dialog summary { cursor: pointer; line-height: 1.5; }
+.dj-config-program { border: 1px solid var(--line, #394151); border-radius: .65rem; padding: .7rem; margin: .8rem 0; min-width: 0; }
+.dj-config-program legend { padding: 0 .3rem; font-weight: 650; }
+.dj-config-days { display: flex; flex-wrap: wrap; gap: .5rem .7rem; }
+.dj-config-days label { display: flex; align-items: center; gap: .2rem; font-size: .75rem; }
+.dj-config-times { display: grid; grid-template-columns: repeat(auto-fit, minmax(6rem, 1fr)); gap: .6rem; margin: .7rem 0; }
+.dj-config-json { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 25rem; overflow: auto; padding: .8rem; border-radius: .5rem; background: var(--bg, #10151e); font: .78rem/1.55 ui-monospace, monospace; }
+.dj-config-review { margin: 1rem 0; padding: 1rem; border: 2px solid var(--accent, #92bdf5); border-radius: .7rem; }
+.dj-config-review:focus { outline-offset: .3rem; }
+.dj-config-program-result { font-weight: 650; }
+.dj-config-dialog .dj-direction-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 760px) { .dj-config-columns { grid-template-columns: minmax(0, 1fr); } .dj-config-dialog { width: calc(100vw - 1rem); max-height: calc(100dvh - 1rem); padding: 1rem; } }
+@media (max-width: 420px) { .dj-config-create { align-items: stretch; flex-direction: column; } .dj-config-dialog .dj-direction-grid { grid-template-columns: minmax(0, 1fr); } }
