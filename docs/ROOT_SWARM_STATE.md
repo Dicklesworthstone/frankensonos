@@ -3255,3 +3255,12 @@ Control matrix as it stands:
 | ASF GUID + size 0 | dies 14 s | survives |
 | valid WAV 108 B | dies 3 s | survives |
 | valid WAV 60 044 B | dies 3 s | survives |
+
+**Pending discriminator (queued, not yet run):** `:8090` on css serves the
+same WAV *close-delimited* (HTTP/1.0, no `Content-Length`, drip-fed). If that
+survives on `.135`, the S2 bug is the fixed-length/finite-file path rather
+than decoding — which is the shape that tends to be steerable — and the next
+test would be length arithmetic (Content-Length vs actual bytes, chunked vs
+not). The run was lost to unit flapping: every file left in the transport
+makes the daemon retry, so it dies again within seconds and the next test
+lands on a down unit.
