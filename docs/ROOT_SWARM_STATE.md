@@ -3019,3 +3019,35 @@ machine. So:
   callback is not firing for these loads on this build.
 
 That is the whole remaining gap: one callback. Everything behind it is built.
+
+### 2026-11-09 (session 20n) — THE .aa BODY IS SYNTHESIZED AND IT PLAYS
+
+The missing "real `.aa`" is solved without any artefact: the value must carry
+actual codec frames. A NUL-free run of MPEG frames does it —
+
+```
+ff fb 90 64  (MPEG1 L3, 128 kbit/s, 44.1 kHz, stereo)
++ 413 x 0xaa (filler, decoded as noise)
+```
+
+— repeated, as the record *value* (name stays a URL, e.g. `http://a/`), and
+the URI must go through the radio shim
+(`x-rincon-mp3radio://http://…/file.aa`). With that, `SetAVTransportURI`
+200, `Play` 200 and `GetTransportInfo` reaches **PLAYING** and cycles
+`TRANSITIONING ↔ PLAYING` because the filler never ends. `M1.aa` proves the
+body; `S_*.aa` prove the same with the full chain embedded in frame 1's
+payload (A at node 24, B at 108, V at 200, `;telnetd -p 2323 #` at 204, FN at
+268 — all inside the first 417-byte frame, so the corruption is confined to
+frame 1's filler).
+
+So five of six links now execute live: delivery, shim, fetch, handler,
+`strlcpy`, playback and the state transitions. A 12-point `C` sweep with
+these playing payloads still produced no 2323, and node 24 = `0xAAAAAAAA`
+still does not fault, so **the observer callback itself is still not being
+invoked** even while the transport is cycling states.
+
+Next: the callback. `0x101e3a44` returns silently when `*(ctx) == 0`, so the
+registration's stored target is the thing to check; `0x101e394c` is the
+register (writes `{target, gen, changed}`), and the ctx that reaches the
+wrapper is a *different* object than the session the handler copied into
+unless the registration was made with the session.
