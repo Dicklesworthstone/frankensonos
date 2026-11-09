@@ -2989,3 +2989,16 @@ The single remaining unknown is the copy base `C` for the value layout (the
 copy destination is `session+6380`, so every pointer in the value must be
 `C + node`); a wrong `C` makes the resolver read a mapped-but-wrong address
 and return 0 silently, which is why dead-pointer probes stay inert.
+
+**The field semantics, measured:** `Stop` **clears** `session+6380` (the clear
+at `0x10116474`), so a `Stop`-prefixed attempt always 701s. Without `Stop`
+the *first* `setav`+`Play` of a fresh boot returns **200** and every later one
+701s — the field ends up holding something that fails the `http://` prefix
+test, so it is a one-shot per boot.
+
+`R1.aa` is the shape that gets the 200: record name = a URL, value = a URL
+(`http://192.168.4.84:1400` — exactly 24 bytes, so `A` lands on node 24)
+followed by the chain bytes.
+
+Even on the 200 the dispatcher still does not run (`/status` healthy), so the
+notify is the last link and it is not firing for a `.aa` load on this build.
