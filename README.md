@@ -86,7 +86,7 @@ can drive:
 | **DJ** | `dj start` with optional mood, artists, genres, decades or other steering constraints in one request, `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords (which also match genres), work length or energy, and for classical music by composers and periods, any of them left out too (`--not-decade 80s`, `--not-genre pop`), for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj rehearse` plans the set it would play from any hour, with each pick's reasons and how varied each hour is, without playing anything; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays, or `--from dinner.toml` writes one out (a favorite, a [saved Sonos playlist](docs/SONOS_PLAYLIST_SCENES.md), a stream, a Spotify link or the DJ with a mood and full direction per group). Native playlist scenes pin their household and SQ: id, load current saved contents, support silent loading, and can run as scheduled Apply scene routines. A captured DJ retains its added filters and remaining lifetime; [reusable directions](docs/DJ_DIRECTIONS.md) restart that lifetime on recall. A captured normal queue remembers its selected occurrence, position and known shuffle/repeat mode; [recall requires that original queue to remain unchanged](docs/SCENE_QUEUES.md). `scene apply dinner` sends only the steps the house needs, `--fade 20s` ramps the volumes there, and `fsonos undo` attempts to restore the prior state |
 | **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright` (the mood lasts until the time-of-day program changes, then the program takes over), or use the full DJ direction flags, such as `--genre jazz --artist 'Miles Davis' --for 2h`, to reapply those settings on each run; `--automatic` clears prior steering. Also schedule a pause, a volume, a scene (ramped over the policy's fade), or a [spoken reminder or chime](docs/SCHEDULED_ANNOUNCEMENTS.md), at times or after delays; runs with the rights of whoever added it; a restarted daemon picks its sleep timers up again |
-| **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` with offline Linux speech (FrankenTTS, espeak-ng or Piper) or macOS `say`; `chime bell`; `announce --file clip.wav`. Policy-capped playback restores the previous music and speaker state |
+| **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` with offline Linux speech (FrankenTTS, espeak-ng or Piper) or macOS `say`; `chime bell`; `announce --file clip.wav`. Policy-capped playback restores the previous music and speaker state. Add `--background` to inspect or cancel an [announcement job](docs/ANNOUNCEMENT_JOBS.md) from the CLI, HTTP, MCP, phone remote, or dashboard |
 | **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so (the local CLI runs uncapped by default); `fsonos log` / `undo`, `fsonos policy show` / `check` |
 | **Setup & diagnosis** | `fsonos setup` walks a first run (including your Spotify app and sign-in); `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon, the store's free disk space and the Tailscale chain, and names the fix for each problem |
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)); editing room aliases (`fsonos rooms alias`) and checking `policy.toml` (`fsonos policy check`) are the CLI's alone, as they work on the data directory's files |
@@ -247,6 +247,16 @@ must be 16-bit PCM, at most 16 MiB and five minutes; all clips use the same
 validated media listener, volume caps and restoration. Announcement playback
 over MCP requires `fsonos serve`; standalone `fsonos mcp` has no media listener.
 
+Add `--background` to return a daemon job ID immediately after admission:
+`fsonos say "Dinner is ready" --rooms Kitchen --background`. Use
+`fsonos announcements`, `fsonos announcements status <job-id>`, and
+`fsonos announcements cancel <job-id>` to follow or cancel it. The phone remote
+and dashboard use the same job controls. Queued cancellation avoids speaker
+writes; active cancellation checks ownership and finishes restoration before
+publishing its final receipt. Jobs retain per-household progress and partial
+restoration details. See [Announcement jobs](docs/ANNOUNCEMENT_JOBS.md) for the
+HTTP/MCP contract, permissions, and process-local retention.
+
 ## From anywhere on your tailnet
 
 The daemon is the only thing that leaves your LAN, and only onto your tailnet:
@@ -313,10 +323,12 @@ reads      list_zones · list_rooms · list_players · get_zone · get_zone_stat
            get_play_mode · recent_plays · recent_actions · get_policy · doctor
            dj_status · dj_moods · dj_rehearse · events · echo
            list_scenes · get_scene · list_sleep_timers · list_schedules · get_eq
+           list_announcements · get_announcement
 control    play · play_favorite · play_sonos_playlist · add_to_queue · play_queue · remove_from_queue · move_in_queue
            set_play_mode · pause · resume · next · previous
            seek · set_volume · mute · group · ungroup · move_playback · group_all · set_eq
-           announce · undo_last · undo_checked · preview_undo · search_and_play
+           announce · announce_start · cancel_announcement
+           undo_last · undo_checked · preview_undo · search_and_play
            fade_volume · fade_and_pause
 dj         dj_start · dj_skip · dj_stop · dj_steer · dj_feedback · dj_preferences · dj_prefer
            dj_sync · dj_sync_status

@@ -2,7 +2,9 @@
 'use strict';
 
 const AnnouncementRemote = (() => {
-  const routes = { announceAudio: ['POST', '/announce'] };
+  const routes = { announceAudio: ['POST', '/announce'], announcementStart: ['POST', '/announcements'],
+    announcementJobs: ['GET', '/announcements'], announcementJob: ['GET', '/announcements/{id}'],
+    announcementCancel: ['POST', '/announcements/{id}/cancel'] };
   const chimes = Object.freeze(['bell', 'beep', 'rise']);
   const text = (value) => typeof value === 'string' && value.trim() !== '';
   const problem = (error) => error && typeof error.message === 'string'
@@ -115,7 +117,7 @@ const AnnouncementRemote = (() => {
       if (!h || !text(h.lead) || !Array.isArray(h.rooms) || !h.rooms.length || !h.rooms.every(text)
           || !Array.isArray(h.levels) || h.levels.some((l) => !l || !text(l.room)
             || !Number.isInteger(l.volume) || l.volume < 0 || l.volume > 100)
-          || !['finished', 'deadline', 'never_started', 'failed'].includes(h.outcome)
+          || !['finished', 'deadline', 'never_started', 'failed', 'cancelled'].includes(h.outcome)
           || (h.error != null && typeof h.error !== 'string')
           || (h.not_restored != null && (!Array.isArray(h.not_restored) || !h.not_restored.every(text)))) invalid();
       const notRestored = h.not_restored || [];
@@ -124,6 +126,207 @@ const AnnouncementRemote = (() => {
         outcome: h.outcome, error: h.error || '', not_restored: [...notRestored] };
     });
     return { done: value.done, clean: value.clean, households };
+  }
+
+  const jobFinished = job => ['completed', 'cancelled', 'failed'].includes(job.phase);
+  const sameRooms = (left, right) => {
+    const expected = [...right].sort();
+    return left.length === expected.length && [...left].sort().every((room, index) => room === expected[index]);
+  };
+  const jobIdentity = job => JSON.stringify([job.id, job.kind, job.created_at, [...job.rooms].sort()]);
+
+  function jobOf(value) {
+    const invalid = () => { throw new Error('The daemon returned an unreadable announcement job. Refresh jobs before another action.'); };
+    if (!value || !/^[0-9a-f]{32}$/.test(value.id) || !text(value.done)
+        || !['speech', 'chime', 'wav'].includes(value.kind)
+        || !['queued', 'preparing', 'playing', 'restoring', 'completed', 'cancelled', 'failed'].includes(value.phase)
+        || !Array.isArray(value.rooms) || !value.rooms.length || value.rooms.length > 512
+        || !value.rooms.every(room => text(room) && room.lastIndexOf('@') > 0 && !room.endsWith('@'))
+        || new Set(value.rooms).size !== value.rooms.length
+        || !Number.isSafeInteger(value.created_at)
+        || (value.finished_at !== null && !Number.isSafeInteger(value.finished_at))
+        || typeof value.cancel_requested !== 'boolean' || typeof value.can_cancel !== 'boolean'
+        || !Array.isArray(value.progress) || value.progress.length > 512) invalid();
+    const terminal = jobFinished(value);
+    if (value.can_cancel !== (!terminal && !value.cancel_requested)
+        || terminal !== (value.finished_at !== null)) invalid();
+    const progress = value.progress.map(row => {
+      if (!row || (row.household !== null && !text(row.household)) || !text(row.lead)
+          || !Array.isArray(row.rooms) || !row.rooms.length || row.rooms.length > 512 || !row.rooms.every(text)
+          || !['queued', 'preparing', 'playing', 'restoring', 'complete'].includes(row.phase)) invalid();
+      return Object.freeze({ household: row.household, lead: row.lead, rooms: Object.freeze([...row.rooms]), phase: row.phase });
+    });
+    const result = value.result === null ? null : reportOf(value.result);
+    const error = value.error;
+    if (error !== null && (!error || !text(error.code) || !text(error.detail)
+        || (error.hint != null && typeof error.hint !== 'string'))) invalid();
+    if ((!terminal && (result || error)) || (terminal && !result && !error)
+        || (value.phase === 'completed' && (!result?.clean || error))
+        || (value.phase === 'failed' && result?.clean)) invalid();
+    // The job identity retains admitted qualified names. Core delivery pins
+    // player IDs and may report newer display names after a queued room rename.
+    if (result && result.households.reduce((count, row) => count + row.rooms.length, 0) !== value.rooms.length) invalid();
+    if (value.phase === 'cancelled' && (!value.cancel_requested || !result || error
+        || !result.households.some(row => row.outcome === 'cancelled')
+        || result.households.some(row => !['finished', 'cancelled'].includes(row.outcome) || row.error || row.not_restored.length))) invalid();
+    return Object.freeze({ id: value.id, done: value.done, kind: value.kind, rooms: Object.freeze([...value.rooms]),
+      phase: value.phase, created_at: value.created_at, finished_at: value.finished_at,
+      cancel_requested: value.cancel_requested, can_cancel: value.can_cancel, progress: Object.freeze(progress), result,
+      error: error === null ? null : Object.freeze({ code: error.code, detail: error.detail, hint: error.hint || '' }) });
+  }
+
+  function jobsOf(value) {
+    if (!Array.isArray(value) || value.length > 64) throw new Error('The announcement history is unreadable. Refresh jobs.');
+    const jobs = value.map(jobOf);
+    if (new Set(jobs.map(job => job.id)).size !== jobs.length) throw new Error('The announcement history repeats a job identity. Refresh jobs.');
+    return jobs;
+  }
+
+  function admittedJob(value, reviewed) {
+    const job = jobOf(value), kind = reviewed.body.text !== undefined ? 'speech'
+      : reviewed.body.chime !== undefined ? 'chime' : 'wav';
+    if (job.kind !== kind || !sameRooms(job.rooms, reviewed.body.rooms)) {
+      throw new Error('The returned job does not match the reviewed source and exact rooms. Its outcome is uncertain; refresh jobs.');
+    }
+    return job;
+  }
+
+  // Jobs survive their creation panel. Only visible panels observe them, with
+  // a finite read budget; cancellation is a single explicit request by job ID.
+  function jobModel({ call, changed = () => {}, completed = () => {}, setTimer = setTimeout,
+    clearTimer = clearTimeout, maxReads = 240, intervalMs = 2000 }) {
+    let disposed = false, version = 0, timer = null, reading = null, remaining = maxReads;
+    const state = { visible: false, loading: false, stale: true, jobs: [], cancelling: new Set(), uncertain: new Set(), message: '' };
+    const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
+    function stopRead() {
+      ++version;
+      if (timer !== null) clearTimer(timer);
+      timer = null; reading?.abort(); reading = null; state.loading = false;
+    }
+    function notifyFinished(before, after) {
+      if (after.some(job => jobFinished(job) && before.some(old => old.id === job.id && !jobFinished(old)))) {
+        try { Promise.resolve(completed()).catch(() => {}); } catch (_) { /* Read-only playback refresh. */ }
+      }
+    }
+    function schedule() {
+      if (disposed || !state.visible || state.loading || timer !== null || !state.jobs.some(job => !jobFinished(job))) return;
+      if (remaining <= 0) { state.message = 'Automatic job updates paused. Refresh jobs for the latest status.'; publish(); return; }
+      timer = setTimer(() => { timer = null; void refresh(false); }, intervalMs);
+    }
+    async function refresh(reset = true) {
+      if (disposed || !state.visible || state.loading || state.cancelling.size) return false;
+      if (reset) remaining = maxReads;
+      if (remaining <= 0) { schedule(); return false; }
+      stopRead(); --remaining;
+      const at = version, abort = new AbortController(); reading = abort; state.loading = true; state.message = ''; publish();
+      try {
+        const jobs = jobsOf(await call('announcementJobs', { signal: abort.signal }));
+        if (disposed || !state.visible || at !== version) return false;
+        for (const job of jobs) {
+          const previous = state.jobs.find(old => old.id === job.id);
+          if (previous && jobIdentity(previous) !== jobIdentity(job)) throw new Error('An announcement identity changed unexpectedly. Refresh jobs before acting.');
+          if (previous && ((previous.cancel_requested && !job.cancel_requested)
+              || (jobFinished(previous) && JSON.stringify(previous) !== JSON.stringify(job)))) {
+            throw new Error('A completed or cancelled announcement returned an older state. Refresh jobs before acting.');
+          }
+        }
+        const previous = state.jobs; state.jobs = jobs; state.stale = false; state.uncertain.clear();
+        notifyFinished(previous, jobs); return true;
+      } catch (error) {
+        if (!disposed && state.visible && at === version) { state.stale = true; state.message = `${problem(error)} Read jobs again; no command was repeated.`; }
+        return false;
+      } finally {
+        if (reading === abort) { reading = null; state.loading = false; publish(); if (!state.stale) schedule(); }
+      }
+    }
+    function accept(value, reviewed) {
+      const job = reviewed ? admittedJob(value, reviewed) : jobOf(value);
+      if (disposed) return job;
+      stopRead(); remaining = maxReads;
+      const previous = state.jobs.find(old => old.id === job.id);
+      if (previous && jobIdentity(previous) !== jobIdentity(job)) throw new Error('The admitted announcement reused a different job identity. Refresh jobs.');
+      const before = state.jobs;
+      state.jobs = [job, ...state.jobs.filter(old => old.id !== job.id)].slice(0, 64);
+      state.stale = false; state.message = `Accepted announcement ${job.id}. Playback and restoration continue in the daemon.`;
+      notifyFinished(before, state.jobs); publish(); schedule(); return job;
+    }
+    const canCancel = job => !disposed && state.visible && !state.stale && job?.can_cancel
+      && !state.cancelling.has(job.id) && !state.uncertain.has(job.id) && state.jobs.includes(job);
+    async function cancel(job) {
+      if (!canCancel(job)) return false;
+      stopRead(); state.cancelling.add(job.id); state.message = 'Requesting cancellation; restoration may still take time…'; publish();
+      try {
+        const receipt = jobOf(await call('announcementCancel', { params: { id: job.id }, body: {} }));
+        if (jobIdentity(receipt) !== jobIdentity(job) || (!receipt.cancel_requested && !jobFinished(receipt))) {
+          throw new Error('The cancellation receipt did not confirm this exact job. Refresh jobs.');
+        }
+        if (!disposed) {
+          const before = state.jobs;
+          state.jobs = state.jobs.map(old => old.id === job.id ? receipt : old);
+          state.uncertain.delete(job.id); state.message = receipt.done;
+          notifyFinished(before, state.jobs);
+        }
+        return true;
+      } catch (error) {
+        if (!disposed) { state.uncertain.add(job.id); state.message = `${problem(error)} The cancellation request was not repeated. Refresh jobs to check its outcome.`; }
+        return false;
+      } finally {
+        state.cancelling.delete(job.id); publish(); schedule();
+      }
+    }
+    function setVisible(visible) {
+      if (disposed || state.visible === visible) return Promise.resolve(false);
+      state.visible = visible;
+      if (!visible) { stopRead(); state.stale = true; publish(); return Promise.resolve(false); }
+      return refresh();
+    }
+    return { state, refresh, accept, canCancel, cancel, setVisible,
+      dispose() { stopRead(); disposed = true; state.visible = false; state.stale = true; } };
+  }
+
+  function jobPanel({ call, el, completed, document: doc = document }) {
+    const heading = el('h3', { text: 'Announcement jobs' }), message = el('p', { role: 'status', 'aria-live': 'polite' });
+    const list = el('div', { class: 'announcement-job-list' });
+    const refresh = el('button', { type: 'button', text: 'Refresh jobs', onclick: () => { void control.refresh(); } });
+    const node = el('section', { class: 'announcement-jobs' }, heading,
+      el('p', { text: 'Queued and active announcements can be cancelled here. The daemon finishes safe restoration before marking a job complete. Recent receipts expire when the daemon restarts.' }),
+      refresh, message, list);
+    const control = jobModel({ call, completed, changed: render });
+    function render(state) {
+      const focus = doc.activeElement?.getAttribute?.('data-announcement-job');
+      refresh.disabled = state.loading || !!state.cancelling.size || !state.visible;
+      message.textContent = state.loading ? 'Reading announcement jobs…' : state.message;
+      list.replaceChildren();
+      for (const job of state.jobs) {
+        const labels = { queued: 'Waiting', preparing: 'Preparing', playing: 'Playing', restoring: 'Restoring playback',
+          completed: 'Finished and restored', cancelled: 'Cancelled', failed: 'Needs attention' };
+        const card = el('section', { class: 'announcement-job' }, el('h4', { text: `${labels[job.phase]} · ${job.kind}` }),
+          el('p', { text: job.rooms.join(' · ') }), el('p', { class: 'empty', text: `Job ${job.id}` }));
+        if (job.cancel_requested && !jobFinished(job)) card.append(el('p', { text: 'Cancellation requested. Waiting for playback and restoration to finish.' }));
+        for (const row of job.progress) card.append(el('p', { text: `${row.rooms.join(' + ')}: ${row.phase}` }));
+        if (job.result) {
+          card.append(el('p', { text: job.result.done }));
+          for (const row of job.result.households) {
+            if (row.error) card.append(el('p', { text: `${row.rooms.join(' + ')}: ${row.error}` }));
+            if (row.not_restored.length) card.append(el('p', { text: `Not restored: ${row.not_restored.join('; ')}` }));
+          }
+        }
+        if (job.error) card.append(el('p', { text: `${job.error.detail} ${job.error.hint}`.trim() }));
+        if (!jobFinished(job)) {
+          const cancel = el('button', { type: 'button', text: state.cancelling.has(job.id) ? 'Requesting cancellation…' : 'Cancel this announcement',
+            'data-announcement-job': job.id, onclick: () => { void control.cancel(job); } });
+          cancel.disabled = !control.canCancel(job); card.append(cancel);
+        }
+        if (state.uncertain.has(job.id)) card.append(el('p', { text: 'Cancellation outcome is unknown. Refresh jobs before another attempt.' }));
+        list.append(card);
+      }
+      if (!state.jobs.length) list.append(el('p', { text: state.stale ? 'Read jobs to see active announcements and recent results.' : 'No retained announcement jobs.' }));
+      if (focus) {
+        const button = list.querySelector?.(`[data-announcement-job="${focus}"]`);
+        if (button && !button.disabled) button.focus({ preventScroll: true });
+      }
+    }
+    render(control.state); return { node, control };
   }
 
   function proposal(state) {
@@ -150,7 +353,7 @@ const AnnouncementRemote = (() => {
     return Object.freeze({ body: Object.freeze(body), rooms: Object.freeze(rooms), label });
   }
 
-  function model({ call, changed = () => {}, completed = () => {}, readFile = readLocalFile }) {
+  function model({ call, changed = () => {}, completed = () => {}, readFile = readLocalFile, jobs = null }) {
     let disposed = false, epoch = 0, reading = null;
     const state = { open: false, rooms: [], selected: new Set(), source: 'speech', words: '', voice: '',
       chime: 'bell', volume: '35', loading: false, writing: false, phase: '', needsRefresh: false,
@@ -211,6 +414,7 @@ const AnnouncementRemote = (() => {
     async function refresh() {
       if (disposed) return false;
       state.open = true;
+      if (jobs) void jobs.setVisible(true);
       if (state.writing) { publish(); return false; }
       stopFileRead();
       const version = ++epoch;
@@ -295,10 +499,17 @@ const AnnouncementRemote = (() => {
         state.pending = null;
         state.wav = null;
         state.phase = 'announcing';
-        state.message = 'The daemon is preparing, playing, and restoring. Do not send the announcement again.';
+        state.message = jobs ? 'Starting the announcement job. Do not send it again.'
+          : 'The daemon is preparing, playing, and restoring. Do not send the announcement again.';
         sent = true;
         publish();
-        const report = reportOf(await call('announceAudio', { body: pending.body }));
+        const value = await call(jobs ? 'announcementStart' : 'announceAudio', { body: pending.body });
+        if (jobs) {
+          const job = jobs.accept(value, pending);
+          if (!disposed) state.message = `Announcement ${job.id} was admitted. Follow playback and restoration in Announcement jobs below.`;
+          return true;
+        }
+        const report = reportOf(value);
         if (!disposed) {
           state.report = report;
           state.message = report.clean ? 'Announcement finished; the daemon reports playback restored.'
@@ -323,6 +534,7 @@ const AnnouncementRemote = (() => {
 
     function close() {
       state.open = false;
+      if (jobs) void jobs.setVisible(false);
       stopFileRead();
       state.wav = null;
       ++epoch;
@@ -331,8 +543,8 @@ const AnnouncementRemote = (() => {
       publish();
     }
 
-    return { state, refresh, field, select, review, cancel, confirm, close, chooseWav, clearWav,
-      dispose() { disposed = true; close(); } };
+    return { state, jobs, refresh, field, select, review, cancel, confirm, close, chooseWav, clearWav,
+      dispose() { disposed = true; close(); jobs?.dispose(); } };
   }
 
   function panel({ call, el, completed }) {
@@ -341,7 +553,8 @@ const AnnouncementRemote = (() => {
     const node = el('section', { class: 'announcements' }, details);
     const body = el('div', { class: 'announcement-body' });
     details.append(body);
-    const control = model({ call, completed, changed: render });
+    const jobs = jobPanel({ call, el, completed });
+    const control = model({ call, completed, jobs: jobs.control, changed: render });
     const button = (label, action) => el('button', { type: 'button', text: label, onclick: action });
     const refresh = button('Refresh rooms', () => control.refresh());
     const message = el('p', { role: 'status', 'aria-live': 'polite' });
@@ -373,7 +586,7 @@ const AnnouncementRemote = (() => {
     const report = el('div', { class: 'announcement-report' });
     body.append(el('p', { text: 'Choose the rooms explicitly. Speech is generated by the daemon’s local engine, not this browser.' }),
       refresh, message, rooms, el('label', {}, 'Source', source), speech, chimeBox, wavBox,
-      el('label', {}, 'Requested volume (house caps still apply)', volume), review, consent, report);
+      el('label', {}, 'Requested volume (house caps still apply)', volume), review, consent, report, jobs.node);
     let shownRooms = null, shownPending = null, shownReport = null;
     const selectors = new Map();
 
@@ -418,7 +631,7 @@ const AnnouncementRemote = (() => {
         consent.replaceChildren();
         if (state.pending) {
           const pending = state.pending;
-          const cancel = button('Cancel announcement', () => control.cancel());
+          const cancel = button('Cancel review', () => control.cancel());
           consent.append(el('div', { class: 'announcement-review', role: 'group', 'aria-label': 'Confirm announcement' },
             el('p', { text: pending.label }),
             el('p', { text: `To: ${pending.rooms.map((r) => r.label).join(', ')}. Requested volume: ${pending.body.volume}.` }),
@@ -446,11 +659,14 @@ const AnnouncementRemote = (() => {
       }
     }
     details.addEventListener('toggle', () => { if (details.open) control.refresh(); else control.close(); });
+    const visibility = () => { void jobs.control.setVisible(details.open && !document.hidden); };
+    document.addEventListener('visibilitychange', visibility);
     render(control.state);
-    return { node, dispose: control.dispose };
+    return { node, dispose() { document.removeEventListener('visibilitychange', visibility); control.dispose(); } };
   }
 
-  return { routes, model, panel, proposal, roomsOf, reportOf, chimes, wavInfo, wavBase64, readLocalFile, MAX_WAV_BYTES };
+  return { routes, model, panel, proposal, roomsOf, reportOf, jobOf, jobsOf, admittedJob, jobFinished, jobModel, jobPanel,
+    chimes, wavInfo, wavBase64, readLocalFile, MAX_WAV_BYTES };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = AnnouncementRemote;

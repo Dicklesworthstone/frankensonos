@@ -22,7 +22,7 @@ const DashboardAnnouncements = (() => {
     }
     return report;
   }
-  function model({ call, controller, changed = () => {}, now = () => performance.now(), readFile = A.readLocalFile }) {
+  function model({ call, controller, changed = () => {}, now = () => performance.now(), readFile = A.readLocalFile, jobs = null }) {
     let version = 0, active = true, disposed = false, reading = null, fileRead = null, readAt = 0;
     const state = { open: false, target: '', scope: '', rooms: [], selected: new Set(), stale: true,
       source: 'speech', words: '', voice: '', chime: 'bell', volume: '35', wav: null, fileLoading: false,
@@ -150,14 +150,20 @@ const DashboardAnnouncements = (() => {
             fail('A selected room or group changed. Read rooms and review again.');
           }
           state.wav = null; state.report = null; state.phase = 'announcing';
-          state.message = 'The daemon is preparing, playing, and restoring. This can take several minutes. Do not send the announcement again.'; publish();
+          state.message = jobs ? 'Starting the announcement job. Do not send it again.'
+            : 'The daemon is preparing, playing, and restoring. This can take several minutes. Do not send the announcement again.'; publish();
           valid(); reading = null;
-          receipt = reportOf(await send('/announce', reviewed.body), reviewed);
+          const value = await send(jobs ? '/announcements' : '/announce', reviewed.body);
+          if (jobs) {
+            receipt = jobs.accept(value, reviewed);
+            return { done: `Announcement ${receipt.id} was admitted. Follow playback and restoration in Announcement jobs.`, changed: true };
+          }
+          receipt = reportOf(value, reviewed);
           return { done: receipt.clean ? 'Announcement finished; the daemon reports playback restored.'
             : 'The announcement did not complete cleanly. Check playback and restoration details.', changed: true };
         }, { wholeHouse: true });
         if (!disposed) {
-          if (ok) state.report = receipt;
+          if (ok && !jobs) state.report = receipt;
           state.message = controller.state.message || 'No announcement was sent. Refresh playback and read rooms again.';
         }
         return ok;
@@ -165,31 +171,48 @@ const DashboardAnnouncements = (() => {
         state.writing = false; state.phase = ''; retire(); publish();
       }
     }
-    return { state, read, canRead, editable, edit, select, chooseWav, clearWav, canReview, review, canApply, apply, observe,
+    return { state, jobs, read, canRead, editable, edit, select, chooseWav, clearWav, canReview, review, canApply, apply, observe,
       cancelReview() { if (state.writing) return false; ++version; state.pending = null; publish(); return true; },
       open() {
         if (disposed || !active) return Promise.resolve(false);
         state.open = true;
+        if (jobs) void jobs.setVisible(true);
         if (state.writing) { publish(); return Promise.resolve(false); }
         retire(undefined, true); state.target = controller.state.selected; state.scope = scope();
         if (!canRead()) { state.message = 'Refresh playback, then read rooms before announcing. The last received result remains below.'; publish(); return Promise.resolve(false); }
         publish(); return read();
       },
-      close() { state.open = false; retire(undefined, true); publish(); },
-      suspend() { active = false; state.open = false; retire(undefined, true); publish(); },
+      close() { state.open = false; if (jobs) void jobs.setVisible(false); retire(undefined, true); publish(); },
+      suspend() { active = false; state.open = false; if (jobs) void jobs.setVisible(false); retire(undefined, true); publish(); },
       resume() { if (!disposed) { active = true; observe(); } },
-      dispose() { disposed = true; active = false; state.open = false; retire(undefined, true); },
+      dispose() { disposed = true; active = false; state.open = false; jobs?.dispose(); retire(undefined, true); },
     };
   }
 
-  function panel({ call, controller, document: doc = document, now, readFile }) {
+  function panel({ call, controller, document: doc = document, now, readFile, trackJobs = true }) {
     const $ = id => doc.getElementById(id), dialog = $('announcements-dialog'), trigger = $('open-announcements'), preview = $('announcement-preview');
     let opener = null, reviewFocus = null, shown = null, roomsShown = null, reportShown = null;
     const checks = new Map();
     const element = (tag, text) => { const node = doc.createElement(tag); if (text !== undefined) node.textContent = text; return node; };
-    const control = model({ call, controller, now, readFile, changed: render });
+    const el = (tag, attrs = {}, ...children) => {
+      const node = doc.createElement(tag);
+      for (const [name, value] of Object.entries(attrs)) {
+        if (name === 'text') node.textContent = value;
+        else if (name.startsWith('on')) node.addEventListener(name.slice(2), value);
+        else node.setAttribute(name, value);
+      }
+      node.append(...children); return node;
+    };
+    const jobs = trackJobs ? A.jobPanel({ el, document: doc, completed: () => controller.refresh(),
+      call: (name, { params, body, signal } = {}) => {
+        const [method, template] = A.routes[name];
+        const path = template.replace(/\{(\w+)\}/g, (_, key) => encodeURIComponent(params[key]));
+        return call(path, method === 'GET' ? undefined : body || {}, { signal });
+      } }) : null;
+    if (jobs) dialog.append(jobs.node);
+    const control = model({ call, controller, now, readFile, jobs: jobs?.control, changed: render });
     function render(s) {
-      trigger.disabled = !controller.selected() || !controller.state.active || (controller.state.busy && !s.writing);
+      trigger.disabled = !controller.state.active;
       trigger.setAttribute('aria-expanded', String(s.open));
       if (s.open && !dialog.open) dialog.showModal();
       else if (!s.open && dialog.open) { dialog.close(); if (opener && !opener.disabled) opener.focus(); }
@@ -237,7 +260,7 @@ const DashboardAnnouncements = (() => {
           $('announcement-result-detail').append(element('p', s.report.done));
           for (const h of s.report.households) {
             const section = element('section');
-            section.append(element('h4', h.rooms.join(' + ') + ' · ' + ({ finished: 'Finished', deadline: 'Playback timed out', never_started: 'Playback did not start', failed: 'Playback failed' })[h.outcome]), element('p', 'Lead room: ' + h.lead),
+            section.append(element('h4', h.rooms.join(' + ') + ' · ' + ({ finished: 'Finished', deadline: 'Playback timed out', never_started: 'Playback did not start', failed: 'Playback failed', cancelled: 'Cancelled' })[h.outcome]), element('p', 'Lead room: ' + h.lead),
               element('p', 'Applied levels: ' + (h.levels.map(level => `${level.room}: ${level.volume}`).join(' · ') || 'not reported')));
             if (h.error) section.append(element('p', h.error));
             if (h.not_restored.length) section.append(element('p', 'Not restored: ' + h.not_restored.join('; ')));
