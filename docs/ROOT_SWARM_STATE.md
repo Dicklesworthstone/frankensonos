@@ -3226,3 +3226,11 @@ Scope of the primitive today: **`.135` only** (S2). `.84` survives the same
 16-byte file. It is a repeatable, zero-cost daemon kill; what it is *not* yet
 is a write — that needs the sniffer/handler read on the S2, where the size and
 short-read paths are trusted.
+
+**Next discriminator staged:** a 4 096-byte all-`A` file (`A_big.bin`). If it
+*survives*, the `.135` crash is the *short read* (16 bytes into a fixed
+buffer) and the parser can be steered with a real header plus controlled
+fields; if it also dies, the sniffer is failing on unrecognised content
+itself and the steer has to be a real container of some family (ASF/WAV/MP3
+headers are the candidates, WAV and ASF being the ones nothing has ever
+fuzzed).
