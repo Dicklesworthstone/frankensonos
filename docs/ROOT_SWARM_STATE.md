@@ -3070,3 +3070,15 @@ Next hop is therefore `0x1011be20` / `0x102af290`: confirm whether the
 stream-creator re-registers `+30000`, and if it does not, find the notify
 that carries `+6352` and whether our payload's stream-creation path reaches
 it at all.
+
+**The notify is reached from `0x1010e858`** (the state-change emitter in the
+0x1010e- session code): `r3 = session+30000` (the cell), `r4 = session+21484`,
+`r5 = 23`, `r7 = 30` → `0x101e3d60` → driver → `0x101e3a44` → dispatcher.
+So the *cell* is the ctx, `*(cell)` is the target, and the callback is a
+no-op whenever that target is null. The call immediately preceding the
+registration (`0x1032da38`) does not set `+6352`, so within one ctor the
+target is **always null** — the cell can only be useful if a *later* ctor
+runs while `+6352` is already populated, i.e. once a stream has existed.
+
+Tried and inert: stream PLAYING then payload (`SetAV 200`, `Play 200`), then
+`Stop` to force the transition — no fault with a dead A, no 2323.
