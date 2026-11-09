@@ -2830,3 +2830,33 @@ Artifacts: `Xd.aa` (dead-pointer discriminator), `B_*.aa` (dual-node A, node
 24 + 6404), `C_*.aa` (cell = C variant), `jargv.aa` (argv encoding),
 `jrb.aa` (reboot-gadget FN). The reboot oracle is the `GetZoneGroupState`
 per-boot counter; the playback blip is not an oracle.
+
+### 2026-11-09 (session 20i) — the unit cannot reach the Mac; every LAN-served result was fetch-less
+
+A byte-counting server (8905) logged **zero connections** for both the shim
+and the bare form, while `Play` answered 200. The unit cannot reach the Mac
+at all — it also fails to ICMP it (`/tools` ping: 3 sent, 3 lost). So all
+Mac-served "successes" in 20e-20h were queued, never fetched, and their
+"TRANSITIONING" is meaningless.
+
+Serving from **css** the fetch is real (journal: `GET /Xd.aa 200`) and the
+answer is `Play 500`. Re-running the `0xDEADBEEF` discriminator that way is
+still inert — health 200 throughout — so "the dispatcher is never called"
+holds, now with the fetch actually proven.
+
+Corrected picture:
+- payload host **must be css** (reachable); the Mac is not;
+- from css the file *is* fetched, `Play` is 500, nothing dispatches;
+- `x-rincon-mp3radio://http://…` never fetches even from css — the radio
+  shim is cosmetic for fetch purposes;
+- the Mac-side servers (8901/8902/8903/8905) are only useful if the macOS
+  firewall is opened for the unit.
+
+Also falsified while chasing the load: `protocolInfo` alternatives
+(`audio/x-sonos-aa`, `audio/x-aa`, `application/octet-stream`, `*:*`), DIDL
+`duration`/`size`/`title` hints, and paced 256-byte delivery — all identical
+`TRANSITIONING`.
+
+`/tools` host validation: only `[A-Za-z0-9.-]`, but a leading `-` passes, so
+ping options are reachable (`-c1` → 200); spaces and every metacharacter are
+400.
