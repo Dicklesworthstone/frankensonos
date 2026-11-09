@@ -3331,3 +3331,16 @@ Consequence for the fleet: because the death is on *every* successful setav,
 stored URI, dies again. `.135` is therefore unusable for anything until this
 handler is fixed or avoided, and a `Stop` has to be issued in the window where
 it is up. `.84` is healthy and lives through the same calls.
+
+**Empty `CurrentURI` also kills it** (poll-then-fire, `setav 200`, down at
+11 s). So the S2 death is not carried by the URI at all — an empty value is
+enough. Caveat to keep honest: `.135` now always has a stored URI armed and
+re-arms it on every daemon start, so "killed by our call" and "killed by the
+re-armed stored URI" cannot be separated here without a boot that starts with
+no URI at all, which the settle cannot provide (`Stop` does not clear it).
+
+Either way the practical statement is firm: **on `.135` any
+`SetAVTransportURI` returns 200 and the daemon is dead within 3-15 s**, empty
+URI included, and the unit crash-loops itself thereafter. The handler family
+to read is the `0x10104f38` equivalent; an unconditional death on an empty
+input points at the entry/lock state rather than at any parse of the value.
