@@ -551,6 +551,7 @@ impl AnnounceDto {
                     Ok(Ending::Finished) => ("finished", None),
                     Ok(Ending::Deadline) => ("deadline", None),
                     Ok(Ending::NeverStarted) => ("never_started", None),
+                    Ok(Ending::Cancelled) => ("cancelled", None),
                     Err(why) => ("failed", Some(why.clone())),
                 };
                 let mut not_restored: Vec<String> = h
