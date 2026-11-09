@@ -3182,3 +3182,11 @@ the post-reboot list check for `ompX` is outstanding. Two S1s left the pass
 down at one point because the fake-frame `.aa` URI re-arms on daemon restart
 (the previously documented crash-loop trap); settling with a radio URI and
 `Stop` is what clears it, and must be the last action of any payload test.
+
+**`.202` final observable (after 35+ min):** ICMP answers, **port 1400 is
+closed** — the daemon is *dead*, not hung, and nothing on the unit restarts it
+(no dropbear/2323 either, and the watchdog thread died with the family). The
+combination that killed it was a `BeginSoftwareUpdate` reboot issued from a
+daemon that had just been through the `customsd` write pass; `.84` and `.135`
+are healthy and `.84` is settled. A power-cycle is required, then one
+`ListAvailableServices` call to confirm `ompX` persisted.
