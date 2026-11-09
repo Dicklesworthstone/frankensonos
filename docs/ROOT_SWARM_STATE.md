@@ -2804,3 +2804,29 @@ reboot. Firing `jrb.aa` (FN = reboot gadget) moved it not at all.
 C is stale (heap re-seeded), and a 12-step sweep of `C ± 8 KB` (0x400 steps,
 cell = C, FN = reboot gadget) produced no reboot — the old `0x106c67dc`
 included. Calibrating C is the current task; the oracle is the counter.
+
+### 2026-11-09 (session 20h) — the dispatcher is never called; everything chain-level is moot
+
+The clean discriminator: put `0xDEADBEEF` in *both* candidate A slots (node
+24 and node 6404) and fire with the correct recipe. A dereference of that
+must fault. Result: **completely inert**, health 200 the whole time, no
+blip, no crash.
+
+Conclusion: `0x102bf778` never runs for these payloads — the failure is
+upstream of the whole chain, so C-calibration, the argv encoding and the FN
+choice cannot be tested yet. (A 16-step `C` sweep at 0x400 over ±8 KB around
+the old base was therefore swept blind and, unsurprisingly, all inert.)
+
+The remaining failure is the **load itself**: the `.aa` is fetched and
+`Play` is accepted, but the media never leaves `NETWORK`/`TRANSITIONING`,
+`Duration` stays `0:00:00`, and the state change that would drive the notify
+never happens. Note the payload bodies are *all zero* — no CELP frames at
+all — so the codec has nothing to start on. A decodable body (a genuine
+chime `.aa`) is the prerequisite for any chain work; failing that, the next
+move is to synthesise a minimal *valid codec frame* and see whether the
+stream will start, and only then re-run the `0xDEADBEEF` discriminator.
+
+Artifacts: `Xd.aa` (dead-pointer discriminator), `B_*.aa` (dual-node A, node
+24 + 6404), `C_*.aa` (cell = C variant), `jargv.aa` (argv encoding),
+`jrb.aa` (reboot-gadget FN). The reboot oracle is the `GetZoneGroupState`
+per-boot counter; the playback blip is not an oracle.
