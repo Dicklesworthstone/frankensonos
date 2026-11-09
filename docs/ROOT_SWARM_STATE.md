@@ -2955,3 +2955,26 @@ handler facts worth carrying forward: `type 2 == node metadata`, the
   gives 200 then 500 then 200 with no change on our side.
 
 All three units left settled (`Stop` 200, `/status/VERSION` 200).
+
+### 2026-11-09 (session 20m) — the type-2 handler decoded end to end: it is a **URI** handler
+
+The handler's first act is `strncasecmp(*(obj+6380), "http://", 7)`; a
+non-match returns **701** (that is the `Transition not available` every
+fire has been getting), and the second compare adds `https://` / `hls-aac://`.
+So `session+6380` holds the **current URI**, and the record's arguments are
+`(obj, name, value)` with the record data laid out `name\0value` — a
+separator our files never had, which is why the *value* was arriving empty.
+
+Confirmed by the error code: every payload gives `<errorCode>701</errorCode>`
+on `Play`, both after an oversized value and after a legal one. It is not a
+size error and not a transport state.
+
+Swept anyway with the corrected encodings (value prefixed `http://x/`, A at
+node 24): 12-point `C` sweeps, some 200s on `Play`, no 2323 and no crash.
+With the URI prefix in the value the string at `B` is no longer a pointer
+(node 0 is literally `http`), so a correct chain would need A to land on a
+slot holding a real pointer — the layout is not right yet.
+
+Recipe established along the way and useful regardless:
+**`Stop` → `SetAVTransportURI` → `Play`** is the only order that avoids the
+701 for a `.aa`, and `Stop` re-arms it.
