@@ -535,6 +535,14 @@ the web panel keeps observing it. `fsonos setup` shares the daemon's refresh
 worker when available and explains unfinished intake without asking you to
 repeat a successful Spotify sign-in.
 
+The daemon also checks [recent Spotify listening](docs/RECENT_LISTENING.md)
+before its normal background pass, so the next DJ selection can avoid music
+you just heard on another device without waiting for the daily library sync.
+Each check reads only the latest 50 plays, shares Spotify cooldowns, and merges
+accepted evidence under the exact account identity. Delayed full refreshes
+cannot erase newer listening. The sync panel and CLI/HTTP/MCP show this
+observation's freshness separately from the last full-library refresh.
+
 Whole-work album completion also retains private page proofs across interruptions.
 Each pass still uses at most eight catalog requests, including root checks and
 verification. A resumed album is published only after its retained pages are

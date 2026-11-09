@@ -26,6 +26,8 @@ mod intake;
 pub use intake::{SavedLibraryIntakeDto, SavedLibraryIntakePhase};
 mod followed;
 pub use followed::{FollowedArtistsDto, FollowedArtistsPhase};
+mod recent;
+pub use recent::RecentListeningDto;
 
 use std::fmt::Write as _;
 
@@ -64,6 +66,9 @@ pub struct LibrarySyncDto {
     /// or cursor payloads. Independent of the last completed full refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub followed_artists: Option<FollowedArtistsDto>,
+    /// Lightweight listening freshness, independent of full library publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_listening: Option<RecentListeningDto>,
 }
 
 /// One completed refresh.
@@ -117,6 +122,7 @@ impl LibrarySyncDto {
             genre_enrichment: None,
             library_intake: None,
             followed_artists: None,
+            recent_listening: None,
         };
         state.done = state.text();
         state
@@ -149,7 +155,21 @@ impl LibrarySyncDto {
         self
     }
 
+    /// Add the recent-listening reader's freshness without changing `last`.
+    #[must_use]
+    pub fn with_recent_listening(mut self, recent: Option<RecentListeningDto>) -> Self {
+        self.recent_listening = recent;
+        self.done = self.text();
+        self
+    }
+
     fn text(&self) -> String {
+        if self.running
+            && let Some(recent) = &self.recent_listening
+            && recent.running
+        {
+            return recent.text();
+        }
         if self.running
             && let Some(genres) = &self.genre_enrichment
             && genres.running
@@ -212,6 +232,9 @@ impl LibrarySyncDto {
         }
         if let Some(artists) = &self.followed_artists {
             let _ = write!(text, " {}", artists.text());
+        }
+        if let Some(recent) = &self.recent_listening {
+            let _ = write!(text, " {}", recent.text());
         }
         text
     }

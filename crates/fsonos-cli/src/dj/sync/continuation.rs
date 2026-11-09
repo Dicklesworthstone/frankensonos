@@ -20,6 +20,8 @@ mod followed;
 use followed::followed_status;
 mod intake;
 pub(super) use intake::status;
+mod recent;
+use recent::{RecentCheckpoint, recent_status};
 
 pub(super) enum Pass {
     Full,
@@ -96,6 +98,8 @@ pub(super) struct Checkpoint {
     intake: Option<SavedLibraryProgress>,
     #[serde(default)]
     intake_error: Option<String>,
+    #[serde(default)]
+    recent: RecentCheckpoint,
 }
 
 impl Checkpoint {
@@ -115,6 +119,7 @@ impl Checkpoint {
         self.album_retry_at = self.album_retry_at.max(self.not_before);
         self.genre_retry_at = self.genre_retry_at.max(self.not_before);
         self.followed_retry_at = self.followed_retry_at.max(self.not_before);
+        self.recent.retry_at = self.recent.retry_at.max(self.not_before);
     }
 
     fn reserve(&self, now: i64) -> Self {
@@ -182,6 +187,7 @@ impl Checkpoint {
             intake_pending: self.intake_pending,
             intake: self.intake.clone(),
             intake_error: self.intake_error.clone(),
+            recent: self.recent.clone(),
         };
         next.cooldown(now, report.retry_after_secs);
         next
@@ -554,6 +560,13 @@ impl LibrarySync {
         }
         // A manual refresh cannot replace the saved owner or cooldown between
         // this selection and its admission. Preserve the last error if idle.
+        let listening = match self.refresh_recent_if_due() {
+            Ok(observed) => observed,
+            Err(error) => {
+                self.running().running = false;
+                return Some(Err(error));
+            }
+        };
         let now = self.now();
         let pass = if self.due(now) {
             Some(Pass::Full)
@@ -564,7 +577,7 @@ impl LibrarySync {
         };
         let Some(pass) = pass else {
             self.running().running = false;
-            return None;
+            return listening.then(|| Ok(self.status()));
         };
         self.running().error = None;
         Some(self.run_pass(pass))
@@ -593,7 +606,10 @@ impl LibrarySync {
         let kind = pass.kind();
         let full = kind == PassKind::Full;
         let before = self.last();
-        let checkpoint = load(&self.data_dir).unwrap_or_default();
+        let mut checkpoint = load(&self.data_dir).unwrap_or_default();
+        if self.fence_recent_status(&mut checkpoint) {
+            write(&self.data_dir, before.as_ref(), &checkpoint).map_err(store_failure)?;
+        }
         let now = self.now();
         if now < checkpoint.not_before {
             return Err(Failure::new(
@@ -633,6 +649,12 @@ impl LibrarySync {
         read: Result<ReadResult, Failure>,
     ) -> Result<(), Failure> {
         let full = kind == PassKind::Full;
+        // The read can adopt another account before a later publication
+        // failure, or a competing process can adopt one while it is pending.
+        // Recheck on every outcome, not only a completed full publication.
+        let mut checkpoint = checkpoint.clone();
+        self.fence_recent_status(&mut checkpoint);
+        reserved.recent = checkpoint.recent.clone();
         let (result, retry_after, pending, progress, progress_observed) = match read {
             Ok(ReadResult {
                 result,
@@ -683,7 +705,7 @@ impl LibrarySync {
                     read.genre_continuation.retry_after_secs.max(retry_after);
                 read.followed_artists.retry_after_secs =
                     read.followed_artists.retry_after_secs.max(retry_after);
-                self.accepted(before, checkpoint, &read, kind, at)
+                self.accepted(before, &checkpoint, &read, kind, at)
                     .map(|_| ())
             }
             Err(error) => {
@@ -716,6 +738,7 @@ impl LibrarySync {
             next.intake_pending = false;
             next.intake = None;
             next.intake_error = None;
+            next.recent.after_full_refresh(at);
         }
         // Genre-only passes just observe missing albums; full and playlist
         // passes can now return newly read pages. Retain a previous checkpoint
