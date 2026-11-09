@@ -2532,3 +2532,22 @@ threads exist per server (spawned via the single `pthread_create` site
 `/tmp/s23_lsc_orig`, `/tmp/lsc_v2.so` (patched crypto lib, deployed as
 `lib/libsonoscrypto.so.1`), `/tmp/aa_www/serve.py` (:8899 payload server),
 `/tmp/aa_www/JFFSEX_84.aa`.
+
+**Next session, in order.**
+1. Name the logger mutex holder. Conditional breakpoints are far too slow on
+   this path (gdb round-trips per hit) — use `ignore 1 <N>` on
+   `0x10408e04` with N calibrated by first counting hits to the wedge, then
+   `x/4xw $r30` (`__lock`, `__count`, `__owner` at +0/+4/+8). If the owner is
+   a thread blocked elsewhere, the cycle is real and the patch belongs at the
+   callee, not at the lock.
+2. If the emulated accept never becomes reachable, take the argument question
+   to the device instead: the payload's `V` slot is `0x106c69ec`, `.bss`, i.e.
+   zeroes at start. Two readings decide the whole `.aa` lane — (a) `V` *is* the
+   command pointer, so `system()` gets a pointer into zeroed `.bss` and runs an
+   empty command (which would explain all eight negative exec shapes with no
+   crash), or (b) `V` is a scratch slot and the chain writes `base+504` there.
+   Variant A: `V` = the address of an existing `.rodata` command string.
+   Variant B: `V` = `A+504` computed by the chain. Either one, fired at .84,
+   discriminates: variant A must reboot if pointers are honoured, variant B
+   must produce the dd effect.
+3. Only then re-attempt port 2323 / `Configure.dev`.
