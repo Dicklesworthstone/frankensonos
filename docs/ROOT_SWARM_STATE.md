@@ -3264,3 +3264,15 @@ test would be length arithmetic (Content-Length vs actual bytes, chunked vs
 not). The run was lost to unit flapping: every file left in the transport
 makes the daemon retry, so it dies again within seconds and the next test
 lands on a down unit.
+
+**Framing is not the variable either.** The same 60 KB valid WAV served
+close-delimited (HTTP/1.0, no `Content-Length`, 1 KB drip) still kills `.135`
+at 13 s. So on `86.10` the transport dies on *any* file by any framing:
+content-independent, size-independent, framing-independent.
+
+That closes the steerable-surface question for the S2 file path: it is a
+clean, guaranteed, pre-auth DoS primitive, not (yet) a write. Turning it into
+one needs the S2 transport-open code, and the ASF/GUID strings give no anchor
+in the binary — the next RE step would be from the *handler* side (the
+`R_PLAY_OP_CODEC_SELECTED` / `ERROR_AUDIBLE_BAD_CODEC` strings at `0x47a328`
+and `0x4f9e40` are the nearest markers), not from container parsing.
