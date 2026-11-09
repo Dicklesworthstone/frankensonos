@@ -13,8 +13,10 @@ existing precedence and expiry.
 
 ## Use the browser editor
 
-Open **Moods & daily programs** on the phone remote or beside **Standing
-taste** on the dashboard. No selected room or active DJ is required.
+Open **Moods & daily programs** in the phone remote’s **Music** workspace or
+beside **Standing taste** on the dashboard. The phone’s command finder also
+opens it directly when you search for moods or daily programs. No selected
+room or active DJ is required.
 
 Select an existing mood or create a name such as `late-night-jazz`. Edit
 artists, genres, composers, periods, decades, keywords, work length, energy,

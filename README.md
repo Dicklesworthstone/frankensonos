@@ -159,8 +159,8 @@ virtual house.
 
 ### Reusable DJ moods and daily programs
 
-Open **Moods & daily programs** on the phone remote or dashboard to create
-reusable selection rules and choose their automatic weekday/time windows.
+Open **Moods & daily programs** in the phone remote’s **Music** workspace
+or on the dashboard to create reusable selection rules and choose their automatic weekday/time windows.
 Edit a built-in mood, restore its factory definition, or create a custom name;
 preview the program at a day and time before saving. Settings apply to future
 DJ picks across the daemon's groups and keep queued music and temporary

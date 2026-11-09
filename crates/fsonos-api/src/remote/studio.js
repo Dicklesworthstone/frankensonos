@@ -13,6 +13,7 @@ const StudioRemote = (() => {
     { id: 'house-policy', workspace: 'activity', match: /house.policy|policy and volume caps/i, title: 'Understand volume caps and command limits', description: 'Read your caller identity, configured limits, quiet hours, and tool rules.', keywords: 'policy quiet hours denied capped rights permissions client why volume' },
     { id: 'diagnostics', workspace: 'activity', match: /diagnostic/i, title: 'Diagnose missing rooms or silence', description: 'Read setup checks, evidence, and concrete remedies without changing playback.', keywords: 'doctor setup troubleshoot failure wifi network callback tailscale spotify silence missing rooms' },
     { id: 'dj-steering', workspace: 'music', match: /steer|dj direction/i, title: 'Shape the next DJ pick', description: 'Mood, energy, artists, genres, eras, and whole-work constraints.', keywords: 'whole work classical composer focus dinner next mood' },
+    { id: 'dj-configuration', workspace: 'music', match: /dj.configuration|reusable.*mood|daily.program/i, title: 'Save moods and daily programs', description: 'Create reusable mood rules and choose their automatic weekday and overnight windows.', keywords: 'custom preset factory defaults reusable moods daily program time window' },
     { id: 'dj-session', workspace: 'music', match: /dj session/i, title: 'See why the DJ chose it', description: 'The current work, upcoming selections, and the reasons behind them.', keywords: 'reason explain upcoming movement classical' },
     { id: 'dj-preferences', workspace: 'music', match: /preference|taste/i, title: 'Teach the DJ your taste', description: 'Standing preferences, favorites, avoids, and explicit-content choices.', keywords: 'pin ban artist genre explicit' },
     { id: 'music-library', workspace: 'music', match: /music library/i, title: 'Find music in your library', description: 'Browse and search your music and household favorites.', keywords: 'search spotify album playlist track favorite' },
@@ -264,6 +265,13 @@ const StudioRemote = (() => {
       if (!found) return false;
       const [node, tool] = found;
       navigate(tool.workspace, false);
+      if (id === 'dj-configuration') {
+        const trigger = node.querySelector('.dj-config-trigger');
+        if (!trigger || trigger.disabled) return false;
+        // Opening reads the owner-wide configuration; it never saves a draft.
+        trigger.click();
+        return true;
+      }
       const details = node.matches('details') ? node : node.querySelector('details');
       if (details) details.open = true;
       // The native editor rechecks this observed group before prefilling it.
