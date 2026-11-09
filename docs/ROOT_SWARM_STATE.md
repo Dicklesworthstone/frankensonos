@@ -3368,3 +3368,18 @@ Also noted: the `soap` + ` - param %s = %s` pair is a SOAP request-logging
 hook, so if the log level can ever be raised the daemon will print every
 parameter it receives — useful for confirming handler entry without a
 debugger.
+
+**Correction that matters for all S2 RE:** the image is linked at `0x400000`,
+so **VMA = file offset + 0x400000** — the "addresses" quoted earlier from
+`strings -t x` are *file offsets*, not VMAs (`0x2bbfa7` is really
+`0x6bbfa7`). Every literal search done against the file-offset values was
+therefore looking for the wrong number. With the corrected VMAs the table and
+the three `AVTransport` occurrences are still not present as 32-bit literals
+and have no relocation pointing at them (543 relocations total, none to those
+addresses), so the reference is built from a base register plus displacement —
+and the `.data.rel.ro` dump near the cluster is pointer-looking but not
+relocated.
+
+Starting points now: `.rodata` VMA `0x6bbf40` (SOAP parameter table),
+`0x6bbfa7` / `0x68d92a` / `0x6ae554` (`AVTransport`), and `-m mips:16` for any
+range that decodes as `.word` under the default mode.
