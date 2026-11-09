@@ -3234,3 +3234,24 @@ fields; if it also dies, the sniffer is failing on unrecognised content
 itself and the steer has to be a real container of some family (ASF/WAV/MP3
 headers are the candidates, WAV and ASF being the ones nothing has ever
 fuzzed).
+
+**It is the file path on the S2, not any parser.** A *valid* 108-byte WAV
+kills `.135` at 3 s, and a *valid* 60 044-byte WAV kills it at 3 s too
+(`setav 200`, `play 200`, then down). Unrecognised content, ASF, and valid
+WAV all die; **`.84` survives every one of them** (junk, ASF, 108-byte WAV).
+
+So the `.135` (`86.10`) daemon cannot take a *file* through
+`SetAVTransportURI` at all — the moment the transport starts on a finite file
+it falls over, size-independent — while the S1 handles files fine. That is a
+much larger and more useful primitive than the ASF guess: a guaranteed,
+pre-auth, zero-cost daemon kill on the S2 that does not depend on content.
+
+Control matrix as it stands:
+
+| input | `.135` | `.84` |
+|---|---|---|
+| 16 B junk | dies 8 s | survives |
+| ASF GUID head | dies 15 s | survives |
+| ASF GUID + size 0 | dies 14 s | survives |
+| valid WAV 108 B | dies 3 s | survives |
+| valid WAV 60 044 B | dies 3 s | survives |
