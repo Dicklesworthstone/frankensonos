@@ -3353,3 +3353,18 @@ different immediates, and only symbol-carrying functions are reliably
 decodable. Any S2 RE pass must either force MIPS16 for the affected ranges
 (symbols carry the mode bit) or work from the ~150 `muse` symbols and the
 `AVTransport` data xrefs rather than from `lui/addiu` pairs.
+
+**RE anchor found (data, not strings-by-name):** `.rodata` at `0x2bbf40` is a
+**SOAP parameter table** — an array of pointers followed by the parameter
+names themselves: `logon`, `newLogon`, `newPassword`, `developerKey`,
+`CurrentAVTransportURI`, `ProgramURI`, `username`, `reporter`, `soap`,
+` - param %s = %s`, `EnqueuedURI`, `EnqueuedURIs`, `term`, … The AVT handler
+is reached through this table, so an xref to the *table*, not to any action
+name, is the right entry point — and MIPS16 materialises 32-bit addresses via
+GOT slots, so the practical method is to find the `.got` entry holding
+`0x2bbf40` and grep for loads off that slot.
+
+Also noted: the `soap` + ` - param %s = %s` pair is a SOAP request-logging
+hook, so if the log level can ever be raised the daemon will print every
+parameter it receives — useful for confirming handler entry without a
+debugger.
