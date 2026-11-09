@@ -19,6 +19,10 @@ use fsonos_types::PlayerId;
 use std::collections::HashSet;
 use std::net::IpAddr;
 
+mod contents;
+
+pub use contents::{MAX_CONTENTS_PAGE, PlaylistContents, contents};
+
 /// The native `SaveQueue` Title argument holds at most 1023 UTF-8 bytes.
 /// The S1 handler has a 1024-byte argument buffer (docs/RE_COPY_AUDIT.md).
 pub const MAX_PLAYLIST_TITLE_BYTES: usize = 1023;
@@ -215,7 +219,10 @@ impl GroupProof {
     }
 }
 
-fn native_id(id: &str) -> bool {
+/// Whether an identifier names one native saved Sonos playlist, not its
+/// catalog, a queue, or a caller-supplied file resource.
+#[must_use]
+pub fn native_id(id: &str) -> bool {
     id.strip_prefix(SONOS_PLAYLISTS)
         .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
 }

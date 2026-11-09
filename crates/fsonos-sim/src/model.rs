@@ -1418,7 +1418,10 @@ impl State {
             return Err(INVALID_ACTION);
         }
         let object = args.get("ObjectID")?;
-        if args.get("BrowseFlag")? != "BrowseDirectChildren" {
+        let flag = args.get("BrowseFlag")?;
+        if flag != "BrowseDirectChildren"
+            && !(flag == "BrowseMetadata" && object.starts_with("SQ:") && object != "SQ:")
+        {
             return Err(INVALID_ARGS);
         }
         let start: usize = args.num("StartingIndex")?;
@@ -1428,7 +1431,7 @@ impl State {
             let to = if count == 0 {
                 total
             } else {
-                (from + count).min(total)
+                from.saturating_add(count).min(total)
             };
             (from, to)
         };
@@ -1453,6 +1456,35 @@ impl State {
                     saved.len(),
                     house.saved_playlists_update_id,
                 )
+            }
+            object if object.starts_with("SQ:") => {
+                let id = object
+                    .strip_prefix("SQ:")
+                    .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+                    .and_then(|id| id.parse::<u32>().ok())
+                    .ok_or(TRANSITION_NOT_AVAILABLE)?;
+                let house = &self.households[self.players[p].household];
+                let saved = house
+                    .saved_playlists
+                    .iter()
+                    .find(|saved| saved.id == id)
+                    .ok_or(TRANSITION_NOT_AVAILABLE)?;
+                if flag == "BrowseMetadata" {
+                    (
+                        docs::saved_playlist_items(std::slice::from_ref(saved)),
+                        1,
+                        1,
+                        house.saved_playlists_update_id,
+                    )
+                } else {
+                    let (from, to) = window(saved.tracks.len());
+                    (
+                        docs::saved_playlist_tracks(id, &saved.tracks[from..to], from + 1),
+                        to - from,
+                        saved.tracks.len(),
+                        house.saved_playlists_update_id,
+                    )
+                }
             }
             "Q:0" => {
                 let t = &self.players[p].transport;
@@ -2251,5 +2283,36 @@ mod tests {
             ),
             Err(INVALID_ARGS)
         );
+    }
+
+    #[test]
+    fn empty_saved_playlist_still_has_metadata_and_a_complete_empty_page() {
+        let mut s = state();
+        s.households[0].saved_playlists[0].tracks.clear();
+        for (flag, count) in [("BrowseDirectChildren", "0"), ("BrowseMetadata", "1")] {
+            let out = call(
+                &mut s,
+                0,
+                &CONTENT_DIRECTORY,
+                "Browse",
+                &[
+                    ("ObjectID", "SQ:1"),
+                    ("BrowseFlag", flag),
+                    ("StartingIndex", "0"),
+                    ("RequestedCount", "100"),
+                ],
+            )
+            .unwrap();
+            assert_eq!(get(&out, "NumberReturned"), count);
+            assert_eq!(get(&out, "TotalMatches"), count);
+            assert_eq!(get(&out, "UpdateID"), "1");
+            let objects = parse_didl(&get(&out, "Result")).unwrap();
+            if flag == "BrowseDirectChildren" {
+                assert!(objects.is_empty());
+            } else {
+                assert_eq!(objects[0].id, "SQ:1");
+                assert_eq!(objects[0].parent_id, "SQ:");
+            }
+        }
     }
 }

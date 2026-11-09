@@ -107,6 +107,10 @@ pub enum CoreError {
     /// before sending it again (an album's tracks could be queued twice).
     #[error("{0}")]
     Uncertain(String),
+    /// A saved-playlist page no longer belongs to the household, player, or
+    /// contents observation the caller is continuing. Read again from zero.
+    #[error("{0}")]
+    PlaylistChanged(String),
 }
 
 fn list(items: &[String]) -> String {
