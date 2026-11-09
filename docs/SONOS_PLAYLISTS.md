@@ -1,6 +1,6 @@
 # Saved Sonos playlists
 
-FrankenSonos can list, play and create playlists saved on the Sonos household, including
+FrankenSonos can list, inspect, play and create playlists saved on the Sonos household, including
 ones that are not in My Sonos favorites. These are the native `SQ:` saved queues,
 separate from the Spotify account's cached playlists.
 
@@ -9,6 +9,8 @@ separate from the Spotify account's cached playlists.
 ```sh
 fsonos playlists Kitchen
 fsonos --json playlists Kitchen
+fsonos playlist-contents Kitchen 'Evening Mix'
+fsonos --json playlist-contents Kitchen SQ:7 --limit 25
 fsonos playlist-save Kitchen 'Evening Mix'
 fsonos play Kitchen --playlist 'Evening Mix'
 fsonos play Kitchen --playlist SQ:7 --next
@@ -33,6 +35,41 @@ The commands use the daemon when available and also work in direct mode. They
 need no Spotify Web API sign-in or learned Spotify favorite template. The
 speakers still need access to whatever music services or local files the saved
 playlist contains.
+
+## Inspect the saved tracks
+
+`fsonos playlist-contents <room> <playlist>` reads up to 100 ordered track
+occurrences without replacing the playing queue or interrupting music. It works
+for both S1 and S2, independently of Spotify Web API sign-in. Track positions,
+titles, artists, albums, durations and artwork remain the speaker's observations;
+missing metadata stays unknown. Repeated tracks occupy separate positions.
+
+The response includes the resolved native `playlist`, `total`, `offset`,
+`items`, an opaque `revision`, and `next_offset` when more tracks remain.
+Continue using the returned native id and revision, for example:
+
+```sh
+fsonos playlist-contents Kitchen SQ:7 --offset 25 --limit 25 \
+  --expected-revision '<revision from the preceding page>'
+```
+
+Offsets are zero-based; displayed track positions are one-based. Limits are
+1–100. Short speaker pages continue at the actual next occurrence. A nonzero
+offset requires the preceding revision, and any revision-bound request requires
+the exact native `SQ:` id rather than a title or catalog number.
+
+Each page uses bounded reads of the selected playlist's metadata and children,
+with a second read and a topology check before returning. Continuations bind to
+the household, coordinator, boot identity, group and saved-content observation.
+A changed observation returns `QUEUE_CHANGED` (HTTP 409): read again from
+offset zero without `expected_revision`. Failed or incomplete reads do not
+become an empty playlist. An empty saved playlist is a successful observation
+with `total: 0` and no continuation.
+
+These checks detect inconsistent observations; they do not lock the playlist
+against another controller or make all pages an atomic snapshot. Browsing does
+not select a track or send a playback command. Whole-playlist play/next/append
+still uses the speaker's current saved contents when that separate action runs.
 
 ## Save the current queue
 
@@ -68,6 +105,13 @@ in the desktop dashboard. Choose the destination group, select **Saved Sonos
 playlist**, and choose a playlist from that household. **Play now**, **Queue
 next**, and **Queue at end** use the same native operations as the CLI.
 
+Choose **Read tracks** to inspect the selection first. **Next tracks** and
+**Previous tracks** retain its observed revision; **Refresh tracks** starts a
+new observation. Both views keep duplicate tracks and their original positions.
+Changing the selected group, household or playlist clears the preview, and a
+late response from the old selection cannot replace it. Reads are explicit and
+do not add background polling or contact the track's media URL.
+
 The review shows the destination and the effect on its current queue. Before
 sending, the controller reads the catalog and destination again; a renamed or
 removed selection, regrouped destination, or changed queue requires a fresh
@@ -95,6 +139,7 @@ read and review.
 | Operation | HTTP | MCP |
 |---|---|---|
 | List the selected household's saved playlists | `GET /sonos/playlists?zone=Kitchen` | `list_sonos_playlists(zone="Kitchen")` |
+| Inspect ordered saved tracks | `GET /sonos/playlists/contents?zone=Kitchen&playlist=SQ:7&offset=0&limit=100` | `sonos_playlist_contents(zone="Kitchen", playlist="SQ:7", offset=0, limit=100)` |
 | Save the current queue as a new playlist | `POST /sonos/playlists/save` with `{"zone":"Kitchen","title":"Evening Mix"}` | `save_sonos_playlist(zone="Kitchen", title="Evening Mix")` |
 | Replace the queue and play | `POST /sonos/playlists/play` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `play_sonos_playlist(zone="Kitchen", playlist="SQ:7")` |
 | Append | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `add_to_queue(zone="Kitchen", playlist="SQ:7")` |
@@ -105,7 +150,7 @@ exactly one of `playlist`, `favorite`, or `source_uri`. Playback and queue opera
 take a catalog selection, not caller-supplied renderer metadata or a file URI.
 They resolve the selection from the target household again before execution.
 
-The existing permissions apply: `list_favorites` for listing, `play_favorite`
+The existing permissions apply: `list_favorites` for listing and contents reads, `play_favorite`
 for starting, and `add_to_queue` for append/next. Playback uses the same volume
 caps, DJ handoff, action history, and coordinator resolution as native container
 favorites. This keeps existing client allowlists effective. Saving requires
@@ -162,3 +207,14 @@ The protocol follows the native catalog and enqueue operations documented in
 and [queue implementation](https://github.com/SoCo/SoCo/blob/master/soco/core.py).
 Its [DIDL model](https://github.com/SoCo/SoCo/blob/master/soco/data_structures.py)
 records the two playlist element forms; FrankenSonos keeps the form it reads.
+
+Contents-specific simulator coverage lives in
+`fsonos-sim/tests/saved_playlist_contents.rs` and
+`fsonos-core/tests/sonos_playlist_contents_sim.rs`; API, CLI and MCP regressions
+extend the existing native-playlist suites. The phone and dashboard readers
+share `scripts/test-sonos-playlist-contents.cjs`, which covers duplicate
+occurrences, both paging directions, changed revisions, delayed replies,
+household changes, empty playlists and text-only metadata rendering. Rust
+execution remains blocked in this environment by a SIGKILL while compiling
+the pinned `asupersync` dependency. Node contents and existing source-player
+regressions pass; physical-speaker contents acceptance remains separate.

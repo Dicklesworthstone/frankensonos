@@ -2,13 +2,61 @@
 
 use clap::Args;
 use fsonos_api::Failure;
-use fsonos_api::surface::sonos_playlists::{SaveSonosPlaylistRequest, SavedSonosPlaylistDto};
+use fsonos_api::surface::sonos_playlists::{
+    SaveSonosPlaylistRequest, SavedSonosPlaylistDto, SonosPlaylistContentsDto,
+    SonosPlaylistContentsRequest,
+};
 use fsonos_core::playlists;
 use fsonos_core::policy::Client;
 
 use crate::config::GlobalArgs;
 use crate::remote::Daemon;
 use crate::{daemon, emit};
+
+#[derive(Debug, Args)]
+pub struct PlaylistContentsArgs {
+    /// A room on the selected Sonos household (Room@S1 / Room@S2 disambiguates names).
+    pub zone: String,
+    /// Native SQ: id, current catalog number or unambiguous saved-playlist title.
+    pub playlist: String,
+    /// Continue at the preceding page's next_offset with its exact SQ: id and revision.
+    #[arg(long, default_value_t = 0)]
+    pub offset: u32,
+    /// Maximum entries (1-100); reading never changes the playing queue.
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=100))]
+    pub limit: u32,
+    /// Opaque revision from the preceding contents page; required for nonzero offsets.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: Option<String>,
+}
+
+impl PlaylistContentsArgs {
+    fn request(&self) -> Result<SonosPlaylistContentsRequest, Failure> {
+        let request = SonosPlaylistContentsRequest {
+            zone: self.zone.clone(),
+            playlist: self.playlist.clone(),
+            offset: self.offset,
+            limit: self.limit,
+            expected_revision: self.expected_revision.clone(),
+        };
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+pub fn contents(global: &GlobalArgs, args: &PlaylistContentsArgs) -> anyhow::Result<()> {
+    let request = args.request()?;
+    let path = request.path()?;
+    let page: SonosPlaylistContentsDto = if let Some(remote) = Daemon::find(global, global.daemon)?
+    {
+        remote.get(&path)?
+    } else {
+        let dir = daemon::data_dir(global)?;
+        let surface = daemon::surface(global, daemon::policy(&dir)?)?;
+        surface.sonos_playlist_contents(&Client::Cli, &request)?
+    };
+    emit(global.json, &page, SonosPlaylistContentsDto::text)
+}
 
 #[derive(Debug, Args)]
 pub struct PlaylistSaveArgs {
@@ -112,5 +160,103 @@ mod tests {
             Cli::try_parse_from(["fsonos", "playlist-save", "Room", "Mix", "--direct"]).unwrap();
         assert!(saved.global.direct);
         assert!(matches!(saved.command, Command::PlaylistSave(_)));
+    }
+
+    #[test]
+    fn native_contents_command_retains_daemon_target_and_revision() {
+        let cli = Cli::try_parse_from([
+            "fsonos",
+            "playlist-contents",
+            "Living Room@S2",
+            "SQ:7",
+            "--offset",
+            "100",
+            "--limit",
+            "25",
+            "--expected-revision",
+            "sp1:observed",
+            "--json",
+            "--daemon-url",
+            "http://127.0.0.1:9999",
+        ])
+        .unwrap();
+        assert!(cli.global.json);
+        assert_eq!(
+            cli.global.daemon_url.as_deref(),
+            Some("http://127.0.0.1:9999")
+        );
+        let Command::PlaylistContents(args) = cli.command else {
+            panic!("expected playlist contents")
+        };
+        let request = args.request().unwrap();
+        assert_eq!(request.zone, "Living Room@S2");
+        assert_eq!(request.playlist, "SQ:7");
+        assert_eq!(request.offset, 100);
+        assert_eq!(request.limit, 25);
+        assert_eq!(request.expected_revision.as_deref(), Some("sp1:observed"));
+    }
+
+    #[test]
+    fn contents_rejects_unbound_continuations_before_daemon_discovery() {
+        for arguments in [
+            vec![
+                "fsonos",
+                "playlist-contents",
+                "Den",
+                "SQ:7",
+                "--offset",
+                "1",
+            ],
+            vec![
+                "fsonos",
+                "playlist-contents",
+                "Den",
+                "Evening",
+                "--expected-revision",
+                "revision",
+            ],
+            vec![
+                "fsonos",
+                "playlist-contents",
+                "Den",
+                "SQ:7",
+                "--expected-revision",
+                " ",
+            ],
+            vec!["fsonos", "playlist-contents", " ", "SQ:7"],
+            vec!["fsonos", "playlist-contents", "Den", " "],
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            let Command::PlaylistContents(args) = cli.command else {
+                panic!("expected playlist contents")
+            };
+            assert!(args.request().is_err());
+        }
+        for limit in ["0", "101", "4294967296"] {
+            assert!(
+                Cli::try_parse_from([
+                    "fsonos",
+                    "playlist-contents",
+                    "Den",
+                    "SQ:7",
+                    "--limit",
+                    limit
+                ])
+                .is_err()
+            );
+        }
+        let cli = Cli::try_parse_from([
+            "fsonos",
+            "playlist-contents",
+            "Den@S1",
+            "Evening",
+            "--direct",
+        ])
+        .unwrap();
+        assert!(cli.global.direct);
+        let Command::PlaylistContents(args) = cli.command else {
+            panic!("expected playlist contents")
+        };
+        assert_eq!(args.request().unwrap().limit, 100);
     }
 }

@@ -3,7 +3,8 @@
 const SourcePlayerRemote = (() => {
   const routes = { sourcePlay: ['POST', '/play'], sourceQueue: ['POST', '/queue'],
     sourceQueueState: ['GET', '/zones/{room}/queue'],
-    sourcePlaylists: ['GET', '/sonos/playlists'], sourcePlaylistPlay: ['POST', '/sonos/playlists/play'] };
+    sourcePlaylists: ['GET', '/sonos/playlists'], sourcePlaylistPlay: ['POST', '/sonos/playlists/play'],
+    sourcePlaylistContents: ['GET', '/sonos/playlists/contents'] };
   const modes = Object.freeze({ play: 'Play now', next: 'Queue next', end: 'Queue at end' });
   const MAX_BYTES = 2048, MAX_TITLE = 256;
   const text = (v) => typeof v === 'string' && v.trim() !== '';
@@ -170,6 +171,56 @@ const SourcePlayerRemote = (() => {
     }
   }
 
+  function contentsRequest(page, history, direction, playlist) {
+    if (!['refresh', 'next', 'previous'].includes(direction)) return null;
+    if (direction !== 'refresh' && (!page || page.playlist.id !== playlist)) return null;
+    const offset = direction === 'refresh' ? 0 : direction === 'next' ? page.next_offset : history.at(-1);
+    if (offset === null || offset === undefined) return null;
+    return { query: { playlist, offset, limit: 100,
+      ...(direction === 'refresh' ? {} : { expected_revision: page.revision }) },
+      history: direction === 'refresh' ? [] : direction === 'next' ? [...history, page.offset] : history.slice(0, -1) };
+  }
+
+  function playlistContents(value, query, selected, group) {
+    const fail = () => { throw new Error('The saved playlist contents changed or are unreadable. Read tracks again.'); };
+    const uint = n => Number.isInteger(n) && n >= 0 && n <= 0xffffffff;
+    if (!value || !group || value.zone !== group.coordinator || !value.playlist || value.playlist.id !== query.playlist
+        || value.playlist.title !== selected.title || typeof value.revision !== 'string' || !value.revision
+        || value.revision.length > 4096 || /[\p{Cc}]/u.test(value.revision)
+        || (query.expected_revision && value.revision !== query.expected_revision)
+        || !uint(value.total) || value.offset !== query.offset || !Array.isArray(value.items)
+        || value.items.length > query.limit || value.offset + value.items.length > value.total) fail();
+    const next = value.offset + value.items.length;
+    if ((value.next_offset ?? null) !== (next < value.total ? next : null)
+        || (!value.items.length && next < value.total)) fail();
+    const items = value.items.map((item, index) => {
+      if (!item || item.position !== value.offset + index + 1 || typeof item.title !== 'string'
+          || ['creator', 'album', 'uri', 'art_uri'].some(key => item[key] != null && typeof item[key] !== 'string')
+          || (item.duration_secs != null && !uint(item.duration_secs))) fail();
+      return Object.freeze({ ...item });
+    });
+    return Object.freeze({ ...value, playlist: Object.freeze({ ...value.playlist }),
+      next_offset: value.next_offset ?? null, items: Object.freeze(items) });
+  }
+
+  function contentsSummary(page) {
+    if (!page) return 'Read the saved tracks without changing playback.';
+    if (!page.total) return 'This saved Sonos playlist is empty.';
+    return `Tracks ${page.offset + 1}–${page.offset + page.items.length} of ${page.total} · ${page.playlist.title || page.playlist.id}`;
+  }
+
+  function renderContents(list, page, doc) {
+    list.replaceChildren();
+    for (const item of page?.items || []) {
+      const row = doc.createElement('li'); row.value = item.position;
+      const title = doc.createElement('strong'); title.textContent = item.title || 'Untitled track'; row.append(title);
+      const detail = [item.creator, item.album].filter(Boolean);
+      if (item.duration_secs != null) detail.push(Math.floor(item.duration_secs / 60) + ':' + String(item.duration_secs % 60).padStart(2, '0'));
+      if (detail.length) { const text = doc.createElement('span'); text.textContent = detail.join(' · '); row.append(text); }
+      list.append(row);
+    }
+  }
+
   function commandBody(choice, target) {
     return { zone: target, ...(choice.item.kind === 'sonos_playlist'
       ? { playlist: choice.item.id }
@@ -180,7 +231,7 @@ const SourcePlayerRemote = (() => {
   function model({ call, changed = () => {}, execute = (_, work) => work() }) {
     let epoch = 0, disposed = false;
     const state = { open: false, groups: [], target: '', sourceType: 'link', input: '', title: '', mode: 'play', pending: null,
-      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle',
+      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [],
       reading: false, writing: false, message: '', result: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const selected = () => state.groups.find((group) => group.target === state.target);
@@ -189,7 +240,8 @@ const SourcePlayerRemote = (() => {
       ++epoch; state.pending = null; state.reading = false;
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
     };
-    const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; };
+    const clearContents = () => { state.contents = null; state.contentsHistory = []; };
+    const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
 
     async function refresh() {
       if (disposed) return false;
@@ -219,6 +271,7 @@ const SourcePlayerRemote = (() => {
       if (field === 'playlist' && (state.playlistTarget !== state.target || !state.playlists.some(item => item.id === value))) return false;
       invalidate();
       if (field === 'target' || field === 'sourceType') clearPlaylists();
+      if (field === 'playlist') clearContents();
       state[field] = value; state.message = ''; publish(); return true;
     }
 
@@ -234,6 +287,25 @@ const SourcePlayerRemote = (() => {
         return true;
       } catch (error) {
         if (current(version)) { state.playlistStatus = 'error'; state.message = problem(error); }
+        return false;
+      } finally { if (current(version)) { state.reading = false; publish(); } }
+    }
+
+    async function loadContents(direction = 'refresh') {
+      const group = selected(), item = state.playlists.find(item => item.id === state.playlist);
+      if (disposed || !state.open || state.writing || state.reading || state.sourceType !== 'playlist'
+          || !group || !item || state.playlistStatus !== 'ready' || state.playlistTarget !== group.target) return false;
+      const request = contentsRequest(state.contents, state.contentsHistory, direction, item.id);
+      if (!request) return false;
+      invalidate(); const version = epoch;
+      state.reading = true; state.message = 'Reading saved tracks…'; publish();
+      try {
+        const value = await call('sourcePlaylistContents', { query: { zone: group.target, ...request.query } });
+        if (!current(version)) return false;
+        state.contents = playlistContents(value, request.query, item, group); state.contentsHistory = request.history;
+        state.message = ''; return true;
+      } catch (error) {
+        if (current(version)) { clearContents(); state.message = problem(error); }
         return false;
       } finally { if (current(version)) { state.reading = false; publish(); } }
     }
@@ -336,7 +408,7 @@ const SourcePlayerRemote = (() => {
       return accepted;
     }
 
-    return { state, refresh, edit, loadPlaylists, review, confirm, offer, clearDraft,
+    return { state, refresh, edit, loadPlaylists, loadContents, review, confirm, offer, clearDraft,
       cancel() { if (!state.writing && !disposed) { invalidate(); state.message = ''; publish(); } },
       close() { state.open = false; invalidate(); state.message = ''; publish(); },
       dispose() { disposed = true; state.open = false; invalidate(); },
@@ -350,8 +422,15 @@ const SourcePlayerRemote = (() => {
     const playlist = el('select', { 'aria-label': 'Saved Sonos playlist' });
     const refreshPlaylists = el('button', { type: 'button', text: 'Refresh playlists' });
     const playlistHelp = el('p', { class: 'source-help', role: 'status' });
+    const readContents = el('button', { type: 'button', text: 'Read tracks' });
+    const previousContents = el('button', { type: 'button', text: '← Previous tracks' });
+    const nextContents = el('button', { type: 'button', text: 'Next tracks →' });
+    const contentsHelp = el('p', { class: 'source-help', role: 'status', 'aria-live': 'polite' });
+    const contentsList = el('ol', { class: 'source-track-list', 'aria-label': 'Saved playlist tracks' });
+    const contentsFields = el('div', { class: 'source-contents', hidden: true },
+      el('div', { class: 'row' }, readContents, previousContents, nextContents), contentsHelp, contentsList);
     const playlistFields = el('div', { class: 'source-catalog', hidden: true },
-      el('label', {}, 'Saved Sonos playlist ', playlist), refreshPlaylists, playlistHelp);
+      el('label', {}, 'Saved Sonos playlist ', playlist), refreshPlaylists, playlistHelp, contentsFields);
     const input = el('input', { type: 'text', 'aria-label': 'Spotify link or audio stream address',
       placeholder: 'Spotify link, Spotify URI, or HTTP audio address', autocomplete: 'off', spellcheck: 'false' });
     const mode = el('select', { 'aria-label': 'Play now or add to queue' });
@@ -369,7 +448,7 @@ const SourcePlayerRemote = (() => {
         el('label', {}, 'Destination ', target), el('label', {}, 'Music source ', sourceType), inputField, titleField, playlistFields,
         el('label', {}, 'Action ', mode), el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
     const node = el('section', { class: 'scenes', 'aria-label': 'Play a link or Sonos playlist' }, details);
-    let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, confirmButton = null;
+    let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, shownContents = null, confirmButton = null;
     const control = model({ call, execute, changed: render });
     function render(state) {
       const busy = state.reading || state.writing;
@@ -393,9 +472,16 @@ const SourcePlayerRemote = (() => {
       playlist.disabled = state.writing || state.playlistStatus !== 'ready' || !state.playlists.length;
       refreshPlaylists.disabled = busy || !state.target;
       playlistHelp.textContent = state.playlistStatus === 'ready' ? state.playlists.length
-        ? 'Saved on the speakers in this household. The playlist’s current contents are used when you play or queue it.'
+        ? 'Saved on the speakers in this household. Read its tracks before choosing how to play it.'
         : 'This household has no saved Sonos playlists. Save a playlist in Sonos, then refresh here.'
         : state.target ? 'Read the saved playlists for this destination.' : 'Choose a destination group first.';
+      contentsFields.hidden = !state.playlist || state.playlistStatus !== 'ready';
+      readContents.disabled = busy || !state.playlist;
+      readContents.textContent = state.contents ? 'Refresh tracks' : 'Read tracks';
+      previousContents.hidden = !state.contentsHistory.length; previousContents.disabled = busy;
+      nextContents.hidden = state.contents?.next_offset == null; nextContents.disabled = busy;
+      contentsHelp.textContent = contentsSummary(state.contents);
+      if (shownContents !== state.contents) { shownContents = state.contents; renderContents(contentsList, state.contents, doc); }
       review.textContent = state.mode === 'play' ? 'Review playback' : 'Review queue addition';
       for (const [field, element] of [['input', input], ['title', title]]) if (element.value !== state[field]) element.value = state[field];
       for (const element of [target, sourceType, input, title, mode]) element.disabled = state.writing;
@@ -440,6 +526,9 @@ const SourcePlayerRemote = (() => {
     });
     playlist.addEventListener('change', () => control.edit('playlist', playlist.value));
     refreshPlaylists.addEventListener('click', () => { void control.loadPlaylists(); });
+    readContents.addEventListener('click', () => { void control.loadContents(); });
+    previousContents.addEventListener('click', () => { void control.loadContents('previous'); });
+    nextContents.addEventListener('click', () => { void control.loadContents('next'); });
     input.addEventListener('input', () => control.edit('input', input.value));
     title.addEventListener('input', () => control.edit('title', title.value));
     mode.addEventListener('change', () => control.edit('mode', mode.value));
@@ -475,7 +564,8 @@ const SourcePlayerRemote = (() => {
     } };
   }
 
-  return { source, prepare, playlists, preparePlaylist, verifyPlaylist, commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE };
+  return { source, prepare, playlists, preparePlaylist, verifyPlaylist, contentsRequest, playlistContents, contentsSummary, renderContents,
+    commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SourcePlayerRemote;

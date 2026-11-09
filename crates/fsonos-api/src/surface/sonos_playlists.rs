@@ -15,6 +15,9 @@ use crate::failure::{ErrorCode, Failure};
 use crate::plan::Command;
 use crate::request::zone_name;
 
+mod contents;
+pub use contents::{SonosPlaylistContentsDto, SonosPlaylistContentsRequest, SonosPlaylistItemDto};
+
 /// Saving a queue changes the household's catalog, not playback.
 pub const SAVE: &str = "save_sonos_playlist";
 

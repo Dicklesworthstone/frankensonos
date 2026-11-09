@@ -5,7 +5,9 @@ mod e2e;
 
 use e2e::{Run, Scenario};
 use fsonos_api::surface::queue::QueueAddedDto;
-use fsonos_api::surface::sonos_playlists::{SavedSonosPlaylistDto, SonosPlaylistDto};
+use fsonos_api::surface::sonos_playlists::{
+    SavedSonosPlaylistDto, SonosPlaylistContentsDto, SonosPlaylistDto,
+};
 use fsonos_proto::content::{QUEUE, browse_all};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::DidlObject;
@@ -81,6 +83,8 @@ fn exercise(s: &mut Scenario, route: &str) {
             &played.stdout,
         );
 
+        inspect_saved_contents(s, route, room, &selected, &playing);
+
         let next = call(
             s,
             route,
@@ -111,6 +115,82 @@ fn exercise(s: &mut Scenario, route: &str) {
 
         save_and_recall(s, route, room, generation, &selected);
     }
+}
+
+fn inspect_saved_contents(
+    s: &mut Scenario,
+    route: &str,
+    room: &str,
+    selected: &[DidlObject],
+    playing: &str,
+) {
+    let host = s.ip(room);
+    let first = call(
+        s,
+        route,
+        "native-contents",
+        &["playlist-contents", room, "SQ:7", "--limit", "2"],
+    );
+    assert!(first.ok(), "{first:?}");
+    let page: SonosPlaylistContentsDto = serde_json::from_str(&first.stdout).unwrap();
+    assert_eq!(page.playlist.id, "SQ:7");
+    assert_eq!(page.total, 3);
+    assert_eq!(page.next_offset, Some(2));
+    assert_eq!(page.items.len(), 2);
+    let continuation = call(
+        s,
+        route,
+        "native-contents-next",
+        &[
+            "playlist-contents",
+            room,
+            &page.playlist.id,
+            "--limit",
+            "2",
+            "--offset",
+            "2",
+            "--expected-revision",
+            &page.revision,
+        ],
+    );
+    assert!(continuation.ok(), "{continuation:?}");
+    let last: SonosPlaylistContentsDto = serde_json::from_str(&continuation.stdout).unwrap();
+    s.check(
+        "native-contents",
+        "cli",
+        "saved contents retain duplicates and leave current music untouched",
+        last.revision == page.revision
+            && last.items.len() == 1
+            && last.items[0].position == 3
+            && last.items[0].uri == page.items[0].uri
+            && last.next_offset.is_none()
+            && browse_all(&s.lan(), host, QUEUE).unwrap() == selected
+            && soap::get_position_info(&s.lan(), host).unwrap().uri == playing
+            && soap::get_transport_info(&s.lan(), host).unwrap().state == TransportState::Playing,
+        format!("{} {}", first.stdout, continuation.stdout),
+    );
+    let stale = call(
+        s,
+        route,
+        "native-contents-stale",
+        &[
+            "playlist-contents",
+            room,
+            &page.playlist.id,
+            "--offset",
+            "2",
+            "--expected-revision",
+            "stale",
+        ],
+    );
+    s.check(
+        "native-contents-stale",
+        "cli",
+        "stale saved playlist continuations are refused",
+        !stale.ok()
+            && (stale.stdout.contains("QUEUE_CHANGED") || stale.stderr.contains("QUEUE_CHANGED")),
+        format!("{} {}", stale.stdout, stale.stderr),
+    );
 }
 
 fn save_and_recall(

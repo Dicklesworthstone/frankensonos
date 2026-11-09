@@ -220,6 +220,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "browse_library",
         "playlist_contents",
         "list_sonos_playlists",
+        "sonos_playlist_contents",
         "play_sonos_playlist",
         "save_sonos_playlist",
         "add_to_queue",
@@ -271,6 +272,14 @@ fn control_tools_are_advertised_with_their_arguments() {
         tool("play_sonos_playlist"),
         tool("save_sonos_playlist"),
         tool("add_to_queue"),
+    );
+    let native_contents = tool("sonos_playlist_contents");
+    assert_eq!(native_contents["annotations"]["readOnlyHint"], true);
+    assert_eq!(native_contents["annotations"]["idempotentHint"], true);
+    assert_tool_arguments(
+        native_contents,
+        &["zone", "playlist", "offset", "limit", "expected_revision"],
+        &["zone", "playlist"],
     );
 }
 

@@ -4,7 +4,7 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::sonos_playlists::{
     self, PlaySonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto,
-    SonosPlaylistDto,
+    SonosPlaylistContentsRequest, SonosPlaylistDto,
 };
 use fsonos_api::{ErrorCode, Failure};
 use serde::Serialize;
@@ -17,6 +17,21 @@ struct PlaylistsDto {
 }
 
 impl Backend {
+    /// Inspect the selected daemon's saved playlist, preserving the page's
+    /// native identity and revision for explicit continuation.
+    pub fn sonos_playlist_contents(
+        &self,
+        req: &SonosPlaylistContentsRequest,
+    ) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let path = req.path()?;
+            let contents = self.read(&path, || {
+                self.surface.sonos_playlist_contents(&self.client, req)
+            })?;
+            Ok((contents.text(), contents))
+        })
+    }
+
     /// Read the selected daemon's household, never a second local catalog.
     pub fn list_sonos_playlists(&self, zone: &str) -> McpResult<FinalCallToolResult> {
         respond(|| {
@@ -81,6 +96,30 @@ async fn list_sonos_playlists(
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |backend| backend.list_sonos_playlists(&zone)).await
+}
+
+#[tool(
+    description = "Inspect a playlist saved on a Sonos household without replacing the playing queue or changing playback, volume or the DJ. This reads native SQ: contents, not Spotify's cached playlists, and needs no Spotify sign-in. Give zone (Room@S1 or Room@S2 disambiguates households) and playlist as an SQ: id, current catalog number or unambiguous title from list_sonos_playlists. Returns title, artist, album, available duration/art/renderer identity, and exact one-based positions; duplicate tracks remain separate occurrences. limit is 1-100 (default 100). Continue with next_offset, the returned playlist.id and revision as expected_revision. An offset above zero requires the revision; a changed playlist, player or group fails instead of mixing pages. Start a fresh read explicitly after change. Uses list_favorites read permission. Rows are inspection only; play_sonos_playlist or add_to_queue still select the whole native playlist.",
+    annotations(read_only, idempotent)
+)]
+async fn sonos_playlist_contents(
+    ctx: &McpContext,
+    zone: String,
+    playlist: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
+    expected_revision: Option<String>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |backend| {
+        backend.sonos_playlist_contents(&SonosPlaylistContentsRequest {
+            zone,
+            playlist,
+            offset: offset.unwrap_or(0),
+            limit: limit.unwrap_or(100),
+            expected_revision,
+        })
+    })
+    .await
 }
 
 #[tool(

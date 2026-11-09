@@ -22,3 +22,12 @@
 .source-catalog-controls{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px}
 .source-catalog-controls p{flex:1;min-width:180px;margin:0}
 .source-fields [hidden]{display:none}
+.source-fields .source-contents{grid-column:1/-1;display:grid;gap:12px;min-width:0}
+.source-contents>p{margin:0}
+.source-track-list{max-height:300px;overflow:auto;margin:0;padding:4px 12px 4px 44px;background:var(--raised);border:1px solid var(--line-strong);border-radius:8px;font-size:12px}
+.source-track-list:empty{display:none}
+.source-track-list li{padding:10px 4px;overflow-wrap:anywhere}
+.source-track-list li+li{border-top:1px solid var(--line-strong)}
+.source-track-list strong,.source-track-list span{display:block;line-height:1.6}
+.source-track-list span{color:var(--muted);margin-top:3px}
+.source-fields .source-contents[hidden]{display:none}

@@ -918,6 +918,17 @@ Only an explicit, valid catalog read for that target releases the uncertainty;
 playback refreshes, other households and obsolete reads do not. Confirmed
 receipts retain the native id and offer a separate catalog-browsing handoff.
 
+Native saved-playlist contents are inspectable before playback through
+`fsonos playlist-contents`, `GET /sonos/playlists/contents`, MCP
+`sonos_playlist_contents`, and **Read tracks** in the phone and dashboard
+source selectors. Pages retain original ordered occurrences, including repeated
+tracks and missing resource metadata. Bounded native metadata/children reads
+and an opaque revision bind continuations to the household, coordinator, boot,
+group and saved contents. Changed observations require a fresh first page;
+browsing never changes the active queue, playback, volume or DJ. These are
+consistency checks, not a lock on the speaker's saved playlist. See
+`docs/SONOS_PLAYLISTS.md` for continuation and validation status.
+
 ### 12.7 Scenes
 
 [`b-scenes`, `d-scenes-surface`] Named, declarative house states: group layout,

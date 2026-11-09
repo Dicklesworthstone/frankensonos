@@ -18,6 +18,7 @@
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /sonos/playlists?zone=<room>` | | native saved Sonos playlists, with household-local SQ: ids |
+//! | `GET /sonos/playlists/contents?zone=<room>&playlist=<id>` | | ordered native saved contents with revision-bound continuation; changes no playback |
 //! | `POST /sonos/playlists/play` | [`crate::surface::sonos_playlists::PlaySonosPlaylistRequest`] | [`crate::OutcomeDto`]: replaces the queue and plays the saved playlist |
 //! | `POST /sonos/playlists/save` | [`crate::surface::sonos_playlists::SaveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::SavedSonosPlaylistDto`]: saves the current queue as a new native playlist |
 //! | `POST /library/play` | [`crate::SearchPlayRequest`] | [`crate::OutcomeDto`] |

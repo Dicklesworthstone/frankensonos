@@ -2,7 +2,9 @@
 //! action-log boundary and real localhost simulator sockets.
 
 use fsonos_api::surface::queue::QueueRequest;
-use fsonos_api::surface::sonos_playlists::{PlaySonosPlaylistRequest, SaveSonosPlaylistRequest};
+use fsonos_api::surface::sonos_playlists::{
+    PlaySonosPlaylistRequest, SaveSonosPlaylistRequest, SonosPlaylistContentsRequest,
+};
 use fsonos_api::{ErrorCode, Surface};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
@@ -65,6 +67,126 @@ fn play(zone: &str, playlist: &str) -> PlaySonosPlaylistRequest {
         zone: zone.into(),
         playlist: playlist.into(),
     }
+}
+
+fn contents(zone: &str, playlist: &str, limit: u32) -> SonosPlaylistContentsRequest {
+    SonosPlaylistContentsRequest {
+        zone: zone.into(),
+        playlist: playlist.into(),
+        offset: 0,
+        limit,
+        expected_revision: None,
+    }
+}
+
+#[test]
+fn saved_contents_retain_duplicate_occurrences_without_touching_playback() {
+    let sim = sim();
+    sim.retain_favorites(1, |_| false).unwrap();
+    sim.retain_favorites(2, |_| false).unwrap();
+    let houses = households(&sim);
+    let s = surface(Box::new(sim.lan()), &houses, Policy::default());
+    let mut revisions = Vec::new();
+    for generation in ["S1", "S2"] {
+        let zone = format!("Den@{generation}");
+        let host = resolve_room(&houses, &zone).unwrap().coordinator.ip;
+        soap::set_volume(&sim.lan(), host, 72).unwrap();
+        soap::set_mute(&sim.lan(), host, true).unwrap();
+        let before = soap::get_transport_info(&sim.lan(), host).unwrap();
+        let page = s
+            .sonos_playlist_contents(&Client::McpStdio, &contents(&zone, "SQ:7", 2))
+            .unwrap();
+        assert_eq!(page.playlist.id, "SQ:7");
+        assert_eq!(page.total, 3);
+        assert_eq!(page.offset, 0);
+        assert_eq!(page.next_offset, Some(2));
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|item| item.position)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(page.items.iter().all(|item| item.uri.is_some()));
+        assert!(!page.revision.is_empty());
+        let next = SonosPlaylistContentsRequest {
+            offset: page.next_offset.unwrap(),
+            expected_revision: Some(page.revision.clone()),
+            ..contents(&zone, &page.playlist.id, 2)
+        };
+        let last = s.sonos_playlist_contents(&Client::McpStdio, &next).unwrap();
+        assert_eq!(last.revision, page.revision);
+        assert_eq!(last.total, 3);
+        assert_eq!(last.items.len(), 1);
+        assert_eq!(last.items[0].position, 3);
+        assert_eq!(last.items[0].uri, page.items[0].uri);
+        assert_eq!(last.next_offset, None);
+        assert_eq!(soap::get_transport_info(&sim.lan(), host).unwrap(), before);
+        assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 72);
+        assert!(soap::get_mute(&sim.lan(), host).unwrap());
+        assert!(queue(&sim, &houses, &zone).is_empty());
+        revisions.push(page.revision);
+    }
+    assert_ne!(
+        revisions[0], revisions[1],
+        "equal native ids stay household-local"
+    );
+    assert!(
+        s.recent_actions(&Client::Cli, &ActionFilter::default())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn native_contents_resolve_member_rooms_and_initial_titles_but_refuse_stale_continuations() {
+    let sim = sim();
+    let initial = households(&sim);
+    let lead = resolve_room(&initial, "Den@S2").unwrap();
+    let member = resolve_room(&initial, "Office@S2").unwrap();
+    soap::join_group(&sim.lan(), member.player.ip, &lead.coordinator.id).unwrap();
+    let houses = households(&sim);
+    let s = surface(Box::new(sim.lan()), &houses, Policy::default());
+    let page = s
+        .sonos_playlist_contents(&Client::McpStdio, &contents("Office@S2", "Saved Mix S2", 1))
+        .unwrap();
+    assert_eq!(page.zone, "Den");
+    assert_eq!(page.playlist.id, "SQ:1");
+    assert_eq!(page.total, 2);
+    let same = s
+        .sonos_playlist_contents(&Client::McpStdio, &contents("Den@S2", "SQ:1", 1))
+        .unwrap();
+    assert_eq!(same.revision, page.revision);
+
+    for (zone, id, revision) in [
+        ("Den@S2", "SQ:1", "stale revision".to_owned()),
+        ("Den@S1", "SQ:1", page.revision.clone()),
+        ("Den@S2", "SQ:7", page.revision.clone()),
+    ] {
+        let request = SonosPlaylistContentsRequest {
+            offset: 1,
+            expected_revision: Some(revision),
+            ..contents(zone, id, 1)
+        };
+        let failure = s
+            .sonos_playlist_contents(&Client::McpStdio, &request)
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::QueueChanged, "{failure:?}");
+        assert!(failure.hint.contains("saved Sonos playlist"));
+    }
+    assert_eq!(
+        s.sonos_playlist_contents(&Client::Cli, &contents("Den", "SQ:1", 1))
+            .unwrap_err()
+            .code,
+        ErrorCode::AmbiguousRoom
+    );
+    assert_eq!(
+        s.sonos_playlist_contents(&Client::Cli, &contents("Den@S2", "missing title", 1))
+            .unwrap_err()
+            .code,
+        ErrorCode::NoMatch
+    );
+    assert!(queue(&sim, &houses, "Den@S2").is_empty());
 }
 
 #[test]
@@ -194,6 +316,30 @@ fn native_playlists_obey_existing_favorite_and_queue_permissions() {
             .code,
         ErrorCode::PolicyDenied
     );
+    assert_eq!(
+        s.sonos_playlist_contents(&Client::McpStdio, &contents("Den", "SQ:7", 100))
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyDenied
+    );
+    for request in [
+        contents("Den", "SQ:7", 101),
+        SonosPlaylistContentsRequest {
+            offset: 1,
+            ..contents("Den", "SQ:7", 100)
+        },
+        SonosPlaylistContentsRequest {
+            expected_revision: Some("revision".into()),
+            ..contents("Den", "Evening", 100)
+        },
+    ] {
+        assert_eq!(
+            s.sonos_playlist_contents(&Client::Cli, &request)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+    }
     assert_eq!(
         s.play_sonos_playlist(&Client::McpStdio, &play("Den", "SQ:1"))
             .unwrap_err()

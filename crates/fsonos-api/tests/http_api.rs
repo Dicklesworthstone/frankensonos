@@ -633,6 +633,23 @@ fn the_openapi_document_describes_every_route() {
 
 fn assert_native_playlist_openapi(doc: &Value) {
     assert_eq!(
+        doc["paths"]["/sonos/playlists/contents"]["get"]["operationId"],
+        "sonos_playlist_contents"
+    );
+    let contents = &doc["paths"]["/sonos/playlists/contents"]["get"];
+    let names: Vec<_> = contents["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| parameter["name"].as_str())
+        .collect();
+    for parameter in ["zone", "playlist", "offset", "limit", "expected_revision"] {
+        assert!(
+            names.contains(&parameter),
+            "missing {parameter}: {contents}"
+        );
+    }
+    assert_eq!(
         doc["paths"]["/sonos/playlists"]["get"]["operationId"],
         "list_sonos_playlists"
     );
@@ -668,6 +685,34 @@ fn assert_native_playlist_openapi(doc: &Value) {
         .map_or(schema, |name| &doc["components"]["schemas"][name]);
     assert!(queue["properties"]["playlist"].is_object());
     assert_eq!(queue["required"], json!(["zone"]));
+}
+
+#[test]
+fn saved_playlist_contents_rejects_invalid_or_ambiguous_queries_before_speaker_io() {
+    let api = Api::start("", &Client::Cli);
+    for query in [
+        "zone=Den",
+        "playlist=SQ%3A7",
+        "zone=Den&playlist=SQ%3A7&limit=0",
+        "zone=Den&playlist=SQ%3A7&limit=101",
+        "zone=Den&playlist=SQ%3A7&offset=1",
+        "zone=Den&playlist=Evening&expected_revision=old",
+        "zone=Den&playlist=SQ%3A7&limit=-1",
+        "zone=Den&playlist=SQ%3A7&offset=4294967296",
+        "zone=Den&playlist=SQ%3A7&offset=4294967295",
+        "zone=Den&playlist=SQ%3A7&zone=Other",
+        "zone=Den&playlist=SQ%3A7&metadata=untrusted",
+        "zone=Den&playlist=SQ%3A7&offset",
+        "zone=Den&playlist=SQ%3A7&expected_revision=%20",
+    ] {
+        let (status, body) = api.get(&format!("/sonos/playlists/contents?{query}"));
+        assert_eq!(status, 422, "{query}: {body}");
+        assert_eq!(body["code"], "INVALID_ARGUMENT", "{query}: {body}");
+    }
+    assert!(
+        api.actions().is_empty(),
+        "invalid reads must not survey or browse speakers"
+    );
 }
 
 /// http.rs's route table names every route the app serves (8hhv.2): a

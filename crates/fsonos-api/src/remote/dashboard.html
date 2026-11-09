@@ -110,6 +110,11 @@
     <p id="source-kinds" class="small-note">Tracks, albums, playlists and episodes can play now or join the queue. Artists and shows can join the queue. HTTP streams play now.</p>
     <label id="source-playlist-field" class="source-address" for="source-playlist" hidden>Saved Sonos playlist<select id="source-playlist" aria-describedby="source-playlist-help" disabled><option value="">Refresh playlists for this group</option></select></label>
     <div id="source-playlist-controls" class="source-catalog-controls" hidden><button id="source-playlist-refresh" class="text-button" type="button">Refresh playlists</button><p id="source-playlist-help" class="small-note" role="status"></p></div>
+    <section id="source-contents" class="source-contents" aria-label="Saved playlist contents" hidden>
+      <div class="source-catalog-controls"><button id="source-contents-read" class="text-button" type="button">Read tracks</button><button id="source-contents-previous" class="text-button" type="button" hidden>← Previous tracks</button><button id="source-contents-next" class="text-button" type="button" hidden>Next tracks →</button></div>
+      <p id="source-contents-help" class="small-note" role="status" aria-live="polite"></p>
+      <ol id="source-contents-items" class="source-track-list" aria-label="Saved playlist tracks"></ol>
+    </section>
     <label id="source-title-field" for="source-title">Display title <span class="small-note">optional</span><input id="source-title" type="text" maxlength="256" autocomplete="off" placeholder="A name for this source"></label>
     <label for="source-mode">Action<select id="source-mode"><option value="play">Play now</option><option value="next">Queue next</option><option value="end">Add to end</option></select></label>
   </div>

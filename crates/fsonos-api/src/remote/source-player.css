@@ -9,3 +9,10 @@
 .source-player [role="status"]:empty { display: none; }
 .source-catalog { display: grid; gap: .6rem; }
 .source-catalog > button { justify-self: start; }
+.source-contents { display: grid; gap: .65rem; padding-top: .5rem; }
+.source-track-list { max-height: 24rem; overflow: auto; margin: 0; padding: .25rem .75rem .25rem 3rem; border: 1px solid var(--line); border-radius: .5rem; }
+.source-track-list:empty { display: none; }
+.source-track-list li { padding: .65rem .25rem; overflow-wrap: anywhere; }
+.source-track-list li + li { border-top: 1px solid var(--line); }
+.source-track-list strong, .source-track-list span { display: block; }
+.source-track-list span { margin-top: .25rem; color: var(--muted); font-size: .85rem; }

@@ -51,6 +51,77 @@ fn request() -> PlaySonosPlaylistRequest {
     }
 }
 
+fn contents_request() -> SonosPlaylistContentsRequest {
+    SonosPlaylistContentsRequest {
+        zone: "Den & Study@S2".into(),
+        playlist: "SQ:7".into(),
+        offset: 2,
+        limit: 25,
+        expected_revision: Some("native:a&b=2".into()),
+    }
+}
+
+#[test]
+fn native_contents_forward_exact_daemon_household_page_and_revision() {
+    let page = json!({
+        "zone":"Den & Study", "playlist":{"id":"SQ:7", "title":"Evening & Friends"},
+        "revision":"native:a&b=2", "offset":2, "total":3,
+        "items":[{"position":3,"title":"Repeat","creator":"Artist", "duration_secs":123}]
+    });
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: Some(Ok(page.clone())),
+    });
+    let result = backend(&reply)
+        .sonos_playlist_contents(&contents_request())
+        .unwrap();
+    assert!(!result.is_error);
+    assert_eq!(result.structured_content, Some(page));
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!([
+            "GET",
+            "/sonos/playlists/contents?zone=Den%20%26%20Study%40S2&playlist=SQ%3A7&offset=2&limit=25&expected_revision=native%3Aa%26b%3D2",
+            null
+        ])]
+    );
+}
+
+#[test]
+fn failed_or_malformed_contents_never_fall_back_to_another_household() {
+    for answer in [
+        Err(Failure::new(
+            ErrorCode::QueueChanged,
+            "saved playlist changed",
+        )),
+        Err(Failure::new(
+            ErrorCode::PlayerUnreachable,
+            "speaker unavailable",
+        )),
+        Err(Failure::new(ErrorCode::PolicyDenied, "not allowed")),
+        Ok(json!({"zone":"Den", "playlist":{"id":"SQ:7", "title":"Incomplete"}, "items":[]})),
+    ] {
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(answer),
+        });
+        assert!(
+            backend(&reply)
+                .sonos_playlist_contents(&contents_request())
+                .is_err()
+        );
+        assert_eq!(reply.calls.lock().unwrap().len(), 1);
+    }
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: None,
+    });
+    let mut request = contents_request();
+    request.expected_revision = None;
+    assert!(backend(&reply).sonos_playlist_contents(&request).is_err());
+    assert!(reply.calls.lock().unwrap().is_empty());
+}
+
 #[test]
 fn native_playlist_reads_keep_the_selected_daemons_household_and_native_ids() {
     let list = json!([{"id":"SQ:7", "title":"Evening & Friends"}]);

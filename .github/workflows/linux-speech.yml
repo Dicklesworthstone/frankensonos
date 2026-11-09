@@ -15,6 +15,7 @@ on:
       - "scripts/test-remote-equalizer.cjs"
       - "scripts/test-remote-source-player.cjs"
       - "scripts/test-remote-source-player-queue.cjs"
+      - "scripts/test-sonos-playlist-contents.cjs"
       - "scripts/test-remote-fades.cjs"
       - "scripts/test-remote-library.cjs"
       - "scripts/test-remote-library-browse.cjs"
@@ -132,7 +133,7 @@ jobs:
         run: node --test scripts/test-remote-queue-coordination.cjs scripts/test-remote-queue-live.cjs scripts/test-remote-queue-http.cjs
       - name: Web direct source playback regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs
+        run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs scripts/test-sonos-playlist-contents.cjs
       - name: Web speaker sound regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-equalizer.cjs scripts/test-remote-fades.cjs scripts/test-remote-sound-copy.cjs
