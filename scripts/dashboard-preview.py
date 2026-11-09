@@ -12,11 +12,11 @@ from urllib.parse import parse_qs, urlsplit
 
 ASSETS = Path(__file__).resolve().parents[1] / "crates/fsonos-api/src/remote"
 SCRIPTS = ["event-feed.js", "dashboard-core.js", "dashboard-seek.js", "dashboard-live.js", "dashboard-visualizer.js",
-           "dashboard-audio.js", "scene-queue.js", "dj-direction.js", "playlist-contents.js",
+           "dashboard-audio.js", "scene-queue.js", "dj-direction.js", "dj-configuration.js", "dj-configuration-panel.js", "playlist-contents.js",
            "dashboard-library.js", "dashboard-session.js", "dashboard-queue.js",
            "dashboard-library-panel.js", "dashboard-activity.js", "dashboard-activity-panel.js",
            "dashboard-workspace.js", "dashboard-play-mode.js", "dashboard-groups.js", "timers.js", "dashboard-sleep.js", "dashboard-volume.js", "dashboard-scenes.js", "schedules.js", "dashboard-routines.js", "announcements.js", "dashboard-announcements.js", "dj-steering.js", "dashboard-direction.js", "dj-preferences.js", "dashboard-preferences.js", "dj-session.js", "dashboard-rehearsal.js", "source-player.js", "dashboard-source.js", "dashboard-playlist-save.js", "dashboard-playlist-save-panel.js", "spotify-connect.js", "library-sync.js", "dashboard-music.js", "dashboard.js"]
-STYLES = ["dashboard.css", "dashboard-library.css", "dashboard-queue.css", "dashboard-activity.css", "dashboard-announcements.css", "dashboard-direction.css", "dashboard-preferences.css", "dashboard-rehearsal.css", "dashboard-source.css", "dashboard-music.css", "dashboard-playlist-save.css"]
+STYLES = ["dashboard.css", "dashboard-library.css", "dashboard-queue.css", "dashboard-activity.css", "dashboard-announcements.css", "dashboard-direction.css", "dashboard-preferences.css", "dj-configuration.css", "dashboard-rehearsal.css", "dashboard-source.css", "dashboard-music.css", "dashboard-playlist-save.css"]
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 

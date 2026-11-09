@@ -55,6 +55,9 @@ const PREFERENCES_STYLE: &str = include_str!("../remote/dj-preferences.css");
 const SESSION_SCRIPT: &str = include_str!("../remote/dj-session.js");
 const SESSION_STYLE: &str = include_str!("../remote/dj-session.css");
 const DIRECTION_SCRIPT: &str = include_str!("../remote/dj-direction.js");
+const CONFIG_SCRIPT: &str = include_str!("../remote/dj-configuration.js");
+const CONFIG_PANEL_SCRIPT: &str = include_str!("../remote/dj-configuration-panel.js");
+const CONFIG_STYLE: &str = include_str!("../remote/dj-configuration.css");
 const STEERING_SCRIPT: &str = include_str!("../remote/dj-steering.js");
 const STEERING_STYLE: &str = include_str!("../remote/dj-steering.css");
 const HISTORY_SCRIPT: &str = include_str!("../remote/history.js");
@@ -112,7 +115,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENT_FEED_SCRIPT}\n{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{PLAYLIST_SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{DIRECTION_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENE_QUEUE_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
+                        "{EVENT_FEED_SCRIPT}\n{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{PLAYLIST_SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{DIRECTION_SCRIPT}\n{CONFIG_SCRIPT}\n{CONFIG_PANEL_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENE_QUEUE_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
                     ),
                 )
             },
@@ -129,7 +132,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}\n{EQ_STYLE}\n{SOUND_COPY_STYLE}\n{SOURCE_PLAYER_STYLE}\n{LISTENING_STYLE}\n{FADES_STYLE}\n{GROUP_VOLUME_STYLE}\n{ROUTINES_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{CONFIG_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}\n{EQ_STYLE}\n{SOUND_COPY_STYLE}\n{SOURCE_PLAYER_STYLE}\n{LISTENING_STYLE}\n{FADES_STYLE}\n{GROUP_VOLUME_STYLE}\n{ROUTINES_STYLE}"
                     ),
                 )
             },
@@ -349,6 +352,9 @@ mod tests {
             ("dj-session.js", SESSION_SCRIPT),
             ("dj-session.css", SESSION_STYLE),
             ("dj-direction.js", DIRECTION_SCRIPT),
+            ("dj-configuration.js", CONFIG_SCRIPT),
+            ("dj-configuration-panel.js", CONFIG_PANEL_SCRIPT),
+            ("dj-configuration.css", CONFIG_STYLE),
             ("dj-steering.js", STEERING_SCRIPT),
             ("dj-steering.css", STEERING_STYLE),
             ("history.js", HISTORY_SCRIPT),
