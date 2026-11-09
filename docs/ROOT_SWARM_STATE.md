@@ -3464,3 +3464,23 @@ seen in the writer format
 Xref note for that: the path string sits at VMA `0x667020` with two literal
 references in `.data` (`0x6e69ac`, `0x6e69b8`), and the loads into it are
 pool-relative, so the reader is found by the pool slot, not by an immediate.
+
+**The settings file alone does not satisfy the hhid.** Three shapes tried —
+flat object, `householdSettings` wrapper, and the full writer-schema array —
+all still log `<mod_zp,1> hhid not available`. That fits the log's own
+wording: the message is emitted by `mod_zp` when it queries the **muse**
+layer, and the file is only a cache; the authoritative source is the
+`NewMuseHHIDEvent` (`RZoneBridge handled NewMuseHHIDEvent, Muse HHID: %s`),
+which normally arrives from the cloud.
+
+So the emulator fix is not a file, it is **injecting the event** with the
+synthetic `HHID_111111111111111111111111111` — in the S1 this was done by
+forcing the state bit; here the equivalent is a gdb call into the
+`NewMuseHHIDEvent` handler (or the bridge that consumes it) once the daemon is
+up, using the same `0x596416` abort patch to get it running first.
+
+Also relevant: `.data` around the two path literals (`0x6e6970+`) is a
+**16-byte-record path-pair table** (`{2, 0, strA, strB}`, each `strB` the next
+record's `strA`, covering `0x666fbc → 0x66705c…`), i.e. the settings schema
+fragments chained by path — the consumer of that table is where the reader
+lives, and the chain gives an ordered walk to it.
