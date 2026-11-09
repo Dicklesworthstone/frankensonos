@@ -2675,3 +2675,34 @@ encrypted, so there is no genuine chime on hand to diff against.
 **Still no reboot route:** `/reboot` is 403 on GET and POST (hhid gate),
 `/status/reboot` is just another empty file route, `/api/reboot` exists but
 answers 400 to a bare GET. `/tools` has no reboot form.
+
+### 2026-11-09 (session 20e) — the transport is degraded; `Play` is state-dependent, not file-dependent
+
+Decisive correction to the previous entry: three files fired back-to-back in
+one state — the known-good `JFFSEX_84.aa`, the same file zero-padded to 23 706
+bytes (`jpad.aa`), and a 23 706-byte variant carrying an observer cell
+(`jcell.aa`, cell at file 23656) — and **all three returned Play 500**. An
+earlier single shot of `JFFSEX_84.aa` had returned 200. So `Play` success
+tracks the daemon's state, not the container and not the length, and
+back-to-back fires leave it worse.
+
+Also established in the process:
+- **a bare `http://` URI *is* fetched** (css journal: `GET /u_test.aa 200`).
+  The earlier "no fetch" reading was an atime artefact (`relatime`). So the
+  radio shim is only about `Play`, never about the fetch.
+- the daemon accepts and fetches, then answers 701/500 — a refusal to start,
+  not a fetch failure.
+- an `.aa` bigger than ~6.4 KB is not inherently rejected: the padded and
+  cell-carrying variants behaved identically to the original.
+
+**Practical consequence:** with the transport degraded, nothing can be
+measured reliably until the unit is power-cycled. Every route tried for a
+soft reboot is closed: `/reboot` 403 (GET and POST, hhid gate),
+`/status/reboot` an empty file route, `/api/reboot` 400 to a bare GET,
+`/tools` has no reboot form, and the `.aa` reboot gadget needs the chain
+that needs a working transport.
+
+**Next session starts with a physical power-cycle**, then immediately the
+`jcell.aa` vehicle (F=`0x55000000`, cell at file 23656) as the single
+canary — a crash inside ~55 s proves the chain is live again, and only then
+does a band sweep make sense. `jcell.aa` is on the Mac payload dir and on css.
