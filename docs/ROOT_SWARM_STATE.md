@@ -2551,3 +2551,42 @@ threads exist per server (spawned via the single `pthread_create` site
    discriminates: variant A must reboot if pointers are honoured, variant B
    must produce the dd effect.
 3. Only then re-attempt port 2323 / `Configure.dev`.
+
+### 2026-11-09 (session 20b) — the device fire rig rebuilt from scratch, and what it exposes
+
+`fire84.py` was lost with /tmp; `scripts/fire_aa.py` re-implements it and the
+rebuild pinned down two things the old notes never recorded.
+
+**The control endpoint is NOT `/AVTransport/Control`.** On 57.23 that path is
+GET-only (GET 404 / POST 405). The live one is
+`/MediaRenderer/AVTransport/Control` (POST 200 on GetTransportInfo).
+
+**A bare `http://` URI is accepted by SetAVTransportURI (200) but the
+transport never fetches it.** The URI must go through the radio shim:
+`x-rincon-mp3radio://http://<host>:<port>/<file>`. With that form the unit's
+own HTTP client fetches (proven in the payload server's journal, twice per
+file — a probe then the read), and `Play` returns 200 instead of UPnP 701
+"Transition not available".
+
+**The blocker the rig exposes:** with these synthetic `.aa` files the unit
+fetches and accepts but never reaches `PLAYING` — `GetTransportInfo` stays
+STOPPED through `setav`+`Play`, through a `Stop` settle, and on both the
+303/4248-byte "benign" files and the 24KB payloads. 32 s of `/status/VERSION`
+polling at 3 s stays 200 with no hang. Since the notify that runs the chain
+needs a state change, no state change = the parse is never dispatched.
+
+Known-band re-test (0x106c4e10 / 4ef0 / 4f50, the pre-shift band): all
+SetAV+Play 200, no 2323, no hang — confirms the campaign doc's "the band
+shifts after every reboot" and that a fresh calibration is needed *after*
+playback works.
+
+**Payload encodes correctly** — `recon/tnzm_audible/aimed_builder.py` is the
+4-level chain (`[F+6404]=A; [A+8]=B; [B]=V; FN=[V+28]`, r3=V=cmd) and the
+observer cell sits at **node 23620 = file 23656** (node n = file n+36, same
+mapping as every other field; the older note's 23657 is one byte late).
+Set `S2_SYSTEM_PLT = 0x105464B0` (the PPC GOT slot) for .84, and point the
+cell at `F = S+6380`.
+
+**Environment wrinkle:** the payload server now holds css `:1400`
+(`/tmp/aa_www/serve.py`, systemd unit `aa1400`) — a second copy of it, or the
+emulator, must not expect 1400 free on css.
