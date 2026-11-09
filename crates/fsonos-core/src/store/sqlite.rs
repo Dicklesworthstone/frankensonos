@@ -781,6 +781,39 @@ fn heard_rows(plays: &[(String, i64)]) -> Vec<Vec<SqliteValue>> {
         .collect()
 }
 
+/// Called only inside the caller's account-fenced publication transaction.
+/// Two simple statements avoid replacing a newer timestamp with a delayed
+/// observation. Only the bounded incoming rows are written in the common case.
+fn merge_heard_rows(
+    connection: &AsyncConnection,
+    rows: &[Vec<SqliteValue>],
+) -> Result<(), FrankenError> {
+    if !rows.is_empty() {
+        connection.execute_many_with_params_in_transaction_sync(
+            "INSERT OR IGNORE INTO spotify_heard (source_uri, played_at) VALUES (?1, ?2)",
+            rows,
+        )?;
+        connection.execute_many_with_params_in_transaction_sync(
+            "UPDATE spotify_heard SET played_at = ?2 WHERE source_uri = ?1 AND played_at < ?2",
+            rows,
+        )?;
+    }
+    let retained = i64::try_from(super::MAX_SPOTIFY_HEARD_TRACKS)
+        .map_err(|error| FrankenError::Internal(error.to_string()))?;
+    let discarded = connection.query_with_params_sync(
+        "SELECT source_uri FROM spotify_heard ORDER BY played_at DESC, source_uri DESC LIMIT -1 OFFSET ?1",
+        &[retained.into()],
+    )?;
+    for row in &discarded {
+        let uri = text(row, 0).map_err(|error| FrankenError::Internal(error.to_string()))?;
+        connection.execute_with_params_sync(
+            "DELETE FROM spotify_heard WHERE source_uri = ?1",
+            &[uri.into()],
+        )?;
+    }
+    Ok(())
+}
+
 struct SpotifyLibraryProjection {
     library: Vec<Vec<SqliteValue>>,
     directory: Option<Vec<Vec<SqliteValue>>>,
@@ -835,13 +868,7 @@ fn write_spotify_library(
         )?;
     }
     if let Some(rows) = &projection.listening {
-        connection.execute_sync("DELETE FROM spotify_heard")?;
-        if !rows.is_empty() {
-            connection.execute_many_with_params_in_transaction_sync(
-                "INSERT OR REPLACE INTO spotify_heard (source_uri, played_at) VALUES (?1, ?2)",
-                rows,
-            )?;
-        }
+        merge_heard_rows(connection, rows)?;
     }
     Ok(changed)
 }
@@ -2400,6 +2427,21 @@ impl Store for SqliteStore {
         .iter()
         .map(|r| Ok((text(r, 0)?, int(r, 1)?)))
         .collect()
+    }
+
+    fn merge_spotify_heard(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        plays: &[(String, i64)],
+    ) -> Result<bool, StoreError> {
+        let rows = heard_rows(plays);
+        self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != Some(owner) {
+                return Ok(false);
+            }
+            merge_heard_rows(connection, &rows)?;
+            Ok(true)
+        })
     }
 
     fn album_misses(&self) -> Result<Vec<(String, i64)>, StoreError> {

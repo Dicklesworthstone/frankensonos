@@ -458,6 +458,14 @@ impl Store for SharedStore<'_> {
         self.lock().save_spotify_heard(plays)
     }
 
+    fn merge_spotify_heard(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        plays: &[(String, i64)],
+    ) -> Result<bool, StoreError> {
+        self.lock().merge_spotify_heard(owner, plays)
+    }
+
     fn spotify_heard(&self) -> Result<Vec<(String, i64)>, StoreError> {
         self.lock().spotify_heard()
     }
