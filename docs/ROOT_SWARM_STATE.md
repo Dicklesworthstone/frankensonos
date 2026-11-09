@@ -3134,3 +3134,32 @@ must place those four dwords accordingly and keep the string at `B` usable
 
 This closes the "is the chain real" question for good: it is, and it is
 reproducible on demand in the emulator.
+
+### 2026-11-09 (session 21) — `/customsd` re-verified; HLS ring re-confirmed as a killer
+
+**`/customsd` (pre-auth config write).** Form is 4 431 bytes with a fresh
+`csrfToken`; a full POST answers **Success!**. It is *not* injectable and it
+does not crash: `name` 4 000 B, `uri` 4 000 B, `pollInterval=-1`, path
+traversal (`http://a/../../jffs/system/Configure.dev`) and `x-file-cifs://`
+all return 200 with the daemon healthy.
+
+The registration only *shows* when the `sid` matches a live slot: posting with
+`sid=253` replaced the existing custom entry in
+`MusicServices#ListAvailableServices` (`Id="253" Name="ompX"`), while
+`sid=254`/`255` accept the POST but never appear in the list. The write is
+live-immediate and refers to URLs fetched later, not executed.
+
+**HLS ring still kills.** `/tmp/hls.py` on css `:8089` serves a playlist whose
+window advances one segment per reload; fired as
+`hls-radio://http://209.145.54.164:8089/p.m3u8` the daemon fetched
+`p.m3u8`/`seg13/seg15/seg17` and **died at 37 s** (the server log shows the
+sequence marching), recovering on its own via the watchdog. That is a
+repeatable crash primitive, but the overrun target is fixed (`dest = base -
+0xc48`), so it is not yet a controllable write.
+
+**Other device facts from this pass:** `/customsd` answers 200 on `.84` and
+`.202` but **403 on `.135`** (S2 gates it). `/tools` host values accept a
+leading dash only as the whole token — `-c1` alone is 200, `-c1 127.0.0.1`
+with a space is 400 — so ping options are reachable but without a target.
+Dead-`A` payload with frames: `SetAV 200`, `Play 200`, states
+`{PLAYING, TRANSITIONING}`, still no fault — the null observer target stands.
