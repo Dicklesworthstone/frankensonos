@@ -3344,3 +3344,12 @@ Either way the practical statement is firm: **on `.135` any
 URI included, and the unit crash-loops itself thereafter. The handler family
 to read is the `0x10104f38` equivalent; an unconditional death on an empty
 input points at the entry/lock state rather than at any parse of the value.
+
+**S2 disassembly caveat found:** `readelf -h` on `/tmp/s86/bin/anacapad` shows
+`Flags: 0x74001005 … mips16, mips32r2`. The image is **mixed MIPS32/MIPS16**,
+so a plain `objdump -d` decodes most of it as `.word` and immediate-based
+xref hunting silently fails — MIPS16 instruction encodings are 16-bit and use
+different immediates, and only symbol-carrying functions are reliably
+decodable. Any S2 RE pass must either force MIPS16 for the affected ranges
+(symbols carry the mode bit) or work from the ~150 `muse` symbols and the
+`AVTransport` data xrefs rather than from `lui/addiu` pairs.
