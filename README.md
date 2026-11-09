@@ -252,7 +252,8 @@ Add `--background` to return a daemon job ID immediately after admission:
 `fsonos announcements`, `fsonos announcements status <job-id>`, and
 `fsonos announcements cancel <job-id>` to follow or cancel it. The phone remote
 and dashboard use the same job controls. Queued cancellation avoids speaker
-writes; active cancellation checks ownership and finishes restoration before
+writes; cancellation during local speech synthesis stops the engine and discards
+unpublished audio. Active cancellation checks ownership and finishes restoration before
 publishing its final receipt. Jobs retain per-household progress and partial
 restoration details. See [Announcement jobs](docs/ANNOUNCEMENT_JOBS.md) for the
 HTTP/MCP contract, permissions, and process-local retention.

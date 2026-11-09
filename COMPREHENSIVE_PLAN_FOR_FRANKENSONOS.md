@@ -1103,7 +1103,9 @@ and `announcements`, HTTP `/announcements`, and MCP start/list/get/cancel tools.
 The phone remote and dashboard share job observation and cancellation, release
 their creation flow after admission, and show each household's final restoration
 receipt. Synchronous, scheduled, and background delivery share capacity; queued
-cancellation sends no speaker writes, and active cancellation preserves newer
+cancellation sends no speaker writes. Local speech synthesis also observes
+cancellation during its process poll, reaps the engine and its Unix process
+group, and discards unpublished audio. Active cancellation preserves newer
 manual playback or group ownership. A cancellation request is distinct from
 completed restoration. Exact admitted room identities survive alias edits;
 ordinary callers see their own jobs and the configured owner can inspect all.
