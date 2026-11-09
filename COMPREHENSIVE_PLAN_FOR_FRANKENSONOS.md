@@ -969,6 +969,21 @@ contents are outside action-history undo. Existing `keep` scenes retain their
 original behavior.
 See `docs/SCENE_QUEUES.md` for the capture and apply contract.
 
+Authored scenes also accept native saved Sonos playlists through
+`{kind: "sonos_playlist", name: "SQ:7"}`. Saving resolves and pins the actual
+household, exact native id and catalog title. Each recall stages the saved
+playlist's current contents; renamed, missing or cross-household references
+require an explicit new save. A paused load never starts the queue. Permitted
+sources are checked before caps or grouping writes and again at source
+execution, including the final coordinator and group membership. Caller and
+saved-writer playback permissions and caps both apply. Schedules use the
+existing ApplyScene action and check catalog readiness before claiming a run;
+partial or uncertain writes are not replayed. Queue replacement remains
+outside action-history undo. CLI, HTTP, MCP and the browser scene editor share
+this source; see `docs/SONOS_PLAYLIST_SCENES.md`. Browser regressions pass;
+the new S1/S2 simulator cases remain unexecuted behind the local dependency
+build failure.
+
 DJ scenes check every permitted prospective start after caller/writer policy
 filtering and before any volume cap lowering, fade supersession, grouping,
 queue, or steering writes. Readiness uses the future coordinator's inventory

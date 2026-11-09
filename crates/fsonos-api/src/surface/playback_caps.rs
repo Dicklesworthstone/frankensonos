@@ -137,6 +137,7 @@ fn scene_sounding_rooms<'h>(households: &'h [HouseholdState], plan: &ScenePlan) 
                 joining.push(player);
             }
             SceneOp::Favorite { coordinator, .. }
+            | SceneOp::SonosPlaylist { coordinator, .. }
             | SceneOp::Uri { coordinator, .. }
             | SceneOp::Queue { coordinator, .. }
             | SceneOp::QueueBackup { coordinator, .. }

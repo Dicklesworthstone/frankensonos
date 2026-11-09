@@ -87,6 +87,7 @@ fn op_name(op: &SceneOp) -> &'static str {
         SceneOp::Volume { .. } => "volume",
         SceneOp::Mute { .. } => "mute",
         SceneOp::Favorite { .. } => "favorite",
+        SceneOp::SonosPlaylist { .. } => "sonos_playlist",
         SceneOp::Uri { .. } => "uri",
         SceneOp::Queue { .. } => "queue",
         SceneOp::QueueBackup { .. } => "queue_backup",

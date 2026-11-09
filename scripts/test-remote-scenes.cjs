@@ -588,10 +588,104 @@ const topology = () => [
   { household: 'S2', coordinator_room: 'Den', members: ['Den', 'Studio'] },
 ];
 const SPOTIFY_ID = '0123456789ABCDEFabcdef';
+const nativeRow = () => row({ groups: [{ coordinator: 'Den@SIM_HOUSEHOLD_S1', members: [], playing: true,
+  source: { kind: 'sonos_playlist', name: 'SQ:7',
+    playlist: { household: 'SIM_HOUSEHOLD_S1', id: 'SQ:7', title: 'Evening & friends' } } }] });
+
+test('native playlist scene summaries bind the household, exact native id and saved title', () => {
+  const saved = Scenes.sceneOf(nativeRow());
+  assert.match(Scenes.detail(saved), /Evening & friends.*SQ:7.*SIM_HOUSEHOLD_S1.*replaces the queue/);
+  for (const field of ['id', 'household', 'title']) {
+    const changed = nativeRow();
+    changed.groups[0].source.playlist[field] = field === 'id' ? 'SQ:8' : 'Changed';
+    if (field === 'id') changed.groups[0].source.name = 'SQ:8';
+    assert.notEqual(Scenes.signature(saved), Scenes.signature(Scenes.sceneOf(changed)));
+    const missing = nativeRow(); delete missing.groups[0].source.playlist[field];
+    assert.throws(() => Scenes.sceneOf(missing));
+  }
+  for (const source of [
+    { kind: 'sonos_playlist', name: 'SQ:7' },
+    { ...nativeRow().groups[0].source, uri: 'file:///untrusted.rsq' },
+    { ...nativeRow().groups[0].source, name: 'SQ:8' },
+    { kind: 'keep', playlist: nativeRow().groups[0].source.playlist },
+  ]) assert.throws(() => Scenes.sceneOf(row({ groups: [{ coordinator: 'Den', members: [], source }] })));
+});
+
+test('native catalog choices preserve duplicate titles while requiring unique native ids', () => {
+  const list = [{ id: 'SQ:7', title: 'Same title' }, { id: 'SQ:8', title: 'Same title' }];
+  const choices = Scenes.sourceChoicesOf('sonos_playlist', list);
+  assert.deepEqual(choices.items.map((p) => p.id), ['SQ:7', 'SQ:8']);
+  assert.equal(choices.ambiguous, 0);
+  for (const bad of [[list[0], list[0]], [{ id: '7', title: 'Missing prefix' }],
+    [{ id: 'SQ:7/1', title: 'Track' }], [{ id: 'SQ:7', title: '' }]]) {
+    assert.throws(() => Scenes.sourceChoicesOf('sonos_playlist', bad));
+  }
+});
+
+test('the native playlist chooser saves the reviewed household source without starting playback', async () => {
+  for (const target of ['Den@S1', 'Den@S2']) {
+    const f = await editor();
+    group(f, target, 'sonos_playlist');
+    let g = f.control.state.draft.groups[0];
+    assert.equal(await f.control.loadSources(g), true);
+    assert.deepEqual(f.writes, []);
+    const choice = f.control.choicesFor(g).items[1];
+    assert.equal(f.control.chooseSource(g, choice), true);
+    g = f.control.state.draft.groups[0];
+    f.control.editGroup(g, 'playing', 'pause');
+    const body = await saveDefinition(f);
+    assert.deepEqual(body.groups[0], { coordinator: target, members: [],
+      source: { kind: 'sonos_playlist', name: 'SQ:8' }, playing: false });
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.control.state.saved.groups[0].source.playlist.household, `SIM_HOUSEHOLD_${target.split('@')[1]}`);
+    assert.match(f.control.state.message, /No playback was changed/);
+  }
+});
+
+test('native catalog and destination changes invalidate the scene review before saving', async () => {
+  for (const change of ['title', 'removed', 'player']) {
+    const f = await editor();
+    group(f, 'Den@S1', 'sonos_playlist', 'SQ:7');
+    assert.equal(await f.control.reviewDefinition(), true, f.control.state.message);
+    const pending = f.control.state.pending;
+    if (change === 'title') f.playlists[0].title = 'Renamed';
+    else if (change === 'removed') f.playlists.shift();
+    else f.identityVersion = '_REPLACED';
+    assert.equal(await f.control.confirm(pending), false, change);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
+test('a native scene receipt with another pinned household remains uncertain and is never repeated', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'sonos_playlist', 'SQ:7');
+  assert.equal(await f.control.reviewDefinition(), true);
+  const pending = f.control.state.pending;
+  f.savedHousehold = 'SIM_HOUSEHOLD_S2';
+  assert.equal(await f.control.confirm(pending), false);
+  assert.equal(await f.control.confirm(pending), false);
+  assert.equal(f.writes.length, 1);
+  assert.match(f.control.state.message, /pinned household.*uncertain/);
+});
+
+test('server-canonical household room names still confirm the same reviewed custom scene', async () => {
+  const f = await editor();
+  f.canonical = true;
+  group(f, 'Den@S1', 'uri', 'https://example.invalid/radio.mp3', ['Hall@S1']);
+  f.control.editRoom('Den@S1', 'volumes', '20');
+  f.control.editRoom('Studio@S2', 'mutes', 'muted');
+  await saveDefinition(f);
+  assert.equal(f.control.state.saved.groups[0].coordinator, 'Den@SIM_HOUSEHOLD_S1');
+  assert.equal(f.control.state.saved.volumes['Den@SIM_HOUSEHOLD_S1'], 20);
+  assert.equal(f.control.state.saved.mutes['Studio@SIM_HOUSEHOLD_S2'], true);
+});
+
 function editorFixture(initial = []) {
   const f = { rows: structuredClone(initial), zones: topology(), writes: [], reads: [],
     favorites: [{ id: 'FV:2/1', title: 'Dinner', kind: 'container', description: 'Owner mix' }],
-    moods: { moods: [{ name: 'focus' }] }, hook: null };
+    moods: { moods: [{ name: 'focus' }] }, hook: null,
+    playlists: [{ id: 'SQ:7', title: 'Evening & friends' }, { id: 'SQ:8', title: 'Evening & friends' }],
+    identityVersion: '', savedHousehold: null, canonical: false };
   f.call = async (name, options = {}) => {
     if (f.hook) {
       const result = await f.hook(name, options);
@@ -602,6 +696,15 @@ function editorFixture(initial = []) {
     if (name === 'zones') return structuredClone(f.zones);
     if (name === 'favorites') return structuredClone(f.favorites);
     if (name === 'moods') return structuredClone(f.moods);
+    if (name === 'sonosPlaylists') return structuredClone(f.playlists);
+    if (name === 'sceneTargets') {
+      const target = options.query.target;
+      const parsed = /^(.*)@(S[12]|SIM_HOUSEHOLD_S[12])$/.exec(target);
+      if (!parsed) throw new Error('unknown target');
+      const household = parsed[2].replace('SIM_HOUSEHOLD_', '');
+      return { target, matched: 'room', rooms: [{ room: parsed[1], household,
+        player: `PLAYER_${household}_${parsed[1]}${f.identityVersion}`, coordinator: `COORDINATOR_${household}` }], groups: [] };
+    }
     assert.equal(name, 'sceneSave', 'custom scene creation must never send a speaker command');
     f.writes.push({ name, ...structuredClone(options) });
     const saved = { name: options.params.name, saved: 1_900_000_001, ...structuredClone(options.body) };
@@ -609,6 +712,17 @@ function editorFixture(initial = []) {
       const favorite = f.favorites.find((v) => v.id === g.source.name);
       g.source.name = favorite.title;
       g.source.uri = 'x-file:server-learned-favorite';
+    }
+    for (const g of saved.groups) if (g.source.kind === 'sonos_playlist') {
+      const chosen = f.playlists.find((p) => p.id === g.source.name);
+      const household = g.coordinator.split('@').at(-1);
+      g.source.playlist = { id: chosen.id, title: chosen.title, household: f.savedHousehold || `SIM_HOUSEHOLD_${household}` };
+      f.canonical = true;
+    }
+    if (f.canonical) {
+      const canonical = (target) => target.replace(/@(S[12])$/, '@SIM_HOUSEHOLD_$1');
+      for (const g of saved.groups) { g.coordinator = canonical(g.coordinator); g.members = g.members.map(canonical); }
+      for (const key of ['volumes', 'mutes']) saved[key] = Object.fromEntries(Object.entries(saved[key]).map(([target, value]) => [canonical(target), value]));
     }
     f.rows = [...f.rows.filter((r) => r.name.toLowerCase() !== saved.name.toLowerCase()), saved];
     return saved;
@@ -965,6 +1079,70 @@ test('custom definitions cross a real localhost JSON endpoint with exact encoded
       volumes: { 'Den@S1': 0 }, mutes: { 'Den@S2': false } } }]);
   assert.equal(requests.filter((r) => r.path === '/favorites?zone=Hall%40S1').length, 3,
     'browse, review and confirmation all read the exact household-qualified source');
+});
+
+test('native playlist scene choices and identity checks use registered routes through a real HTTP endpoint', async (t) => {
+  const http = require('node:http');
+  const { once } = require('node:events');
+  const f = editorFixture();
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    try {
+      let input = '';
+      for await (const chunk of req) input += chunk;
+      const url = new URL(req.url, 'http://localhost');
+      const query = Object.fromEntries(url.searchParams);
+      requests.push({ method: req.method, path: req.url });
+      const read = { '/scenes': 'scenes', '/zones': 'zones',
+        '/sonos/playlists': 'sonosPlaylists', '/rooms/resolve': 'sceneTargets' }[url.pathname];
+      const save = req.method === 'PUT' && url.pathname.startsWith('/scenes/');
+      assert.ok((req.method === 'GET' && read) || save, 'only catalog, identity and scene storage endpoints are allowed');
+      const result = await f.call(save ? 'sceneSave' : read, save
+        ? { params: { name: decodeURIComponent(url.pathname.slice('/scenes/'.length)) }, body: JSON.parse(input) }
+        : { query });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (error) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: error.message }));
+    }
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const routes = { scenes: ['GET', '/scenes'], zones: ['GET', '/zones'], ...Scenes.routes };
+  const call = async (operation, { params = {}, query = {}, body } = {}) => {
+    assert.ok(routes[operation], `scene operation ${operation} must be registered`);
+    const [method, template] = routes[operation];
+    const path = template.replace(/\{(\w+)\}/g, (_, key) => encodeURIComponent(params[key]))
+      + (Object.keys(query).length ? `?${new URLSearchParams(query)}` : '');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+      method, headers: { 'content-type': 'application/json' },
+      ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const control = Scenes.model({ call });
+  assert.equal(await control.refresh(), true);
+  assert.equal(await control.beginDefinition(), true);
+  control.editName('Morning / & 二');
+  group({ control }, 'Den@S1', 'sonos_playlist');
+  assert.equal(await control.loadSources(control.state.draft.groups[0]), true, control.state.message);
+  assert.equal(control.chooseSource(control.state.draft.groups[0], control.choicesFor(control.state.draft.groups[0]).items[1]), true);
+  control.editGroup(control.state.draft.groups[0], 'playing', 'pause');
+  assert.equal(await control.reviewDefinition(), true, control.state.message);
+  assert.deepEqual(f.writes, []);
+  assert.equal(await control.confirm(control.state.pending), true, control.state.message);
+  assert.equal(f.writes.length, 1);
+  assert.deepEqual(f.writes[0].body.groups[0], { coordinator: 'Den@S1', members: [],
+    source: { kind: 'sonos_playlist', name: 'SQ:8' }, playing: false });
+  assert.equal(control.state.saved.groups[0].source.playlist.household, 'SIM_HOUSEHOLD_S1');
+  assert.equal(requests.filter((r) => r.path === '/sonos/playlists?zone=Den%40S1').length, 3);
+  assert.ok(requests.some((r) => r.path === '/rooms/resolve?target=Den%40SIM_HOUSEHOLD_S1'));
+  assert.deepEqual(requests.filter((r) => r.method !== 'GET'), [
+    { method: 'PUT', path: `/scenes/${encodeURIComponent('Morning / & 二')}` },
+  ]);
 });
 
 test('scene music choices offer playable unique-title favorites and preserve useful descriptions', () => {
