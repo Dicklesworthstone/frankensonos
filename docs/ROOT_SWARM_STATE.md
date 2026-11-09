@@ -2874,3 +2874,42 @@ not reach the notify, and the dispatcher is provably never entered
 (`0xDEADBEEF` inert with the fetch in the journal). The blocker is the load
 itself — an all-zero CELP body — and the next lever is a real chime payload,
 synthesised or captured.
+
+### 2026-11-09 (session 20j) — THE SIZE CAP: the type-2 handler rejects any value ≥ 4096 bytes
+
+Reading the actual handler `0x10104f38` (r3 = session, r4 = node name, r5 =
+node value) settles the format question and invalidates the payloads in use:
+
+```
+0x10104f8c  if (*(obj+6380))         -> 701
+0x10104fd4  if (strlen(node) >= 1024) or (strlen(value) >= 4096) -> 402
+0x10105134  strlcpy(stack_buf, value, 4097)
+0x1010518c  parse(obj+6340+17928, node, strlen_of_copy, …)
+```
+
+- any node name ≥ 1 024 or value ≥ 4 096 is refused with **UPnP 402**, i.e.
+  exactly the `Play` 500 seen in every recent run — the loads were never
+  reaching the copy;
+- the value is copied with `strlcpy` at **4097** and the *consumer* is handed
+  `strlen(copy)`, so the copy is NUL-bounded: everything past the first NUL
+  byte is not copied. A payload layout must therefore be **NUL-free** across
+  every byte it needs;
+- consequence: **every payload used so far is over the cap** — JFFSEX is
+  6 408 bytes and the whole `ppc_v5_builder` family is 24 000, so the
+  dispatcher could never have been reached, and node 6404 could never be
+  copied (only nodes 0-4095 exist). The earlier `0xDEADBEEF` inertness is
+  fully explained.
+
+**Compact design derived and staged** (100 bytes total, `mkfmt.py`):
+`r3` is `B`, and the string the shell sees starts with `B`'s four bytes,
+so: node 0 = `C` (making `[B] = V = C` and `FN = [V+28]` land at node 28),
+node 4 = `;telnetd -p 2323 #` — the leading pointer bytes run as a harmless
+failing command, then `;` runs telnetd, and the trailing `#` comments the
+binary fields out; node 22-23 spaces, node 24 = `A = C-8` (so `[A+8] = C`),
+node 28 = `system@GOT`. `F_*.aa` files for `C ± 0x40…0x400` are on css.
+
+Still blocked one level up: `Play` answers 500 even for a legal 100-byte
+payload on a freshly rebooted daemon, so the state change that drives the
+notify still does not happen; with the size cap known, the next lever is
+getting `Play` to 200 on a legal file (the successful 200s earlier in the
+session all predate this analysis and were on illegal files).
