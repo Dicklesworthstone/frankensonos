@@ -3422,3 +3422,27 @@ The practical fixes are therefore the S1 playbook: either nop the abort call
 (**file offset `0x196417`**, `jal abort` → `nop`) so the load continues with a
 default parameter block, or find the classifier that fills `sp+4144` and feed
 it a supported id.
+
+**The S2 daemon now runs, logs and binds in the emulator.** With the abort
+call at file offset **`0x196416`** (`jal abort` → two mips16 nops `6500 6500`;
+original preserved as `/tmp/s86/bin/anacapad.orig`) the daemon starts
+normally: it writes its full log set under `/opt/log` (`anacapa.avt.play.log`,
+`chsrc`, `musecmd`, `musevt`, …), **binds `:1400`** and produces real traces.
+
+What it then does, verbatim:
+
+```
+<mod_zp,1> hhid not available
+<main,3> ******************************        (≈ every 10-15 s)
+```
+
+- `:1400` sits with **Recv-Q 2** — connections queue and are never accepted,
+  exactly the S1 emulator's behaviour.
+- The daemon **restarts every 10-15 s** (the `<main,3>` banner repeats), so
+  even the bound listener is intermittent.
+
+So both builds hit the same two walls in emulation — the hhid gate and the
+absent accept loop — but the S2 now has the instrument it lacked: a running
+daemon with per-module logs and a bind, plus a documented patch to get past
+its startup abort. Note the abort patch is *emulator-only*; the device is
+untouched.
