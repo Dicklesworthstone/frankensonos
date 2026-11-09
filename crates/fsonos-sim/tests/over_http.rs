@@ -652,6 +652,105 @@ fn a_clock_moved_alone_catches_up_in_order_at_the_next_request() {
     );
 }
 
+#[test]
+fn renderer_errors_preserve_the_queue_and_survive_a_refused_play() {
+    let sim = sim();
+    for room in ["Kitchen", "Living Room"] {
+        let t = sim.transport(room).unwrap();
+        let uuid = &sim.player(room).unwrap().uuid;
+        for uri in [
+            "x-file-cifs://music.example/a.flac",
+            "x-file-cifs://music.example/b.flac",
+        ] {
+            fsonos_proto::control::add_uri_to_queue(&t, t.ip(), uri, "", false).unwrap();
+        }
+        avt(
+            &t,
+            "SetAVTransportURI",
+            &[
+                ("CurrentURI", &format!("x-rincon-queue:{uuid}#0")),
+                ("CurrentURIMetaData", ""),
+            ],
+        )
+        .unwrap();
+        fsonos_proto::control::seek_track(&t, t.ip(), 2).unwrap();
+        fsonos_proto::control::play(&t, t.ip()).unwrap();
+        sim.advance(Duration::from_secs(13));
+        let queue = content::browse_snapshot(&t, t.ip(), content::QUEUE).unwrap();
+        let position = avt(&t, "GetPositionInfo", &[]).unwrap();
+        sim.playback_error(room).unwrap();
+        let info = avt(&t, "GetTransportInfo", &[]).unwrap();
+        assert_eq!(info.get("CurrentTransportState"), Some("STOPPED"));
+        assert_eq!(info.get("CurrentTransportStatus"), Some("ERROR_OCCURRED"));
+        sim.advance(Duration::from_secs(30));
+        let failed = avt(&t, "GetPositionInfo", &[]).unwrap();
+        for field in ["Track", "TrackURI", "RelTime"] {
+            assert_eq!(failed.get(field), position.get(field), "{field}");
+        }
+        assert_eq!(failed.get("Track"), Some("2"));
+        assert_eq!(failed.get("RelTime"), Some("0:00:13"));
+
+        sim.upnp_fault(room, "Play", 701).unwrap();
+        assert_eq!(fault_code(fsonos_proto::control::play(&t, t.ip())), 701);
+        sim.clear_faults(room).unwrap();
+        let info = avt(&t, "GetTransportInfo", &[]).unwrap();
+        assert_eq!(info.get("CurrentTransportStatus"), Some("ERROR_OCCURRED"));
+        fsonos_proto::control::play(&t, t.ip()).unwrap();
+        let info = avt(&t, "GetTransportInfo", &[]).unwrap();
+        assert_eq!(info.get("CurrentTransportState"), Some("PLAYING"));
+        assert_eq!(info.get("CurrentTransportStatus"), Some("OK"));
+        assert_eq!(
+            content::browse_snapshot(&t, t.ip(), content::QUEUE).unwrap(),
+            queue
+        );
+        sim.playback_error(room).unwrap();
+        fsonos_proto::control::seek_track(&t, t.ip(), 1).unwrap();
+        let info = avt(&t, "GetTransportInfo", &[]).unwrap();
+        assert_eq!(info.get("CurrentTransportState"), Some("STOPPED"));
+        assert_eq!(info.get("CurrentTransportStatus"), Some("OK"));
+    }
+}
+
+#[test]
+fn intentional_stops_and_new_selections_clear_the_old_renderer_error() {
+    let sim = sim();
+    assert!(sim.playback_error("Bridge").is_err());
+    assert!(sim.playback_error("Kitchen").is_err());
+    let t = sim.transport("Kitchen").unwrap();
+    let uri = "x-rincon-mp3radio://stream.example.invalid/live";
+    avt(
+        &t,
+        "SetAVTransportURI",
+        &[("CurrentURI", uri), ("CurrentURIMetaData", "")],
+    )
+    .unwrap();
+    fsonos_proto::control::play(&t, t.ip()).unwrap();
+    sim.playback_error("Kitchen").unwrap();
+    fsonos_proto::control::stop(&t, t.ip()).unwrap();
+    assert_eq!(
+        avt(&t, "GetTransportInfo", &[])
+            .unwrap()
+            .get("CurrentTransportStatus"),
+        Some("OK")
+    );
+    sim.playback_error("Kitchen").unwrap();
+    avt(
+        &t,
+        "SetAVTransportURI",
+        &[
+            (
+                "CurrentURI",
+                "x-rincon-mp3radio://stream.example.invalid/another",
+            ),
+            ("CurrentURIMetaData", ""),
+        ],
+    )
+    .unwrap();
+    let info = avt(&t, "GetTransportInfo", &[]).unwrap();
+    assert_eq!(info.get("CurrentTransportStatus"), Some("OK"));
+    assert_eq!(info.get("CurrentTransportState"), Some("STOPPED"));
+}
+
 /// Serve each of `responses` (status, body) to one connection on loopback;
 /// returns the base URL.
 fn serve(responses: Vec<(u16, Vec<u8>)>) -> String {
@@ -751,13 +850,62 @@ fn played_loopback_media_is_fetched_and_a_dead_link_stops_the_player() {
         sim.fetch_log()[1]
     );
     assert_eq!(transport_state(&kitchen), "STOPPED");
+    assert_eq!(
+        avt(&kitchen, "GetTransportInfo", &[])
+            .unwrap()
+            .get("CurrentTransportStatus"),
+        Some("ERROR_OCCURRED")
+    );
     let missing = format!("{}/media/missing.wav", serve(vec![(404, b"no".to_vec())]));
     play(&missing);
     assert_eq!(sim.fetch_log()[2].result, Ok(404));
     assert_eq!(transport_state(&kitchen), "STOPPED");
+    assert_eq!(
+        avt(&kitchen, "GetTransportInfo", &[])
+            .unwrap()
+            .get("CurrentTransportStatus"),
+        Some("ERROR_OCCURRED")
+    );
 
     // Media anywhere else is never fetched: it is taken to be a stream.
     play("http://192.0.2.77/stream.mp3");
     assert_eq!(sim.fetch_log().len(), 3);
     assert_eq!(transport_state(&kitchen), "PLAYING");
+    assert_eq!(
+        avt(&kitchen, "GetTransportInfo", &[])
+            .unwrap()
+            .get("CurrentTransportStatus"),
+        Some("OK")
+    );
+}
+
+#[test]
+fn a_failed_media_fetch_is_retried_by_play_and_clears_its_error() {
+    let sim = sim();
+    let t = sim.transport("Kitchen").unwrap();
+    let url = format!(
+        "{}/retry.wav",
+        serve(vec![(503, b"busy".to_vec()), (200, wav(1_000))])
+    );
+    avt(
+        &t,
+        "SetAVTransportURI",
+        &[("CurrentURI", &url), ("CurrentURIMetaData", "")],
+    )
+    .unwrap();
+    fsonos_proto::control::play(&t, t.ip()).unwrap();
+    assert!(sim.wait_for_fetches(Duration::from_secs(5)));
+    assert_eq!(sim.fetch_log().len(), 1);
+    assert_eq!(
+        avt(&t, "GetTransportInfo", &[])
+            .unwrap()
+            .get("CurrentTransportStatus"),
+        Some("ERROR_OCCURRED")
+    );
+    fsonos_proto::control::play(&t, t.ip()).unwrap();
+    assert!(sim.wait_for_fetches(Duration::from_secs(5)));
+    assert_eq!(sim.fetch_log().len(), 2);
+    let info = avt(&t, "GetTransportInfo", &[]).unwrap();
+    assert_eq!(info.get("CurrentTransportStatus"), Some("OK"));
+    assert_eq!(info.get("CurrentTransportState"), Some("PLAYING"));
 }

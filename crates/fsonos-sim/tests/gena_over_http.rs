@@ -120,6 +120,62 @@ fn play_radio(t: &SimTransport) {
     .unwrap();
 }
 
+#[test]
+fn renderer_error_status_is_evented_to_every_group_member() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let mut sub = Subscriber::new();
+    for (room, member) in [("Kitchen", "Office"), ("Living Room", "Bedroom")] {
+        let lead = sim.transport(room).unwrap();
+        let follower = sim.transport(member).unwrap();
+        let uuid = &sim.player(room).unwrap().uuid;
+        call(
+            &follower,
+            &AV_TRANSPORT,
+            "SetAVTransportURI",
+            &[
+                ("InstanceID", "0"),
+                ("CurrentURI", &format!("x-rincon:{uuid}")),
+                ("CurrentURIMetaData", ""),
+            ],
+        )
+        .unwrap();
+        play_radio(&lead);
+        let sids = [
+            sub.subscribe(&sim, room, AVT, 300),
+            sub.subscribe(&sim, member, AVT, 300),
+        ];
+        for sid in &sids {
+            let initial = sub.next(sid);
+            let change = initial.last_change().unwrap().unwrap();
+            assert_eq!(change.get("TransportStatus"), Some("OK"));
+            assert_eq!(change.get("TransportState"), Some("PLAYING"));
+        }
+        sim.playback_error(&sim.player(member).unwrap().uuid)
+            .unwrap();
+        for sid in &sids {
+            let failed = sub.next(sid);
+            let change = failed.last_change().unwrap().unwrap();
+            assert_eq!(change.get("TransportStatus"), Some("ERROR_OCCURRED"));
+            assert_eq!(change.get("TransportState"), Some("STOPPED"));
+            assert_eq!(
+                change.get("CurrentTrackURI"),
+                Some("x-rincon-mp3radio://stream.example.invalid/a.mp3")
+            );
+        }
+        for t in [&lead, &follower] {
+            let info = call(t, &AV_TRANSPORT, "GetTransportInfo", &[("InstanceID", "0")]).unwrap();
+            assert_eq!(info.get("CurrentTransportStatus"), Some("ERROR_OCCURRED"));
+        }
+        fsonos_proto::control::play(&lead, lead.ip()).unwrap();
+        for sid in &sids {
+            let resumed = sub.next(sid);
+            let change = resumed.last_change().unwrap().unwrap();
+            assert_eq!(change.get("TransportStatus"), Some("OK"));
+            assert_eq!(change.get("TransportState"), Some("PLAYING"));
+        }
+    }
+}
+
 fn refused_with(r: Result<impl std::fmt::Debug, ProtoError>, status: u16) {
     match r {
         Err(ProtoError::Network { detail, .. }) => {

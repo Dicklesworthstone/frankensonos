@@ -113,6 +113,21 @@ impl TransportState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportStatus {
+    Ok,
+    ErrorOccurred,
+}
+
+impl TransportStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::ErrorOccurred => "ERROR_OCCURRED",
+        }
+    }
+}
+
 /// What the transport plays from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Source {
@@ -137,6 +152,7 @@ pub(crate) struct QueueItem {
 #[derive(Debug, Clone)]
 pub(crate) struct Transport {
     pub state: TransportState,
+    pub status: TransportStatus,
     pub source: Source,
     pub uri: String,
     pub uri_metadata: String,
@@ -165,6 +181,7 @@ impl Transport {
     pub(crate) fn new() -> Self {
         Self {
             state: TransportState::Stopped,
+            status: TransportStatus::Ok,
             source: Source::Nothing,
             uri: String::new(),
             uri_metadata: String::new(),
@@ -241,9 +258,22 @@ impl Transport {
         self.position_ms = self.position(now);
         self.playing_since = (to == TransportState::Playing).then_some(now);
         self.state = to;
+        self.status = TransportStatus::Ok;
+    }
+
+    /// Stop a failed renderer at its current occurrence and playback clock.
+    pub(crate) fn playback_error(&mut self, now: u64) {
+        self.set_state(TransportState::Stopped, now);
+        self.status = TransportStatus::ErrorOccurred;
+        // A later Play retries a URI fetch instead of treating a failed
+        // download as already fetched.
+        self.fetched = false;
     }
 
     fn go_to_track(&mut self, track: usize, now: u64) {
+        if self.track != track {
+            self.status = TransportStatus::Ok;
+        }
         self.track = track;
         self.position_ms = 0;
         if self.state == TransportState::Playing {
@@ -638,8 +668,7 @@ impl State {
         let t = &mut self.players[p].transport;
         if t.source == Source::Uri && t.uri == url {
             if !ok && t.state == TransportState::Playing {
-                t.set_state(TransportState::Stopped, now);
-                t.position_ms = 0;
+                t.playback_error(now);
             }
             if let Some(length) = outcome.wav_duration_ms.filter(|_| ok) {
                 t.uri_duration_ms = length;
@@ -981,6 +1010,7 @@ impl State {
                 if !playable {
                     return Err(TRANSITION_NOT_AVAILABLE);
                 }
+                t.status = TransportStatus::Ok;
                 if t.state != TransportState::Playing {
                     t.set_state(TransportState::Playing, now);
                 }
@@ -1091,7 +1121,10 @@ impl State {
                         "CurrentTransportState",
                         self.players[c].transport.state.as_str().to_string(),
                     ),
-                    ("CurrentTransportStatus", "OK".to_string()),
+                    (
+                        "CurrentTransportStatus",
+                        self.players[c].transport.status.as_str().to_string(),
+                    ),
                     ("CurrentSpeed", "1".to_string()),
                 ])
             }

@@ -1,6 +1,6 @@
 //! Typed read-back observations use the same state and change vocabulary as GENA.
 
-use super::{Changes, Playback, PlayerPlayback};
+use super::{Changes, Playback, PlayerPlayback, transport_status};
 use fsonos_proto::control::{MediaInfo, PositionInfo, TransportInfo};
 use fsonos_types::{PlayerId, TransportState};
 use std::time::{Duration, Instant};
@@ -70,6 +70,7 @@ impl Playback {
             state.position = before.position_at(now).map(|position| (position, now));
         }
         state.transport = Some(transport);
+        state.transport_status = transport_status(&observation.transport.status);
         state.media_uri = media_uri;
         let tracks = observation.media.tracks;
         state.queue_length = Some(tracks);
@@ -78,6 +79,8 @@ impl Playback {
         Changes {
             metadata_changed,
             transport: changed_transport.then_some((before.transport, transport)),
+            transport_status: (before.transport_status != state.transport_status)
+                .then(|| (before.transport_status, state.transport_status.clone())),
             track: moved.then(|| (before.track_uri, state.track_uri.clone())),
             media_uri: source_changed.then(|| (before.media_uri, state.media_uri.clone())),
             queue_length: (before.queue_length != Some(tracks)).then_some(tracks),
@@ -90,10 +93,12 @@ impl PlayerPlayback {
     /// Whether a pending transport read still belongs to this observation.
     /// Room/group levels are deliberately excluded: a volume fade must not
     /// keep cancelling a clock sample, and apply_observation never replaces
-    /// those controls. Metadata and the request flag still fence radio-title
-    /// updates and same-track seeks, even when URI and transport are equal.
+    /// those controls. Status, metadata and the request flag still fence
+    /// renderer errors, radio-title updates and same-track seeks, even when
+    /// URI and transport are equal.
     pub(crate) fn same_transport_observation(&self, before: &Self) -> bool {
         self.transport == before.transport
+            && self.transport_status == before.transport_status
             && self.track_uri == before.track_uri
             && self.media_uri == before.media_uri
             && self.now_playing == before.now_playing
@@ -193,13 +198,14 @@ mod tests {
         after.group_volume = Some(63);
         after.group_mute = Some(true);
         assert!(after.same_transport_observation(&before));
-        for changed in 0..4 {
+        for changed in 0..5 {
             let mut after = after.clone();
             match changed {
                 0 => after.duration_secs = Some(999),
                 1 => after.queue_position = Some(2),
                 2 => after.position = Some((24, now)),
-                _ => after.position_requested = true,
+                3 => after.position_requested = true,
+                _ => after.transport_status = Some("ERROR_OCCURRED".into()),
             }
             assert!(!after.same_transport_observation(&before));
         }

@@ -608,7 +608,8 @@ pub fn ramp_to_volume<T: Transport + ?Sized>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportInfo {
     pub state: TransportState,
-    /// `CurrentTransportStatus` (`OK`, or an error string).
+    /// Trimmed `CurrentTransportStatus` (`OK`, `ERROR_OCCURRED`, or an unknown
+    /// wire value). Empty when the renderer omits or clears its status.
     pub status: String,
 }
 
@@ -619,7 +620,11 @@ pub fn get_transport_info<T: Transport + ?Sized>(
     let r = call(t, host, &AV_TRANSPORT, "GetTransportInfo", &[INSTANCE])?;
     Ok(TransportInfo {
         state: transport_state(r.require("CurrentTransportState")?),
-        status: r.get("CurrentTransportStatus").unwrap_or("").to_string(),
+        status: r
+            .get("CurrentTransportStatus")
+            .unwrap_or("")
+            .trim()
+            .to_string(),
     })
 }
 
@@ -1132,6 +1137,53 @@ mod tests {
         assert_eq!(info.status, "OK");
         assert_eq!(transport_state("PLAYING"), TransportState::Playing);
         assert_eq!(transport_state("WHAT"), TransportState::Unknown);
+    }
+
+    #[test]
+    fn transport_info_preserves_reported_status_without_inventing_success() {
+        for (body, expected) in [
+            ("<CurrentTransportState>STOPPED</CurrentTransportState>", ""),
+            (
+                concat!(
+                    "<CurrentTransportState>STOPPED</CurrentTransportState>",
+                    "<CurrentTransportStatus></CurrentTransportStatus>"
+                ),
+                "",
+            ),
+            (
+                concat!(
+                    "<CurrentTransportState>STOPPED</CurrentTransportState>",
+                    "<CurrentTransportStatus> \n\t </CurrentTransportStatus>"
+                ),
+                "",
+            ),
+            (
+                concat!(
+                    "<CurrentTransportState>STOPPED</CurrentTransportState>",
+                    "<CurrentTransportStatus> ERROR_OCCURRED \n</CurrentTransportStatus>"
+                ),
+                "ERROR_OCCURRED",
+            ),
+            (
+                concat!(
+                    "<CurrentTransportState>STOPPED</CurrentTransportState>",
+                    "<CurrentTransportStatus> vendor-specific: waiting </CurrentTransportStatus>"
+                ),
+                "vendor-specific: waiting",
+            ),
+            (
+                concat!(
+                    "<CurrentTransportState>STOPPED</CurrentTransportState>",
+                    "<CurrentTransportStatus> error_occurred </CurrentTransportStatus>"
+                ),
+                "error_occurred",
+            ),
+        ] {
+            let t = Canned::new(body);
+            let info = get_transport_info(&t, host()).unwrap();
+            assert_eq!(info.state, TransportState::Stopped);
+            assert_eq!(info.status, expected);
+        }
     }
 
     #[test]
