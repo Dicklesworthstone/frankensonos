@@ -3173,3 +3173,12 @@ runtime structure. Our `ompX` replacement occupies the same slot.
 **Caveat from this pass:** `.202` did not return from the verification reboot
 within ~12 minutes (ICMP up, daemon down), so the post-reboot list check is
 outstanding for that unit; `.84`/`.135` were healthy at the end.
+
+**End-of-pass state:** `.84` and `.135` healthy; `.84` settled (radio URI +
+`Stop`, so no `.aa` is left armed). `.202` is the one open item: after the
+verification reboot its OS answers ICMP but the daemon had not returned in
+~25 minutes — it needs a power-cycle if it does not come back, and then only
+the post-reboot list check for `ompX` is outstanding. Two S1s left the pass
+down at one point because the fake-frame `.aa` URI re-arms on daemon restart
+(the previously documented crash-loop trap); settling with a radio URI and
+`Stop` is what clears it, and must be the last action of any payload test.
