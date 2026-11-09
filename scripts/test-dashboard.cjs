@@ -193,3 +193,58 @@ test('a missing canvas context degrades without throwing or scheduling animation
   renderer.resize(100, 100, 2); renderer.visible(true); renderer.mode('contour'); renderer.track(1, true); renderer.dispose();
   assert.equal(renderer.supported, false);
 });
+
+
+test('dashboard playback statuses preserve unknown values and identify only explicit renderer errors', () => {
+  for (const transport_status of ['ERROR_OCCURRED', 'OK', null, undefined, 'FUTURE_STATUS', 'error_occurred']) {
+    const observed = C.playback(p(z(), { transport_state: 'stopped', transport_status }), z());
+    assert.equal(observed.transport_status, transport_status);
+    assert.equal(C.playbackLabel(observed), transport_status === 'ERROR_OCCURRED' ? 'Playback error' : 'stopped');
+    if (transport_status === 'ERROR_OCCURRED') assert.match(C.playbackNotice(observed), /playback error/);
+    else if (transport_status == null || transport_status === 'OK') assert.equal(C.playbackNotice(observed), '');
+    else assert.equal(C.playbackNotice(observed), 'Renderer status: ' + transport_status + '.');
+  }
+  for (const transport_status of [{}, 7, false, '', ' '.repeat(4), 'x'.repeat(4097)]) {
+    assert.throws(() => C.playback(p(z(), { transport_status }), z()));
+  }
+});
+
+test('dashboard status-only failure and recovery update the selected group without automatic playback', async () => {
+  const f = fixture(), m = await f.ready();
+  for (const transport_status of ['ERROR_OCCURRED', 'OK', null, undefined]) {
+    f.setPlayback(p(z(), { transport_state: 'stopped', transport_status }));
+    m.invalidate(['Studio@S2']);
+    assert.equal(await m.refresh(false, { targets: ['Studio@S2'] }), true);
+    assert.equal(m.selected().state.transport_status, transport_status);
+    assert.equal(C.playbackLabel(m.selected().state), transport_status === 'ERROR_OCCURRED' ? 'Playback error' : 'stopped');
+    assert.equal(m.canControl(), true, 'an owner can still choose how to continue');
+  }
+  assert.equal(f.writes().length, 0);
+});
+
+
+test('the shipped dashboard renders failure and recovery in its stage, notice and player dock', () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const script = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/dashboard.js'), 'utf8');
+  const begin = script.indexOf('  function render(state) {'), end = script.indexOf('  function renderHero() {', begin);
+  assert.ok(begin >= 0 && end > begin);
+  const nodes = new Map(), element = () => ({ textContent: '', hidden: false, dataset: {}, append() {}, replaceChildren() {}, removeAttribute() {} });
+  const $ = id => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
+  const item = { zone: z(), state: p(z(), { track: null, transport_state: 'stopped' }), fresh: true };
+  const state = { items: [item], selected: 'Studio@S2', initialized: true, active: true, connected: true, error: '', message: '' };
+  const context = { C, $, disposed: false, demo: false, controller: { selected: () => item },
+    el: element, icon: element, artKey: '', visualKey: '', selectedKey: state.selected,
+    renderer: { track() {} }, renderRooms() {}, renderMap() {}, renderHero() {}, timing() {}, controls() {}, workspace: null };
+  const render = vm.runInNewContext(script.slice(begin, end) + '\nrender;', context);
+  for (const transport_status of ['ERROR_OCCURRED', 'OK', null]) {
+    item.state.transport_status = transport_status; render(state);
+    const failed = transport_status === 'ERROR_OCCURRED';
+    assert.equal($('stage-status').textContent, failed ? 'PLAYBACK ERROR' : 'STOPPED');
+    assert.equal($('playback-notice').hidden, !failed);
+    assert.equal($('dock-target').textContent.includes('Playback error'), failed);
+    if (failed) assert.match($('playback-notice').textContent, /Studio \+ Kitchen · S2: The speaker reported a playback error/);
+  }
+  item.state.transport_status = 'ERROR_OCCURRED'; item.fresh = false; render(state);
+  assert.equal($('stage-status').textContent, 'WAITING FOR FRESH STATE');
+  assert.equal($('playback-notice').hidden, true, 'an old error is not presented as fresh speaker state');
+});

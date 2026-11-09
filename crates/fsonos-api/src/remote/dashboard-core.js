@@ -32,13 +32,23 @@ const DashboardCore = (() => {
   function playback(value, zone) {
     if (!value || shape(zones([value.zone])[0]) !== shape(zone) || !STATES.includes(value.transport_state)
         || [value.volume, value.group_volume].some((v) => v != null && !level(v))
-        || (value.mute != null && typeof value.mute !== 'boolean')) throw new Error('Playback or group membership changed.');
+        || (value.mute != null && typeof value.mute !== 'boolean')
+        || (value.transport_status != null && !text(value.transport_status))) throw new Error('Playback or group membership changed.');
     const t = value.track;
     if (t != null && (!text(t.uri) || [t.duration_secs, t.position_secs, t.queue_position].some((v) => v != null && !seconds(v))
         || t.queue_position === 0 || (t.duration_secs > 0 && t.position_secs > t.duration_secs))) {
       throw new Error('Unreadable playback position.');
     }
     return Object.freeze({ ...value, zone, track: t == null ? null : Object.freeze({ ...t }) });
+  }
+  function playbackLabel(state) {
+    return state?.transport_status === 'ERROR_OCCURRED' ? 'Playback error' : state?.transport_state || 'unknown';
+  }
+  function playbackNotice(state) {
+    const status = state?.transport_status;
+    if (status == null || status === 'OK') return '';
+    return status === 'ERROR_OCCURRED' ? 'The speaker reported a playback error.'
+      : `Renderer status: ${status}.`;
   }
   // GENA can report playing/paused before it supplies a track URI. Those
   // states still authorize play/pause; track navigation needs a known track.
@@ -358,6 +368,6 @@ const DashboardCore = (() => {
       resume() { if (!disposed) { state.active = true; emit(); } },
       dispose() { disposed = true; suspend(); } };
   }
-  return { STATES, EVENTS, zones, playback, transportAvailable, key, shape, elapsed, clock, hash, each, request, model, problem };
+  return { STATES, EVENTS, zones, playback, playbackLabel, playbackNotice, transportAvailable, key, shape, elapsed, clock, hash, each, request, model, problem };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardCore;

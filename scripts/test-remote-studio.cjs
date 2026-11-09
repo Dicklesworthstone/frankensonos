@@ -280,3 +280,17 @@ test('room selection helpers and unsupported dock actions never invoke native ha
   }
   assert.deepEqual(fixture.calls, []);
 });
+
+
+test('studio room and dock status distinguish renderer failure from an ordinary stop', () => {
+  assert.equal(studio.playbackStatus({ transport_state: 'stopped', transport_status: 'ERROR_OCCURRED' }), 'Playback error');
+  for (const transport_status of ['OK', null, undefined, 'error_occurred', 'FUTURE_STATUS']) {
+    assert.equal(studio.playbackStatus({ transport_state: 'stopped', transport_status }), 'stopped');
+  }
+  assert.equal(studio.playbackStatus(null, 'Awaiting update'), 'Awaiting update');
+  const fixture = dockHouse(zone('S2', 'Den', 'stopped'));
+  fixture.parts.lastState.transport_status = 'ERROR_OCCURRED';
+  assert.deepEqual(fixture.calls, [], 'observing a failure sends no command');
+  assert.equal(studio.activate(fixture.house, fixture.selected, 'play'), true);
+  assert.deepEqual(fixture.calls, [{ control: 'play', target: 'Den@S2', verb: 'resume' }]);
+});

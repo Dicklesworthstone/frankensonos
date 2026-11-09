@@ -65,9 +65,11 @@ fn direct_state_reports_a_failure_and_an_ordinary_stop_on_both_generations() {
         assert_eq!(stopped.transport_state, "stopped");
         assert_eq!(stopped.transport_status.as_deref(), Some("OK"));
         assert_eq!(stopped.playback_notice(), None);
+        // An intentional Stop resets the playback clock. It must retain
+        // the selected source and occurrence while clearing the error.
         assert_eq!(
-            failed.track, stopped.track,
-            "a status recovery does not advance the track"
+            failed.track.as_ref().map(|track| (&track.uri, track.queue_position)),
+            stopped.track.as_ref().map(|track| (&track.uri, track.queue_position))
         );
     }
 }

@@ -45,6 +45,9 @@ const StudioRemote = (() => {
     return available.filter(tool => words.every(word => `${tool.title} ${tool.description} ${tool.keywords}`.toLocaleLowerCase().includes(word)));
   }
   const key = zone => JSON.stringify([zone.household, zone.coordinator_room]);
+  function playbackStatus(state, fallback = 'unknown') {
+    return state?.transport_status === 'ERROR_OCCURRED' ? 'Playback error' : state?.transport_state || fallback;
+  }
   function choose(zones, selected) {
     return zones.some(zone => key(zone) === selected) ? selected
       : zones.length ? key(zones.find(zone => zone.transport_state === 'playing') || zones[0]) : null;
@@ -114,7 +117,7 @@ const StudioRemote = (() => {
           });
           roomChoices.set(id, button); $('studio-room-choices').append(button);
         }
-        const state = house.cards.get(id)?.lastState, status = state?.transport_state || 'Awaiting update';
+        const state = house.cards.get(id)?.lastState, status = playbackStatus(state, 'Awaiting update');
         text(button.children[1].children[0], name);
         text(button.children[1].children[1], `${zone.household} · ${state?.track?.title || status}`);
         text(button.children[2], id === selected ? 'Selected' : 'Choose');
@@ -152,7 +155,8 @@ const StudioRemote = (() => {
       $('studio-player-room').setAttribute('aria-label', `${title}. Listening in ${target}. Choose a listening group`);
       $('studio-player-room').title = `${title}\n${target}`;
       const status = parts.writing ? 'Updating playback…' : !state ? 'Waiting for a live update'
-        : ({ playing: 'Now playing', paused: 'Paused', stopped: 'Ready to play', transitioning: 'Connecting to music…' })[state.transport_state] || 'Playback unavailable';
+        : state.transport_status === 'ERROR_OCCURRED' ? 'Playback error reported by the speaker'
+          : ({ playing: 'Now playing', paused: 'Paused', stopped: 'Ready to play', transitioning: 'Connecting to music…' })[state.transport_state] || 'Playback unavailable';
       text($('studio-player-state'), status); dock.dataset.playing = String(playing);
       for (const [id, control, verb] of [['studio-player-play', 'play', playing ? 'Pause' : 'Play'],
         ['studio-player-previous', 'previous', 'Previous track in'], ['studio-player-next', 'next', 'Next track in']]) {
@@ -210,7 +214,7 @@ const StudioRemote = (() => {
         }
         const parts = house.cards.get(id);
         const name = zone.members.join(' + ');
-        const status = parts?.lastState?.transport_state || zone.transport_state || 'unknown';
+        const status = playbackStatus(parts?.lastState, zone.transport_state || 'unknown');
         const title = parts?.lastState?.track?.title;
         text(button.children[1], name);
         text(button.children[2], `${zone.household} · ${status}${title ? ` · ${title}` : ''}`);
@@ -360,7 +364,7 @@ const StudioRemote = (() => {
     return { reconcile, navigate, openTool, available, selected: () => selected,
       dispose() { disposed = true; observer.disconnect(); layoutObserver?.disconnect(); if (frame !== null) cancel(frame); for (const off of on) off(); } };
   }
-  return { mount, movable, identify, search, choose, key, tools, workspaces, matchingZones, selectedCard, activate };
+  return { mount, movable, identify, search, choose, key, tools, workspaces, matchingZones, selectedCard, activate, playbackStatus };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = StudioRemote;
 else if (typeof house !== 'undefined' && typeof registerCardPanel === 'function') {

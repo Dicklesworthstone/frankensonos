@@ -33,7 +33,7 @@ function setup(groups = null) {
   const zone={household:'S2',coordinator_room:'Den',members:['Den'],transport_state:'playing'};
   const zones=groups || [zone];
   let override=null, invalidations=0, histories=0;
-  const playback=(group=zones[0])=>({zone:{...group},transport_state:data.state,volume:20,mute:false,
+  const playback=(group=zones[0])=>({zone:{...group},transport_state:data.state,transport_status:data.status,volume:20,mute:false,
     track:{uri:'fixture:one',title:data.title,position_secs:20,duration_secs:600,queue_position:1}});
   const fetcher=async(url,init)=>{
     requests.push({url,init,at:t.now()});
@@ -388,4 +388,19 @@ test('scoped updates and failed-room recovery cannot acknowledge an uncertain wr
   vm.runInContext('kick(true)',h.context);await h.t.tick(0);
   assert.equal(h.controller.state.uncertain,false);assert.equal(h.controller.canControl(),true);
   assert.equal(h.writes().length,1);h.close();
+});
+
+
+test('status-only renderer errors and null clears flow through the live page without commands',async()=>{
+  const h=setup();await h.ready();h.data.state='stopped';let id=0;
+  for(const status of ['ERROR_OCCURRED','OK',null]) {
+    h.data.status=status;
+    h.frame('id: '+(++id)+'\nevent: zone.state\ndata: '+JSON.stringify({room:'Den',transport_status:status})+'\n\n');
+    await settle();assert.equal(h.controller.selected().fresh,false);
+    await h.t.tick(350);
+    assert.equal(h.controller.selected().state.transport_status,status);
+    assert.equal(C.playbackLabel(h.controller.selected().state),status==='ERROR_OCCURRED'?'Playback error':'stopped');
+  }
+  assert.equal(h.snapshotCount(),1,'a status-only event uses the existing group scope');
+  assert.equal(h.writes().length,0);h.close();
 });
