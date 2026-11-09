@@ -287,6 +287,29 @@ fn zones_list_and_one_zone_by_percent_encoded_name() {
 }
 
 #[test]
+fn state_routes_expose_renderer_failures_without_changing_playback() {
+    for (reply, status) in [
+        ("<CurrentTransportState>STOPPED</CurrentTransportState><CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus>", Some("ERROR_OCCURRED")),
+        ("<CurrentTransportState>STOPPED</CurrentTransportState><CurrentTransportStatus>OK</CurrentTransportStatus>", Some("OK")),
+        ("<CurrentTransportState>STOPPED</CurrentTransportState>", None),
+    ] {
+        let api = Api::start(reply, &Client::LoopbackHttp);
+        let (code, state) = api.get("/zones/Kitchen/state");
+        assert_eq!(code, 200, "{state}");
+        assert_eq!(state["transport_state"], "stopped");
+        assert_eq!(state.get("transport_status").and_then(Value::as_str), status);
+        assert_eq!(state["zone"]["coordinator_room"], "Living Room");
+        assert!(
+            api.sent
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|action| action.starts_with("Get"))
+        );
+    }
+}
+
+#[test]
 fn control_routes_address_the_coordinator() {
     let api = Api::start("", &Client::LoopbackHttp);
     let (status, out) = api.post("/pause", &json!({ "zone": "Kitchen" }));

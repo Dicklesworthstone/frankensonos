@@ -287,6 +287,16 @@ fn changes(d: &Value) -> String {
     if let Some(transport) = d.get("transport").and_then(Value::as_str) {
         said.push(transport.to_owned());
     }
+    match d.get("transport_status") {
+        Some(Value::String(status)) if status == "ERROR_OCCURRED" => {
+            said.push("playback error (ERROR_OCCURRED)".to_owned());
+        }
+        Some(Value::String(status)) => {
+            said.push(format!("renderer status {}", status.escape_default()));
+        }
+        Some(Value::Null) => said.push("renderer status unknown".to_owned()),
+        _ => {}
+    }
     if d.get("source_changed").and_then(Value::as_bool) == Some(true) {
         said.push("source changed".to_owned());
     }
@@ -445,6 +455,26 @@ mod tests {
         let mut body = BufReader::new(Chunked::new(&bad[..]));
         let err = body.read_line(&mut String::new()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn renderer_status_events_distinguish_error_recovery_and_unknown() {
+        for (status, expected) in [
+            (json!("ERROR_OCCURRED"), "playback error (ERROR_OCCURRED)"),
+            (json!("OK"), "renderer status OK"),
+            (Value::Null, "renderer status unknown"),
+            (json!("FUTURE_STATUS"), "renderer status FUTURE_STATUS"),
+        ] {
+            let event = Event {
+                id: Some(1),
+                kind: "zone.state".into(),
+                data: json!({"room": "Room", "transport_status": status}),
+            };
+            assert_eq!(
+                event_text(&event, "12:00:00"),
+                format!("12:00:00 Room: {expected}\n")
+            );
+        }
     }
 
     #[test]

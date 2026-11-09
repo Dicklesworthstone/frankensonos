@@ -103,6 +103,7 @@ impl Surface {
         Ok(json!({
             "zone": state.zone.coordinator_room,
             "transport_state": upnp_state(&state.transport_state),
+            "transport_status": state.transport_status,
             "title": text(track.and_then(|t| t.title.as_ref())),
             "artist": text(track.and_then(|t| t.creator.as_ref())),
             "album": text(track.and_then(|t| t.album.as_ref())),

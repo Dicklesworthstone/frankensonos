@@ -349,6 +349,9 @@ impl Backend {
             if let Some(mode) = state.play_mode_text() {
                 let _ = write!(volume, ", {mode}");
             }
+            if let Some(notice) = state.playback_notice() {
+                let _ = write!(volume, ". {notice}");
+            }
             let text = format!(
                 "{} [{}]: {} ({on}){volume}",
                 state.zone.members.join(" + "),
@@ -855,7 +858,7 @@ async fn list_zones(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolR
 }
 
 #[tool(
-    description = "What a room is doing right now: its group, whether that group is playing, paused or stopped, the current track or station (title, artist, position), and the room's volume (and the whole group's, when it plays with others). Call this before changing anything relative ('a bit louder', 'what's playing?'). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    description = "What a room is doing right now: its group, whether that group is playing, paused or stopped, the renderer's reported transport_status (ERROR_OCCURRED means a playback failure; absence means unknown), the current track or station (title, artist, position), and the room's volume (and the whole group's, when it plays with others). Call this before changing anything relative ('a bit louder', 'what's playing?'). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
     annotations(read_only, idempotent)
 )]
 async fn get_zone_state(
@@ -1885,6 +1888,33 @@ mod tests {
         assert_eq!(
             (sent.lock().unwrap().len(), surveys.load(Ordering::SeqCst)),
             (0, 0)
+        );
+    }
+
+    #[test]
+    fn zone_state_surfaces_renderer_errors_in_text_and_structured_replies() {
+        let reply = "<CurrentTransportState>STOPPED</CurrentTransportState>\
+                     <CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus>";
+        let (backend, _, _) = backend(reply, Client::McpStdio);
+        let direct = backend.zone_state("Kitchen").unwrap();
+        assert!(!direct.is_error);
+        assert!(text(&direct).contains("Playback error reported by the speaker"));
+        assert_eq!(
+            direct.structured_content.as_ref().unwrap()["transport_status"],
+            "ERROR_OCCURRED"
+        );
+        let daemon = fake(direct.structured_content);
+        let backend = backend.with_daemon(daemon.clone());
+        let forwarded = backend.zone_state("Kitchen").unwrap();
+        assert!(!forwarded.is_error);
+        assert!(text(&forwarded).contains("Playback error reported by the speaker"));
+        assert_eq!(
+            forwarded.structured_content.unwrap()["transport_status"],
+            "ERROR_OCCURRED"
+        );
+        assert_eq!(
+            *daemon.calls.lock().unwrap(),
+            [("GET".into(), "/zones/Kitchen/state".into(), None)]
         );
     }
 

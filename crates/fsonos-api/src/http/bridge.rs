@@ -12,7 +12,7 @@
 //! |---|---|---|
 //! | `GET /health` | | `{ok, devices}` |
 //! | `GET /zones` | | `{zones: [{name, ip, model, is_coordinator, coordinator, group_members, transport_state}]}` |
-//! | `GET /status?zone=` | | `{zone, transport_state, title, artist, album, position, duration, volume, muted}` |
+//! | `GET /status?zone=` | | `{zone, transport_state, transport_status, title, artist, album, position, duration, volume, muted}` |
 //! | `GET /favorites?zone=` | | `{zone, favorites: [{title, uri, meta}]}` (the first 30) |
 //! | `GET /mediainfo?zone=` | | `{zone, current_uri, current_uri_metadata}` |
 //! | `POST /rediscover` | | `{ok, devices}` |

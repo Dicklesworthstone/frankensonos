@@ -16,6 +16,11 @@ pub struct ZoneStateDto {
     pub zone: ZoneDto,
     /// `playing`, `paused`, `stopped`, `transitioning` or `unknown`.
     pub transport_state: String,
+    /// The group's renderer status, such as `OK` or `ERROR_OCCURRED`.
+    /// Absent means the speaker has not reported a status; a stopped
+    /// transport alone does not imply a playback failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_status: Option<String>,
     /// The room's own volume (0–100), when its player answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
@@ -43,6 +48,19 @@ pub struct ZoneStateDto {
 }
 
 impl ZoneStateDto {
+    /// A reported playback problem, without treating an unknown status as
+    /// either a success or an error. Wire values remain available in JSON.
+    #[must_use]
+    pub fn playback_notice(&self) -> Option<String> {
+        match self.transport_status.as_deref() {
+            None | Some("OK") => None,
+            Some("ERROR_OCCURRED") => {
+                Some("Playback error reported by the speaker (ERROR_OCCURRED)".into())
+            }
+            Some(status) => Some(format!("Renderer status: {}", status.escape_default())),
+        }
+    }
+
     /// `shuffle`, `repeat all`, `shuffle, repeat one` and so on: how the
     /// group plays its queue, when that isn't in order once through.
     #[must_use]
@@ -255,6 +273,39 @@ pub(crate) fn play_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renderer_status_preserves_unknown_and_future_values() {
+        let legacy = serde_json::json!({
+            "zone": {"household": "S2", "coordinator_room": "Room", "members": ["Room"], "transport_state": "stopped"},
+            "transport_state": "stopped"
+        });
+        let mut state: ZoneStateDto = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(state.transport_status, None);
+        assert_eq!(state.playback_notice(), None);
+        assert!(
+            serde_json::to_value(&state)
+                .unwrap()
+                .get("transport_status")
+                .is_none()
+        );
+        for status in ["OK", "ERROR_OCCURRED", "FUTURE_STATUS"] {
+            state.transport_status = Some(status.into());
+            let value = serde_json::to_value(&state).unwrap();
+            assert_eq!(value["transport_status"], status);
+            let decoded: ZoneStateDto = serde_json::from_value(value).unwrap();
+            assert_eq!(decoded, state);
+            assert_eq!(decoded.playback_notice().is_some(), status != "OK");
+        }
+        let mut cleared = legacy;
+        cleared["transport_status"] = serde_json::Value::Null;
+        assert_eq!(
+            serde_json::from_value::<ZoneStateDto>(cleared)
+                .unwrap()
+                .transport_status,
+            None
+        );
+    }
 
     #[test]
     fn an_empty_transport_has_no_track() {

@@ -13,7 +13,7 @@
 //!
 //! | `event:` | `data:` |
 //! |---|---|
-//! | `zone.state` | `{player, room, transport?, track?, volume?, mute?, group_volume?, queue_length?, metadata_changed?, source_changed?, shuffle?, repeat?, play_mode?}`: only what changed (`repeat`: `off`, `all` or `one`; `play_mode` as `set_play_mode` takes it) |
+//! | `zone.state` | `{player, room, transport?, transport_status?, track?, volume?, mute?, group_volume?, queue_length?, metadata_changed?, source_changed?, shuffle?, repeat?, play_mode?}`: only what changed (`repeat`: `off`, `all` or `one`; `play_mode` as `set_play_mode` takes it) |
 //! | `topology.changed` | `{households, rooms}` (read `GET /zones` for the new shape) |
 //! | `player.health` | `{player, room, health}`: `healthy`, `degraded` or `offline` |
 //! | `action.logged` | the action as `GET /actions` shows it |
@@ -27,6 +27,10 @@
 //! `source_changed: true` asks clients to reread playback when the active
 //! AVTransport source changes, even if the current track and transport state
 //! do not. It does not expose the source URI or imply that a track advanced.
+//!
+//! `transport_status` carries the speaker's status (`OK`, `ERROR_OCCURRED`,
+//! or another wire value). An explicit `null` clears a previously reported
+//! status to unknown. A status change can arrive without a transport change.
 //!
 //! While nothing happens the stream sends a `: heartbeat` comment every
 //! [`HEARTBEAT`], so proxies and clients can tell a quiet house from a dead
@@ -386,6 +390,9 @@ impl EventBus {
                 if let Some((_, now)) = changes.transport {
                     data.insert("transport".into(), json!(transport_state_name(now)));
                 }
+                if let Some((_, status)) = &changes.transport_status {
+                    data.insert("transport_status".into(), json!(status));
+                }
                 if let Some((_, track)) = &changes.track {
                     data.insert("track".into(), json!(track));
                 }
@@ -583,6 +590,36 @@ mod tests {
         assert_eq!(event.data["volume"], 30);
         assert!(event.data["room"].is_string(), "{}", event.data);
         assert!(event.data.get("transport").is_none());
+    }
+
+    #[test]
+    fn renderer_status_only_events_report_failure_recovery_and_unknown() {
+        let bus = EventBus::new();
+        let households = crate::zones::fixtures::households();
+        let player = crate::zones::fixtures::id("RINCON_DEN");
+        let mut previous = None;
+        for status in [Some("ERROR_OCCURRED"), Some("OK"), None] {
+            let current = status.map(str::to_owned);
+            let changes = fsonos_core::playback::Changes {
+                transport_status: Some((previous, current.clone())),
+                ..Default::default()
+            };
+            bus.publish_live(
+                &LiveEvent::Playback {
+                    player: player.clone(),
+                    changes,
+                },
+                &households,
+            );
+            let events = bus.after(0).unwrap();
+            let event = events.last().unwrap();
+            assert_eq!(event.kind, "zone.state");
+            assert_eq!(event.data.get("transport_status"), Some(&json!(status)));
+            assert!(event.data.get("transport").is_none());
+            assert!(event.data.get("track").is_none());
+            previous = current;
+        }
+        assert_eq!(bus.after(0).unwrap().len(), 3);
     }
 
     #[test]
