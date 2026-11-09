@@ -611,8 +611,12 @@ impl QueueFeed {
             self.queued = ahead;
             self.played
                 .extend(played.into_iter().filter(|w| w.last().is_some()));
-            if let Some(uri) =
-                uri.filter(|u| self.current().and_then(|w| w.track_at(position)) == Some(u))
+            // Selecting a queue occurrence while stopped or buffering is not
+            // listening. A later PLAYING event for that same occurrence still
+            // records it once, without making pause/resume a new play.
+            if playback.transport == Some(fsonos_types::TransportState::Playing)
+                && let Some(uri) =
+                    uri.filter(|u| self.current().and_then(|w| w.track_at(position)) == Some(u))
                 && self.recorded.as_ref() != Some(&(position, uri.clone()))
             {
                 store.record_play(&self.zone, &uri, plan.now)?;
@@ -1439,6 +1443,7 @@ mod tests {
     use crate::cache::{apply_library_read, pool_from_store};
     use crate::test_shelf::{MIDNIGHT, shelf_items, song_items, works_of};
 
+    mod history;
     mod navigation;
     mod source;
 

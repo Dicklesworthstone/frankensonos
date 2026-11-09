@@ -979,6 +979,14 @@ account signals (§12.1). Today the `feedback` rows carry `work_key`,
 of `c-dj-taste`. Time-of-day programs set the
 default mood when none is given.
 
+The DJ feed records anti-repeat play history only after observing `Playing`
+for its exact owned queue occurrence. Selecting a track while stopped, paused
+or buffering does not count as listening, including a refused initial `Play`.
+A later successful start at the same position records once; duplicate events
+and pause/resume do not add another play. Simulator regressions cover these
+transitions; their Rust execution remains blocked by the dependency-build
+resource failure documented for this session.
+
 ### 12.10 Schedules and a sleep timer
 
 [`b-scheduler`, `d-schedule-surface`] Daemon-side and persisted:
