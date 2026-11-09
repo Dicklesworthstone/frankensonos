@@ -3082,3 +3082,16 @@ runs while `+6352` is already populated, i.e. once a stream has existed.
 
 Tried and inert: stream PLAYING then payload (`SetAV 200`, `Play 200`), then
 `Stop` to force the transition — no fault with a dead A, no 2323.
+
+**Accumulation tested and refuted.** `ACC.aa`: eight type-2 records of 4 000
+bytes each (value each prefixed `http://a/`), with `0x55000000` written at the
+node-23620 position (record 6, local 3620) so that *if* records accumulate the
+observer cell would receive an unmapped target and the next notify would
+fault. Result: `SetAV 200`, `Play 200`, healthy throughout — no fault. So
+records **overwrite** at `session+6380`; only ~4 KB of the payload ever lands
+and the `+30000` cell cannot be reached that way.
+
+That closes the structural options for the `.aa` route in this build:
+the copy is 4 KB, the cell is 26 KB past the destination, and the cell's
+target is null by ctor construction. Reaching the cell needs a second write
+primitive or a different notification path.
