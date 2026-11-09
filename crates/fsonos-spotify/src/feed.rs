@@ -58,6 +58,8 @@ use crate::steer::Steer;
 mod enqueue;
 mod mode;
 mod readiness;
+mod recovery;
+pub use recovery::{RecoveryBudget, RecoveryNotice};
 mod navigation {
     //! Follow a listener back through the retained DJ queue without mistaking an
     //! old event for a new seek. Queue positions are checked against the player
@@ -252,6 +254,10 @@ pub enum FeedError {
     /// outcome. Automatic feeding stops without changing existing playback.
     #[error("the enqueue outcome is uncertain; automatic feeding has stopped: {0}")]
     UncertainEnqueue(String),
+    /// Automatic recovery could not safely continue. Release management
+    /// without stopping, clearing or undoing the speaker's current state.
+    #[error("automatic DJ playback recovery stopped: {0}")]
+    RecoveryStopped(String),
     #[error(transparent)]
     Core(#[from] CoreError),
     #[error(transparent)]
@@ -360,6 +366,8 @@ pub struct QueueFeed {
     /// Whether `playing` is where the feed itself jumped (a start, a skip,
     /// playing on past a dry queue), with no event saying so since.
     jumped: bool,
+    recovery: RecoveryBudget,
+    recovery_notice: Option<RecoveryNotice>,
 }
 
 /// What a running feed knows of its queue, to carry it across a restart
@@ -377,6 +385,9 @@ pub struct FeedSnapshot {
     /// before the DJ trimmed its queue).
     #[serde(default)]
     pub played: Vec<QueuedWork>,
+    /// Bound renderer-error recovery even across a daemon restart.
+    #[serde(default)]
+    pub recovery: RecoveryBudget,
 }
 
 impl QueueFeed {
@@ -397,6 +408,8 @@ impl QueueFeed {
             trim_error: None,
             dry_end: None,
             jumped: false,
+            recovery: RecoveryBudget::default(),
+            recovery_notice: None,
         }
     }
 
@@ -411,6 +424,7 @@ impl QueueFeed {
             playing: self.playing,
             recorded: self.recorded.clone(),
             played: self.played.clone(),
+            recovery: self.recovery.clone(),
         })
     }
 
@@ -434,6 +448,8 @@ impl QueueFeed {
             trim_error: None,
             dry_end: None,
             jumped: false,
+            recovery: snapshot.recovery,
+            recovery_notice: None,
         }
     }
 
@@ -441,6 +457,11 @@ impl QueueFeed {
     /// tops up anyway and tries the trim again on the next track.
     pub fn take_trim_error(&mut self) -> Option<String> {
         self.trim_error.take()
+    }
+
+    /// The latest move past a renderer failure, once, for the action log.
+    pub fn take_recovery_notice(&mut self) -> Option<RecoveryNotice> {
+        self.recovery_notice.take()
     }
 
     /// The coordinator it feeds.
@@ -510,6 +531,8 @@ impl QueueFeed {
         plan: Planning<'_>,
         store: &mut S,
     ) -> Result<(), FeedError> {
+        // An explicit start is the owner's decision to try this session anew.
+        self.recovery = RecoveryBudget::default();
         if self.active {
             // Resuming: the queue may have changed since.
             self.resync(at)?;
@@ -549,6 +572,12 @@ impl QueueFeed {
             // Temporary announcements, radio and Connect retain the DJ set,
             // but cannot move its cursor, record listens, trim or refill it.
             return Ok(0);
+        }
+        if playback.transport_status.as_deref() == Some("ERROR_OCCURRED") {
+            self.dry_end = None;
+            // Errors are neither listens nor ordinary queue exhaustion.
+            // A stale error also exits after its read-only confirmation.
+            return recovery::recover(self, at, playback, plan.now).map(|()| 0);
         }
         if !mode::maintain(self, at, playback)? {
             return Ok(0);
@@ -646,6 +675,7 @@ impl QueueFeed {
             .and_then(spotify_uri_from_renderer_uri)
             .is_some();
         playback.transport == Some(fsonos_types::TransportState::Stopped)
+            && playback.transport_status.as_deref() != Some("ERROR_OCCURRED")
             && playing == length
             && !self.jumped
             && length > 1
@@ -664,6 +694,10 @@ impl QueueFeed {
     /// else's: such an end comes with `true`, and the caller reads the queue
     /// before playing on ([`Self::topped_up_past`]).
     fn dry(&mut self, playback: &PlayerPlayback) -> Option<(u32, bool)> {
+        if playback.transport_status.as_deref() == Some("ERROR_OCCURRED") {
+            self.dry_end = None;
+            return None;
+        }
         let stopped = playback.transport == Some(fsonos_types::TransportState::Stopped);
         let left = self.left_at();
         let exact = playback.queue_length.is_some() && playback.queue_length == left;
@@ -794,6 +828,7 @@ impl QueueFeed {
         mode::start(at, first)?;
         self.playing = Some(first);
         self.jumped = true;
+        self.recovery = RecoveryBudget::default();
         Ok(&self.queued[next])
     }
 
@@ -833,6 +868,8 @@ impl QueueFeed {
         self.queue_len = None;
         self.dry_end = None;
         self.jumped = false;
+        self.recovery = RecoveryBudget::default();
+        self.recovery_notice = None;
     }
 
     /// Whether the playing (position, track) matches the feed's model of the
@@ -1444,6 +1481,7 @@ mod tests {
     use crate::test_shelf::{MIDNIGHT, shelf_items, song_items, works_of};
 
     mod history;
+    mod recovery;
     mod navigation;
     mod source;
 

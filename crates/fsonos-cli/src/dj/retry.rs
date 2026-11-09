@@ -12,6 +12,8 @@ const MAX: Duration = Duration::from_secs(300);
 #[derive(Debug, PartialEq, Eq)]
 struct PlaybackKey {
     transport: Option<TransportState>,
+    transport_status: Option<String>,
+    media_uri: Option<String>,
     uri: Option<String>,
     position: Option<u32>,
     length: Option<u32>,
@@ -21,6 +23,8 @@ impl From<&PlayerPlayback> for PlaybackKey {
     fn from(playback: &PlayerPlayback) -> Self {
         Self {
             transport: playback.transport,
+            transport_status: playback.transport_status.clone(),
+            media_uri: playback.media_uri.clone(),
             uri: playback.track_uri.clone(),
             position: playback.queue_position,
             length: playback.queue_length,
@@ -117,13 +121,15 @@ mod tests {
         let now = Instant::now();
         let original = playback();
         let retry = Retry::failed(None, &original, now);
-        for change in 0..4 {
+        for change in 0..6 {
             let mut changed = original.clone();
             match change {
                 0 => changed.track_uri = Some("test:next-track".into()),
                 1 => changed.transport = Some(TransportState::Paused),
                 2 => changed.queue_position = Some(2),
-                _ => changed.queue_length = Some(3),
+                3 => changed.queue_length = Some(3),
+                4 => changed.transport_status = Some("ERROR_OCCURRED".into()),
+                _ => changed.media_uri = Some("test:other-source".into()),
             }
             assert!(retry.ready(&changed, now));
             let failed = Retry::failed(Some(&retry), &changed, now);
@@ -150,6 +156,7 @@ mod tests {
                 playing: None,
                 recorded: None,
                 played: Vec::new(),
+                recovery: Default::default(),
             },
             DjConfig::default(),
             1,

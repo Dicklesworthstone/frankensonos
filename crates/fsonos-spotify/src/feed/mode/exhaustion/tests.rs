@@ -108,6 +108,7 @@ impl Rig {
                     },
                 }],
                 played: Vec::new(),
+                recovery: Default::default(),
                 playing: Some(4),
                 recorded: Some((4, TRACKS[3].into())),
             },

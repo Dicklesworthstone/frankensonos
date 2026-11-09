@@ -87,6 +87,7 @@ impl RunningQueue {
                 playing: Some(1),
                 recorded: None,
                 played: Vec::new(),
+                recovery: Default::default(),
             },
             DjConfig::default(),
             1,

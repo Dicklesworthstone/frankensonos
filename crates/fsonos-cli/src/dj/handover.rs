@@ -364,6 +364,7 @@ mod tests {
             playing: Some(1),
             recorded: Some((1, TRACKS[0].into())),
             played: Vec::new(),
+            recovery: Default::default(),
         }
     }
 

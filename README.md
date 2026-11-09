@@ -17,8 +17,8 @@ house from the terminal, an HTTP API, or any AI agent that speaks MCP.
 
 </div>
 
-> **Status: pre-release (before `0.1.0`).** Everything below is implemented,
-> and every feature is tested end to end against `fsonos-sim`, a virtual
+> **Status: pre-release (before `0.1.0`).** Features have protocol, unit and
+> end-to-end regression tests using `fsonos-sim`, a virtual
 > Sonos house (an S1 and an S2 household speaking SOAP and GENA on loopback,
 > checked against scrubbed captures of real players). The daemon also runs a
 > real two-household house, S1 and S2, where discovery, grouping, volume,
@@ -91,6 +91,25 @@ can drive:
 | **Setup & diagnosis** | `fsonos setup` walks a first run (including your Spotify app and sign-in); `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon, the store's free disk space and the Tailscale chain, and names the fix for each problem |
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)); editing room aliases (`fsonos rooms alias`) and checking `policy.toml` (`fsonos policy check`) are the CLI's alone, as they work on the data directory's files |
 | **A house without speakers** | `fsonos sim` starts virtual S1 and S2 households on loopback, so you can try every command, or develop an agent, with no hardware |
+
+### Playback errors and DJ recovery
+
+`fsonos status ROOM`, API state, MCP and live events expose the speaker's
+reported transport status. `ERROR_OCCURRED` is distinct from an ordinary
+stop; an absent status means unknown. Phone and dashboard views display the
+same playback-error state.
+
+An active DJ can move past a confirmed failed work to the first movement of
+the next intact DJ work already waiting on its queue. Recovery keeps the
+listener's inserted tracks intact, obeys current volume caps and quiet hours,
+and is limited to three attempts in any rolling five minutes, including across
+daemon restarts. A failed or ambiguous command stops automatic management;
+the DJ does not replay it or clear the queue. Renderer failures do not teach
+the DJ that the listener disliked the music. The action log distinguishes an
+observed successful recovery from a continuation that has only been requested.
+
+This addition includes simulator regression cases. Its Rust build and test
+execution are still pending after the execution environment became unavailable.
 
 ## Quick tour
 

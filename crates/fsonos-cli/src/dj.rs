@@ -45,7 +45,9 @@ use fsonos_core::store::{Action, LoggedAction, Store};
 use fsonos_core::{CoreError, control};
 use fsonos_spotify::cache::works_from_store;
 use fsonos_spotify::dj::{DjConfig, PlayRecord, WorkPool};
-use fsonos_spotify::feed::{FeedError, Planning, QueueFeed, QueuedWork, Speakers};
+use fsonos_spotify::feed::{
+    FeedError, Planning, QueueFeed, QueuedWork, RecoveryNotice, Speakers,
+};
 use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
 use fsonos_spotify::steer::{DjSession, Moods, Steer, steering};
 use fsonos_types::PlayerId;
@@ -430,6 +432,18 @@ fn settle(
                 ),
             );
         }
+        Err(FeedError::RecoveryStopped(detail)) => {
+            observe_listening = false;
+            refill_retries.remove(at);
+            tracing::warn!(%detail, "automatic DJ playback recovery stopped");
+            problems.insert(
+                at.clone(),
+                format!(
+                    "The DJ stopped automatic recovery: {detail}. \
+                     Check the speaker before starting the DJ again."
+                ),
+            );
+        }
         Err(e) => {
             let retry = retry::Retry::failed(refill_retries.get(at), playback, Instant::now());
             tracing::warn!(
@@ -437,10 +451,15 @@ fn settle(
                 retry_in_s = retry.delay().as_secs(),
                 "the DJ could not top up; retrying with backoff"
             );
+            let operation = if playback.transport_status.as_deref() == Some("ERROR_OCCURRED") {
+                "confirm safe playback recovery"
+            } else {
+                "top up the queue"
+            };
             problems.insert(
                 at.clone(),
                 format!(
-                    "The DJ couldn't top up the queue ({e}); it tries again in {} s",
+                    "The DJ couldn't {operation} ({e}); it tries again in {} s",
                     retry.delay().as_secs()
                 ),
             );
@@ -526,6 +545,43 @@ fn record_top_up(
     }
 }
 
+/// Publish recovery through the existing action log, without recording a
+/// listen, a dislike, or a successful start that was not actually observed.
+fn record_recovery(
+    logged: &mut Vec<LoggedAction>,
+    store: &mut dyn Store,
+    at: DjSpeakers<'_>,
+    notice: &RecoveryNotice,
+    now: i64,
+) {
+    let result = if notice.playing {
+        format!(
+            "Playback failed in {:?}; continued with {:?} (attempt {})",
+            notice.failed_work, notice.next_work, notice.attempt
+        )
+    } else {
+        format!(
+            "Playback failed in {:?}; requested {:?} (attempt {}); \
+             playback has not been confirmed",
+            notice.failed_work, notice.next_work, notice.attempt
+        )
+    };
+    let action = Action {
+        at: now,
+        client: "dj".into(),
+        surface: "dj".into(),
+        intent: format!("dj: recover playback in {}", room(at)),
+        decision: "allow".into(),
+        result,
+        before_state: None,
+        undo_of: None,
+    };
+    match fsonos_core::actions::record(store, &action) {
+        Ok(id) => logged.push(LoggedAction { id, action }),
+        Err(error) => tracing::warn!(%error, "the DJ's playback recovery was not logged"),
+    }
+}
+
 /// " (mood: evening)", when the pick was steered by a mood.
 fn mood(cx: &Context) -> String {
     cx.steer
@@ -564,6 +620,9 @@ fn failure(err: FeedError) -> Failure {
         FeedError::UncertainEnqueue(_) => Failure::new(ErrorCode::OutcomeUncertain, detail).with_hint(
             "Inspect the speaker's queue before starting the DJ again. The add was not \
              replayed, and existing playback was left alone.",
+        ),
+        FeedError::RecoveryStopped(_) => Failure::new(ErrorCode::NoDjSession, detail).with_hint(
+            "Inspect the speaker's playback and queue, then start the DJ again when ready.",
         ),
         FeedError::Core(e) => Failure::from(e),
         FeedError::Proto(e) => Failure::from(CoreError::from(e)),
@@ -963,6 +1022,13 @@ impl DjEngine for SpotifyDj {
             // Do this before backoff so its duration never counts as listening.
             return;
         }
+        if playback.transport_status.as_deref() == Some("ERROR_OCCURRED")
+            && let Some(listening) = state.listening.get_mut(at.coordinator)
+        {
+            // A renderer fault is not a preference. Interrupt before retry
+            // backoff can defer this observation and make a later skip look heard.
+            listening.interrupt();
+        }
         // Keep a failed rebuild pending even after consuming the library's
         // freshness notification. A repaired plan can unblock a failed feed.
         self.take_library_fresh(&mut state);
@@ -1034,6 +1100,9 @@ impl DjEngine for SpotifyDj {
         );
         record_top_up(logged, store, at, feed, &result, cx.now);
         let trim_error = feed.take_trim_error();
+        if let Some(notice) = feed.take_recovery_notice() {
+            record_recovery(logged, store, at, &notice, cx.now);
+        }
         let observe_listening = settle(
             result,
             trim_error,

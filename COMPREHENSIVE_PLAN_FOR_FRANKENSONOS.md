@@ -987,6 +987,30 @@ and pause/resume do not add another play. Simulator regressions cover these
 transitions; their Rust execution remains blocked by the dependency-build
 resource failure documented for this session.
 
+Renderer status now survives GENA and complete readbacks independently of
+transport state. `transport_status` is available in zone state, CLI/MCP
+status, the legacy bridge, and SSE; an explicit SSE null clears the old status
+to unknown. Missing status never becomes an invented `OK`.
+
+The DJ handles a freshly confirmed stopped `ERROR_OCCURRED` by selecting
+the first movement of the next intact, already queued DJ work. It checks the
+current occurrence, both complete works, the queue revision, source, group
+membership and coordinator boot around the attempt and between its stages.
+It never skips over an owner's intervening items or enqueues during recovery.
+Each Seek/Play is sent once through the existing volume-cap transport; an
+unconfirmed mutation ends automatic management without clearing or undoing
+the queue. At most three attempts are admitted in any rolling five-minute
+period, with the budget retained in saved feeds; an explicit DJ start or skip
+starts a new budget. Recovery notices distinguish confirmed Playing+OK from
+an accepted continuation whose playback is still unconfirmed. Speaker errors
+interrupt implicit taste feedback, so they cannot become dislikes or completed
+listens, and cannot enter ordinary dry-queue restart logic.
+
+These renderer-error changes include protocol, simulator, live-state, surface
+and DJ regression cases. Rust compilation and test execution for the additions
+remain unverified after dependency-build memory failures and the execution
+environment becoming unavailable.
+
 ### 12.10 Schedules and a sleep timer
 
 [`b-scheduler`, `d-schedule-surface`] Daemon-side and persisted:
