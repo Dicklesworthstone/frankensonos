@@ -695,6 +695,17 @@ their standing preferences on every surface and in the daemon. What is on
   hashed unread IDs/names retain deferred samples and guest-credit evidence.
   Sync notes distinguish samples deferred by this pass from full discography
   coverage and explain that another explicit sync advances the rotation.
+- Recent listening also has a lightweight reader independent of full-library
+  publication. Before each due background library/enrichment check, it reads at
+  most the latest 50 Spotify plays between account identity checks. It shares
+  the worker slot and server cooldowns, retains admission/backoff across restart,
+  and updates next-pick repeat avoidance without rebuilding the pool or changing
+  already queued music. This is a bounded observation, not complete history or
+  backfill. Account-adoption fences and a monotonic, 10,000-track retention bound
+  protect its publication; delayed full reads cannot erase newer evidence.
+  CLI/HTTP/MCP and the shared web sync panel show accepted-window freshness and
+  failures separately from the last full refresh. See
+  [`docs/RECENT_LISTENING.md`](docs/RECENT_LISTENING.md) for coverage and validation.
 - Taste beyond the library is read with the owner's grant
   (`user-follow-read`, `user-top-read`, `user-read-recently-played`,
   `playlist-read-private`: owner-authorized, requested at sign-in, listed in

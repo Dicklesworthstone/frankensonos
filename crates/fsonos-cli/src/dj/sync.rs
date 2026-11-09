@@ -85,6 +85,7 @@ struct Running {
     genres: bool,
     followed: bool,
     intake: bool,
+    recent: bool,
     error: Option<String>,
 }
 

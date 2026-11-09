@@ -78,8 +78,28 @@ const LibrarySyncRemote = (() => {
         verified_pages: v.verified_pages, limited: v.limited, running: v.running,
         retry_at: v.retry_at ?? null, not_before: v.not_before ?? null, requires_refresh: v.requires_refresh });
     }
+    let recent = null;
+    if (value.recent_listening != null) {
+      const v = value.recent_listening;
+      if (!object(v) || !['running', 'more_available', 'missing_scope', 'requires_refresh'].every((key) => typeof v[key] === 'boolean')
+          || !['received', 'accepted', 'skipped'].every((key) => count(v[key]) && v[key] <= 50)
+          || v.accepted + v.skipped > v.received || (v.missing_scope && v.requires_refresh)
+          || (v.running && (!value.running || genres?.running || intake?.running || followed?.running))
+          || (v.checked_at != null && (!timestamp(v.checked_at) || v.checked_at < 0))
+          || (v.checked_at == null && v.accepted > 0)
+          || (v.retry_at != null && !timestamp(v.retry_at))
+          || (v.not_before != null && !timestamp(v.not_before))
+          || (v.error != null && !text(v.error))) {
+        throw new Error('The recent listening status is unreadable. Check status again.');
+      }
+      recent = Object.freeze({ running: v.running, checked_at: v.checked_at ?? null,
+        received: v.received, accepted: v.accepted, skipped: v.skipped, more_available: v.more_available,
+        missing_scope: v.missing_scope, requires_refresh: v.requires_refresh,
+        retry_at: v.retry_at ?? null, not_before: v.not_before ?? null, error: v.error ?? null });
+    }
     return Object.freeze({ done: value.done, running: value.running, last,
-      error: value.error ?? null, genre_enrichment: genres, library_intake: intake, followed_artists: followed });
+      error: value.error ?? null, genre_enrichment: genres, library_intake: intake, followed_artists: followed,
+      recent_listening: recent });
   }
 
   function model({ call, changed = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
@@ -288,6 +308,30 @@ const LibrarySyncRemote = (() => {
               const label = followed.phase === 'ready' ? 'Next library reconciliation no earlier than' : 'Next followed-artist pass no earlier than';
               if (deadlines.length) deadline(label, Math.max(...deadlines));
             }
+          }
+          if (observed.recent_listening) {
+            const recent = observed.recent_listening;
+            facts.append(el('h3', { text: 'Recent listening on Spotify' }),
+              el('p', { text: recent.running ? 'Checking the latest plays so the DJ can avoid music you just heard on another device.'
+                : recent.error ? `The latest listening check failed: ${recent.error}. ${recent.checked_at !== null
+                  ? 'The last accepted window retains its original timestamp.' : 'No accepted window is available for the current account.'}`
+                  : recent.missing_scope ? 'Sign in to Spotify again with the recent-listening grant to enable this check.'
+                    : recent.requires_refresh ? 'The current Spotify account needs a full library refresh before its listening can be accepted.'
+                      : recent.checked_at !== null ? 'The next DJ selections use the accepted listening observations. Already queued music stays queued.'
+                        : 'No recent-listening window has been accepted by this reader yet.' }));
+            if (recent.checked_at !== null) {
+              deadline('Last accepted listening check', recent.checked_at);
+              facts.append(el('dl', { class: 'library-sync-counts' },
+                el('dt', { text: 'History rows observed' }), el('dd', { text: recent.received.toLocaleString() }),
+                el('dt', { text: 'Distinct track identities accepted' }), el('dd', { text: recent.accepted.toLocaleString() }),
+                el('dt', { text: 'Unavailable or non-track rows skipped' }), el('dd', { text: recent.skipped.toLocaleString() })));
+            }
+            facts.append(el('p', { text: 'Each background check reads at most the latest 50 plays. Older listening between checks can be missed; this is not a complete history import.' }));
+            if (recent.more_available) facts.append(el('p', { text: 'This window may omit older plays.' }));
+            if (recent.not_before !== observed.library_intake?.not_before
+                && recent.not_before !== observed.genre_enrichment?.not_before
+                && recent.not_before !== observed.followed_artists?.not_before) deadline('Spotify cooldown ends at', recent.not_before);
+            if (!recent.running) deadline('Next listening check no earlier than', recent.retry_at);
           }
         }
       }

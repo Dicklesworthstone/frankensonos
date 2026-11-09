@@ -15,6 +15,9 @@ const intake = (overrides = {}) => ({ pending: true, phase: 'reading', pages: 51
 const followed = (overrides = {}) => ({ pending: true, phase: 'reading', pages: 20, artists: 1000,
   verified_pages: 0, limited: false, running: false, retry_at: 1790000900, not_before: 1790003600,
   requires_refresh: false, ...overrides });
+const recent = (overrides = {}) => ({ running: false, checked_at: 1790000800,
+  received: 50, accepted: 45, skipped: 2, more_available: true, missing_scope: false,
+  requires_refresh: false, retry_at: 1790001700, not_before: null, error: null, ...overrides });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -37,8 +40,56 @@ test('old completed DTOs keep omitted notes and pending genres at their defaults
   assert.equal(s.genre_enrichment, null);
   assert.equal(s.library_intake, null);
   assert.equal(s.followed_artists, null);
+  assert.equal(s.recent_listening, null);
   assert.equal(remote.statusOf({ done: 'Not read yet', running: false }).last, null);
   assert.ok(Object.isFrozen(s) && Object.isFrozen(s.last) && Object.isFrozen(s.last.notes));
+});
+
+test('recent listening is immutable bounded evidence independent of full-library freshness', () => {
+  const raw = status({ recent_listening: recent() });
+  const parsed = remote.statusOf(raw);
+  raw.recent_listening.accepted = 1;
+  assert.deepEqual(parsed.recent_listening, recent());
+  assert.ok(Object.isFrozen(parsed.recent_listening));
+  assert.equal(parsed.last.at, completed().at);
+  assert.notEqual(parsed.last.at, parsed.recent_listening.checked_at);
+  const pending = remote.statusOf(status({ last: null, recent_listening: recent({
+    checked_at: null, received: 0, accepted: 0, skipped: 0, more_available: false, requires_refresh: true,
+  }) }));
+  assert.equal(pending.last, null);
+  assert.equal(pending.recent_listening.checked_at, null);
+});
+
+test('malformed recent listening never enables a cache mutation', async () => {
+  for (const value of [null, [], {}, recent({ received: 51 }), recent({ accepted: 49 }),
+    recent({ skipped: -1 }), recent({ checked_at: null }), recent({ checked_at: 'now' }),
+    recent({ checked_at: -1 }), recent({ retry_at: 'later' }), recent({ error: {} }),
+    recent({ more_available: 1 }), recent({ missing_scope: true, requires_refresh: true }),
+    recent({ running: true })].filter((v) => v !== null)) {
+    const h = harness(() => status({ recent_listening: value }));
+    assert.equal(await h.model.open(), false);
+    assert.equal(await h.model.start(), false);
+    assert.equal(h.calls.length, 1);
+    h.model.dispose();
+  }
+  for (const other of [{ genre_enrichment: genres({ running: true }) },
+    { library_intake: intake({ running: true }) }, { followed_artists: followed({ running: true }) }]) {
+    assert.throws(() => remote.statusOf(status({ running: true, ...other, recent_listening: recent({ running: true }) })));
+  }
+});
+
+test('an active recent-listening read is observed without issuing a full refresh or endless idle polling', async () => {
+  let current = status({ running: true, recent_listening: recent({ running: true }) });
+  const h = harness(() => current);
+  await h.model.open();
+  assert.equal(await h.model.start(), false);
+  current = status({ recent_listening: recent() });
+  assert.equal(h.fire(), remote.POLL_MS);
+  await settle();
+  assert.equal(h.model.state.status.last.at, completed().at);
+  assert.equal(h.timers.size, 0);
+  assert.ok(h.calls.every(([operation]) => operation === 'librarySyncStatus'));
+  h.model.dispose();
 });
 
 test('saved intake retains its exact progress without inventing a full refresh', () => {
@@ -400,6 +451,30 @@ function panelHarness(t, initial) {
   panel = remote.panel({ call: async () => answer, el });
   return { panel, nodes: () => all(panel.node), answer: (value) => { answer = value; return panel.model.refresh(); } };
 }
+
+test('the panel distinguishes a bounded listening window, a failed retry and the last full refresh', async (t) => {
+  const h = panelHarness(t, status({ recent_listening: recent() }));
+  await h.panel.model.open();
+  let nodes = h.nodes();
+  assert.ok(nodes.some((node) => node.textContent === 'Last completed full refresh'));
+  assert.ok(nodes.some((node) => node.textContent === 'Recent listening on Spotify'));
+  assert.ok(nodes.some((node) => node.textContent.includes('latest 50 plays') && node.textContent.includes('can be missed')));
+  const counts = nodes.filter((node) => node.tag === 'dl').map((node) => node.children.map((child) => child.textContent));
+  assert.ok(counts.some((values) => values.join('|') === 'History rows observed|50|Distinct track identities accepted|45|Unavailable or non-track rows skipped|2'));
+  let checked = nodes.find((node) => node.tag === 'p' && node.children[0]?.textContent === 'Last accepted listening check ');
+  assert.equal(checked.children[1].datetime, new Date(recent().checked_at * 1000).toISOString());
+  await h.answer(status({ recent_listening: recent({ error: 'Spotify unavailable', not_before: 1790005000 }) }));
+  nodes = h.nodes();
+  assert.ok(nodes.some((node) => node.textContent.includes('last accepted window retains its original timestamp')));
+  checked = nodes.find((node) => node.tag === 'p' && node.children[0]?.textContent === 'Last accepted listening check ');
+  assert.equal(checked.children[1].datetime, new Date(recent().checked_at * 1000).toISOString());
+  await h.answer(status({ last: null, recent_listening: recent({ checked_at: null,
+    received: 0, accepted: 0, skipped: 0, more_available: false, missing_scope: true }) }));
+  nodes = h.nodes();
+  assert.ok(nodes.some((node) => node.textContent.includes('recent-listening grant')));
+  assert.ok(!nodes.some((node) => node.textContent === 'Last completed full refresh'));
+  assert.ok(!nodes.some((node) => node.children[0]?.textContent === 'Last accepted listening check '));
+});
 
 test('the panel shows current genre counts and cooldown instead of a stale full-refresh count', async (t) => {
   const h = panelHarness(t, status({ last: completed({ genre_artists_pending: 99 }), genre_enrichment: genres() }));
