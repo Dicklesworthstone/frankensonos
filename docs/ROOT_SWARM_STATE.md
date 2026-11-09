@@ -2746,3 +2746,17 @@ JFFSEX's only embedded addresses, for that work (node offsets):
 `;dd …` string), `6404` = A `0x106c6980`; `FN = system@GOT 0x105464b0` at
 `556`. None of them is a `0x106c4ef0`-style fake handler, so F is supplied
 outside the file.
+
+**In-place command swap tried:** `jt.aa` = JFFSEX with bytes 540-591 (the
+command field, NUL-padded before the FN at 592) rewritten to
+`;telnetd -p 2323 -l /bin/sh`. Fired with the correct recipe: SETAV/PLAY 200,
+daemon healthy afterwards, **no 2323 and no hang** — so the outcome is also
+unstable run to run (36 s hang once, clean the next), and the in-file command
+field is not what `system()` receives. Next step for the argument is to find
+what V (`0x106c69ec`) actually points at in the daemon and re-aim it, or to
+calibrate F so the chain resolves cleanly, then re-test.
+
+**Servers left running for the next session:** Mac `:8901` (`/tmp/aa-fire`,
+`aafire3`), `:8902` (`audio/aac` type, `aac8902`), `:8903` (Range-capable,
+`rng8903`); css `:1400` (`aa1400`, `/tmp/aa_www`). The payloads
+`jffsex.aa`, `jt.aa`, `jcell.aa`, `g5723.upd`, `g65130.upd` are in both dirs.
