@@ -3405,3 +3405,20 @@ Setup on css so the `86.11` daemon can be debugged instead of guessed at:
 Next: run it under `-g` with a breakpoint on `abort`/`raise` to catch the
 failing assert and seed whatever device file it wants, then the SOAP handler
 becomes a breakpoint instead of a static-search target.
+
+**The S2 abort is a codec switch with `abort()` as default.** Caught with the
+stub: `break abort` → `pc=0x6dcc91` (the mips16 PLT), `ra=0x59641d`, call site
+**`0x596417`**. The surrounding code is a compare chain on a value held at
+`sp+4144` against ids `10, 11, 20, 25, 36, 115, 145, …`, each case writing a
+codec parameter block (fields `+236/+240/+248/+252` of the object in `s0`,
+e.g. `li 0,512` / `li 0,1024` for buffer sizes, `li 0,255; addiu 1` for a
+mask), and **falling through to `abort()` for an id it does not know**.
+
+That is the same shape as the S1's diag-submodel abort and it explains the
+universal death: whatever the sniffed format maps to, the id does not land in
+the table, so every input aborts — content, size, framing and URI form are all
+irrelevant because none of them change the classification before this point.
+The practical fixes are therefore the S1 playbook: either nop the abort call
+(**file offset `0x196417`**, `jal abort` → `nop`) so the load continues with a
+default parameter block, or find the classifier that fills `sp+4144` and feed
+it a supported id.
