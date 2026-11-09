@@ -3002,3 +3002,20 @@ followed by the chain bytes.
 
 Even on the 200 the dispatcher still does not run (`/status` healthy), so the
 notify is the last link and it is not firing for a `.aa` load on this build.
+
+**Observer path confirmed unguarded:** `0x101e3a44` is
+`if (*(ctx)) 0x102bf778(*(ctx), a2..a5)` — no flag test, no type test. So the
+dispatcher runs whenever the observer callback fires, and `obj` is whatever
+the registration stored. `0x101e3a44` is reached only from the notify driver
+`0x101e3aa0` (a 26 KB-frame serializer), whose single caller is the state
+machine. So:
+
+- `obj` is the *same object* the type-2 handler strcpy'd into at `+6380`
+  (node 24 = `obj+6404`), i.e. `C = obj+6380` and everything in the value must
+  be `C + node`;
+- the only missing precondition is a **notify on that object after the copy**.
+  `Stop` is a state change and the copied bytes survive it (the clear is a
+  single byte at the copy's first byte), yet no call happens — so the observer
+  callback is not firing for these loads on this build.
+
+That is the whole remaining gap: one callback. Everything behind it is built.
