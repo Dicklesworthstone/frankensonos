@@ -3446,3 +3446,21 @@ absent accept loop — but the S2 now has the instrument it lacked: a running
 daemon with per-module logs and a bind, plus a documented patch to get past
 its startup abort. Note the abort patch is *emulator-only*; the device is
 untouched.
+
+**hhid source mapped (both builds, same design):** the daemon reads
+`/jffs/settings/householdsettings.json`, reacts to `NewMuseHHIDEvent`
+(logging `RZoneBridge handled NewMuseHHIDEvent, Muse HHID: %s`), and validates
+with `invalid hhid` / `hhid invalid (%s != %s)`. The synthetic
+`HHID_111111111111111111111111111` template exists in the **S2** binary too
+(exactly as in the S1), and there is an emitter `  "hhid" : "%s",`.
+
+First attempt — the flat shape
+`{"householdSettings":{"hhid":"HHID_111111…111"}}` — is **not** accepted (log
+still says `hhid not available`), so the reader wants the array/schema form
+seen in the writer format
+(`[{"version":%u,"lastUpdateDevice":"%24s"}, [{"name":"restricted-admin",
+"readPermission":null,"writePermission":"hh-config-admin","settings":…}]]`).
+
+Xref note for that: the path string sits at VMA `0x667020` with two literal
+references in `.data` (`0x6e69ac`, `0x6e69b8`), and the loads into it are
+pool-relative, so the reader is found by the pool slot, not by an immediate.
