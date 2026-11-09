@@ -3163,3 +3163,13 @@ leading dash only as the whole token — `-c1` alone is 200, `-c1 127.0.0.1`
 with a space is 400 — so ping options are reachable but without a target.
 Dead-`A` payload with frames: `SetAV 200`, `Play 200`, states
 `{PLAYING, TRANSITIONING}`, still no fault — the null observer target stands.
+
+**B4 (persistence) answered by existing evidence:** the custom entry already
+in the list before this pass (`Id="253" Name="pwn2"`, full SMAPI triad on
+`192.168.4.160:8899`) has survived every reboot of `.202` in the intervening
+days, so `/customsd` entries are flash-persistent — the write is not just a
+runtime structure. Our `ompX` replacement occupies the same slot.
+
+**Caveat from this pass:** `.202` did not return from the verification reboot
+within ~12 minutes (ICMP up, daemon down), so the post-reboot list check is
+outstanding for that unit; `.84`/`.135` were healthy at the end.
