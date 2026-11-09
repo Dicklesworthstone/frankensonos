@@ -3213,3 +3213,16 @@ The `.aa`/`.ra` pair used to reach it rides the existing delivery, so no new
 transport work is needed; the open question is whether the size is consumed by
 a *loop* (pure DoS) or by a *copy* (a potential write), which is what the S2
 handler at the ASF object walk has to be read for.
+
+**Correction after controls — it is not ASF-specific on the S2, it is the
+generic sniffer.** `A_hdr.bin` (bare 16-byte GUID) also kills `.135` (15 s),
+and a plain 16-byte `AAAA…` file kills it in 8 s. The ASF GUID is not even a
+literal in the `86.11` daemon or any of its libs, so nothing ASF-specific is
+being matched — the `86.10` sniffer simply dies on a file it cannot identify
+(and on both size extremes when it can). Delivery is pre-auth
+`SetAVTransportURI`.
+
+Scope of the primitive today: **`.135` only** (S2). `.84` survives the same
+16-byte file. It is a repeatable, zero-cost daemon kill; what it is *not* yet
+is a write — that needs the sniffer/handler read on the S2, where the size and
+short-read paths are trusted.
