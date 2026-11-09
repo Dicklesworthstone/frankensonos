@@ -3304,3 +3304,16 @@ path is fixed or avoided — which is exactly why every `.135` experiment this
 week stalled. It also reframes the S2 work: the bug is in the media-load
 *common* path, not in any decoder, so a single RE pass over the load/start
 routine covers all of the above at once.
+
+**RE access to the `86.10`/`86.11` binary is good, in a narrow way.** The
+`/tmp/s86/bin/anacapad` image is `elf32-tradbigmips` (big-endian), readable by
+`mips-linux-gnu-objdump`/`readelf`, and carries **partial symbols**: ~150 are
+`muse`-prefixed (the household/cloud layer) while the transport/AVT layer is
+stripped, and the S2 shares none of the S1 handler strings (`audible`,
+`R_PLAY_OP_CODEC_SELECTED`, `ERROR_AUDIBLE_BAD_CODEC` are all absent). So the
+entry point for the media-load RE is the `muse`/`AVTransport` string xrefs
+(`AVTransport` exists 3×, `codec` 243×) plus the call graph down from the
+device's AVTransport action dispatch — not S1 knowledge transplanted, which
+is why the two builds behave so differently.
+
+Units: `.135` and `.84` both settled and up at the end of this pass.
