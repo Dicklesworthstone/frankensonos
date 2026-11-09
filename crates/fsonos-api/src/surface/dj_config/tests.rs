@@ -2,25 +2,25 @@ use super::*;
 use crate::ErrorCode;
 use serde_json::{Value, json};
 
-fn request(config: Value) -> DjConfigureRequest {
+fn request(config: &Value) -> DjConfigureRequest {
     serde_json::from_value(json!({"expected_revision": "a".repeat(64), "config": config})).unwrap()
 }
 
 #[test]
 fn default_program_and_explicitly_disabled_program_remain_distinct() {
-    let defaults = request(json!({})).checked().unwrap();
+    let defaults = request(&json!({})).checked().unwrap();
     assert_eq!(defaults.config.programs, None);
-    let off = request(json!({"programs": []})).checked().unwrap();
+    let off = request(&json!({"programs": []})).checked().unwrap();
     assert_eq!(off.config.programs, Some(vec![]));
     assert_ne!(defaults, off);
 }
 
 #[test]
 fn stored_moods_roundtrip_song_alternatives_expiry_and_strict_filters() {
-    let original = request(json!({"moods": {"Evening": {
+    let original = request(&json!({"moods": {"Evening": {
         "periods": ["Late Romantic"], "song_keywords": [" soul ", "gospel"],
         "include_artists": [" Alice "], "energy_bias": -2,
-        "strict": true, "allow_long_works": true, "expires_at": 1900000000,
+        "strict": true, "allow_long_works": true, "expires_at": 1_900_000_000,
         "decades": [1970], "max_work_minutes": 24
     }}}));
     let checked = original.checked().unwrap();
@@ -28,7 +28,7 @@ fn stored_moods_roundtrip_song_alternatives_expiry_and_strict_filters() {
     assert_eq!(mood.periods, ["late_romantic"]);
     assert_eq!(mood.song_keywords, [" soul ", "gospel"]);
     assert_eq!(mood.include_artists, [" Alice "]);
-    assert_eq!(mood.expires_at, Some(1900000000));
+    assert_eq!(mood.expires_at, Some(1_900_000_000));
     assert!(mood.strict && mood.allow_long_works);
     let copy: DjConfigureRequest =
         serde_json::from_slice(&serde_json::to_vec(&checked).unwrap()).unwrap();
@@ -37,7 +37,7 @@ fn stored_moods_roundtrip_song_alternatives_expiry_and_strict_filters() {
 
 #[test]
 fn program_precedence_overnight_and_full_day_are_preserved() {
-    let checked = request(json!({"programs": [
+    let checked = request(&json!({"programs": [
         {"days":["FRI", "mon"],"from":"21:00","to":"06:00","mood":"Calm"},
         {"days":["mon"],"from":"00:00","to":"24:00","mood":"focus"},
         {"days":["sun"],"from":"12:00","to":"12:00","mood":"dinner"}
@@ -56,7 +56,7 @@ fn program_precedence_overnight_and_full_day_are_preserved() {
 
 #[test]
 fn rejects_stale_token_shapes_ambiguous_names_and_unbounded_or_invalid_rules() {
-    let mut bad = request(json!({}));
+    let mut bad = request(&json!({}));
     for revision in ["", "missing", &"A".repeat(64), &"a".repeat(65)] {
         bad.expected_revision = revision.into();
         assert_eq!(bad.checked().unwrap_err().code, ErrorCode::InvalidArgument);
@@ -73,7 +73,7 @@ fn rejects_stale_token_shapes_ambiguous_names_and_unbounded_or_invalid_rules() {
         json!({"programs": [{"days":["daily"],"from":"00:00","to":"24:00","mood":"focus"}]}),
     ] {
         assert_eq!(
-            request(config.clone()).checked().unwrap_err().code,
+            request(&config).checked().unwrap_err().code,
             ErrorCode::InvalidArgument,
             "{config}"
         );
@@ -106,7 +106,7 @@ fn config_conflicts_have_a_distinct_non_retryable_contract() {
 #[test]
 fn program_only_edits_preserve_existing_authored_names_and_filters() {
     let checked = request(
-        json!({"moods": {" evening ": {"include_keywords": [" piano "]}},
+        &json!({"moods": {" evening ": {"include_keywords": [" piano "]}},
             "programs": [{"days":["fri"],"from":"21:00","to":"02:00","mood":" evening "}]
         }),
     )
@@ -147,7 +147,7 @@ fn configuration_writes_need_the_dj_grant_before_any_engine_or_store_access() {
         // error; a read-only call must fail at policy first.
         assert_eq!(
             surface
-                .dj_configure(&Client::McpStdio, &request(json!({})))
+                .dj_configure(&Client::McpStdio, &request(&json!({})))
                 .unwrap_err()
                 .code,
             expected

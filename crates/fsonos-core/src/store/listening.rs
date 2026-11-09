@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn retention_keeps_the_latest_distinct_tracks_with_stable_ties() {
         let current: Vec<_> = (0..MAX_SPOTIFY_HEARD_TRACKS)
-            .map(|i| (format!("track{i:05}"), i as i64))
+            .map(|i| (format!("track{i:05}"), i64::try_from(i).unwrap()))
             .collect();
         let merged = merge_plays(&current, &[play("new", 20_000), play("track00000", 30_000)]);
         assert_eq!(merged.len(), MAX_SPOTIFY_HEARD_TRACKS);

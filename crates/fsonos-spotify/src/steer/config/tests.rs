@@ -200,8 +200,10 @@ fn invalid_configuration_changes_neither_the_file_nor_its_revision() {
     let original = MoodsConfig::load(&path).unwrap();
     let saved = custom("study").save(&path, &original.revision).unwrap();
     let before = fs::read(&path).unwrap();
-    let mut missing_mood = MoodsConfig::default();
-    missing_mood.programs = Some(vec![all_day("not-defined")]);
+    let missing_mood = MoodsConfig {
+        programs: Some(vec![all_day("not-defined")]),
+        ..MoodsConfig::default()
+    };
     let mut bad_energy = custom("study");
     bad_energy.moods.get_mut("study").unwrap().energy_bias = 3;
     for config in [missing_mood, bad_energy] {

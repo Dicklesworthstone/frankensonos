@@ -21,6 +21,7 @@ use crate::steer::DjSession as Session;
 /// Check against the same previous revision that will be compared on save.
 /// This reads existing dependencies; the caller owns serialization with DJ
 /// session changes. It does not hold database locks or mutate saved routines.
+#[allow(clippy::too_many_lines)] // one validation pass reports all session and routine conflicts
 pub fn check_references(
     previous: &Moods,
     proposed: &Moods,

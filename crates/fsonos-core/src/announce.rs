@@ -468,6 +468,7 @@ impl Announcer {
     }
 
     /// One household's announcement, start to finish.
+    #[allow(clippy::too_many_lines)] // Keep preparation and restoration visible in execution order.
     fn announce_in<T: Transport + ?Sized>(
         &self,
         t: &T,

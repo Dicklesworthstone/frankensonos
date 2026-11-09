@@ -162,7 +162,7 @@ fn snapshot(kind: &str, mood: &str, expires: i64) -> Value {
     }
 }
 
-fn record(surface: &Surface, before: Value) -> i64 {
+fn record(surface: &Surface, before: &Value) -> i64 {
     surface
         .with_store(|store| {
             store.record_action(&Action {
@@ -254,7 +254,7 @@ fn deleted_moods_are_rejected_before_checked_or_forced_undo_writes_anything() {
     for checked in [false, true] {
         for kind in ["session", "scene", "schedule"] {
             let surface = surface(true);
-            let id = record(&surface, snapshot(kind, "deleted-custom-mood", i64::MAX));
+            let id = record(&surface, &snapshot(kind, "deleted-custom-mood", i64::MAX));
             let failure = undo(&surface, id, checked).unwrap_err();
             assert_eq!(failure.code, ErrorCode::UnknownMood, "{failure:?}");
             assert!(failure.detail.contains("deleted-custom-mood"));
@@ -274,7 +274,7 @@ fn known_moods_restore_normally_on_both_undo_paths() {
             ("schedule", (0, 0, 1, 1)),
         ] {
             let surface = surface(true);
-            let id = record(&surface, snapshot(kind, "CALM", i64::MAX));
+            let id = record(&surface, &snapshot(kind, "CALM", i64::MAX));
             undo(&surface, id, checked).unwrap();
             assert_eq!(restored_rows(&surface), expected);
         }
@@ -292,7 +292,7 @@ fn changed_mood_bounds_cannot_restore_clashing_directions_but_explicit_bounds_wi
                 }));
                 let mut before = snapshot(kind, "calm", i64::MAX);
                 bounds(&mut before, kind, minimum);
-                let id = record(&surface, before);
+                let id = record(&surface, &before);
                 let result = undo(&surface, id, checked);
                 if minimum.is_some() {
                     result.unwrap();
@@ -327,7 +327,7 @@ fn automatic_undo_directions_are_checked_against_current_program_moods() {
                 if constrained {
                     bounds(&mut before, kind, None);
                 }
-                let id = record(&surface, before);
+                let id = record(&surface, &before);
                 let result = undo(&surface, id, checked);
                 if constrained {
                     let failure = result.unwrap_err();
@@ -351,14 +351,14 @@ fn automatic_undo_directions_are_checked_against_current_program_moods() {
 #[test]
 fn expired_session_snapshot_and_older_engines_keep_their_undo_behavior() {
     let surface = surface(true);
-    let id = record(&surface, snapshot("session", "deleted-custom-mood", 100));
+    let id = record(&surface, &snapshot("session", "deleted-custom-mood", 100));
     surface.undo_checked(&Client::Cli, id).unwrap();
     assert_eq!(restored_rows(&surface), (1, 0, 0, 1));
 
     let surface = self::surface(false);
     let id = record(
         &surface,
-        snapshot("session", "legacy-engine-mood", i64::MAX),
+        &snapshot("session", "legacy-engine-mood", i64::MAX),
     );
     surface.undo_checked(&Client::Cli, id).unwrap();
     assert_eq!(restored_rows(&surface), (1, 0, 0, 1));
@@ -374,7 +374,7 @@ fn unreadable_referenced_routines_fail_before_restoring_or_consuming_the_action(
         } else {
             before["schedules"][0]["was"]["action"] = json!("not JSON");
         }
-        let id = record(&surface, before);
+        let id = record(&surface, &before);
         let failure = surface.undo_checked(&Client::Cli, id).unwrap_err();
         assert_eq!(failure.code, ErrorCode::InvalidArgument);
         assert!(failure.detail.contains(kind));
