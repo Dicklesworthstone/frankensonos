@@ -1,5 +1,8 @@
 //! Restore attempted effects only while the announcement still owns the state.
 
+mod untouched;
+pub(super) use untouched::Origin;
+
 use super::{GroupPlan, HouseholdAnnouncement, continuity, refreshed};
 use crate::snapshot::{self, Aspect, RestoreOp, RestoreReport, SnapshotSource, ZoneSnapshot};
 use crate::{CoreError, HouseholdState, control, heal};
@@ -196,12 +199,15 @@ fn left_alone(aspects: &[Aspect], why: &str) -> RestoreReport {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn put_back<T: Transport + ?Sized>(
     t: &T,
     household: &HouseholdState,
     plan: &GroupPlan,
     snaps: &[ZoneSnapshot],
     effects: &Effects,
+    origins: &[Origin],
+    capture_started: Instant,
     give_up: Instant,
     report: &mut HouseholdAnnouncement,
 ) {
@@ -263,6 +269,8 @@ pub(super) fn put_back<T: Transport + ?Sized>(
             snap,
             &effects,
             &released,
+            origins,
+            capture_started,
             give_up,
             &still_owned,
             report,
@@ -343,6 +351,8 @@ fn put_zone_back<T: Transport + ?Sized>(
     snap: &ZoneSnapshot,
     effects: &Effects,
     released: &[continuity::Released],
+    origins: &[Origin],
+    capture_started: Instant,
     give_up: Instant,
     still_owned: Owned<'_>,
     report: &mut HouseholdAnnouncement,
@@ -375,6 +385,30 @@ fn put_zone_back<T: Transport + ?Sized>(
     };
     let aspects = changed_aspects(snap, effects, continuation.is_some());
     if aspects.is_empty() && continuation.is_none() {
+        // Cap callbacks may have interrupted this zone's sleep fade even
+        // though cancellation or admission refusal prevented its first write.
+        // Only a complete fresh proof can authorize that sleep continuation.
+        let verified = untouched::confirm(t, household, snap, origins, capture_started);
+        report.restored.push((
+            snap.coordinator.clone(),
+            match verified {
+                Ok(()) => RestoreReport::default(),
+                Err(why) => left_alone(&Aspect::ALL, &why),
+            },
+        ));
+        return;
+    }
+    let preparation_only = effects.clip.is_none()
+        && continuation.is_none()
+        && !effects.sources.contains(&snap.coordinator)
+        && !snap
+            .members
+            .iter()
+            .any(|player| effects.groups.contains(player));
+    if preparation_only && let Err(why) = untouched::source_current(t, household, snap, origins) {
+        report
+            .restored
+            .push((snap.coordinator.clone(), left_alone(&Aspect::ALL, &why)));
         return;
     }
     let mut changed = snap.clone();
@@ -387,6 +421,11 @@ fn put_zone_back<T: Transport + ?Sized>(
     let restore = || {
         let now = refreshed(t, household)?;
         snapshot::restore_vetted(t, std::slice::from_ref(&now), &changed, &aspects, &|op| {
+            // Every dispatch needs the original authority, including a retry
+            // after an unreachable player or the 402 clip-settling backoff.
+            if preparation_only {
+                untouched::source_current(t, household, snap, origins)?;
+            }
             if let Some((entry, proof)) = continuation.zip(returned.as_ref()) {
                 proof.check(t, entry).map_err(|error| error.to_string())?;
             }
@@ -409,6 +448,16 @@ fn put_zone_back<T: Transport + ?Sized>(
         Ok(Ok(mut r)) => {
             if continuation.is_some() {
                 r.restored.splice(0..0, continued);
+            }
+            // A preparation cancelled before source installation may have
+            // changed only a room's level. Restoring that level alone cannot
+            // authorize its old sleep on a source or group changed meanwhile.
+            if effects.clip.is_none()
+                && r.skipped.is_empty()
+                && let Err(why) = untouched::confirm(t, household, snap, origins, capture_started)
+            {
+                r.skipped
+                    .extend(Aspect::ALL.into_iter().map(|aspect| (aspect, why.clone())));
             }
             report.restored.push((snap.coordinator.clone(), r));
         }

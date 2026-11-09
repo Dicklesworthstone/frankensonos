@@ -864,16 +864,13 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         Command::Sleep(args) => sleep(&daemon, json, args)?,
         Command::Eq(args) => crate::eq_cmd::through(&daemon, json, args)?,
         Command::Say(args) => {
-            let announced = daemon.announce(&args.request())?;
-            emit(json, &announced, announce_cmd::text)?;
+            announce_cmd::through(&daemon, json, &args.request(), args.at.background)?
         }
         Command::Chime(args) => {
-            let announced = daemon.announce(&args.request())?;
-            emit(json, &announced, announce_cmd::text)?;
+            announce_cmd::through(&daemon, json, &args.request(), args.at.background)?
         }
         Command::Announce(args) => {
-            let announced = daemon.announce(&args.request()?)?;
-            emit(json, &announced, announce_cmd::text)?;
+            announce_cmd::through(&daemon, json, &args.request()?, args.at.background)?
         }
         Command::Play {
             zone,

@@ -1,7 +1,7 @@
 //! Read-only playback capture. Bracket room reads with source, queue, track,
 //! mode and transport observations; do not combine different playback epochs.
 
-use super::{MemberLevel, SnapshotSource, ZoneSnapshot, ip, member_rooms};
+use super::{MemberLevel, SnapshotSource, SourceObservation, ZoneSnapshot, ip, member_rooms};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::content::{self, BrowseFlag};
 use fsonos_proto::control::{self as soap, MediaInfo, PositionInfo};
@@ -25,6 +25,7 @@ struct QueueStamp {
 struct Playback {
     media: MediaInfo,
     state: TransportState,
+    status: String,
     position: PositionInfo,
     queue: Option<QueueStamp>,
     mode: Option<PlayMode>,
@@ -98,7 +99,7 @@ impl Playback {
             // Never restore another coordinator's queue as this player's own.
             return Err(changed());
         }
-        let state = soap::get_transport_info(t, host)?.state;
+        let transport = soap::get_transport_info(t, host)?;
         let queue = (media.uri == own_queue)
             .then(|| queue_stamp(t, host))
             .transpose()?;
@@ -106,7 +107,8 @@ impl Playback {
         let position = soap::get_position_info(t, host)?;
         Ok(Self {
             media,
-            state,
+            state: transport.state,
+            status: transport.status,
             position,
             queue,
             mode,
@@ -129,12 +131,13 @@ impl Playback {
             }
             None => (None, true),
         };
-        let state = soap::get_transport_info(t, host)?.state;
+        let transport = soap::get_transport_info(t, host)?;
         let media = soap::get_media_info(t, host)?;
         Ok((
             Self {
                 media,
-                state,
+                state: transport.state,
+                status: transport.status,
                 position,
                 queue,
                 mode,
@@ -146,6 +149,7 @@ impl Playback {
     fn agrees(&self, after: &Self, elapsed: Duration) -> bool {
         self.media == after.media
             && self.state == after.state
+            && self.status == after.status
             && matches!(
                 self.state,
                 TransportState::Playing | TransportState::Paused | TransportState::Stopped
@@ -189,6 +193,31 @@ impl Playback {
             }
         }
     }
+}
+
+/// One bounded source observation, sharing snapshot queue/occurrence checks.
+/// A mixed read is refused rather than silently adopting the newer source
+/// before an announcement interrupts an existing sleep fade.
+pub(super) fn observe_source<T: Transport + ?Sized>(
+    t: &T,
+    household: &HouseholdState,
+    coordinator: &PlayerId,
+) -> Result<SourceObservation, CoreError> {
+    let host = ip(household, coordinator)?;
+    let started = Instant::now();
+    let before = Playback::begin(t, host, coordinator)?;
+    let (after, selection_matches) = before.finish(t, host)?;
+    if !selection_matches || !before.agrees(&after, started.elapsed()) {
+        return Err(changed());
+    }
+    Ok(SourceObservation {
+        transport: soap::TransportInfo {
+            state: after.state,
+            status: after.status.clone(),
+        },
+        play_mode: after.mode,
+        source: after.source(),
+    })
 }
 
 fn progresses(

@@ -51,7 +51,7 @@ use fsonos_proto::control as soap;
 use fsonos_proto::didl::xml_escape;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::PlayerId;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The level rooms announce at unless asked otherwise (before policy caps).
 pub const DEFAULT_VOLUME: u8 = 35;
@@ -188,7 +188,8 @@ pub struct HouseholdAnnouncement {
     /// How the clip ended, or why the announcement failed. The snapshots
     /// were restored either way, unless taking them failed.
     pub outcome: Result<Ending, String>,
-    /// Each zone's restore, by coordinator.
+    /// Each zone's restore, by coordinator. An empty successful row can also
+    /// confirm by fresh reads that an untouched zone still matches its snapshot.
     pub restored: Vec<(PlayerId, RestoreReport)>,
     /// Zones (or rooms leaving the temporary group) that could not be put
     /// back, and why.
@@ -206,8 +207,12 @@ impl HouseholdAnnouncement {
 }
 
 /// Boundary work that belongs to one household's announcement turn.
-/// Both callbacks run while that turn is held; households remain independent.
+/// Callbacks run while that turn is held; households remain independent.
 pub struct AnnouncementCallbacks<'a> {
+    /// Recheck admission after waiting for this household, before cap callbacks
+    /// can suspend its fades, and after snapshots before the first write.
+    /// Core is policy-neutral; a refusal becomes this household's outcome.
+    pub authorize: &'a (dyn Fn() -> Result<(), String> + Sync),
     /// The maximum level for each target room, before any playback changes.
     pub cap: &'a (dyn Fn(&Room) -> u8 + Sync),
     /// Called after restoration, including failed or partial restoration,
@@ -352,6 +357,7 @@ impl Announcer {
             volume,
             live,
             &AnnouncementCallbacks {
+                authorize: &|| Ok(()),
                 cap,
                 completed: &|_, _| {},
             },
@@ -446,7 +452,7 @@ impl Announcer {
                         };
                         playback.phase(AnnouncementPhase::Preparing);
                         let report =
-                            self.announce_in(t, household, rooms, &playback, volume, callbacks.cap);
+                            self.announce_in(t, household, rooms, &playback, volume, callbacks);
                         (callbacks.completed)(household, &report);
                         playback.phase(AnnouncementPhase::Complete);
                         report
@@ -469,7 +475,7 @@ impl Announcer {
         rooms: &[&Room],
         playback: &Playback<'_>,
         volume: u8,
-        cap: &(dyn Fn(&Room) -> u8 + Sync),
+        callbacks: &AnnouncementCallbacks<'_>,
     ) -> HouseholdAnnouncement {
         if playback.cancelled() {
             return cancelled_report(rooms);
@@ -506,10 +512,6 @@ impl Announcer {
             return cancelled_report(rooms);
         }
         report.rooms = rooms.iter().map(|r| r.name.clone()).collect();
-        report.levels = rooms
-            .iter()
-            .map(|r| (r.name.clone(), volume.min(cap(r))))
-            .collect();
         let Some(plan) = plan_group(household, rooms) else {
             report.outcome = Err("no rooms to announce to".into());
             return report;
@@ -518,25 +520,75 @@ impl Announcer {
         if let Some(observer) = playback.observer {
             observer.target(&report);
         }
+        let origins = match plan
+            .zones
+            .iter()
+            .map(|zone| recovery::Origin::capture(t, household, zone))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(origins) => origins,
+            Err(error) => {
+                report.outcome = Err(format!(
+                    "could not observe the original source, so nothing was played: {error}"
+                ));
+                return report;
+            }
+        };
+        if playback.cancelled() {
+            return cancelled_report(rooms);
+        }
+        if let Err(why) = (callbacks.authorize)() {
+            report.outcome = Err(why);
+            return report;
+        }
+        report.levels = rooms
+            .iter()
+            .map(|r| (r.name.clone(), volume.min((callbacks.cap)(r))))
+            .collect();
         let hs = std::slice::from_ref(household);
         let mut snaps = Vec::new();
+        let capture_started = Instant::now();
+        let mut snapshot_failure = None;
         for zone in &plan.zones {
             match snapshot::capture(t, hs, zone, unix_now()) {
                 Ok(snap) => snaps.push(snap),
                 Err(e) => {
-                    report.outcome = Err(format!(
+                    snapshot_failure = Some(format!(
                         "could not snapshot {}'s zone, so nothing was played: {e}",
                         room_name(household, zone)
                     ));
-                    return report;
+                    break;
                 }
             }
         }
-        let (outcome, effects) = self.play(t, hs, &plan, rooms, &report.levels, playback);
+        let admission = snapshot_failure.map_or_else(
+            || {
+                if snaps.iter().all(|snap| origins.iter().any(|origin| origin.matches(snap))) {
+                    (callbacks.authorize)()
+                } else {
+                    Err("original playback changed while preparing the announcement; nothing was played".into())
+                }
+            },
+            Err,
+        );
+        let (outcome, effects) = match admission {
+            Ok(()) => self.play(t, hs, &plan, rooms, &report.levels, playback),
+            Err(why) => (Err(why), Effects::default()),
+        };
         report.outcome = outcome;
         playback.phase(AnnouncementPhase::Restoring);
         let give_up = std::time::Instant::now() + self.patience;
-        recovery::put_back(t, household, &plan, &snaps, &effects, give_up, &mut report);
+        recovery::put_back(
+            t,
+            household,
+            &plan,
+            &snaps,
+            &effects,
+            &origins,
+            capture_started,
+            give_up,
+            &mut report,
+        );
         report
     }
 

@@ -183,6 +183,10 @@ fn configured_server(
             "announce".into(),
             fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES,
         );
+        http.tool_input_max_bytes.insert(
+            "announce_start".into(),
+            fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES,
+        );
     }
     // The essentials, in ESSENTIALS order.
     let builder = fastmcp_server::ServerBuilder::try_new_with_fixed_protocol_policy(
@@ -257,6 +261,10 @@ fn configured_server(
             .tool(play_mode::GetPlayMode)
             .tool(play_mode::SetPlayMode)
             .tool(tools::Announce)
+            .tool(tools::AnnounceStart)
+            .tool(tools::ListAnnouncements)
+            .tool(tools::GetAnnouncement)
+            .tool(tools::CancelAnnouncement)
             .tool(tools::dj_feedback::DjFeedback)
             .tool(tools::dj_prefs::DjPreferences)
             .tool(tools::dj_prefs::DjPrefer)

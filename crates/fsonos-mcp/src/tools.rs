@@ -41,7 +41,9 @@ mod players;
 pub use players::ListPlayers;
 
 mod announce;
-pub use announce::Announce;
+pub use announce::{
+    Announce, AnnounceStart, CancelAnnouncement, GetAnnouncement, ListAnnouncements,
+};
 
 mod eq;
 pub use eq::{GetEq, SetEq};

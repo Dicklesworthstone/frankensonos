@@ -153,6 +153,22 @@ pub fn capture<T: Transport + ?Sized>(
     read::capture(t, households, coordinator, captured_at)
 }
 
+/// Coherent source identity without room-level reads. Announcements use it
+/// before suspending fades; their ordinary snapshot captures levels afterwards.
+pub(crate) struct SourceObservation {
+    pub source: SnapshotSource,
+    pub transport: soap::TransportInfo,
+    pub play_mode: Option<PlayMode>,
+}
+
+pub(crate) fn observe_source<T: Transport + ?Sized>(
+    t: &T,
+    household: &HouseholdState,
+    coordinator: &PlayerId,
+) -> Result<SourceObservation, CoreError> {
+    read::observe_source(t, household, coordinator)
+}
+
 /// The primary of each room in the group `coordinator` leads, its own first.
 pub(crate) fn member_rooms(household: &HouseholdState, coordinator: &PlayerId) -> Vec<PlayerId> {
     let mut rooms: Vec<&crate::Room> = household

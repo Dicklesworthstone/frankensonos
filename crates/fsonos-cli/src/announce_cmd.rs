@@ -5,7 +5,9 @@
 //! speakers (the address `fsonos serve` would give them for events).
 //! `fsonos serve` serves clips from its event listener instead.
 
-use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest, Announcements};
+use fsonos_api::surface::announce::{
+    AnnounceDto, AnnounceRequest, AnnouncementJobDto, Announcements,
+};
 use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::CoreError;
 use fsonos_core::announce::clip::{MediaStore, read_wav};
@@ -60,6 +62,27 @@ pub struct Where {
     /// it per room.
     #[arg(long)]
     pub volume: Option<u8>,
+    /// Return a daemon job ID after admission. Inspect or cancel it with
+    /// `fsonos announcements`; requires a running daemon.
+    #[arg(long)]
+    pub background: bool,
+}
+
+/// Inspect or cancel process-local announcement jobs held by the daemon.
+#[derive(Debug, Clone, clap::Args)]
+pub struct JobsArgs {
+    #[command(subcommand)]
+    pub action: Option<JobsCommand>,
+}
+
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum JobsCommand {
+    /// List active jobs and recent receipts visible to this caller.
+    List,
+    /// Inspect one exact announcement job and its restoration report.
+    Status { id: String },
+    /// Request cancellation; cleanup may still be running in the reply.
+    Cancel { id: String },
 }
 
 impl SayArgs {
@@ -120,9 +143,75 @@ pub fn media(data_dir: Option<&Path>) -> (MediaStore, MediaFiles) {
 }
 
 /// Run a direct announcement and print its result in the requested format.
-pub fn run_and_emit(global: &GlobalArgs, req: &AnnounceRequest) -> anyhow::Result<()> {
+pub fn run_and_emit(
+    global: &GlobalArgs,
+    req: &AnnounceRequest,
+    background: bool,
+) -> anyhow::Result<()> {
+    if background {
+        let daemon = required_daemon(global)?;
+        return through(&daemon, global.json, req, true);
+    }
     let announced = run(global, req)?;
     crate::emit(global.json, &announced, text)
+}
+
+fn required_daemon(global: &GlobalArgs) -> Result<crate::remote::Daemon, Failure> {
+    crate::remote::Daemon::find(global, true)?.ok_or_else(|| {
+        Failure::new(ErrorCode::NotReady, "announcement jobs require a running daemon")
+            .with_hint("Run fsonos serve and omit --direct. Synchronous announcements remain available directly.")
+    })
+}
+
+pub fn through(
+    daemon: &crate::remote::Daemon,
+    json: bool,
+    req: &AnnounceRequest,
+    background: bool,
+) -> anyhow::Result<()> {
+    if background {
+        let job: AnnouncementJobDto = daemon.post("/announcements", req)?;
+        crate::emit(json, &job, AnnouncementJobDto::text)
+    } else {
+        let announced = daemon.announce(req)?;
+        crate::emit(json, &announced, text)
+    }
+}
+
+pub fn jobs(global: &GlobalArgs, args: &JobsArgs) -> anyhow::Result<()> {
+    let daemon = required_daemon(global)?;
+    match args.action.as_ref() {
+        None | Some(JobsCommand::List) => {
+            let jobs: Vec<AnnouncementJobDto> = daemon.get("/announcements")?;
+            crate::emit(global.json, &jobs, |jobs| {
+                if jobs.is_empty() {
+                    "no retained announcements\n".into()
+                } else {
+                    jobs.iter().map(AnnouncementJobDto::text).collect()
+                }
+            })
+        }
+        Some(JobsCommand::Status { id } | JobsCommand::Cancel { id }) => {
+            if id.len() != 32
+                || !id
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            {
+                return Err(Failure::invalid(
+                    "use the exact 32-character announcement id returned by the daemon",
+                )
+                .into());
+            }
+            let path = format!("/announcements/{id}");
+            let job: AnnouncementJobDto =
+                if matches!(args.action.as_ref(), Some(JobsCommand::Cancel { .. })) {
+                    daemon.post(&format!("{path}/cancel"), &serde_json::json!({}))?
+                } else {
+                    daemon.get(&path)?
+                };
+            crate::emit(global.json, &job, AnnouncementJobDto::text)
+        }
+    }
 }
 
 /// Announce `req` in direct mode, serving the clip from a listener of its
@@ -172,6 +261,7 @@ mod tests {
             at: Where {
                 rooms: vec!["Kitchen".into(), "Office".into()],
                 volume: Some(30),
+                background: false,
             },
         };
         let req = say.request();
@@ -189,6 +279,7 @@ mod tests {
             at: Where {
                 rooms: Vec::new(),
                 volume: None,
+                background: false,
             },
         }
         .request();
@@ -206,6 +297,7 @@ mod tests {
             at: Where {
                 rooms: vec!["Kitchen".into()],
                 volume: Some(25),
+                background: false,
             },
         };
         let bytes = Chime::Beep.wav();

@@ -1834,7 +1834,7 @@ impl Surface {
 fn fire(
     surface: &Surface,
     schedule: &Schedule,
-    announcement: Option<AnnouncementPermit<'_>>,
+    announcement: Option<AnnouncementPermit>,
 ) -> Result<String, Failure> {
     let client = client_of(&schedule.creator);
     let zone = |room: &str| ZoneRequest { zone: room.into() };
@@ -2075,6 +2075,9 @@ impl Scheduler {
             })
     }
 }
+
+#[cfg(test)]
+mod announcement_cancel_tests;
 
 #[cfg(test)]
 mod tests {

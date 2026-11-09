@@ -255,6 +255,73 @@ impl Api {
     }
 }
 
+#[test]
+fn announcement_job_routes_distinguish_empty_history_and_invalid_or_retired_ids() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    assert_eq!(api.get("/announcements"), (200, json!([])));
+    let id = "0123456789abcdef0123456789abcdef";
+    for (status, body) in [
+        api.get(&format!("/announcements/{id}")),
+        api.post(&format!("/announcements/{id}/cancel"), &json!({})),
+    ] {
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["code"], "NO_MATCH");
+    }
+    for (status, body) in [
+        api.get("/announcements/not-a-job"),
+        api.post("/announcements/not-a-job/cancel", &json!({})),
+        api.post(
+            &format!("/announcements/{id}/cancel"),
+            &json!({"rooms":["Kitchen"]}),
+        ),
+    ] {
+        assert_eq!(status, 422, "{body}");
+        assert_eq!(body["code"], "INVALID_ARGUMENT");
+    }
+    assert!(api.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn announcement_job_writes_authorize_before_any_speaker_io() {
+    let api = Api::start("", &Client::Unknown);
+    for (path, request) in [
+        (
+            "/announcements",
+            json!({"chime":"bell","rooms":["Kitchen"]}),
+        ),
+        (
+            "/announcements/0123456789abcdef0123456789abcdef/cancel",
+            json!({}),
+        ),
+    ] {
+        let (status, body) = api.post(path, &request);
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(body["code"], "POLICY_DENIED");
+    }
+    assert!(api.sent.lock().unwrap().is_empty());
+}
+
+#[test]
+fn announcement_job_routes_publish_typed_status_and_cancellation_schemas() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, doc) = api.get("/openapi.json");
+    assert_eq!(status, 200);
+    for (path, method, operation) in [
+        ("/announcements", "post", "announce_start"),
+        ("/announcements", "get", "list_announcements"),
+        ("/announcements/{id}", "get", "get_announcement"),
+        ("/announcements/{id}/cancel", "post", "cancel_announcement"),
+    ] {
+        let route = &doc["paths"][path][method];
+        assert_eq!(route["operationId"], operation);
+        assert!(route["responses"]["200"].is_object(), "{path}: {route}");
+    }
+    assert!(
+        doc["paths"]["/announce"]["post"].is_object(),
+        "legacy synchronous route remains available"
+    );
+}
+
 impl Drop for Api {
     fn drop(&mut self) {
         self.server.shutdown();
