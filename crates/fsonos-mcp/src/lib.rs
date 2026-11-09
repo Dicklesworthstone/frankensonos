@@ -187,6 +187,10 @@ fn configured_server(
             "announce_start".into(),
             fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES,
         );
+        http.tool_input_max_bytes.insert(
+            "dj_configure".into(),
+            fsonos_api::surface::dj_config::MAX_CONFIG_BYTES + 1024,
+        );
     }
     // The essentials, in ESSENTIALS order.
     let builder = fastmcp_server::ServerBuilder::try_new_with_fixed_protocol_policy(
@@ -268,6 +272,8 @@ fn configured_server(
             .tool(tools::dj_feedback::DjFeedback)
             .tool(tools::dj_prefs::DjPreferences)
             .tool(tools::dj_prefs::DjPrefer)
+            .tool(tools::dj_config::DjConfiguration)
+            .tool(tools::dj_config::DjConfigure)
             .tool(tools::dj_rehearse::DjRehearse)
             .tool(tools::dj_sync::DjSyncStatus)
             .tool(tools::dj_sync::DjSync)

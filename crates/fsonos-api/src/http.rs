@@ -58,6 +58,7 @@
 //! | `POST /dj/rehearse` | `DjRehearseRequest` | `DjRehearsalDto`: the set the DJ would play from a time, with each work's reason; plays nothing |
 //! | `GET /zones/{room}/dj` | | [`crate::DjStatusDto`] |
 //! | `GET /dj/moods?zone=<room>` | | [`crate::DjMoodsDto`] (`now` is the room's steering, else the house's program) |
+//! | `GET`/`POST /dj/configuration` | `DjConfigureRequest` for writes | editable and effective owner-wide moods/programs; atomic revision-checked saves for future picks |
 //! | `GET`/`POST /sleep`, `GET`/`POST /schedules`, `POST /schedules/remove`, `/schedules/pause`, `/schedules/resume` | | sleep timers and schedules: see [`schedules`] |
 //! | `GET`/`POST /announcements`, `GET /announcements/{id}`, `POST /announcements/{id}/cancel` | announcement request, or `{}` to cancel | bounded job status and ownership-checked cancellation; asynchronous delivery |
 //! | `POST /announce` | [`crate::surface::announce::AnnounceRequest`] | [`crate::surface::announce::AnnounceDto`] |
@@ -123,6 +124,7 @@ mod eq;
 
 mod queue;
 
+mod dj_config;
 mod dj_feedback;
 mod dj_prefs;
 mod dj_sync;
@@ -212,6 +214,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(players::routes(cx));
     routes.extend(scenes::routes(cx));
     routes.extend(dj(cx));
+    routes.extend(dj_config::routes(cx));
     routes.extend(dj_feedback::routes(cx));
     routes.extend(dj_prefs::routes(cx));
     routes.extend(dj_sync::routes(cx));

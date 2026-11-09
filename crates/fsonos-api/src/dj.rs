@@ -25,6 +25,7 @@ use std::fmt::Write as _;
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure};
 use crate::plan::DjAction;
+use crate::surface::dj_config::{DjConfigDto, DjConfigureRequest, DjConfiguredDto};
 use crate::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 use crate::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
 use crate::surface::dj_rehearse::{DjRehearsal, DjRehearsalDto};
@@ -203,6 +204,28 @@ pub trait DjEngine: Send + Sync {
         Err(Failure::new(
             ErrorCode::NotImplemented,
             "this DJ takes no feedback",
+        ))
+    }
+
+    /// Editable owner-wide moods/programs and the exact revision to save.
+    fn configuration(&self) -> Result<DjConfigDto, Failure> {
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ has no editable configuration",
+        ))
+    }
+
+    /// Persist checked owner-wide configuration if its revision still matches.
+    fn configure(
+        &self,
+        request: &DjConfigureRequest,
+        store: &dyn Store,
+        clock: &dyn Clock,
+    ) -> Result<DjConfiguredDto, Failure> {
+        let _ = (request, store, clock);
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ has no editable configuration",
         ))
     }
 

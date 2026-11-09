@@ -71,6 +71,12 @@ pub enum DjAction {
         #[command(subcommand)]
         action: crate::dj::prefs::PrefsAction,
     },
+    /// Read or replace reusable moods and daily programs through the daemon.
+    /// Applying a JSON document requires the revision returned by show.
+    Configuration {
+        #[command(subcommand)]
+        action: Option<crate::dj::configuration::ConfigurationAction>,
+    },
     /// Refresh the DJ's library from Spotify now: new saves and likes,
     /// their genres, and the taste signals the sign-in allows. The daemon
     /// does it daily on its own.
@@ -248,6 +254,7 @@ impl DjAction {
                 | Self::Like { .. }
                 | Self::Dislike { .. }
                 | Self::Prefs { .. }
+                | Self::Configuration { .. }
                 | Self::Sync(_)
                 | Self::Browse(_)
         )
@@ -269,6 +276,10 @@ impl DjAction {
                 action: crate::dj::prefs::PrefsAction::Show,
             } => "dj_preferences",
             Self::Prefs { .. } => "dj_prefer",
+            Self::Configuration {
+                action: Some(crate::dj::configuration::ConfigurationAction::Apply { .. }),
+            } => "dj_configure",
+            Self::Configuration { .. } => "dj_configuration",
             Self::Sync(_) => "dj_sync",
             Self::Browse(_) => "browse_library",
         }
@@ -291,6 +302,7 @@ impl DjAction {
             | Self::Like { .. }
             | Self::Dislike { .. }
             | Self::Prefs { .. }
+            | Self::Configuration { .. }
             | Self::Sync(_)
             | Self::Browse(_) => return None,
         })
@@ -312,6 +324,7 @@ impl DjAction {
             | Self::Like { .. }
             | Self::Dislike { .. }
             | Self::Prefs { .. }
+            | Self::Configuration { .. }
             | Self::Sync(_)
             | Self::Browse(_) => Err(Failure::new(
                 ErrorCode::Internal,
@@ -354,6 +367,9 @@ pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
             crate::dj::feedback::run(global, zone.as_deref(), DjFeedback::Dislike)
         }
         DjAction::Prefs { action } => crate::dj::prefs::run(global, action),
+        DjAction::Configuration { action } => {
+            crate::dj::configuration::run(global, action.as_ref())
+        }
         DjAction::Sync(args) => crate::dj::sync::run(global, args),
         DjAction::Browse(args) => browse::run(global, args),
         _ => Err(Failure::new(ErrorCode::Internal, "not a DJ read").into()),
@@ -568,6 +584,38 @@ mod tests {
             panic!("not a start")
         };
         start.request()
+    }
+
+    #[test]
+    fn configuration_defaults_to_show_and_apply_requires_an_explicit_revision() {
+        for args in [&["configuration"][..], &["configuration", "show"][..]] {
+            let action = parse(args);
+            assert!(action.is_read());
+            assert_eq!(action.tool(), "dj_configuration");
+            assert!(action.daemon_request().is_none());
+        }
+        let revision = "a".repeat(64);
+        let action = parse(&[
+            "configuration",
+            "apply",
+            "edited.json",
+            "--expected-revision",
+            &revision,
+        ]);
+        assert_eq!(action.tool(), "dj_configure");
+        let DjAction::Configuration {
+            action:
+                Some(crate::dj::configuration::ConfigurationAction::Apply {
+                    file,
+                    expected_revision,
+                }),
+        } = action
+        else {
+            panic!("not a configuration apply")
+        };
+        assert_eq!(file, std::path::Path::new("edited.json"));
+        assert_eq!(expected_revision, revision);
+        assert!(Cli::try_parse_from(["dj", "configuration", "apply", "edited.json"]).is_err());
     }
 
     #[test]

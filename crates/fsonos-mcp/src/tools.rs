@@ -25,6 +25,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::tool_error;
 
+pub mod dj_config;
 pub mod dj_feedback;
 pub mod dj_prefs;
 pub mod dj_rehearse;

@@ -48,6 +48,25 @@ impl Surface {
             );
             return Err(denied);
         }
+        // Lock in the same order as configuration edits and legacy undo:
+        // configuration, undo selection, then restoration.
+        let _configuration = self
+            .dj_configuration_gate
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
+        let selected = actions::undo_target(&SharedStore(&log.store), Some(client), self.now())?;
+        let actual = selected.as_ref().map(|target| target.id);
+        let Some(target) = selected.filter(|target| target.id == expected_id) else {
+            let error = CheckedUndoError::TargetChanged {
+                expected: expected_id,
+                actual,
+            };
+            return Err(Failure::invalid(error.to_string()).with_hint(
+                "Read GET /undo/preview and review the current action before confirming again. No action was restored.",
+            ));
+        };
+        super::super::dj_config::restore::check(self, &target, self.now())?;
         self.invalidate();
         let households = self.households()?;
         let vet = |op: &RestoreOp| {
@@ -59,7 +78,6 @@ impl Surface {
         };
         // Match the legacy lock order. Store calls stay short: never hold its
         // mutex across network I/O, and keep DJ top-ups out during restore.
-        let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
         let _restoring = log
             .restoring
             .write()

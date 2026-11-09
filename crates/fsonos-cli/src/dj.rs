@@ -34,6 +34,7 @@ use fsonos_api::dj::{
     DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer, DjSteeringDto, SteerConstraints,
 };
 use fsonos_api::plan::DjAction;
+use fsonos_api::surface::dj_config::{DjConfigDto, DjConfigureRequest, DjConfiguredDto};
 use fsonos_api::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 use fsonos_api::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
 use fsonos_api::surface::dj_rehearse::{DjRehearsal, DjRehearsalDto};
@@ -57,6 +58,7 @@ use std::time::{Duration, Instant};
 
 use crate::dj_view::{self, steer_failure, store_failure};
 
+pub(crate) mod configuration;
 pub(crate) mod feedback;
 mod handover;
 #[cfg(test)]
@@ -1157,6 +1159,25 @@ impl DjEngine for SpotifyDj {
 
     fn preferences(&self) -> Result<PreferencesDto, Failure> {
         prefs::show(self.moods_file.as_ref())
+    }
+
+    fn configuration(&self) -> Result<DjConfigDto, Failure> {
+        configuration::show(self.moods_file.as_ref())
+    }
+
+    fn configure(
+        &self,
+        request: &DjConfigureRequest,
+        store: &dyn Store,
+        clock: &dyn Clock,
+    ) -> Result<DjConfiguredDto, Failure> {
+        configuration::change(
+            &mut self.state(),
+            self.moods_file.as_ref(),
+            request,
+            store,
+            clock,
+        )
     }
 
     fn prefer(&self, change: &PrefChange) -> Result<PreferredDto, Failure> {

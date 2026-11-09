@@ -44,6 +44,7 @@ use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto
 use crate::request::{PlayFavoriteRequest, SearchRequest};
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
 
+pub mod dj_config;
 pub mod dj_feedback;
 mod dj_follow;
 pub mod dj_prefs;
@@ -112,6 +113,9 @@ pub struct Surface {
     /// Runs the DJ (`dj_start` / `dj_skip` / `dj_stop`); without one they
     /// answer NOT_IMPLEMENTED.
     dj: Option<Box<dyn DjEngine>>,
+    /// Serialize removal of a named mood with validation and persistence of
+    /// new scene/schedule references. Never held by speaker event callbacks.
+    dj_configuration_gate: RwLock<()>,
     /// `aliases.toml`, read on each call that names a room.
     aliases_file: Option<PathBuf>,
     /// The daemon's live model; not kept alive by the surface (see
@@ -222,6 +226,7 @@ impl Surface {
             doctor_checks: None,
             doctor_last: Mutex::new(None),
             dj: None,
+            dj_configuration_gate: RwLock::new(()),
             aliases_file: None,
             live: None,
             events: None,
@@ -1022,6 +1027,22 @@ impl Surface {
         // Only the CLI undoes someone else's action: every other caller
         // undoes its own newest (README, "the caller's own newest").
         let own_only = own_only || *client != Client::Cli;
+        // Keep configuration edits out while an undo validates and restores
+        // the mood references it captured. Acquire this before undo/restoring.
+        let _configuration = self
+            .dj_configuration_gate
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(target) = actions::undo_target(
+            &shared_store::SharedStore(&log.store),
+            own_only.then_some(client),
+            self.now(),
+        )?
+        else {
+            return Ok(None);
+        };
+        dj_config::restore::check(self, &target, self.now())?;
         // Plan the restore against the speakers as they are now.
         self.invalidate();
         let households = self.households()?;
@@ -1035,12 +1056,11 @@ impl Surface {
         // One undo at a time, but the store is locked only for each read or
         // write: the restore talks to the speakers, and every other call's
         // log entry must not wait on it.
-        let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
         let _restoring = log
             .restoring
             .write()
             .unwrap_or_else(PoisonError::into_inner);
-        let report = actions::undo_last_vetted(
+        let report = actions::undo_last_vetted_checked(
             &*self.transport,
             &households,
             &mut shared_store::SharedStore(&log.store),
@@ -1048,11 +1068,21 @@ impl Surface {
             client,
             &log.surface,
             self.now(),
+            target.id,
             force,
             &vet,
         );
         self.invalidate();
-        Ok(report?)
+        match report {
+            Ok(report) => Ok(Some(report)),
+            Err(actions::CheckedUndoError::Core(error)) => Err(error.into()),
+            Err(error @ actions::CheckedUndoError::TargetChanged { .. }) => Err(Failure::invalid(
+                error.to_string(),
+            )
+            .with_hint(
+                "Read the latest action and retry undo after reviewing it. No action was restored.",
+            )),
+        }
     }
 
     /// The action log, newest first (empty without one).
