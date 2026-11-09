@@ -2441,3 +2441,94 @@ session, break at the muse state machine and force the
 cloud_rcvd_muse_hhid flag + write the synthetic HHID into the state global,
 letting the init proceed to the port binds. With :1400 live under the
 debugger, the .aa child strace = the exec-env answer.
+
+### 2026-11-09 (session 20) — the emulation listener BINDS; three real gates killed; the wall decoded; the exec wrapper fully reverse-engineered
+
+Corrections to the session-20 handoff, then the new facts.
+
+**Correction 1 — the hhid is not the bind gate, and the "stall" is not a pause.**
+The 21:36/21:42 runs logged `anacapa is starting on port 1400/1443/1843`;
+live, all three sockets reach LISTEN. The daemon then wedges (0% CPU, no
+accept thread, `Recv-Q` grows, curl hangs) and the run ends. Nothing about
+the bind needs the hhid, and `cloud_rcvd_muse_hhid` (state index 24 of the
+51-entry muse state table at 0x104922c8; bit 24 of the word at obj+0x38;
+setter 0x102860f0, tester 0x10286078) is downstream of the bind.
+
+**Correction 2 — the wedge is a logger deadlock, not the muse init.**
+`thread apply all bt` at the wedge (bp at 0x104125b8, all-thread dump) shows
+the daemon main, and every other thread that logs, blocked in
+`pthread_mutex_lock` inside the diag logger:
+`0x104155fc ← 0x10415090 ← 0x10403b48 ← 0x10408e0c ← 0x10408d8c`. The two
+logger mutexes are taken at 0x10408dd4 (registry, obj+0x34) and 0x10408e08
+(obj+4). The libc is NPTL (futex), not the linuxthreads the earlier notes
+assumed — the clone flags we force (CLONE_THREAD|CLONE_SYSVSEM) are exactly
+NPTL's. Even with DiagLevel default=0 the wedge persists, so logging volume
+is not the trigger; something holds those mutexes and never releases.
+
+**The three gates killed this session (all emulation-only artifacts).**
+1. A diag-collector `abort()` at **0x1036c2f8** (the *second* copy of the
+   same unhandled-submodel switch; the first, 0x1036bab4, was already
+   nop'd) — patched to `nop` in `/tmp/s23_anacapad_v6` (md5
+   `84e85168504539ed4c760780ff5bf0ce`, deployed).
+2. A **libsonoscrypto NULL-context assert**: `ZZ0071` (0x85f4) checks a
+   global and calls the assert stub when it is 0; reached from `ZZ0153`
+   (0x8654, a bit reader) via the certval path
+   (`0x102d2fbc → 0x101417e4 → 0x100ba408 → 0x10008cb0`). Patch: the
+   conditional branch at **0x8628** `419e0028` → `48000004` (always fall
+   through). Deployed; original preserved at `/tmp/s23_lsc_orig`
+   (md5 `d03670db3f1de85dae27eeec6b91a5ab`).
+3. The pre-mixer stall — solved by the same patches; the init now runs to
+   `dropout_event_logging`, `mixthrd thread started` and the `htsnk`
+   observers, and the sockets bind.
+
+**Emitter note — `-g` blocks the guest until a debugger attaches, and
+`-batch` gdb exits on its first stop, which kills the run.** Useful stops:
+`handle SIG32/33 nostop noprint pass`, then a breakpoint; the SIG32 stops are
+the NPTL/thread suspend signals. `select` and `sigtimedwait` are logged by
+`-strace`, socket setup is not.
+
+**The exec wrapper, fully decoded (this is the session's real yield).**
+Byte-level, one routine, two entry points: 0x10404730 parses a command
+string into an argv array (max 8, space-split, 62-byte cut), 0x104044b4 runs
+it:
+1. three `pipe()` pairs into fd slots `stdin,stdout,stderr`;
+2. **`access(argv[0], X_OK)`** at 0x1040460c — on `-1` it logs
+   `Can't access: %s` (level 1, *log only, nothing to the pipe*) and returns
+   -1 **without forking**;
+3. `fork()` (0x10404618) — on `-1` it closes the six pipe fds and returns -1
+   silently;
+4. child: `dup2` the three ends onto 0/1/2, `close(3..254)`,
+   `execve(argv[0], argv, environ)`; on failure it writes
+   `exec of '%s' failed, errno=%d` **into the pipe**, then retries/exits;
+5. parent: closes its copies, `select()` on the three read ends with a 300 s
+   timeout, accumulates into a 1024-byte buffer.
+
+There is **no `setsid`, no `chdir`, no signal-disposition reset** — the child
+is a plain fork/exec in the daemon's session. Consequences:
+- an empty `/status/<exec>` page body means `access()` failed (a fork or exec
+  failure would have written text into the body). Measured `/status/ps` is
+  only ~10 ms slower than `/status/VERSION`, consistent with no fork;
+- `system("/sbin/reboot")` demonstrably works on hardware (the reboot gadget
+  is proven), and the PPC daemon has exactly one `system()` site
+  (0x104123e0) whose argument is a *constant in .rodata* — so on-device
+  fork/exec/sh is **not** broken. The `.aa` failure is therefore in the
+  *argument* the chain hands to `system()`, not in the exec environment.
+  The `JFFSEX_84.aa` layout (6408 payload bytes behind a 36-byte container
+  header; V=0x106c69ec at payload 500, cmd `;dd if=/dev/mtd0 …` at 504,
+  FN=system@GOT 0x105464b0 at 556, A/B at 6404/428) needs the argument path
+  verified — the emulated `-strace` would print the `execve` argv, which is
+  why the accept loop still matters.
+
+**What is still missing:** anything that makes the daemon *accept*. Both the
+http server threads sit before their `select()` (0x104125b8) when the logger
+wedges, and no thread ever reaches `accept` (0x1023bf14 / 0x10407a2c). Two
+threads exist per server (spawned via the single `pthread_create` site
+0x10408790, thread fn 0x104184ec) and they do run.
+
+**Artifacts on css:** `/tmp/s23_anacapad_v6` (best known; deployed),
+`/tmp/ana_v9` (v6 + logger spin stub at 0x104544c0, three call sites
+0x10408dd4/0x10408e08/0x10408fd8 — keeps logging alive but crashes in
+`pthread_mutex_unlock`), `/tmp/s23_anacapad_nopark` (v5 base),
+`/tmp/s23_lsc_orig`, `/tmp/lsc_v2.so` (patched crypto lib, deployed as
+`lib/libsonoscrypto.so.1`), `/tmp/aa_www/serve.py` (:8899 payload server),
+`/tmp/aa_www/JFFSEX_84.aa`.
