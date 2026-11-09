@@ -41,6 +41,7 @@ use crate::source::normalize_source_uri;
 
 mod dj_direction;
 mod dj_start;
+mod sonos_playlist;
 
 /// A saved scene (`GET /scenes`, `list_scenes`, `fsonos scene show`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -72,8 +73,9 @@ pub struct SceneGroupDto {
 
 /// What a scene group plays: `keep` (whatever the group has, its queue
 /// say), a `favorite` (by `name`), a `uri` (a stream, or a Spotify track,
-/// album or playlist), the `dj` (with a `mood` and reusable `direction`, if
-/// supplied), a captured `queue` reference, or a durable `queue_backup`.
+/// album or playlist), a `sonos_playlist` (native id in `name`), the `dj`
+/// (with a `mood` and reusable `direction`, if supplied), a captured `queue`
+/// reference, or a durable `queue_backup`.
 /// References require the original unchanged queue. Backups retain its
 /// ordered contents and can reconstruct them on the original player.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -91,6 +93,40 @@ pub struct SceneSourceDto {
     pub direction: Option<DjDirectionDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<SceneQueueDto>,
+    /// Read-only identity pinned from the household catalog when saving a
+    /// `sonos_playlist` source. Author with its native id in `name` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<ScenePlaylistDto>,
+}
+
+/// A native saved playlist, identified independently of titles in other
+/// households. Recall uses current contents and refuses a changed title.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ScenePlaylistDto {
+    pub household: String,
+    pub id: String,
+    pub title: String,
+}
+
+impl ScenePlaylistDto {
+    #[must_use]
+    pub fn text(&self) -> String {
+        format!(
+            "saved Sonos playlist {} ({}, household {}; replaces the queue)",
+            self.title, self.id, self.household
+        )
+    }
+}
+
+impl From<&scenes::SonosPlaylistReference> for ScenePlaylistDto {
+    fn from(playlist: &scenes::SonosPlaylistReference) -> Self {
+        Self {
+            household: playlist.household.0.clone(),
+            id: playlist.id.clone(),
+            title: playlist.title.clone(),
+        }
+    }
 }
 
 /// The public summary of a captured queue. `total` identifies a durable
@@ -266,7 +302,9 @@ impl SceneDefinition {
     /// references are captured by the daemon, never accepted as authored data.
     pub fn validate_sources(&self) -> Result<(), Failure> {
         for group in &self.groups {
-            if let Some(source) = &group.source {
+            if let Some(source) = &group.source
+                && sonos_playlist::requested(source)?.is_none()
+            {
                 source_of(source)?;
             }
         }
@@ -276,17 +314,27 @@ impl SceneDefinition {
     /// The scene `name` this defines, its rooms named as the house names
     /// them, or why it can't be one (a room not in the house, a source that
     /// can't play, two households in one group).
-    fn scene(&self, name: &str, households: &[HouseholdState]) -> Result<Scene, Failure> {
+    fn scene(
+        &self,
+        name: &str,
+        households: &[HouseholdState],
+        playlists: &BTreeMap<usize, scenes::SonosPlaylistReference>,
+    ) -> Result<Scene, Failure> {
         let room =
             |asked: &str| scenes::canonical_room_name(households, asked).map_err(Failure::from);
         let mut groups = Vec::with_capacity(self.groups.len());
-        for g in &self.groups {
-            let source = g
-                .source
-                .as_ref()
-                .map(source_of)
-                .transpose()?
-                .unwrap_or_default();
+        for (index, g) in self.groups.iter().enumerate() {
+            let source = match playlists.get(&index) {
+                Some(playlist) => SceneSource::SonosPlaylist {
+                    playlist: playlist.clone(),
+                },
+                None => g
+                    .source
+                    .as_ref()
+                    .map(source_of)
+                    .transpose()?
+                    .unwrap_or_default(),
+            };
             groups.push(SceneGroup {
                 coordinator: room(&g.coordinator)?,
                 members: g
@@ -374,6 +422,11 @@ fn scene_settings<T: Copy>(
 
 /// What a written-out group plays, or why that can't be a scene's source.
 fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
+    if dto.playlist.is_some() {
+        return Err(Failure::invalid(
+            "a scene playlist identity cannot be authored; select its native SQ: id in name",
+        ));
+    }
     if matches!(dto.kind.as_str(), "queue" | "queue_backup") || dto.queue.is_some() {
         return Err(Failure::invalid(
             "queue references and backups can only be captured from the current house",
@@ -421,7 +474,7 @@ fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
             Ok(SceneSource::Dj { mood, direction })
         }
         other => Err(Failure::invalid(format!(
-            "no scene source {other:?}: use keep, favorite, uri or dj"
+            "no resolved scene source {other:?}: use keep, favorite, sonos_playlist, uri or dj"
         ))),
     }
 }
@@ -480,6 +533,7 @@ impl From<&SceneSource> for SceneSourceDto {
             mood: None,
             direction: None,
             queue: None,
+            playlist: None,
         };
         match source {
             SceneSource::Keep => dto("keep"),
@@ -487,6 +541,11 @@ impl From<&SceneSource> for SceneSourceDto {
                 name: Some(name.clone()),
                 uri: uri.clone(),
                 ..dto("favorite")
+            },
+            SceneSource::SonosPlaylist { playlist } => Self {
+                name: Some(playlist.id.clone()),
+                playlist: Some(ScenePlaylistDto::from(playlist)),
+                ..dto("sonos_playlist")
             },
             SceneSource::Uri { uri, .. } => Self {
                 uri: Some(uri.clone()),
@@ -589,6 +648,22 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
         } => format!(
             "{} has the favorite {name} ready, paused",
             room(coordinator)
+        ),
+        SceneOp::SonosPlaylist {
+            coordinator,
+            playlist,
+            start,
+        } => format!(
+            "{} {} saved Sonos playlist {} ({}){}",
+            room(coordinator),
+            if *start { "plays" } else { "loads" },
+            playlist.title,
+            playlist.id,
+            if *start {
+                ""
+            } else {
+                " ready without playback"
+            },
         ),
         SceneOp::Uri {
             coordinator,
@@ -847,8 +922,8 @@ impl Surface {
     }
 
     /// Save `def` as the scene `name` (`save_scene` with a scene): checked
-    /// against the house as it is now, each favorite found in its group's
-    /// household, rather than captured from the speakers.
+    /// against the house as it is now, each favorite or native playlist found
+    /// in its group's household, rather than captured from the speakers.
     pub fn save_scene_from(
         &self,
         client: &Client,
@@ -870,7 +945,8 @@ impl Surface {
         }
         def.validate_sources()?;
         let households = self.scene_house()?;
-        let mut scene = def.scene(name, &households)?;
+        let playlists = sonos_playlist::resolve(self, def, &households)?;
+        let mut scene = def.scene(name, &households, &playlists)?;
         for group in &mut scene.groups {
             if let SceneSource::Dj {
                 mood: Some(mood), ..
@@ -1033,7 +1109,8 @@ impl Surface {
             };
             (plan, _) = Self::permitted_ops(&guard, households, plan);
         }
-        dj_start::check_readiness(self, households, &plan)
+        dj_start::check_readiness(self, households, &plan)?;
+        scenes::check_playlist_sources(&*self.transport, households, &plan).map_err(Failure::from)
     }
 
     /// [`Self::apply_scene`], its volumes ramping over `req.fade_secs` when
@@ -1145,7 +1222,12 @@ impl Surface {
             .done
             .iter()
             .chain(report.failed.iter().map(|(op, _)| op))
-            .any(|op| matches!(op, SceneOp::QueueBackup { .. }));
+            .any(|op| {
+                matches!(
+                    op,
+                    SceneOp::QueueBackup { .. } | SceneOp::SonosPlaylist { .. }
+                )
+            });
         if regrouped {
             self.invalidate();
         }
@@ -1249,6 +1331,8 @@ impl Surface {
         // writes below, which can also supersede an existing volume fade.
         // Only permitted operations are checked, exactly as execution sees them.
         dj_start::check_readiness(self, households, &plan)?;
+        scenes::check_playlist_sources(&*self.transport, households, &plan)
+            .map_err(Failure::from)?;
         notes.extend(self.lower_scene_rooms(households, &plan, &clients)?);
         Ok((plan, notes, allowed_fade))
     }
@@ -1359,6 +1443,7 @@ fn op_tool(op: &SceneOp) -> &'static str {
         SceneOp::Volume { .. } => "set_volume",
         SceneOp::Mute { .. } => "mute",
         SceneOp::Favorite { .. } => "play_favorite",
+        SceneOp::SonosPlaylist { .. } => "play_favorite",
         SceneOp::Uri { .. } | SceneOp::Play { .. } => "play",
         SceneOp::Dj { .. } => "dj_start",
         SceneOp::Pause { .. } => "pause",
@@ -1376,6 +1461,10 @@ fn authorize_op(guard: &Guard<'_>, op: &SceneOp) -> Result<(), Failure> {
         }
     ) {
         guard.authorize("dj_steer", false)?;
+    }
+    if matches!(op, SceneOp::SonosPlaylist { start: false, .. }) {
+        // Staging a paused container first pauses the old source.
+        guard.authorize("pause", false)?;
     }
     let queue = match op {
         SceneOp::Queue { queue, start, .. } => Some((queue, *start)),
@@ -1413,6 +1502,7 @@ fn op_subject(households: &[HouseholdState], op: &SceneOp) -> String {
         SceneOp::Mute { room, .. } => format!("{room}'s mute"),
         SceneOp::Dj { coordinator, .. } => format!("the DJ in {}", room_of(coordinator)),
         SceneOp::Favorite { coordinator, .. }
+        | SceneOp::SonosPlaylist { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
         | SceneOp::Queue { coordinator, .. }
         | SceneOp::QueueBackup { coordinator, .. }

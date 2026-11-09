@@ -489,6 +489,9 @@ pub fn status_text(state: &ZoneStateDto) -> String {
         state.zone.household,
         state.transport_state
     );
+    if let Some(notice) = state.playback_notice() {
+        let _ = write!(out, "\n  {notice}");
+    }
     if let Some(track) = &state.track {
         let title = track.title.as_deref().unwrap_or(&track.uri);
         let _ = write!(out, "\n  {title}");
@@ -553,6 +556,34 @@ pub fn favorites_text(favorites: &[FavoriteDto]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_distinguishes_a_renderer_error_from_an_ordinary_stop() {
+        let mut value = serde_json::json!({
+            "zone": zone(&["Den"], "stopped", &[]),
+            "transport_state": "stopped"
+        });
+        for status in [
+            None,
+            Some("OK"),
+            Some("ERROR_OCCURRED"),
+            Some("FUTURE_STATUS"),
+        ] {
+            value["transport_status"] = serde_json::json!(status);
+            let state: ZoneStateDto = serde_json::from_value(value.clone()).unwrap();
+            let text = status_text(&state);
+            assert!(text.starts_with("Den [S1]: stopped"));
+            match status {
+                Some("ERROR_OCCURRED") => {
+                    assert!(text.contains("Playback error reported by the speaker"));
+                }
+                Some("FUTURE_STATUS") => {
+                    assert!(text.contains("Renderer status: FUTURE_STATUS"));
+                }
+                _ => assert_eq!(text, "Den [S1]: stopped\n"),
+            }
+        }
+    }
 
     #[test]
     fn history_reads_a_line_per_play_newest_first() {

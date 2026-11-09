@@ -773,6 +773,31 @@ impl SimHandle {
         })
     }
 
+    /// Fail the renderer serving `who`'s group at its current occurrence.
+    /// The queue, source and playback position remain intact; SOAP and GENA
+    /// report `STOPPED` with `ERROR_OCCURRED`. A successful `Play` clears
+    /// the status, while a refused `Play` leaves the failure observable.
+    /// This is playback state, independent of [`Self::upnp_fault`] and
+    /// [`Self::clear_faults`]. A room or player UUID may name `who`.
+    pub fn playback_error(&self, who: &str) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            s.settle();
+            let c = s.players[p].coordinator;
+            let t = &s.players[c].transport;
+            if !s.players[c].model.is_renderer()
+                || t.source == model::Source::Nothing
+                || (t.source == model::Source::Queue && t.current().is_none())
+            {
+                return Err(SimError::Invalid(
+                    "no selected media can fail playback".into(),
+                ));
+            }
+            let now = s.clock.now_ms();
+            s.players[c].transport.playback_error(now);
+            Ok(())
+        })
+    }
+
     /// Make `who` answer `action` with success and not carry it out, as
     /// real players do with some grouping verbs (`RemoveMember`,
     /// docs/PROTOCOL.md §6), until [`Self::clear_faults`].

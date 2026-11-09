@@ -918,6 +918,32 @@ Only an explicit, valid catalog read for that target releases the uncertainty;
 playback refreshes, other households and obsolete reads do not. Confirmed
 receipts retain the native id and offer a separate catalog-browsing handoff.
 
+Native saved-playlist contents are inspectable before playback through
+`fsonos playlist-contents`, `GET /sonos/playlists/contents`, MCP
+`sonos_playlist_contents`, and **Read tracks** in the phone and dashboard
+source selectors. Pages retain original ordered occurrences, including repeated
+tracks and missing resource metadata. Bounded native metadata/children reads
+and an opaque revision bind continuations to the household, coordinator, boot,
+group and saved contents. Changed observations require a fresh first page;
+browsing never changes the active queue, playback, volume or DJ. These are
+consistency checks, not a lock on the speaker's saved playlist. See
+`docs/SONOS_PLAYLISTS.md` for continuation and validation status.
+
+An exact observed track can now be played or queued independently through
+`fsonos playlist-track`, `POST /sonos/playlists/track`, MCP
+`sonos_playlist_track`, and each browser preview row. The request carries its
+native playlist id, one-based occurrence, expected revision and explicit mode
+(`play`, `next`, or `append`); no client renderer URI or metadata is accepted.
+The server preserves the native track's DIDL, including service descriptors,
+and refuses unavailable entries, containers and stale observations. Play
+retains the existing queue, applies caps and rechecks the group and selection
+around snapshot/policy reads without redirecting or replaying on another
+coordinator. Queue modes insert one confirmed occurrence without starting or
+resuming playback, with the existing exact-range undo. The browser reviews
+and rechecks both the selected track and destination, consumes each submission
+once, and retains uncertain outcomes. Browser regressions execute under Node;
+the added Rust/simulator cases still await a successful dependency build.
+
 ### 12.7 Scenes
 
 [`b-scenes`, `d-scenes-surface`] Named, declarative house states: group layout,
@@ -943,6 +969,21 @@ contents are outside action-history undo. Existing `keep` scenes retain their
 original behavior.
 See `docs/SCENE_QUEUES.md` for the capture and apply contract.
 
+Authored scenes also accept native saved Sonos playlists through
+`{kind: "sonos_playlist", name: "SQ:7"}`. Saving resolves and pins the actual
+household, exact native id and catalog title. Each recall stages the saved
+playlist's current contents; renamed, missing or cross-household references
+require an explicit new save. A paused load never starts the queue. Permitted
+sources are checked before caps or grouping writes and again at source
+execution, including the final coordinator and group membership. Caller and
+saved-writer playback permissions and caps both apply. Schedules use the
+existing ApplyScene action and check catalog readiness before claiming a run;
+partial or uncertain writes are not replayed. Queue replacement remains
+outside action-history undo. CLI, HTTP, MCP and the browser scene editor share
+this source; see `docs/SONOS_PLAYLIST_SCENES.md`. Browser regressions pass;
+the new S1/S2 simulator cases remain unexecuted behind the local dependency
+build failure.
+
 DJ scenes check every permitted prospective start after caller/writer policy
 filtering and before any volume cap lowering, fade supersession, grouping,
 queue, or steering writes. Readiness uses the future coordinator's inventory
@@ -967,6 +1008,38 @@ account signals (§12.1). Today the `feedback` rows carry `work_key`,
 `performer`; separate artist and album keys come with the library migration
 of `c-dj-taste`. Time-of-day programs set the
 default mood when none is given.
+
+The DJ feed records anti-repeat play history only after observing `Playing`
+for its exact owned queue occurrence. Selecting a track while stopped, paused
+or buffering does not count as listening, including a refused initial `Play`.
+A later successful start at the same position records once; duplicate events
+and pause/resume do not add another play. Simulator regressions cover these
+transitions; their Rust execution remains blocked by the dependency-build
+resource failure documented for this session.
+
+Renderer status now survives GENA and complete readbacks independently of
+transport state. `transport_status` is available in zone state, CLI/MCP
+status, the legacy bridge, and SSE; an explicit SSE null clears the old status
+to unknown. Missing status never becomes an invented `OK`.
+
+The DJ handles a freshly confirmed stopped `ERROR_OCCURRED` by selecting
+the first movement of the next intact, already queued DJ work. It checks the
+current occurrence, both complete works, the queue revision, source, group
+membership and coordinator boot around the attempt and between its stages.
+It never skips over an owner's intervening items or enqueues during recovery.
+Each Seek/Play is sent once through the existing volume-cap transport; an
+unconfirmed mutation ends automatic management without clearing or undoing
+the queue. At most three attempts are admitted in any rolling five-minute
+period, with the budget retained in saved feeds; an explicit DJ start or skip
+starts a new budget. Recovery notices distinguish confirmed Playing+OK from
+an accepted continuation whose playback is still unconfirmed. Speaker errors
+interrupt implicit taste feedback, so they cannot become dislikes or completed
+listens, and cannot enter ordinary dry-queue restart logic.
+
+These renderer-error changes include protocol, simulator, live-state, surface
+and DJ regression cases. Rust compilation and test execution for the additions
+remain unverified after dependency-build memory failures and the execution
+environment becoming unavailable.
 
 ### 12.10 Schedules and a sleep timer
 

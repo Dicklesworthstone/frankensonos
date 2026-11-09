@@ -30,7 +30,7 @@ const DashboardSource = (() => {
   function model({ call, controller, changed = () => {}, completed = () => {}, now = () => performance.now() }) {
     let version = 0, active = true, disposed = false, reading = null;
     const state = { open: false, target: '', scope: '', group: null, sourceType: 'link', input: '', title: '', mode: 'play',
-      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle',
+      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [],
       loading: false, writing: false, pending: null, result: null, message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const live = () => !disposed && active && state.open;
@@ -45,7 +45,8 @@ const DashboardSource = (() => {
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (message) state.message = message;
     }
-    const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; };
+    const clearContents = () => { state.contents = null; state.contentsHistory = []; };
+    const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     function destination() {
       if (!matching()) clearPlaylists();
       state.target = target(); state.scope = scope();
@@ -71,6 +72,7 @@ const DashboardSource = (() => {
       if (field === 'playlist' && (state.playlistStatus !== 'ready' || state.playlistTarget !== state.target
           || !state.playlists.some(item => item.id === value))) return false;
       retire(); if (field === 'sourceType') clearPlaylists();
+      if (field === 'playlist') clearContents();
       state[field] = value; state.message = ''; publish(); return true;
     }
     async function loadPlaylists() {
@@ -92,6 +94,30 @@ const DashboardSource = (() => {
       }
     }
 
+    async function loadContents(direction = 'refresh') {
+      if (!ready() || state.sourceType !== 'playlist' || state.playlistStatus !== 'ready'
+          || state.playlistTarget !== state.target) return false;
+      const item = state.playlists.find(item => item.id === state.playlist);
+      if (!item) return false;
+      const request = P.contentsRequest(state.contents, state.contentsHistory, direction, item.id);
+      if (!request) return false;
+      retire();
+      const v = version, selected = state.target, abort = new AbortController();
+      reading = abort; state.loading = true; state.message = 'Reading saved tracks…'; publish();
+      try {
+        const query = new URLSearchParams({ zone: selected, ...request.query });
+        const value = await call('/sonos/playlists/contents?' + query, undefined, { signal: abort.signal });
+        if (!live() || v !== version || abort.signal.aborted || !matching()) return false;
+        state.contents = P.playlistContents(value, request.query, item, state.group); state.contentsHistory = request.history;
+        state.message = ''; return true;
+      } catch (error) {
+        if (live() && v === version) { clearContents(); state.message = C.problem(error); }
+        return false;
+      } finally {
+        if (reading === abort) { reading = null; state.loading = false; publish(); }
+      }
+    }
+
     async function inspect(reviewed, options, valid) {
       valid();
       const groups = P.groups(C.zones(await call('/zones', undefined, options))); valid();
@@ -101,6 +127,11 @@ const DashboardSource = (() => {
       if (reviewed.item.kind === 'sonos_playlist') {
         const catalog = await call('/sonos/playlists?zone=' + encodeURIComponent(reviewed.target), undefined, options); valid();
         P.verifyPlaylist(catalog, reviewed.item);
+      }
+      if (reviewed.item.kind === 'sonos_playlist_track') {
+        const query = new URLSearchParams(P.trackQuery(reviewed.item, reviewed.target));
+        const value = await call('/sonos/playlists/contents?' + query, undefined, options); valid();
+        P.verifyPlaylistTrack(value, reviewed.item, reviewed.group);
       }
       const base = '/zones/' + encodeURIComponent(reviewed.target);
       const queueNeeded = reviewed.mode !== 'play' || reviewed.item.container;
@@ -113,13 +144,13 @@ const DashboardSource = (() => {
     }
     const canReview = () => !!(ready() && (state.sourceType === 'playlist'
       ? state.playlist && state.playlistStatus === 'ready' && state.playlistTarget === state.target : state.input.trim()));
-    async function review() {
+    async function review(prepared = null) {
       if (!canReview()) return null;
       retire();
       const v = version, at = now(), abort = new AbortController();
       let choice;
-      try { choice = state.sourceType === 'playlist' ? P.preparePlaylist(state.playlist, state.playlists, state.mode)
-        : P.prepare(state.input, state.title, state.mode); }
+      try { choice = prepared || (state.sourceType === 'playlist' ? P.preparePlaylist(state.playlist, state.playlists, state.mode)
+        : P.prepare(state.input, state.title, state.mode)); }
       catch (error) { state.message = C.problem(error); publish(); return null; }
       const proposed = { ...choice, target: state.target, scope: state.scope, group: state.group,
         zone: controller.selected().zone, version: v, at };
@@ -141,6 +172,14 @@ const DashboardSource = (() => {
       } finally {
         if (reading === abort) { reading = null; state.loading = false; publish(); }
       }
+    }
+    async function reviewTrack(position, mode, page = state.contents) {
+      if (!canReview() || state.sourceType !== 'playlist' || !page || page !== state.contents
+          || page.playlist.id !== state.playlist) return null;
+      let choice;
+      try { choice = P.preparePlaylistTrack(page, position, mode); }
+      catch (error) { retire(); state.message = C.problem(error); publish(); return null; }
+      return review(choice);
     }
     const canApply = () => !!(ready() && state.pending && state.pending.version === version && now() - state.pending.at < MAX_AGE);
     async function apply(reviewed = state.pending) {
@@ -164,8 +203,10 @@ const DashboardSource = (() => {
           }
           state.message = reviewed.mode === 'play' ? 'Starting the reviewed source…' : 'Adding the reviewed source to the queue…'; publish();
           valid(); reading = null;
-          const route = reviewed.mode === 'play' ? reviewed.item.kind === 'sonos_playlist' ? '/sonos/playlists/play' : '/play' : '/queue';
+          const route = reviewed.item.kind === 'sonos_playlist_track' ? '/sonos/playlists/track'
+            : reviewed.mode === 'play' ? reviewed.item.kind === 'sonos_playlist' ? '/sonos/playlists/play' : '/play' : '/queue';
           const value = await send(route, reviewed.body);
+          if (reviewed.item.kind === 'sonos_playlist_track') { detail = P.trackOutcome(value, reviewed); return { ...value, done: detail }; }
           if (reviewed.mode === 'play') { detail = P.outcome(value); return value; }
           detail = P.queued(value, reviewed.group);
           return { done: detail, changed: true };
@@ -196,7 +237,7 @@ const DashboardSource = (() => {
       }
       publish(); return true;
     }
-    return { state, observe, editable, edit, loadPlaylists, canReview, review, canApply, apply, open,
+    return { state, observe, editable, edit, loadPlaylists, loadContents, canReview, review, reviewTrack, canApply, apply, open,
       cancelReview() { if (state.writing) return false; retire(); state.message = ''; publish(); return true; },
       clearDraft() {
         if (!editable()) return false;
@@ -222,7 +263,7 @@ const DashboardSource = (() => {
 
   function panel({ call, controller, completed, document: doc = document, now }) {
     const $ = id => doc.getElementById(id), dialog = $('source-dialog'), trigger = $('open-source'), preview = $('source-preview');
-    let opener = null, reviewFocus = null, shown = null, shownPlaylists = null, shownPlaylistStatus = '';
+    let opener = null, reviewFocus = null, shown = null, shownPlaylists = null, shownPlaylistStatus = '', shownContents = null, shownContentsReady = null;
     const control = model({ call, controller, completed, now, changed: render });
     function render(s) {
       trigger.disabled = !controller.state.active || (controller.state.busy && !s.writing) || (!controller.selected() && !s.result);
@@ -253,9 +294,20 @@ const DashboardSource = (() => {
       $('source-playlist').disabled = !control.editable() || s.playlistStatus !== 'ready' || !s.playlists.length;
       $('source-playlist-refresh').disabled = !control.editable() || s.loading || !s.group || !controller.canControl();
       $('source-playlist-help').textContent = s.playlistStatus === 'ready' ? s.playlists.length
-        ? 'Saved on the speakers in this household. Their current contents are read when you play or queue a playlist.'
+        ? 'Saved on the speakers in this household. Read its tracks before choosing how to play it.'
         : 'This household has no saved Sonos playlists. Open Speaker queue → Save queue as playlist, then refresh here.'
         : s.group ? 'Read saved playlists for the selected group.' : 'Select a listening group first.';
+      $('source-contents').hidden = !saved || !s.playlist || s.playlistStatus !== 'ready';
+      $('source-contents-read').disabled = !control.canReview();
+      $('source-contents-read').textContent = s.contents ? 'Refresh tracks' : 'Read tracks';
+      $('source-contents-previous').hidden = !s.contentsHistory.length;
+      $('source-contents-next').hidden = s.contents?.next_offset == null;
+      for (const id of ['source-contents-previous', 'source-contents-next']) $(id).disabled = !control.canReview();
+      $('source-contents-help').textContent = P.contentsSummary(s.contents);
+      if (shownContents !== s.contents || shownContentsReady !== control.canReview()) {
+        shownContents = s.contents; shownContentsReady = control.canReview();
+        P.renderContents($('source-contents-items'), s.contents, doc, { review: control.reviewTrack, disabled: !shownContentsReady });
+      }
       $('source-context').textContent = s.group ? 'Destination: ' + s.group.label : 'Select a listening group first.';
       $('source-review').textContent = s.mode === 'play' ? 'Review playback' : 'Review queue addition';
       $('source-review').disabled = !control.canReview(); $('source-clear').disabled = !control.editable();
@@ -265,7 +317,9 @@ const DashboardSource = (() => {
       if (s.pending) {
         const p = s.pending, q = p.before.queue;
         $('source-preview-title').textContent = P.modes[p.mode] + ': ' + (p.title || p.item.uri);
-        $('source-preview-source').textContent = p.item.kind === 'sonos_playlist' ? 'Saved Sonos playlist · ' + p.item.id : p.item.uri;
+        $('source-preview-source').textContent = p.item.kind === 'sonos_playlist_track'
+          ? `Track ${p.item.position} · ${p.item.playlistTitle} · ${p.item.id}`
+          : p.item.kind === 'sonos_playlist' ? 'Saved Sonos playlist · ' + p.item.id : p.item.uri;
         $('source-preview-target').textContent = p.group.label;
         $('source-preview-current').textContent = p.before.label;
         $('source-preview-effect').textContent = effect(p);
@@ -294,6 +348,9 @@ const DashboardSource = (() => {
     });
     $('source-playlist').addEventListener('change', event => control.edit('playlist', event.target.value));
     $('source-playlist-refresh').addEventListener('click', () => { void control.loadPlaylists(); });
+    $('source-contents-read').addEventListener('click', () => { void control.loadContents(); });
+    $('source-contents-previous').addEventListener('click', () => { void control.loadContents('previous'); });
+    $('source-contents-next').addEventListener('click', () => { void control.loadContents('next'); });
     for (const field of ['input', 'title', 'mode']) {
       $('source-' + field).addEventListener(field === 'mode' ? 'change' : 'input', event => control.edit(field, event.target.value));
     }

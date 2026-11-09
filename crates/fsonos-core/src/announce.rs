@@ -31,12 +31,15 @@
 //! then coordination returns natively: continued progress, queue edits and
 //! paused playback survive without replaying an old queue bookmark.
 
+mod cancellation;
 pub mod clip;
 mod continuity;
 mod recovery;
 pub mod speech;
+mod turns;
 mod watch;
 
+pub use cancellation::{AnnouncementControl, AnnouncementPhase, AnnouncementProgress};
 use recovery::Effects;
 
 use crate::control;
@@ -48,8 +51,6 @@ use fsonos_proto::control as soap;
 use fsonos_proto::didl::xml_escape;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::PlayerId;
-use std::collections::HashMap;
-use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The level rooms announce at unless asked otherwise (before policy caps).
@@ -110,6 +111,9 @@ pub enum Ending {
     Deadline,
     /// The player never started it (e.g. it could not fetch the clip).
     NeverStarted,
+    /// Cancelled before playback, or its owned clip stopped at the caller's
+    /// request. Restoration details remain in the household's report.
+    Cancelled,
 }
 
 /// How one household's target rooms are grouped for an announcement.
@@ -222,20 +226,14 @@ pub struct AnnounceReport {
 pub enum AnnounceError {
     #[error("no rooms to announce to")]
     NoTargets,
-}
-
-/// Turns per household: tickets handed out and the one being served.
-#[derive(Debug, Default)]
-struct Turns {
-    next: u64,
-    serving: u64,
+    #[error("an announcement control can be used for only one invocation")]
+    ControlReused,
 }
 
 /// Plays announcements, one per household at a time.
 #[derive(Debug)]
 pub struct Announcer {
-    turns: Mutex<HashMap<String, Turns>>,
-    turn_over: Condvar,
+    turns: turns::Turns,
     poll: Duration,
     stop_grace: Duration,
     patience: Duration,
@@ -252,28 +250,23 @@ impl Default for Announcer {
 struct Playback<'a> {
     clip: &'a Clip,
     live: Option<&'a Live>,
+    observer: Option<cancellation::Observer<'a>>,
 }
 
-/// A household's turn; the next waiting announcement goes when it drops.
-struct Turn<'a> {
-    announcer: &'a Announcer,
-    key: String,
-}
+impl Playback<'_> {
+    fn control(&self) -> Option<&AnnouncementControl> {
+        self.observer.map(|observer| observer.control)
+    }
 
-impl Drop for Turn<'_> {
-    fn drop(&mut self) {
-        let mut turns = self
-            .announcer
-            .turns
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(t) = turns.get_mut(&self.key) {
-            t.serving += 1;
-            if t.serving == t.next {
-                turns.remove(&self.key);
-            }
+    fn cancelled(&self) -> bool {
+        self.control()
+            .is_some_and(AnnouncementControl::is_cancelled)
+    }
+
+    fn phase(&self, phase: AnnouncementPhase) {
+        if let Some(observer) = self.observer {
+            observer.phase(phase);
         }
-        self.announcer.turn_over.notify_all();
     }
 }
 
@@ -288,8 +281,7 @@ impl Announcer {
     #[must_use]
     pub fn with_timing(poll: Duration, stop_grace: Duration) -> Self {
         Self {
-            turns: Mutex::new(HashMap::new()),
-            turn_over: Condvar::new(),
+            turns: turns::Turns::default(),
             poll,
             stop_grace,
             patience: Duration::ZERO,
@@ -308,26 +300,22 @@ impl Announcer {
     /// How many announcements are playing or waiting, over all households.
     #[must_use]
     pub fn pending(&self) -> u64 {
-        let turns = self.turns.lock().unwrap_or_else(PoisonError::into_inner);
-        turns.values().map(|t| t.next - t.serving).sum()
+        self.turns.pending()
     }
 
     /// Wait for `key`'s turn.
-    fn turn(&self, key: String) -> Turn<'_> {
-        let mut turns = self.turns.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = turns.entry(key.clone()).or_default();
-        let ticket = entry.next;
-        entry.next += 1;
-        while turns.get(&key).is_some_and(|t| t.serving != ticket) {
-            turns = self
-                .turn_over
-                .wait(turns)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-        Turn {
-            announcer: self,
-            key,
-        }
+    fn turn(&self, key: String) -> turns::Turn<'_> {
+        self.turn_controlled(key, None)
+            .expect("an uncontrolled turn is never cancelled")
+    }
+
+    fn turn_controlled(
+        &self,
+        key: String,
+        control: Option<&AnnouncementControl>,
+    ) -> Option<turns::Turn<'_>> {
+        self.turns
+            .take(key, control.map(AnnouncementControl::cancellation_flag))
     }
 
     /// Play `clip` in the `targets` rooms at `volume` (each room capped at
@@ -382,7 +370,38 @@ impl Announcer {
         live: Option<&Live>,
         callbacks: &AnnouncementCallbacks<'_>,
     ) -> Result<AnnounceReport, AnnounceError> {
-        let playback = Playback { clip, live };
+        self.run(t, targets, clip, volume, live, callbacks, None)
+    }
+
+    /// The existing announcement lifecycle with process-local cancellation
+    /// and per-household progress. A queued cancellation touches no speakers.
+    /// Active cancellation stops only the still-owned clip, then runs the
+    /// ordinary guarded restoration and completion callback before finishing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn announce_controlled<T: Transport + Sync + ?Sized>(
+        &self,
+        t: &T,
+        targets: &[ControlTarget<'_>],
+        clip: &Clip,
+        volume: u8,
+        live: Option<&Live>,
+        callbacks: &AnnouncementCallbacks<'_>,
+        control: &AnnouncementControl,
+    ) -> Result<AnnounceReport, AnnounceError> {
+        self.run(t, targets, clip, volume, live, callbacks, Some(control))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run<T: Transport + Sync + ?Sized>(
+        &self,
+        t: &T,
+        targets: &[ControlTarget<'_>],
+        clip: &Clip,
+        volume: u8,
+        live: Option<&Live>,
+        callbacks: &AnnouncementCallbacks<'_>,
+        control: Option<&AnnouncementControl>,
+    ) -> Result<AnnounceReport, AnnounceError> {
         let mut by_household: Vec<(&HouseholdState, Vec<&Room>)> = Vec::new();
         for target in targets {
             match by_household
@@ -400,15 +419,36 @@ impl Announcer {
         if by_household.is_empty() {
             return Err(AnnounceError::NoTargets);
         }
+        if let Some(control) = control {
+            control.begin(&by_household)?;
+        }
         let households = std::thread::scope(|s| {
             let running: Vec<_> = by_household
                 .iter()
-                .map(|(household, rooms)| {
+                .enumerate()
+                .map(|(index, (household, rooms))| {
                     s.spawn(move || {
-                        let _turn = self.turn(turn_key(household));
+                        let playback = Playback {
+                            clip,
+                            live,
+                            observer: control
+                                .map(|control| cancellation::Observer { control, index }),
+                        };
+                        let turn = control.map_or_else(
+                            || Some(self.turn(turn_key(household))),
+                            |control| self.turn_controlled(turn_key(household), Some(control)),
+                        );
+                        let Some(_turn) = turn else {
+                            // No preparation, cap callback or speaker request
+                            // happened, so there is nothing to restore.
+                            playback.phase(AnnouncementPhase::Complete);
+                            return cancelled_report(rooms);
+                        };
+                        playback.phase(AnnouncementPhase::Preparing);
                         let report =
                             self.announce_in(t, household, rooms, &playback, volume, callbacks.cap);
                         (callbacks.completed)(household, &report);
+                        playback.phase(AnnouncementPhase::Complete);
                         report
                     })
                 })
@@ -431,6 +471,9 @@ impl Announcer {
         volume: u8,
         cap: &(dyn Fn(&Room) -> u8 + Sync),
     ) -> HouseholdAnnouncement {
+        if playback.cancelled() {
+            return cancelled_report(rooms);
+        }
         let mut report = HouseholdAnnouncement {
             lead: rooms[0].primary.clone(),
             rooms: rooms.iter().map(|r| r.name.clone()).collect(),
@@ -459,6 +502,9 @@ impl Announcer {
             return report;
         };
         let (household, rooms) = (&fresh, selected.as_slice());
+        if playback.cancelled() {
+            return cancelled_report(rooms);
+        }
         report.rooms = rooms.iter().map(|r| r.name.clone()).collect();
         report.levels = rooms
             .iter()
@@ -469,6 +515,9 @@ impl Announcer {
             return report;
         };
         report.lead.clone_from(&plan.lead);
+        if let Some(observer) = playback.observer {
+            observer.target(&report);
+        }
         let hs = std::slice::from_ref(household);
         let mut snaps = Vec::new();
         for zone in &plan.zones {
@@ -485,6 +534,7 @@ impl Announcer {
         }
         let (outcome, effects) = self.play(t, hs, &plan, rooms, &report.levels, playback);
         report.outcome = outcome;
+        playback.phase(AnnouncementPhase::Restoring);
         let give_up = std::time::Instant::now() + self.patience;
         recovery::put_back(t, household, &plan, &snaps, &effects, give_up, &mut report);
         report
@@ -507,17 +557,21 @@ impl Announcer {
             // A join can start audio immediately. Bound all levels before
             // regrouping, and never unmute a room at its old, possibly loud level.
             for (room, (_, level)) in rooms.iter().zip(levels) {
+                cancellation::check(playback.control())?;
                 effects.volumes.push((room.primary.clone(), *level));
                 control::set_volume(t, hs, &room.primary, *level)?;
             }
+            cancellation::check(playback.control())?;
             continuity::prepare(t, &hs[0], rooms, &mut effects)?;
             if plan.lead_leaves && !effects.groups.contains(&plan.lead) {
+                cancellation::check(playback.control())?;
                 effects.groups.push(plan.lead.clone());
                 effects.sources.push(plan.lead.clone());
                 let now = refreshed(t, &hs[0])?;
                 control::leave(t, std::slice::from_ref(&now), &plan.lead)?;
             }
             for room in &plan.joins {
+                cancellation::check(playback.control())?;
                 effects.groups.push(room.clone());
                 effects.sources.push(room.clone());
                 let now = refreshed(t, &hs[0])?;
@@ -525,20 +579,34 @@ impl Announcer {
             }
             recovery::wait_for_group(t, &hs[0], plan)?;
             for room in rooms {
+                cancellation::check(playback.control())?;
                 effects.mutes.push(room.primary.clone());
                 control::set_mute(t, hs, &room.primary, false)?;
             }
+            cancellation::check(playback.control())?;
             let host = control::locate(hs, &plan.lead)?.ip;
             effects.before_clip = Some(soap::get_media_info(t, host)?.uri);
             effects.sources.push(plan.lead.clone());
             effects.clip = Some(clip.url.clone());
             events = playback.live.map(Live::subscribe);
-            control::play_uri(t, hs, &plan.lead, &clip.url, &clip.didl())?;
+            control::play_uri(
+                &cancellation::Starting {
+                    transport: t,
+                    control: playback.control(),
+                },
+                hs,
+                &plan.lead,
+                &clip.url,
+                &clip.didl(),
+            )?;
             effects.installed = true;
+            playback.phase(AnnouncementPhase::Playing);
             Ok(())
         })();
-        let outcome = prepared.map_err(|e| e.to_string()).and_then(|()| {
-            let result = watch::wait(
+        let outcome = match prepared {
+            Err(error) if cancellation::requested(&error) => Ok(Ending::Cancelled),
+            Err(error) => Err(error.to_string()),
+            Ok(()) => watch::wait(
                 t,
                 &hs[0],
                 plan,
@@ -546,17 +614,29 @@ impl Announcer {
                 clip.duration + self.stop_grace,
                 self.poll,
                 events.as_ref(),
-            );
-            result.map_err(|interrupted| match interrupted {
+                playback.control(),
+            )
+            .map_err(|interrupted| match interrupted {
                 watch::Interrupted::LeaveAlone(why) => {
                     effects.preserve = Some(why.clone());
                     why
                 }
                 // Put back once the players answer again, if still owned.
                 watch::Interrupted::Unanswered(why) => why,
-            })
-        });
+            }),
+        };
         (outcome, effects)
+    }
+}
+
+fn cancelled_report(rooms: &[&Room]) -> HouseholdAnnouncement {
+    HouseholdAnnouncement {
+        lead: rooms[0].primary.clone(),
+        rooms: rooms.iter().map(|room| room.name.clone()).collect(),
+        levels: Vec::new(),
+        outcome: Ok(Ending::Cancelled),
+        restored: Vec::new(),
+        restore_failed: Vec::new(),
     }
 }
 
@@ -611,8 +691,8 @@ fn unix_now() -> i64 {
 mod tests {
     use super::*;
     use fsonos_types::ZoneGroup;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     fn pid(s: &str) -> PlayerId {
         PlayerId(s.into())

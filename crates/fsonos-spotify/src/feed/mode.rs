@@ -359,6 +359,7 @@ mod replay {
                     lookahead: 1,
                     queued: vec![Self::work(2)],
                     played: vec![Self::work(0)],
+                    recovery: Default::default(),
                     playing: Some(3),
                     recorded: Some((3, TRACKS[2].into())),
                 },

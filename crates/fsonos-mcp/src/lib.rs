@@ -217,6 +217,8 @@ fn configured_server(
             .tool(tools::ListPlayers)
             .tool(tools::GetZone)
             .tool(tools::ListSonosPlaylists)
+            .tool(tools::SonosPlaylistContents)
+            .tool(tools::SonosPlaylistTrack)
             .tool(tools::PlaySonosPlaylist)
             .tool(tools::SaveSonosPlaylist)
             .tool(tools::RecentActions)

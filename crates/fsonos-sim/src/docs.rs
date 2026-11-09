@@ -4,7 +4,7 @@
 
 use crate::SimModel;
 use crate::model::{Favorite, Player, QueueItem, SavedPlaylist, State};
-use fsonos_proto::didl::xml_escape;
+use fsonos_proto::didl::{parse_didl, xml_escape};
 use std::fmt::Write as _;
 
 /// One service a virtual player exposes.
@@ -310,6 +310,62 @@ pub(crate) fn saved_playlist_items(playlists: &[SavedPlaylist]) -> String {
             xml_escape(&saved.uri()),
             tag = saved.tag,
         );
+    }
+    out
+}
+
+/// Ordered saved-queue occurrences. Their ids belong to this playlist, not
+/// the current player queue, and repeated resources remain separate items.
+pub(crate) fn saved_playlist_tracks(id: u32, tracks: &[QueueItem], start: usize) -> String {
+    let mut out = String::new();
+    for (index, track) in tracks.iter().enumerate() {
+        let metadata = parse_didl(&track.metadata)
+            .ok()
+            .and_then(|items| items.into_iter().next());
+        let class = metadata
+            .as_ref()
+            .map_or("object.item.audioItem.musicTrack", |item| {
+                item.class.as_str()
+            });
+        let resource = metadata.as_ref().and_then(|item| item.res.as_ref());
+        let protocol = resource
+            .and_then(|res| res.protocol_info.as_deref())
+            .unwrap_or_else(|| protocol_info(&track.uri));
+        let _ = write!(
+            out,
+            "<item id=\"SQ:{id}/{position}\" parentID=\"SQ:{id}\" restricted=\"true\">\
+             <res protocolInfo=\"{protocol}\" duration=\"{duration}\">{uri}</res>\
+             <dc:title>{title}</dc:title><upnp:class>{class}</upnp:class>",
+            position = start + index,
+            protocol = xml_escape(protocol),
+            duration = hms(track.duration_ms),
+            uri = xml_escape(&track.uri),
+            title = xml_escape(&track.title),
+            class = xml_escape(class),
+        );
+        let art = metadata
+            .as_ref()
+            .and_then(|item| item.album_art_uri.clone())
+            .or_else(|| art_path(&track.uri));
+        for (tag, value) in [
+            ("dc:creator", track.creator.as_deref()),
+            ("upnp:album", track.album.as_deref()),
+            ("upnp:albumArtURI", art.as_deref()),
+        ] {
+            if let Some(value) = value {
+                let _ = write!(out, "<{tag}>{}</{tag}>", xml_escape(value));
+            }
+        }
+        if let Some(desc) = metadata.and_then(|item| item.desc) {
+            let _ = write!(
+                out,
+                "<desc id=\"{}\" nameSpace=\"{}\">{}</desc>",
+                xml_escape(&desc.id),
+                xml_escape(&desc.name_space),
+                xml_escape(&desc.value),
+            );
+        }
+        out.push_str("</item>");
     }
     out
 }

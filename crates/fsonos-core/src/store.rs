@@ -12,8 +12,11 @@
 //! seconds stamped by the caller, which keeps behavior deterministic in tests.
 
 pub mod faults;
+mod listening;
 mod sqlite;
 
+pub use listening::MAX_SPOTIFY_HEARD_TRACKS;
+use listening::{latest_plays, merge_plays};
 pub use sqlite::{LISTENING_RETENTION_SECS, SqliteStore};
 
 /// The database file's name inside the data directory.
@@ -684,7 +687,9 @@ pub trait Store {
 
     /// Publish a prepared library and its personal evidence in one transaction,
     /// only while the receipt still names the current owner and generation.
-    /// `None` preserves the directory/heard cache; `Some(&[])` clears it.
+    /// `None` preserves each optional projection; an empty directory clears
+    /// it. Listening is merged monotonically and bounded, so an older full
+    /// read cannot erase evidence accepted by the lightweight listening reader.
     /// Returns false without writes when any intervening adoption invalidated
     /// the receipt, even when the current account has the same ID again.
     fn publish_spotify_library(
@@ -979,6 +984,22 @@ pub trait Store {
     /// heard more than once keeps its latest play.
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError>;
 
+    /// Merge recent listening only while the exact account adoption remains
+    /// current. Keep the latest timestamp per URI and the latest
+    /// [`MAX_SPOTIFY_HEARD_TRACKS`] distinct tracks. Empty or delayed reads
+    /// cannot erase evidence. A mismatch returns false without any writes;
+    /// this does not change library candidates, weights or catalog revision.
+    /// Implementations must compare ownership and merge in one transaction.
+    fn merge_spotify_heard(
+        &mut self,
+        _owner: &SpotifyLibraryOwner,
+        _plays: &[(String, i64)],
+    ) -> Result<bool, StoreError> {
+        Err(StoreError::Backend(
+            "this store cannot atomically merge Spotify listening".into(),
+        ))
+    }
+
     /// Those plays, oldest first.
     fn spotify_heard(&self) -> Result<Vec<(String, i64)>, StoreError>;
 
@@ -1220,21 +1241,6 @@ fn validate_spotify_playlist_publication(
 
 fn stronger_playlist_weight(current: Option<u32>, incoming: Option<u32>) -> Option<u32> {
     incoming.filter(|weight| *weight > current.unwrap_or(1_000))
-}
-
-/// Each track's latest play in `plays`, oldest first (by time, then URI).
-pub(crate) fn latest_plays(plays: &[(String, i64)]) -> Vec<(String, i64)> {
-    let mut latest: BTreeMap<&str, i64> = BTreeMap::new();
-    for (uri, at) in plays {
-        let kept = latest.entry(uri.as_str()).or_insert(*at);
-        *kept = (*kept).max(*at);
-    }
-    let mut plays: Vec<(String, i64)> = latest
-        .into_iter()
-        .map(|(uri, at)| (uri.to_owned(), at))
-        .collect();
-    plays.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
-    plays
 }
 
 /// An in-memory [`Store`] with the same semantics as [`SqliteStore`]
@@ -1606,7 +1612,7 @@ impl Store for MemStore {
                 .insert(observation.playlist_uri.clone(), observation.clone());
         }
         if let Some(heard) = heard {
-            self.spotify_heard = latest_plays(heard);
+            self.spotify_heard = merge_plays(&self.spotify_heard, heard);
         }
         if changed || !contents.is_empty() {
             self.bump_library_catalog_revision();
@@ -2073,6 +2079,18 @@ impl Store for MemStore {
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {
         self.spotify_heard = latest_plays(plays);
         Ok(())
+    }
+
+    fn merge_spotify_heard(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        plays: &[(String, i64)],
+    ) -> Result<bool, StoreError> {
+        if self.spotify_library_owner.as_ref() != Some(owner) {
+            return Ok(false);
+        }
+        self.spotify_heard = merge_plays(&self.spotify_heard, plays);
+        Ok(true)
     }
 
     fn spotify_heard(&self) -> Result<Vec<(String, i64)>, StoreError> {

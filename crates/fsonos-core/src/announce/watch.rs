@@ -2,7 +2,7 @@
 
 mod events;
 
-use super::{Clip, Ending, GroupPlan, recovery, refreshed};
+use super::{AnnouncementControl, Clip, Ending, GroupPlan, cancellation, recovery, refreshed};
 use crate::live::LiveEvent;
 use crate::{CoreError, HouseholdState, control, heal};
 use fsonos_proto::{ProtoError, Transport, control as soap};
@@ -58,11 +58,24 @@ struct Watch<'a, T: Transport + ?Sized> {
     began: bool,
     /// Only a successful state read followed by an exact source read can rearm events.
     observed: Option<TransportState>,
+    control: Option<&'a AnnouncementControl>,
 }
 
 impl<T: Transport + ?Sized> Watch<'_, T> {
     fn remaining(&self) -> Duration {
         self.deadline.saturating_sub(self.started.elapsed())
+    }
+
+    fn cancelled(&self) -> bool {
+        self.control.is_some_and(AnnouncementControl::is_cancelled)
+    }
+
+    fn delay(&self, delay: Duration) -> Duration {
+        if self.control.is_some() {
+            delay.min(cancellation::CANCEL_POLL)
+        } else {
+            delay
+        }
     }
 
     fn owns_source(&self) -> Result<(), Interrupted> {
@@ -96,6 +109,11 @@ impl<T: Transport + ?Sized> Watch<'_, T> {
             Err(interrupted) => return Err(interrupted),
         };
         self.observed = Some(state);
+        // A manual pause retains its existing supersession semantics even
+        // when a cancellation request happens at the same time.
+        if self.cancelled() && state != TransportState::Paused {
+            return Ok(Some(Ending::Cancelled));
+        }
         match state {
             TransportState::Playing | TransportState::Transitioning => self.began = true,
             TransportState::Paused => {
@@ -114,8 +132,51 @@ impl<T: Transport + ?Sized> Watch<'_, T> {
         }
         Ok(None)
     }
+
+    fn cancellation_state(&self) -> Result<TransportState, Interrupted> {
+        self.owns_group()?;
+        let state = soap::get_transport_info(self.transport, self.host)?.state;
+        self.owns_source()?;
+        match state {
+            TransportState::Playing | TransportState::Transitioning | TransportState::Stopped => {
+                Ok(state)
+            }
+            TransportState::Paused => Err(Interrupted::LeaveAlone(
+                "announcement was paused; cancellation left the newer intent alone".into(),
+            )),
+            _ => Err(Interrupted::LeaveAlone(
+                "announcement transport is unknown; cancellation left playback alone".into(),
+            )),
+        }
+    }
+
+    /// Stop exactly once after fresh ownership reads. A lost reply can be
+    /// proved by reads, but never causes another Stop or source replay.
+    fn stop_cancelled(&self) -> Result<(), Interrupted> {
+        if self.cancellation_state()? == TransportState::Stopped {
+            return Ok(());
+        }
+        let sent = soap::stop(self.transport, self.host);
+        if let Err(error) = &sent
+            && !matches!(error, ProtoError::Network { .. } | ProtoError::Malformed(_))
+        {
+            return Err(Interrupted::LeaveAlone(error.to_string()));
+        }
+        match self.cancellation_state() {
+            Ok(TransportState::Stopped) => Ok(()),
+            Ok(_) => Err(Interrupted::LeaveAlone(
+                "announcement cancellation did not establish a stopped clip; playback was left alone"
+                    .into(),
+            )),
+            Err(Interrupted::Unanswered(why)) => Err(Interrupted::Unanswered(
+                sent.err().map_or(why, |error| error.to_string()),
+            )),
+            Err(interrupted) => Err(interrupted),
+        }
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn wait<T: Transport + ?Sized>(
     transport: &T,
     household: &HouseholdState,
@@ -124,6 +185,7 @@ pub(super) fn wait<T: Transport + ?Sized>(
     deadline: Duration,
     poll: Duration,
     incoming: Option<&Receiver<LiveEvent>>,
+    control: Option<&AnnouncementControl>,
 ) -> Result<Ending, Interrupted> {
     let host = control::locate(std::slice::from_ref(household), &plan.lead)?.ip;
     let mut watch = Watch {
@@ -136,6 +198,7 @@ pub(super) fn wait<T: Transport + ?Sized>(
         deadline,
         began: false,
         observed: None,
+        control,
     };
     if let Some(incoming) = incoming {
         return events::wait(&mut watch, incoming);
@@ -146,9 +209,11 @@ pub(super) fn wait<T: Transport + ?Sized>(
                 watch.owns_group()?;
                 watch.owns_source()?;
                 soap::stop(watch.transport, watch.host)?;
+            } else if ending == Ending::Cancelled {
+                watch.stop_cancelled()?;
             }
             return Ok(ending);
         }
-        std::thread::sleep(poll.min(watch.remaining()));
+        std::thread::sleep(watch.delay(poll.min(watch.remaining())));
     }
 }

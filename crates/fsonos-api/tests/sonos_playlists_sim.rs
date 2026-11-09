@@ -2,7 +2,10 @@
 //! action-log boundary and real localhost simulator sockets.
 
 use fsonos_api::surface::queue::QueueRequest;
-use fsonos_api::surface::sonos_playlists::{PlaySonosPlaylistRequest, SaveSonosPlaylistRequest};
+use fsonos_api::surface::sonos_playlists::{
+    PlaySonosPlaylistRequest, SaveSonosPlaylistRequest, SonosPlaylistContentsRequest,
+    SonosPlaylistTrackMode, SonosPlaylistTrackRequest,
+};
 use fsonos_api::{ErrorCode, Surface};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
@@ -14,6 +17,8 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::TransportState;
 use std::net::IpAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 fn sim() -> SimHandle {
@@ -65,6 +70,351 @@ fn play(zone: &str, playlist: &str) -> PlaySonosPlaylistRequest {
         zone: zone.into(),
         playlist: playlist.into(),
     }
+}
+
+fn contents(zone: &str, playlist: &str, limit: u32) -> SonosPlaylistContentsRequest {
+    SonosPlaylistContentsRequest {
+        zone: zone.into(),
+        playlist: playlist.into(),
+        offset: 0,
+        limit,
+        expected_revision: None,
+    }
+}
+
+fn track_request(
+    s: &Surface,
+    zone: &str,
+    position: u32,
+    mode: SonosPlaylistTrackMode,
+) -> SonosPlaylistTrackRequest {
+    let page = s
+        .sonos_playlist_contents(&Client::Cli, &contents(zone, "SQ:7", 100))
+        .unwrap();
+    SonosPlaylistTrackRequest {
+        zone: zone.into(),
+        playlist: page.playlist.id,
+        position,
+        expected_revision: page.revision,
+        mode,
+    }
+}
+
+#[test]
+fn one_saved_track_plays_with_caps_native_metadata_and_retained_queue_on_both_generations() {
+    for generation in ["S1", "S2"] {
+        let sim = sim();
+        sim.retain_favorites(1, |_| false).unwrap();
+        sim.retain_favorites(2, |_| false).unwrap();
+        let houses = households(&sim);
+        let zone = format!("Den@{generation}");
+        let target = resolve_room(&houses, &zone).unwrap();
+        let mut policy = Policy::default();
+        policy.defaults.max_volume = 25;
+        let s = surface(Box::new(sim.lan()), &houses, policy);
+        seed_native_queue(&s, &zone);
+        let original = queue(&sim, &houses, &zone);
+        soap::set_volume(&sim.lan(), target.coordinator.ip, 80).unwrap();
+        let req = track_request(&s, &zone, 3, SonosPlaylistTrackMode::Play);
+        let start = sim.soap_log().len();
+        let result = s.sonos_playlist_track(&Client::McpStdio, &req).unwrap();
+        assert_eq!(
+            (result.playlist.as_str(), result.position, result.mode),
+            ("SQ:7", 3, SonosPlaylistTrackMode::Play)
+        );
+        assert!(result.changed && !result.title.is_empty());
+        assert!(
+            !result.notes.is_empty(),
+            "the existing playback cap receipt is retained"
+        );
+        assert_eq!(
+            (result.first, result.count, result.playing_queue),
+            (None, None, None)
+        );
+        assert_eq!(queue(&sim, &houses, &zone), original);
+        let playback = control::playback(&sim.lan(), &houses, &target.coordinator.id).unwrap();
+        assert_eq!(playback.transport.state, TransportState::Playing);
+        assert_eq!(
+            soap::get_media_info(&sim.lan(), target.coordinator.ip)
+                .unwrap()
+                .uri,
+            original[2]
+        );
+        assert_eq!(
+            soap::get_volume(&sim.lan(), target.coordinator.ip).unwrap(),
+            25
+        );
+        let calls = sim.soap_log();
+        let actions: Vec<_> = calls[start..]
+            .iter()
+            .map(|call| call.action.as_str())
+            .collect();
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| **action == "SetAVTransportURI")
+                .count(),
+            1
+        );
+        assert!(!actions.iter().any(|action| {
+            [
+                "AddURIToQueue",
+                "RemoveAllTracksFromQueue",
+                "RemoveTrackRangeFromQueue",
+            ]
+            .contains(action)
+        }));
+        let other = if generation == "S1" {
+            "Den@S2"
+        } else {
+            "Den@S1"
+        };
+        assert!(queue(&sim, &houses, other).is_empty());
+    }
+}
+
+#[test]
+fn selected_track_next_and_append_preserve_music_and_undo_only_the_confirmed_occurrence() {
+    for generation in ["S1", "S2"] {
+        let sim = sim();
+        let initial = households(&sim);
+        let zone = format!("Den@{generation}");
+        let member_zone = format!("Office@{generation}");
+        let lead = resolve_room(&initial, &zone).unwrap();
+        let member = resolve_room(&initial, &member_zone).unwrap();
+        soap::join_group(&sim.lan(), member.player.ip, &lead.coordinator.id).unwrap();
+        let houses = households(&sim);
+        let s = surface(Box::new(sim.lan()), &houses, Policy::default());
+        s.play_sonos_playlist(&Client::Cli, &play(&zone, "SQ:1"))
+            .unwrap();
+        let original = queue(&sim, &houses, &zone);
+        let before = control::playback(&sim.lan(), &houses, &lead.coordinator.id).unwrap();
+        soap::set_volume(&sim.lan(), lead.coordinator.ip, 80).unwrap();
+        for (mode, first) in [
+            (SonosPlaylistTrackMode::Next, 2),
+            (SonosPlaylistTrackMode::Append, 3),
+        ] {
+            let req = track_request(&s, &member_zone, 3, mode);
+            let page = s
+                .sonos_playlist_contents(&Client::Cli, &contents(&member_zone, "SQ:7", 100))
+                .unwrap();
+            let selected = page.items[2].uri.as_ref().unwrap();
+            let result = s.sonos_playlist_track(&Client::McpStdio, &req).unwrap();
+            assert_eq!(
+                (result.first, result.count, result.playing_queue),
+                (Some(first), Some(1), Some(true))
+            );
+            assert_eq!(
+                (result.zone.as_str(), result.position, result.mode),
+                ("Den", 3, mode)
+            );
+            let after = queue(&sim, &houses, &zone);
+            assert_eq!(after.len(), original.len() + 1);
+            assert_eq!(&after[first as usize - 1], selected);
+            assert_eq!(
+                control::playback(&sim.lan(), &houses, &lead.coordinator.id).unwrap(),
+                before
+            );
+            assert_eq!(
+                soap::get_volume(&sim.lan(), lead.coordinator.ip).unwrap(),
+                80
+            );
+            let undone = s.undo(&Client::McpStdio, true).unwrap().unwrap();
+            assert!(undone.unqueue_failures.is_empty());
+            assert_eq!(queue(&sim, &houses, &zone), original);
+        }
+    }
+}
+
+#[test]
+fn stale_saved_track_selection_is_rejected_before_playback_volume_or_queue_changes() {
+    let sim = sim();
+    let houses = households(&sim);
+    let s = surface(Box::new(sim.lan()), &houses, Policy::default());
+    let target = resolve_room(&houses, "Den@S2").unwrap();
+    soap::set_volume(&sim.lan(), target.coordinator.ip, 90).unwrap();
+    let mut request = track_request(&s, "Den@S2", 2, SonosPlaylistTrackMode::Play);
+    request.expected_revision = "obsolete".into();
+    for mode in [
+        SonosPlaylistTrackMode::Play,
+        SonosPlaylistTrackMode::Next,
+        SonosPlaylistTrackMode::Append,
+    ] {
+        request.mode = mode;
+        let start = sim.soap_log().len();
+        let error = s
+            .sonos_playlist_track(&Client::McpStdio, &request)
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::QueueChanged);
+        assert!(
+            sim.soap_log()[start..]
+                .iter()
+                .all(|entry| matches!(entry.action.as_str(), "GetZoneGroupState" | "Browse"))
+        );
+    }
+    assert_eq!(
+        soap::get_volume(&sim.lan(), target.coordinator.ip).unwrap(),
+        90
+    );
+    assert!(queue(&sim, &houses, "Den@S2").is_empty());
+    assert_eq!(
+        soap::get_transport_info(&sim.lan(), target.coordinator.ip)
+            .unwrap()
+            .state,
+        TransportState::Stopped
+    );
+    let mut cross_household = track_request(&s, "Den@S1", 2, SonosPlaylistTrackMode::Play);
+    cross_household.zone = "Den@S2".into();
+    assert_eq!(
+        s.sonos_playlist_track(&Client::McpStdio, &cross_household)
+            .unwrap_err()
+            .code,
+        ErrorCode::QueueChanged
+    );
+}
+
+#[test]
+fn selected_track_permissions_are_mode_specific_and_checked_before_speaker_io() {
+    for (mode, policy) in [
+        (SonosPlaylistTrackMode::Play, "allow = ['add_to_queue']"),
+        (SonosPlaylistTrackMode::Next, "allow = ['play_favorite']"),
+        (SonosPlaylistTrackMode::Append, "allow = ['play_favorite']"),
+    ] {
+        let policy = Policy::from_toml(&format!("[clients.mcp-stdio]\n{policy}\n")).unwrap();
+        let s = surface(Box::new(NoSpeakerIo), &[], policy);
+        let req = SonosPlaylistTrackRequest {
+            zone: "Den@S2".into(),
+            playlist: "SQ:7".into(),
+            position: 2,
+            expected_revision: "observed".into(),
+            mode,
+        };
+        assert_eq!(
+            s.sonos_playlist_track(&Client::McpStdio, &req)
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyDenied
+        );
+        assert_eq!(
+            s.sonos_playlist_track(
+                &Client::Cli,
+                &SonosPlaylistTrackRequest { position: 0, ..req }
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidArgument
+        );
+    }
+}
+
+#[test]
+fn saved_contents_retain_duplicate_occurrences_without_touching_playback() {
+    let sim = sim();
+    sim.retain_favorites(1, |_| false).unwrap();
+    sim.retain_favorites(2, |_| false).unwrap();
+    let houses = households(&sim);
+    let s = surface(Box::new(sim.lan()), &houses, Policy::default());
+    let mut revisions = Vec::new();
+    for generation in ["S1", "S2"] {
+        let zone = format!("Den@{generation}");
+        let host = resolve_room(&houses, &zone).unwrap().coordinator.ip;
+        soap::set_volume(&sim.lan(), host, 72).unwrap();
+        soap::set_mute(&sim.lan(), host, true).unwrap();
+        let before = soap::get_transport_info(&sim.lan(), host).unwrap();
+        let page = s
+            .sonos_playlist_contents(&Client::McpStdio, &contents(&zone, "SQ:7", 2))
+            .unwrap();
+        assert_eq!(page.playlist.id, "SQ:7");
+        assert_eq!(page.total, 3);
+        assert_eq!(page.offset, 0);
+        assert_eq!(page.next_offset, Some(2));
+        assert_eq!(
+            page.items
+                .iter()
+                .map(|item| item.position)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(page.items.iter().all(|item| item.uri.is_some()));
+        assert!(!page.revision.is_empty());
+        let next = SonosPlaylistContentsRequest {
+            offset: page.next_offset.unwrap(),
+            expected_revision: Some(page.revision.clone()),
+            ..contents(&zone, &page.playlist.id, 2)
+        };
+        let last = s.sonos_playlist_contents(&Client::McpStdio, &next).unwrap();
+        assert_eq!(last.revision, page.revision);
+        assert_eq!(last.total, 3);
+        assert_eq!(last.items.len(), 1);
+        assert_eq!(last.items[0].position, 3);
+        assert_eq!(last.items[0].uri, page.items[0].uri);
+        assert_eq!(last.next_offset, None);
+        assert_eq!(soap::get_transport_info(&sim.lan(), host).unwrap(), before);
+        assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 72);
+        assert!(soap::get_mute(&sim.lan(), host).unwrap());
+        assert!(queue(&sim, &houses, &zone).is_empty());
+        revisions.push(page.revision);
+    }
+    assert_ne!(
+        revisions[0], revisions[1],
+        "equal native ids stay household-local"
+    );
+    assert!(
+        s.recent_actions(&Client::Cli, &ActionFilter::default())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn native_contents_resolve_member_rooms_and_initial_titles_but_refuse_stale_continuations() {
+    let sim = sim();
+    let initial = households(&sim);
+    let lead = resolve_room(&initial, "Den@S2").unwrap();
+    let member = resolve_room(&initial, "Office@S2").unwrap();
+    soap::join_group(&sim.lan(), member.player.ip, &lead.coordinator.id).unwrap();
+    let houses = households(&sim);
+    let s = surface(Box::new(sim.lan()), &houses, Policy::default());
+    let page = s
+        .sonos_playlist_contents(&Client::McpStdio, &contents("Office@S2", "Saved Mix S2", 1))
+        .unwrap();
+    assert_eq!(page.zone, "Den");
+    assert_eq!(page.playlist.id, "SQ:1");
+    assert_eq!(page.total, 2);
+    let same = s
+        .sonos_playlist_contents(&Client::McpStdio, &contents("Den@S2", "SQ:1", 1))
+        .unwrap();
+    assert_eq!(same.revision, page.revision);
+
+    for (zone, id, revision) in [
+        ("Den@S2", "SQ:1", "stale revision".to_owned()),
+        ("Den@S1", "SQ:1", page.revision.clone()),
+        ("Den@S2", "SQ:7", page.revision.clone()),
+    ] {
+        let request = SonosPlaylistContentsRequest {
+            offset: 1,
+            expected_revision: Some(revision),
+            ..contents(zone, id, 1)
+        };
+        let failure = s
+            .sonos_playlist_contents(&Client::McpStdio, &request)
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::QueueChanged, "{failure:?}");
+        assert!(failure.hint.contains("saved Sonos playlist"));
+    }
+    assert_eq!(
+        s.sonos_playlist_contents(&Client::Cli, &contents("Den", "SQ:1", 1))
+            .unwrap_err()
+            .code,
+        ErrorCode::AmbiguousRoom
+    );
+    assert_eq!(
+        s.sonos_playlist_contents(&Client::Cli, &contents("Den@S2", "missing title", 1))
+            .unwrap_err()
+            .code,
+        ErrorCode::NoMatch
+    );
+    assert!(queue(&sim, &houses, "Den@S2").is_empty());
 }
 
 #[test]
@@ -194,6 +544,30 @@ fn native_playlists_obey_existing_favorite_and_queue_permissions() {
             .code,
         ErrorCode::PolicyDenied
     );
+    assert_eq!(
+        s.sonos_playlist_contents(&Client::McpStdio, &contents("Den", "SQ:7", 100))
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyDenied
+    );
+    for request in [
+        contents("Den", "SQ:7", 101),
+        SonosPlaylistContentsRequest {
+            offset: 1,
+            ..contents("Den", "SQ:7", 100)
+        },
+        SonosPlaylistContentsRequest {
+            expected_revision: Some("revision".into()),
+            ..contents("Den", "Evening", 100)
+        },
+    ] {
+        assert_eq!(
+            s.sonos_playlist_contents(&Client::Cli, &request)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+    }
     assert_eq!(
         s.play_sonos_playlist(&Client::McpStdio, &play("Den", "SQ:1"))
             .unwrap_err()
@@ -466,4 +840,206 @@ fn without_a_local_log_the_native_save_still_returns_its_confirmed_identity() {
             .count(),
         1
     );
+}
+
+struct RegroupDuringTrackPlay {
+    inner: SimLan,
+    old_host: IpAddr,
+    new_coordinator: fsonos_types::PlayerId,
+    trigger: &'static str,
+    skip: usize,
+    seen: Arc<AtomicUsize>,
+}
+
+impl Transport for RegroupDuringTrackPlay {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let change = host == self.old_host
+            && action.ends_with(self.trigger)
+            && self.seen.fetch_add(1, Ordering::SeqCst) == self.skip;
+        if change && self.trigger == "#SetAVTransportURI\"" {
+            // Inject a first-step 800 after the old target becomes a member.
+            // Generic healing would replay the selected track on the new lead.
+            soap::join_group(&self.inner, self.old_host, &self.new_coordinator)?;
+            return Err(ProtoError::SoapFault {
+                code: 800,
+                reason: "coordinator moved before accepting the selected track".into(),
+            });
+        }
+        let response = self.inner.soap_post(host, path, action, body)?;
+        if change && self.trigger != "#SetAVTransportURI\"" {
+            soap::join_group(&self.inner, self.old_host, &self.new_coordinator)?;
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn selected_track_does_not_start_after_group_changes_during_snapshot_or_caps() {
+    // First GetVolume belongs to the undo snapshot; the next belongs to caps.
+    for skip in [0, 1] {
+        let sim = sim();
+        let houses = households(&sim);
+        let target = resolve_room(&houses, "Den@S2").unwrap();
+        let other = resolve_room(&houses, "Office@S2").unwrap();
+        soap::set_volume(&sim.lan(), target.coordinator.ip, 20).unwrap();
+        let reader = surface(Box::new(sim.lan()), &houses, Policy::default());
+        let req = track_request(&reader, "Den@S2", 2, SonosPlaylistTrackMode::Play);
+        let s = surface(
+            Box::new(RegroupDuringTrackPlay {
+                inner: sim.lan(),
+                old_host: target.coordinator.ip,
+                new_coordinator: other.coordinator.id.clone(),
+                trigger: "#GetVolume\"",
+                skip,
+                seen: Arc::new(AtomicUsize::new(0)),
+            }),
+            &houses,
+            Policy::default(),
+        );
+        let before = sim.soap_log().len();
+        assert!(s.sonos_playlist_track(&Client::McpStdio, &req).is_err());
+        let calls = sim.soap_log();
+        assert!(
+            calls[before..]
+                .iter()
+                .any(|call| call.action == "SetAVTransportURI"),
+            "the competing regroup must actually happen"
+        );
+        assert!(
+            !calls[before..]
+                .iter()
+                .any(|call| matches!(call.action.as_str(), "Play" | "SetVolume" | "AddURIToQueue")),
+            "no selected music or volume mutation follows changed grouping"
+        );
+        assert!(
+            soap::get_media_info(&sim.lan(), other.coordinator.ip)
+                .unwrap()
+                .uri
+                .is_empty()
+        );
+        assert_eq!(
+            soap::get_volume(&sim.lan(), target.coordinator.ip).unwrap(),
+            20
+        );
+    }
+}
+
+#[test]
+fn first_native_play_refusal_never_retargets_a_revision_bound_track_to_new_coordinator() {
+    let sim = sim();
+    let houses = households(&sim);
+    let target = resolve_room(&houses, "Den@S2").unwrap();
+    let other = resolve_room(&houses, "Office@S2").unwrap();
+    let reader = surface(Box::new(sim.lan()), &houses, Policy::default());
+    let req = track_request(&reader, "Den@S2", 2, SonosPlaylistTrackMode::Play);
+    let page = reader
+        .sonos_playlist_contents(&Client::Cli, &contents("Den@S2", "SQ:7", 100))
+        .unwrap();
+    let uri = page.items[1].uri.as_ref().unwrap();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let s = surface(
+        Box::new(RegroupDuringTrackPlay {
+            inner: sim.lan(),
+            old_host: target.coordinator.ip,
+            new_coordinator: other.coordinator.id.clone(),
+            trigger: "#SetAVTransportURI\"",
+            skip: 0,
+            seen: Arc::clone(&attempts),
+        }),
+        &houses,
+        Policy::default(),
+    );
+    let before = sim.soap_log().len();
+    let failure = s.sonos_playlist_track(&Client::McpStdio, &req).unwrap_err();
+    assert_eq!(failure.code, ErrorCode::UpnpFault, "{failure:?}");
+    let calls = sim.soap_log();
+    let selected: Vec<_> = calls[before..]
+        .iter()
+        .filter(|call| {
+            call.action == "SetAVTransportURI"
+                && call
+                    .args
+                    .iter()
+                    .any(|(name, value)| name == "CurrentURI" && value == uri)
+        })
+        .collect();
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "the refused initial Set is sent once"
+    );
+    assert!(
+        selected.is_empty(),
+        "no requested Set reaches another coordinator: {selected:?}"
+    );
+    assert_eq!(failure.upnp_code, Some(800));
+    assert!(!calls[before..].iter().any(|call| call.action == "Play"));
+    assert!(
+        soap::get_media_info(&sim.lan(), other.coordinator.ip)
+            .unwrap()
+            .uri
+            .is_empty()
+    );
+}
+
+struct LoseTrackEnqueueReply(SimLan);
+
+impl Transport for LoseTrackEnqueueReply {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let response = self.0.soap_post(host, path, action, body)?;
+        if action.ends_with("#AddURIToQueue\"") {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "track add reply lost after insertion".into(),
+            });
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn selected_track_lost_enqueue_reply_is_confirmed_once_and_keeps_exact_undo() {
+    let sim = sim();
+    let houses = households(&sim);
+    let reader = surface(Box::new(sim.lan()), &houses, Policy::default());
+    let req = track_request(&reader, "Den@S2", 3, SonosPlaylistTrackMode::Append);
+    let s = surface(
+        Box::new(LoseTrackEnqueueReply(sim.lan())),
+        &houses,
+        Policy::default(),
+    );
+    let before = sim.soap_log().len();
+    let added = s.sonos_playlist_track(&Client::McpStdio, &req).unwrap();
+    assert_eq!(
+        (added.first, added.count, added.playing_queue),
+        (Some(1), Some(1), Some(false))
+    );
+    assert_eq!(
+        sim.soap_log()[before..]
+            .iter()
+            .filter(|entry| entry.action == "AddURIToQueue")
+            .count(),
+        1
+    );
+    assert_eq!(queue(&sim, &houses, "Den@S2").len(), 1);
+    assert!(
+        s.undo(&Client::McpStdio, true)
+            .unwrap()
+            .unwrap()
+            .unqueue_failures
+            .is_empty()
+    );
+    assert!(queue(&sim, &houses, "Den@S2").is_empty());
 }

@@ -47,12 +47,14 @@ mod execution;
 mod layout;
 pub(crate) mod queue;
 pub(crate) mod queue_backup;
+mod sonos_playlist;
 mod targets;
 
 pub use queue::QueueReference;
 pub use queue_backup::{
     MAX_QUEUE_BACKUP_BYTES, MAX_QUEUE_BACKUP_ENTRIES, QueueBackup, QueueBackupEntry,
 };
+pub use sonos_playlist::{SonosPlaylistReference, check_playlist_sources};
 pub use targets::canonical_room_name;
 
 /// The longest scene name.
@@ -108,6 +110,8 @@ pub enum SceneSource {
         #[serde(default)]
         uri: Option<String>,
     },
+    /// A native saved playlist pinned to its original household and title.
+    SonosPlaylist { playlist: SonosPlaylistReference },
     /// A URI with its DIDL-Lite metadata, or a Spotify track, album or
     /// playlist (`spotify:<kind>:<id>`), played through the household's own
     /// Spotify account.
@@ -188,6 +192,13 @@ pub enum SceneOp {
         name: String,
         start: bool,
     },
+    /// Replace the queue with this household-bound native playlist. A false
+    /// `start` stages and selects it silently, even when music was playing.
+    SonosPlaylist {
+        coordinator: PlayerId,
+        playlist: SonosPlaylistReference,
+        start: bool,
+    },
     /// Play `uri` (this starts playback), or with `start` false load it
     /// paused, ready to resume, without a sound.
     Uri {
@@ -230,6 +241,7 @@ impl SceneOp {
     pub fn starts(&self) -> bool {
         match self {
             Self::Favorite { start, .. }
+            | Self::SonosPlaylist { start, .. }
             | Self::Uri { start, .. }
             | Self::Queue { start, .. }
             | Self::QueueBackup { start, .. } => *start,
@@ -351,6 +363,7 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
     let mut players: Vec<(usize, PlayerId)> = Vec::new();
     for g in &scene.groups {
         let source_valid = match &g.source {
+            SceneSource::SonosPlaylist { playlist } => playlist.validate(),
             SceneSource::Queue { queue } => queue.validate(),
             SceneSource::QueueBackup { backup } => backup.validate(),
             _ => Ok(()),
@@ -359,6 +372,11 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
             name: scene.name.clone(),
             why,
         })?;
+        if let SceneSource::SonosPlaylist { playlist } = &g.source
+            && let Some((_, lead)) = named_room(households, &g.coordinator)?
+        {
+            playlist.check_household(households, &lead.primary)?;
+        }
         let mut house = None;
         let mut rooms = Vec::new();
         for name in std::iter::once(&g.coordinator).chain(&g.members) {
@@ -493,6 +511,14 @@ fn plan_sources(
         });
         let coordinator = lead.primary.clone();
         let playing_now = now.is_some_and(|s| s.transport_state == TransportState::Playing);
+        if let SceneSource::SonosPlaylist { playlist } = &g.source {
+            plan.ops.push(SceneOp::SonosPlaylist {
+                coordinator,
+                playlist: playlist.clone(),
+                start: g.playing.unwrap_or(playing_now),
+            });
+            continue;
+        }
         if let SceneSource::Queue { queue } = &g.source {
             // Even an apparently unchanged bookmark needs a live reboot and
             // revision check. Execution reports a verified no-op separately.
@@ -521,7 +547,10 @@ fn plan_sources(
         // a source that fails leaves its music playing as it was.
         let start = g.playing != Some(false) || maybe_playing;
         let source = match &g.source {
-            SceneSource::Keep | SceneSource::Queue { .. } | SceneSource::QueueBackup { .. } => None,
+            SceneSource::Keep
+            | SceneSource::SonosPlaylist { .. }
+            | SceneSource::Queue { .. }
+            | SceneSource::QueueBackup { .. } => None,
             SceneSource::Favorite { name, uri } => (uri.is_none() || on_now != uri.as_deref())
                 .then(|| SceneOp::Favorite {
                     coordinator: coordinator.clone(),
@@ -584,6 +613,11 @@ pub fn fade_players(households: &[HouseholdState], plan: &ScenePlan) -> Vec<Play
         .iter()
         .filter_map(|op| match op {
             SceneOp::Favorite {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::SonosPlaylist {
                 coordinator,
                 start: true,
                 ..
@@ -664,6 +698,11 @@ fn silence_starting<T: Transport + ?Sized>(
         match op {
             SceneOp::Play { coordinator } => starts.push(coordinator),
             SceneOp::Favorite {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::SonosPlaylist {
                 coordinator,
                 start: true,
                 ..
@@ -925,6 +964,11 @@ fn run<T: Transport + ?Sized>(
             };
             done.map_err(|e| e.to_string())
         }
+        SceneOp::SonosPlaylist {
+            coordinator,
+            playlist,
+            start,
+        } => sonos_playlist::recall(t, households, coordinator, playlist, *start),
         SceneOp::Uri {
             coordinator,
             uri,

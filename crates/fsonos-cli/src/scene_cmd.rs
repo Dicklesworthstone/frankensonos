@@ -41,7 +41,7 @@ enum SceneAction {
         name: String,
         /// A TOML file writing the scene out: `[[groups]]` with `coordinator`,
         /// `members`, `source = { kind = "favorite", name = "…" }` (or `dj`
-        /// with a `mood` and full `direction`, a `uri`, `keep`) and `playing`; `[volumes]` and
+        /// with a `mood` and full `direction`, `sonos_playlist` with `name = "SQ:7"`, a `uri`, `keep`) and `playing`; `[volumes]` and
         /// `[mutes]` by room.
         #[arg(long, value_name = "FILE")]
         from: Option<PathBuf>,
@@ -189,6 +189,10 @@ fn group_text(g: &SceneGroupDto) -> String {
     let source = &g.source;
     let what = match source.kind.as_str() {
         "favorite" => format!("favorite {}", source.name.as_deref().unwrap_or("?")),
+        "sonos_playlist" => source.playlist.as_ref().map_or_else(
+            || "saved Sonos playlist identity unavailable; save the scene again".into(),
+            fsonos_api::surface::scenes::ScenePlaylistDto::text,
+        ),
         "uri" => source.uri.clone().unwrap_or_default(),
         "dj" if source.direction.is_some() => {
             let direction = source.direction.as_ref().expect("matched direction");
@@ -210,7 +214,12 @@ fn group_text(g: &SceneGroupDto) -> String {
     };
     let state = match g.playing {
         Some(true) => "playing",
-        Some(false) if matches!(source.kind.as_str(), "queue" | "queue_backup") => {
+        Some(false)
+            if matches!(
+                source.kind.as_str(),
+                "queue" | "queue_backup" | "sonos_playlist"
+            ) =>
+        {
             "ready without playback"
         }
         Some(false) => "paused",
@@ -326,6 +335,7 @@ mod tests {
             uri: None,
             mood: None,
             queue: None,
+            playlist: None,
             direction: None,
         };
         SceneDto {
@@ -394,6 +404,7 @@ mod tests {
             uri: None,
             mood: None,
             direction: None,
+            playlist: None,
             queue: Some(fsonos_api::surface::scenes::SceneQueueDto {
                 total: None,
                 coordinator: "RINCON_SYNTHETIC".into(),

@@ -249,3 +249,21 @@ test('no streaming capability preserves bounded read-only fallback', async t => 
   await h.time.tick(300); await h.time.tick(10300);
   assert.equal(h.streams.length, 0); assert.equal(reads(h), 2); assert.equal(h.label(), 'Refreshing without live events');
 });
+
+
+test('renderer error and null status events refresh the existing remote card without playback commands', async t => {
+  const h = runtime(t), r = room(h);
+  let status = 'ERROR_OCCURRED';
+  h.answer(async url => url === '/zones' ? [r.zone]
+    : { ...r.state(), transport_state: 'stopped', transport_status: status });
+  await h.time.tick(350);
+  assert.equal(h.streams.length, 1);
+  for (status of ['ERROR_OCCURRED', 'OK', null]) {
+    h.streams[0].send('event: zone.state\ndata: ' + JSON.stringify({ room: 'Den', transport_status: status }) + '\n\n');
+    await h.time.tick(350);
+    assert.equal(r.parts.lastState.transport_status, status);
+    if (status === 'ERROR_OCCURRED') assert.match(r.parts.state.textContent, /Playback error reported by the speaker/);
+    else assert.equal(r.parts.state.textContent, 'stopped');
+  }
+  assert.equal(mutationRequests(h).length, 0);
+});

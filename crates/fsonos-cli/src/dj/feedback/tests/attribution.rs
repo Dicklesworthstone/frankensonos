@@ -92,6 +92,7 @@ fn feed(queued: QueuedWork) -> QueueFeed {
             playing: Some(1),
             recorded: None,
             played: Vec::new(),
+            recovery: Default::default(),
         },
         DjConfig::default(),
         1,
@@ -447,5 +448,50 @@ fn temporary_sources_do_not_count_as_listens_even_when_the_track_identity_matche
             1310
         ));
         assert!(store.feedback_between(0..2000).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn renderer_errors_are_neither_skips_nor_completed_listens() {
+    let work = work("A");
+    let queue = queued(&work, 1);
+    let feed = feed(queue.clone());
+    let pool = WorkPool::from_works(vec![work.clone()]);
+    for transport in [
+        None,
+        Some(TransportState::Playing),
+        Some(TransportState::Paused),
+        Some(TransportState::Stopped),
+        Some(TransportState::Transitioning),
+    ] {
+        for heard in [0, 180] {
+            let mut listening = Listening {
+                current: Some((sample(&work, 2), heard)),
+                prefix_complete: true,
+                observed_at: Some(0),
+                advancing: true,
+                ..Listening::default()
+            };
+            let mut state = playback(&queue, 2);
+            state.transport = transport;
+            state.transport_status = Some("ERROR_OCCURRED".into());
+            let mut store = MemStore::default();
+            assert!(!implicit(
+                &mut listening,
+                &feed,
+                &pool,
+                &mut store,
+                &state,
+                20,
+                1000
+            ));
+            assert!(!listening.advancing);
+            assert!(!listening.prefix_complete);
+            assert_eq!(
+                listening.on_change(21, Some(TransportState::Stopped), None),
+                None
+            );
+            assert!(store.feedback_between(0..2000).unwrap().is_empty());
+        }
     }
 }

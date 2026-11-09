@@ -287,6 +287,41 @@ fn zones_list_and_one_zone_by_percent_encoded_name() {
 }
 
 #[test]
+fn state_routes_expose_renderer_failures_without_changing_playback() {
+    for (reply, status) in [
+        (
+            "<CurrentTransportState>STOPPED</CurrentTransportState><CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus>",
+            Some("ERROR_OCCURRED"),
+        ),
+        (
+            "<CurrentTransportState>STOPPED</CurrentTransportState><CurrentTransportStatus>OK</CurrentTransportStatus>",
+            Some("OK"),
+        ),
+        (
+            "<CurrentTransportState>STOPPED</CurrentTransportState>",
+            None,
+        ),
+    ] {
+        let api = Api::start(reply, &Client::LoopbackHttp);
+        let (code, state) = api.get("/zones/Kitchen/state");
+        assert_eq!(code, 200, "{state}");
+        assert_eq!(state["transport_state"], "stopped");
+        assert_eq!(
+            state.get("transport_status").and_then(Value::as_str),
+            status
+        );
+        assert_eq!(state["zone"]["coordinator_room"], "Living Room");
+        assert!(
+            api.sent
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|action| action.starts_with("Get"))
+        );
+    }
+}
+
+#[test]
 fn control_routes_address_the_coordinator() {
     let api = Api::start("", &Client::LoopbackHttp);
     let (status, out) = api.post("/pause", &json!({ "zone": "Kitchen" }));
@@ -633,6 +668,38 @@ fn the_openapi_document_describes_every_route() {
 
 fn assert_native_playlist_openapi(doc: &Value) {
     assert_eq!(
+        doc["paths"]["/sonos/playlists/track"]["post"]["operationId"],
+        "sonos_playlist_track"
+    );
+    let schema = &doc["paths"]["/sonos/playlists/track"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    let selected = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    assert_eq!(
+        selected["required"],
+        json!(["zone", "playlist", "position", "expected_revision", "mode"])
+    );
+    assert_eq!(selected["properties"].as_object().unwrap().len(), 5);
+    assert_eq!(
+        doc["paths"]["/sonos/playlists/contents"]["get"]["operationId"],
+        "sonos_playlist_contents"
+    );
+    let contents = &doc["paths"]["/sonos/playlists/contents"]["get"];
+    let names: Vec<_> = contents["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| parameter["name"].as_str())
+        .collect();
+    for parameter in ["zone", "playlist", "offset", "limit", "expected_revision"] {
+        assert!(
+            names.contains(&parameter),
+            "missing {parameter}: {contents}"
+        );
+    }
+    assert_eq!(
         doc["paths"]["/sonos/playlists"]["get"]["operationId"],
         "list_sonos_playlists"
     );
@@ -668,6 +735,68 @@ fn assert_native_playlist_openapi(doc: &Value) {
         .map_or(schema, |name| &doc["components"]["schemas"][name]);
     assert!(queue["properties"]["playlist"].is_object());
     assert_eq!(queue["required"], json!(["zone"]));
+}
+
+#[test]
+fn saved_playlist_contents_rejects_invalid_or_ambiguous_queries_before_speaker_io() {
+    let api = Api::start("", &Client::Cli);
+    for query in [
+        "zone=Den",
+        "playlist=SQ%3A7",
+        "zone=Den&playlist=SQ%3A7&limit=0",
+        "zone=Den&playlist=SQ%3A7&limit=101",
+        "zone=Den&playlist=SQ%3A7&offset=1",
+        "zone=Den&playlist=Evening&expected_revision=old",
+        "zone=Den&playlist=SQ%3A7&limit=-1",
+        "zone=Den&playlist=SQ%3A7&offset=4294967296",
+        "zone=Den&playlist=SQ%3A7&offset=4294967295",
+        "zone=Den&playlist=SQ%3A7&zone=Other",
+        "zone=Den&playlist=SQ%3A7&metadata=untrusted",
+        "zone=Den&playlist=SQ%3A7&offset",
+        "zone=Den&playlist=SQ%3A7&expected_revision=%20",
+    ] {
+        let (status, body) = api.get(&format!("/sonos/playlists/contents?{query}"));
+        assert_eq!(status, 422, "{query}: {body}");
+        assert_eq!(body["code"], "INVALID_ARGUMENT", "{query}: {body}");
+    }
+    assert!(
+        api.actions().is_empty(),
+        "invalid reads must not survey or browse speakers"
+    );
+}
+
+#[test]
+fn selected_saved_tracks_reject_missing_proofs_and_raw_metadata_before_speaker_io() {
+    let api = Api::start("", &Client::Cli);
+    let valid = json!({"zone":"Kitchen", "playlist":"SQ:7", "position":3, "expected_revision":"observed", "mode":"next"});
+    for field in ["playlist", "position", "expected_revision", "mode"] {
+        let mut body = valid.clone();
+        body.as_object_mut().unwrap().remove(field);
+        let (status, error) = api.post("/sonos/playlists/track", &body);
+        assert_eq!(status, 422, "{field}: {error}");
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+    }
+    for (field, value) in [
+        ("playlist", json!("Evening")),
+        ("position", json!(0)),
+        ("position", json!(100001)),
+        ("expected_revision", json!(" ")),
+        ("mode", json!("replace")),
+        ("uri", json!("http://untrusted.example/track")),
+        ("metadata", json!("<untrusted/>")),
+    ] {
+        let mut body = valid.clone();
+        body[field] = value;
+        let (status, error) = api.post("/sonos/playlists/track", &body);
+        assert_eq!(status, 422, "{body}: {error}");
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+    }
+    assert!(api.actions().is_empty());
+    let blocked = Api::start("", &Client::Unknown);
+    let (status, error) = blocked.post("/sonos/playlists/track", &valid);
+    assert_eq!(status, 403, "{error}");
+    assert_eq!(error["code"], "POLICY_DENIED");
+    assert!(blocked.actions().is_empty());
 }
 
 /// http.rs's route table names every route the app serves (8hhv.2): a

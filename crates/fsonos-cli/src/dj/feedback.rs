@@ -191,7 +191,10 @@ pub(super) fn implicit(
     elapsed: i64,
     now: i64,
 ) -> bool {
-    if !feed.is_active() || !playback.is_queue_of(&feed.coordinator()) {
+    if !feed.is_active()
+        || !playback.is_queue_of(&feed.coordinator())
+        || playback.transport_status.as_deref() == Some("ERROR_OCCURRED")
+    {
         listening.interrupt();
         return false;
     }

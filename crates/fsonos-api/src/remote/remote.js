@@ -425,7 +425,7 @@ function card(zone) {
     art: el('img', { alt: '', hidden: true, width: 64, height: 64 }),
     title: el('div', { class: 'title', text: 'Nothing playing' }),
     by: el('div', { class: 'by' }),
-    state: el('div', { class: 'state', text: zone.transport_state }),
+    state: el('div', { class: 'state', text: zone.transport_state, role: 'status' }),
     previous: el('button', { type: 'button', text: 'Prev', 'aria-label': `Previous track in ${label}` }),
     play: el('button', { class: 'primary', type: 'button', text: 'Play', 'aria-label': `Play ${label}` }),
     next: el('button', { type: 'button', text: 'Next', 'aria-label': `Next track in ${label}` }),
@@ -676,6 +676,7 @@ async function refreshZone(zone) {
     state = await call('state', { params: { room: parts.name } });
     if (!current()) return;
     if (!state || !['playing', 'paused', 'stopped', 'transitioning', 'unknown'].includes(state.transport_state)
+        || (state.transport_status != null && (typeof state.transport_status !== 'string' || !state.transport_status.trim() || state.transport_status.length > 4096))
         || (state.track != null && (typeof state.track !== 'object' || typeof state.track.uri !== 'string'))) {
       throw new Error('The playback state is unreadable.');
     }
@@ -693,7 +694,10 @@ async function refreshZone(zone) {
   const playing = state.transport_state === 'playing';
   parts.play.textContent = playing ? 'Pause' : 'Play';
   parts.play.setAttribute('aria-label', `${playing ? 'Pause' : 'Play'} ${zone.members.join(' + ')}`);
-  parts.state.textContent = state.transport_state;
+  parts.state.textContent = state.transport_status === 'ERROR_OCCURRED'
+    ? `Playback error reported by the speaker · ${state.transport_state}`
+    : state.transport_status && state.transport_status !== 'OK'
+      ? `${state.transport_state} · renderer status: ${state.transport_status}` : state.transport_state;
   const track = state.track;
   parts.title.textContent = track ? track.title || track.uri : 'Nothing playing';
   parts.by.textContent = track ? [track.creator, track.album].filter(Boolean).join(' · ') : '';

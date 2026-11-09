@@ -1498,9 +1498,10 @@ impl Surface {
         let heard = |p: &PlayerId| self.live().and_then(|live| live.player(p));
         // The group's transport and track, from its events when it has
         // reported them, else asked.
-        let (state, track) = match heard(&target.coordinator.id) {
+        let (state, transport_status, track) = match heard(&target.coordinator.id) {
             Some(group) if group.transport.is_some() => (
                 group.transport.unwrap_or(TransportState::Unknown),
+                group.transport_status.clone(),
                 crate::live::track(&group, Instant::now()),
             ),
             _ => {
@@ -1510,6 +1511,8 @@ impl Surface {
                         .inspect_err(|f| self.notice(f))?;
                 (
                     playback.transport.state,
+                    (!playback.transport.status.trim().is_empty())
+                        .then(|| playback.transport.status.trim().to_owned()),
                     TrackDto::from_position(&playback.position),
                 )
             }
@@ -1549,6 +1552,7 @@ impl Surface {
         Ok(ZoneStateDto {
             zone,
             transport_state: crate::zones::transport_state_name(state).to_string(),
+            transport_status,
             volume,
             mute,
             group_volume,

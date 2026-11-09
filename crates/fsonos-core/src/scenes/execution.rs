@@ -127,6 +127,7 @@ fn is_grouping(op: &SceneOp) -> bool {
 fn sound_target(op: &SceneOp) -> Option<&PlayerId> {
     match op {
         SceneOp::Favorite { coordinator, .. }
+        | SceneOp::SonosPlaylist { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
         | SceneOp::Queue { coordinator, .. }
         | SceneOp::QueueBackup { coordinator, .. }
@@ -144,6 +145,7 @@ fn target(op: &SceneOp) -> &PlayerId {
         | SceneOp::Volume { player, .. }
         | SceneOp::Mute { player, .. } => player,
         SceneOp::Favorite { coordinator, .. }
+        | SceneOp::SonosPlaylist { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
         | SceneOp::Queue { coordinator, .. }
         | SceneOp::QueueBackup { coordinator, .. }

@@ -222,6 +222,36 @@ mod tests {
             assert!(!initial(&engine, &mut model).is_empty());
             let state = model.playback.of(&player).unwrap();
             assert_eq!(state.transport, Some(TransportState::Stopped));
+            assert_eq!(state.transport_status.as_deref(), Some("OK"));
+            // An error can change only status. With no event listener, the
+            // complete SOAP sample must still publish it and its recovery.
+            sim.playback_error("Room").unwrap();
+            let events = initial(&engine, &mut model);
+            let expected = Some((Some("OK".into()), Some("ERROR_OCCURRED".into())));
+            assert!(events.iter().any(|event| {
+                matches!(event, LiveEvent::Playback { changes, .. }
+                    if changes.transport_status == expected
+                        && changes.transport.is_none()
+                        && changes.track.is_none()
+                        && changes.media_uri.is_none())
+            }));
+            assert_eq!(
+                model
+                    .playback
+                    .of(&player)
+                    .unwrap()
+                    .transport_status
+                    .as_deref(),
+                Some("ERROR_OCCURRED")
+            );
+            assert!(initial(&engine, &mut model).is_empty());
+            stop(&*lan, host).unwrap();
+            let events = initial(&engine, &mut model);
+            let expected = Some((Some("ERROR_OCCURRED".into()), Some("OK".into())));
+            assert!(events.iter().any(|event| {
+                matches!(event, LiveEvent::Playback { changes, .. }
+                    if changes.transport_status == expected && changes.transport.is_none())
+            }));
             engine.stop.store(true, Ordering::Release);
             assert!(initial(&engine, &mut model).is_empty());
             sim.shutdown();
@@ -234,6 +264,7 @@ mod tests {
         calls: AtomicUsize,
         change_final_state: bool,
         change_final_source: bool,
+        change_final_status: bool,
     }
 
     impl<T: Transport + ?Sized> Transport for ReadFault<'_, T> {
@@ -251,6 +282,11 @@ mod tests {
             let response = self.inner.soap_post(host, path, action, body)?;
             if self.change_final_state && call == 5 {
                 Ok(response.replace("STOPPED", "PLAYING"))
+            } else if self.change_final_status && call == 5 {
+                Ok(response.replace(
+                    "<CurrentTransportStatus>OK</CurrentTransportStatus>",
+                    "<CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus>",
+                ))
             } else if self.change_final_source && call == 4 {
                 Ok(response.replace("test:radio", "test:other"))
             } else {
@@ -268,23 +304,29 @@ mod tests {
         let host = sim.player("Room").unwrap().ip;
         let lan = sim.lan();
         set_av_transport_uri(&lan, host, "test:radio", "").unwrap();
-        let fault = |fail_at, change_final_state, change_final_source| ReadFault {
-            inner: &lan,
-            fail_at,
-            calls: AtomicUsize::new(0),
-            change_final_state,
-            change_final_source,
-        };
+        let fault =
+            |fail_at, change_final_state, change_final_source, change_final_status| ReadFault {
+                inner: &lan,
+                fail_at,
+                calls: AtomicUsize::new(0),
+                change_final_state,
+                change_final_source,
+                change_final_status,
+            };
         for fail_at in 1..=5 {
-            let transport = fault(fail_at, false, false);
+            let transport = fault(fail_at, false, false, false);
             assert!(read(&transport, host, || false).is_err());
             assert_eq!(transport.calls.load(Ordering::Relaxed), fail_at);
         }
-        for changed in [fault(0, true, false), fault(0, false, true)] {
+        for changed in [
+            fault(0, true, false, false),
+            fault(0, false, true, false),
+            fault(0, false, false, true),
+        ] {
             assert!(read(&changed, host, || false).is_err());
         }
         for stop_after in 0..=5 {
-            let transport = fault(0, false, false);
+            let transport = fault(0, false, false, false);
             let result = read(&transport, host, || {
                 transport.calls.load(Ordering::Relaxed) >= stop_after
             });

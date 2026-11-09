@@ -40,7 +40,7 @@ pub(super) fn permits<T: Transport + ?Sized>(
         .iter()
         .any(|group| group.coordinator == *at.coordinator)
         || soap::get_media_info(at.transport, host)?.uri != own_queue
-        || soap::get_transport_info(at.transport, host)?.state != TransportState::Stopped
+        || !stopped_without_error(at.transport, host)?
     {
         return Ok(false);
     }
@@ -88,7 +88,15 @@ pub(super) fn permits<T: Transport + ?Sized>(
     Ok(after.track == position.track
         && same_track(&after.uri, &position.uri)
         && soap::get_media_info(at.transport, host)?.uri == own_queue
-        && soap::get_transport_info(at.transport, host)?.state == TransportState::Stopped)
+        && stopped_without_error(at.transport, host)?)
+}
+
+fn stopped_without_error<T: Transport + ?Sized>(
+    transport: &T,
+    host: std::net::IpAddr,
+) -> Result<bool, FeedError> {
+    let observed = soap::get_transport_info(transport, host)?;
+    Ok(observed.state == TransportState::Stopped && observed.status != "ERROR_OCCURRED")
 }
 
 /// Preserve exact occurrences. Reassigning an old claim to an identical later

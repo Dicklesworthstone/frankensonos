@@ -3,10 +3,12 @@
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
-use fsonos_core::favorites::{self, FavoriteKind};
+use fsonos_core::favorites::{self, Favorite, FavoriteKind};
 use fsonos_core::policy::Client;
-use fsonos_core::{control, favorite_queue, playlists};
+use fsonos_core::{HouseholdState, control, favorite_queue, playlists};
+use fsonos_proto::Transport;
 use fsonos_proto::didl::{SpotifyBare, SpotifyContainer};
+use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 
 use super::{ADD, QueueAddRequest, QueueAddedDto, Surface};
@@ -198,9 +200,43 @@ impl Surface {
                 sonos_playlists::playlist_name(query)?;
             }
         }
-        let zone = zone.trim();
-        let query = query.trim();
-        let label = catalog.label();
+        self.queue_native_selected(
+            client,
+            zone.trim(),
+            query.trim(),
+            next,
+            catalog.label(),
+            |transport, households, coordinator| {
+                let listed = match catalog {
+                    NativeCatalog::Favorites => {
+                        favorites::list(transport, households, coordinator)?
+                    }
+                    NativeCatalog::Playlists => {
+                        playlists::list(transport, households, coordinator)?
+                    }
+                };
+                let selected = match catalog {
+                    NativeCatalog::Favorites => favorites::find(&listed, query.trim())?,
+                    NativeCatalog::Playlists => sonos_playlists::find(&listed, query.trim())?,
+                };
+                Ok(selected.clone())
+            },
+        )
+    }
+
+    /// Resolve trusted native metadata once against the fresh destination,
+    /// then share insertion confirmation, uncertainty handling and exact undo.
+    pub(in crate::surface) fn queue_native_selected(
+        &self,
+        client: &Client,
+        zone: &str,
+        query: &str,
+        next: bool,
+        label: &str,
+        select: impl FnOnce(&dyn Transport, &[HouseholdState], &PlayerId) -> Result<Favorite, Failure>,
+    ) -> Result<QueueAddedDto, Failure> {
+        self.authorize_logged(client, ADD)?;
+        zone_name("zone", zone)?;
         let intent = format!("{ADD}: {zone} {label} {query:?} next={next}");
         // Whether the add failed after tracks may have been queued.
         let uncertain = std::cell::Cell::new(false);
@@ -208,18 +244,7 @@ impl Surface {
             let (households, group) = self.queue_households(client, zone)?;
             let coordinator = group.coordinator.clone();
             let player = control::locate(&households, &coordinator)?;
-            let listed = match catalog {
-                NativeCatalog::Favorites => {
-                    favorites::list(&*self.transport, &households, &coordinator)?
-                }
-                NativeCatalog::Playlists => {
-                    playlists::list(&*self.transport, &households, &coordinator)?
-                }
-            };
-            let selected = match catalog {
-                NativeCatalog::Favorites => favorites::find(&listed, query)?,
-                NativeCatalog::Playlists => sonos_playlists::find(&listed, query)?,
-            };
+            let selected = select(&*self.transport, &households, &coordinator)?;
             if !matches!(selected.kind, FavoriteKind::Track | FavoriteKind::Container) {
                 return Err(Failure::invalid(format!(
                     "favorite {:?} is not a track, album or playlist and cannot be queued",
@@ -234,7 +259,7 @@ impl Surface {
                 &*self.transport,
                 &households,
                 &coordinator,
-                selected,
+                &selected,
                 next,
             )
             .map_err(|error| {

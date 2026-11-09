@@ -236,3 +236,45 @@ test('mute writes are serialized independently and a read cannot undo optimistic
   assert.equal(e.muted, true); assert.equal(h.calls.filter(([, m]) => m === 'POST').length, 1);
   waiting.resolve({ done: 'Muted', changed: true }); await settle(); assert.equal(e.mute.disabled, false);
 });
+
+
+test('renderer errors are visible and status-only recovery clears them without a command', async () => {
+  const h = harness(); await h.api.loadZones(); const p = parts(h);
+  let status = 'ERROR_OCCURRED';
+  h.custom = (url) => url.endsWith('/state')
+    ? { ...state(h.zones[0]), transport_state: 'stopped', transport_status: status } : undefined;
+  await h.api.refreshZone(h.zones[0]);
+  assert.match(p.state.textContent, /Playback error reported by the speaker/);
+  assert.equal(p.lastState.transport_status, 'ERROR_OCCURRED');
+  assert.equal(p.title.textContent, 'Current');
+  for (status of ['OK', null, undefined]) {
+    await h.api.refreshZone(h.zones[0]);
+    assert.equal(p.state.textContent, 'stopped');
+    assert.equal(p.lastState.transport_status, status);
+  }
+  assert.equal(h.calls.filter(([, method]) => method === 'POST').length, 0);
+});
+
+test('an obsolete renderer failure cannot overwrite a newer successful observation', async () => {
+  const h = harness(); await h.api.loadZones(); const old = deferred(), next = deferred(); let n = 0;
+  h.custom = (url) => url.endsWith('/state') ? (++n === 1 ? old.promise : next.promise) : undefined;
+  const a = h.api.refreshZone(h.zones[0]), b = h.api.refreshZone(h.zones[0]);
+  next.resolve({ ...state(h.zones[0]), transport_status: 'OK' }); await b;
+  old.resolve({ ...state(h.zones[0]), transport_state: 'stopped', transport_status: 'ERROR_OCCURRED' }); await a;
+  assert.equal(parts(h).state.textContent, 'playing');
+  assert.equal(parts(h).lastState.transport_status, 'OK');
+  assert.equal(h.calls.filter(([, method]) => method === 'POST').length, 0);
+});
+
+test('renderer failures remain scoped to their household-qualified group', async () => {
+  const h = harness(); h.zones = [zone('S1'), zone('S2')]; await h.api.loadZones();
+  h.custom = (url) => {
+    if (!url.endsWith('/state')) return undefined;
+    const z = h.zones.find(z => url.includes(encodeURIComponent(z.coordinator_room + '@' + z.household)));
+    return { ...state(z), transport_state: 'stopped', transport_status: z.household === 'S1' ? 'ERROR_OCCURRED' : 'OK' };
+  };
+  for (const z of h.zones) await h.api.refreshZone(z);
+  assert.match(parts(h, 'Den', 'S1').state.textContent, /Playback error/);
+  assert.equal(parts(h, 'Den', 'S2').state.textContent, 'stopped');
+  assert.equal(h.calls.filter(([, method]) => method === 'POST').length, 0);
+});

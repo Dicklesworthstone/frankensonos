@@ -25,6 +25,8 @@ mod position_tests;
 #[cfg(test)]
 mod source_tests;
 mod stamp;
+#[cfg(test)]
+mod status_tests;
 pub use observation::PlaybackObservation;
 pub(crate) use stamp::Stamp;
 
@@ -64,6 +66,10 @@ impl NowPlaying {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PlayerPlayback {
     pub transport: Option<TransportState>,
+    /// Renderer status (`OK`, `ERROR_OCCURRED`, or an unknown wire value).
+    /// Whitespace is trimmed. None until observed, explicitly cleared, or
+    /// omitted from a full read-back; omission from a partial event preserves it.
+    pub transport_status: Option<String>,
     pub track_uri: Option<String>,
     /// Current AVTransport source: a queue, stream, line-in or Connect session.
     /// A track URI alone cannot establish which source is playing it.
@@ -133,6 +139,8 @@ impl PlayerPlayback {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Changes {
     pub transport: Option<(Option<TransportState>, TransportState)>,
+    /// Renderer status changed, including an explicit clear to unknown.
+    pub transport_status: Option<(Option<String>, Option<String>)>,
     /// The track URI moved on (a new track started, or the queue ended).
     pub track: Option<(Option<String>, Option<String>)>,
     /// The AVTransport source changed, even if its current track did not.
@@ -292,6 +300,11 @@ fn connect_session(uri: &str) -> bool {
     uri.starts_with("x-sonos-vli:") && uri.contains(",spotify:")
 }
 
+fn transport_status(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
 fn apply_av_transport(
     state: &mut PlayerPlayback,
     lc: &LastChange,
@@ -320,6 +333,13 @@ fn apply_av_transport(
         }
         changes.transport = Some((state.transport, t));
         state.transport = Some(t);
+    }
+    if let Some(status) = lc.get("TransportStatus") {
+        let status = transport_status(status);
+        if state.transport_status != status {
+            changes.transport_status = Some((state.transport_status.clone(), status.clone()));
+            state.transport_status = status;
+        }
     }
     // The track moved on when its URI changed or, for the same URI queued
     // twice in a row, when its queue position changed.
@@ -376,6 +396,7 @@ fn apply_av_transport(
     }
     if [
         "TransportState",
+        "TransportStatus",
         "CurrentTrackURI",
         "CurrentTrack",
         "AVTransportURI",

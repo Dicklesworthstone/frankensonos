@@ -87,6 +87,7 @@ fn recovery_read_keeps_intervening_source_events_terminal() {
         deadline: Duration::from_millis(500),
         began: false,
         observed: None,
+        control: None,
     };
     assert!(matches!(
         wait(&mut watch, &receive),

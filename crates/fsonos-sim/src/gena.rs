@@ -310,6 +310,7 @@ impl State {
         };
         [
             ("TransportState", t.state.as_str().to_string()),
+            ("TransportStatus", t.status.as_str().to_string()),
             ("CurrentPlayMode", t.play_mode.clone()),
             ("NumberOfTracks", tracks.to_string()),
             ("CurrentTrack", t.track.to_string()),

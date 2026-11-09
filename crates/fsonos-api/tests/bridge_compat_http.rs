@@ -127,6 +127,36 @@ fn sim() -> SimHandle {
 }
 
 #[test]
+fn bridge_status_reports_renderer_error_without_starting_playback() {
+    let sim = sim();
+    let host = sim.player("Kitchen").unwrap().ip;
+    soap::set_av_transport_uri(
+        &sim.lan(),
+        host,
+        "https://audio.example.invalid/track.mp3",
+        "",
+    )
+    .unwrap();
+    sim.playback_error("Kitchen").unwrap();
+    let bridge = Bridge::start(&sim, Policy::default());
+    let marker = sim.soap_log().len();
+    let (code, failed) = bridge.get("/status?zone=Kitchen");
+    assert_eq!(code, 200, "{failed}");
+    assert_eq!(failed["transport_state"], "STOPPED");
+    assert_eq!(failed["transport_status"], "ERROR_OCCURRED");
+    assert!(
+        sim.soap_log()[marker..]
+            .iter()
+            .all(|call| call.action.starts_with("Get"))
+    );
+    soap::stop(&sim.lan(), host).unwrap();
+    let (code, stopped) = bridge.get("/status?zone=Kitchen");
+    assert_eq!(code, 200, "{stopped}");
+    assert_eq!(stopped["transport_state"], "STOPPED");
+    assert_eq!(stopped["transport_status"], "OK");
+}
+
+#[test]
 fn the_bridge_reads_answer_in_its_shapes() {
     let sim = sim();
     let bridge = Bridge::start(&sim, Policy::default());

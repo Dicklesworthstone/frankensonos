@@ -180,7 +180,11 @@ pub(super) fn wait<T: Transport + ?Sized>(
                 Err(interrupted) => return Err(interrupted),
             }
         }
-        if evidence.inspect || Instant::now() >= verify_at || watch.remaining().is_zero() {
+        if evidence.inspect
+            || watch.cancelled()
+            || Instant::now() >= verify_at
+            || watch.remaining().is_zero()
+        {
             evidence.inspect = false;
             evidence.changed = false;
             let ending = watch.inspect()?;
@@ -198,13 +202,29 @@ pub(super) fn wait<T: Transport + ?Sized>(
                 }
                 if ending == Ending::Deadline {
                     soap::stop(watch.transport, watch.host)?;
+                } else if ending == Ending::Cancelled {
+                    watch.stop_cancelled()?;
+                    // Our Stop can produce an ordinary terminal event, but
+                    // queued owner source/pause/group changes must still win
+                    // before restoration. Never loop into a second Stop.
+                    if !evidence.drain(incoming, None, &watch.plan.lead, &watch.clip.url)? {
+                        return Err(Interrupted::LeaveAlone(
+                            "announcement callbacks did not settle after cancellation; newer playback was left alone"
+                                .into(),
+                        ));
+                    }
+                    if evidence.topology {
+                        watch.owns_group()?;
+                    }
                 }
                 return Ok(ending);
             }
         }
-        let delay = verify_at
-            .saturating_duration_since(Instant::now())
-            .min(watch.remaining());
+        let delay = watch.delay(
+            verify_at
+                .saturating_duration_since(Instant::now())
+                .min(watch.remaining()),
+        );
         if evidence.disconnected {
             std::thread::sleep(delay);
             continue;
