@@ -3190,3 +3190,26 @@ combination that killed it was a `BeginSoftwareUpdate` reboot issued from a
 daemon that had just been through the `customsd` write pass; `.84` and `.135`
 are healthy and `.84` is settled. A power-cycle is required, then one
 `ListAvailableServices` call to confirm `ompX` persisted.
+
+### 2026-11-09 (session 22) — NEW PRIMITIVE: the ASF/WMA container crashes the S2 daemon pre-auth
+
+Following the "dead legacy codecs" lead: an ASF object whose 64-bit size field
+is `0` or `0xffffffffffffffff` **kills the `86.10` daemon on `.135`**, from a
+plain `SetAVTransportURI` (pre-auth), reproducibly:
+
+| file | bytes | `.135` result |
+|---|---|---|
+| `A_sz0.bin` | ASF GUID + `u64 0` + 64 junk | setav 200, play 200, **down at 14 s** |
+| `A_szff.bin` | ASF GUID + `u64 0xffff…ff` + 64 junk | setav 200, play 000, **down at 3 s** |
+| `A_hdr.bin` | bare 16-byte ASF GUID | setav 200, play 200, survives |
+| `F_asf.bin` | GUID + 8 zeros + `u64 max` + junk | setav 200, then **down** |
+
+So both size extremes are fatal and a truncated header is not: the parser
+trusts the size field, and it is reached *before* any signature or session
+gate. **S1 is not affected** — the identical `A_sz0.bin` leaves `.84` healthy,
+so this is an `86.10`-only path.
+
+The `.aa`/`.ra` pair used to reach it rides the existing delivery, so no new
+transport work is needed; the open question is whether the size is consumed by
+a *loop* (pure DoS) or by a *copy* (a potential write), which is what the S2
+handler at the ASF object walk has to be read for.
