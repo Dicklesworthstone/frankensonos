@@ -3107,3 +3107,30 @@ overwrite, and the cell's target is null at ctor. The route therefore needs
 either a second write primitive or a notify variant that carries a
 reachable context (the second call site at `0x101e3ebc` passes an
 `obj+21484` context — also beyond the copy, so not directly usable).
+
+### 2026-11-09 (session 21) — the chain is PROVEN in the emulator, offsets and all
+
+Called `0x102bf778` directly from gdb against a hand-built fake object in
+`.bss` (`obj = 0x10650000`), bypassing the `.aa` entirely.
+
+- **A0 slot** `[obj+6404]` = `0x10651904`. Writing `0xDEADBEEF` there and
+  calling with `r3 = obj` gives **SIGSEGV at the deref** — the
+  `[obj+6404] → +8` resolver is exactly as decoded and `r3` is the object.
+- **Full 4-level chain** in the same object:
+  `[obj+6404] = A(0x10650100)`, `[A+8] = B(0x10650200)`, `[B] = V(0x10650300)`,
+  `[V+28] = FN`. With `FN = 0x104123d8` (reboot gadget) the fault PC lands at
+  **`0x104123e4`** — i.e. the instruction *after* `bl system` inside the
+  gadget: the function ran and returned. (The epilogue then faults only
+  because we jumped into a mid-function without its frame.)
+- **`FN = system@GOT` with a command string at B** (`[B]` = V, the string
+  continuing at `B+4`, NUL-terminated): the shell executed and printed
+  `sh: e: not found` — that is our V-pointer bytes being read as the command
+  prefix, exactly as predicted, followed by the `;` part running.
+
+So the whole dispatch is: `r3 = obj`, `[obj+6404] = A`, `[A+8] = B`,
+`r3 = B` for the call, `[B] = V`, `FN = [V+28]`, `FN(r3 = B)`. Any payload
+must place those four dwords accordingly and keep the string at `B` usable
+(leading pointer bytes + `;cmd #`).
+
+This closes the "is the chain real" question for good: it is, and it is
+reproducible on demand in the emulator.
