@@ -2913,3 +2913,24 @@ payload on a freshly rebooted daemon, so the state change that drives the
 notify still does not happen; with the size cap known, the next lever is
 getting `Play` to 200 on a legal file (the successful 200s earlier in the
 session all predate this analysis and were on illegal files).
+
+### 2026-11-09 (session 20k) — record types mapped a little further; the tag is not validated
+
+- The record dispatcher is `0x101052e0`-ish: it loads the record type into
+  `session+21748` and only `== 2` reaches the node handler `0x10104f38`.
+  Other types fall through to a second path (`0x103720bc`).
+- The literal **`acelp` does not exist as a string in the daemon binary**
+  (`grep -c` = 0), so the codec tag is a marker, never compared.
+- Appending extra records does not hurt: `type 3` and `type 5` records (2 kB
+  of junk) still give `SetAV` 200 + `Play` 200; `type 4` gave 500. None of
+  them changes the outcome — the transport still ends `STOPPED` immediately.
+- Legal 100-byte payload **on an already-PLAYING transport** (stage 1 = a real
+  AAC stream, verified `PLAYING` first): `SetAV` 200, `Play` 200, still no
+  dispatch and no crash. So neither the transport state nor the payload size
+  alone is the remaining gate.
+
+The lane is now sitting on the codec/record semantics: to reach the notify the
+`.aa` must actually *load*, and that needs a correct audio record with
+decodable frames, which is exactly what no artefact on hand has. The three
+handler facts worth carrying forward: `type 2 == node metadata`, the
+`1024`/`4096` strlens, and `strlcpy`'s NUL-bounded copy.
