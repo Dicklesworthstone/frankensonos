@@ -3383,3 +3383,25 @@ relocated.
 Starting points now: `.rodata` VMA `0x6bbf40` (SOAP parameter table),
 `0x6bbfa7` / `0x68d92a` / `0x6ae554` (`AVTransport`), and `-m mips:16` for any
 range that decodes as `.word` under the default mode.
+
+### S2 emulator harness — started, and it runs
+
+Setup on css so the `86.11` daemon can be debugged instead of guessed at:
+
+- `/tmp/s86` is that rootfs; `/usr/bin/qemu-mips` is **static-pie**, so it works
+  inside the chroot untouched.
+- The config is `ServerRoot /opt` with `Path htdocs`, so `/opt/{bin,conf,htdocs,log}`
+  and `/ramdisk/optlog` had to be created and `htdocs/`+`conf/` copied under
+  `/opt`; the S1 dev fakes (`/dev/mtd0`, `mtd1-8`, `chk`, `leds`, `audioctl`)
+  and `/jffs/system/audio_out_disable` were cloned from `/tmp/s23rootfs`.
+- With that the daemon parses its config and gets as far as `Invalid path
+  'htdocs'` → then, once `htdocs` exists, it **aborts (SIGABRT) silently**
+  before writing a trace — the same class of gate as the S1's `/dev/chk`
+  park/assert, i.e. device state the fake files do not satisfy yet.
+- The S2 rootfs is missing `/dev` entirely, so the fake set is a placeholder
+  (the S2's own `libsonos-mdp` layouts, not the S1's); the corpus of S2 device
+  state still has to be built out.
+
+Next: run it under `-g` with a breakpoint on `abort`/`raise` to catch the
+failing assert and seed whatever device file it wants, then the SOAP handler
+becomes a breakpoint instead of a static-search target.
