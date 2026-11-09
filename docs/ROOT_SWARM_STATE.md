@@ -3276,3 +3276,31 @@ one needs the S2 transport-open code, and the ASF/GUID strings give no anchor
 in the binary — the next RE step would be from the *handler* side (the
 `R_PLAY_OP_CODEC_SELECTED` / `ERROR_AUDIBLE_BAD_CODEC` strings at `0x47a328`
 and `0x4f9e40` are the nearest markers), not from container parsing.
+
+**Final matrix — `.135` dies on every media load, no exceptions.**
+
+| input | framing / URI form | `.135` | `.84` |
+|---|---|---|---|
+| 16 B junk | shim | dies 8 s | survives |
+| ASF GUID head | shim | dies 15 s | survives |
+| ASF + size 0 / max | shim | dies 14 s / 3 s | survives |
+| valid WAV 108 B | shim | dies 3 s | survives |
+| valid WAV 60 044 B | shim, and close-delimited | dies 3 s / 13 s | survives |
+| synthesised MP3 (40 frames) | shim | dies 24 s | survives |
+| infinite WAV body, huge declared sizes | shim, no EOF | dies 3 s | — |
+| MP3, HTTP/1.1 **chunked** | shim | dies 3 s | — |
+| **real icecast AAC stream** | shim | **dies 5 s** | plays |
+| **real icecast AAC stream** | **bare http** | **dies 6 s** (setav 500) | — |
+
+So the earlier assumption "streams are fine on `.135`, only files die" is
+wrong — we had never actually played one there. The `86.10` daemon falls over
+on *any* successful media load, by any framing, either URI form, file or live
+stream. Content, size, framing and URI shape are all eliminated; `.84` handles
+every one of them.
+
+That makes the S2's AVTransport path a **universal, pre-auth, 3-25 s daemon
+kill** and simultaneously means `.135` cannot be exercised at all until that
+path is fixed or avoided — which is exactly why every `.135` experiment this
+week stalled. It also reframes the S2 work: the bug is in the media-load
+*common* path, not in any decoder, so a single RE pass over the load/start
+routine covers all of the above at once.
