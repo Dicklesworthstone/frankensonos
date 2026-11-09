@@ -2590,3 +2590,44 @@ cell at `F = S+6380`.
 **Environment wrinkle:** the payload server now holds css `:1400`
 (`/tmp/aa_www/serve.py`, systemd unit `aa1400`) — a second copy of it, or the
 emulator, must not expect 1400 free on css.
+
+### 2026-11-09 (session 20c) — the chain does not execute any more; the load never starts
+
+The rig is now fully functional and the failure is upstream of the payload.
+
+- **Fetch and Play work** with the radio shim over the LAN
+  (`x-rincon-mp3radio://http://192.168.4.46:8901/<file>`): the unit's own
+  HTTP client fetches, `Play` is 200, the state reaches TRANSITIONING.
+  Serving from css over the WAN does *not* work — the unit fetches (visible
+  in the css journal) but never transitions; the likely cause is NAT
+  hairpin/latency, so **serve from the LAN**.
+- **But the load never starts.** `GetTransportInfo` never leaves
+  TRANSITIONING and `GetMediaInfo` reports `Duration 0:00:00` and
+  `TransportStatus NETWORK`. Nothing decodes, so nothing stops, so no state
+  change fires the notify.
+- **The chain therefore never runs**, proven with the campaign's own oracle:
+  an observer cell of `0x55000000` (unmapped, historically a 54.8 s crash)
+  fired for 60 s with `/status/VERSION` answering 200 the whole way. A
+  13-address canary sweep (FN `0x51000000`, 0x1000 steps, 0x106c0000-cc000)
+  was equally inert — every candidate "clean".
+- **Consequence:** band calibration is moot until the chain exercises again.
+  The published values (0x106c4e10/f50) are stale, as the campaign doc warns.
+
+**Builder inventory correction:** `HANDOFF_ROOT_CAMPAIGN.md` lists
+`recon/tnzm_audible/ppc_aimed.py`; the file is not present. What exists is
+`ppc_v5_builder.py` (4-level chain, observer cell at node 23620 = file
+23656, FN from `FN_WRAPPER`). `sed`-ing `FN_WRAPPER` is enough to produce the
+canary (`0x51000000`) and reboot (`0x104123d8`) variants — both were built and
+verified structurally this session.
+
+**Open leads for the next session (in order).**
+1. Why won't an `.aa` decode? Compare against a **genuine chime .aa**: the
+   unit serves media through `/getaa?u=<url>`, and the s23 rootfs has no
+   `.aa` of its own — fetch one from the unit, or from an update package's
+   rootfs image, and use it as stage 1. Until a real `.aa` reaches PLAYING,
+   every payload test is meaningless.
+2. Reboot the unit clean (it has taken a dozen fires today). `/reboot` is
+   403 (hhid gate) on GET and POST, so it needs the button or a working
+   channel.
+3. Then two-stage with the canary and re-calibrate; only then re-test the
+   `dd`/telnetd payloads.
