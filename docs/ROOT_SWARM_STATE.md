@@ -3317,3 +3317,17 @@ device's AVTransport action dispatch — not S1 knowledge transplanted, which
 is why the two builds behave so differently.
 
 Units: `.135` and `.84` both settled and up at the end of this pass.
+
+**It is the `SetAVTransportURI` path itself, not playback.** Firing the URI
+with **no `Play` at all**: `setav 200`, then **down at 3 s**. So the S2 dies
+while *setting/parsing* the URI, before any transport start — which locates
+the bug in the same handler family the S1 analysis reached (`0x10104f38`
+equivalent: the record/URI parse that `strlcpy`s into the session), not in
+the start or decode path, and explains why content, size, framing and URI form
+were all irrelevant: none of them are reached before the death.
+
+Consequence for the fleet: because the death is on *every* successful setav,
+**any URI left armed keeps `.135` in a crash loop** — it recovers, re-arms the
+stored URI, dies again. `.135` is therefore unusable for anything until this
+handler is fixed or avoided, and a `Stop` has to be issued in the window where
+it is up. `.84` is healthy and lives through the same calls.
