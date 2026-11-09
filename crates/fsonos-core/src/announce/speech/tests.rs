@@ -3,6 +3,9 @@ use crate::announce::clip::wav_info;
 #[cfg(unix)]
 use crate::announce::clip::{MAX_SPEECH_CHARS, MediaStore, encode_wav};
 
+#[cfg(unix)]
+mod cancellation;
+
 fn discover(
     config: &SpeechConfig,
     voice: Option<&str>,

@@ -15,12 +15,12 @@
 
 use std::fmt;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
-use super::speech::SpeechConfig;
+use super::{AnnouncementControl, speech::SpeechConfig};
 
 /// Sample rate of synthesized chimes, and the rate `say` is asked for.
 pub const SAMPLE_RATE: u32 = 44_100;
@@ -39,6 +39,8 @@ pub const MAX_WAV_DURATION: Duration = Duration::from_secs(300);
 /// Why a clip could not be made or stored.
 #[derive(Debug, thiserror::Error)]
 pub enum ClipError {
+    #[error("announcement cancelled while preparing audio")]
+    Cancelled,
     #[error("{0}")]
     Unsupported(&'static str),
     #[error("unknown chime {name:?}; choose one of: {}", Chime::NAMES.join(", "))]
@@ -127,18 +129,59 @@ impl MediaStore {
 
     /// Make the clip `source` asks for and store it.
     pub fn make(&self, source: &ClipSource) -> Result<StoredClip, ClipError> {
+        self.make_with_control(source, None)
+    }
+
+    /// Make a clip for one cancellable announcement. Cancellation interrupts
+    /// a running speech engine and prevents publishing its partial output.
+    pub fn make_controlled(
+        &self,
+        source: &ClipSource,
+        control: &AnnouncementControl,
+    ) -> Result<StoredClip, ClipError> {
+        self.make_with_control(source, Some(control))
+    }
+
+    fn make_with_control(
+        &self,
+        source: &ClipSource,
+        control: Option<&AnnouncementControl>,
+    ) -> Result<StoredClip, ClipError> {
+        check_cancelled(control)?;
         match source {
-            ClipSource::Chime { name } => self.put(&name.parse::<Chime>()?.wav()),
-            ClipSource::Tts { text, voice } => self.speak(text, voice.as_deref()),
-            ClipSource::Wav { bytes } => self.put(bytes),
+            ClipSource::Chime { name } => {
+                self.put_with_control(&name.parse::<Chime>()?.wav(), control)
+            }
+            ClipSource::Tts { text, voice } => {
+                self.speak_with_control(text, voice.as_deref(), control)
+            }
+            ClipSource::Wav { bytes } => self.put_with_control(bytes, control),
         }
     }
 
     /// Store `wav` (checked to be a PCM WAV) under a new id.
     pub fn put(&self, wav: &[u8]) -> Result<StoredClip, ClipError> {
+        self.put_with_control(wav, None)
+    }
+
+    fn put_with_control(
+        &self,
+        wav: &[u8],
+        control: Option<&AnnouncementControl>,
+    ) -> Result<StoredClip, ClipError> {
+        check_cancelled(control)?;
         let duration = wav_info(wav)?.duration;
         let id = self.new_id()?;
-        fs::write(self.dir.join(format!("{id}.wav")), wav)?;
+        // A staging filename is never accepted by `path`. Publish only the
+        // complete WAV, after checking cancellation again following the write.
+        let mut staging = tempfile::Builder::new()
+            .prefix(".clip-")
+            .tempfile_in(&self.dir)?;
+        staging.write_all(wav)?;
+        check_cancelled(control)?;
+        staging
+            .persist_noclobber(self.dir.join(format!("{id}.wav")))
+            .map_err(|error| error.error)?;
         Ok(StoredClip { id, duration })
     }
 
@@ -152,13 +195,39 @@ impl MediaStore {
     /// Speak through the local engine. Only complete, valid output is
     /// published under a media id; errors leave no playable partial clip.
     pub fn speak(&self, text: &str, voice: Option<&str>) -> Result<StoredClip, ClipError> {
+        self.speak_with_control(text, voice, None)
+    }
+
+    /// Speak for one cancellable announcement. Cancellation terminates the
+    /// engine's process group and reaps the child before returning
+    /// [`ClipError::Cancelled`].
+    pub fn speak_controlled(
+        &self,
+        text: &str,
+        voice: Option<&str>,
+        control: &AnnouncementControl,
+    ) -> Result<StoredClip, ClipError> {
+        self.speak_with_control(text, voice, Some(control))
+    }
+
+    fn speak_with_control(
+        &self,
+        text: &str,
+        voice: Option<&str>,
+        control: Option<&AnnouncementControl>,
+    ) -> Result<StoredClip, ClipError> {
+        check_cancelled(control)?;
         check_speech(text, voice)?;
         let config = match &self.speech {
             Some(config) => config.clone(),
             None => SpeechConfig::load(self.dir.parent().expect("media has a data directory"))?,
         };
         let backend = config.discover(voice)?;
-        self.put(&backend.render(text, &self.dir)?)
+        let wav = match control {
+            Some(control) => backend.render_controlled(text, &self.dir, control)?,
+            None => backend.render(text, &self.dir)?,
+        };
+        self.put_with_control(&wav, control)
     }
 
     /// The file for a request path's last segment, `<id>.wav`, if it is a
@@ -208,6 +277,14 @@ impl MediaStore {
         fs::create_dir_all(&self.dir)?;
         self.prune(SystemTime::now())?;
         Ok(clip_id()?)
+    }
+}
+
+pub(super) fn check_cancelled(control: Option<&AnnouncementControl>) -> Result<(), ClipError> {
+    if control.is_some_and(AnnouncementControl::is_cancelled) {
+        Err(ClipError::Cancelled)
+    } else {
+        Ok(())
     }
 }
 
@@ -629,6 +706,35 @@ mod tests {
             fs::read(store.path(&format!("{}.wav", clip.id)).unwrap()).unwrap(),
             bytes
         );
+    }
+
+    #[test]
+    fn cancelled_preparation_neither_discovers_speech_nor_creates_media() {
+        let (_dir, store) = store();
+        let control = AnnouncementControl::default();
+        assert!(control.cancel());
+        for source in [
+            ClipSource::Tts {
+                text: "No engine should start".into(),
+                voice: None,
+            },
+            ClipSource::Chime {
+                name: "bell".into(),
+            },
+            ClipSource::Wav {
+                bytes: encode_wav(&[0; 240], 24_000),
+            },
+        ] {
+            assert!(matches!(
+                store.make_controlled(&source, &control),
+                Err(ClipError::Cancelled)
+            ));
+        }
+        assert!(matches!(
+            store.speak_controlled("No speech discovery", None, &control),
+            Err(ClipError::Cancelled)
+        ));
+        assert!(!store.dir().exists());
     }
 
     #[test]

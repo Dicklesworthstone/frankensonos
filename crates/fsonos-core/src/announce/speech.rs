@@ -6,7 +6,8 @@
 //! substitute {output} and {voice} inside individual arguments without
 //! splitting, quoting, or invoking a shell.
 
-use super::clip::{ClipError, MAX_WAV_BYTES, SAMPLE_RATE, check_speech, read_wav};
+use super::AnnouncementControl;
+use super::clip::{ClipError, MAX_WAV_BYTES, SAMPLE_RATE, check_cancelled, check_speech, read_wav};
 use serde::Deserialize;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -348,6 +349,25 @@ impl SpeechBackend {
     /// Synthesize into a private temporary directory, then read and validate
     /// the complete WAV. Failed/partial output never has a media clip id.
     pub(super) fn render(&self, text: &str, media_dir: &Path) -> Result<Vec<u8>, ClipError> {
+        self.render_with_control(text, media_dir, None)
+    }
+
+    pub(super) fn render_controlled(
+        &self,
+        text: &str,
+        media_dir: &Path,
+        control: &AnnouncementControl,
+    ) -> Result<Vec<u8>, ClipError> {
+        self.render_with_control(text, media_dir, Some(control))
+    }
+
+    fn render_with_control(
+        &self,
+        text: &str,
+        media_dir: &Path,
+        control: Option<&AnnouncementControl>,
+    ) -> Result<Vec<u8>, ClipError> {
+        check_cancelled(control)?;
         check_speech(text, self.voice.as_deref())?;
         fs::create_dir_all(media_dir)?;
         let staging = tempfile::Builder::new()
@@ -372,6 +392,7 @@ impl SpeechBackend {
             use std::os::unix::process::CommandExt as _;
             command.process_group(0);
         }
+        check_cancelled(control)?;
         let child = command
             .spawn()
             .map_err(|e| ClipError::Speech(format!("could not start {}: {e}", self.name())))?;
@@ -381,6 +402,9 @@ impl SpeechBackend {
         };
         let deadline = Instant::now() + self.timeout;
         let status = loop {
+            // Use the existing local polling interval: cancellation adds no
+            // speaker I/O and drops the guard to terminate the whole engine.
+            check_cancelled(control)?;
             if let Some(status) = child.try_wait()? {
                 break status;
             }
@@ -401,6 +425,7 @@ impl SpeechBackend {
             }
             std::thread::sleep(POLL.min(deadline.saturating_duration_since(Instant::now())));
         };
+        check_cancelled(control)?;
         if !status.success() {
             stderr.seek(SeekFrom::Start(0))?;
             let mut detail = Vec::new();
@@ -412,17 +437,20 @@ impl SpeechBackend {
                 detail.trim()
             )));
         }
-        read_wav(&out).map_err(|e| match e {
+        let wav = read_wav(&out).map_err(|e| match e {
             ClipError::Io(e) => ClipError::Speech(format!(
                 "{} exited successfully but did not write a readable WAV: {e}",
                 self.name()
             )),
             other => other,
-        })
+        })?;
+        check_cancelled(control)?;
+        Ok(wav)
     }
 }
 
-/// Reap the child on every return path, including timeout or I/O error.
+/// Reap the child on every return path, including cancellation, timeout or
+/// I/O error.
 struct ChildGuard {
     child: Child,
     completed: bool,

@@ -470,7 +470,13 @@ impl Surface {
         if let Err(e) = with.media.prune(SystemTime::now()) {
             tracing::debug!(error = %e, "old clips not pruned");
         }
-        let stored = with.media.make(&source).map_err(|e| clip_failure(&e))?;
+        let stored = match with.media.make_controlled(&source, control) {
+            Ok(stored) => stored,
+            Err(ClipError::Cancelled) => {
+                return Ok(cancelled_before_playback(&households, &targets));
+            }
+            Err(error) => return Err(clip_failure(&error)),
+        };
         if control.is_cancelled() {
             return Ok(cancelled_before_playback(&households, &targets));
         }
@@ -685,6 +691,10 @@ fn title(source: &ClipSource) -> String {
 /// A clip that could not be made, as a failure.
 fn clip_failure(e: &ClipError) -> Failure {
     match e {
+        // Controlled delivery consumes this as a cancelled job before reaching
+        // this conversion. Keep other callers exhaustive without suggesting a
+        // retry of an announcement the caller explicitly stopped.
+        ClipError::Cancelled => Failure::invalid(e.to_string()),
         ClipError::UnknownChime { .. } => {
             Failure::invalid(e.to_string()).with_suggestions(Chime::NAMES.to_vec())
         }

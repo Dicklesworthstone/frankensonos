@@ -358,3 +358,88 @@ fn slow_speech_cannot_retain_a_grant_revoked_during_synthesis() {
         assert_eq!(surface.announcements_pending(), 0);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn cancelling_a_synthesizing_job_releases_its_turn_without_touching_speakers() {
+    use fsonos_core::announce::speech::{BackendKind, SpeechConfig};
+    struct NoSpeakerIo;
+    impl Transport for NoSpeakerIo {
+        fn soap_post(&self, _: IpAddr, _: &str, _: &str, _: &str) -> Result<String, ProtoError> {
+            panic!("speech cancellation must complete before speaker I/O")
+        }
+    }
+    let data = tempfile::tempdir().unwrap();
+    let ready = data.path().join("started");
+    let media_path = data.path().join("media");
+    let media = MediaStore::new(data.path()).with_speech_config(SpeechConfig {
+        backend: BackendKind::Command,
+        command: vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "printf '%s' started >\"$1\"; exec /bin/sleep 20".into(),
+            "test-cancelled-speech".into(),
+            ready.display().to_string(),
+            "{output}".into(),
+        ],
+        timeout_secs: 30,
+        ..SpeechConfig::default()
+    });
+    let houses = crate::zones::fixtures::households();
+    let surface = Arc::new(
+        Surface::new(
+            Box::new(NoSpeakerIo),
+            Box::new(move |_| Ok(houses.clone())),
+            Policy::default(),
+            Box::new(fsonos_core::clock::SystemClock),
+        )
+        .with_announcements(Announcements::new(
+            media,
+            Box::new(|| Some("http://192.0.2.250:3400".into())),
+        )),
+    );
+    let accepted = surface
+        .start_announcement(
+            &Client::Cli,
+            &AnnounceRequest {
+                text: Some("This speech is cancelled while it is being synthesized".into()),
+                rooms: vec!["Patio".into()],
+                ..AnnounceRequest::default()
+            },
+        )
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while !ready.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Always cancel before asserting readiness: a failed test must not strand
+    // a synthesis process for its full timeout.
+    let cancelled_at = Instant::now();
+    surface
+        .cancel_announcement(&Client::Cli, &accepted.id)
+        .unwrap();
+    let finished = finished_job(&surface, &accepted.id);
+    assert!(ready.exists(), "the scripted speech engine did not start");
+    assert!(cancelled_at.elapsed() < Duration::from_secs(5));
+    assert_eq!(finished.phase, AnnouncementJobPhase::Cancelled);
+    assert!(finished.error.is_none());
+    let result = finished.result.as_ref().unwrap();
+    assert!(result.done.contains("before playback"));
+    assert_eq!(surface.announcements_pending(), 0);
+    assert_eq!(
+        surface
+            .cancel_announcement(&Client::Cli, &accepted.id)
+            .unwrap()
+            .phase,
+        AnnouncementJobPhase::Cancelled
+    );
+    if media_path.exists() {
+        assert!(std::fs::read_dir(&media_path).unwrap().all(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .extension()
+                .is_none_or(|extension| extension != "wav")
+        }));
+    }
+}

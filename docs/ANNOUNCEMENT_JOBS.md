@@ -102,10 +102,12 @@ restoration callbacks return. `cancel_requested: true` alone is never proof
 that the speakers have stopped or their earlier playback has returned.
 
 Cancelling a clip waiting for its household turn releases it without sending
-speaker commands. Cancellation during preparation prevents subsequent playback
-once the current preparation step returns. Cancellation is cooperative: a
-running speech synthesis or network operation may finish before the worker can
-observe it. Active cancellation stops the clip only while the daemon still
+speaker commands. During local speech synthesis, cancellation interrupts the
+engine at the next process poll (20 ms), terminates and reaps its process group
+on Unix, and discards staged audio before it can become a playable clip. The
+job releases its reserved turn and reports cancellation without speaker I/O.
+Cancellation remains cooperative around in-flight network operations, which
+may finish before the worker can observe it. Active cancellation stops the clip only while the daemon still
 owns the announcement source and group, then uses the normal restoration path.
 It does not overwrite a newer manual source, pause, regrouping, or other
 ownership change.
