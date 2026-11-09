@@ -3095,3 +3095,15 @@ That closes the structural options for the `.aa` route in this build:
 the copy is 4 KB, the cell is 26 KB past the destination, and the cell's
 target is null by ctor construction. Reaching the cell needs a second write
 primitive or a different notification path.
+
+**`type 1` with a 4 000-byte block** (the one record type never exercised; it
+is special in real files with a 5-byte payload): `SetAV 200`, `Play 200`,
+healthy, no fault. So it is not a second write sink either.
+
+Consolidated position for the `.aa` route on 57.23: everything up to and
+including playback is executable from the network, but the dispatch target
+lives in the observer cell at `+30000`, the copy is 4 KB at `+6380`, records
+overwrite, and the cell's target is null at ctor. The route therefore needs
+either a second write primitive or a notify variant that carries a
+reachable context (the second call site at `0x101e3ebc` passes an
+`obj+21484` context — also beyond the copy, so not directly usable).
