@@ -2978,3 +2978,14 @@ slot holding a real pointer — the layout is not right yet.
 Recipe established along the way and useful regardless:
 **`Stop` → `SetAVTransportURI` → `Play`** is the only order that avoids the
 701 for a `.aa`, and `Stop` re-arms it.
+
+**Resolved end to end just after:** the prefix check runs on *both* record
+arguments, so the record data must be `http://…\0<value>` — i.e. the record
+*name* is a URL and the *value* is the buffer that gets `strcpy`d. With that
+encoding, `Stop → SetAVTransportURI → Play` returns **200** (no 701) and the
+handler executes. `Q1.aa` is that shape.
+
+The single remaining unknown is the copy base `C` for the value layout (the
+copy destination is `session+6380`, so every pointer in the value must be
+`C + node`); a wrong `C` makes the resolver read a mapped-but-wrong address
+and return 0 silently, which is why dead-pointer probes stay inert.
