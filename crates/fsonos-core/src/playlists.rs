@@ -20,8 +20,10 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 mod contents;
+mod selection;
 
 pub use contents::{MAX_CONTENTS_PAGE, PlaylistContents, contents};
+pub use selection::select_track;
 
 /// The native `SaveQueue` Title argument holds at most 1023 UTF-8 bytes.
 /// The S1 handler has a 1024-byte argument buffer (docs/RE_COPY_AUDIT.md).
