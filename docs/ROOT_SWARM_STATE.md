@@ -3051,3 +3051,22 @@ registration's stored target is the thing to check; `0x101e394c` is the
 register (writes `{target, gen, changed}`), and the ctx that reaches the
 wrapper is a *different* object than the session the handler copied into
 unless the registration was made with the session.
+
+**Two facts that pin the last hop.**
+1. The observer cell is registered **once, at ctor** (`0x101037d8`: `r4 =
+   [session+6352]`, `r3 = session+30000`), and `+6352` is **zeroed in the
+   same ctor** — so the cell holds whatever `6352` held at that instant.
+   `6352` is only later set, by the stream-creator at `0x1011be20`
+   (`stw r9, 6352` then `0x102af290(&6352, …)`), i.e. *after* the
+   registration. `0x101e3a44` returns silently on a zero target, so unless
+   the stream path re-registers, the callback is dead by construction.
+2. `session+6380` is where the *current URI* lives: repeated loads never 701
+   again, because the URI (which satisfies the prefix test, including the
+   `x-rincon-…` form) is re-written there on every `setav`. So a 701 probe
+   cannot detect whether our copy landed — the copy is overwritten by the
+   next request.
+
+Next hop is therefore `0x1011be20` / `0x102af290`: confirm whether the
+stream-creator re-registers `+30000`, and if it does not, find the notify
+that carries `+6352` and whether our payload's stream-creation path reaches
+it at all.
