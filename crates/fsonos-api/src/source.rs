@@ -8,7 +8,9 @@
 //! with a clear message, and passes any other well-formed URI through
 //! unchanged for the core and the speaker to judge.
 
+use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_proto::didl::{SpotifyBare, SpotifyContainer};
+use serde::{Deserialize, Serialize};
 
 use crate::failure::{ErrorCode, Failure};
 
@@ -23,6 +25,94 @@ pub trait SpotifySources: Send + Sync {
             "this Spotify catalog provider does not resolve shows",
         ))
     }
+
+    fn search_catalog(
+        &self,
+        _query: &str,
+        _kind: CatalogKind,
+        _limit: u32,
+    ) -> Result<CatalogPage, Failure> {
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this Spotify catalog provider does not support search",
+        ))
+    }
+}
+
+/// One Spotify content kind requested explicitly by a catalog search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogKind {
+    Track,
+    Album,
+    Artist,
+    Playlist,
+    Show,
+    Episode,
+}
+
+impl CatalogKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Track => "track",
+            Self::Album => "album",
+            Self::Artist => "artist",
+            Self::Playlist => "playlist",
+            Self::Show => "show",
+            Self::Episode => "episode",
+        }
+    }
+}
+
+impl fastapi_openapi::JsonSchema for CatalogKind {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            ["track", "album", "artist", "playlist", "show", "episode"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("CatalogKind")
+    }
+}
+
+impl std::str::FromStr for CatalogKind {
+    type Err = Failure;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "track" => Ok(Self::Track),
+            "album" => Ok(Self::Album),
+            "artist" => Ok(Self::Artist),
+            "playlist" => Ok(Self::Playlist),
+            "show" => Ok(Self::Show),
+            "episode" => Ok(Self::Episode),
+            _ => Err(Failure::invalid(
+                "Spotify search kind must be track, album, artist, playlist, show, or episode",
+            )),
+        }
+    }
+}
+
+/// Display metadata and a canonical source identity; no renderer credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CatalogItem {
+    pub source_uri: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+}
+
+/// A bounded first page in provider order. The more flag reports additional
+/// results, not a continuation token or complete catalog coverage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CatalogPage {
+    pub items: Vec<CatalogItem>,
+    pub more: bool,
 }
 
 /// How a bounded catalog selection was obtained.

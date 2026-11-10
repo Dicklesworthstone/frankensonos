@@ -62,6 +62,7 @@ pub mod scenes;
 pub mod schedules;
 pub mod sonos_playlists;
 pub mod spotify_auth;
+pub mod spotify_search;
 
 pub mod announce;
 mod bridge;

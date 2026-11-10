@@ -1,22 +1,26 @@
-//! Explicit artist and show playback resolve through the owner's existing Spotify
+//! Catalog search and artist/show playback use the owner's existing Spotify
 //! sign-in before any speaker command. Each read has its own runtime; one
 //! admission slot bounds concurrency and retains Spotify's cooldown between
 //! fresh sessions, so later sign-ins and saved app settings are picked up.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use asupersync::Cx;
 use asupersync::http::Client;
 use asupersync::time::{timeout, wall_now};
-use fsonos_api::source::{SourceSelection, SourceSelectionKind, SpotifySources};
+use fsonos_api::source::{
+    CatalogItem, CatalogKind, CatalogPage, SourceSelection, SourceSelectionKind, SpotifySources,
+};
 use fsonos_api::{ErrorCode, Failure, Surface};
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::artist_playback::{self, SelectionSource};
 use fsonos_spotify::client::{Endpoints, SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
-use fsonos_spotify::show_playback;
+use fsonos_spotify::{catalog_search, show_playback};
 
 use crate::config::{SPOTIFY_REDIRECT_URI, ServeArgs};
 
@@ -76,10 +80,10 @@ impl Sources {
         .ok_or_else(|| {
             Failure::new(
                 ErrorCode::SpotifyAuthRequired,
-                "catalog playback needs a configured Spotify app and sign-in",
+                "Spotify catalog access needs a configured Spotify app and sign-in",
             )
             .with_hint(
-                "Run fsonos setup to save your Spotify app and sign in, then retry the artist or show.",
+                "Run fsonos setup to save your Spotify app and sign in, then retry the catalog request.",
             )
         })?;
         let redirect_uri = self
@@ -104,18 +108,57 @@ impl SpotifySources for Sources {
     fn show_episodes(&self, show_uri: &str) -> Result<SourceSelection, Failure> {
         self.resolve(show_uri, true)
     }
+
+    fn search_catalog(
+        &self,
+        query: &str,
+        kind: CatalogKind,
+        limit: u32,
+    ) -> Result<CatalogPage, Failure> {
+        let query = query.to_owned();
+        self.request(move |session, cx| {
+            Box::pin(async move {
+                let page = catalog_search::search(session, cx, &query, kind.as_str(), limit).await?;
+                Ok(CatalogPage {
+                    items: page
+                        .items
+                        .into_iter()
+                        .map(|item| CatalogItem {
+                            source_uri: item.source_uri,
+                            title: item.title,
+                            subtitle: item.subtitle,
+                        })
+                        .collect(),
+                    more: page.more,
+                })
+            })
+        })
+    }
 }
+
+type CatalogFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, SpotifyError>> + 'a>>;
 
 impl Sources {
     fn resolve(&self, source_uri: &str, show: bool) -> Result<SourceSelection, Failure> {
+        let uri = source_uri.to_owned();
+        self.request(move |session, cx| {
+            Box::pin(async move { select(session, cx, &uri, show).await })
+        })
+    }
+
+    fn request<T, F>(&self, operation: F) -> Result<T, Failure>
+    where
+        T: Send + 'static,
+        F: for<'a> FnOnce(&'a mut Session, &'a Cx) -> CatalogFuture<'a, T> + Send + 'static,
+    {
         let mut state = match self.state.try_lock() {
             Ok(state) => state,
             Err(TryLockError::WouldBlock) => {
                 return Err(Failure::new(
                     ErrorCode::NotReady,
-                    "a Spotify catalog selection is already being read",
+                    "a Spotify catalog request is already being read",
                 )
-                .with_hint("Wait for that selection to finish before requesting another source."));
+                .with_hint("Wait for that catalog request to finish before requesting another."));
             }
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
         };
@@ -126,21 +169,20 @@ impl Sources {
         let config = self.configuration()?;
         let cache = TokenCache::in_data_dir(&self.data_dir);
         let endpoints = self.endpoints.clone();
-        let uri = source_uri.to_owned();
         let worker = std::thread::Builder::new()
-            .name("spotify-catalog-selection".into())
+            .name("spotify-catalog-read".into())
             .stack_size(STACK)
-            .spawn(move || read(config, cache, endpoints, &uri, show))
+            .spawn(move || read(config, cache, endpoints, operation))
             .map_err(|error| {
                 Failure::new(
                     ErrorCode::Internal,
-                    format!("cannot start Spotify catalog selection: {error}"),
+                    format!("cannot start Spotify catalog request: {error}"),
                 )
             })?;
         let (result, retry_after) = worker.join().map_err(|_| {
             Failure::new(
                 ErrorCode::Internal,
-                "the Spotify catalog selection worker stopped unexpectedly",
+                "the Spotify catalog worker stopped unexpectedly",
             )
         })?;
         state.record(retry_after);
@@ -151,13 +193,15 @@ impl Sources {
     }
 }
 
-fn read(
+fn read<T, F>(
     config: SpotifyConfig,
     cache: TokenCache,
     endpoints: Endpoints,
-    uri: &str,
-    show: bool,
-) -> (Result<SourceSelection, SpotifyError>, u64) {
+    operation: F,
+) -> (Result<T, SpotifyError>, u64)
+where
+    F: for<'a> FnOnce(&'a mut Session, &'a Cx) -> CatalogFuture<'a, T>,
+{
     let runtime = match crate::runtime() {
         Ok(runtime) => runtime,
         Err(error) => return (Err(SpotifyError::Http(format!("{error:#}"))), 0),
@@ -174,7 +218,7 @@ fn read(
         let selected = timeout(
             now,
             LOOKUP_LIMIT,
-            Box::pin(select(&mut session, &cx, uri, show)),
+            operation(&mut session, &cx),
         )
         .await
         .unwrap_or_else(|_| {
@@ -226,16 +270,16 @@ fn cooldown(seconds: u64) -> Failure {
 fn failure(error: SpotifyError) -> Failure {
     match error {
         SpotifyError::Auth(detail) => Failure::new(ErrorCode::SpotifyAuthRequired, detail)
-            .with_hint("Sign in with fsonos setup, then retry the artist or show."),
+            .with_hint("Sign in with fsonos setup, then retry the catalog request."),
         SpotifyError::Api { status: 401, .. } => Failure::new(
             ErrorCode::SpotifyAuthRequired,
             "Spotify did not accept the catalog lookup's sign-in",
         )
-        .with_hint("Sign in with fsonos setup, then retry the artist or show."),
+        .with_hint("Sign in with fsonos setup, then retry the catalog request."),
         SpotifyError::Config(detail) => Failure::invalid(detail),
         other => Failure::new(
             ErrorCode::NotReady,
-            format!("Spotify catalog selection: {other}"),
+            format!("Spotify catalog request: {other}"),
         )
         .with_hint("Try a specific track, album or episode, or retry when Spotify's catalog is available."),
     }

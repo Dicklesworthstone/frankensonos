@@ -61,6 +61,9 @@ pub use sonos_playlists::{
     SonosPlaylistTrack,
 };
 
+mod spotify_search;
+pub use spotify_search::SearchSpotify;
+
 mod controls;
 mod documents;
 

@@ -7,6 +7,7 @@
 //!   discover   list the players on the LAN
 //!   zones      show the zone groups and what each is doing
 //!   status     what a room is doing (track, transport, volume)
+//!   spotify-search search the online catalog, then choose a source to play
 //!   favorites  the household's Sonos favorites, numbered
 //!   playlists  playlists saved on the Sonos household, with native ids
 //!   playlist-contents inspect a saved playlist without changing playback
@@ -68,6 +69,7 @@ mod setup_spotify;
 #[cfg(feature = "sim")]
 mod sim;
 mod spotify_app;
+mod spotify_search_cmd;
 mod spotify_sources;
 mod streaming;
 mod tailscale_cmd;
@@ -122,6 +124,9 @@ enum Command {
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=50))]
         limit: u32,
     },
+    /// Search Spotify's online catalog for tracks, albums, artists, playlists,
+    /// shows or episodes. Prints source URIs for a separate play/queue request.
+    SpotifySearch(spotify_search_cmd::SpotifySearchArgs),
     /// What a room is doing: its group, the track or station, its volume.
     Status { zone: String },
     /// List the Sonos favorites of a room's household, numbered.
@@ -545,6 +550,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Eq(args) => eq_cmd::run(global, &args),
         Command::QueuePlay(args) => queue_play_cmd::run(global, &args),
         Command::QueueSearch(args) => queue_search_cmd::run(global, &args),
+        Command::SpotifySearch(args) => spotify_search_cmd::run(global, &args),
         Command::QueueRemove(args) => queue_edit_cmd::remove(global, &args),
         Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
         Command::PlayMode(args) => play_mode_cmd::run(global, &args),
@@ -1072,6 +1078,7 @@ fn plan_for<'a>(
         Command::Discover
         | Command::Zones { .. }
         | Command::Search { .. }
+        | Command::SpotifySearch(_)
         | Command::Doctor(_)
         | Command::Status { .. }
         | Command::Favorites { .. }

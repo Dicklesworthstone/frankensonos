@@ -132,6 +132,7 @@ mod schedules;
 
 mod sonos_playlists;
 mod spotify_auth;
+mod spotify_search;
 
 mod scenes;
 
@@ -220,6 +221,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(dj_sync::routes(cx));
     routes.extend(schedules::routes(cx));
     routes.extend(spotify_auth::routes(cx));
+    routes.extend(spotify_search::routes(cx));
     routes.extend(sonos_playlists::routes(cx));
     routes.extend(remote::routes(cx));
     routes

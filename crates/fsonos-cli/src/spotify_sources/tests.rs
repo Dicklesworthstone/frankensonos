@@ -319,3 +319,120 @@ fn show_catalog_refusals_are_reported_without_artist_fallback_requests() {
     assert!(failure.detail.contains("403"));
     assert_eq!(fake.stop().log, [format!("GET /v1/shows/{SHOW}")]);
 }
+
+fn catalog_search_fixture(fake: &FakeSpotify) -> String {
+    let path = fake
+        .endpoints()
+        .search("Lantern & Coast", "artist", 10)
+        .strip_prefix(&format!("http://{}", fake.addr))
+        .unwrap()
+        .to_owned();
+    let mut state = fake.state.lock().unwrap();
+    state.access = "artist-access".into();
+    state.library_pages.insert(
+        path.clone(),
+        json!({
+            "artists": {
+                "items": [{
+                    "id": ARTIST,
+                    "uri": format!("spotify:artist:{ARTIST}"),
+                    "type": "artist",
+                    "name": "Lantern Coast",
+                }],
+                "offset": 0, "limit": 10, "total": 20,
+                "next": "https://example.invalid/catalog-page-not-followed",
+            },
+        })
+        .to_string(),
+    );
+    path
+}
+
+#[test]
+fn real_worker_searches_with_the_current_sign_in_and_returns_explicit_sources() {
+    let fake = FakeSpotify::start();
+    let path = catalog_search_fixture(&fake);
+    let sources = configured(&fake);
+    for access in ["artist-access", "replacement-search-access"] {
+        TokenCache::in_data_dir(&sources.data_dir)
+            .store(&token(access))
+            .unwrap();
+        access.clone_into(&mut fake.state.lock().unwrap().access);
+        let found = sources
+            .search_catalog("Lantern & Coast", CatalogKind::Artist, 10)
+            .unwrap();
+        assert_eq!(
+            found.items,
+            [CatalogItem {
+                source_uri: format!("spotify:artist:{ARTIST}"),
+                title: "Lantern Coast".into(),
+                subtitle: None,
+            }]
+        );
+        assert!(found.more);
+    }
+    let seen = fake.stop();
+    assert_eq!(seen.log, vec![format!("GET {path}"); 2]);
+    assert_eq!(seen.refreshes, 0);
+}
+
+#[test]
+fn search_shares_missing_grant_and_busy_admission_contracts_without_network_io() {
+    let fake = FakeSpotify::start();
+    let mut sources = sources();
+    sources.endpoints = fake.endpoints();
+    assert_eq!(
+        sources
+            .search_catalog("music", CatalogKind::Track, 10)
+            .unwrap_err()
+            .code,
+        ErrorCode::SpotifyAuthRequired
+    );
+    let running = sources.state.lock().unwrap();
+    let failed = sources
+        .search_catalog("music", CatalogKind::Track, 10)
+        .unwrap_err();
+    assert_eq!(failed.code, ErrorCode::NotReady);
+    assert!(failed.detail.contains("already being read"));
+    drop(running);
+    assert!(fake.stop().log.is_empty());
+}
+
+#[test]
+fn search_and_playback_share_the_same_spotify_cooldown() {
+    for search_first in [true, false] {
+        let fake = FakeSpotify::start();
+        selection(&fake);
+        let path = catalog_search_fixture(&fake);
+        let sources = configured(&fake);
+        {
+            let mut state = fake.state.lock().unwrap();
+            if search_first {
+                state.api_errors.insert(path.clone(), (429, Some(3600)));
+            } else {
+                state.rate_limit_artists = 1;
+                state.artist_retry_after = Some(3600);
+            }
+        }
+        for search in [search_first, !search_first, search_first] {
+            let failed = if search {
+                sources
+                    .search_catalog("Lantern & Coast", CatalogKind::Artist, 10)
+                    .unwrap_err()
+            } else {
+                sources
+                    .artist_tracks(&format!("spotify:artist:{ARTIST}"))
+                    .unwrap_err()
+            };
+            assert_eq!(failed.code, ErrorCode::NotReady);
+            assert!(failed.detail.contains("rate-limited"));
+        }
+        let seen = fake.stop();
+        assert_eq!(seen.log.len(), 1);
+        assert_eq!(
+            seen.log[0].starts_with("GET /v1/search?"),
+            search_first,
+            "only the first admitted catalog read reaches Spotify"
+        );
+    }
+}
