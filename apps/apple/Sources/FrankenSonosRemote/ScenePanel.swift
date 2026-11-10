@@ -121,6 +121,13 @@ import FrankenSonosKit
                     switch group.source.kind {
                     case "keep": Text("Keep the current source")
                     case "favorite": Text("Favorite: \(group.source.name ?? "")")
+                    case "sonos_playlist":
+                        if let playlist = group.source.playlist {
+                            Text(playlist.summary)
+                            Text(playlist.recallNote).font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("Saved playlist identity unavailable. Read the scene again.")
+                        }
                     case "uri": Text("Source URI: \(group.source.uri ?? "")").textSelection(.enabled)
                     case "dj": Text(group.source.djSummary).textSelection(.enabled)
                     case "queue", "queue_backup":
@@ -135,7 +142,7 @@ import FrankenSonosKit
                     default: Text("Unsupported source: \(group.source.kind)")
                     }
                     Text(group.playing.map { $0 ? "Start / continue playback" :
-                        (group.source.kind == "queue" || group.source.kind == "queue_backup" ? "Ready without playback" : "Pause playback")
+                        (["queue", "queue_backup", "sonos_playlist"].contains(group.source.kind) ? "Ready without playback" : "Pause playback")
                     } ?? "Leave play/pause state unchanged")
                         .font(.caption).foregroundStyle(.secondary)
                 }

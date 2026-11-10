@@ -33,7 +33,7 @@ public struct SpotifySearchRequest: Equatable, Sendable {
 
     public init(query: String, kind: SpotifyCatalogKind = .track, limit: UInt32 = 10) throws {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+        guard !query.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }),
               (1...256).contains(trimmed.utf8.count), (1...10).contains(limit) else {
             throw ContractError.invalid("Enter a Spotify search of 1–256 UTF-8 bytes without control characters; request up to 10 results.")
         }
@@ -61,7 +61,7 @@ public struct SpotifySearchPage: Decodable, Equatable, Sendable {
 
     public func validated(for request: SpotifySearchRequest) throws -> Self {
         func label(_ text: String) -> Bool {
-            text.utf8.count <= 4_096 && !text.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            text.utf8.count <= 4_096 && !text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control })
         }
         guard query.utf8.elementsEqual(request.query.utf8), kind == request.kind,
               items.count <= request.limit else {

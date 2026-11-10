@@ -24,7 +24,8 @@ interprets an empty PUT body as a request to capture the live house.
 
 Source choices include keeping the current source, a searchable list of playable
 Sonos favorites from the chosen household, a complete music URI or Spotify track,
-album or playlist link, and the DJ's listed moods or automatic time-of-day program.
+album, artist, playlist, show or episode link, and the DJ's listed moods or automatic
+time-of-day program.
 Favorite titles must be unique within that household: scenes retain the title,
 so selecting an ID does not make a duplicate title safe for later application.
 Source reads are bound to the draft group, leading room and source kind; a late
@@ -59,6 +60,26 @@ changes and cannot be undone from Activity. They do not change current playback;
 schedules referring to the scene name will use the replacement or need another
 scene after deletion.
 
+## Saved Sonos playlist sources
+
+Scenes authored through the web remote or CLI can use a saved native Sonos
+playlist. The Apple remote lists, inspects and applies those scenes, retaining
+the playlist's exact household, `SQ:` ID and catalog title. Its details show all
+three. Review and confirmation compare the retained identity along with the
+rest of the saved definition, even if its name and saved timestamp are unchanged.
+
+Applying such a scene asks the daemon to load the playlist's **current contents**
+from that exact household and replace the group's queue. Review does not freeze
+the playlist's track list. A renamed or missing playlist requires saving the
+scene again; it is never substituted by title in another household. A source
+with playback disabled is shown as **Ready without playback**. Ordinary undo
+cannot restore the queue contents replaced by this operation.
+
+The native custom composer still offers its existing source choices. It does
+not copy these retained playlist references into an editable custom definition.
+Use the web remote or CLI to author a new saved-playlist source; native scene
+recall, deletion and explicit replacement remain available.
+
 ## Apply and review guarantees
 
 Expand a saved scene to inspect every coordinator, member, source, playback
@@ -86,6 +107,9 @@ independently of their confirmation buttons.
 Run `swift test --package-path apps/apple -Xswiftc -warnings-as-errors`.
 Production codec, actor, transport and screen-model tests cover authoring,
 capture, exact payloads, source drift, replacements, deletion without rooms,
-fade requests, cancellation, uncertain receipts and preserved drafts. Linux
+fade requests, cancellation, uncertain receipts and preserved drafts. Saved-playlist
+regressions cover mixed source catalogs, malformed or mismatched identities,
+exact Unicode titles, identity changes during review, silent loading, cancellation
+and lost acknowledgements without replay. Linux
 execution does not validate SwiftUI; Apple SDK builds and physical-device
 acceptance cover the platform boundaries separately.

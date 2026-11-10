@@ -226,6 +226,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .sleep(let change):
             path = ["sleep"]; body.merge(try change.fields()) { _, new in new }
         case .scene(let scene, let fade):
+            _ = try scene.validated()
             try require(!scene.name.isEmpty, "The scene has no name.")
             path = ["scenes", scene.name, "apply"]; body = [:]
             if let fade {

@@ -96,6 +96,9 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
             guard group.source.kind != "queue", group.source.kind != "queue_backup", group.source.queue == nil else {
                 throw ContractError.invalid("Capture the current house to save a queue position or backup. Captured queues cannot be authored.")
             }
+            guard group.source.kind != "sonos_playlist", group.source.playlist == nil else {
+                throw ContractError.invalid("Use the web remote or CLI to author a saved Sonos playlist source. Pinned playlist references cannot be copied into a custom native definition.")
+            }
             guard group.source.kind == "dj" || group.source.direction == nil else {
                 throw ContractError.invalid("A saved DJ direction belongs only to a DJ source.")
             }

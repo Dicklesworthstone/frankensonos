@@ -25,6 +25,9 @@ extension Scene {
             guard source.kind == "dj" || source.direction == nil else {
                 throw ContractError.invalid("A saved DJ direction is attached to another scene music source.")
             }
+            guard source.kind == "sonos_playlist" || source.playlist == nil else {
+                throw ContractError.invalid("A native playlist reference is attached to another scene music source.")
+            }
             switch source.kind {
             case "keep": break
             case "dj":
@@ -33,6 +36,13 @@ extension Scene {
                 guard source.name.map(named) == true else { throw ContractError.invalid("The scene favorite has no name.") }
             case "uri":
                 guard source.uri.map(named) == true else { throw ContractError.invalid("The scene source has no URI.") }
+            case "sonos_playlist":
+                guard let playlist = source.playlist,
+                      source.name?.utf8.elementsEqual(playlist.id.utf8) == true,
+                      source.uri == nil, source.mood == nil else {
+                    throw ContractError.invalid("The scene’s saved Sonos playlist identity is incomplete. Read the scene again.")
+                }
+                try playlist.validate()
             case "queue", "queue_backup":
                 func identity(_ value: String) -> Bool {
                     named(value) && value.utf8.count <= 1_024 &&
@@ -55,6 +65,27 @@ extension Scene {
             }
         }
         return self
+    }
+}
+
+extension Scene.PlaylistReference {
+    func validate() throws {
+        // Match the daemon's Unicode whitespace and Cc control checks. The
+        // trimmed title is only checked; its retained identity stays byte-exact.
+        let trimmedTitle = title.unicodeScalars
+            .drop(while: { $0.properties.isWhitespace })
+            .reversed()
+            .drop(while: { $0.properties.isWhitespace })
+        let titleBytes = trimmedTitle.reduce(0) { $0 + $1.utf8.count }
+        guard household.unicodeScalars.contains(where: { !$0.properties.isWhitespace }),
+              household.utf8.count <= 1_024,
+              !household.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }),
+              id.hasPrefix("SQ:"), (4...1_024).contains(id.utf8.count),
+              id.utf8.dropFirst(3).allSatisfy({ (48...57).contains($0) }),
+              (1...1_023).contains(titleBytes),
+              !trimmedTitle.contains(where: { $0.properties.generalCategory == .control }) else {
+            throw ContractError.invalid("The scene needs its saved playlist’s household, native SQ: id and valid catalog title.")
+        }
     }
 }
 

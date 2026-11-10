@@ -230,11 +230,30 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
         public let mood: String?
         public let queue: QueueReference?
         public let direction: DJDirection?
+        public let playlist: PlaylistReference?
 
         public init(kind: String, name: String?, uri: String?, mood: String?, queue: QueueReference? = nil,
-                    direction: DJDirection? = nil) {
+                    direction: DJDirection? = nil, playlist: PlaylistReference? = nil) {
             self.kind = kind; self.name = name; self.uri = uri; self.mood = mood; self.queue = queue
-            self.direction = direction
+            self.direction = direction; self.playlist = playlist
+        }
+    }
+    /// Read-only identity pinned when the daemon saves a native Sonos playlist
+    /// source. Recall reads its current contents in this exact household.
+    public struct PlaylistReference: Codable, Equatable, Sendable {
+        public let household: String
+        public let id: String
+        public let title: String
+
+        public static func == (left: Self, right: Self) -> Bool {
+            left.household.utf8.elementsEqual(right.household.utf8)
+                && left.id.utf8.elementsEqual(right.id.utf8)
+                && left.title.utf8.elementsEqual(right.title.utf8)
+        }
+
+        public var summary: String { "Saved Sonos playlist: \(title) · \(id) · \(household)" }
+        public var recallNote: String {
+            "Recall loads this saved playlist’s current contents and replaces the group’s queue. A renamed or missing playlist requires saving the scene again. Ordinary undo cannot restore the replaced queue contents."
         }
     }
     /// A captured position on the original coordinator. A non-nil total

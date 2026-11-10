@@ -51,6 +51,23 @@ private func catalogDecoded(_ data: Data) throws -> SpotifySearchPage {
         }
     }
 
+    @Test func queryAndMetadataAllowUnicodeFormatCharactersWithoutAllowingControls() throws {
+        let query = "Family 👩‍👩‍👧‍👦"
+        let title = "Songs 👩‍👩‍👧‍👦"
+        let subtitle = "Persian \u{200c} artist"
+        let request = try SpotifySearchRequest(query: "  " + query + "  ")
+        #expect(request.query == query)
+        let page = try catalogDecoded(catalogData(query: query) { body in
+            body["items"] = [["source_uri": "spotify:track:\(catalogID)", "title": title, "subtitle": subtitle]]
+        }).validated(for: request)
+        #expect(page.items.first?.title == title && page.items.first?.subtitle == subtitle)
+        #expect(throws: ContractError.self) { try SpotifySearchRequest(query: query + "\u{85}") }
+        let control = try catalogData(query: query) { body in
+            body["items"] = [["source_uri": "spotify:track:\(catalogID)", "title": title, "subtitle": "Artist\u{7f}"]]
+        }
+        #expect(throws: ContractError.self) { try catalogDecoded(control).validated(for: request) }
+    }
+
     @Test func searchResponseRejectsWrongQueryKindDuplicatesAndUntrustedSources() throws {
         let request = try SpotifySearchRequest(query: "fixture")
         let mutations: [(inout [String: Any]) -> Void] = [
