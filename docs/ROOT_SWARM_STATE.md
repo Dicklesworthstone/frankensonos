@@ -3588,3 +3588,30 @@ after `<mixthrd,0> Running with audio output disabled` the process takes
 **SIGABRT** (`,kill` from libc). Ports are bound but nothing accepts because a
 thread dies at that point. That abort — not the hhid, and not thread creation —
 is what keeps `Recv-Q` growing in both builds.
+
+**The accept wall is `abort()` inside `libsonoscrypto`.** With the hhid set,
+the abort backtrace is unambiguous:
+
+```
+#4 abort()
+#5 0x0fdb8654  libsonoscrypto.ZZ0071
+#6 0x0fdb86d8  libsonoscrypto.ZZ0153
+#7 0x1027dcd8  anacapad
+#8 0x102d2fc0
+#9 0x101417e4
+#10 0x100ba6b0
+```
+
+So it is a **crypto** failure reached exactly because the hhid now exists —
+the synthetic `HHID_1111…` has no crypto material (keys/signature) behind it,
+and the library takes its error path. It is not mixthrd, not a thread, not the
+old `0x1036c2f8`/`0x8628` sites.
+
+That also reframes the `.135` **device** death: a crypto abort after the
+household identity is registered fits every observation (any armed URI kills
+it in 3 s, content never mattered), and is the strongest lead yet for a real
+device-side bug.
+
+gdb note for this build: the link register is **`$lr`**, `$ra` errors out;
+`break kill` must be installed *before* the `call` (the abort happens *during*
+it), and `bt` unwinds cleanly through libc/libpthread frames.
