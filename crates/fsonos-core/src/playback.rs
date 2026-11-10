@@ -348,8 +348,8 @@ fn apply_av_transport(
         .map(|_| lc.current_track_uri().map(str::to_string));
     let position: Option<u32> = lc.get("CurrentTrack").and_then(|v| v.trim().parse().ok());
     let uri_moved = uri.as_ref().is_some_and(|u| *u != state.track_uri);
-    let position_moved =
-        state.queue_position.is_some() && position.is_some_and(|n| state.queue_position != Some(n));
+    let position_moved = state.queue_position.is_some()
+        && position.is_some_and(|n| state.queue_position != (n > 0).then_some(n));
     if uri_moved || position_moved {
         let to = uri.clone().unwrap_or_else(|| state.track_uri.clone());
         changes.track = Some((state.track_uri.clone(), to.clone()));
@@ -374,7 +374,9 @@ fn apply_av_transport(
         state.duration_secs = Some(d);
     }
     if let Some(n) = position {
-        state.queue_position = Some(n);
+        // Zero means no known queue occurrence, just as in GetPositionInfo.
+        // Keep an omitted field distinct so a status-only delta preserves it.
+        state.queue_position = (n > 0).then_some(n);
     }
     if let Some(n) = lc.get("NumberOfTracks").and_then(|v| v.trim().parse().ok()) {
         if state.queue_length != Some(n) {

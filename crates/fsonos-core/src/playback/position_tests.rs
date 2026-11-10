@@ -133,3 +133,72 @@ fn unknown_timing_and_cleared_sources_do_not_request_reads_forever() {
         .unwrap();
     assert!(!playback.of(&id()).unwrap().needs_position_sample());
 }
+
+#[test]
+fn zero_track_events_and_readbacks_keep_the_same_unknown_occurrence() {
+    let now = Instant::now();
+    let mut playback = Playback::default();
+    let read = PositionInfo {
+        track: 0,
+        duration_secs: Some(180),
+        position_secs: Some(43),
+        uri: "test:stream".into(),
+        metadata: None,
+    };
+    for _ in 0..3 {
+        playback.apply_position(&id(), &read, now);
+        assert_eq!(playback.of(&id()).unwrap().queue_position, None);
+        let changes = playback
+            .apply(
+                &id(),
+                EventSource::AvTransport,
+                &event("<CurrentTrack val=\"0\"/><CurrentTrackURI val=\"test:stream\"/>"),
+                now,
+            )
+            .unwrap();
+        assert!(
+            changes.is_empty(),
+            "the same stream did not change occurrence"
+        );
+        let state = playback.of(&id()).unwrap();
+        assert_eq!(state.queue_position, None);
+        assert_eq!(state.position_at(now), Some(43));
+        assert_eq!(state.duration_secs, Some(180));
+    }
+}
+
+#[test]
+fn explicit_zero_clears_the_slot_while_omitted_or_invalid_positions_preserve_it() {
+    let now = Instant::now();
+    let mut playback = Playback::default();
+    playback
+        .apply(&id(), EventSource::AvTransport, &event(PLAYING), now)
+        .unwrap();
+    sample(&mut playback, Some(73), now);
+    for body in [
+        "<TransportStatus val=\"OK\"/>",
+        "<CurrentTrack val=\"\"/>",
+        "<CurrentTrack val=\"NOT_IMPLEMENTED\"/>",
+    ] {
+        let changes = playback
+            .apply(&id(), EventSource::AvTransport, &event(body), now)
+            .unwrap();
+        assert_eq!(changes.track, None);
+        let state = playback.of(&id()).unwrap();
+        assert_eq!(state.queue_position, Some(1));
+        assert_eq!(state.position_at(now), Some(73));
+    }
+    let changes = playback
+        .apply(
+            &id(),
+            EventSource::AvTransport,
+            &event("<CurrentTrack val=\"0\"/>"),
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        changes.track,
+        Some((Some("test:clock".into()), Some("test:clock".into())))
+    );
+    assert_eq!(playback.of(&id()).unwrap().queue_position, None);
+}
