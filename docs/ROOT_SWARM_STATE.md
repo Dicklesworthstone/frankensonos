@@ -3688,3 +3688,29 @@ signal main is supposed to send. That is the logger/spin family again — with
 
 Practical consequence: scripts can now run without the `call` hang, so the
 `break abort` / `break kill` instrumentation works normally.
+
+**Two more emulator defects found and fixed; the boot now reaches a 14-thread
+daemon.**
+
+1. **`/dev/urandom` did not exist in the chroot.** `-strace` showed main
+   looping `open("/dev/urandom") = -1 ENOENT` forever — that *was* the 110% CPU
+   spin — and a second thread then `kill(ppid, SIGKILL)`ed the daemon. Device
+   nodes (`urandom`, `random`, `null`, `zero`) are now mknod'ed into
+   `/tmp/s23rootfs/dev/`.
+
+2. **`ZZ0041` aborts when *already* initialised**, and the crypto patch calls
+   it on every `ZZ0071` entry, so the second call died at its own `0x8528`.
+   The guard is `bne cr7,8528` (to abort); retargeted to the epilogue:
+
+```
+before: 40 9e 00 90    bne cr7,8528 (abort)
+after : 40 9e 00 70    bne cr7,8508 (epilogue, returns "already up")
+```
+
+**Result: the daemon runs past everything it previously died on** — `chsrc`
+stopRoutine and `dspconfigparam` both execute, thread count climbs from 4-6 to
+**14**, and the process survives. It now idles at `dspconfigparam`
+("Unsupported PPC/Connectx Submodel") rather than aborting or spinning.
+
+Both libsonoscrypto edits are in the working chroot; the pristine library is
+at `/tmp/s23_lsc_orig2`.
