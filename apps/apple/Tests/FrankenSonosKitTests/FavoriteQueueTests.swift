@@ -158,6 +158,9 @@ private actor FavoriteQueueTransport: DaemonTransport {
         if path == "/zones/\(zone.id.address)/state" {
             return HTTPReply(data: try encoder.encode(favoriteQueueState(zone, uri: uri)), status: 200)
         }
+        if path == "/zones/\(zone.id.address)/queue" {
+            return HTTPReply(data: Data(#"{"zone":"Room","total":1,"revision":"queue-r1","playing":1,"items":[{"position":1,"title":"Current","uri":"fixture:queue-entry"}]}"#.utf8), status: 200)
+        }
         if path == "/favorites" {
             favoriteReads += 1
             if heldRead == favoriteReads { waiting = true; await withCheckedContinuation { waiter = $0 } }
@@ -194,8 +197,8 @@ private func favoriteQueueWait(_ predicate: @Sendable () async -> Bool) async th
         let receipt = try await session.execute(review)
         #expect(receipt.detail.contains("current source was left unchanged"))
         let requests = await transport.requests
-        #expect(requests.map { $0.url!.path } == ["/zones", "/zones/Room@\(home)/state", "/favorites",
-                                               "/zones", "/zones/Room@\(home)/state", "/favorites", "/queue"])
+        #expect(requests.map { $0.url!.path } == ["/zones", "/zones/Room@\(home)/state", "/favorites", "/zones/Room@\(home)/queue",
+                                               "/zones", "/zones/Room@\(home)/state", "/favorites", "/zones/Room@\(home)/queue", "/queue"])
         for request in requests.filter({ $0.url!.path == "/favorites" }) {
             #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "zone", value: "Room@\(home)")])
         }

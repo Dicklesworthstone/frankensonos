@@ -66,7 +66,7 @@ public enum NativeCommand: Equatable, Sendable {
     }
     public var explanation: String {
         switch self {
-        case .queueAdd: "Adds music without starting playback. The daemon resolves the source and applies its queue rules."
+        case .queueAdd(let uri, _): Self.sourceExplanation(uri, queued: true)
         case .queueFavorite(let favorite): favorite.explanation
         case .playlistTrack(let selection): selection.explanation
         case .queueRemove: "Removes this exact revision-bound entry. Removing the current entry can advance or stop playback. Undo requires a complete backup saved by the daemon; check the result."
@@ -89,9 +89,30 @@ public enum NativeCommand: Equatable, Sendable {
         case .scene(_, let fade): "May regroup rooms, replace sources, start or pause music, and change levels and mutes. Review all listed scene settings. Partial outcomes are shown individually." + (fade.map { " Fade scene levels over \($0) seconds where the daemon supports it." } ?? "")
         case .sleep: "Changes this group’s sleep timer, not the remote’s lifetime. The daemon or speaker owns the deadline; its reply says whether a fade is available. Cancellation does not resume playback."
         case .seek: "Checks the current track before seeking. Does not resume paused music."
-        case .playSource, .playFavorite, .djStart: "Replaces what this group plays and can change its queue. The daemon applies playback volume caps."
+        case .playSource(let uri): Self.sourceExplanation(uri, queued: false)
+        case .playFavorite, .djStart: "Replaces what this group plays and can change its queue. The daemon applies playback volume caps."
         default: "Controls the selected group's coordinator. Other households remain independent."
         }
+    }
+
+    private static func sourceExplanation(_ uri: String, queued: Bool) -> String {
+        let source = try? SceneDefinition.sourceURI(uri)
+        let kind = source.flatMap { value in SpotifyCatalogKind.allCases.first { $0.contains(value) } }
+        let selection: String
+        switch kind {
+        case .artist:
+            selection = "The daemon uses the owner’s Spotify sign-in to select up to 10 actual tracks from this artist’s top tracks or a bounded album sample. It is a finite selection, not artist radio or a complete discography. "
+        case .show:
+            selection = "The daemon uses the owner’s Spotify sign-in to select up to 10 available episodes from this show’s first page, in Spotify’s returned order. It does not promise newest or unplayed order. "
+        default: selection = ""
+        }
+        if queued {
+            return selection + "Adds the selected source without starting or resuming playback. The daemon resolves the source and applies its queue rules."
+        }
+        if kind == .artist || kind == .show {
+            return selection + "Replaces this group’s queue and plays the selected entries in order through the household’s own Sonos Spotify link. The previous queue contents cannot be recovered through ordinary undo. Playback volume caps apply."
+        }
+        return "Replaces what this group plays and can change its queue. The daemon applies playback volume caps."
     }
     public var requiresDJ: Bool {
         switch self {

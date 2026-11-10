@@ -394,8 +394,9 @@ private actor CatalogRig {
         case .queueNext, .queueLast: acknowledgement = #"{"done":"Queued","first":3,"count":4,"playing_queue":false}"#
         }
         // Initial browse, prepare reads, confirmation reads, and one write.
-        let transport = try RecordingTransport(jsons: [catalogJSON(request, total: 1), "[\(zones)]", state,
-                                                       "[\(zones)]", state, acknowledgement])
+        let queue = #"{"zone":"Studio","total":2,"revision":"queue-r1","items":[{"position":1,"title":"Current","uri":"fixture:queue-entry"}]}"#
+        let observation = ["[\(zones)]", state] + (action == .playNow ? [] : [queue])
+        let transport = try RecordingTransport(jsons: [catalogJSON(request, total: 1)] + observation + observation + [acknowledgement])
         let daemon = try client(transport)
         let catalog = LibraryCatalogModel(client: daemon, searchDelay: .zero)
         catalog.resume(); catalog.browse(.playlists); try await drain { !catalog.loading }

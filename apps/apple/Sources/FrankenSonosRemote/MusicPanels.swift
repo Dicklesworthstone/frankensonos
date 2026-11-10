@@ -2,19 +2,30 @@
 import SwiftUI
 import FrankenSonosKit
 
+private enum MusicLibraryMode: String, CaseIterable {
+    case saved, searchSaved, spotify
+    var title: String {
+        switch self { case .saved: "Browse saved"; case .searchSaved: "Search saved"; case .spotify: "Spotify online" }
+    }
+}
+
 @MainActor struct MusicPanels: View {
     @ObservedObject var bridge: RemoteBridge
     @State private var search = ""
     @State private var source = ""
     @State private var mood = ""
     @State private var minutes = 60
-    @State private var browsingLibrary = true
+    @State private var libraryMode: MusicLibraryMode = .saved
     @State private var selectingQueueBlock = false
     @State private var queueSelectionRefreshID = UUID()
     private var model: RemoteModel { bridge.model }
     private var ready: Bool { model.canPrepare && !model.panelLoading }
-    private var catalogVisible: Bool { model.panel == .library && browsingLibrary }
-    private var panelLoading: Bool { catalogVisible ? bridge.catalog.loading : model.panelLoading }
+    private var catalogVisible: Bool { model.panel == .library && libraryMode == .saved }
+    private var spotifyVisible: Bool { model.panel == .library && libraryMode == .spotify }
+    private var panelLoading: Bool { spotifyVisible ? bridge.spotifySearch.loading : catalogVisible ? bridge.catalog.loading : model.panelLoading }
+    private var canRefresh: Bool {
+        spotifyVisible ? bridge.spotifySearch.canSearch : catalogVisible ? bridge.catalog.canRefresh : model.active && !panelLoading
+    }
     private var panelTitle: String {
         switch model.panel {
         case .queue: "Up next"
@@ -34,7 +45,8 @@ import FrankenSonosKit
                 Spacer()
                 if panelLoading { ProgressView().controlSize(.small) }
                 Button {
-                    if catalogVisible { bridge.catalog.refresh() }
+                    if spotifyVisible { bridge.spotifySearch.search() }
+                    else if catalogVisible { bridge.catalog.refresh() }
                     else {
                         if model.panel == .queue { bridge.queueSearch.invalidate(); queueSelectionRefreshID = UUID() }
                         model.refreshPanel()
@@ -43,10 +55,10 @@ import FrankenSonosKit
                     Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
-                .disabled(catalogVisible ? !bridge.catalog.canRefresh : !model.active || panelLoading)
-                .accessibilityLabel("Refresh \(panelTitle.lowercased())")
+                .disabled(!canRefresh)
+                .accessibilityLabel(spotifyVisible ? "Search Spotify again" : "Refresh \(panelTitle.lowercased())")
             }
-            if let problem = model.panelProblem, !catalogVisible {
+            if let problem = model.panelProblem, !catalogVisible && !spotifyVisible {
                 Label(problem, systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true).remoteCard()
@@ -344,7 +356,8 @@ import FrankenSonosKit
                     libraryModeButton
                 }
             }
-            if browsingLibrary { LibraryBrowserPanel(bridge: bridge) }
+            if libraryMode == .spotify { SpotifySearchPanel(bridge: bridge) }
+            else if libraryMode == .saved { LibraryBrowserPanel(bridge: bridge) }
             else if model.selectedZone != nil { librarySearchPanel }
             else {
                 EmptyMusicState(title: "Choose a room to search everything", systemImage: "hifispeaker",
@@ -355,15 +368,15 @@ import FrankenSonosKit
     }
 
     private var libraryModeDescription: some View {
-        Text(browsingLibrary ? "Albums, tracks and playlists" : "Your library and this household’s favorites")
+        Text(libraryMode == .spotify ? "Find music and podcasts on Spotify"
+             : libraryMode == .saved ? "Albums, tracks and playlists" : "Your saved library and this household’s favorites")
             .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 
     private var libraryModeButton: some View {
-        Button(browsingLibrary ? "Search all" : "Browse library",
-               systemImage: browsingLibrary ? "magnifyingglass" : "square.grid.2x2") {
-            browsingLibrary.toggle()
-        }.buttonStyle(.bordered)
+        Picker("Music collection", selection: $libraryMode) {
+            ForEach(MusicLibraryMode.allCases, id: \.self) { Text($0.title).tag($0) }
+        }.pickerStyle(.menu)
     }
 
     private var librarySearchPanel: some View {

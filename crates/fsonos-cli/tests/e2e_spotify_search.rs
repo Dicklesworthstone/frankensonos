@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 const ARTIST: &str = "Artist0000000000000001";
+const ALBUM: &str = "Album00000000000000001";
 const QUERY: &str = "Lantern & Coast";
 
 fn catalog() -> FakeSpotify {
@@ -28,8 +29,8 @@ fn catalog() -> FakeSpotify {
             "id": id, "uri": format!("spotify:track:{id}"), "name": format!("Catalog song {n}"),
             "artists": [{ "id": ARTIST, "name": "Lantern Coast" }],
             "album": {
-                "id": "Album00000000000000001",
-                "uri": "spotify:album:Album00000000000001",
+                "id": ALBUM,
+                "uri": format!("spotify:album:{ALBUM}"),
                 "name": "Catalog album",
             },
             "duration_ms": 210_000, "is_playable": true, "explicit": false,

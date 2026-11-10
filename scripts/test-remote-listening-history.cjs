@@ -135,7 +135,7 @@ function playerFixture(extra = {}) {
     if (extra.call) return extra.call(name, args);
     if (name === 'zones') return groups();
     if (name === 'state') return { zone: groupOf(args.params.room), transport_state: 'playing', track: { uri: 'test:current', title: 'Current', queue_position: 1 } };
-    if (name === 'sourceQueueState') return { zone: 'Study', revision: 'queue-original', total: 3, playing: 1, items: [{ position: 1 }] };
+    if (name === 'sourceQueueState') return { zone: 'Study', revision: extra.revision?.() ?? 'queue-original', total: 3, playing: 1, items: [{ position: 1 }] };
     if (name === 'sourceQueue') return { zone: 'Study', done: 'Added', first: 2, count: 1, playing_queue: true };
     if (name === 'sourcePlay') return { done: 'Playing', changed: true };
     throw new Error(`Unexpected call ${name}`);
@@ -185,7 +185,7 @@ test('source imports cannot carry a destination, queue position, action or unkno
 });
 
 for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) for (const gen of ['S1', 'S2'])
-  for (const mode of ['artist', 'show'].includes(kind) ? ['next', 'end'] : ['play', 'next', 'end']) {
+  for (const mode of ['play', 'next', 'end']) {
   test(`recorded ${kind} reaches ${gen} ${mode} only after selecting, reviewing and confirming`, async () => {
     const f = playerFixture(), row = play({ room: 'Study', source_uri: `spotify:${kind}:0000000000000000000001` });
     assert.equal(await f.m.offer(history.replayOf(row, sourcePlayer.source)), true);
@@ -205,17 +205,21 @@ for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) 
 }
 
 for (const kind of ['artist', 'show']) for (const gen of ['S1', 'S2']) {
-  test(`recorded ${kind} cannot bypass the direct-play refusal in ${gen}`, async () => {
-    const f = playerFixture(), row = play({ room: 'Study', source_uri: `spotify:${kind}:0000000000000000000001` });
+  test(`recorded ${kind} playback refuses a changed destination queue in ${gen}`, async () => {
+    let revision = 'queue-original';
+    const f = playerFixture({ revision: () => revision });
+    const row = play({ room: 'Study', source_uri: `spotify:${kind}:0000000000000000000001` });
     assert.equal(await f.m.offer(history.replayOf(row, sourcePlayer.source)), true);
     assert.equal(f.m.edit('target', `Study@${gen}`), true);
-    const before = f.calls.length;
-    assert.equal(await f.m.review(), false);
-    assert.equal(f.calls.length, before, 'unsupported direct playback fails before any destination reads');
-    assert.equal(f.m.state.pending, null); assert.equal(await f.m.confirm(f.m.state.pending), false);
-    assert.equal(f.writes().length, 0, 'history import cannot silently queue or dispatch a playback fallback');
+    assert.equal(await f.m.review(), true);
+    const pending = f.m.state.pending;
+    assert.equal(f.writes().length, 0, 'a catalog history selection is only reviewed, never played automatically');
+    revision = 'queue-replaced';
+    assert.equal(await f.m.confirm(pending), false);
+    assert.equal(await f.m.confirm(pending), false, 'a stale review cannot be replayed');
+    assert.equal(f.writes().length, 0, 'catalog replacement must retain the reviewed destination queue');
     assert.equal(f.m.state.input, row.source_uri); assert.equal(f.m.state.mode, 'play');
-    assert.match(f.m.state.message, /Choose Queue next or Queue at end/);
+    assert.equal(f.m.state.result.status, 'not_sent');
   });
 }
 

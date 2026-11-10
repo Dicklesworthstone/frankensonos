@@ -86,6 +86,9 @@ private actor PlaylistTransport: DaemonTransport {
                 "transport_state":"playing","volume":20,"mute":false,"track":{"uri":"\(track)","duration_secs":120,"position_secs":1,"queue_position":1}}
                 """.utf8), status: 200)
         }
+        if path.hasSuffix("/queue") {
+            return HTTPReply(data: Data(#"{"zone":"Studio","total":8,"revision":"queue-r1","playing":1,"items":[{"position":1,"title":"Current","uri":"fixture:queue-entry"}]}"#.utf8), status: 200)
+        }
         #expect(path == "/library/playlist")
         let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
         func value(_ key: String) -> String? { query.first { $0.name == key }?.value }

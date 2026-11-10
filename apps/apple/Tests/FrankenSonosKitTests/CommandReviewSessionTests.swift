@@ -12,6 +12,8 @@ actor ReviewTransport: DaemonTransport {
     var volumes = ["Studio@TEST-A": 20, "Hall@TEST-A": 40]
     var uri = "test:track:one", position = 12
     var revision = "queue-r1", favoriteTitle = "Test station", workTitle = "Test work"
+    var queueTotal: UInt32 = 1, queuePlaying: UInt32? = 1
+    var queueReply: Data?
     var unavailable: String?
     var destinationExpanded = false
     var lostWrite = false, malformedWrite = false, wrongFeedback = false
@@ -23,6 +25,8 @@ actor ReviewTransport: DaemonTransport {
     func setURI(_ value: String) { uri = value }
     func setPosition(_ value: Int) { position = value }
     func setRevision(_ value: String) { revision = value }
+    func setQueue(total: UInt32, playing: UInt32?) { queueTotal = total; queuePlaying = playing }
+    func overrideQueue(_ json: String) { queueReply = Data(json.utf8) }
     func setFavorite(_ value: String) { favoriteTitle = value }
     func setWork(_ value: String) { workTitle = value }
     func setUnavailable(_ value: String?) { unavailable = value }
@@ -80,7 +84,11 @@ actor ReviewTransport: DaemonTransport {
                              "mute": false, "track": ["uri": uri, "duration_secs": 240, "position_secs": position, "queue_position": 1]])
         }
         if path.hasSuffix("/queue") {
-            return try json(["total": 1, "revision": revision, "items": [["position": 1, "title": "Test entry", "uri": "test:entry"]]])
+            if let queueReply { return HTTPReply(data: queueReply, status: 200) }
+            var queue: [String: Any] = ["zone": "Studio", "total": queueTotal, "revision": revision,
+                                       "items": queueTotal == 0 ? [] : [["position": 1, "title": "Test entry", "uri": "test:entry"]]]
+            if let queuePlaying { queue["playing"] = queuePlaying }
+            return try json(queue)
         }
         if path == "/favorites" {
             return try json([["id": "FV:1", "title": favoriteTitle, "kind": "stream"]])

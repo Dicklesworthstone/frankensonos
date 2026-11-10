@@ -55,6 +55,9 @@ private actor ActivityTransport: DaemonTransport {
         case let p where p.hasSuffix("/state"):
             reply = try activityWire(["zone": ["household": "TEST-A", "coordinator_room": "Studio", "members": ["Studio", "Hall"], "transport_state": "playing"],
                                       "transport_state": "playing", "volume": 20, "mute": false])
+        case let p where request.httpMethod == "GET" && p.hasSuffix("/queue"):
+            reply = try activityWire(["zone": "Studio", "total": 2, "revision": "queue-r1",
+                                      "items": [["position": 1, "title": "Retained music", "uri": "fixture:entry"]]])
         case "/play": reply = try activityWire(["done": "Playing selected source", "changed": true])
         case "/queue": reply = try activityWire(["done": "Added without starting", "first": 3, "count": 1, "playing_queue": false])
         default: throw ContractError.invalid("Unexpected activity test route")

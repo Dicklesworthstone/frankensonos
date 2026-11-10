@@ -164,9 +164,9 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
         func lowerASCII(_ value: String) -> String { String(decoding: SceneName.key(value), as: UTF8.self) }
         func spotify(_ kind: String, _ id: String) throws -> String {
             let kind = lowerASCII(kind)
-            guard ["track", "album", "playlist"].contains(kind), id.utf8.count == 22,
+            guard SpotifyCatalogKind(rawValue: kind) != nil, id.utf8.count == 22,
                   id.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) }) else {
-                throw ContractError.invalid("Choose a Spotify track, album or playlist with its complete 22-character ID.")
+                throw ContractError.invalid("Choose a Spotify track, album, artist, playlist, show or episode with its complete 22-character ID.")
             }
             return "spotify:\(kind):\(id)"
         }
@@ -176,7 +176,7 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
             if parts.count == 4, lowerASCII(parts[0]) == "user", lowerASCII(parts[2]) == "playlist" {
                 return try spotify("playlist", parts[3])
             }
-            throw ContractError.invalid("Paste a complete Spotify track, album or playlist link.")
+            throw ContractError.invalid("Paste a complete Spotify track, album, artist, playlist, show or episode link.")
         }
         if ["http", "https"].contains(lowerASCII(scheme)), rest.hasPrefix("//") {
             let pieces = String(rest.dropFirst(2)).split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
@@ -191,7 +191,7 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
                 if parts.first == "embed" { parts.removeFirst() }
                 if parts.count == 2 { return try spotify(parts[0], parts[1]) }
                 if parts.count == 4, parts[0] == "user", parts[2] == "playlist" { return try spotify("playlist", parts[3]) }
-                throw ContractError.invalid("Paste a full Spotify track, album or playlist link.")
+                throw ContractError.invalid("Paste a full Spotify track, album, artist, playlist, show or episode link.")
             }
         }
         return value

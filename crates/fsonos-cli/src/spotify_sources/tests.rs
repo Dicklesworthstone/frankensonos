@@ -281,8 +281,10 @@ fn artist_and_show_reads_share_the_same_cooldown_across_workers() {
                     .api_errors
                     .insert(format!("/v1/shows/{SHOW}"), (429, Some(3600)));
             } else {
-                state.rate_limit_artists = 1;
-                state.artist_retry_after = Some(3600);
+                state.api_errors.insert(
+                    format!("/v1/artists/{ARTIST}/top-tracks?market=from_token"),
+                    (429, Some(3600)),
+                );
             }
         }
         for show in [show_first, !show_first, show_first] {
@@ -410,8 +412,10 @@ fn search_and_playback_share_the_same_spotify_cooldown() {
             if search_first {
                 state.api_errors.insert(path.clone(), (429, Some(3600)));
             } else {
-                state.rate_limit_artists = 1;
-                state.artist_retry_after = Some(3600);
+                state.api_errors.insert(
+                    format!("/v1/artists/{ARTIST}/top-tracks?market=from_token"),
+                    (429, Some(3600)),
+                );
             }
         }
         for search in [search_first, !search_first, search_first] {

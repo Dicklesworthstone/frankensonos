@@ -11,6 +11,30 @@ send requests. Select a result to put its canonical source into the link draft,
 then review the target group and **Play now**, **Play next**, or **Add to queue**.
 Selecting a result alone never writes to a speaker.
 
+### Native iPhone and Mac app
+
+Open **Spotify online** in the **Music** library panel. Choose one of the same six categories,
+enter a query and press **Search Spotify**. The native client uses the daemon's
+existing account; it can search without a selected speaker and does not create a
+separate Spotify sign-in. Ordinary local reads retain their usual deadline,
+while this online search allows 60 seconds for the daemon's 45-second worker.
+
+Results retain the exact query, kind, canonical source URI and observation time.
+The first page contains at most ten results; a `more` response asks the user to
+refine the query. Search is explicit and single-flight. Changing the query or
+category, cancelling, leaving the view or suspending the app retires selection
+authority. A cancelled request keeps its slot until it drains, and late replies
+cannot overwrite a newer draft.
+
+**Play now**, **Queue next** and **Add to end of queue** enter the same one-use
+review as a pasted source. Review binds the chosen source to the selected group;
+confirmation never reruns the search. Queue insertions and artist/show queue
+replacement also compare a bounded destination queue observation before sending.
+A changed group or queue requires a fresh review. Lost playback replies remain
+uncertain and are never automatically retried.
+
+### CLI
+
 The CLI defaults to tracks and ten results:
 
 ~~~bash
@@ -93,7 +117,10 @@ the DJ's standing taste.
 The regression sources cover all six kinds; exact query/type binding; bounded
 and malformed results; policy denial before I/O; token refresh, API refusal and
 shared cooldown; direct CLI, HTTP, remote CLI and standalone MCP; and explicit
-browser find → choose → review → play/queue flows.
+browser and native find → choose → review → play/queue flows. Native tests use
+controlled daemon replies and cover both household generations, all six kinds,
+all three actions, lifecycle cancellation, changed destinations and single-use
+confirmation. They do not require a live Spotify account or physical speakers.
 
 Focused Rust commands:
 

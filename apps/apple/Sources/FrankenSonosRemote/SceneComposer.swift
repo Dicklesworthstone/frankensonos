@@ -211,7 +211,7 @@ import FrankenSonosKit
             Text("Use whatever this leading room is playing when the scene is applied.")
                 .font(.caption).foregroundStyle(.secondary)
         case .uri:
-            TextField("Spotify track, album, playlist or music URI", text: Binding(get: { self.group?.value ?? "" }, set: { text in update { $0.value = text } }))
+            TextField("Spotify music, podcast link or source URI", text: Binding(get: { self.group?.value ?? "" }, set: { text in update { $0.value = text } }))
                 .textFieldStyle(.roundedBorder).accessibilityLabel("Scene music URI or Spotify link")
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)

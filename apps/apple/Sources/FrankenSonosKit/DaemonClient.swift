@@ -175,8 +175,9 @@ public struct DaemonClient: Sendable {
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(type, from: data)
     }
-    public func get<T: Decodable & Sendable>(_ type: T.Type, _ path: [String], query: [URLQueryItem] = []) async throws -> T {
-        var request = URLRequest(url: try endpoint.resource(path, query: query), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
+    public func get<T: Decodable & Sendable>(_ type: T.Type, _ path: [String], query: [URLQueryItem] = [],
+                                            timeout: TimeInterval = 15) async throws -> T {
+        var request = URLRequest(url: try endpoint.resource(path, query: query), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let reply = try await transport.send(request)
         try Self.check(reply)

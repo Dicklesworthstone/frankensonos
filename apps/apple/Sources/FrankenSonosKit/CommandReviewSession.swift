@@ -104,6 +104,7 @@ fileprivate struct CommandObservation: Sendable {
     let favorite: Favorite?
     let scene: Scene?
     let sleepTimer: SleepTimer?
+    let sourceQueue: SourceQueueReview?
 
     func state(for command: NativeCommand, in zone: Zone) throws -> ZoneState {
         let id = RoomID(household: zone.household, room: command.room ?? zone.coordinatorRoom)
@@ -187,7 +188,9 @@ fileprivate struct CommandObservation: Sendable {
         default: break
         }
         try Task.checkCancellation()
-        let result = Self(house: house, dj: dj, favorite: favorite, scene: scene, sleepTimer: sleepTimer)
+        let sourceQueue = command.needsSourceQueueReview ? try await SourceQueueReview.read(client, in: zone) : nil
+        try Task.checkCancellation()
+        let result = Self(house: house, dj: dj, favorite: favorite, scene: scene, sleepTimer: sleepTimer, sourceQueue: sourceQueue)
         let state = try result.state(for: command, in: zone)
         try command.validate(before: state, current: state)
         return result
@@ -195,6 +198,12 @@ fileprivate struct CommandObservation: Sendable {
 
     func validate(_ current: Self, command: NativeCommand, zone: Zone) throws {
         try command.validate(before: state(for: command, in: zone), current: current.state(for: command, in: zone))
+        if command.needsSourceQueueReview {
+            guard let sourceQueue, let after = current.sourceQueue else {
+                throw ContractError.invalid("The destination queue is unavailable. Review this source again.")
+            }
+            try sourceQueue.validate(after, command: command)
+        }
         if command.sleepChange != nil {
             switch (sleepTimer, current.sleepTimer) {
             case (nil, nil): break

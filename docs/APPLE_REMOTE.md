@@ -92,7 +92,7 @@ daemon and the app connects to the origin you provide.
 ## What the screen connects
 
 The app has four destinations: **Listen** for artwork, playback and room levels;
-**Music** for favorites, library browsing/search and the queue; **Your DJ** for the current
+**Music** for favorites, saved-library browsing/search, Spotify online search and the queue; **Your DJ** for the current
 whole work, explanations and steering; and **House** for scenes, sleep timers,
 schedules, grouping, Spotify setup and activity. A mini player remains above the
 tab bar while browsing. The Mac keeps a room sidebar; the iPhone and iPad use a
@@ -128,6 +128,14 @@ the page readable but not editable. Source URIs and library results can be
 played, queued next or appended; adding to the queue does not start playback.
 Favorites are read from the selected household and reviewed by their stable ID.
 
+Source insertions also retain a bounded destination queue observation during
+review and compare it again before confirmation: revision, entry count and the
+first entry's exact URI. Queue-next and artist/show queue replacement additionally
+retain the playing occurrence. Appending permits normal playback advancement.
+A changed or unreadable queue consumes the review without sending the command.
+These reads use one queue entry, not a complete queue download; the daemon still
+owns the final device checks.
+
 **Shuffle & repeat** in Up next reads the selected group's playback order and
 offers a reviewed change. Native controls distinguish shuffle, repeat-all and
 repeat-one, including the daemon's DJ-aware behavior for whole works. These
@@ -142,6 +150,22 @@ Play, queue next and append all use the selected household/group's existing
 command review. Album playback uses the full album source; the displayed track
 list describes cached coverage, not a promise that every album track is saved.
 **Search all** keeps the combined cached-library and household-favorites search.
+**Spotify online** searches beyond saved music. Choose tracks, albums, artists,
+playlists, shows or episodes, enter a query and press **Search Spotify**. The app
+reads a bounded first page only when requested; searching does not need a selected
+speaker. Results show their query, category and observation time. Editing the
+query/category, cancelling, leaving the view or suspending the app retires the
+result selection, so a delayed response cannot replace a newer draft.
+
+Each current result offers **Play now**, **Queue next** and **Add to end of queue**.
+Choosing one enters the shared command review with the exact returned source
+and explicitly selected household/group. It sends no playback command until
+confirmation, and confirmation never searches again to choose a different
+result. Artist playback selects up to ten tracks; show playback selects up to
+ten available episodes in the provider's returned order. Their review explains
+queue replacement and the lack of ordinary queue undo. See
+`docs/SPOTIFY_SEARCH.md` for provider bounds and account requirements.
+
 Spotify sign-in and library synchronization are available from **House**.
 
 The DJ panel shows its current whole work, the upcoming works and the reason for
@@ -261,6 +285,15 @@ These cover all four action types, store management without speaker reads,
 house-local and offset-explicit times, shared playback command locking, cancelled
 reads, and uncertain acknowledgements that must not be replayed. Schedule-list
 observations are not evidence that a scheduled action actually ran.
+
+Native catalog-search regressions exercise all six source kinds and all three
+play/queue actions through the production client and one-use command session.
+They also cover cancelled and delayed reads, stale result selection, changed
+destination groups, malformed metadata and lost write acknowledgements.
+Source-queue review tests cover changed revisions/counts/entries, empty queues,
+append versus queue-next playback advancement, cancellation and no replay.
+These are test sources; the implementation session's Swift build was interrupted
+before completion, so a completed native test or SDK build is not claimed here.
 
 Spotify setup adds twenty-eight client/workflow tests for read-only consent,
 callback binding, explicit browser opening, partial imports, read isolation,
