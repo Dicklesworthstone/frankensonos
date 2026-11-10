@@ -3615,3 +3615,30 @@ device-side bug.
 gdb note for this build: the link register is **`$lr`**, `$ra` errors out;
 `break kill` must be installed *before* the `call` (the abort happens *during*
 it), and `bt` unwinds cleanly through libc/libpthread frames.
+
+**Decoded: the abort is "crypto context never initialised".** `ZZ0071` (base
+`0x85f4`) is a verify-or-die helper:
+
+```
+85f4 ZZ0071:   ... lwz r9,-32768(r30) ; lwz r0,0(r9)
+8624           cmpwi cr7,r0,0
+8628           beq cr7,8650        -> abort
+8650           bl abort@plt
+```
+
+The global is the library's own context pointer, cleared to 0 by the teardown
+(`sonosRefCntGlobalTerminate`, `mbedtls_entropy_free`, `mbedtls_ctr_drbg_free`
+at `0x85bc-0x85d0`). Its **initialiser is `ZZ0041` at `0x0fdb8460`**, which
+does exactly the right thing — `sonosRefCntGlobalInitialize`, `mbedtls_entropy_init`,
+drbg setup, then sets the flag — and is idempotent (`lwz`/`cmpwi`/`bne` guard at
+`0x848c`). The daemon simply never reaches it in this boot, so the first crypto
+call aborts.
+
+Fix options, cheapest first: (a) redirect an early daemon PLT entry to
+`ZZ0041` so the library initialises itself; (b) LD_PRELOAD a one-instruction
+PPC stub whose constructor calls it; (c) patch the check to a `b` and accept
+an uninitialised context only if the caller passes one.
+
+Tooling notes: `$lr` is the link register (not `$ra`); `break kill` must exist
+before any `call`; a `call` from gdb runs the inferior but **never returns
+control** to the script, so anything after it must not be needed.
