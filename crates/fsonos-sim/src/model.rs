@@ -752,6 +752,7 @@ impl State {
             "ZoneGroupTopology" => self.zone_group_topology(p, action),
             "ContentDirectory" => self.content_directory(p, action, args),
             "DeviceProperties" => self.device_properties(p, action),
+            "AudioIn" => self.audio_in(p, action),
             _ => Err(INVALID_ACTION),
         }
     }
@@ -1207,6 +1208,18 @@ impl State {
     /// or a Spotify item that does not carry this household's linked-account
     /// parameters and `desc` (800).
     fn check_renderable(&self, p: usize, uri: &str, metadata: &str) -> Result<(), Fault> {
+        if let Some(source) = uri.strip_prefix("x-rincon-stream:") {
+            let source = self.find(source).ok_or(TRANSITION_NOT_AVAILABLE)?;
+            let input = &self.players[source];
+            return if input.model.has_line_in()
+                && input.household == self.players[p].household
+                && !input.offline
+            {
+                Ok(())
+            } else {
+                Err(TRANSITION_NOT_AVAILABLE)
+            };
+        }
         let lower = uri.to_ascii_lowercase();
         if lower.starts_with("spotify:") {
             return Err(ILLEGAL_MIME_TYPE);
@@ -1537,6 +1550,20 @@ impl State {
             ("TotalMatches", total.to_string()),
             ("UpdateID", update_id.to_string()),
         ])
+    }
+
+    fn audio_in(&self, p: usize, action: &str) -> Result<Out, Fault> {
+        let player = &self.players[p];
+        if !player.model.has_line_in() {
+            return Err(INVALID_ACTION);
+        }
+        match action {
+            "GetAudioInputAttributes" => Ok(vec![
+                ("CurrentName", format!("{} line-in", player.room)),
+                ("CurrentIcon", "AudioComponent".to_owned()),
+            ]),
+            _ => Err(INVALID_ACTION),
+        }
     }
 
     fn device_properties(&self, p: usize, action: &str) -> Result<Out, Fault> {

@@ -22,6 +22,7 @@
 //! testable without a network, and so the franken async stack is wired in one
 //! place ([`net`]).
 
+pub mod audio_in;
 pub mod content;
 pub mod control;
 pub mod description;

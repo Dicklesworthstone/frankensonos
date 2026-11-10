@@ -65,6 +65,8 @@ const ANY_PORT: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
 pub enum SimModel {
     /// Play:5 Gen 1 (model `S5`), S1-only.
     Play5Gen1,
+    /// Play:5 Gen 2 (model `S6`), a physical line-in capable S2 player.
+    Play5Gen2,
     /// Bridge (`ZB100`), S1-only; not a renderer.
     Bridge,
     /// One (`S13`).
@@ -77,7 +79,7 @@ impl SimModel {
     #[must_use]
     pub fn model_name(self) -> &'static str {
         match self {
-            Self::Play5Gen1 => "Sonos Play:5",
+            Self::Play5Gen1 | Self::Play5Gen2 => "Sonos Play:5",
             Self::Bridge => "Sonos Bridge",
             Self::One => "Sonos One",
             Self::Play1 => "Sonos Play:1",
@@ -88,6 +90,7 @@ impl SimModel {
     pub fn model_number(self) -> &'static str {
         match self {
             Self::Play5Gen1 => "S5",
+            Self::Play5Gen2 => "S6",
             Self::Bridge => "ZB100",
             Self::One => "S13",
             Self::Play1 => "S1",
@@ -97,11 +100,17 @@ impl SimModel {
     #[must_use]
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Play5Gen1 => "Play:5",
+            Self::Play5Gen1 | Self::Play5Gen2 => "Play:5",
             Self::Bridge => "Bridge",
             Self::One => "One",
             Self::Play1 => "Play:1",
         }
+    }
+
+    /// Whether the model exposes a native AudioIn service.
+    #[must_use]
+    pub fn has_line_in(self) -> bool {
+        matches!(self, Self::Play5Gen1 | Self::Play5Gen2)
     }
 
     /// Whether it plays audio (exposes AVTransport). False for a Bridge.

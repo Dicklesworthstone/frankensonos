@@ -42,6 +42,12 @@ pub(crate) const ZONE_GROUP_TOPOLOGY: ServiceDef = service(
     "/ZoneGroupTopology/Control",
     "/ZoneGroupTopology/Event",
 );
+pub(crate) const AUDIO_IN: ServiceDef = service(
+    "AudioIn",
+    "urn:schemas-upnp-org:service:AudioIn:1",
+    "/AudioIn/Control",
+    "/AudioIn/Event",
+);
 pub(crate) const CONTENT_DIRECTORY: ServiceDef = service(
     "ContentDirectory",
     "urn:schemas-upnp-org:service:ContentDirectory:1",
@@ -78,6 +84,9 @@ const MEDIA_RENDERER: [ServiceDef; 3] = [RENDERING_CONTROL, AV_TRANSPORT, GROUP_
 /// (docs/PROTOCOL.md §2): a Bridge has no MediaServer / MediaRenderer.
 pub(crate) fn services(model: SimModel) -> Vec<ServiceDef> {
     let mut all = TOP_LEVEL.to_vec();
+    if model.has_line_in() {
+        all.push(AUDIO_IN);
+    }
     if model.is_renderer() {
         all.extend(MEDIA_SERVER);
         all.extend(MEDIA_RENDERER);
@@ -128,7 +137,11 @@ pub(crate) fn device_description(p: &Player, sw_gen: u8) -> String {
         room = xml_escape(&p.room),
         short = m.display_name(),
     );
-    service_list(&mut out, &TOP_LEVEL);
+    let mut top_level = TOP_LEVEL.to_vec();
+    if m.has_line_in() {
+        top_level.push(AUDIO_IN);
+    }
+    service_list(&mut out, &top_level);
     if m.is_renderer() {
         out.push_str("<deviceList>");
         for (kind, defs) in [

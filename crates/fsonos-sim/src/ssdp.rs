@@ -79,6 +79,7 @@ fn is_zoneplayer_search(datagram: &[u8]) -> bool {
 fn server_token(model: SimModel) -> &'static str {
     match model {
         SimModel::Play5Gen1 => "ZPS5",
+        SimModel::Play5Gen2 => "ZPS6",
         SimModel::Bridge => "BR100",
         SimModel::One => "ZPS13",
         SimModel::Play1 => "ZPS1",

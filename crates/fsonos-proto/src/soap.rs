@@ -28,6 +28,14 @@ pub const AV_TRANSPORT: Service = Service {
     event_path: "/MediaRenderer/AVTransport/Event",
 };
 
+/// AudioIn — the physical analog input on capable players.
+pub const AUDIO_IN: Service = Service {
+    name: "AudioIn",
+    service_type: "urn:schemas-upnp-org:service:AudioIn:1",
+    control_path: "/AudioIn/Control",
+    event_path: "/AudioIn/Event",
+};
+
 /// RenderingControl — volume, mute, bass/treble, loudness.
 pub const RENDERING_CONTROL: Service = Service {
     name: "RenderingControl",
