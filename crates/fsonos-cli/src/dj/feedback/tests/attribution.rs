@@ -2,12 +2,22 @@
 
 use super::super::attribution::movement as observed;
 use super::*;
+use crate::dj::SpotifyDj;
+use fsonos_api::dj::{DjEngine, DjSpeakers};
+use fsonos_core::HouseholdState;
+use fsonos_core::clock::FakeClock;
+use fsonos_core::playback::Playback;
 use fsonos_core::store::MemStore;
+use fsonos_proto::control as soap;
+use fsonos_proto::topology::get_zone_group_state;
+use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 use fsonos_spotify::classical::CandidatePool;
 use fsonos_spotify::dj::{DjConfig, PickReason};
 use fsonos_spotify::feed::{FeedSnapshot, Movement as QueuedMovement, QueuedWork};
 use fsonos_spotify::library::{LibraryItem, Origin};
 use fsonos_spotify::works::{Completeness, group_works};
+use fsonos_types::PlayerId;
+use std::time::Instant;
 
 fn work(take: &str) -> Work {
     let items: Vec<_> = ["I. Prelude", "II. Allemande", "III. Courante"]
@@ -97,6 +107,253 @@ fn feed(queued: QueuedWork) -> QueueFeed {
         DjConfig::default(),
         1,
     )
+}
+
+/// Exercise the feed's observation checks and the daemon's taste learning
+/// together, over real simulator sockets for both player generations.
+struct LiveFeedback {
+    sim: SimHandle,
+    households: Vec<HouseholdState>,
+    id: PlayerId,
+    dj: SpotifyDj,
+    store: MemStore,
+    clock: FakeClock,
+    works: Vec<Work>,
+}
+
+impl LiveFeedback {
+    fn new(generation: u8) -> Self {
+        let builder = SimHousehold::builder();
+        let sim = if generation == 1 {
+            builder.s1([SimPlayerSpec::new("Feedback Room", SimModel::Play5Gen1)])
+        } else {
+            builder.s2([SimPlayerSpec::new("Feedback Room", SimModel::One)])
+        }
+        .spawn()
+        .unwrap();
+        let player = sim.player("Feedback Room").unwrap();
+        let id = PlayerId(player.uuid.clone());
+        let lan = sim.lan();
+        let mut house = HouseholdState::default();
+        house.apply_topology(&get_zone_group_state(&lan, player.ip).unwrap());
+        let households = vec![house];
+        let works = vec![work("A"), work("B"), work("C")];
+        let tracks: Vec<_> = works
+            .iter()
+            .flat_map(|work| &work.movements)
+            .map(|movement| {
+                (
+                    movement.track.source_uri.as_str(),
+                    movement.track.title.as_str(),
+                )
+            })
+            .collect();
+        control::queue_spotify_tracks(&lan, &households, &id, &tracks).unwrap();
+        let dj = SpotifyDj::new(None);
+        {
+            let mut state = dj.state();
+            state.pool = WorkPool::from_works(works.clone());
+            state.planned = true;
+            state.plan_inputs = Some(crate::dj::plan_inputs(None));
+            state.feeds.insert(
+                id.clone(),
+                QueueFeed::restore(
+                    FeedSnapshot {
+                        zone: id.0.clone(),
+                        earlier: Vec::new(),
+                        lookahead: 1,
+                        queued: works
+                            .iter()
+                            .enumerate()
+                            .map(|(index, work)| {
+                                queued(work, 1 + 3 * u32::try_from(index).unwrap())
+                            })
+                            .collect(),
+                        playing: Some(1),
+                        recorded: None,
+                        played: Vec::new(),
+                        recovery: Default::default(),
+                    },
+                    DjConfig::default(),
+                    7,
+                ),
+            );
+        }
+        Self {
+            sim,
+            households,
+            id,
+            dj,
+            store: MemStore::default(),
+            clock: FakeClock::new(
+                chrono::DateTime::parse_from_rfc3339("2026-10-07T12:00:00+00:00").unwrap(),
+            ),
+            works,
+        }
+    }
+
+    fn read(&self) -> PlayerPlayback {
+        let host = self.sim.player("Feedback Room").unwrap().ip;
+        let info = soap::get_position_info(&self.sim.lan(), host).unwrap();
+        let mut model = Playback::default();
+        model.apply_position(&self.id, &info, Instant::now());
+        let mut event = model.of(&self.id).unwrap().clone();
+        event.transport = Some(
+            soap::get_transport_info(&self.sim.lan(), host)
+                .unwrap()
+                .state,
+        );
+        event.media_uri = Some(format!("x-rincon-queue:{}#0", self.id.0));
+        event.queue_length = Some(9);
+        event.play_mode = Some("NORMAL".into());
+        // The synthetic recording's duration is authoritative for this test.
+        event.duration_secs = Some(180);
+        event
+    }
+
+    fn seek(&mut self, position: u32) -> PlayerPlayback {
+        control::play_queue_from(&self.sim.lan(), &self.households, &self.id, position).unwrap();
+        let event = self.read();
+        self.observe(&event);
+        event
+    }
+
+    fn observe(&mut self, event: &PlayerPlayback) {
+        self.dj.on_playback(
+            DjSpeakers {
+                transport: &self.sim.lan(),
+                households: &self.households,
+                coordinator: &self.id,
+            },
+            &mut self.store,
+            event,
+            &self.clock,
+        );
+    }
+
+    fn advance(&self, seconds: i64) {
+        self.clock.advance(chrono::TimeDelta::seconds(seconds));
+    }
+
+    fn accepted(&self) -> bool {
+        self.dj.state().feeds[&self.id].accepted_playback()
+    }
+
+    fn signals(&self) -> Vec<fsonos_core::store::Feedback> {
+        self.store.feedback_between(0..i64::MAX).unwrap()
+    }
+}
+
+#[test]
+fn rejected_backward_events_do_not_teach_skips_or_fabricated_completions() {
+    for generation in [1, 2] {
+        let mut rig = LiveFeedback::new(generation);
+        let stale = rig.seek(1);
+        assert!(rig.accepted());
+        rig.advance(180);
+        rig.seek(2);
+        assert!(rig.accepted());
+        rig.advance(10);
+        rig.observe(&stale);
+        assert!(!rig.accepted(), "the player still reports movement 2");
+        assert!(
+            rig.signals().is_empty(),
+            "a buffered event is not an early skip"
+        );
+        assert_eq!(
+            rig.dj.state().listening[&rig.id]
+                .current
+                .as_ref()
+                .unwrap()
+                .0
+                .position,
+            2,
+            "the rejected observation never replaces the listened movement"
+        );
+        rig.advance(170);
+        rig.seek(3);
+        rig.advance(180);
+        rig.seek(4);
+        assert!(
+            rig.signals().is_empty(),
+            "unverified continuity cannot earn a later whole-work completion"
+        );
+        for position in [5, 6] {
+            rig.advance(180);
+            rig.seek(position);
+        }
+        rig.advance(180);
+        let host = rig.sim.player("Feedback Room").unwrap().ip;
+        soap::stop(&rig.sim.lan(), host).unwrap();
+        rig.observe(&rig.read());
+        let signals = rig.signals();
+        assert_eq!(
+            signals.len(),
+            1,
+            "fresh whole-work listening still teaches taste"
+        );
+        assert_eq!(signals[0].signal, Signal::FullListen.value());
+        assert_eq!(
+            signals[0].performer,
+            FeedbackSignal::about(&rig.works[1], Signal::FullListen, 0).performer
+        );
+    }
+}
+
+#[test]
+fn failed_observation_checks_cannot_reuse_an_earlier_acceptance() {
+    for generation in [1, 2] {
+        let mut rig = LiveFeedback::new(generation);
+        let stale = rig.seek(1);
+        rig.advance(180);
+        rig.seek(2);
+        assert!(rig.accepted());
+        rig.sim
+            .upnp_fault("Feedback Room", "GetMediaInfo", 701)
+            .unwrap();
+        rig.advance(10);
+        rig.observe(&stale);
+        assert!(!rig.accepted());
+        assert!(rig.signals().is_empty());
+        rig.sim.clear_faults("Feedback Room").unwrap();
+        rig.advance(10);
+        rig.seek(2);
+        assert!(rig.accepted());
+        rig.advance(10);
+        rig.seek(3);
+        assert!(
+            rig.signals().is_empty(),
+            "the gap and a later fresh event cannot manufacture an early skip"
+        );
+    }
+}
+
+#[test]
+fn a_failed_top_up_preserves_valid_listening_evidence() {
+    for generation in [1, 2] {
+        let mut rig = LiveFeedback::new(generation);
+        rig.seek(1);
+        rig.dj.state().feeds.get_mut(&rig.id).unwrap().lookahead = 3;
+        rig.sim
+            .upnp_fault("Feedback Room", "AddURIToQueue", 701)
+            .unwrap();
+        for position in [2, 3, 4] {
+            rig.advance(180);
+            rig.seek(position);
+            assert!(
+                rig.accepted(),
+                "queue refill and playback evidence are separate"
+            );
+            assert!(rig.dj.state().problems.contains_key(&rig.id));
+        }
+        let signals = rig.signals();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].signal, Signal::FullListen.value());
+        assert_eq!(
+            signals[0].performer,
+            FeedbackSignal::about(&rig.works[0], Signal::FullListen, 0).performer
+        );
+    }
 }
 
 #[test]

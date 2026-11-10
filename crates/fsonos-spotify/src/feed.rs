@@ -368,6 +368,9 @@ pub struct QueueFeed {
     jumped: bool,
     recovery: RecoveryBudget,
     recovery_notice: Option<RecoveryNotice>,
+    /// Whether the last playback observation passed the feed's ownership
+    /// checks. This is transient evidence, never restored from a saved feed.
+    accepted_playback: bool,
 }
 
 /// What a running feed knows of its queue, to carry it across a restart
@@ -410,6 +413,7 @@ impl QueueFeed {
             jumped: false,
             recovery: RecoveryBudget::default(),
             recovery_notice: None,
+            accepted_playback: false,
         }
     }
 
@@ -450,6 +454,7 @@ impl QueueFeed {
             jumped: false,
             recovery: snapshot.recovery,
             recovery_notice: None,
+            accepted_playback: false,
         }
     }
 
@@ -462,6 +467,16 @@ impl QueueFeed {
     /// The latest move past a renderer failure, once, for the action log.
     pub fn take_recovery_notice(&mut self) -> Option<RecoveryNotice> {
         self.recovery_notice.take()
+    }
+
+    /// Whether the latest [`Self::on_playback`] accepted its observation for
+    /// listening feedback. Ignored stale events and failed ownership checks
+    /// cannot teach taste. A later refill failure does not invalidate an
+    /// already accepted observation. Starts and restored feeds carry no such
+    /// evidence until their next playback observation.
+    #[must_use]
+    pub fn accepted_playback(&self) -> bool {
+        self.accepted_playback
     }
 
     /// The coordinator it feeds.
@@ -531,6 +546,7 @@ impl QueueFeed {
         plan: Planning<'_>,
         store: &mut S,
     ) -> Result<(), FeedError> {
+        self.accepted_playback = false;
         // An explicit start is the owner's decision to try this session anew.
         self.recovery = RecoveryBudget::default();
         if self.active {
@@ -568,6 +584,7 @@ impl QueueFeed {
         store: &mut S,
         playback: &PlayerPlayback,
     ) -> Result<usize, FeedError> {
+        self.accepted_playback = false;
         if !self.active || !playback.is_queue_of(at.coordinator) {
             // Temporary announcements, radio and Connect retain the DJ set,
             // but cannot move its cursor, record listens, trim or refill it.
@@ -627,6 +644,10 @@ impl QueueFeed {
             }
             *self = reconciled;
         }
+        // Queue maintenance can legitimately do nothing for a rejected event.
+        // Keep its disposition separate from the count of works added so the
+        // caller cannot turn an ignored event into listening feedback.
+        self.accepted_playback = true;
         if let Some(position) = position {
             self.restore_played_from(position);
             self.playing = Some(position);
@@ -870,6 +891,7 @@ impl QueueFeed {
         self.jumped = false;
         self.recovery = RecoveryBudget::default();
         self.recovery_notice = None;
+        self.accepted_playback = false;
     }
 
     /// Whether the playing (position, track) matches the feed's model of the

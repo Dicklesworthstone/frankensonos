@@ -1126,8 +1126,18 @@ impl DjEngine for SpotifyDj {
             refill_retries,
             problems,
         );
+        // An ignored stale event can still describe an owned movement. Its
+        // queue position must not manufacture a skip or completion signal.
+        // Failed ownership reads also break continuous-listen evidence; an
+        // ordinary top-up failure may retain an accepted observation.
+        if (!observe_listening || !feed.accepted_playback())
+            && let Some(listening) = listening.get_mut(at.coordinator)
+        {
+            listening.interrupt();
+        }
         // An early skip or a full listen, as the movement heard ends.
         if observe_listening
+            && feed.accepted_playback()
             && feedback::implicit(
                 listening.entry(at.coordinator.clone()).or_default(),
                 feed,
