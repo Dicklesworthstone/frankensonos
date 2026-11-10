@@ -6,8 +6,10 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Destination {
+/// An observed group, boot epoch and selected source. Retain this proof across
+/// slow source resolution and confirm it again before changing the speakers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
     members: Vec<String>,
     boot_seq: Option<u32>,
     uri: String,
@@ -15,7 +17,7 @@ pub(crate) struct Destination {
 }
 
 impl Destination {
-    pub(crate) fn read<T: Transport + ?Sized>(
+    pub fn read<T: Transport + ?Sized>(
         t: &T,
         host: IpAddr,
         coordinator: &PlayerId,
@@ -76,7 +78,7 @@ impl Destination {
         })
     }
 
-    pub(crate) fn confirm<T: Transport + ?Sized>(
+    pub fn confirm<T: Transport + ?Sized>(
         &self,
         t: &T,
         host: IpAddr,

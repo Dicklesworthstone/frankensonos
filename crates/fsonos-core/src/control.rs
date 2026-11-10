@@ -29,11 +29,17 @@ mod queue_start;
 mod seek_relative;
 mod source_start;
 mod spotify_source;
+mod spotify_tracks;
 mod transport_state;
 
+pub use crate::queue_source::destination::Destination as SourceDestination;
 pub use loading::{
     load_queue_from, load_queue_from_in_order, load_spotify_container, load_spotify_track,
     load_uri, pause_confirmed,
+};
+pub use spotify_tracks::{
+    MAX_SPOTIFY_TRACK_BATCH, enqueue_spotify_tracks, enqueue_spotify_tracks_bound,
+    load_spotify_tracks, load_spotify_tracks_bound, play_spotify_tracks, play_spotify_tracks_bound,
 };
 
 /// How long a player that left its group may take to show alone (real ones

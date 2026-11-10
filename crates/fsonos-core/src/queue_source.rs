@@ -115,6 +115,43 @@ fn replace<T: Transport + ?Sized>(
             "the append did not preserve the original prefix and the reported new range",
         ));
     }
+    commit(
+        t,
+        households,
+        coordinator,
+        Staged {
+            destination: &destination,
+            before: &before,
+            after: &staged,
+        },
+        autoplay,
+        false,
+    )
+}
+
+/// A complete replacement already observed after the untouched old prefix.
+pub(crate) struct Staged<'a> {
+    pub(crate) destination: &'a Destination,
+    pub(crate) before: &'a Queue,
+    pub(crate) after: &'a Queue,
+}
+
+/// Commit either a native container expansion or a known, verified track
+/// batch using the same guarded removal and source-selection path.
+pub(crate) fn commit<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    staged: Staged<'_>,
+    autoplay: bool,
+    in_order: bool,
+) -> Result<(), CoreError> {
+    let host = control::locate(households, coordinator)?.ip;
+    let Staged {
+        destination,
+        before,
+        after,
+    } = staged;
     if !autoplay
         && !matches!(
             soap::get_transport_info(t, host).map_err(uncertain)?.state,
@@ -129,14 +166,14 @@ fn replace<T: Transport + ?Sized>(
         .confirm(t, host, coordinator)
         .map_err(uncertain)?;
     if !before.uris.is_empty() {
-        if staged.revision == 0 {
+        if after.revision == 0 {
             return Err(uncertain("the player reports wildcard queue revision zero"));
         }
         let count = u32::try_from(before.uris.len()).map_err(uncertain)?;
         // A refused removal is not a rejected source and cannot authorize
         // another append through render-parameter recovery. The shared
         // verifier also fences coordinator changes and lost acknowledgements.
-        queue_removal::remove(t, host, coordinator, &staged, 1, count).map_err(uncertain)?;
+        queue_removal::remove(t, host, coordinator, after, 1, count).map_err(uncertain)?;
     }
     // Empty queues skip removal, but not destination verification. Never
     // detach an old coordinator or replace a newly selected source merely
@@ -147,9 +184,19 @@ fn replace<T: Transport + ?Sized>(
     if !autoplay {
         // The new queue is committed. Even a definite source-selection
         // refusal must not trigger a second append through account recovery.
-        return control::load_queue_from(t, households, coordinator, 1).map_err(uncertain);
+        return if in_order {
+            control::load_queue_from_in_order(t, households, coordinator, 1)
+        } else {
+            control::load_queue_from(t, households, coordinator, 1)
+        }
+        .map_err(uncertain);
     }
-    match control::play_queue_from(t, households, coordinator, 1) {
+    let started = if in_order {
+        control::play_queue_from_in_order(t, households, coordinator, 1)
+    } else {
+        control::play_queue_from(t, households, coordinator, 1)
+    };
+    match started {
         Ok(()) => Ok(()),
         Err(error @ CoreError::Proto(ProtoError::SoapFault { .. })) => Err(error),
         // The queue has already changed. A lost start reply may be recovered

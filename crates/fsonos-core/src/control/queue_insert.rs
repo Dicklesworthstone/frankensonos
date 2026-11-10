@@ -14,6 +14,9 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
 
+mod batch;
+pub(super) use batch::enqueue_batch;
+
 pub(super) struct Request<'a> {
     pub source_uri: &'a str,
     pub uri: &'a str,
@@ -96,6 +99,7 @@ struct Plan {
     playing_queue: bool,
     as_next: bool,
     first: u32,
+    position: Option<soap::PositionInfo>,
 }
 
 fn prepare<T: Transport + ?Sized>(
@@ -163,6 +167,7 @@ fn prepare<T: Transport + ?Sized>(
         playing_queue,
         as_next,
         first,
+        position,
     })
 }
 
@@ -196,6 +201,7 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
         playing_queue,
         as_next,
         first,
+        ..
     } = prepare(t, host, coordinator, request.next)?;
 
     let written = soap::enqueue_uri(

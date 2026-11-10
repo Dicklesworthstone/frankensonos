@@ -10,7 +10,7 @@ use std::net::IpAddr;
 use std::ops::Range;
 
 /// Every URI in one coherent queue revision, in queue order.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub revision: u32,
     pub uris: Vec<String>,
