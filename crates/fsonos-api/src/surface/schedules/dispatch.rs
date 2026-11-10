@@ -219,7 +219,7 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<(), Failure> {
             {
                 named_ready(&households, room)?;
             }
-            surface.scene_dj_ready(&client, &scene, &households)
+            surface.scene_sources_ready(&client, &scene, &households)
         }
         ScheduleAction::Pause { room, fade_secs: 0 } | ScheduleAction::Volume { room, .. } => {
             targets_ready(&rooms, room, false)

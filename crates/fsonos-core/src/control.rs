@@ -194,6 +194,32 @@ pub fn spotify_track_source<T: Transport + ?Sized>(
     }))
 }
 
+/// Check that a canonical Spotify source has a renderer template in this
+/// player's household, without changing playback or the queue. The player
+/// may be a group member that a scene will make coordinator later. Container
+/// learning uses the same complete favorite (or track fallback) as playback;
+/// an album-only favorite is sufficient for an album, but not for a track.
+/// This proves local prerequisites, not that Spotify will deliver the audio.
+pub fn check_spotify_source<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    player: &PlayerId,
+    spotify_uri: &str,
+) -> Result<(), CoreError> {
+    if spotify_uri.starts_with("spotify:track:") || SpotifyBare::of(spotify_uri).is_some() {
+        return spotify_params(t, households, player)?
+            .map(|_| ())
+            .ok_or(CoreError::NoSpotifyFavorite);
+    }
+    if let Some(kind) = SpotifyContainer::of(spotify_uri) {
+        let favorites = content::browse_all(t, addr(households, player)?, "FV:2")?;
+        return spotify_source::container(&favorites, kind, spotify_uri, spotify_uri)
+            .map(|_| ())
+            .ok_or(CoreError::NoSpotifyFavorite);
+    }
+    Err(ProtoError::Malformed("unsupported Spotify source kind".into()).into())
+}
+
 /// A UPnP fault code the renderer uses to refuse a render whose service
 /// parameters it does not accept (stale `sid`/`flags`/`sn`/descriptor).
 fn is_render_800(e: &CoreError) -> bool {

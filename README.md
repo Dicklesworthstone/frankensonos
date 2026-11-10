@@ -645,6 +645,15 @@ fades, queues, or stored steering change. These checks preserve the current
 feed and selection state; a complete retained DJ queue can resume without new
 library picks.
 
+Scenes also check their Sonos favorites and Spotify renderer prerequisites
+before changing any group or volume. A deleted or ambiguous favorite, an
+unplayable shortcut, or missing Spotify linkage leaves the current music
+untouched. Scheduled scenes retry temporary catalog failures within the same
+ten-minute grace period, then skip the missed occurrence. Each source is read
+again when executed; a later playback failure is reported without replaying
+the scene. Album and playlist sources can use their household's own container
+favorite without requiring an unrelated track favorite.
+
 Next:
 
 - Real-hardware CI (a nightly `fsonos selftest` against a real house), then

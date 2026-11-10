@@ -594,6 +594,7 @@ pub fn scene_failure(err: SceneError) -> Failure {
             .with_hint("Save the scene again (fsonos scene save), or delete it."),
         SceneError::Store(e) => store_failure(&e),
         SceneError::Core(e) => Failure::from(e),
+        SceneError::Favorite(e) => Failure::from(e),
     }
 }
 
@@ -1090,10 +1091,10 @@ impl Surface {
         self.apply_scene_fading(client, name, None)
     }
 
-    /// Read-only DJ prerequisites for a scheduled scene, before its occurrence
-    /// is claimed. DJ source operations are always planned, so no speaker
-    /// snapshot is needed to identify every prospective start.
-    pub(super) fn scene_dj_ready(
+    /// Read-only source prerequisites for a scheduled scene, before its
+    /// occurrence is claimed. With no playback snapshots, planning includes
+    /// every source that the scene may need to load on its prospective group.
+    pub(super) fn scene_sources_ready(
         &self,
         client: &Client,
         scene: &Scene,
@@ -1108,7 +1109,7 @@ impl Surface {
             .filter(|writer| writer != client);
         let policy = self.policy();
         // Execution omits a step either identity cannot perform. Its unused
-        // DJ dependencies must not hold the scene's permitted work due.
+        // source dependencies must not hold the scene's permitted work due.
         for who in std::iter::once(client).chain(writer.as_ref()) {
             let guard = Guard {
                 policy: policy.clone(),
@@ -1118,7 +1119,7 @@ impl Surface {
             (plan, _) = Self::permitted_ops(&guard, households, plan);
         }
         dj_start::check_readiness(self, households, &plan)?;
-        scenes::check_playlist_sources(&*self.transport, households, &plan).map_err(Failure::from)
+        scenes::check_sources(&*self.transport, households, &plan).map_err(scene_failure)
     }
 
     /// [`Self::apply_scene`], its volumes ramping over `req.fade_secs` when
@@ -1335,12 +1336,11 @@ impl Surface {
                 });
             }
         }
-        // Every DJ dependency must be available before even the cap-lowering
+        // Every source dependency must be available before even the cap-lowering
         // writes below, which can also supersede an existing volume fade.
         // Only permitted operations are checked, exactly as execution sees them.
         dj_start::check_readiness(self, households, &plan)?;
-        scenes::check_playlist_sources(&*self.transport, households, &plan)
-            .map_err(Failure::from)?;
+        scenes::check_sources(&*self.transport, households, &plan).map_err(scene_failure)?;
         notes.extend(self.lower_scene_rooms(households, &plan, &clients)?);
         Ok((plan, notes, allowed_fade))
     }

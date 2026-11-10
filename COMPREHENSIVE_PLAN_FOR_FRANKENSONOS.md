@@ -1012,6 +1012,17 @@ filtering and before any volume cap lowering, fade supersession, grouping,
 queue, or steering writes. Readiness uses the future coordinator's inventory
 identity and does not modify the current feed, selection RNG or sessions.
 
+Favorite and canonical Spotify scene sources now share that admission boundary.
+Every permitted favorite must still resolve uniquely to playable content, and
+Spotify tracks, episodes, albums and playlists must have the appropriate
+renderer template in their target household. Album and playlist checks reuse
+playback's container learning, including a household with only a matching
+container favorite. A failed source check leaves all groups and levels intact;
+scheduled scenes retain their occurrence and retry within the existing grace
+period. Sources are resolved again at execution, so these reads do not promise
+an atomic speaker snapshot or replay a failed mutation. Arbitrary stream URLs
+are not fetched during admission.
+
 ### 12.8 An instant CLI through the daemon
 
 [`d-cli-daemon-client`] The CLI uses a running daemon's warm state when one

@@ -48,6 +48,7 @@ mod layout;
 pub(crate) mod queue;
 pub(crate) mod queue_backup;
 mod sonos_playlist;
+mod sources;
 mod targets;
 
 pub use queue::QueueReference;
@@ -55,6 +56,7 @@ pub use queue_backup::{
     MAX_QUEUE_BACKUP_BYTES, MAX_QUEUE_BACKUP_ENTRIES, QueueBackup, QueueBackupEntry,
 };
 pub use sonos_playlist::{SonosPlaylistReference, check_playlist_sources};
+pub use sources::check_sources;
 pub use targets::canonical_room_name;
 
 /// The longest scene name.
@@ -150,6 +152,8 @@ pub enum SceneError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Core(#[from] CoreError),
+    #[error(transparent)]
+    Favorite(#[from] favorites::FavoriteError),
 }
 
 fn names(known: &[String]) -> String {
@@ -590,6 +594,8 @@ fn plan_sources(
 }
 
 /// Run `plan`, confirming group transitions before dependent sound changes.
+/// Surfaces call [`check_sources`] before changing caps or invoking this
+/// executor, so known missing music cannot partially apply a house scene.
 /// Failed dependencies are skipped; independent groups continue. With a fade, volumes
 /// go last and together, each room to its own level over the one fade, and a
 /// room whose sound starts with the scene fades in from silence.
@@ -953,10 +959,7 @@ fn run<T: Transport + ?Sized>(
                     slot.insert(favorites::list(t, households, coordinator).map_err(s)?)
                 }
             };
-            let favorite = match list.iter().find(|f| f.title == *name) {
-                Some(f) => f,
-                None => favorites::find(list, name).map_err(|e| e.to_string())?,
-            };
+            let favorite = sources::favorite(list, name).map_err(|e| e.to_string())?;
             let done = if *start {
                 favorites::play(t, households, coordinator, favorite)
             } else {
