@@ -3642,3 +3642,30 @@ an uninitialised context only if the caller passes one.
 Tooling notes: `$lr` is the link register (not `$ra`); `break kill` must exist
 before any `call`; a `call` from gdb runs the inferior but **never returns
 control** to the script, so anything after it must not be needed.
+
+**Crypto patch applied and effective.** Since `ZZ0041` is defined *inside*
+libsonoscrypto at `0x8460`, no PLT hop is needed — the `beq → abort` at
+`0x8628` is replaced by a direct call to the initialiser:
+
+```
+before: 41 9e 00 28      beq cr7,8650        (abort)
+after : 4b ff fe 39      bl  8460            (ZZ0041)
+```
+
+The following instruction is already `lwz r3,-32760(r30)`, i.e. the context
+load the `drbg_random` call wants, so falling through is exactly right and the
+init is idempotent for the already-initialised case. File offset = VMA
+(`.text` VMA `0x4c08` == file `0x4c08`). Original preserved at
+`/tmp/s23_lsc_orig2`.
+
+**Result: the crypto abort disappears and the boot goes far deeper** — `sdbt`
+qos, `cssc` state-change notifications, blacklist clearing, and thread
+spawning (`nodetx_chsrc … Starting`) all run now. It then stalls on that
+thread start, and three `abort()`s are still raised from freshly cloned
+threads (their backtraces bottom out at `clone`, so the frames above are
+unwound).
+
+Next: identify which of the `nodetx_*` threads aborts and whether it is the
+same crypto-context problem one layer up (the retargeted init is only reached
+when the drbg helper runs; other crypto entry points may have their own
+`abort`s).
