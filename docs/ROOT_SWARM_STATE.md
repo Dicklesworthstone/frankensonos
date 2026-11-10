@@ -3669,3 +3669,22 @@ Next: identify which of the `nodetx_*` threads aborts and whether it is the
 same crypto-context problem one layer up (the retargeted init is only reached
 when the drbg helper runs; other crypto entry points may have their own
 `abort`s).
+
+**Two corrections, and the stall reduced to a spin/wait pair.**
+
+1. **The hhid workaround is S2-only.** `hhid not available` does not exist in
+   the S1 binary or any S1 library — the S1 never logs it. Running the S1
+   *without* the setter call produces the identical state (same three
+   `starting on port` lines, same stall), so the setter is a no-op for S1 and
+   matters only for the S2 build.
+2. **With the crypto patch in place and no gdb `call`, there are no aborts at
+   all.** The three `abort()`s seen earlier were produced by the `call` itself,
+   not by the boot.
+
+The stall is now characterisable: main spins (110% CPU) while the node
+transmitter thread sits in `rt_sigtimedwait` waiting for **signal 43**, a
+signal main is supposed to send. That is the logger/spin family again — with
+`nodetx_chsrc` the named consumer — not the crypto context.
+
+Practical consequence: scripts can now run without the `call` hang, so the
+`break abort` / `break kill` instrumentation works normally.
