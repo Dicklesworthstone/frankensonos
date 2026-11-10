@@ -199,6 +199,7 @@ impl Surface {
         let selected = select().inspect_err(|failure| self.notice(failure))?;
         let title = selected.title.clone();
         let command = Command::PlayFavorite {
+            member: coordinator.clone(),
             coordinator: coordinator.clone(),
             favorite: selected.clone(),
         };

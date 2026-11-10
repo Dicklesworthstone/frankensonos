@@ -720,11 +720,13 @@ fn undo_sees_a_joined_duplicate_room_name_across_households() {
         .control_set(&agent(), "set_volume", |_| {
             Ok(vec![
                 Command::Volume {
+                    member: s1_kitchen.clone(),
                     target: s1_kitchen.clone(),
                     scope: VolumeScope::Room,
                     change: VolumeChange::Set(30),
                 },
                 Command::Volume {
+                    member: s2_living.clone(),
                     target: s2_living.clone(),
                     scope: VolumeScope::Room,
                     change: VolumeChange::Set(30),

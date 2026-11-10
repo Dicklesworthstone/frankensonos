@@ -18,6 +18,7 @@ impl Surface {
         command: Command,
     ) -> Result<Command, Failure> {
         let Command::Play {
+            member,
             coordinator,
             source_uri,
             title,
@@ -27,6 +28,7 @@ impl Surface {
         };
         if !is_catalog_source(&source_uri) {
             return Ok(Command::Play {
+                member,
                 coordinator,
                 source_uri,
                 title,

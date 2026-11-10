@@ -1573,6 +1573,7 @@ mod tests {
         assert_eq!(
             plan_set(&["pause", "kitchen"]),
             [Planned::Transport {
+                member: PlayerId("RINCON_KIT".into()),
                 coordinator: PlayerId("RINCON_DEN".into()),
                 action: TransportAction::Pause
             }]
@@ -1580,6 +1581,7 @@ mod tests {
         assert_eq!(
             plan_set(&["volume", "Kitchen", "-5"]),
             [Planned::Volume {
+                member: PlayerId("RINCON_KIT".into()),
                 target: PlayerId("RINCON_KIT".into()),
                 scope: VolumeScope::Room,
                 change: VolumeChange::Adjust(-5)
@@ -1588,6 +1590,7 @@ mod tests {
         assert_eq!(
             plan_set(&["volume", "Kitchen", "40", "--group"]),
             [Planned::Volume {
+                member: PlayerId("RINCON_KIT".into()),
                 target: PlayerId("RINCON_DEN".into()),
                 scope: VolumeScope::Group,
                 change: VolumeChange::Set(40)
@@ -1837,6 +1840,7 @@ mod tests {
         assert_eq!(
             plan_set(&["pause", "everywhere"]),
             [Planned::Transport {
+                member: PlayerId("RINCON_DEN".into()),
                 coordinator: PlayerId("RINCON_DEN".into()),
                 action: TransportAction::Pause
             }]

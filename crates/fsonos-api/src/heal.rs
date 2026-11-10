@@ -32,6 +32,22 @@ pub fn execute_healing<T: Transport + ?Sized>(
     command: &Command,
     fresh: impl FnOnce() -> Option<Vec<HouseholdState>>,
 ) -> Result<OutcomeDto, Failure> {
+    execute_healing_with(transport, households, guard, command, fresh, |_, _| {
+        Ok(Vec::new())
+    })
+}
+
+/// The surface rechecks playback caps and continuation ownership for the
+/// actual destination before a retry. This callback is never a retry itself;
+/// its failure ends recovery even if it already lowered some rooms.
+pub(crate) fn execute_healing_with<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    guard: &Guard<'_>,
+    command: &Command,
+    fresh: impl FnOnce() -> Option<Vec<HouseholdState>>,
+    prepare_retry: impl Fn(&[HouseholdState], &Command) -> Result<Vec<Note>, Failure>,
+) -> Result<OutcomeDto, Failure> {
     let can_readdress = Cell::new(true);
     let volume = RefCell::new(volume::RetryVolume::default());
     let result = on_new_coordinator(
@@ -41,6 +57,7 @@ pub fn execute_healing<T: Transport + ?Sized>(
         command,
         &can_readdress,
         &volume,
+        &prepare_retry,
     );
     let Err(failure) = &result else {
         return result;
@@ -62,7 +79,12 @@ pub fn execute_healing<T: Transport + ?Sized>(
     };
     match address(&moved, player) {
         Some(to) if to != from => {
-            let (retried, _) = observed_execute(transport, &moved, guard, command.clone(), &volume);
+            // A DHCP change can coincide with regrouping. The old coordinator
+            // is only the failed endpoint, never the room the caller named.
+            let command = current_command(households, &moved, command)?;
+            let mut notes = prepare_retry(&moved, &command)?;
+            let destination = command.addressed().map(|target| room(&moved, target));
+            let (retried, _) = observed_execute(transport, &moved, guard, command, &volume);
             tracing::info!(
                 player = player.0.as_str(),
                 %from,
@@ -70,16 +92,60 @@ pub fn execute_healing<T: Transport + ?Sized>(
                 outcome = %retried.as_ref().map_or_else(|f| f.detail.clone(), |_| "ok".into()),
                 "player moved; retried at its new address"
             );
-            retried.map(|outcome| {
+            retried.map(|mut outcome| {
+                notes.append(&mut outcome.notes);
+                outcome.notes = notes;
                 let room = room(&moved, player);
                 healed(
                     outcome,
-                    format!("{room} had moved from {from} to {to}; the command was sent there"),
+                    format!(
+                        "{room} had moved from {from} to {to}; the command was sent to {}",
+                        destination.as_deref().unwrap_or(&room)
+                    ),
                 )
             })
         }
         _ => result,
     }
+}
+
+/// Rebind only the original requested room within its retained household.
+/// A fresh survey must not silently adopt a different room by name, or carry
+/// a household-local favorite into another household after a reset.
+pub(crate) fn current_command(
+    before: &[HouseholdState],
+    after: &[HouseholdState],
+    command: &Command,
+) -> Result<Command, Failure> {
+    let Some(member) = command.group_member() else {
+        return Ok(command.clone());
+    };
+    let changed = || {
+        Failure::new(
+            ErrorCode::NotCoordinator,
+            "the requested room's group could not be confirmed; the command was not redirected",
+        )
+        .with_hint("Reread the rooms, then issue the command for the intended room.")
+    };
+    let previous = before
+        .iter()
+        .find(|h| h.player(member).is_some())
+        .ok_or_else(changed)?;
+    let mut matches = after.iter().filter(|h| h.player(member).is_some());
+    let current = matches.next().ok_or_else(changed)?;
+    if matches.next().is_some()
+        || previous
+            .id
+            .as_ref()
+            .is_some_and(|old| current.id.as_ref() != Some(old))
+    {
+        return Err(changed());
+    }
+    let coordinator = current.coordinator_of(member).ok_or_else(changed)?;
+    if current.player(coordinator).is_none() {
+        return Err(changed());
+    }
+    Ok(command.clone().on_coordinator(coordinator))
 }
 
 /// Observe below orchestration, including its read-back paths. A network or
@@ -121,8 +187,9 @@ fn on_new_coordinator<T: Transport + ?Sized>(
     command: &Command,
     can_readdress: &Cell<bool>,
     volume: &RefCell<volume::RetryVolume>,
+    prepare_retry: &impl Fn(&[HouseholdState], &Command) -> Result<Vec<Note>, Failure>,
 ) -> Result<OutcomeDto, Failure> {
-    let Some(coordinator) = command.group_coordinator() else {
+    let Some(member) = command.group_member() else {
         let (result, blocked) =
             observed_execute(transport, households, guard, command.clone(), volume);
         can_readdress.set(!blocked);
@@ -132,18 +199,34 @@ fn on_new_coordinator<T: Transport + ?Sized>(
     let attempted = Cell::new(false);
     let mut hs = households.to_vec();
     let attempt = |hs: &[HouseholdState], to: &PlayerId| {
-        if attempted.replace(true) {
+        let retry = attempted.replace(true);
+        if retry {
             // A second attempt on a new coordinator consumes the entire
             // recovery budget, including if its answer is lost afterward.
             can_readdress.set(false);
         }
-        let (result, blocked) = observed_execute(
-            transport,
-            hs,
-            guard,
-            command.clone().on_coordinator(to),
-            volume,
-        );
+        let command = if retry {
+            match current_command(households, hs, command) {
+                Ok(command) => command,
+                Err(failure) => return Ok(Err(failure)),
+            }
+        } else {
+            command.clone().on_coordinator(to)
+        };
+        let mut notes = if retry {
+            match prepare_retry(hs, &command) {
+                Ok(notes) => notes,
+                Err(failure) => return Ok(Err(failure)),
+            }
+        } else {
+            Vec::new()
+        };
+        let (result, blocked) = observed_execute(transport, hs, guard, command, volume);
+        let result = result.map(|mut outcome| {
+            notes.append(&mut outcome.notes);
+            outcome.notes = notes;
+            outcome
+        });
         if blocked {
             can_readdress.set(false);
             return Ok(result);
@@ -161,12 +244,12 @@ fn on_new_coordinator<T: Transport + ?Sized>(
             other => Ok(other),
         }
     };
-    match heal::on_coordinator(transport, &mut hs, coordinator, attempt) {
-        Ok((Ok(outcome), Recovery::CoordinatorMoved { from, to })) => Ok(healed(
+    match heal::on_coordinator(transport, &mut hs, member, attempt) {
+        Ok((Ok(outcome), Recovery::CoordinatorMoved { to, .. })) => Ok(healed(
             outcome,
             format!(
                 "{}'s group had a new coordinator ({}); the command was sent there",
-                room(&hs, &from),
+                room(&hs, member),
                 room(&hs, &to)
             ),
         )),
@@ -179,7 +262,7 @@ fn on_new_coordinator<T: Transport + ?Sized>(
                     format!(
                         "{}'s group changed while the command ran: its new coordinator \
                          refused it too ({})",
-                        room(&hs, coordinator),
+                        room(&hs, member),
                         refused.detail
                     ),
                 )
@@ -210,4 +293,83 @@ fn address(households: &[HouseholdState], player: &PlayerId) -> Option<IpAddr> {
 
 fn room(households: &[HouseholdState], player: &PlayerId) -> String {
     control::locate(households, player).map_or_else(|_| player.0.clone(), |p| p.room_name.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ZoneRequest;
+    use crate::plan::{TransportAction, plan_transport};
+    use crate::zones::fixtures::{households, id};
+    use fsonos_types::{HouseholdId, ZoneGroup};
+
+    fn command(before: &[HouseholdState]) -> Command {
+        plan_transport(
+            before,
+            &ZoneRequest {
+                zone: "Kitchen@S1".into(),
+            },
+            TransportAction::Pause,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_fresh_survey_follows_the_requested_uuid_when_its_old_coordinator_left() {
+        let before = households();
+        let mut after = before.clone();
+        after[0].groups = vec![
+            ZoneGroup {
+                coordinator: id("RINCON_KIT1"),
+                members: vec![id("RINCON_KIT1")],
+            },
+            ZoneGroup {
+                coordinator: id("RINCON_STU_L"),
+                members: vec![id("RINCON_STU_L"), id("RINCON_DEN")],
+            },
+        ];
+        // Neither a renamed target nor another household's Kitchen changes
+        // the UUID retained by the original plan.
+        after[0].players[1].room_name = "New Kitchen".into();
+        let rebound = current_command(&before, &after, &command(&before)).unwrap();
+        assert_eq!(rebound.group_coordinator(), Some(&id("RINCON_KIT1")));
+        assert_eq!(rebound.group_member(), Some(&id("RINCON_KIT1")));
+        let another_handover = rebound.on_coordinator(&id("RINCON_STU_L"));
+        assert_eq!(another_handover.group_member(), Some(&id("RINCON_KIT1")));
+    }
+
+    #[test]
+    fn a_known_household_must_still_be_confirmed_after_survey() {
+        let before = households();
+        let command = command(&before);
+        for household in [None, Some(HouseholdId("RESET_HOUSEHOLD".into()))] {
+            let mut after = before.clone();
+            after[0].id = household;
+            let failure = current_command(&before, &after, &command).unwrap_err();
+            assert_eq!(failure.code, ErrorCode::NotCoordinator);
+        }
+        assert!(current_command(&before, &before, &command).is_ok());
+    }
+
+    #[test]
+    fn a_missing_ambiguous_or_unusable_target_is_not_redirected() {
+        let before = households();
+        let command = command(&before);
+        let mut absent = before.clone();
+        absent[0]
+            .players
+            .retain(|player| player.id != id("RINCON_KIT1"));
+        let mut ambiguous = before.clone();
+        ambiguous.push(before[0].clone());
+        let mut groupless = before.clone();
+        groupless[0].groups.clear();
+        let mut leader_absent = before.clone();
+        leader_absent[0]
+            .players
+            .retain(|player| player.id != id("RINCON_DEN"));
+        for after in [absent, ambiguous, groupless, leader_absent] {
+            let failure = current_command(&before, &after, &command).unwrap_err();
+            assert_eq!(failure.code, ErrorCode::NotCoordinator);
+        }
+    }
 }

@@ -71,6 +71,7 @@ mod intents;
 mod outside;
 mod playback_caps;
 pub mod players;
+mod recovery;
 mod search_play;
 mod set_runs;
 mod shared_store;
@@ -709,6 +710,7 @@ impl Surface {
         households: &[HouseholdState],
         guard: &Guard<'_>,
         command: &Command,
+        recovery: &recovery::Audience,
     ) -> Result<OutcomeDto, Failure> {
         self.confirm_source_selection(households, command)?;
         let (mut notes, fresh) = match self.lower_before_playing(households, guard, command) {
@@ -720,15 +722,21 @@ impl Surface {
                 let Some(fresh) = self.resurvey() else {
                     return Err(f);
                 };
+                let command = crate::heal::current_command(households, &fresh, command)?;
+                recovery.observe(&fresh, &command);
                 (
-                    self.lower_before_playing(&fresh, guard, command)?,
-                    Some(fresh),
+                    self.prepare_recovery(&fresh, guard, &command)?,
+                    Some((fresh, command)),
                 )
             }
             Err(f) => return Err(f),
         };
-        let households = fresh.as_deref().unwrap_or(households);
-        let mut outcome = self.carry_out(households, guard, command)?;
+        let (households, command) = fresh
+            .as_ref()
+            .map_or((households, command), |(houses, planned)| {
+                (houses.as_slice(), planned)
+            });
+        let mut outcome = self.carry_out(households, guard, command, recovery)?;
         notes.append(&mut outcome.notes);
         outcome.notes = notes;
         Ok(outcome)
@@ -741,6 +749,7 @@ impl Surface {
         households: &[HouseholdState],
         guard: &Guard<'_>,
         command: &Command,
+        recovery: &recovery::Audience,
     ) -> Result<OutcomeDto, Failure> {
         if let Command::Dj { coordinator, .. } | Command::DjSteer { coordinator, .. } = command
             && let Some(dj) = &self.dj
@@ -764,9 +773,49 @@ impl Surface {
                 })?
                 .unwrap_or_else(|| Err(no_dj_store()));
         }
-        crate::heal::execute_healing(&*self.transport, households, guard, command, || {
-            self.resurvey()
-        })
+        let destination = std::cell::RefCell::new(None);
+        let result = crate::heal::execute_healing_with(
+            &*self.transport,
+            households,
+            guard,
+            command,
+            || self.resurvey(),
+            |houses, planned| {
+                recovery.observe(houses, planned);
+                *destination.borrow_mut() = Some((houses.to_vec(), planned.clone()));
+                self.prepare_recovery(houses, guard, planned)
+            },
+        );
+        if result.is_ok() {
+            // History must follow the same confirmed target as the command,
+            // not credit the old coordinator's now-unrelated playback.
+            match destination.borrow().as_ref() {
+                Some((houses, planned)) => self.remember_play(houses, planned),
+                None => self.remember_play(households, command),
+            }
+        }
+        result
+    }
+
+    /// A recovered command has a confirmed audience. Its volumes and any
+    /// continuation that could overwrite the new intent follow that audience,
+    /// including a new coordinator discovered while reading the initial caps.
+    fn prepare_recovery(
+        &self,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        command: &Command,
+    ) -> Result<Vec<crate::guard::Note>, Failure> {
+        self.invalidate();
+        if let Some(sleep) = &self.sleep {
+            for coordinator in affected(households, command) {
+                sleep.playback_changing(&coordinator);
+                if matches!(command, Command::Volume { .. } | Command::Mute { .. }) {
+                    sleep.volume_changed(households, &coordinator);
+                }
+            }
+        }
+        self.lower_before_playing(households, guard, command)
     }
 
     /// The speakers as a survey finds them now: the live model's next
@@ -833,9 +882,10 @@ impl Surface {
             }
         }
         let regroups = regroups(&command);
+        let recovery = recovery::Audience::new(&households, &command);
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
-            let result = self.execute_following(&households, &guard, &command);
+            let result = self.execute_following(&households, &guard, &command, &recovery);
             if regroups {
                 self.invalidate();
             }
@@ -852,7 +902,7 @@ impl Surface {
             self.now(),
         );
         let sessions = self.sessions_before(&command);
-        let result = self.execute_following(&households, &guard, &command);
+        let result = self.execute_following(&households, &guard, &command, &recovery);
         if regroups {
             self.invalidate();
         }
@@ -868,6 +918,7 @@ impl Surface {
             actions::before_state_with(&snaps, &sessions)
         };
         let (decision, text, before) = log_entry(&result, before, missed.len());
+        let before = recovery::protect(before, recovery.unsafe_undo(&result));
         let before = self.with_after(before, &snaps, &[]);
         let logged = self.record(client, intent, decision, text, before);
         note_unlogged(result, logged)
@@ -947,6 +998,7 @@ impl Surface {
         // One before-state across every affected zone, so one undo restores
         // the whole set.
         let run = self.run_set(&households, &guard, &commands, true);
+        let unsafe_undo = run.unsafe_undo;
         let (snaps, missed) = (run.snaps, run.missed);
         let result = set_runs::merged(&households, &commands, run.outcomes);
         if regroups {
@@ -966,6 +1018,7 @@ impl Surface {
             actions::before_state_with(&snaps, &[])
         };
         let (decision, text, before) = log_entry(&result, before, missed.len());
+        let before = recovery::protect(before, unsafe_undo);
         let before = self.with_after(before, &snaps, &[]);
         let logged = self.record(client, intent, decision, text, before);
         note_unlogged(result, logged)
@@ -1363,6 +1416,7 @@ impl Surface {
             Command::PlayFavorite {
                 coordinator,
                 favorite,
+                ..
             } => (coordinator, favorite.uri.as_deref()),
             _ => return,
         };
@@ -1390,6 +1444,7 @@ impl Surface {
         households: &[HouseholdState],
         guard: &Guard<'_>,
         command: &Command,
+        recovery: &recovery::Audience,
     ) -> Result<OutcomeDto, Failure> {
         // A catalog lookup retained an exact destination. A changed source
         // must be refused before this intent supersedes any continuation.
@@ -1402,10 +1457,7 @@ impl Surface {
             }
         }
         let held = self.dj_hold(households, command);
-        let result = self.execute(households, guard, command);
-        if result.is_ok() {
-            self.remember_play(households, command);
-        }
+        let result = self.execute(households, guard, command, recovery);
         // A successful no-op did not transfer any music. Release the hold,
         // but keep DJ steering, feeds and timers on their original groups.
         let moved = result.as_ref().is_ok_and(|outcome| outcome.changed);
@@ -1851,6 +1903,7 @@ fn vet_restore(
         .find(|r| r.players.contains(player))
         .ok_or_else(|| format!("{} plays in no room now", player.0))?;
     let asked = Command::Volume {
+        member: room.primary.clone(),
         target: room.primary.clone(),
         scope: crate::plan::VolumeScope::Room,
         change: crate::request::VolumeChange::Set(*level),

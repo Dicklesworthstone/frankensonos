@@ -181,6 +181,7 @@ impl Surface {
             let listed = playlists::list(transport, rooms.households, &target.coordinator.id)?;
             let playlist = find(&listed, req.playlist.trim())?;
             Ok(Command::PlayFavorite {
+                member: target.player.id.clone(),
                 coordinator: target.coordinator.id.clone(),
                 favorite: playlist.clone(),
             })

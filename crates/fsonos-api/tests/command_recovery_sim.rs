@@ -63,6 +63,7 @@ fn guard() -> Guard<'static> {
 
 fn play(coordinator: &PlayerId) -> Command {
     Command::Play {
+        member: coordinator.clone(),
         coordinator: coordinator.clone(),
         source_uri: "http://example.invalid/synthetic-radio".into(),
         title: Some("Synthetic station".into()),
@@ -212,6 +213,7 @@ fn coordinator_retry_cannot_chain_into_a_third_attempt_at_the_original_player() 
         attempts: Cell::new(0),
     };
     let command = Command::Volume {
+        member: kitchen.clone(),
         target: kitchen,
         scope: VolumeScope::Group,
         change: VolumeChange::Set(31),
@@ -232,6 +234,7 @@ fn an_initial_coordinator_refusal_still_recovers_and_changes_the_group_volume() 
     let (sim, houses, kitchen) = grouped();
     sim.reelect_coordinator("Kitchen").unwrap();
     let command = Command::Volume {
+        member: kitchen.clone(),
         target: kitchen,
         scope: VolumeScope::Group,
         change: VolumeChange::Set(31),
@@ -279,6 +282,7 @@ fn a_relative_step_with_a_lost_reply_does_not_start_address_recovery() {
     let (mut sim, houses, kitchen) = grouped();
     sim.change_address("Kitchen").unwrap();
     let command = Command::Transport {
+        member: kitchen.clone(),
         coordinator: kitchen,
         action: TransportAction::Next,
     };

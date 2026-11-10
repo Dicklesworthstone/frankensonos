@@ -1488,6 +1488,7 @@ impl Surface {
                 }
             };
             let asked = Command::Volume {
+                member: player.clone(),
                 target: player.clone(),
                 scope: VolumeScope::Room,
                 change: VolumeChange::Set(level),

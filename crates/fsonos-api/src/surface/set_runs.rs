@@ -11,7 +11,7 @@ use fsonos_core::{HouseholdState, actions};
 use fsonos_types::PlayerId;
 use std::thread;
 
-use super::{Surface, affected, speaker_side};
+use super::{Surface, affected, recovery, speaker_side};
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
@@ -30,6 +30,8 @@ pub(super) struct SetRun {
     pub(super) snaps: Vec<ZoneSnapshot>,
     pub(super) missed: Vec<(PlayerId, String)>,
     pub(super) outcomes: Vec<Result<OutcomeDto, Failure>>,
+    /// A recovered attempt reached rooms outside its captured audience.
+    pub(super) unsafe_undo: bool,
 }
 
 /// One group's part of a set.
@@ -37,6 +39,7 @@ struct Ran {
     snaps: Vec<ZoneSnapshot>,
     missed: Vec<(PlayerId, String)>,
     outcome: Result<OutcomeDto, Failure>,
+    unsafe_undo: bool,
 }
 
 impl Surface {
@@ -67,8 +70,11 @@ impl Surface {
             }
             let (snaps, missed) = captured(&every);
             let mut outcomes = Vec::new();
+            let mut unsafe_undo = false;
             for command in commands {
-                let outcome = self.execute_following(households, guard, command);
+                let recovery = recovery::Audience::new(households, command);
+                let outcome = self.execute_following(households, guard, command, &recovery);
+                unsafe_undo |= recovery.unsafe_undo(&outcome);
                 let ends = outcome.as_ref().is_err_and(|f| ends_set(commands.len(), f));
                 outcomes.push(outcome);
                 if ends {
@@ -79,15 +85,19 @@ impl Surface {
                 snaps,
                 missed,
                 outcomes,
+                unsafe_undo,
             };
         }
         let one = |command: &Command, zones: &[PlayerId]| {
             let (snaps, missed) = captured(zones);
-            let outcome = self.execute_following(households, guard, command);
+            let recovery = recovery::Audience::new(households, command);
+            let outcome = self.execute_following(households, guard, command, &recovery);
+            let unsafe_undo = recovery.unsafe_undo(&outcome);
             Ran {
                 snaps,
                 missed,
                 outcome,
+                unsafe_undo,
             }
         };
         let one = &one;
@@ -95,6 +105,7 @@ impl Surface {
             snaps: Vec::new(),
             missed: Vec::new(),
             outcomes: Vec::new(),
+            unsafe_undo: false,
         };
         for (commands, zones) in commands.chunks(IN_FLIGHT).zip(zones.chunks(IN_FLIGHT)) {
             let ran: Vec<Ran> = thread::scope(|scope| {
@@ -124,6 +135,7 @@ impl Surface {
                 run.snaps.extend(ran.snaps);
                 run.missed.extend(ran.missed);
                 run.outcomes.push(ran.outcome);
+                run.unsafe_undo |= ran.unsafe_undo;
             }
         }
         run

@@ -11,6 +11,25 @@ recover at a player's newly discovered address. Coordinator and address
 recovery share one retry budget: a failed coordinator retry cannot dispatch a
 third command to the original player.
 
+Group recovery retains the UUID of the room the caller requested, separately
+from the coordinator that first received the command. If that former leader
+joins another group, recovery follows the requested room's current coordinator.
+It does not follow the old leader into its new audience. A simultaneous address
+change uses the same retained room and household identity; an ambiguous or
+unconfirmed destination requires a fresh request.
+
+Before retrying a source start or resume, the surface checks playback caps for
+the actual destination group, including rooms that joined after the original
+plan. Successful playback history is attributed to that destination. Recovery
+does not add another retry or permit replay of a partially completed operation.
+
+If recovery reaches a different set of rooms or physical players, the action
+log records an undo boundary: its original snapshot cannot safely restore the
+new audience. Neither ordinary nor forced undo can use that obsolete snapshot
+or reach past the action. The boundary survives an uncertain failed retry,
+including a failed group within a larger set command. A coordinator election
+or address change with the same household and members remains undoable.
+
 Once an earlier write may have taken effect, the outer path preserves the
 original failure and reports that earlier steps may have applied. It does not
 resend the source selection, queue edits or playback command from the start.
@@ -26,13 +45,18 @@ code and UPnP cause remain available. An error's transient `retryable` category
 is not permission to replay a partially completed mutation.
 
 Regressions: `cargo test --locked -p fsonos-api --lib heal::` and
-`cargo test --locked -p fsonos-api --test command_recovery_sim --test heal_sim`.
+`cargo test --locked -p fsonos-api --test command_recovery_sim --test heal_sim
+--test recovery_target_sim --test recovery_undo_sim`.
 Unit tests cover progress classification, raw and typed faults, uncertain
 writes and transport forwarding. The command-recovery simulator tests exercise
 late coordinator changes, source success followed by a lost Play reply,
 one shared recovery budget, positive coordinator/address recovery, and
 read-back completion after an accepted write loses its acknowledgement.
-Physical-speaker acceptance is separate.
+Target and undo regressions cover a former leader joining an unrelated group,
+simultaneous address changes, new members' playback caps, actual-target history,
+and undo boundaries after membership changes. Physical-speaker acceptance is
+separate. Recovery only starts after an eligible failure; these checks do not
+make the initial request and concurrent topology changes atomic.
 
 ## A lost daemon reply does not authorize another write
 

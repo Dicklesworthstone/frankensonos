@@ -1233,6 +1233,15 @@ but only if the coordinator actually moved (800 also means a wrong Spotify
 DIDL); a reboot (lost subscription SID)
 triggers resubscription. Each path is tested with sim faults.
 
+Group-command recovery retains the originally requested room's UUID separately
+from its initial coordinator, so a former leader joining an unrelated group
+does not redirect the retry there. A recovered playback start rechecks caps
+for its actual audience and records history against that destination. If the
+room or physical-player membership changed, its obsolete before-state becomes
+an undo boundary; a coordinator-only handover remains undoable. Coordinator
+and address recovery still share one retry budget, and partially completed
+operations are not restarted. See [`docs/COMMAND_RECOVERY.md`](docs/COMMAND_RECOVERY.md).
+
 ### 12.15 Room aliases and smart targets
 
 [`b-room-aliases`, `d-house-verbs`] `aliases.toml` (`kitchen` → "Kitchen",

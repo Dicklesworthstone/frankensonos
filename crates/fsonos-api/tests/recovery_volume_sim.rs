@@ -92,6 +92,7 @@ fn scenario(s2: bool, group: bool, client: &Client, lower_after_move: bool) {
         clock: &SystemClock,
     };
     let command = Command::Volume {
+        member: target.clone(),
         target,
         scope: if group {
             VolumeScope::Group

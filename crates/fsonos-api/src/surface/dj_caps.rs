@@ -102,6 +102,7 @@ impl DjCaps<'_> {
     fn lower(&self) -> Result<(), ProtoError> {
         let dj = Client::Tailnet(DJ_CLIENT.to_owned());
         let start = Command::Transport {
+            member: self.coordinator.clone(),
             coordinator: self.coordinator.clone(),
             action: TransportAction::Resume,
         };

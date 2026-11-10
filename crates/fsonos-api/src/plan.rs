@@ -55,6 +55,8 @@ pub enum VolumeScope {
 pub enum Command {
     /// Render `source_uri` on the group `coordinator` leads.
     Play {
+        /// The requested room's primary, retained if its coordinator moves.
+        member: PlayerId,
         coordinator: PlayerId,
         source_uri: String,
         title: Option<String>,
@@ -71,14 +73,18 @@ pub enum Command {
     /// Play a Sonos favorite (a track, a station, or a container that
     /// replaces the queue) in the group `coordinator` leads.
     PlayFavorite {
+        member: PlayerId,
         coordinator: PlayerId,
         favorite: Favorite,
     },
     Transport {
+        member: PlayerId,
         coordinator: PlayerId,
         action: TransportAction,
     },
     Volume {
+        /// The requested room, also when `target` is its group coordinator.
+        member: PlayerId,
         target: PlayerId,
         scope: VolumeScope,
         change: VolumeChange,
@@ -190,6 +196,25 @@ impl Command {
         }
     }
 
+    /// The room whose group the caller requested. Coordinator recovery must
+    /// follow this UUID, never the old leader into an unrelated group. The DJ
+    /// has its own session-addressed path and retains its coordinator anchor.
+    #[must_use]
+    pub fn group_member(&self) -> Option<&PlayerId> {
+        match self {
+            Self::Play { member, .. }
+            | Self::PlayFavorite { member, .. }
+            | Self::Transport { member, .. }
+            | Self::Volume {
+                member,
+                scope: VolumeScope::Group,
+                ..
+            } => Some(member),
+            Self::Dj { coordinator, .. } | Self::DjSteer { coordinator, .. } => Some(coordinator),
+            _ => None,
+        }
+    }
+
     /// The same group command, sent to `to` (the group's new coordinator).
     #[must_use]
     pub fn on_coordinator(mut self, to: &PlayerId) -> Self {
@@ -275,6 +300,7 @@ pub fn plan_play<'a>(rooms: impl Into<Rooms<'a>>, req: &PlayRequest) -> Result<C
     let target = resolve(rooms, &req.zone)?;
     validate_play_request_source(&req.source_uri)?;
     Ok(Command::Play {
+        member: target.player.id.clone(),
         coordinator: target.coordinator.id.clone(),
         source_uri: req.source_uri,
         title: req.title,
@@ -297,6 +323,7 @@ pub fn plan_play_favorite<'a>(
         None => favorites::find(household_favorites, query)?,
     };
     Ok(Command::PlayFavorite {
+        member: target.player.id.clone(),
         coordinator: target.coordinator.id.clone(),
         favorite: favorite.clone(),
     })
@@ -310,6 +337,7 @@ pub fn plan_transport<'a>(
 ) -> Result<Command, Failure> {
     let target = resolve(rooms, req.zone()?)?;
     Ok(Command::Transport {
+        member: target.player.id.clone(),
         coordinator: target.coordinator.id.clone(),
         action,
     })
@@ -324,6 +352,7 @@ pub fn plan_seek<'a>(
     let to = req.to()?;
     let target = resolve(rooms, req.zone()?)?;
     Ok(Command::Transport {
+        member: target.player.id.clone(),
         coordinator: target.coordinator.id.clone(),
         action: TransportAction::Seek(to),
     })
@@ -337,12 +366,14 @@ pub fn plan_volume<'a>(
 ) -> Result<Command, Failure> {
     let change = req.change()?;
     let target = resolve(rooms, req.zone()?)?;
+    let member = target.player.id.clone();
     let (target, scope) = if req.group {
         (target.coordinator, VolumeScope::Group)
     } else {
         (target.player, VolumeScope::Room)
     };
     Ok(Command::Volume {
+        member,
         target: target.id.clone(),
         scope,
         change,
@@ -400,10 +431,14 @@ pub fn plan_transport_set<'a>(
     let mut commands = Vec::new();
     for target in resolve_set(&rooms, req.zone()?)? {
         let command = Command::Transport {
+            member: target.player.id.clone(),
             coordinator: target.coordinator.id.clone(),
             action,
         };
-        if !commands.contains(&command) {
+        if !commands
+            .iter()
+            .any(|existing: &Command| existing.group_coordinator() == command.group_coordinator())
+        {
             commands.push(command);
         }
     }
@@ -420,17 +455,22 @@ pub fn plan_volume_set<'a>(
     let rooms = rooms.into();
     let mut commands = Vec::new();
     for target in resolve_set(&rooms, req.zone()?)? {
+        let member = target.player.id.clone();
         let (target, scope) = if req.group {
             (target.coordinator, VolumeScope::Group)
         } else {
             (target.player, VolumeScope::Room)
         };
         let command = Command::Volume {
+            member,
             target: target.id.clone(),
             scope,
             change,
         };
-        if !commands.contains(&command) {
+        if !commands
+            .iter()
+            .any(|existing: &Command| existing.addressed() == command.addressed())
+        {
             commands.push(command);
         }
     }
@@ -785,10 +825,12 @@ mod tests {
     fn only_state_setting_commands_are_repeat_safe() {
         let c = || id("RINCON_DEN");
         let transport = |action| Command::Transport {
+            member: c(),
             coordinator: c(),
             action,
         };
         let volume = |change| Command::Volume {
+            member: c(),
             target: c(),
             scope: VolumeScope::Group,
             change,
@@ -909,6 +951,7 @@ mod tests {
         assert_eq!(
             plan_transport(&houses, &zone("kitchen@S1"), TransportAction::Pause).unwrap(),
             Command::Transport {
+                member: id("RINCON_KIT1"),
                 coordinator: id("RINCON_DEN"),
                 action: TransportAction::Pause
             }
@@ -928,6 +971,7 @@ mod tests {
         assert_eq!(
             plan_play(&houses, &play).unwrap(),
             Command::Play {
+                member: id("RINCON_KIT1"),
                 coordinator: id("RINCON_DEN"),
                 source_uri: "spotify:album:0123456789ABCDEFabcdef".into(),
                 title: Some("Partita No. 2".into()),
@@ -947,6 +991,7 @@ mod tests {
         assert_eq!(
             plan_volume(&houses, &req).unwrap(),
             Command::Volume {
+                member: id("RINCON_KIT1"),
                 target: id("RINCON_KIT1"),
                 scope: VolumeScope::Room,
                 change: VolumeChange::Set(25)
@@ -958,6 +1003,7 @@ mod tests {
         assert_eq!(
             plan_volume(&houses, &req).unwrap(),
             Command::Volume {
+                member: id("RINCON_KIT1"),
                 target: id("RINCON_DEN"),
                 scope: VolumeScope::Group,
                 change: VolumeChange::Adjust(-10)
@@ -1102,6 +1148,7 @@ mod tests {
                     Command::Transport {
                         coordinator,
                         action: TransportAction::Pause,
+                        ..
                     } => coordinator.0,
                     other => panic!("{other:?}"),
                 })

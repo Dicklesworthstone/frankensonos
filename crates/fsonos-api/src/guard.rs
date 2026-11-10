@@ -87,6 +87,7 @@ impl Guard<'_> {
         command: Command,
     ) -> Result<(Command, Vec<Note>), Failure> {
         let Command::Volume {
+            member,
             target,
             scope,
             change,
@@ -117,6 +118,7 @@ impl Guard<'_> {
                     ),
                 };
                 let bounded = Command::Volume {
+                    member: member.clone(),
                     target: target.clone(),
                     scope: *scope,
                     change: from_policy(allowed),
@@ -166,6 +168,7 @@ fn sounding_rooms<'h>(households: &'h [HouseholdState], command: &Command) -> Ve
         | Command::Transport {
             coordinator,
             action: TransportAction::Resume,
+            ..
         }
         | Command::Dj {
             coordinator,
@@ -302,6 +305,7 @@ mod tests {
 
     fn set(target: &str, scope: VolumeScope, level: u8) -> Command {
         Command::Volume {
+            member: id(target),
             target: id(target),
             scope,
             change: VolumeChange::Set(level),
@@ -421,10 +425,12 @@ mod tests {
                 action: DjAction::Stop,
             },
             Command::Transport {
+                member: id("RINCON_DEN"),
                 coordinator: id("RINCON_DEN"),
                 action: TransportAction::Pause,
             },
             Command::Transport {
+                member: id("RINCON_DEN"),
                 coordinator: id("RINCON_DEN"),
                 action: TransportAction::Next,
             },

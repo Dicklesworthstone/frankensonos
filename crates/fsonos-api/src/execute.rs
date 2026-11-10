@@ -89,6 +89,7 @@ pub fn execute<T: Transport + ?Sized>(
             coordinator,
             source_uri,
             title,
+            ..
         } => {
             play(
                 transport,
@@ -119,10 +120,12 @@ pub fn execute<T: Transport + ?Sized>(
         Command::PlayFavorite {
             coordinator,
             favorite,
+            ..
         } => play_favorite(transport, households, coordinator, favorite)?,
         Command::Transport {
             coordinator,
             action,
+            ..
         } => {
             let verb = run_transport(transport, households, coordinator, *action)
                 .map_err(|f| refused(*action, f, &room(coordinator)))?;
@@ -132,6 +135,7 @@ pub fn execute<T: Transport + ?Sized>(
             target,
             scope,
             change,
+            ..
         } => {
             let level = run_volume(transport, households, target, *scope, *change)?;
             let whose = match scope {
@@ -651,6 +655,7 @@ mod tests {
         ] {
             let t = Canned::ok("");
             let cmd = Command::Transport {
+                member: id("RINCON_DEN"),
                 coordinator: id("RINCON_DEN"),
                 action,
             };
@@ -665,6 +670,7 @@ mod tests {
         use fsonos_core::control::Seek;
         let houses = households();
         let seek = |to| Command::Transport {
+            member: id("RINCON_DEN"),
             coordinator: id("RINCON_DEN"),
             action: TransportAction::Seek(to),
         };
@@ -695,6 +701,7 @@ mod tests {
         let houses = households();
         let t = Canned::ok("<NewVolume>27</NewVolume>");
         let cmd = Command::Volume {
+            member: id("RINCON_KIT1"),
             target: id("RINCON_KIT1"),
             scope: VolumeScope::Room,
             change: VolumeChange::Adjust(-3),
@@ -708,6 +715,7 @@ mod tests {
 
         let t = Canned::ok("");
         let cmd = Command::Volume {
+            member: id("RINCON_DEN"),
             target: id("RINCON_DEN"),
             scope: VolumeScope::Group,
             change: VolumeChange::Set(40),
@@ -745,6 +753,7 @@ mod tests {
             "Kitchen is muted"
         );
         let play = Command::Play {
+            member: id("RINCON_DEN"),
             coordinator: id("RINCON_DEN"),
             source_uri: "x-rincon-mp3radio://stream.example.org/live.mp3".into(),
             title: None,
@@ -776,6 +785,7 @@ mod tests {
         };
         let t = Canned::ok("<CurrentVolume>60</CurrentVolume>");
         let loud = Command::Volume {
+            member: id("RINCON_KIT1"),
             target: id("RINCON_KIT1"),
             scope: VolumeScope::Room,
             change: VolumeChange::Set(95),
@@ -802,6 +812,7 @@ mod tests {
 
     fn play_spotify(uri: &str) -> Command {
         Command::Play {
+            member: id("RINCON_DEN"),
             coordinator: id("RINCON_DEN"),
             source_uri: uri.into(),
             title: Some("Partita".into()),
@@ -975,6 +986,7 @@ mod tests {
                 ..Canned::ok("")
             };
             let cmd = Command::Transport {
+                member: id("RINCON_DEN"),
                 coordinator: id("RINCON_DEN"),
                 action,
             };
@@ -1025,6 +1037,7 @@ mod tests {
             ..Canned::ok("")
         };
         let cmd = Command::Transport {
+            member: id("RINCON_DEN"),
             coordinator: id("RINCON_DEN"),
             action: TransportAction::Pause,
         };

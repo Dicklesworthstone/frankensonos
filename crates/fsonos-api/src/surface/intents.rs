@@ -28,9 +28,10 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
     let room = |id: &PlayerId| room(households, id);
     match command {
         Command::Play {
-            coordinator,
+            member: coordinator,
             source_uri,
             title,
+            ..
         }
         | Command::PlayTracks {
             coordinator,
@@ -43,8 +44,9 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
             room(coordinator)
         ),
         Command::PlayFavorite {
-            coordinator,
+            member: coordinator,
             favorite,
+            ..
         } => {
             let kind = if favorite.id.starts_with("SQ:") {
                 "Sonos playlist"
@@ -54,8 +56,9 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
             format!("play {kind} {} in {}", favorite.title, room(coordinator))
         }
         Command::Transport {
-            coordinator,
+            member: coordinator,
             action,
+            ..
         } => {
             let r = room(coordinator);
             match action {
@@ -68,13 +71,15 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
             }
         }
         Command::Volume {
+            member,
             target,
             scope,
             change,
+            ..
         } => {
             let whose = match scope {
                 VolumeScope::Room => room(target),
-                VolumeScope::Group => format!("{}'s group", room(target)),
+                VolumeScope::Group => format!("{}'s group", room(member)),
             };
             match change {
                 VolumeChange::Set(level) => format!("{whose} to {level}"),
@@ -163,11 +168,13 @@ mod tests {
         let h = house();
         let set = [
             Command::Volume {
+                member: id("RINCON_A"),
                 target: id("RINCON_A"),
                 scope: VolumeScope::Room,
                 change: VolumeChange::Set(30),
             },
             Command::Volume {
+                member: id("RINCON_B"),
                 target: id("RINCON_B"),
                 scope: VolumeScope::Group,
                 change: VolumeChange::Adjust(-5),
@@ -183,6 +190,7 @@ mod tests {
         };
         assert_eq!(of("group", &h, &[join]), "group: Office joins Kitchen");
         let seek = Command::Transport {
+            member: id("RINCON_A"),
             coordinator: id("RINCON_A"),
             action: TransportAction::Seek(Seek::By(-15)),
         };
@@ -197,6 +205,26 @@ mod tests {
         assert_eq!(
             of("ungroup", &house(), &[leave]),
             "ungroup: RINCON_GONE leaves its group"
+        );
+    }
+
+    #[test]
+    fn intent_names_the_requested_room_even_when_another_room_leads_it() {
+        let pause = Command::Transport {
+            member: id("RINCON_B"),
+            coordinator: id("RINCON_A"),
+            action: TransportAction::Pause,
+        };
+        assert_eq!(of("pause", &house(), &[pause]), "pause: pause Office");
+        let volume = Command::Volume {
+            member: id("RINCON_B"),
+            target: id("RINCON_A"),
+            scope: VolumeScope::Group,
+            change: VolumeChange::Set(25),
+        };
+        assert_eq!(
+            of("set_volume", &house(), &[volume]),
+            "set_volume: Office's group to 25"
         );
     }
 }
