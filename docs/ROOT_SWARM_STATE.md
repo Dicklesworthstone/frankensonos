@@ -3714,3 +3714,22 @@ stopRoutine and `dspconfigparam` both execute, thread count climbs from 4-6 to
 
 Both libsonoscrypto edits are in the working chroot; the pristine library is
 at `/tmp/s23_lsc_orig2`.
+
+**Third environment gap fixed: `/proc`.** `arpchecker` logged `failed to open
+proc fs for retrans` — the chroot had no procfs. `proc` is now mounted at
+`/tmp/s23rootfs/proc` (mountpoint, not a stub) and arpchecker proceeds.
+
+**State after all three fixes.** The daemon boots to 14 threads, logs
+`advert … advertising with loc=http://209.145.54.164:1400/xm`, and holds
+`0.0.0.0:1400`, `:1443` and `:1843` **listening with backlog 80**. It then
+idles at `sntp_server … Starting` / `dspconfigparam: Unsupported PPC/Connectx
+Submodel`, and still never calls `accept()` — every thread sits in
+`rt_sigsuspend`/`rt_sigtimedwait` (signals 9/20/22/32).
+
+Instrumentation notes for the next attempt (both bit me):
+- `break clone` **fails** with `Function "clone" not defined` because the
+  remote symbol files load lazily — set `set breakpoint pending on` first, or
+  break on an address.
+- `continue&` starts the target but the following `interrupt` in batch mode
+  only prints "Use the interrupt command to stop the target"; to sample all
+  threads, break at an address that is *certain* to run late instead.
