@@ -157,6 +157,13 @@ pub(super) async fn read<S: Store + ?Sized>(
                 progress = LibraryProgress::new(owner, session.endpoints(), at);
                 progress.claim()?;
                 save(store, owner, base, &mut expected, &progress, report)?;
+                // An inconsistent live collection can return the same changed
+                // total indefinitely. Yield after clearing the stale intake;
+                // repeatedly restarting here would spend the entire budget
+                // rereading the same pages without making progress.
+                if check.is_none() {
+                    break;
+                }
             }
             Err(error) => {
                 save(store, owner, base, &mut expected, &progress, report)?;

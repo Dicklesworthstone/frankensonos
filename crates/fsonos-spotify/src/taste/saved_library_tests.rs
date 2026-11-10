@@ -366,6 +366,59 @@ fn changed_root_counts_or_music_restart_only_private_progress() {
 }
 
 #[test]
+fn inconsistent_collection_totals_yield_without_repeated_reads_or_publication() {
+    let server = Server::new();
+    liked_library(&server, 5);
+    server.set("/v1/me/tracks?offset=3", liked_page(3, 6, 3));
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let file = server.data.join("saved-library-inconsistent-total.db");
+        let mut store = SqliteStore::open(&file).unwrap();
+        let (owner, _) = store.adopt_spotify_library_owner(OWNER).unwrap();
+        apply_library_read(&mut store, &[held(0)]).unwrap();
+        let accepted = store.library().unwrap();
+        store.close().unwrap();
+
+        for pass_number in 1..=2 {
+            let mut store = SqliteStore::open(&file).unwrap();
+            let attempted = attempt(&server, &cx, &mut store, 512).await;
+            assert!(matches!(
+                attempted.result,
+                Err(SpotifyError::LibraryPending {
+                    pages: 0,
+                    tracks: 0
+                })
+            ));
+            assert!(attempted.progress_observed);
+            let progress = attempted.progress.unwrap();
+            assert_eq!(progress.phase, SavedLibraryPhase::Reading);
+            assert_eq!((progress.pages, progress.tracks), (0, 0));
+            assert_eq!(store.library().unwrap(), accepted);
+            assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
+            assert_eq!(count_offset(&server, "3"), pass_number);
+            assert_eq!(server.calls("/v1/me/tracks").len(), 4 * pass_number);
+            store.close().unwrap();
+        }
+
+        server.set("/v1/me/tracks?offset=3", liked_page(3, 5, 3));
+        let mut store = SqliteStore::open(&file).unwrap();
+        let completed = pass(&server, &cx, &mut store, 512).await.unwrap();
+        assert_eq!(
+            (completed.library.tracks, completed.library.retired),
+            (5, 1)
+        );
+        assert_eq!(count_offset(&server, "3"), 3);
+        assert!(
+            store
+                .spotify_library_progress(OWNER, Some(&owner))
+                .unwrap()
+                .is_none()
+        );
+        store.close().unwrap();
+    });
+}
+
+#[test]
 fn unchanged_roots_cannot_publish_a_changed_middle_page_from_an_older_pass() {
     let server = Server::new();
     liked_library(&server, 5);
