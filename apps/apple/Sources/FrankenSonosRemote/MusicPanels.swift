@@ -30,6 +30,7 @@ private enum MusicLibraryMode: String, CaseIterable {
         switch model.panel {
         case .queue: "Up next"
         case .favorites: "Your favorites"
+        case .sonosPlaylists: "Saved on Sonos"
         case .dj: "A soundtrack for you"
         case .library: "Explore your music"
         case .scenes: "Scenes"
@@ -47,6 +48,7 @@ private enum MusicLibraryMode: String, CaseIterable {
                 Button {
                     if spotifyVisible { bridge.spotifySearch.search() }
                     else if catalogVisible { bridge.catalog.refresh() }
+                    else if model.panel == .sonosPlaylists { model.refreshSonosPlaylists() }
                     else {
                         if model.panel == .queue { bridge.queueSearch.invalidate(); queueSelectionRefreshID = UUID() }
                         model.refreshPanel()
@@ -66,6 +68,7 @@ private enum MusicLibraryMode: String, CaseIterable {
             switch model.panel {
             case .queue: queuePanel
             case .favorites: favoritesPanel
+            case .sonosPlaylists: sonosPlaylistsPanel
             case .dj:
                 DJRehearsalPanel(bridge: bridge)
                 djPanel
@@ -252,6 +255,86 @@ private enum MusicLibraryMode: String, CaseIterable {
         // the shared writer also reads both again before review and dispatch.
         guard ready, model.panel == .favorites, model.favorites.contains(selection.favorite) else { return }
         model.prepare(.queueFavorite(selection), in: selection.zone)
+    }
+
+    @ViewBuilder private var sonosPlaylistsPanel: some View {
+        Text("Playlists saved on the selected Sonos household. No Spotify sign-in or library sync is needed to browse them.")
+            .font(.subheadline).foregroundStyle(.secondary)
+        if let request = model.sonosPlaylistRequest {
+            Button("Back to playlists", systemImage: "chevron.left") { model.closeSonosPlaylist() }
+                .buttonStyle(.bordered)
+            if let page = model.sonosPlaylistContents, let zone = model.selectedZone {
+                HStack {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(page.playlist.title).font(.headline)
+                        Text("\(page.total) entries · \(zone.household)").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    sonosPlaylistMenu(page.playlist, in: zone)
+                }
+                Text("Reading tracks does not change playback. Play and queue actions use this saved playlist’s current complete contents, which can change after this observation.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if page.items.isEmpty {
+                    EmptyMusicState(title: "No saved entries", systemImage: "music.note.list",
+                        detail: "This page has no entries. Refresh after changing the playlist on Sonos.")
+                } else {
+                    LazyVStack(spacing: 10) {
+                        ForEach(page.items) { item in
+                            HStack(alignment: .top, spacing: 12) {
+                                Text("\(item.position)").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 28)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.title.isEmpty ? "Untitled entry" : item.title).font(.headline)
+                                    Text([item.creator, item.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                                        .font(.subheadline).foregroundStyle(.secondary)
+                                    if item.uri == nil { Text("No playback resource was reported for this entry.").font(.caption).foregroundStyle(.secondary) }
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.remoteCard()
+                        }
+                    }
+                }
+                HStack {
+                    if request.offset > 0 {
+                        Button("First page", systemImage: "backward.end") { model.sonosPlaylistPage(offset: 0) }
+                    }
+                    Spacer()
+                    if let offset = page.nextOffset {
+                        Button("Next tracks", systemImage: "chevron.right") { model.sonosPlaylistPage(offset: offset) }
+                    }
+                }.buttonStyle(.bordered).disabled(model.panelLoading)
+            }
+        } else if model.sonosPlaylists.isEmpty && !model.panelLoading && model.panelProblem == nil {
+            EmptyMusicState(title: "No saved Sonos playlists", systemImage: "music.note.list",
+                detail: "Save a queue as a Sonos playlist using the dashboard or CLI, then refresh this household’s catalog.")
+        } else if let zone = model.selectedZone {
+            LazyVStack(spacing: 12) {
+                ForEach(model.sonosPlaylists) { playlist in
+                    HStack(spacing: 12) {
+                        Button {
+                            model.openSonosPlaylist(playlist, in: zone)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(playlist.title).font(.headline).foregroundStyle(.primary)
+                                Text("Read tracks · \(zone.household)").font(.caption).foregroundStyle(.secondary)
+                            }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                        }.buttonStyle(.plain).disabled(model.panelLoading)
+                            .accessibilityHint("Read the saved playlist without changing playback.")
+                        sonosPlaylistMenu(playlist, in: zone)
+                    }.remoteCard()
+                }
+            }
+        }
+    }
+
+    private func sonosPlaylistMenu(_ playlist: SonosPlaylist, in zone: Zone) -> some View {
+        Menu {
+            ForEach(SonosPlaylistAction.allCases, id: \.self) { action in
+                Button(action.title) { model.prepareSonosPlaylist(playlist, in: zone, action: action) }
+            }
+        } label: {
+            Image(systemName: "play.circle").font(.title2).frame(width: 44, height: 44)
+        }.buttonStyle(.bordered).disabled(!ready || model.panelProblem != nil)
+            .accessibilityLabel("Playback options for \(playlist.title)")
+            .accessibilityHint("Review playing or queuing this saved Sonos playlist.")
     }
 
     @ViewBuilder private var djPanel: some View {

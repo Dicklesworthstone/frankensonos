@@ -15,7 +15,7 @@ public struct RemoteResult: Identifiable, Sendable {
 /// lifecycle paths run in package tests. Selection is a household-qualified
 /// room anchor; it follows a coordinator change without retargeting a review.
 @MainActor public final class RemoteModel {
-    public enum Panel: String, CaseIterable, Sendable { case queue, favorites, dj, library, scenes, sleep, schedules }
+    public enum Panel: String, CaseIterable, Sendable { case queue, favorites, sonosPlaylists, dj, library, scenes, sleep, schedules }
     public enum ActionPhase: String, Sendable { case idle, preparing, confirming }
 
     /// A single UI adapter may observe state changes on the main actor. No
@@ -29,6 +29,9 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var queue: QueuePage? { willSet { onChange?() } }
     public private(set) var queueOffset: UInt32 = 0 { willSet { onChange?() } }
     public private(set) var favorites: [Favorite] = [] { willSet { onChange?() } }
+    public private(set) var sonosPlaylists: [SonosPlaylist] = [] { willSet { onChange?() } }
+    public private(set) var sonosPlaylistContents: SonosPlaylistContents? { willSet { onChange?() } }
+    public private(set) var sonosPlaylistRequest: SonosPlaylistContentsRequest? { willSet { onChange?() } }
     public private(set) var dj: DJStatus? { willSet { onChange?() } }
     public private(set) var moods: [MoodCatalog.Mood] = [] { willSet { onChange?() } }
     public private(set) var hits: [LibraryHit] = [] { willSet { onChange?() } }
@@ -211,6 +214,50 @@ public struct RemoteResult: Identifiable, Sendable {
         invalidatePanel(); refreshPanel()
     }
 
+    /// Browse a native saved queue without selecting it for playback. Navigation
+    /// uses the existing single panel-read lane and its cancellation fences.
+    public func openSonosPlaylist(_ playlist: SonosPlaylist, in expectedZone: Zone) {
+        guard active && !stopped && panel == .sonosPlaylists && !panelLoading,
+              sonosPlaylists.contains(where: { $0.sameSelection(as: playlist) }),
+              let zone = selectedZone, expectedZone.sameGroup(as: zone) else { return }
+        do {
+            let request = try SonosPlaylistContentsRequest(playlist: playlist, in: zone)
+            invalidatePanel(); sonosPlaylistRequest = request; refreshPanel()
+        } catch { panelProblem = error.localizedDescription }
+    }
+
+    public func sonosPlaylistPage(offset: UInt32) {
+        guard active && !stopped && panel == .sonosPlaylists && !panelLoading,
+              let before = sonosPlaylistRequest, let page = sonosPlaylistContents,
+              offset == 0 || offset == page.nextOffset,
+              let zone = selectedZone, before.zone.sameGroup(as: zone) else { return }
+        do {
+            let request = try SonosPlaylistContentsRequest(playlist: page.playlist, in: zone,
+                offset: offset, expectedRevision: page.revision)
+            invalidatePanel(); sonosPlaylistRequest = request; refreshPanel()
+        } catch { panelProblem = error.localizedDescription }
+    }
+
+    public func closeSonosPlaylist() {
+        guard active && !stopped && panel == .sonosPlaylists else { return }
+        invalidatePanel(); refreshPanel()
+    }
+
+    public func refreshSonosPlaylists() {
+        guard active && !stopped && panel == .sonosPlaylists else { return }
+        let request = sonosPlaylistRequest.flatMap { try? SonosPlaylistContentsRequest(playlist: $0.playlist, in: $0.zone) }
+        invalidatePanel(); sonosPlaylistRequest = request; refreshPanel()
+    }
+
+    public func prepareSonosPlaylist(_ playlist: SonosPlaylist, in expectedZone: Zone, action: SonosPlaylistAction) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone),
+              sonosPlaylists.contains(where: { $0.sameSelection(as: playlist) })
+                || sonosPlaylistContents?.playlist.sameSelection(as: playlist) == true else { return }
+        do { prepare(.sonosPlaylist(try SonosPlaylistSelection(playlist, in: zone, action: action)), in: zone) }
+        catch { panelProblem = error.localizedDescription }
+    }
+
     /// Every visible command enters this path; changing a slider does not send
     /// anything. A new review is based on fresh reads, not the cached display.
     public func prepare(_ command: NativeCommand, in expectedZone: Zone? = nil) {
@@ -304,6 +351,7 @@ public struct RemoteResult: Identifiable, Sendable {
         panelEpoch &+= 1
         panelTask?.cancel(); panelPending = false
         queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; scenesObservedAt = nil; sleepTimer = nil; sleepObservedAt = nil
+        sonosPlaylists = []; sonosPlaylistContents = nil; sonosPlaylistRequest = nil
         schedules = []; schedulesObservedAt = nil; scheduleScenes = []; scheduleScenesProblem = nil
         panelProblem = nil
         // Keep a cancelled request's slot until it drains, including a
@@ -324,6 +372,7 @@ public struct RemoteResult: Identifiable, Sendable {
         let zone = selectedZone
         panelPending = false; panelLoading = true; panelProblem = nil
         let token = panelEpoch, panel = panel, offset = queueOffset, query = query, client = client
+        let sonosRequest = sonosPlaylistRequest
         panelTask = Task { [weak self] in
             do {
                 let answer: PanelAnswer
@@ -342,6 +391,11 @@ public struct RemoteResult: Identifiable, Sendable {
                     case .schedules: throw ContractError.invalid("The schedule read was not selected.")
                     case .queue: answer = .queue(try await client.queue(zone, offset: offset))
                     case .favorites: answer = .favorites(try await client.favorites(zone))
+                    case .sonosPlaylists:
+                        if let sonosRequest {
+                            guard sonosRequest.zone.sameGroup(as: zone) else { throw ContractError.invalid("The saved playlist’s group changed.") }
+                            answer = .sonosContents(try await client.sonosPlaylistContents(sonosRequest))
+                        } else { answer = .sonosPlaylists(try await client.sonosPlaylists(zone)) }
                     case .scenes: answer = .scenes(try await client.scenes())
                     case .sleep: answer = .sleep(try await client.sleepTimer(zone))
                     case .dj:
@@ -364,6 +418,8 @@ public struct RemoteResult: Identifiable, Sendable {
                         self.scheduleScenes = scenes; self.scheduleScenesProblem = problem
                     case .queue(let value): self.queue = value
                     case .favorites(let value): self.favorites = value
+                    case .sonosPlaylists(let value): self.sonosPlaylists = value
+                    case .sonosContents(let value): self.sonosPlaylistContents = value
                     case .scenes(let value): self.scenes = value; self.scenesObservedAt = Date()
                     case .sleep(let value): self.sleepTimer = value; self.sleepObservedAt = Date()
                     case .dj(let value, let moods, let problem): self.dj = value; self.moods = moods; self.panelProblem = problem
@@ -373,6 +429,7 @@ public struct RemoteResult: Identifiable, Sendable {
             } catch {
                 if let self, self.active && self.panelEpoch == token && !Task.isCancelled {
                     self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []; self.scenesObservedAt = nil; self.sleepTimer = nil; self.sleepObservedAt = nil
+                    self.sonosPlaylists = []; self.sonosPlaylistContents = nil
                     self.schedules = []; self.schedulesObservedAt = nil
                     self.scheduleScenes = []; self.scheduleScenesProblem = nil
                     self.panelProblem = error.localizedDescription
@@ -677,5 +734,6 @@ public struct RemoteResult: Identifiable, Sendable {
 
 private enum PanelAnswer: Sendable {
     case schedules([SavedSchedule], [Scene], String?)
+    case sonosPlaylists([SonosPlaylist]), sonosContents(SonosPlaylistContents)
     case queue(QueuePage), favorites([Favorite]), dj(DJStatus, [MoodCatalog.Mood], String?), library([LibraryHit]), scenes([Scene]), sleep(SleepTimer?)
 }

@@ -16,6 +16,7 @@ public enum NativeCommand: Equatable, Sendable {
     case playSource(String), playFavorite(String)
     case queueAdd(String, next: Bool)
     case queueFavorite(FavoriteQueue)
+    case sonosPlaylist(SonosPlaylistSelection)
     case playlistTrack(PlaylistTrackSelection)
     case queuePlay(QueueItem, revision: String)
     case queueRemove(QueueItem, revision: String)
@@ -43,6 +44,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .playFavorite: "Play this favorite"
         case .queueAdd(_, let next): next ? "Queue next" : "Add to queue"
         case .queueFavorite(let favorite): favorite.title
+        case .sonosPlaylist(let selection): selection.title
         case .playlistTrack(let selection): selection.title
         case .queuePlay(let item, _): "Play \(item.title)"
         case .queueRemove: "Remove queue entry"
@@ -68,6 +70,7 @@ public enum NativeCommand: Equatable, Sendable {
         switch self {
         case .queueAdd(let uri, _): Self.sourceExplanation(uri, queued: true)
         case .queueFavorite(let favorite): favorite.explanation
+        case .sonosPlaylist(let selection): selection.explanation
         case .playlistTrack(let selection): selection.explanation
         case .queueRemove: "Removes this exact revision-bound entry. Removing the current entry can advance or stop playback. Undo requires a complete backup saved by the daemon; check the result."
         case .queueMove(let move): move.explanation
@@ -125,6 +128,7 @@ public enum NativeCommand: Equatable, Sendable {
     public var isQueueAdd: Bool {
         switch self {
         case .queueAdd, .queueFavorite: true
+        case .sonosPlaylist(let selection): selection.action != .play
         case .playlistTrack(let selection): selection.isQueueAdd
         default: false
         }
@@ -152,8 +156,9 @@ public enum NativeCommand: Equatable, Sendable {
     func payload(in zone: Zone) throws -> Payload {
         _ = try zone.validated()
         var path: [String] = [], body: [String: JSONValue] = ["zone": .string(zone.id.address)]
+        let nativePlaylist: Bool = if case .sonosPlaylist = self { true } else { false }
         let timeout: TimeInterval = isAnnouncement ? Announcement.timeout
-            : requiresDJ || savedScene != nil || isQueueAdd || requiresFreshTopology ? 600 : 120
+            : requiresDJ || savedScene != nil || isQueueAdd || requiresFreshTopology || nativePlaylist ? 600 : 120
         func require(_ flag: Bool, _ message: String) throws { if !flag { throw ContractError.invalid(message) } }
         func source(_ value: String) throws -> String {
             let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -181,6 +186,8 @@ public enum NativeCommand: Equatable, Sendable {
             path = ["queue"]; body["source_uri"] = .string(try source(uri)); body["next"] = .bool(next)
         case .queueFavorite(let favorite):
             path = ["queue"]; body = try favorite.fields(in: zone)
+        case .sonosPlaylist(let selection):
+            path = selection.path; body = try selection.fields(in: zone)
         case .playlistTrack(let selection):
             path = selection.path; body = try selection.fields(in: zone)
         case .queuePlay(let item, let revision), .queueRemove(let item, let revision):
@@ -256,6 +263,7 @@ public enum NativeCommand: Equatable, Sendable {
             matches = true
         case .queueAdd(_, let next): matches = !next || before.samePlayback(as: current)
         case .queueFavorite(let favorite): matches = !favorite.next || before.samePlayback(as: current)
+        case .sonosPlaylist(let selection): matches = selection.action == .append || before.samePlayback(as: current)
         case .playlistTrack(let selection): matches = selection.allowsTrackProgress || before.samePlayback(as: current)
         default: matches = before.samePlayback(as: current)
         }
@@ -346,6 +354,7 @@ public enum NativeCommand: Equatable, Sendable {
                   zone == nil || report.zone == zone?.coordinatorRoom else { throw ClientError.unreadable }
             return CommandReceipt(title: report.done, detail: report.work + "\n" + report.done)
         case .queueFavorite(let favorite): return try favorite.receipt(data, in: zone)
+        case .sonosPlaylist(let selection): return try selection.receipt(data, in: zone)
         case .playlistTrack(let selection): return try selection.receipt(data, in: zone)
         case .queueAdd:
             let report = try DaemonClient.decode(QueueAdded.self, from: data)

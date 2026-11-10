@@ -112,7 +112,7 @@ import FrankenSonosKit
                         }.buttonStyle(.bordered)
                     } else { noRoom }
                 case .music:
-                    panelPicker("Music", selection: $musicPanel, choices: [.favorites, .library, .queue])
+                    panelPicker("Music", selection: $musicPanel, choices: [.favorites, .sonosPlaylists, .library, .queue])
                     if model.panel == .queue, let zone = model.selectedZone {
                         PlaybackOrderPanel(bridge: bridge, zone: zone)
                     }
@@ -489,7 +489,7 @@ import FrankenSonosKit
             selection.wrappedValue = panel; model.show(panel)
         })) {
             ForEach(choices, id: \.self) { panel in
-                Text(panel == .queue ? "Up next" : panel.rawValue.capitalized).tag(panel)
+                Text(panel == .queue ? "Up next" : panel == .sonosPlaylists ? "Sonos" : panel.rawValue.capitalized).tag(panel)
             }
         }.pickerStyle(.segmented)
     }

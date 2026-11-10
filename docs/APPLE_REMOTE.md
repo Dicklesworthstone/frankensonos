@@ -92,7 +92,8 @@ daemon and the app connects to the origin you provide.
 ## What the screen connects
 
 The app has four destinations: **Listen** for artwork, playback and room levels;
-**Music** for favorites, saved-library browsing/search, Spotify online search and the queue; **Your DJ** for the current
+**Music** for favorites, saved Sonos playlists, saved-library browsing/search,
+Spotify online search and the queue; **Your DJ** for the current
 whole work, explanations and steering; and **House** for scenes, sleep timers,
 schedules, grouping, Spotify setup and activity. A mini player remains above the
 tab bar while browsing. The Mac keeps a room sidebar; the iPhone and iPad use a
@@ -127,6 +128,27 @@ Pages are not concatenated across revisions. A missing revision leaves
 the page readable but not editable. Source URIs and library results can be
 played, queued next or appended; adding to the queue does not start playback.
 Favorites are read from the selected household and reviewed by their stable ID.
+
+**Music → Sonos** lists the playlists saved in the selected S1 or S2 household,
+independently of Spotify Web API sign-in. **Read tracks** opens ordered pages of
+50 entries; continuation retains the native playlist ID and observed revision.
+Repeated tracks keep their original positions, and unavailable metadata stays
+unknown. Reading the catalog or its tracks does not change playback.
+
+**Play now** replaces the group's queue with the saved playlist and starts it.
+**Queue next** and **Add to end of queue** insert silently. All three use the
+shared command review, rechecking the exact catalog ID/title, destination group
+and queue before a single submission. A cancelled preflight sends nothing; lost
+or unreadable acknowledgements remain uncertain and are not replayed. Whole
+playlist actions load its current full contents: a track preview does not lock
+the saved playlist against edits by another controller. Ordinary undo cannot
+recover the queue replaced by **Play now**.
+
+Native regression sources cover both households, all three actions, changed
+catalogs and queues, bounded paging, cancellation, uncertain acknowledgements,
+and delayed reads after changing rooms or closing the preview. Local execution
+of these additions was unavailable because this environment has no Swift
+toolchain; the Native Apple remotes workflow builds and tests them on Apple SDKs.
 
 Source insertions also retain a bounded destination queue observation during
 review and compare it again before confirmation: revision, entry count and the

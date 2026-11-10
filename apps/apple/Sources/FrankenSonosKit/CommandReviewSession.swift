@@ -183,6 +183,8 @@ fileprivate struct CommandObservation: Sendable {
             try await move.validate { try await client.queue(zone, offset: $0) }
         case .playlistTrack(let selection):
             try selection.validate(await client.playlistContents(selection.request))
+        case .sonosPlaylist(let selection):
+            try selection.validate(await client.sonosPlaylists(zone), in: zone)
         case .listeningSettings(let change):
             try await change.preflight(client, in: zone)
         default: break
