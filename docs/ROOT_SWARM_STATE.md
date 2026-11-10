@@ -3566,3 +3566,25 @@ missing piece is therefore an injected event, not another patch.
 
 Also captured: the daemon **binds `:1410` itself** and netstartd then connects
 to it — the helper is a client of the daemon, not the reverse.
+
+**The hhid gate is cleared by calling the setter, and the accept wall is an
+`abort()` after `mixthrd`.** Both were established on the S1 build.
+
+Calling the real setter with the synthetic value
+
+```
+set {char[32]}0x10650000 = "HHID_111111111111111111111111111"
+call ((void(*)(unsigned int,char*))0x102860f0)(*(u32*)0x10545f3c, 0x10650000)
+```
+
+takes the daemon through the **entire remaining init**: it logs
+`anacapa is starting on port 1400`, `1443`, `1843` and binds 1400. Setting the
+state bit alone (`|= 0x01000000` at `obj+0x38`) is *not* enough — the bit-only
+attempt went to the same place and aborted, so the **string** is what the later
+path needs; call the setter, don't poke the bit.
+
+The surviving wall is then reached identically with or without the bit: right
+after `<mixthrd,0> Running with audio output disabled` the process takes
+**SIGABRT** (`,kill` from libc). Ports are bound but nothing accepts because a
+thread dies at that point. That abort — not the hhid, and not thread creation —
+is what keeps `Recv-Q` growing in both builds.
