@@ -18,3 +18,11 @@
 .source-track-list span { margin-top: .25rem; color: var(--muted); font-size: .85rem; }
 .source-track-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
 .source-track-actions button { min-height: 2.5rem; padding: .35rem .65rem; font-size: .85rem; }
+.source-online, .source-online-form { display: grid; gap: .65rem; min-width: 0; }
+.source-online-results { margin: 0; padding: .25rem .75rem .25rem 2.5rem; max-height: 28rem; overflow: auto; border: 1px solid var(--line); border-radius: .5rem; }
+.source-online-results:empty { display: none; }
+.source-online-results li { padding: .75rem .25rem; overflow-wrap: anywhere; }
+.source-online-results li + li { border-top: 1px solid var(--line); }
+.source-online-results strong, .source-online-results span { display: block; white-space: pre-wrap; }
+.source-online-results span { margin-top: .25rem; color: var(--muted); font-size: .9rem; }
+.source-online-results button { margin-top: .6rem; min-height: 2.75rem; }

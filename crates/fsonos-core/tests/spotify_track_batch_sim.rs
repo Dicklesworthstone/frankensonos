@@ -528,7 +528,10 @@ fn assert_episode_wire(t: &Replies<'_>) {
             .0;
         assert!(metadata.contains("object.item.audioItem.musicTrack"));
         assert!(metadata.contains(&format!("&lt;res&gt;{uri}&lt;/res&gt;")));
-        assert!(!metadata.contains("&lt;desc"), "episodes carry no descriptor");
+        assert!(
+            !metadata.contains("&lt;desc"),
+            "episodes carry no descriptor"
+        );
         assert!(!body.contains("flags="), "episodes carry no track flags");
         assert!(!body.contains("sn="), "episodes carry no track serial");
     }
@@ -549,7 +552,11 @@ fn episode_play_and_silent_load_use_minimal_metadata_and_keep_exact_order() {
             assert_episode_wire(&t);
             assert_eq!(rig.queue(), EPISODES.map(|(uri, _)| uri));
             let queue = browse_snapshot(&rig.sim.lan(), rig.host, QUEUE).unwrap();
-            let titles: Vec<_> = queue.objects.iter().map(|item| item.title.as_str()).collect();
+            let titles: Vec<_> = queue
+                .objects
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect();
             assert_eq!(titles, EPISODES.map(|(_, title)| title));
             let playback = control::playback(&rig.sim.lan(), &rig.houses, &rig.id).unwrap();
             assert_eq!(playback.position.track, 1);

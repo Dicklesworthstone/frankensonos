@@ -77,6 +77,8 @@ function harness(options = {}) {
       if (name === 'state') return structuredClone(h.now);
       if (name === 'sourcePlay' || name === 'sourcePlaylistPlay') return { done: 'Playback accepted', changed: true, notes: [{ detail: 'Volume capped.' }] };
       if (name === 'sourcePlaylists') return structuredClone(h.catalogs.get(args.query.zone));
+      if (name === 'sourceSpotifySearch') return { query: args.query.q, kind: args.query.kind,
+        items: [{ source_uri: `spotify:${args.query.kind}:${ID}`, title: 'Found on Spotify', subtitle: 'Catalog creator' }], more: false };
       if (name === 'sourceQueueState') return structuredClone(h.queue);
       if (name === 'sourceQueue') return { done: 'Queued playlist', zone: 'Den', first: args.body.next ? 4 : 13, count: 3, playing_queue: true };
       throw new Error(`Unexpected call ${name}`);
@@ -225,7 +227,8 @@ class Element {
   setAttribute(key, value) { this.attributes[key] = String(value); if (['value', 'disabled', 'hidden'].includes(key)) this[key] = value; }
   addEventListener(key, fn) { this.events.set(key, fn); }
   removeEventListener(key) { this.events.delete(key); }
-  emit(key) { return this.events.get(key)?.(); }
+  emit(key, event = {}) { return this.events.get(key)?.({ target: this, preventDefault() {}, ...event }); }
+  createElement(tag) { return new Element(tag); }
 }
 const descendants = n => [n, ...(n.children || []).flatMap(v => typeof v === 'object' ? descendants(v) : [])];
 function panelFixture(call) {
@@ -451,4 +454,143 @@ test('phone playlist picker renders untrusted titles as text and reviews before 
   assert.ok(ui.panel.state.pending); ui.find('Play now').emit('click'); await settle();
   assert.deepEqual(calls.filter(([name]) => name === 'sourcePlaylistPlay'), [['sourcePlaylistPlay', { body: { zone: 'Den@S2', playlist: 'SQ:7' } }]]);
   ui.panel.dispose();
+});
+
+for (const kind of Object.keys(Player.catalogKinds)) for (const mode of Object.keys(Player.modes)) {
+  test(`phone Spotify catalog ${kind} ${mode} chooses a source before the existing review`, async () => {
+    const h = harness(); await h.api.refresh(); h.api.edit('target', 'Den@S2'); h.api.edit('mode', mode);
+    h.api.edit('sourceType', 'catalog'); const before = h.calls.length;
+    h.api.catalog.edit('query', '  Search & find?  '); h.api.catalog.edit('kind', kind);
+    assert.equal(h.calls.length, before, 'editing does not contact Spotify');
+    assert.equal(await h.api.catalog.search(), true);
+    assert.deepEqual(h.calls.at(-1)[1].query, { q: 'Search & find?', kind, limit: 10 });
+    assert.equal(await h.api.review(), false, 'a search result is not a source draft');
+    const items = h.api.state.catalog.items;
+    assert.equal(h.api.chooseCatalog(items[0], items), true);
+    assert.equal(h.api.state.target, 'Den@S2'); assert.equal(h.api.state.mode, mode);
+    assert.equal(h.api.state.sourceType, 'link'); assert.equal(h.api.state.pending, null);
+    assert.equal(h.writes().length, 0); assert.equal(h.api.chooseCatalog(items[0], items), false);
+    assert.equal(await h.api.review(), true); assert.equal(h.writes().length, 0);
+    const pending = h.api.state.pending;
+    assert.equal(await h.api.confirm(pending), true); assert.equal(await h.api.confirm(pending), false);
+    assert.deepEqual(h.writes(), [[mode === 'play' ? 'sourcePlay' : 'sourceQueue', { body: {
+      zone: 'Den@S2', source_uri: `spotify:${kind}:${ID}`, title: 'Found on Spotify',
+      ...(mode === 'play' ? {} : { next: mode === 'next' }),
+    } }]]);
+  });
+}
+
+test('phone catalog lookup needs no chosen group and source selection preserves action intent', async () => {
+  const h = harness(); await h.api.refresh(); h.api.edit('mode', 'end'); h.api.edit('sourceType', 'catalog');
+  h.api.catalog.edit('query', 'A song'); await h.api.catalog.search();
+  assert.equal(h.api.chooseCatalog(h.api.state.catalog.items[0]), true);
+  assert.equal(h.api.state.target, ''); assert.equal(h.api.state.mode, 'end');
+  assert.equal(await h.api.review(), false); assert.equal(h.writes().length, 0);
+  h.api.edit('target', 'Den@S2'); assert.equal(await h.api.review(), true);
+});
+
+test('phone catalog cancellations and room changes abort late reads without changing the source draft', async () => {
+  for (const retire of [h => h.api.catalog.cancel(), h => h.api.catalog.edit('query', 'New search'),
+    h => h.api.edit('target', 'Office@S1'), h => h.api.close(), h => h.api.dispose()]) {
+    const h = harness(); h.zones.push(zone('S1', 'Office')); await h.api.refresh(); h.api.edit('target', 'Den@S2');
+    h.api.edit('input', `spotify:track:${ID}`); h.api.edit('sourceType', 'catalog'); h.api.catalog.edit('query', 'Old search');
+    const gate = defer(); let signal;
+    h.custom = (name, args) => { if (name === 'sourceSpotifySearch') { signal = args.signal; return gate.promise; } };
+    const reading = h.api.catalog.search(); assert.equal(h.api.state.catalog.status, 'loading');
+    retire(h); assert.equal(signal.aborted, true);
+    gate.resolve({ query: 'Old search', kind: 'track', items: [{ source_uri: `spotify:track:${ID}`, title: 'Late title' }], more: false });
+    assert.equal(await reading, false); assert.deepEqual(h.api.state.catalog.items, []);
+    assert.equal(h.api.state.input, `spotify:track:${ID}`); assert.equal(h.api.state.title, '');
+    assert.equal(h.api.state.pending, null); assert.equal(h.writes().length, 0);
+  }
+});
+
+test('phone catalog errors carry the sign-in remedy and remain distinct from no matches', async () => {
+  const h = harness(); await h.api.refresh(); h.api.edit('sourceType', 'catalog'); h.api.catalog.edit('query', 'Find music');
+  h.custom = name => { if (name === 'sourceSpotifySearch') throw Object.assign(new Error('Spotify sign-in required'), { hint: 'Connect Spotify in music settings.' }); };
+  assert.equal(await h.api.catalog.search(), false); assert.equal(h.api.state.catalog.status, 'error');
+  assert.match(h.api.state.catalog.message, /Connect Spotify/); assert.equal(h.writes().length, 0);
+  h.custom = name => name === 'sourceSpotifySearch' ? { query: 'Find music', kind: 'track', items: [], more: false } : undefined;
+  assert.equal(await h.api.catalog.search(), true); assert.equal(h.api.state.catalog.status, 'ready');
+  assert.match(h.api.state.catalog.message, /No matching Spotify results/);
+});
+
+test('phone catalog DOM shows text-only metadata and only a submit starts the lookup', async () => {
+  const h = harness(), title = '<img src="https://external.invalid/art">' + '🎵'.repeat(300);
+  const ui = panelFixture(async (name, args) => {
+    h.calls.push([name, args]);
+    if (name === 'zones') return h.zones;
+    if (name === 'sourceSpotifySearch') return { query: args.query.q, kind: args.query.kind,
+      items: [{ source_uri: `spotify:track:${ID}`, title, subtitle: '<script>Catalog byline</script>', art_uri: 'https://external.invalid/art' }], more: true };
+    if (name === 'state') return h.now;
+    if (name === 'sourceQueueState') return h.queue;
+    return { done: 'Playback accepted', changed: true };
+  });
+  await ui.panel.refresh(); ui.panel.edit('target', 'Den@S2'); ui.panel.edit('mode', 'next');
+  ui.panel.edit('sourceType', 'catalog');
+  const input = ui.field('Search the Spotify catalog'); input.value = 'Search'; input.emit('input');
+  assert.equal(h.calls.filter(([name]) => name === 'sourceSpotifySearch').length, 0);
+  descendants(ui.panel.node).find(n => n.tag === 'form').emit('submit'); await settle();
+  assert.equal(h.calls.filter(([name]) => name === 'sourceSpotifySearch').length, 1);
+  assert.ok(descendants(ui.panel.node).some(n => n.tag === 'strong' && n.textContent === title));
+  assert.ok(descendants(ui.panel.node).some(n => n.tag === 'span' && n.textContent === '<script>Catalog byline</script>'));
+  assert.ok(descendants(ui.panel.node).every(n => !['img', 'script', 'iframe'].includes(n.tag)));
+  ui.find('Use this source').emit('click');
+  assert.equal(ui.panel.state.mode, 'next'); assert.equal(ui.panel.state.target, 'Den@S2');
+  assert.equal([...ui.panel.state.title].length, 256); assert.equal(ui.panel.state.pending, null);
+  assert.equal(h.writes().length, 0); ui.panel.dispose();
+});
+
+test('phone catalog query validation is bounded UTF-8 and makes no request for invalid input', async () => {
+  assert.deepEqual(Player.catalogQuery('  é & music?  ', 'track'), { q: 'é & music?', kind: 'track', limit: 10 });
+  assert.doesNotThrow(() => Player.catalogQuery('é'.repeat(128), 'show'));
+  for (const query of ['', '   ', 'é'.repeat(129), 'x'.repeat(257), 'bad\nsearch', '\tsearch', 'search\u0000']) {
+    assert.throws(() => Player.catalogQuery(query, 'track'));
+    const h = harness(); await h.api.refresh(); h.api.edit('sourceType', 'catalog'); h.api.catalog.edit('query', query);
+    const before = h.calls.length; assert.equal(await h.api.catalog.search(), false);
+    assert.equal(h.calls.length, before); assert.equal(h.api.state.catalog.status, 'error');
+  }
+  assert.throws(() => Player.catalogQuery('music', 'audiobook'));
+  assert.deepEqual(Player.routes.sourceSpotifySearch, ['GET', '/spotify/search']);
+});
+
+test('phone catalog reply validation rejects duplicate, mismatched, oversized and unreadable results', () => {
+  const query = Player.catalogQuery('Music', 'track');
+  const item = { source_uri: `spotify:track:${ID}`, title: 'Track', subtitle: 'Artist' };
+  const reply = { query: 'Music', kind: 'track', items: [item], more: false };
+  const page = Player.catalogPage(reply, query);
+  assert.ok(Object.isFrozen(page)); assert.ok(Object.isFrozen(page.items)); assert.ok(Object.isFrozen(page.items[0]));
+  assert.doesNotThrow(() => Player.catalogPage({ ...reply, items: [{ ...item, title: 'é'.repeat(2048), subtitle: null }] }, query));
+  for (const bad of [
+    null, { ...reply, query: 'Other' }, { ...reply, kind: 'album' }, { ...reply, more: 'true' },
+    { ...reply, items: [item, item] }, { ...reply, items: new Array(11).fill(item) },
+    ...[{ source_uri: `spotify:album:${ID}` }, { source_uri: 'spotify:track:short' },
+      { source_uri: 'https://external.invalid/song' }, { title: '' }, { title: '  ' },
+      { title: 'é'.repeat(2049) }, { title: 'bad\nname' }, { subtitle: 'bad\u0000byline' },
+      { subtitle: 'x'.repeat(4097) }].map(change => ({ ...reply, items: [{ ...item, ...change }] })),
+  ]) assert.throws(() => Player.catalogPage(bad, query));
+});
+
+test('phone catalog newer results cannot be replaced or selected by an older search', async () => {
+  const h = harness(); await h.api.refresh(); h.api.edit('sourceType', 'catalog');
+  const first = defer(), second = defer();
+  h.custom = (name, args) => name === 'sourceSpotifySearch' ? (args.query.q === 'Old' ? first.promise : second.promise) : undefined;
+  h.api.catalog.edit('query', 'Old'); const oldRead = h.api.catalog.search();
+  h.api.catalog.edit('query', 'New'); const newRead = h.api.catalog.search();
+  const response = title => ({ query: title, kind: 'track', items: [{ source_uri: `spotify:track:${ID}`, title }], more: false });
+  second.resolve(response('New')); assert.equal(await newRead, true);
+  const items = h.api.state.catalog.items; first.resolve(response('Old')); assert.equal(await oldRead, false);
+  assert.equal(h.api.state.catalog.items, items); assert.equal(items[0].title, 'New');
+  assert.equal(h.api.chooseCatalog({ ...items[0] }, items), false);
+  h.api.catalog.edit('query', 'Different'); assert.equal(h.api.chooseCatalog(items[0], items), false);
+  assert.equal(h.api.state.input, ''); assert.equal(h.writes().length, 0);
+});
+
+test('phone catalog malformed replies do not expose an old result or source choice', async () => {
+  const h = harness(); await h.api.refresh(); h.api.edit('sourceType', 'catalog'); h.api.catalog.edit('query', 'Music');
+  assert.equal(await h.api.catalog.search(), true); const items = h.api.state.catalog.items;
+  h.custom = name => name === 'sourceSpotifySearch' ? { query: 'Music', kind: 'track', items: [items[0], items[0]], more: false } : undefined;
+  assert.equal(await h.api.catalog.search(), false); assert.equal(h.api.state.catalog.status, 'error');
+  assert.deepEqual(h.api.state.catalog.items, []); assert.equal(h.api.chooseCatalog(items[0], items), false);
+  assert.equal(h.writes().length, 0);
 });

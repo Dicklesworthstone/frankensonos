@@ -57,8 +57,9 @@ const RequestRemote = (() => {
   const UNCERTAIN_HINT = 'It may have taken effect or may still finish. Check the current state before sending another command. This request was not repeated.';
 
   function timeoutFor(method, where) {
-    if (method === 'GET') return READ_TIMEOUT;
     const pathname = where.split('?')[0];
+    // Spotify lookups can use a 45-second daemon budget, including token refresh.
+    if (method === 'GET') return pathname === '/spotify/search' ? 60000 : READ_TIMEOUT;
     // Queue expansion, scene fades and spoken announcements can legitimately
     // outlast ordinary controls. Do not interrupt them at a read's deadline.
     if (pathname === '/announce') return ANNOUNCE_TIMEOUT;

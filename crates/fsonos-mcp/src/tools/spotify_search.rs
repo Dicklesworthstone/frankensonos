@@ -39,7 +39,9 @@ async fn search_spotify(
     kind: String,
     limit: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    let kind: CatalogKind = kind.parse().map_err(|failure| crate::tool_error(&failure))?;
+    let kind: CatalogKind = kind
+        .parse()
+        .map_err(|failure| crate::tool_error(&failure))?;
     let request = SpotifySearchQuery {
         query,
         kind,

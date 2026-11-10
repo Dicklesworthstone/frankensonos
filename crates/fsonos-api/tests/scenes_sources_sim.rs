@@ -378,7 +378,10 @@ fn scene_authoring_keeps_catalog_sources_for_recall_and_episodes_play_natively()
                 )
                 .unwrap();
             assert_eq!(
-                surface.apply_scene(&Client::Cli, "Catalog").unwrap_err().code,
+                surface
+                    .apply_scene(&Client::Cli, "Catalog")
+                    .unwrap_err()
+                    .code,
                 ErrorCode::SpotifyAuthRequired
             );
         }

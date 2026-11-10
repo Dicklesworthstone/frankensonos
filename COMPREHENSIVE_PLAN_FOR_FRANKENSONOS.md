@@ -997,6 +997,17 @@ and rechecks both the selected track and destination, consumes each submission
 once, and retains uncertain outcomes. Browser regressions execute under Node;
 the added Rust/simulator cases still await a successful dependency build.
 
+Explicit online Spotify catalog search now complements cached library search.
+The CLI `spotify-search`, HTTP `GET /spotify/search`, and MCP
+`search_spotify` read one page for an explicit track, album, artist, playlist,
+show or episode kind. Query validation, canonical source identities, bounded
+metadata, permission checks and the existing sign-in/cooldown contract are
+shared. Search does not discover speakers, update the library or change the DJ.
+Results can feed the existing play and queue commands; choosing a result never
+starts playback by itself. The phone and dashboard source selectors offer
+explicit search, result choice, then the usual room/action review. See
+`docs/SPOTIFY_SEARCH.md` for the request contract and validation coverage.
+
 ### 12.7 Scenes
 
 [`b-scenes`, `d-scenes-surface`] Named, declarative house states: group layout,

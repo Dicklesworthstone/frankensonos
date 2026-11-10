@@ -147,7 +147,14 @@ fn direct_cli_and_standalone_mcp_search_before_a_separate_play_choice() {
     save_sign_in(&s);
     let found = s.cli_env(
         "direct-search",
-        &["--direct", "--json", "spotify-search", QUERY, "--kind", "artist"],
+        &[
+            "--direct",
+            "--json",
+            "spotify-search",
+            QUERY,
+            "--kind",
+            "artist",
+        ],
         &[(TEST_BASE_ENV, &base)],
         &[],
     );

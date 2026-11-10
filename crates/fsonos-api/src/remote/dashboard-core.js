@@ -90,7 +90,7 @@ const DashboardCore = (() => {
       const budget = method === 'POST' && url === '/announce' ? 1200000
         : write && (url === '/queue' || url === '/sonos/playlists/play' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
         || (method === 'PUT' && /^\/scenes\/[^/]+$/.test(url) && body?.backup_queues === true)) ? 600000
-        : write ? 120000 : /^\/zones\/[^/]+\/queue\/search(?:\?|$)/.test(url) ? 60000 : 10000;
+        : write ? 120000 : /^\/(?:spotify\/search|zones\/[^/]+\/queue\/search)(?:\?|$)/.test(url) ? 60000 : 10000;
       let timer, finished = false, stopped = null, rejectStopped;
       const timeout = new Promise((_, reject) => { rejectStopped = reject; });
       const stop = (error) => {

@@ -1288,16 +1288,17 @@ impl Surface {
             .iter()
             .chain(report.failed.iter().map(|(op, _)| op))
             .any(|op| matches!(op, SceneOp::Uri { uri, .. } if is_catalog_source(uri)));
-        let backed_up_queue = catalog_queue || report
-            .done
-            .iter()
-            .chain(report.failed.iter().map(|(op, _)| op))
-            .any(|op| {
-                matches!(
-                    op,
-                    SceneOp::QueueBackup { .. } | SceneOp::SonosPlaylist { .. }
-                )
-            });
+        let backed_up_queue = catalog_queue
+            || report
+                .done
+                .iter()
+                .chain(report.failed.iter().map(|(op, _)| op))
+                .any(|op| {
+                    matches!(
+                        op,
+                        SceneOp::QueueBackup { .. } | SceneOp::SonosPlaylist { .. }
+                    )
+                });
         if regrouped {
             self.invalidate();
         }

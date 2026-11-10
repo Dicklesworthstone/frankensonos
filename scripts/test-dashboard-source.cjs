@@ -36,6 +36,10 @@ function fixture({demo=false,dom=false,network}={}) {
   const calls=[],completed=[],read=url=>{
     if(url==='/zones')return copy(zones);
     if(url.startsWith('/sonos/playlists?'))return copy(catalogs.get(new URLSearchParams(url.split('?')[1]).get('zone')));
+    if(url.startsWith('/spotify/search?')){
+      const query=new URLSearchParams(url.split('?')[1]);
+      return {query:query.get('q'),kind:query.get('kind'),items:[{source_uri:uri(query.get('kind')),title:'Found on Spotify',subtitle:'Catalog creator'}],more:false};
+    }
     const target=decodeURIComponent(url.split('/')[2]||'');
     if(url.endsWith('/state'))return copy(rows.get(target));
     if(url.endsWith('/queue?offset=0&limit=1'))return copy(queues.get(target));
@@ -410,4 +414,77 @@ test('saved playlist expansion gets the long command deadline without a retry',a
   const waiting=request('/sonos/playlists/play',{zone:'Den@S2',playlist:'SQ:7'});
   assert.equal(budget,600000);expire();await assert.rejects(waiting,/No command confirmation/);
   assert.equal(calls,1);assert.equal(cancelled,true);
+});
+
+for(const kind of ['track','album','artist','playlist','show','episode'])for(const mode of ['play','next','end']){
+  test(`dashboard Spotify catalog ${kind} ${mode} keeps destination and action until explicit review`,async()=>{
+    const f=await fixture().ready();f.source.open();f.source.edit('mode',mode);f.source.edit('sourceType','catalog');
+    const before=f.calls.length;f.source.catalog.edit('query','  Find & hear?  ');f.source.catalog.edit('kind',kind);
+    assert.equal(f.calls.length,before);assert.equal(await f.source.catalog.search(),true);
+    const request=new URL(f.calls.at(-1).url,'http://fixture.invalid');
+    assert.equal(request.pathname,'/spotify/search');assert.deepEqual(Object.fromEntries(request.searchParams),{q:'Find & hear?',kind,limit:'10'});
+    assert.equal(f.source.canReview(),false);const items=f.source.state.catalog.items;
+    assert.equal(f.source.chooseCatalog(items[0],items),true);assert.equal(f.source.state.mode,mode);
+    assert.equal(f.source.state.target,'Den@S2');assert.equal(f.source.state.sourceType,'link');
+    assert.equal(f.source.state.pending,null);assert.equal(f.writes().length,0);
+    assert.equal(f.source.chooseCatalog(items[0],items),false);
+    const review=await f.source.review();assert.ok(review);assert.equal(f.writes().length,0);
+    assert.equal(await f.source.apply(review),true);assert.equal(await f.source.apply(review),false);
+    assert.deepEqual(f.writes().map(({url,body})=>({url,body})),[{url:mode==='play'?'/play':'/queue',body:{
+      zone:'Den@S2',source_uri:uri(kind),title:'Found on Spotify',...(mode==='play'?{}:{next:mode==='next'}),
+    }}]);
+  });
+}
+
+test('dashboard catalog can search before room selection and still requires a destination review',async()=>{
+  const f=fixture();f.source.open();f.source.edit('sourceType','catalog');f.source.catalog.edit('query','Find music');
+  assert.equal(await f.source.catalog.search(),true);assert.equal(f.source.chooseCatalog(f.source.state.catalog.items[0]),true);
+  assert.equal(f.source.state.target,'');assert.equal(f.source.canReview(),false);assert.equal(f.writes().length,0);
+  await f.ready();assert.ok(await f.source.review());assert.equal(f.writes().length,0);
+});
+
+test('dashboard catalog stale responses cannot survive cancellation, close, edits or changed rooms',async()=>{
+  for(const retire of [f=>f.source.catalog.cancel(),f=>f.source.catalog.edit('kind','show'),
+    f=>f.controller.select('Den@S1'),f=>f.source.close(),f=>f.source.suspend(),f=>f.source.dispose()]){
+    const f=await fixture().ready();f.source.open();f.source.edit('sourceType','catalog');f.source.catalog.edit('query','Old search');
+    const gate=deferred();let signal;
+    f.read((url,options,normal)=>{if(url.startsWith('/spotify/search?')){signal=options.signal;return gate.promise;}return normal(url);});
+    const work=f.source.catalog.search();assert.equal(f.source.state.catalog.status,'loading');
+    retire(f);assert.equal(signal.aborted,true);
+    gate.resolve({query:'Old search',kind:'track',items:[{source_uri:uri('track'),title:'Late result'}],more:false});
+    assert.equal(await work,false);assert.deepEqual(f.source.state.catalog.items,[]);
+    assert.equal(f.source.state.input,'');assert.equal(f.source.state.pending,null);assert.equal(f.writes().length,0);
+  }
+});
+
+test('dashboard selected catalog source still refuses a room change after review',async()=>{
+  const f=await fixture().ready();f.source.open();f.source.edit('sourceType','catalog');f.source.catalog.edit('query','Find music');
+  await f.source.catalog.search();f.source.chooseCatalog(f.source.state.catalog.items[0]);const pending=await f.source.review();
+  f.controller.select('Den@S1');assert.equal(await f.source.apply(pending),false);assert.equal(f.writes().length,0);
+  assert.equal(f.source.state.input,uri('track'));assert.equal((await f.source.review()).target,'Den@S1');
+});
+
+test('dashboard catalog reports auth failures and empty results without a playback request',async()=>{
+  const f=await fixture().ready();f.source.open();f.source.edit('sourceType','catalog');f.source.catalog.edit('query','Find music');
+  f.read((url,options,normal)=>{if(url.startsWith('/spotify/search?'))throw Object.assign(new Error('Spotify sign-in required'),{hint:'Connect Spotify in music settings.'});return normal(url);});
+  assert.equal(await f.source.catalog.search(),false);assert.equal(f.source.state.catalog.status,'error');
+  assert.match(f.source.state.catalog.message,/Connect Spotify/);assert.equal(f.writes().length,0);
+  f.read((url,options,normal)=>url.startsWith('/spotify/search?')?{query:'Find music',kind:'track',items:[],more:false}:normal(url));
+  assert.equal(await f.source.catalog.search(),true);assert.equal(f.source.state.catalog.status,'ready');
+  assert.match(f.source.state.catalog.message,/No matching Spotify results/);
+});
+
+test('dashboard catalog DOM submits once and treats provider metadata only as text',async()=>{
+  const f=await fixture({dom:true}).ready(),$=id=>f.doc.getElementById(id),title='<script>Catalog title</script>'+'🎵'.repeat(300);
+  f.read((url,options,normal)=>url.startsWith('/spotify/search?')?{query:'Find music',kind:'track',
+    items:[{source_uri:uri('track'),title,subtitle:'<img src="https://external.invalid/art">'}],more:true}:normal(url));
+  $('open-source').fire('click');$('source-type').value='catalog';$('source-type').fire('change');
+  $('source-catalog-query').value='Find music';$('source-catalog-query').fire('input');
+  assert.equal(f.calls.filter(({url})=>url.startsWith('/spotify/search?')).length,0);
+  $('source-catalog-form').fire('submit');await settled(()=>f.source.state.catalog.status==='ready');
+  const row=$('source-catalog-items').children[0];assert.equal(row.children[0].textContent,title);
+  assert.equal(row.children[1].tag,'span');assert.match(row.children[1].textContent,/<img/);
+  assert.equal($('source-review').disabled,true);row.children[2].fire('click');
+  assert.equal(f.source.state.sourceType,'link');assert.equal([...f.source.state.title].length,256);
+  assert.equal(f.source.state.pending,null);assert.equal(f.writes().length,0);
 });

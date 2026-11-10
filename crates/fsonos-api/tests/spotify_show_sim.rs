@@ -345,8 +345,15 @@ fn show_next_and_append_are_silent_ordered_and_undo_preserves_later_queue_edits(
         surface
             .queue_add(&Client::McpStdio, &queue_request(false))
             .unwrap();
-        let page = browse(&rig.sim.lan(), rig.lead, QUEUE, BrowseFlag::DirectChildren, 0, 1)
-            .unwrap();
+        let page = browse(
+            &rig.sim.lan(),
+            rig.lead,
+            QUEUE,
+            BrowseFlag::DirectChildren,
+            0,
+            1,
+        )
+        .unwrap();
         fsonos_proto::queue::reorder_tracks(&rig.sim.lan(), rig.lead, 4, 3, 1, page.update_id)
             .unwrap();
         let changed = rig.queue();

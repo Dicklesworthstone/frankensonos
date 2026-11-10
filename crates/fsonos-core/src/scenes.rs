@@ -999,13 +999,13 @@ fn run<T: Transport + ?Sized>(
             ..
         } if matches!(
             fsonos_proto::didl::SpotifyBare::of(uri),
-            Some(
-                fsonos_proto::didl::SpotifyBare::Artist
-                    | fsonos_proto::didl::SpotifyBare::Show
-            )
-        ) => options
-            .hooks
-            .load_catalog_source(households, coordinator, uri, *start),
+            Some(fsonos_proto::didl::SpotifyBare::Artist | fsonos_proto::didl::SpotifyBare::Show)
+        ) =>
+        {
+            options
+                .hooks
+                .load_catalog_source(households, coordinator, uri, *start)
+        }
         SceneOp::Uri {
             coordinator,
             uri,

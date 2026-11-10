@@ -93,10 +93,7 @@ fn ready(policy: Policy, reply: Result<CatalogPage, Failure>) -> (Surface, Arc<C
         reply,
         during: None,
     };
-    (
-        base(policy).with_spotify_sources(Box::new(catalog)),
-        calls,
-    )
+    (base(policy).with_spotify_sources(Box::new(catalog)), calls)
 }
 
 fn request() -> SpotifySearchQuery {
@@ -155,12 +152,7 @@ fn invalid_queries_and_limits_are_refused_before_the_provider() {
     }
     assert!(calls.0.lock().unwrap().is_empty());
     surface
-        .search_spotify(
-            &Client::McpStdio,
-            &"é".repeat(128),
-            CatalogKind::Track,
-            10,
-        )
+        .search_spotify(&Client::McpStdio, &"é".repeat(128), CatalogKind::Track, 10)
         .unwrap();
     assert_eq!(calls.0.lock().unwrap().len(), 1);
 }
@@ -326,11 +318,7 @@ fn forwarded_results_must_match_the_exact_normalized_query_and_kind() {
 fn a_permission_revoked_during_the_lookup_does_not_release_catalog_results() {
     let directory = tempfile::tempdir().unwrap();
     let policy_file = directory.path().join("policy.toml");
-    std::fs::write(
-        &policy_file,
-        "[clients.\"mcp-stdio\"]\nallow = ['read']\n",
-    )
-    .unwrap();
+    std::fs::write(&policy_file, "[clients.\"mcp-stdio\"]\nallow = ['read']\n").unwrap();
     let calls = Arc::new(Calls::default());
     let catalog = Catalog {
         calls: Arc::clone(&calls),
@@ -448,8 +436,7 @@ fn http_search_routes_decode_validate_and_describe_online_search() {
 
 #[test]
 fn catalog_kind_schema_uses_the_same_lowercase_names_as_requests_and_replies() {
-    let schema =
-        <CatalogKind as fastapi::fastapi_openapi::JsonSchema>::schema();
+    let schema = <CatalogKind as fastapi::fastapi_openapi::JsonSchema>::schema();
     let schema = serde_json::to_value(schema).unwrap();
     assert_eq!(
         schema["enum"],

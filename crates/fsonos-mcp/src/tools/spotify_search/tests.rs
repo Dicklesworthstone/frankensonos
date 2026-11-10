@@ -52,10 +52,7 @@ fn local(policy: Policy) -> (Backend, Arc<AtomicUsize>) {
         Box::new(SystemClock),
     )
     .with_spotify_sources(Box::new(Catalog(Arc::clone(&calls))));
-    (
-        Backend::shared(Arc::new(surface), Client::McpStdio),
-        calls,
-    )
+    (Backend::shared(Arc::new(surface), Client::McpStdio), calls)
 }
 
 fn request() -> SpotifySearchQuery {
@@ -152,8 +149,7 @@ fn absent_daemon_allows_standalone_search_without_switching_to_saved_music() {
 
 #[test]
 fn denied_or_invalid_requests_do_not_contact_the_daemon_or_catalog_provider() {
-    let policy =
-        Policy::from_toml("[clients.\"mcp-stdio\"]\ndeny = ['search_spotify']\n").unwrap();
+    let policy = Policy::from_toml("[clients.\"mcp-stdio\"]\ndeny = ['search_spotify']\n").unwrap();
     let daemon = remote(Some(Ok(serde_json::to_value(response()).unwrap())));
     let (backend, calls) = local(policy);
     let error = backend

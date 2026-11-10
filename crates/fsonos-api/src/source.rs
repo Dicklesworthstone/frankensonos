@@ -196,7 +196,9 @@ impl SourceSelection {
     pub(crate) fn validate_for_source(&self, source_uri: &str) -> Result<(), Failure> {
         self.validate()?;
         let expected = match self.kind {
-            SourceSelectionKind::TopTracks | SourceSelectionKind::CatalogSample => SpotifyBare::Artist,
+            SourceSelectionKind::TopTracks | SourceSelectionKind::CatalogSample => {
+                SpotifyBare::Artist
+            }
             SourceSelectionKind::ShowEpisodes => SpotifyBare::Show,
         };
         if SpotifyBare::of(source_uri) != Some(expected) {

@@ -116,6 +116,56 @@ for (const stage of ['connection', 'body']) {
   });
 }
 
+test('catalog search can finish after the daemon uses its Spotify lookup budget', async () => {
+  const waiting = deferred(), data = { query: 'evening', kind: 'track', items: [], more: false };
+  const h = harness(async () => waiting.promise);
+  const result = observe(h.request('/spotify/search?q=evening&kind=track&limit=10', { method: 'GET' }));
+  await h.time.tick(45000);
+  assert.equal(result.settled, false); assert.equal(h.calls[0].init.signal.aborted, false);
+  waiting.resolve(response(200, data)); await result.done;
+  assert.equal(result.value.query, 'evening'); assert.equal(h.calls.length, 1);
+  assert.equal(h.time.pending, 0);
+  await h.time.tick(60000); assert.equal(h.calls[0].init.signal.aborted, false);
+});
+
+for (const stage of ['connection', 'body']) test(`catalog search bounds a stalled ${stage} to sixty seconds`, async () => {
+  const waiting = deferred();
+  const h = harness(async () => stage === 'connection' ? waiting.promise
+    : response(200, null, { body: () => waiting.promise }));
+  const where = stage === 'connection' ? '/spotify/search' : '/spotify/search?q=evening';
+  const result = observe(h.request(where, { method: 'GET' }));
+  await h.time.tick(59999); assert.equal(result.settled, false);
+  await h.time.tick(1); assert.equal(result.settled, true);
+  assert.equal(result.error.code, 'REMOTE_READ_TIMEOUT'); assert.equal(result.error.uncertain, false);
+  assert.equal(h.calls[0].init.signal.aborted, true); assert.equal(h.calls.length, 1);
+  assert.equal(h.time.pending, 0);
+  waiting.resolve(stage === 'connection' ? response() : '{"query":"late"}'); await settle();
+  assert.equal(result.value, undefined); assert.equal(h.calls.length, 1);
+});
+
+test('replacing a slow catalog search cancels it without waiting for the extended deadline', async () => {
+  const waiting = deferred(), abort = new AbortController();
+  const h = harness(async () => waiting.promise);
+  const result = observe(h.request('/spotify/search?q=evening', { method: 'GET', signal: abort.signal }));
+  await h.time.tick(20000); assert.equal(result.settled, false);
+  abort.abort(); await result.done;
+  assert.equal(result.error.code, 'REMOTE_READ_CANCELLED'); assert.equal(h.calls[0].init.signal.aborted, true);
+  assert.equal(h.time.pending, 0);
+  waiting.resolve(response()); await h.time.tick(60000);
+  assert.equal(result.value, undefined); assert.equal(h.calls.length, 1);
+});
+
+test('the catalog deadline is restricted to GET on the exact search route', () => {
+  const { RequestRemote: r } = harness(async () => response());
+  for (const where of ['/spotify/search', '/spotify/search?q=evening']) {
+    assert.equal(r.timeoutFor('GET', where), 60000);
+    assert.equal(r.timeoutFor('POST', where), 120000);
+  }
+  for (const where of ['/zones', '/spotify/searching?q=evening', '/spotify/search/extra?q=evening']) {
+    assert.equal(r.timeoutFor('GET', where), 15000);
+  }
+});
+
 test('normal success cancels its timer and never aborts a completed request later', async () => {
   const h = harness(async () => response());
   await h.request('/pause', { method: 'POST' });

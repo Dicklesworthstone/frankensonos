@@ -47,10 +47,17 @@ const DashboardSource = (() => {
     const scope = () => controller.selected() ? C.shape(controller.selected().zone) : '';
     const matching = () => state.target === target() && state.scope === scope();
     const editable = () => !!(live() && !state.writing && !controller.state.busy);
+    const catalog = P.catalogModel({
+      call: (query, options) => call('/spotify/search?' + new URLSearchParams(query), undefined, options),
+      available: () => editable() && state.sourceType === 'catalog' && !state.loading,
+      changed: publish,
+    });
+    state.catalog = catalog.state;
     const ready = () => !!(editable() && !state.loading && state.group && matching()
       && controller.state.topologyFresh && controller.canControl());
     function retire(message) {
       ++version; reading?.abort(); reading = null; state.loading = false; state.pending = null;
+      catalog.retire();
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (message) state.message = message;
     }
@@ -77,12 +84,20 @@ const DashboardSource = (() => {
     function edit(field, value) {
       if (!editable() || typeof value !== 'string' || !['sourceType', 'playlist', 'input', 'title', 'mode'].includes(field)
           || (field === 'mode' && !Object.hasOwn(P.modes, value))) return false;
-      if (field === 'sourceType' && !['link', 'playlist'].includes(value)) return false;
+      if (field === 'sourceType' && !['link', 'playlist', 'catalog'].includes(value)) return false;
       if (field === 'playlist' && (state.playlistStatus !== 'ready' || state.playlistTarget !== state.target
           || !state.playlists.some(item => item.id === value))) return false;
       retire(); if (field === 'sourceType') clearPlaylists();
       if (field === 'playlist') clearContents();
       state[field] = value; state.message = ''; publish(); return true;
+    }
+    function chooseCatalog(item, items) {
+      const incoming = catalog.select(item, items);
+      if (!incoming) return false;
+      retire(); clearPlaylists(); state.sourceType = 'link';
+      state.input = incoming.input; state.title = incoming.title;
+      state.message = 'Spotify source selected. Review the destination and action before sending it.';
+      publish(); return true;
     }
     async function loadPlaylists() {
       if (!editable() || state.sourceType !== 'playlist' || !state.group || !matching()
@@ -151,7 +166,7 @@ const DashboardSource = (() => {
       valid();
       return observation(playback, queue, reviewed.zone, reviewed.group, reviewed.mode);
     }
-    const canReview = () => !!(ready() && (state.sourceType === 'playlist'
+    const canReview = () => !!(ready() && state.sourceType !== 'catalog' && (state.sourceType === 'playlist'
       ? state.playlist && state.playlistStatus === 'ready' && state.playlistTarget === state.target : state.input.trim()));
     async function review(prepared = null) {
       if (!canReview()) return null;
@@ -246,7 +261,7 @@ const DashboardSource = (() => {
       }
       publish(); return true;
     }
-    return { state, observe, editable, edit, loadPlaylists, loadContents, canReview, review, reviewTrack, canApply, apply, open,
+    return { state, catalog, chooseCatalog, observe, editable, edit, loadPlaylists, loadContents, canReview, review, reviewTrack, canApply, apply, open,
       cancelReview() { if (state.writing) return false; retire(); state.message = ''; publish(); return true; },
       clearDraft() {
         if (!editable()) return false;
@@ -273,9 +288,10 @@ const DashboardSource = (() => {
   function panel({ call, controller, completed, document: doc = document, now }) {
     const $ = id => doc.getElementById(id), dialog = $('source-dialog'), trigger = $('open-source'), preview = $('source-preview');
     let opener = null, reviewFocus = null, shown = null, shownPlaylists = null, shownPlaylistStatus = '', shownContents = null, shownContentsReady = null;
+    let shownCatalog = null, shownCatalogReady = null;
     const control = model({ call, controller, completed, now, changed: render });
     function render(s) {
-      trigger.disabled = !controller.state.active || (controller.state.busy && !s.writing) || (!controller.selected() && !s.result);
+      trigger.disabled = !controller.state.active || (controller.state.busy && !s.writing);
       trigger.setAttribute('aria-expanded', String(s.open));
       if (s.open && !dialog.open) dialog.showModal();
       else if (!s.open && dialog.open) { dialog.close(); if (opener && !opener.disabled) opener.focus(); }
@@ -284,9 +300,22 @@ const DashboardSource = (() => {
         if (input.value !== s[field]) input.value = s[field];
       }
       $('source-type').value = s.sourceType; $('source-type').disabled = !control.editable();
-      const saved = s.sourceType === 'playlist';
-      for (const id of ['source-link-field', 'source-title-field', 'source-kinds']) $(id).hidden = saved;
+      const saved = s.sourceType === 'playlist', online = s.sourceType === 'catalog';
+      for (const id of ['source-link-field', 'source-title-field', 'source-kinds']) $(id).hidden = saved || online;
       for (const id of ['source-playlist-field', 'source-playlist-controls']) $(id).hidden = !saved;
+      $('source-online').hidden = !online;
+      if ($('source-catalog-query').value !== s.catalog.query) $('source-catalog-query').value = s.catalog.query;
+      $('source-catalog-kind').value = s.catalog.kind;
+      const catalogReady = control.editable() && !s.loading;
+      for (const id of ['source-catalog-query', 'source-catalog-kind']) $(id).disabled = !catalogReady;
+      $('source-catalog-search').disabled = !catalogReady || s.catalog.status === 'loading';
+      $('source-catalog-cancel').hidden = s.catalog.status !== 'loading';
+      $('source-catalog-message').textContent = s.catalog.message;
+      $('source-online').setAttribute('aria-busy', String(s.catalog.status === 'loading'));
+      if (shownCatalog !== s.catalog.items || shownCatalogReady !== catalogReady) {
+        shownCatalog = s.catalog.items; shownCatalogReady = catalogReady;
+        P.renderCatalog($('source-catalog-items'), s.catalog, doc, { choose: control.chooseCatalog, disabled: !catalogReady });
+      }
       if (shownPlaylists !== s.playlists || shownPlaylistStatus !== s.playlistStatus) {
         shownPlaylists = s.playlists; shownPlaylistStatus = s.playlistStatus;
         const caption = s.playlistStatus === 'loading' ? 'Loading playlists…'
@@ -317,7 +346,8 @@ const DashboardSource = (() => {
         shownContents = s.contents; shownContentsReady = control.canReview();
         P.renderContents($('source-contents-items'), s.contents, doc, { review: control.reviewTrack, disabled: !shownContentsReady });
       }
-      $('source-context').textContent = s.group ? 'Destination: ' + s.group.label : 'Select a listening group first.';
+      $('source-context').textContent = s.group ? 'Destination: ' + s.group.label
+        : 'Search Spotify or prepare a source now. Select a listening group before reviewing playback.';
       $('source-review').textContent = s.mode === 'play' ? 'Review playback' : 'Review queue addition';
       $('source-review').disabled = !control.canReview(); $('source-clear').disabled = !control.editable();
       $('source-message').textContent = s.message;
@@ -355,6 +385,10 @@ const DashboardSource = (() => {
     $('source-type').addEventListener('change', event => {
       if (control.edit('sourceType', event.target.value) && control.state.sourceType === 'playlist') void control.loadPlaylists();
     });
+    $('source-catalog-query').addEventListener('input', event => control.catalog.edit('query', event.target.value));
+    $('source-catalog-kind').addEventListener('change', event => control.catalog.edit('kind', event.target.value));
+    $('source-catalog-form').addEventListener('submit', event => { event.preventDefault(); void control.catalog.search(); });
+    $('source-catalog-cancel').addEventListener('click', () => control.catalog.cancel());
     $('source-playlist').addEventListener('change', event => control.edit('playlist', event.target.value));
     $('source-playlist-refresh').addEventListener('click', () => { void control.loadPlaylists(); });
     $('source-contents-read').addEventListener('click', () => { void control.loadContents(); });

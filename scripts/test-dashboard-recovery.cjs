@@ -131,6 +131,60 @@ for (const stage of ['connect', 'body']) test(`cancelling a stuck read ${stage} 
   assert.equal(run.value, undefined);
 });
 
+test('catalog search can finish after the daemon uses its Spotify lookup budget', async () => {
+  const t = clock(), gate = deferred(); let signal, calls = 0;
+  const request = C.request({ schedule: t.schedule, cancel: t.cancel,
+    fetcher: async (_, init) => { calls++; signal = init.signal; return gate.promise; } });
+  const run = observe(request('/spotify/search?q=evening&kind=track&limit=10'));
+  await t.tick(45000); assert.ok(!run.settled); assert.equal(signal.aborted, false);
+  gate.resolve({ ok: true, text: async () => '{"query":"evening","kind":"track","items":[],"more":false}' });
+  await run.done; assert.equal(run.value.query, 'evening'); assert.equal(calls, 1); assert.equal(t.size, 0);
+  await t.tick(60000); assert.equal(signal.aborted, false);
+});
+
+for (const stage of ['connect', 'body']) test(`catalog search bounds a stalled ${stage} to sixty seconds`, async () => {
+  const t = clock(), gate = deferred(); let signal, calls = 0;
+  const request = C.request({ schedule: t.schedule, cancel: t.cancel,
+    fetcher: async (_, init) => { calls++; signal = init.signal; return stage === 'connect' ? gate.promise
+      : { ok: true, text: () => gate.promise }; } });
+  const run = observe(request(stage === 'connect' ? '/spotify/search' : '/spotify/search?q=evening'));
+  await t.tick(59999); assert.ok(!run.settled);
+  await t.tick(1); assert.equal(run.settled, true);
+  assert.equal(run.error.message, 'The daemon did not answer in time.');
+  assert.equal(signal.aborted, true); assert.equal(calls, 1); assert.equal(t.size, 0);
+  gate.resolve(stage === 'connect' ? { ok: true, text: async () => '{"query":"late"}' } : '{"query":"late"}');
+  await settle(); assert.equal(run.value, undefined); assert.equal(calls, 1);
+});
+
+test('replacing a slow catalog search cancels it without waiting for the extended deadline', async () => {
+  const t = clock(), gate = deferred(), abort = new AbortController(); let signal, calls = 0;
+  const request = C.request({ schedule: t.schedule, cancel: t.cancel,
+    fetcher: async (_, init) => { calls++; signal = init.signal; return gate.promise; } });
+  const run = observe(request('/spotify/search?q=evening', undefined, { signal: abort.signal }));
+  await t.tick(20000); assert.ok(!run.settled);
+  abort.abort(); await run.done;
+  assert.equal(run.error.code, 'DASHBOARD_READ_CANCELLED'); assert.equal(signal.aborted, true);
+  assert.equal(t.size, 0);
+  gate.resolve({ ok: true, text: async () => '{"query":"late"}' }); await t.tick(60000);
+  assert.equal(run.value, undefined); assert.equal(calls, 1);
+});
+
+test('the catalog deadline does not extend other reads or shorten writes', async () => {
+  for (const url of ['/zones', '/spotify/searching?q=evening', '/spotify/search/extra?q=evening', '/spotify/search']) {
+    const t = clock(), gate = deferred(), write = url === '/spotify/search'; let signal, calls = 0;
+    const request = C.request({ schedule: t.schedule, cancel: t.cancel,
+      fetcher: async (_, init) => { calls++; signal = init.signal; return gate.promise; } });
+    const run = observe(request(url, write ? { query: 'evening' } : undefined));
+    await t.tick((write ? 120000 : 10000) - 1); assert.ok(!run.settled, url);
+    await t.tick(1); assert.equal(run.settled, true, url);
+    assert.equal(run.error.message, write
+      ? 'No command confirmation arrived. It may still complete; refresh before another action.'
+      : 'The daemon did not answer in time.');
+    assert.equal(signal.aborted, true); assert.equal(calls, 1); assert.equal(t.size, 0);
+    gate.resolve({ ok: true, text: async () => '[]' }); await settle();
+  }
+});
+
 test('cancelling reads never aborts a sent command and every deadline is released', async () => {
   const t = clock(), gates = [], calls = [];
   const request = C.request({ schedule: t.schedule, cancel: t.cancel, fetcher: async (url, init) => {

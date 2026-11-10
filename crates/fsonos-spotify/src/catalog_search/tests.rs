@@ -203,7 +203,9 @@ fn unicode_queries_are_trimmed_and_encoded_once_without_query_injection() {
     });
     assert_eq!(
         server.calls(),
-        ["GET /v1/search?q=Bj%C3%B6rk%20%26%20caf%C3%A9%20%2B%20genre%3Ajazz&type=track&limit=1&offset=0"]
+        [
+            "GET /v1/search?q=Bj%C3%B6rk%20%26%20caf%C3%A9%20%2B%20genre%3Ajazz&type=track&limit=1&offset=0"
+        ]
     );
 }
 
@@ -251,7 +253,9 @@ fn query_byte_boundary_is_accepted_and_results_never_exceed_ten() {
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, true);
-        let found = search(&mut session, &cx, &query, "track", 10).await.unwrap();
+        let found = search(&mut session, &cx, &query, "track", 10)
+            .await
+            .unwrap();
         assert_eq!(found.items.len(), 10);
         assert!(found.more);
         assert_eq!(found.items[9].source_uri, item_uri("track", 9));
@@ -335,10 +339,7 @@ fn invalid_usable_identity_or_display_never_returns_an_earlier_valid_result() {
             8 => bad["name"] = "x".repeat(MAX_TITLE_BYTES + 1).into(),
             _ => bad["artists"][0]["name"] = "bad\ncreator".into(),
         }
-        assert_malformed(
-            "track",
-            &response("track", &[item("track", 1), bad], 2, 10),
-        );
+        assert_malformed("track", &response("track", &[item("track", 1), bad], 2, 10));
     }
     let mut episode = item("episode", 1);
     episode.as_object_mut().unwrap().remove("is_playable");

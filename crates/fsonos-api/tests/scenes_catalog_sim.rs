@@ -235,26 +235,41 @@ fn catalog_scenes_resolve_once_and_play_or_load_silently_in_both_households() {
                 .unwrap();
             assert_eq!(calls.load(Ordering::SeqCst), 0, "saving is not playback");
             let stored = surface.scene(&Client::Cli, "Music").unwrap();
-            assert_eq!(stored.groups[0].source.uri.as_deref(), Some(source_uri(kind)));
+            assert_eq!(
+                stored.groups[0].source.uri.as_deref(),
+                Some(source_uri(kind))
+            );
             let marker = rig.sim.soap_log().len();
             let result = surface.apply_scene(&Client::McpStdio, "Music").unwrap();
             assert!(result.complete && result.changed, "{result:?}");
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             let writes = rig.writes(marker);
             assert_eq!(
-                writes.iter().filter(|entry| entry.action == "AddURIToQueue").count(),
+                writes
+                    .iter()
+                    .filter(|entry| entry.action == "AddURIToQueue")
+                    .count(),
                 6
             );
             assert_eq!(
                 writes.iter().filter(|entry| entry.action == "Play").count(),
                 if playing { 2 } else { 0 }
             );
-            assert!(writes.iter().all(|entry| entry.action != "RemoveAllTracksFromQueue"));
+            assert!(
+                writes
+                    .iter()
+                    .all(|entry| entry.action != "RemoveAllTracksFromQueue")
+            );
             for room in ["Kitchen", "Den"] {
                 let player = rig.sim.player(room).unwrap();
                 assert_eq!(rig.queue(room), selection(kind).tracks);
-                assert_eq!(get_play_mode(&rig.sim.lan(), player.ip).unwrap(), PlayMode::Normal);
-                let state = soap::get_transport_info(&rig.sim.lan(), player.ip).unwrap().state;
+                assert_eq!(
+                    get_play_mode(&rig.sim.lan(), player.ip).unwrap(),
+                    PlayMode::Normal
+                );
+                let state = soap::get_transport_info(&rig.sim.lan(), player.ip)
+                    .unwrap()
+                    .state;
                 if playing {
                     assert_eq!(state, TransportState::Playing);
                 } else {
@@ -268,7 +283,12 @@ fn catalog_scenes_resolve_once_and_play_or_load_silently_in_both_households() {
                     .collect();
                 assert_eq!(adds.len(), 3);
                 assert!(adds.iter().all(|entry| {
-                    let uri = &entry.args.iter().find(|(key, _)| key == "EnqueuedURI").unwrap().1;
+                    let uri = &entry
+                        .args
+                        .iter()
+                        .find(|(key, _)| key == "EnqueuedURI")
+                        .unwrap()
+                        .1;
                     let metadata = &entry
                         .args
                         .iter()
@@ -292,7 +312,10 @@ fn catalog_scenes_resolve_once_and_play_or_load_silently_in_both_households() {
                 }));
             }
             assert!(writes.iter().all(|entry| {
-                entry.args.iter().all(|(_, value)| !value.contains(source_uri(kind)))
+                entry
+                    .args
+                    .iter()
+                    .all(|(_, value)| !value.contains(source_uri(kind)))
             }));
             let marker = rig.sim.soap_log().len();
             let refusal = surface.undo(&Client::McpStdio, true).unwrap_err();
@@ -318,7 +341,9 @@ fn a_catalog_scene_can_make_a_current_group_member_its_new_coordinator() {
             "volumes": {"Study": 20, "Den": 15}
         }))
         .unwrap();
-        surface.save_scene_from(&Client::Cli, "Swap", &scene).unwrap();
+        surface
+            .save_scene_from(&Client::Cli, "Swap", &scene)
+            .unwrap();
         let marker = rig.sim.soap_log().len();
         let result = surface.apply_scene(&Client::McpStdio, "Swap").unwrap();
         assert!(result.complete && result.changed, "{result:?}");
@@ -330,9 +355,15 @@ fn a_catalog_scene_can_make_a_current_group_member_its_new_coordinator() {
             .find(|group| group.coordinator.0 == future.uuid)
             .unwrap();
         assert!(group.members.iter().any(|member| member.uuid.0 == old.uuid));
-        assert!(rig.writes(marker).iter().all(|entry| entry.action != "Play"));
+        assert!(
+            rig.writes(marker)
+                .iter()
+                .all(|entry| entry.action != "Play")
+        );
         assert_ne!(
-            soap::get_transport_info(&rig.sim.lan(), future.ip).unwrap().state,
+            soap::get_transport_info(&rig.sim.lan(), future.ip)
+                .unwrap()
+                .state,
             TransportState::Playing
         );
     }
@@ -353,19 +384,28 @@ fn invalid_catalog_items_and_missing_household_linkage_leave_all_groups_untouche
                 .save_scene_from(&Client::Cli, "Music", &definition(kind, true))
                 .unwrap();
             if missing_renderer {
-                rig.sim.retain_favorites(2, |uri| !uri.contains("spotify")).unwrap();
+                rig.sim
+                    .retain_favorites(2, |uri| !uri.contains("spotify"))
+                    .unwrap();
             }
             let marker = rig.sim.soap_log().len();
             let error = surface.apply_scene(&Client::McpStdio, "Music").unwrap_err();
             assert_eq!(
                 error.code,
-                if missing_renderer { ErrorCode::RenderParamsMissing } else { ErrorCode::NotReady }
+                if missing_renderer {
+                    ErrorCode::RenderParamsMissing
+                } else {
+                    ErrorCode::NotReady
+                }
             );
             assert!(rig.writes(marker).is_empty());
             for room in ["Kitchen", "Office", "Den", "Study"] {
                 let host = rig.sim.player(room).unwrap().ip;
                 assert_eq!(soap::get_volume(&rig.sim.lan(), host).unwrap(), 85);
-                assert_eq!(soap::get_media_info(&rig.sim.lan(), host).unwrap().uri, ORIGINAL);
+                assert_eq!(
+                    soap::get_media_info(&rig.sim.lan(), host).unwrap().uri,
+                    ORIGINAL
+                );
             }
         }
     }
@@ -401,17 +441,26 @@ fn a_queue_edit_during_lookup_preserves_the_edit_and_prevents_caps_or_regrouping
             "mutes": {(destination): true}
         }))
         .unwrap();
-        surface.save_scene_from(&Client::Cli, "Music", &scene).unwrap();
+        surface
+            .save_scene_from(&Client::Cli, "Music", &scene)
+            .unwrap();
         let marker = rig.sim.soap_log().len();
         let error = surface.apply_scene(&Client::McpStdio, "Music").unwrap_err();
         assert!(error.detail.contains("changed"), "{error:?}");
         let writes = rig.writes(marker);
-        assert_eq!(writes.len(), 1, "only the newer user's edit may write: {writes:?}");
+        assert_eq!(
+            writes.len(),
+            1,
+            "only the newer user's edit may write: {writes:?}"
+        );
         assert_eq!(writes[0].action, "AddURIToQueue");
         assert_eq!(soap::get_volume(&rig.sim.lan(), target).unwrap(), 85);
         assert!(!soap::get_mute(&rig.sim.lan(), target).unwrap());
         let queue = browse_all(&rig.sim.lan(), target, QUEUE).unwrap();
-        assert_eq!(queue.last().unwrap().res.as_ref().unwrap().uri, "http://example.invalid/newer.mp3");
+        assert_eq!(
+            queue.last().unwrap().res.as_ref().unwrap().uri,
+            "http://example.invalid/newer.mp3"
+        );
     }
 }
 
@@ -427,22 +476,38 @@ fn either_writer_or_caller_can_forbid_catalog_playback_without_blocking_room_lev
             let policy = Policy::from_toml("[clients.\"tag:blocked\"]\ndeny = ['play']\n").unwrap();
             let surface = rig.surface(policy, catalog);
             let blocked = Client::Tailnet("tag:blocked".into());
-            let writer = if denied_writer { &blocked } else { &Client::Cli };
-            let caller = if denied_writer { &Client::Cli } else { &blocked };
+            let writer = if denied_writer {
+                &blocked
+            } else {
+                &Client::Cli
+            };
+            let caller = if denied_writer {
+                &Client::Cli
+            } else {
+                &blocked
+            };
             surface
                 .save_scene_from(writer, "Quiet", &definition(kind, false))
                 .unwrap();
             let marker = rig.sim.soap_log().len();
             let result = surface.apply_scene(caller, "Quiet").unwrap();
             assert!(result.complete && result.changed, "{result:?}");
-            assert!(result.notes.iter().any(|note| note.code == NoteCode::Skipped));
+            assert!(
+                result
+                    .notes
+                    .iter()
+                    .any(|note| note.code == NoteCode::Skipped)
+            );
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             assert_eq!(
                 soap::get_volume(&rig.sim.lan(), rig.sim.player("Den").unwrap().ip).unwrap(),
                 20
             );
             assert!(rig.writes(marker).iter().all(|entry| {
-                !matches!(entry.action.as_str(), "Play" | "Pause" | "Stop" | "AddURIToQueue")
+                !matches!(
+                    entry.action.as_str(),
+                    "Play" | "Pause" | "Stop" | "AddURIToQueue"
+                )
             }));
         }
     }
@@ -504,9 +569,16 @@ fn scheduled_catalog_scenes_retry_readiness_before_claiming_and_load_only_once()
         let scheduler = Scheduler::new(&surface);
         ready.store(false, Ordering::SeqCst);
         let marker = rig.sim.soap_log().len();
-        assert_eq!(scheduler.tick_at(at, &Utc), [Ran::Fired { id: saved.id, at }]);
+        assert_eq!(
+            scheduler.tick_at(at, &Utc),
+            [Ran::Fired { id: saved.id, at }]
+        );
         assert!(scheduler.wait(Duration::from_secs(10)));
-        assert!(surface.schedules(&Client::Cli).unwrap()[0].last_fired.is_none());
+        assert!(
+            surface.schedules(&Client::Cli).unwrap()[0]
+                .last_fired
+                .is_none()
+        );
         assert!(rig.writes(marker).is_empty());
         ready.store(true, Ordering::SeqCst);
         assert_eq!(
@@ -514,13 +586,27 @@ fn scheduled_catalog_scenes_retry_readiness_before_claiming_and_load_only_once()
             [Ran::Fired { id: saved.id, at }]
         );
         assert!(scheduler.wait(Duration::from_secs(10)));
-        assert!(surface.schedules(&Client::Cli).unwrap()[0].last_fired.is_some());
-        assert!(scheduler.tick_at(at + chrono::TimeDelta::minutes(2), &Utc).is_empty());
+        assert!(
+            surface.schedules(&Client::Cli).unwrap()[0]
+                .last_fired
+                .is_some()
+        );
+        assert!(
+            scheduler
+                .tick_at(at + chrono::TimeDelta::minutes(2), &Utc)
+                .is_empty()
+        );
         for room in ["Kitchen", "Den"] {
             assert_eq!(rig.queue(room), selection(kind).tracks);
         }
         let writes = rig.writes(marker);
-        assert_eq!(writes.iter().filter(|entry| entry.action == "AddURIToQueue").count(), 6);
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|entry| entry.action == "AddURIToQueue")
+                .count(),
+            6
+        );
         assert!(writes.iter().all(|entry| entry.action != "Play"));
     }
 }
@@ -578,12 +664,8 @@ fn catalog_recall_keeps_its_queue_and_source_proof_through_cap_writes_and_regrou
                 let kitchen = rig.sim.player("Kitchen").unwrap();
                 let office = rig.sim.player("Office").unwrap();
                 let coordinator = if layout == "future" {
-                    soap::join_group(
-                        &rig.sim.lan(),
-                        office.ip,
-                        &PlayerId(kitchen.uuid.clone()),
-                    )
-                    .unwrap();
+                    soap::join_group(&rig.sim.lan(), office.ip, &PlayerId(kitchen.uuid.clone()))
+                        .unwrap();
                     "Office"
                 } else {
                     "Kitchen"
@@ -610,21 +692,31 @@ fn catalog_recall_keeps_its_queue_and_source_proof_through_cap_writes_and_regrou
                     "volumes": {(coordinator): 20}
                 }))
                 .unwrap();
-                surface.save_scene_from(&Client::Cli, "Music", &scene).unwrap();
+                surface
+                    .save_scene_from(&Client::Cli, "Music", &scene)
+                    .unwrap();
                 let marker = rig.sim.soap_log().len();
                 let result = surface.apply_scene(&Client::McpStdio, "Music").unwrap();
                 assert!(!result.complete, "{kind} {layout} {change}: {result:?}");
                 assert!(
-                    result.failed.iter().any(|failure| failure.error.contains("changed")),
+                    result
+                        .failed
+                        .iter()
+                        .any(|failure| failure.error.contains("changed")),
                     "{result:?}"
                 );
                 let writes = rig.writes(marker);
                 assert!(writes.iter().any(|entry| entry.action == "SetVolume"));
-                assert!(writes.iter().all(|entry| {
-                    !matches!(entry.action.as_str(), "Play" | "Pause" | "Stop")
-                }));
+                assert!(
+                    writes.iter().all(|entry| {
+                        !matches!(entry.action.as_str(), "Play" | "Pause" | "Stop")
+                    })
+                );
                 assert_eq!(
-                    writes.iter().filter(|entry| entry.action == "AddURIToQueue").count(),
+                    writes
+                        .iter()
+                        .filter(|entry| entry.action == "AddURIToQueue")
+                        .count(),
                     usize::from(change == "queue"),
                     "the catalog must not adopt the newer state as its replacement baseline"
                 );

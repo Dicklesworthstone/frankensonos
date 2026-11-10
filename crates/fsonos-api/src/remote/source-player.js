@@ -2,11 +2,15 @@
 'use strict';
 const SourcePlayerRemote = (() => {
   const routes = { sourcePlay: ['POST', '/play'], sourceQueue: ['POST', '/queue'],
+    sourceSpotifySearch: ['GET', '/spotify/search'],
     sourceQueueState: ['GET', '/zones/{room}/queue'],
     sourcePlaylists: ['GET', '/sonos/playlists'], sourcePlaylistPlay: ['POST', '/sonos/playlists/play'],
     sourcePlaylistContents: ['GET', '/sonos/playlists/contents'], sourcePlaylistTrack: ['POST', '/sonos/playlists/track'] };
   const modes = Object.freeze({ play: 'Play now', next: 'Queue next', end: 'Queue at end' });
   const MAX_BYTES = 2048, MAX_TITLE = 256;
+  const catalogKinds = Object.freeze({ track: 'Tracks', album: 'Albums', artist: 'Artists',
+    playlist: 'Playlists', show: 'Podcast shows', episode: 'Episodes' });
+  const CATALOG_LIMIT = 10, MAX_QUERY_BYTES = 256;
   const text = (v) => typeof v === 'string' && v.trim() !== '';
   const problem = (e) => [e?.message || 'The request failed.', e?.hint].filter(Boolean).join(' ');
 
@@ -67,6 +71,99 @@ const SourcePlayerRemote = (() => {
       throw new Error('The source display title is invalid.');
     }
     return Object.freeze({ input: item.uri, title: value.title?.trim() || '' });
+  }
+
+  function catalogQuery(raw, kind) {
+    if (typeof raw !== 'string' || /[\p{Cc}]/u.test(raw)) {
+      throw new Error('Use a Spotify search without control characters.');
+    }
+    const q = raw.trim();
+    if (!q || new TextEncoder().encode(q).length > MAX_QUERY_BYTES) {
+      throw new Error(`Enter a Spotify search between 1 and ${MAX_QUERY_BYTES} bytes.`);
+    }
+    if (!Object.hasOwn(catalogKinds, kind)) throw new Error('Choose a Spotify catalog category.');
+    return Object.freeze({ q, kind, limit: CATALOG_LIMIT });
+  }
+
+  function catalogPage(value, query) {
+    const fail = () => { throw new Error('The Spotify catalog reply is incomplete. Search again before choosing a source.'); };
+    if (!value || value.query !== query.q || value.kind !== query.kind || typeof value.more !== 'boolean'
+        || !Array.isArray(value.items) || value.items.length > query.limit) fail();
+    const validText = v => typeof v === 'string' && new TextEncoder().encode(v).length <= 4096 && !/[\p{Cc}]/u.test(v);
+    const seen = new Set();
+    const items = value.items.map(item => {
+      if (!item || !validText(item.title) || !item.title.trim()
+          || (item.subtitle != null && !validText(item.subtitle))) fail();
+      const parsed = source(item.source_uri);
+      if (parsed.kind !== query.kind || parsed.uri !== item.source_uri || seen.has(parsed.uri)) fail();
+      seen.add(parsed.uri);
+      return Object.freeze({ source_uri: parsed.uri, title: item.title, subtitle: item.subtitle || '' });
+    });
+    return Object.freeze({ query: query.q, kind: query.kind, items: Object.freeze(items), more: value.more });
+  }
+
+  // Both surfaces use the same read-only search lane. Editing, changing rooms
+  // or closing retires an outstanding read even if the provider ignores abort.
+  function catalogModel({ call, available, changed = () => {} }) {
+    let version = 0, reading = null;
+    const state = { query: '', kind: 'track', status: 'idle', items: [], more: false, message: '' };
+    function retire() {
+      ++version; reading?.abort(); reading = null;
+      state.status = 'idle'; state.items = []; state.more = false; state.message = '';
+    }
+    async function search() {
+      if (!available()) return false;
+      retire();
+      let query;
+      try { query = catalogQuery(state.query, state.kind); }
+      catch (error) { state.status = 'error'; state.message = problem(error); changed(); return false; }
+      const v = version, abort = new AbortController();
+      reading = abort; state.status = 'loading'; state.message = 'Searching the Spotify catalog…'; changed();
+      const current = () => v === version && !abort.signal.aborted && available();
+      try {
+        const value = await call(query, { signal: abort.signal });
+        if (!current()) return false;
+        const page = catalogPage(value, query);
+        state.items = page.items; state.more = page.more; state.status = 'ready';
+        state.message = !page.items.length ? 'No matching Spotify results. Try another search or category.'
+          : `${page.items.length} Spotify result(s). Choose a source, then review its destination and action.${page.more ? ' More matches are available; refine your search.' : ''}`;
+        return true;
+      } catch (error) {
+        if (current()) { state.status = 'error'; state.message = problem(error); }
+        return false;
+      } finally {
+        if (reading === abort) {
+          reading = null;
+          if (state.status === 'loading') { state.status = 'idle'; state.message = 'The search is no longer current. Search again.'; }
+          changed();
+        }
+      }
+    }
+    return { state, search, retire,
+      edit(field, value) {
+        if (!available() || !['query', 'kind'].includes(field) || typeof value !== 'string'
+            || (field === 'kind' && !Object.hasOwn(catalogKinds, value))) return false;
+        retire(); state[field] = value; changed(); return true;
+      },
+      select(item, items = state.items) {
+        if (!available() || state.status !== 'ready' || items !== state.items || !items.includes(item)) return null;
+        return offeredSource({ source_uri: item.source_uri, title: [...item.title].slice(0, MAX_TITLE).join('') });
+      },
+      cancel() { retire(); state.message = 'Spotify search cancelled.'; changed(); },
+    };
+  }
+
+  function renderCatalog(list, state, doc, { choose, disabled = false }) {
+    list.replaceChildren();
+    const items = state.items;
+    for (const item of items) {
+      const row = doc.createElement('li'), title = doc.createElement('strong');
+      title.textContent = item.title; row.append(title);
+      if (item.subtitle) { const byline = doc.createElement('span'); byline.textContent = item.subtitle; row.append(byline); }
+      const button = doc.createElement('button'); button.type = 'button'; button.textContent = 'Use this source';
+      button.disabled = disabled;
+      button.addEventListener('click', () => choose(item, items)); row.append(button); list.append(row);
+    }
   }
 
   function groups(value) {
@@ -279,10 +376,17 @@ const SourcePlayerRemote = (() => {
       playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [],
       reading: false, writing: false, message: '', result: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
+    const catalog = catalogModel({
+      call: (query, options) => call('sourceSpotifySearch', { query, signal: options.signal }),
+      available: () => !disposed && state.open && state.sourceType === 'catalog' && !state.reading && !state.writing,
+      changed: publish,
+    });
+    state.catalog = catalog.state;
     const selected = () => state.groups.find((group) => group.target === state.target);
     const current = (version) => !disposed && state.open && epoch === version;
     const invalidate = () => {
       ++epoch; state.pending = null; state.reading = false;
+      catalog.retire();
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
     };
     const clearContents = () => { state.contents = null; state.contentsHistory = []; };
@@ -312,12 +416,21 @@ const SourcePlayerRemote = (() => {
       if (disposed || state.writing || !['target', 'sourceType', 'playlist', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
       if (field === 'target' && !state.groups.some((group) => group.target === value)) return false;
       if (field === 'mode' && !Object.hasOwn(modes, value)) return false;
-      if (field === 'sourceType' && !['link', 'playlist'].includes(value)) return false;
+      if (field === 'sourceType' && !['link', 'playlist', 'catalog'].includes(value)) return false;
       if (field === 'playlist' && (state.playlistTarget !== state.target || !state.playlists.some(item => item.id === value))) return false;
       invalidate();
       if (field === 'target' || field === 'sourceType') clearPlaylists();
       if (field === 'playlist') clearContents();
       state[field] = value; state.message = ''; publish(); return true;
+    }
+
+    function chooseCatalog(item, items) {
+      const incoming = catalog.select(item, items);
+      if (!incoming) return false;
+      invalidate(); clearPlaylists(); state.sourceType = 'link';
+      state.input = incoming.input; state.title = incoming.title;
+      state.message = 'Spotify source selected. Review the destination and action before sending it.';
+      publish(); return true;
     }
 
     async function loadPlaylists() {
@@ -400,7 +513,7 @@ const SourcePlayerRemote = (() => {
     }
 
     async function review(choice = null) {
-      if (disposed || !state.open || state.writing || state.reading) return false;
+      if (disposed || !state.open || state.writing || state.reading || state.sourceType === 'catalog') return false;
       invalidate();
       const version = epoch, group = selected(), mode = choice?.mode || state.mode;
       let item, title;
@@ -467,7 +580,7 @@ const SourcePlayerRemote = (() => {
       return accepted;
     }
 
-    return { state, refresh, edit, loadPlaylists, loadContents, review, reviewTrack, confirm, offer, clearDraft,
+    return { state, catalog, chooseCatalog, refresh, edit, loadPlaylists, loadContents, review, reviewTrack, confirm, offer, clearDraft,
       cancel() { if (!state.writing && !disposed) { invalidate(); state.message = ''; publish(); } },
       close() { state.open = false; invalidate(); state.message = ''; publish(); },
       dispose() { disposed = true; state.open = false; invalidate(); },
@@ -477,7 +590,22 @@ const SourcePlayerRemote = (() => {
   function panel({ call, el, execute, document: doc = document }) {
     const target = el('select', { 'aria-label': 'Destination group for music' });
     const sourceType = el('select', { 'aria-label': 'Music source' },
-      el('option', { value: 'link', text: 'Link or stream' }), el('option', { value: 'playlist', text: 'Saved Sonos playlist' }));
+      el('option', { value: 'link', text: 'Link or stream' }), el('option', { value: 'playlist', text: 'Saved Sonos playlist' }),
+      el('option', { value: 'catalog', text: 'Spotify catalog' }));
+    const catalogInput = el('input', { type: 'search', 'aria-label': 'Search the Spotify catalog',
+      placeholder: 'Search music and podcasts on Spotify', autocomplete: 'off', maxlength: MAX_QUERY_BYTES });
+    const catalogKind = el('select', { 'aria-label': 'Spotify catalog category' });
+    for (const [value, label] of Object.entries(catalogKinds)) catalogKind.append(el('option', { value, text: label }));
+    const catalogSearch = el('button', { type: 'submit', text: 'Search Spotify' });
+    const catalogCancel = el('button', { type: 'button', text: 'Cancel search', hidden: true });
+    const catalogMessage = el('p', { class: 'source-help', role: 'status', 'aria-live': 'polite' });
+    const catalogList = el('ol', { class: 'source-online-results', 'aria-label': 'Spotify catalog results' });
+    const catalogForm = el('form', { class: 'source-online-form' },
+      el('label', {}, 'Spotify catalog search ', catalogInput), el('label', {}, 'Category ', catalogKind),
+      el('div', { class: 'row' }, catalogSearch, catalogCancel));
+    const catalogFields = el('section', { class: 'source-online', hidden: true, 'aria-label': 'Spotify catalog search' },
+      el('p', { class: 'source-help', text: 'Search Spotify online using the owner’s connected account. Your cached library and saved Sonos playlists are separate. Choosing a result prepares a source for review.' }),
+      catalogForm, catalogMessage, catalogList);
     const playlist = el('select', { 'aria-label': 'Saved Sonos playlist' });
     const refreshPlaylists = el('button', { type: 'button', text: 'Refresh playlists' });
     const playlistHelp = el('p', { class: 'source-help', role: 'status' });
@@ -502,12 +630,13 @@ const SourcePlayerRemote = (() => {
     const result = el('p', { role: 'status', 'aria-live': 'polite' });
     const consent = el('div', { class: 'source-review', hidden: true, tabindex: '-1', 'aria-label': 'Review selected playback' });
     const inputField = el('label', {}, 'Link or stream ', input), titleField = el('label', {}, 'Title ', title);
-    const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Play a link or Sonos playlist' }),
-      el('div', {}, el('p', { text: 'Choose a saved Sonos playlist from your speakers, paste a Spotify link, or send a direct audio stream. Review the destination and action before playing or adding music to the queue.' }),
-        el('label', {}, 'Destination ', target), el('label', {}, 'Music source ', sourceType), inputField, titleField, playlistFields,
+    const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Spotify, links & Sonos playlists' }),
+      el('div', {}, el('p', { text: 'Search the Spotify catalog, choose a saved Sonos playlist, paste a link, or send a direct audio stream. Review the destination and action before playing or adding music to the queue.' }),
+        el('label', {}, 'Destination ', target), el('label', {}, 'Music source ', sourceType), inputField, titleField, playlistFields, catalogFields,
         el('label', {}, 'Action ', mode), el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
-    const node = el('section', { class: 'scenes', 'aria-label': 'Play a link or Sonos playlist' }, details);
+    const node = el('section', { class: 'scenes', 'aria-label': 'Spotify, links and Sonos playlists' }, details);
     let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, shownContents = null, shownContentsBusy = null, confirmButton = null;
+    let shownCatalog = null, shownCatalogBusy = null;
     const control = model({ call, execute, changed: render });
     function render(state) {
       const busy = state.reading || state.writing;
@@ -517,8 +646,19 @@ const SourcePlayerRemote = (() => {
         for (const group of state.groups) target.append(el('option', { value: group.target, text: group.label }));
       }
       target.value = state.target; mode.value = state.mode; sourceType.value = state.sourceType;
-      const saved = state.sourceType === 'playlist';
-      inputField.hidden = saved; titleField.hidden = saved; playlistFields.hidden = !saved;
+      const saved = state.sourceType === 'playlist', online = state.sourceType === 'catalog';
+      inputField.hidden = saved || online; titleField.hidden = saved || online; playlistFields.hidden = !saved; catalogFields.hidden = !online;
+      if (catalogInput.value !== state.catalog.query) catalogInput.value = state.catalog.query;
+      catalogKind.value = state.catalog.kind;
+      catalogInput.disabled = busy; catalogKind.disabled = busy;
+      catalogSearch.disabled = busy || state.catalog.status === 'loading';
+      catalogCancel.hidden = state.catalog.status !== 'loading';
+      catalogMessage.textContent = state.catalog.message;
+      catalogFields.setAttribute('aria-busy', String(state.catalog.status === 'loading'));
+      if (shownCatalog !== state.catalog.items || shownCatalogBusy !== busy) {
+        shownCatalog = state.catalog.items; shownCatalogBusy = busy;
+        renderCatalog(catalogList, state.catalog, doc, { choose: control.chooseCatalog, disabled: busy });
+      }
       if (shownPlaylists !== state.playlists || shownPlaylistStatus !== state.playlistStatus) {
         shownPlaylists = state.playlists; shownPlaylistStatus = state.playlistStatus;
         const caption = state.playlistStatus === 'loading' ? 'Loading playlists…'
@@ -548,7 +688,7 @@ const SourcePlayerRemote = (() => {
       for (const [field, element] of [['input', input], ['title', title]]) if (element.value !== state[field]) element.value = state[field];
       for (const element of [target, sourceType, input, title, mode]) element.disabled = state.writing;
       clear.disabled = state.writing;
-      refresh.disabled = busy; review.disabled = busy || !state.target || (saved ? !state.playlist || state.playlistStatus !== 'ready' : !state.input.trim());
+      refresh.disabled = busy; review.disabled = busy || online || !state.target || (saved ? !state.playlist || state.playlistStatus !== 'ready' : !state.input.trim());
       message.textContent = state.message || (state.reading ? 'Reading the destination…' : '');
       result.textContent = state.result?.detail || '';
       if (shownReview !== state.pending) {
@@ -593,6 +733,10 @@ const SourcePlayerRemote = (() => {
     sourceType.addEventListener('change', () => {
       if (control.edit('sourceType', sourceType.value) && control.state.sourceType === 'playlist') void control.loadPlaylists();
     });
+    catalogInput.addEventListener('input', () => control.catalog.edit('query', catalogInput.value));
+    catalogKind.addEventListener('change', () => control.catalog.edit('kind', catalogKind.value));
+    catalogForm.addEventListener('submit', event => { event.preventDefault(); void control.catalog.search(); });
+    catalogCancel.addEventListener('click', () => control.catalog.cancel());
     playlist.addEventListener('change', () => control.edit('playlist', playlist.value));
     refreshPlaylists.addEventListener('click', () => { void control.loadPlaylists(); });
     readContents.addEventListener('click', () => { void control.loadContents(); });
@@ -635,7 +779,8 @@ const SourcePlayerRemote = (() => {
 
   return { source, prepare, playlists, preparePlaylist, verifyPlaylist, contentsRequest, playlistContents, contentsSummary, renderContents,
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
-    commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE };
+    commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE,
+    catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, CATALOG_LIMIT, MAX_QUERY_BYTES };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SourcePlayerRemote;

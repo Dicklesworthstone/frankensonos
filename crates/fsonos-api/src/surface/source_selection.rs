@@ -55,7 +55,11 @@ impl Surface {
         let selection = match SpotifyBare::of(source_uri) {
             Some(SpotifyBare::Artist) => sources.artist_tracks(source_uri)?,
             Some(SpotifyBare::Show) => sources.show_episodes(source_uri)?,
-            _ => return Err(Failure::invalid("this source does not need catalog resolution")),
+            _ => {
+                return Err(Failure::invalid(
+                    "this source does not need catalog resolution",
+                ));
+            }
         };
         selection.validate_for_source(source_uri)?;
         Ok(selection)

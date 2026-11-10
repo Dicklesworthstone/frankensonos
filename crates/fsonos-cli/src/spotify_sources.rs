@@ -118,7 +118,8 @@ impl SpotifySources for Sources {
         let query = query.to_owned();
         self.request(move |session, cx| {
             Box::pin(async move {
-                let page = catalog_search::search(session, cx, &query, kind.as_str(), limit).await?;
+                let page =
+                    catalog_search::search(session, cx, &query, kind.as_str(), limit).await?;
                 Ok(CatalogPage {
                     items: page
                         .items
@@ -215,17 +216,13 @@ where
             Err(error) => return (Err(error), 0),
         };
         let now = cx.timer_driver().map_or_else(wall_now, |timer| timer.now());
-        let selected = timeout(
-            now,
-            LOOKUP_LIMIT,
-            operation(&mut session, &cx),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(SpotifyError::Http(
-                "Spotify catalog lookup exceeded its 45-second deadline".into(),
-            ))
-        });
+        let selected = timeout(now, LOOKUP_LIMIT, operation(&mut session, &cx))
+            .await
+            .unwrap_or_else(|_| {
+                Err(SpotifyError::Http(
+                    "Spotify catalog lookup exceeded its 45-second deadline".into(),
+                ))
+            });
         (selected, session.retry_after_secs())
     })
 }
@@ -281,7 +278,9 @@ fn failure(error: SpotifyError) -> Failure {
             ErrorCode::NotReady,
             format!("Spotify catalog request: {other}"),
         )
-        .with_hint("Try a specific track, album or episode, or retry when Spotify's catalog is available."),
+        .with_hint(
+            "Try a specific track, album or episode, or retry when Spotify's catalog is available.",
+        ),
     }
 }
 

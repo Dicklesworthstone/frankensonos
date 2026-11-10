@@ -377,11 +377,7 @@ fn a_failed_paused_source_never_starts_music_in_a_following_step() {
     let (state, uri) = playing(&sim, "A@S1");
     assert_ne!(state, TransportState::Playing);
     assert_eq!(uri, OLD);
-    assert!(
-        sim.soap_log()[mark..]
-            .iter()
-            .all(|e| e.action != "Play")
-    );
+    assert!(sim.soap_log()[mark..].iter().all(|e| e.action != "Play"));
 }
 
 struct SurpriseMember {
