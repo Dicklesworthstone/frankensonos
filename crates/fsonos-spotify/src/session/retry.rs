@@ -271,6 +271,9 @@ async fn attempts(
                 .record(response.header_value("Retry-After"), unix_now());
         }
         checkpoint(cx)?;
+        // A fresh access token can outlive a local sign-out or account switch.
+        // Never publish its response, refresh it or retry it under a newer grant.
+        session.current_grant()?;
         if remaining().is_zero() {
             return Err(deadline_error());
         }

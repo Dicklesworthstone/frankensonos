@@ -164,20 +164,15 @@ impl Session {
     }
 
     /// A valid access token, refreshed (and re-cached) when it is about to
-    /// expire.
+    /// expire. A replaced or removed grant requires a new session even while
+    /// this session's access token is still fresh.
     pub async fn access_token(&mut self, cx: &Cx) -> Result<String, SpotifyError> {
-        let fresh = self
-            .token
-            .as_ref()
-            .ok_or_else(not_authorized)?
-            .is_fresh(unix_now(), REFRESH_MARGIN_SECS);
-        if !fresh {
-            self.refresh(cx).await?;
+        let current = self.current_grant()?;
+        if current.is_fresh(unix_now(), REFRESH_MARGIN_SECS) {
+            return Ok(current.access_token.clone());
         }
-        self.token
-            .as_ref()
-            .map(|t| t.access_token.clone())
-            .ok_or_else(not_authorized)
+        self.refresh(cx).await?;
+        Ok(self.current_grant()?.access_token.clone())
     }
 
     /// GET a Web API URL with the owner's token. Transient read failures
@@ -275,11 +270,18 @@ impl Session {
         Ok(Artist::parse(&body)?.genres)
     }
 
-    async fn refresh(&mut self, cx: &Cx) -> Result<(), SpotifyError> {
+    /// Confirm the same credential identity used by refresh publication. This
+    /// session's refresh updates both copies; a new sign-in belongs to a new read.
+    fn current_grant(&self) -> Result<&CachedToken, SpotifyError> {
         let current = self.token.as_ref().ok_or_else(not_authorized)?;
         if self.cache.load()?.as_ref() != Some(current) {
             return Err(sign_in_changed());
         }
+        Ok(current)
+    }
+
+    async fn refresh(&mut self, cx: &Cx) -> Result<(), SpotifyError> {
+        let current = self.current_grant()?;
         let body = self.config.refresh_body(&current.refresh_token);
         let response = self.post_token(cx, body).await?;
         let next = current.refreshed(response, unix_now())?;

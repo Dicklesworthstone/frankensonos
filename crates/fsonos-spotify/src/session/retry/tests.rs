@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
@@ -108,6 +108,7 @@ struct Reply {
     after: Option<String>,
     stall: Duration,
     hang_up: bool,
+    before_response: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl Reply {
@@ -122,6 +123,7 @@ impl Reply {
             after: None,
             stall: Duration::ZERO,
             hang_up: false,
+            before_response: None,
         }
     }
 
@@ -216,7 +218,10 @@ impl Server {
                     .set_write_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
                 log.lock().unwrap().push(read_request(&mut stream));
-                let reply = replies.pop_front().unwrap_or_else(|| Reply::status(418));
+                let mut reply = replies.pop_front().unwrap_or_else(|| Reply::status(418));
+                if let Some(before_response) = reply.before_response.take() {
+                    before_response();
+                }
                 if reply.hang_up {
                     continue;
                 }
@@ -694,4 +699,169 @@ fn changing_the_api_endpoint_does_not_transfer_an_old_peers_rate_limit() {
     assert!(session.api_cooldown.limited.is_none());
     assert_eq!(server.count(), 0);
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn replacement_grant() -> CachedToken {
+    CachedToken {
+        access_token: "new-owner-access".into(),
+        refresh_token: "new-owner-refresh".into(),
+        expires_at: unix_now() + 3600,
+        scope: SCOPE.into(),
+    }
+}
+
+fn change_grant(cache: &TokenCache, replacement: Option<&CachedToken>) {
+    match replacement {
+        Some(grant) => cache.store(grant).unwrap(),
+        None => std::fs::remove_file(cache.path()).unwrap(),
+    }
+}
+
+fn assert_changed_grant(error: &SpotifyError) {
+    assert!(matches!(error, SpotifyError::Auth(_)), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "auth error: Spotify sign-in changed or was removed; retry with a new session"
+    );
+}
+
+#[test]
+fn replaced_or_removed_fresh_grants_fail_before_any_network_request() {
+    for replacement in [Some(replacement_grant()), None] {
+        let server = Server::start(vec![Reply::status(200)]);
+        let (mut session, directory) = server.session();
+        let cache = session.cache.clone();
+        change_grant(&cache, replacement.as_ref());
+        let results = runtime().block_on(async move {
+            let cx = Cx::current().unwrap();
+            let url = format!("{}/me/tracks", session.endpoints.api);
+            [
+                session.access_token(&cx).await.map(|_| ()),
+                session.get(&cx, &url).await.map(|_| ()),
+                session.get_brief(&cx, &url).await.map(|_| ()),
+                session.check_grant(&cx).await.map(|_| ()),
+            ]
+        });
+        for result in results {
+            assert_changed_grant(&result.unwrap_err());
+        }
+        assert_eq!(server.count(), 0, "an old fresh token must not be sent");
+        assert_eq!(cache.load().unwrap(), replacement);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn grant_changes_during_http_prevent_old_results_refreshes_and_retries() {
+    for (status, hang_up) in [
+        (200, false),
+        (401, false),
+        (429, false),
+        (503, false),
+        (200, true),
+    ] {
+        for replacement in [Some(replacement_grant()), None] {
+            let (send_cache, receive_cache) = mpsc::sync_channel::<TokenCache>(1);
+            let changed = replacement.clone();
+            let mut reply = Reply {
+                hang_up,
+                ..Reply::status(status)
+            };
+            if status == 429 {
+                reply = reply.after("3600");
+            }
+            reply.before_response = Some(Box::new(move || {
+                let cache = receive_cache.recv_timeout(Duration::from_secs(2)).unwrap();
+                change_grant(&cache, changed.as_ref());
+            }));
+            let server = Server::start(vec![reply, Reply::status(200)]);
+            let (mut session, directory) = server.session();
+            let cache = session.cache.clone();
+            send_cache.send(cache.clone()).unwrap();
+            let (result, retry_after) = runtime().block_on(async move {
+                let cx = Cx::current().unwrap();
+                let url = format!("{}/me/tracks", session.endpoints.api);
+                let result = session.get_brief(&cx, &url).await;
+                (result, session.retry_after_secs())
+            });
+            assert_changed_grant(&result.unwrap_err());
+            assert_eq!(
+                server.count(),
+                1,
+                "a changed grant must not trigger another GET or token POST"
+            );
+            assert_eq!(cache.load().unwrap(), replacement);
+            if status == 429 {
+                assert!(retry_after > 0, "keep the observed server cooldown");
+            }
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+}
+
+#[test]
+fn rewriting_the_same_grant_during_http_keeps_the_response_usable() {
+    let (send_cache, receive_cache) = mpsc::sync_channel::<TokenCache>(1);
+    let mut reply = Reply::status(200);
+    reply.before_response = Some(Box::new(move || {
+        let cache = receive_cache.recv_timeout(Duration::from_secs(2)).unwrap();
+        let current = cache.load().unwrap().unwrap();
+        cache.store(&current).unwrap();
+    }));
+    let server = Server::start(vec![reply]);
+    let (mut session, directory) = server.session();
+    let cache = session.cache.clone();
+    let original = cache.load().unwrap();
+    send_cache.send(cache.clone()).unwrap();
+    runtime().block_on(async move {
+        let cx = Cx::current().unwrap();
+        let url = format!("{}/me/tracks", session.endpoints.api);
+        assert_eq!(
+            session.get_brief(&cx, &url).await.unwrap(),
+            b"{\"ok\":true}"
+        );
+    });
+    assert_eq!(cache.load().unwrap(), original);
+    assert_eq!(server.count(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn own_proactive_and_reactive_refreshes_allow_subsequent_reads() {
+    for proactive in [false, true] {
+        let mut replies = vec![Reply::token(), Reply::status(200), Reply::status(200)];
+        if !proactive {
+            replies.insert(0, Reply::status(401));
+        }
+        let server = Server::start(replies);
+        let (mut session, directory) = server.session();
+        if proactive {
+            session.token.as_mut().unwrap().expires_at = 0;
+            let expired = session.token.as_ref().unwrap();
+            session.cache.store(expired).unwrap();
+        }
+        runtime().block_on(async move {
+            let cx = Cx::current().unwrap();
+            for path in ["me/tracks", "me/albums"] {
+                let url = format!("{}/{path}", session.endpoints.api);
+                assert_eq!(
+                    session.get_brief(&cx, &url).await.unwrap(),
+                    b"{\"ok\":true}"
+                );
+            }
+            assert_eq!(
+                session.cache.load().unwrap().as_ref(),
+                session.token.as_ref(),
+                "the session retains its own refreshed credential"
+            );
+        });
+        let seen = server.seen.lock().unwrap();
+        assert_eq!(seen.len(), if proactive { 3 } else { 4 });
+        assert_eq!(seen.iter().filter(|seen| seen.method == "POST").count(), 1);
+        for read in seen.iter().rev().take(2) {
+            assert_eq!(read.method, "GET");
+            assert_eq!(read.authorization.as_deref(), Some("Bearer rotated-access"));
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }

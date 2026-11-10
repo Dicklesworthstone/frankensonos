@@ -32,6 +32,20 @@ commands, dependencies or token persistence rules are introduced. Successful
 response bodies still pass to their existing parsers; malformed JSON is not a
 reason to replay a request.
 
+## Account changes while reading
+
+A Spotify read stays attached to the sign-in that started it. If that cached
+sign-in is replaced or removed, an old session stops before sending another
+request. If the change happens during a request, its response is discarded with
+an authentication error before it can become a search result or playback
+selection. Retry the catalog request with the current sign-in; each catalog
+request opens a new session.
+
+Automatic token refresh still works: a session can continue reading with the
+credentials it refreshed itself. Rewriting an identical credential does not
+invalidate a read. An observed Spotify rate limit is retained even when the
+account changes before its response is accepted.
+
 ## Successive reads on the same session
 
 A 429 records a monotonic cooldown before returning or waiting, including the
@@ -58,6 +72,11 @@ terminal errors and deadlines spanning body reads, backoff and refresh. Six
 additional cases cover cross-endpoint cooldown, expiration, early-return grant
 checks, dropped waits, last-attempt rate limits and endpoint changes. The
 runtime test futures own their session state, matching the existing test style.
+
+Credential regressions change the cached sign-in after the peer receives a
+request and before it replies, without timing sleeps. They cover fresh-token
+replacement and removal, successful and failed responses, connection loss,
+unchanged-credential rewrites, and successful proactive and reactive refresh.
 
 The focused `session::` filter is the Rust proof for this behavior; live
 Spotify operation and physical-speaker acceptance are separate. The stalled-body
