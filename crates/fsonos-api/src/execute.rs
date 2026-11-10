@@ -179,10 +179,10 @@ fn play_tracks<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
     source_uri: &str,
-    selection: &crate::source::ArtistSelection,
+    selection: &crate::source::SourceSelection,
     destination: &control::TrackBatchDestination,
 ) -> Result<OutcomeDto, Failure> {
-    selection.validate()?;
+    selection.validate_for_source(source_uri)?;
     let room = &control::locate(households, coordinator)?.room_name;
     let tracks: Vec<_> = selection
         .tracks
@@ -192,8 +192,9 @@ fn play_tracks<T: Transport + ?Sized>(
     control::play_spotify_tracks_bound(transport, households, coordinator, &tracks, destination)
         .map_err(spotify_failure)?;
     Ok(OutcomeDto::sent(format!(
-        "playing {} tracks from {source_uri} in {room}'s group ({})",
+        "playing {} {} from {source_uri} in {room}'s group ({})",
         tracks.len(),
+        selection.kind.item_label(),
         selection.kind.description()
     )))
 }

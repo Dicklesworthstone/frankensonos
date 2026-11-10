@@ -94,7 +94,7 @@ fn real_worker_resolves_tracks_and_reloads_a_later_sign_in() {
         let found = sources
             .artist_tracks(&format!("spotify:artist:{ARTIST}"))
             .unwrap();
-        assert_eq!(found.kind, ArtistSelectionKind::TopTracks);
+        assert_eq!(found.kind, SourceSelectionKind::TopTracks);
         assert_eq!(
             found.tracks,
             [(
@@ -187,4 +187,135 @@ fn cooldown_durations_do_not_overflow_and_expired_cooldowns_allow_reading() {
     assert_eq!(state.remaining(), 0);
     state.record(0);
     assert_eq!(state.remaining(), 0);
+}
+
+const SHOW: &str = "Show000000000000000001";
+
+fn show_selection(fake: &FakeSpotify) {
+    let episode = |number: u32| {
+        let id = format!("Episode{number:015}");
+        json!({
+            "id": id, "uri": format!("spotify:episode:{id}"), "type": "episode",
+            "name": format!("Catalog episode {number}"), "duration_ms": 1_800_000,
+            "explicit": number == 2, "is_playable": true,
+        })
+    };
+    let mut state = fake.state.lock().unwrap();
+    state.access = "artist-access".into();
+    state.library_pages.insert(
+        format!("/v1/shows/{SHOW}"),
+        json!({
+            "id": SHOW, "uri": format!("spotify:show:{SHOW}"), "type": "show",
+            "name": "The Sim Conversations", "total_episodes": 30,
+            "episodes": {
+                "items": [episode(2), episode(1), episode(2)],
+                "offset": 0, "limit": 20, "total": 30,
+                "next": "https://example.invalid/episodes-do-not-follow",
+            },
+        })
+        .to_string(),
+    );
+}
+
+#[test]
+fn real_worker_resolves_show_episodes_and_reloads_a_later_sign_in() {
+    let fake = FakeSpotify::start();
+    show_selection(&fake);
+    let sources = configured(&fake);
+    for access in ["artist-access", "new-show-sign-in-access"] {
+        TokenCache::in_data_dir(&sources.data_dir)
+            .store(&token(access))
+            .unwrap();
+        access.clone_into(&mut fake.state.lock().unwrap().access);
+        let found = sources
+            .show_episodes(&format!("spotify:show:{SHOW}"))
+            .unwrap();
+        assert_eq!(found.kind, SourceSelectionKind::ShowEpisodes);
+        assert_eq!(
+            found.tracks,
+            [
+                (
+                    "spotify:episode:Episode000000000000002".into(),
+                    "Catalog episode 2".into()
+                ),
+                (
+                    "spotify:episode:Episode000000000000001".into(),
+                    "Catalog episode 1".into()
+                ),
+            ]
+        );
+    }
+    let seen = fake.stop();
+    assert_eq!(seen.log, vec![format!("GET /v1/shows/{SHOW}"); 2]);
+    assert_eq!(seen.refreshes, 0, "the replacement grant is read from disk");
+}
+
+#[test]
+fn show_lookups_share_missing_grant_and_busy_admission_contracts() {
+    let fake = FakeSpotify::start();
+    let mut sources = sources();
+    sources.endpoints = fake.endpoints();
+    assert_eq!(
+        sources.show_episodes(SHOW).unwrap_err().code,
+        ErrorCode::SpotifyAuthRequired
+    );
+    let running = sources.state.lock().unwrap();
+    let failed = sources.show_episodes(SHOW).unwrap_err();
+    assert_eq!(failed.code, ErrorCode::NotReady);
+    assert!(failed.detail.contains("already being read"));
+    drop(running);
+    assert!(fake.stop().log.is_empty());
+}
+
+#[test]
+fn artist_and_show_reads_share_the_same_cooldown_across_workers() {
+    for show_first in [false, true] {
+        let fake = FakeSpotify::start();
+        selection(&fake);
+        show_selection(&fake);
+        let sources = configured(&fake);
+        {
+            let mut state = fake.state.lock().unwrap();
+            if show_first {
+                state
+                    .api_errors
+                    .insert(format!("/v1/shows/{SHOW}"), (429, Some(3600)));
+            } else {
+                state.rate_limit_artists = 1;
+                state.artist_retry_after = Some(3600);
+            }
+        }
+        for show in [show_first, !show_first, show_first] {
+            let failed = if show {
+                sources.show_episodes(SHOW).unwrap_err()
+            } else {
+                sources.artist_tracks(ARTIST).unwrap_err()
+            };
+            assert_eq!(failed.code, ErrorCode::NotReady);
+            assert!(failed.detail.contains("rate-limited"));
+        }
+        let seen = fake.stop();
+        assert_eq!(seen.log.len(), 1, "other catalog kinds retain the cooldown");
+        assert_eq!(
+            seen.log[0].contains("/v1/shows/"),
+            show_first,
+            "only the first admitted lookup reaches Spotify"
+        );
+    }
+}
+
+#[test]
+fn show_catalog_refusals_are_reported_without_artist_fallback_requests() {
+    let fake = FakeSpotify::start();
+    show_selection(&fake);
+    fake.state
+        .lock()
+        .unwrap()
+        .api_errors
+        .insert(format!("/v1/shows/{SHOW}"), (403, None));
+    let sources = configured(&fake);
+    let failure = sources.show_episodes(SHOW).unwrap_err();
+    assert_eq!(failure.code, ErrorCode::NotReady);
+    assert!(failure.detail.contains("403"));
+    assert_eq!(fake.stop().log, [format!("GET /v1/shows/{SHOW}")]);
 }

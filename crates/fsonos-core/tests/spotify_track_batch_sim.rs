@@ -115,6 +115,7 @@ struct Replies<'a> {
     adds: Cell<usize>,
     edited: Cell<bool>,
     writes: RefCell<Vec<String>>,
+    added_bodies: RefCell<Vec<String>>,
 }
 
 impl<'a> Replies<'a> {
@@ -126,6 +127,7 @@ impl<'a> Replies<'a> {
             adds: Cell::new(0),
             edited: Cell::new(false),
             writes: RefCell::new(Vec::new()),
+            added_bodies: RefCell::new(Vec::new()),
         }
     }
 
@@ -181,6 +183,7 @@ impl Transport for Replies<'_> {
             self.writes.borrow_mut().push(name.into());
         }
         if name == "AddURIToQueue" {
+            self.added_bodies.borrow_mut().push(body.to_owned());
             self.adds.set(self.adds.get() + 1);
             if self.adds.get() == 2 {
                 if self.fault == Fault::RefuseSecond {
@@ -471,11 +474,193 @@ fn invalid_batches_are_rejected_before_any_transport_read_or_write() {
         too_many,
         vec![("spotify:artist:0000000000000000000101", "Wrong kind")],
         vec![("spotify:track:short", "Bad id")],
+        vec![("spotify:episode:short", "Bad episode id")],
+        vec![("spotify:show:0000000000000000000101", "Unresolved show")],
         vec![("spotify:track:00000000000000000001?1", "Bad id")],
     ] {
         let id = PlayerId("fixture".into());
         assert!(control::play_spotify_tracks(&NoIo, &[], &id, &tracks).is_err());
         assert!(control::load_spotify_tracks(&NoIo, &[], &id, &tracks).is_err());
         assert!(control::enqueue_spotify_tracks(&NoIo, &[], &id, &tracks, true).is_err());
+    }
+}
+
+const EPISODES: [(&str, &str); 4] = [
+    ("spotify:episode:0000000000000000000201", "Episode & one"),
+    ("spotify:episode:0000000000000000000202", "Episode two"),
+    ("spotify:episode:0000000000000000000203", "Episode three"),
+    ("spotify:episode:0000000000000000000201", "Episode again"),
+];
+
+fn assert_episode_wire(t: &Replies<'_>) {
+    let favorites =
+        fsonos_proto::content::browse_all(&t.rig.sim.lan(), t.rig.host, "FV:2").unwrap();
+    let params = fsonos_proto::didl::learn_spotify_params(&favorites).unwrap();
+    let bodies = t.added_bodies.borrow();
+    assert_eq!(bodies.len(), EPISODES.len());
+    for body in bodies.iter() {
+        let uri = body
+            .split_once("<EnqueuedURI>")
+            .unwrap()
+            .1
+            .split_once("</EnqueuedURI>")
+            .unwrap()
+            .0;
+        let episode = spotify_uri_from_renderer_uri(uri).unwrap();
+        assert!(
+            EPISODES.iter().any(|(expected, _)| *expected == episode),
+            "only requested episodes are sent"
+        );
+        assert_eq!(
+            uri,
+            format!(
+                "x-sonos-spotify:{}?sid={}",
+                episode.replace(':', "%3a"),
+                params.sid
+            )
+        );
+        let metadata = body
+            .split_once("<EnqueuedURIMetaData>")
+            .unwrap()
+            .1
+            .split_once("</EnqueuedURIMetaData>")
+            .unwrap()
+            .0;
+        assert!(metadata.contains("object.item.audioItem.musicTrack"));
+        assert!(metadata.contains(&format!("&lt;res&gt;{uri}&lt;/res&gt;")));
+        assert!(!metadata.contains("&lt;desc"), "episodes carry no descriptor");
+        assert!(!body.contains("flags="), "episodes carry no track flags");
+        assert!(!body.contains("sn="), "episodes carry no track serial");
+    }
+}
+
+#[test]
+fn episode_play_and_silent_load_use_minimal_metadata_and_keep_exact_order() {
+    for s2 in [false, true] {
+        for autoplay in [false, true] {
+            let rig = Rig::new(s2, true);
+            set_play_mode(&rig.sim.lan(), rig.host, PlayMode::ShuffleNoRepeat).unwrap();
+            let t = Replies::new(&rig, Fault::None);
+            if autoplay {
+                control::play_spotify_tracks(&t, &rig.houses, &rig.id, &EPISODES).unwrap();
+            } else {
+                control::load_spotify_tracks(&t, &rig.houses, &rig.id, &EPISODES).unwrap();
+            }
+            assert_episode_wire(&t);
+            assert_eq!(rig.queue(), EPISODES.map(|(uri, _)| uri));
+            let queue = browse_snapshot(&rig.sim.lan(), rig.host, QUEUE).unwrap();
+            let titles: Vec<_> = queue.objects.iter().map(|item| item.title.as_str()).collect();
+            assert_eq!(titles, EPISODES.map(|(_, title)| title));
+            let playback = control::playback(&rig.sim.lan(), &rig.houses, &rig.id).unwrap();
+            assert_eq!(playback.position.track, 1);
+            assert_eq!(
+                spotify_uri_from_renderer_uri(&playback.position.uri).as_deref(),
+                Some(EPISODES[0].0)
+            );
+            assert_eq!(
+                get_play_mode(&rig.sim.lan(), rig.host).unwrap(),
+                PlayMode::Normal
+            );
+            if autoplay {
+                assert_eq!(playback.transport.state, TransportState::Playing);
+            } else {
+                assert!(matches!(
+                    playback.transport.state,
+                    TransportState::Paused | TransportState::Stopped
+                ));
+            }
+            let writes = t.writes.borrow();
+            assert_eq!(
+                writes.iter().filter(|name| name.as_str() == "Play").count(),
+                usize::from(autoplay)
+            );
+            assert!(!writes.iter().any(|name| name == "RemoveAllTracksFromQueue"));
+            let removal = writes
+                .iter()
+                .position(|name| name == "RemoveTrackRangeFromQueue")
+                .unwrap();
+            assert_eq!(
+                writes[..removal]
+                    .iter()
+                    .filter(|name| name.as_str() == "AddURIToQueue")
+                    .count(),
+                EPISODES.len(),
+                "every episode is staged before the old queue is removed"
+            );
+        }
+    }
+}
+
+#[test]
+fn episode_next_and_append_remain_silent_ordered_and_exactly_undoable() {
+    for s2 in [false, true] {
+        for next in [false, true] {
+            for radio in [false, true] {
+                let rig = Rig::new(s2, true);
+                if radio {
+                    control::play_uri(&rig.sim.lan(), &rig.houses, &rig.id, RADIO, "").unwrap();
+                }
+                let before = control::playback(&rig.sim.lan(), &rig.houses, &rig.id).unwrap();
+                let source = soap::get_media_info(&rig.sim.lan(), rig.host).unwrap().uri;
+                let mode = get_play_mode(&rig.sim.lan(), rig.host).unwrap();
+                let t = Replies::new(&rig, Fault::None);
+                let added =
+                    control::enqueue_spotify_tracks(&t, &rig.houses, &rig.id, &EPISODES, next)
+                        .unwrap();
+                assert_episode_wire(&t);
+                t.only_adds(EPISODES.len());
+                let first = if next && !radio { 2 } else { 4 };
+                assert_eq!(added.first, first);
+                assert_eq!(added.playing_queue, !radio);
+                let mut expected: Vec<String> = OLD.iter().map(|uri| (*uri).into()).collect();
+                let index = usize::try_from(first - 1).unwrap();
+                expected.splice(index..index, EPISODES.iter().map(|(uri, _)| (*uri).into()));
+                assert_eq!(rig.queue(), expected);
+                let after = control::playback(&rig.sim.lan(), &rig.houses, &rig.id).unwrap();
+                assert_eq!(after.transport.state, before.transport.state);
+                assert_eq!(after.position.track, before.position.track);
+                assert_eq!(
+                    soap::get_media_info(&rig.sim.lan(), rig.host).unwrap().uri,
+                    source
+                );
+                assert_eq!(get_play_mode(&rig.sim.lan(), rig.host).unwrap(), mode);
+                assert!(
+                    control::unqueue(
+                        &rig.sim.lan(),
+                        &rig.houses,
+                        &rig.id,
+                        added.first,
+                        &added.uris
+                    )
+                    .unwrap()
+                );
+                assert_eq!(rig.queue(), OLD);
+            }
+        }
+    }
+}
+
+#[test]
+fn episode_refusal_preserves_the_old_queue_and_applied_reply_loss_is_not_replayed() {
+    for s2 in [false, true] {
+        let rig = Rig::new(s2, true);
+        let t = Replies::new(&rig, Fault::RefuseSecond);
+        assert!(matches!(
+            control::play_spotify_tracks(&t, &rig.houses, &rig.id, &EPISODES),
+            Err(CoreError::Uncertain(_))
+        ));
+        t.only_adds(2);
+        assert_eq!(&rig.queue()[..OLD.len()], OLD);
+        assert_eq!(rig.queue().len(), OLD.len() + 1);
+        assert_eq!(rig.queue()[OLD.len()], EPISODES[0].0);
+
+        let rig = Rig::new(s2, true);
+        let t = Replies::new(&rig, Fault::LostApplied);
+        let added =
+            control::enqueue_spotify_tracks(&t, &rig.houses, &rig.id, &EPISODES, true).unwrap();
+        assert_episode_wire(&t);
+        t.only_adds(EPISODES.len());
+        assert_eq!(added.uris.len(), EPISODES.len());
+        assert_eq!(rig.queue().len(), OLD.len() + EPISODES.len());
     }
 }

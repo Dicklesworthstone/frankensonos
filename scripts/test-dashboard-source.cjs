@@ -78,7 +78,7 @@ test('opening is lazy and source validation precedes every destination read',asy
   assert.equal(f.writes().length,0);
 });
 
-for(const kind of ['track','album','playlist','artist','episode'])test('native '+kind+' playback uses one reviewed qualified command',async()=>{
+for(const kind of ['track','album','playlist','artist','episode','show'])test('Spotify '+kind+' playback uses one reviewed qualified command',async()=>{
   const f=await fixture().ready(),p=await review(f,kind,'play','  Display title  ');
   assert.ok(Object.isFrozen(p));assert.ok(Object.isFrozen(p.body));assert.ok(Object.isFrozen(p.before));assert.ok(Object.isFrozen(p.group));
   assert.equal(f.writes().length,0);assert.equal(await f.source.apply(p),true);assert.equal(await f.source.apply(p),false);
@@ -87,10 +87,15 @@ for(const kind of ['track','album','playlist','artist','episode'])test('native '
   assert.deepEqual(f.completed,[{target:'Den@S2',mode:'play'}]);assert.equal(f.controller.state.uncertain,false);
 });
 
-test('show Play now fails before I/O while explicit queue modes remain available',async()=>{
-  const f=await fixture().ready();f.source.open();const before=f.calls.length;
-  f.source.edit('input',uri('show'));assert.equal(await f.source.review(),null);assert.match(f.source.state.message,/added to the queue/);
-  assert.equal(f.calls.length,before);assert.equal(f.writes().length,0);
+test('show reviews explain the bounded episode selection for every mode',async()=>{
+  for(const mode of ['play','next','end']){
+    const f=await fixture().ready(),p=await review(f,'show',mode),effect=Source.effect(p);
+    assert.equal(p.item.container,true);assert.equal(p.before.queue.total,12);
+    assert.match(effect,/up to 10 available episodes/);assert.match(effect,/Spotify’s order/);
+    assert.match(effect,/Requires Spotify sign-in/);
+    assert.match(effect,mode==='play'?/Replace the current queue/:mode==='next'?/without restarting/:/without starting or resuming/);
+    assert.equal(f.writes().length,0);
+  }
 });
 
 test('artist reviews explain the bounded selection and each playback effect',async()=>{
@@ -121,8 +126,8 @@ test('signed HTTP stream URLs are preserved and require Play now',async()=>{
   assert.deepEqual(f.writes()[0].body,{zone:'Den@S2',source_uri:value});assert.ok(f.calls.every(row=>row.url.startsWith('/')));
 });
 
-test('replacing album, playlist or artist content also reads and binds the old queue revision',async()=>{
-  for(const kind of ['album','playlist','artist']){
+test('replacing album, playlist, artist or show content also reads and binds the old queue revision',async()=>{
+  for(const kind of ['album','playlist','artist','show']){
     const f=await fixture().ready(),p=await review(f,kind);
     assert.equal(p.before.queue.total,12);assert.match(Source.effect(p),/Replace the current queue/);
     f.queues.get('Den@S2').revision='queue:changed';

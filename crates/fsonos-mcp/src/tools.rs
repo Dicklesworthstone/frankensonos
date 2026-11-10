@@ -947,7 +947,7 @@ async fn undo_last(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolRe
 }
 
 #[tool(
-    description = "Play something in the group a room plays in. `source_uri` is a Spotify track, album, playlist, artist or episode URI/link, or a radio/HTTP stream or Sonos favorite URI. Albums and playlists replace the queue. An artist requires the owner's Spotify catalog sign-in and resolves to up to ten top tracks or a bounded album sample; it replaces the queue and plays those tracks in order. This is not artist radio or a full discography, and replacement queue contents cannot be recovered with undo_last. Shows cannot play directly; choose an episode. Spotify renders through the household's own linked account. Optional `title` labels the request. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
+    description = "Play something in the group a room plays in. `source_uri` is a Spotify track, album, playlist, artist, episode or show URI/link, or a radio/HTTP stream or Sonos favorite URI. Albums and playlists replace the queue. An artist requires the owner's Spotify catalog sign-in and resolves to up to ten top tracks or a bounded album sample; it replaces the queue and plays those tracks in order. This is not artist radio or a full discography, and replacement queue contents cannot be recovered with undo_last. A show also requires Spotify sign-in and replaces the queue with up to ten available episodes from its first episode page, in Spotify's returned order. Spotify renders through the household's own linked account. Optional `title` labels the request. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
 )]
 async fn play(
     ctx: &McpContext,

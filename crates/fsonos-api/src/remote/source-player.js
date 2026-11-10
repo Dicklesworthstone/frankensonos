@@ -16,7 +16,7 @@ const SourcePlayerRemote = (() => {
       throw new Error('Choose a Spotify track, album, playlist, artist, episode or show.');
     }
     if (!/^[a-zA-Z0-9]{22}$/.test(id)) throw new Error('The Spotify id must contain exactly 22 letters and digits. Paste the complete link.');
-    return Object.freeze({ uri: `spotify:${kind}:${id}`, kind, container: ['album', 'playlist', 'artist'].includes(kind) });
+    return Object.freeze({ uri: `spotify:${kind}:${id}`, kind, container: ['album', 'playlist', 'artist', 'show'].includes(kind) });
   }
 
   function source(raw) {
@@ -136,9 +136,6 @@ const SourcePlayerRemote = (() => {
   function prepare(raw, title, mode) {
     if (!Object.hasOwn(modes, mode)) throw new Error('Choose Play now, Queue next or Queue at end.');
     const item = source(raw);
-    if (mode === 'play' && item.kind === 'show') {
-      throw new Error('Spotify show links can be added to the queue. Choose Queue next or Queue at end, then play an episode from the speaker queue.');
-    }
     if (mode !== 'play' && item.kind === 'stream') {
       throw new Error('Only Spotify sources can be queued here. Choose Play now for an audio stream.');
     }
@@ -565,6 +562,7 @@ const SourcePlayerRemote = (() => {
           const snapshot = pending.before.queue;
           const effect = pending.mode === 'play'
             ? pending.item.kind === 'artist' ? 'This replaces the group’s queue with up to 10 artist tracks and starts them in order.'
+              : pending.item.kind === 'show' ? 'This replaces the group’s queue with up to 10 available episodes and starts them in Spotify’s order.'
               : pending.item.container ? 'This replaces the group’s queue and starts the album or playlist.'
               : 'This replaces the group’s current source and starts playback. The existing queue remains available.'
             : pending.mode === 'next' && snapshot.playing !== null
@@ -574,6 +572,7 @@ const SourcePlayerRemote = (() => {
             el('p', { text: `Current playback: ${pending.before.label}.` }),
             el('p', { text: effect }),
             ...(pending.item.kind === 'artist' ? [el('p', { class: 'source-help', text: 'Uses the artist’s top tracks or a small sample from their albums, in Spotify’s order. Requires Spotify sign-in.' })] : []),
+            ...(pending.item.kind === 'show' ? [el('p', { class: 'source-help', text: 'Selects up to 10 available episodes from the show’s first episode page, in Spotify’s order. Requires Spotify sign-in.' })] : []),
             ...(snapshot && pending.mode !== 'play' && snapshot.playing === null ? [el('p', { text: 'The group is not using its queue. Select an existing queue entry separately when you are ready to start it.' })] : []),
             ...(pending.item.kind === 'sonos_playlist' ? [el('p', { class: 'source-help', text: 'The saved playlist is read again before sending. Its current contents are supplied by this household’s speakers.' })] : []),
             ...(pending.item.kind === 'sonos_playlist_track' ? [el('p', { class: 'source-help', text: `Track ${pending.item.position} from “${pending.item.playlistTitle}”. The exact saved occurrence is checked again before sending.` })] : []),

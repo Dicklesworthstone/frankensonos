@@ -206,8 +206,8 @@ impl Surface {
         .map_err(|f| self.explain(f))?;
         let coordinator = target.coordinator.id.clone();
         let zone = target.coordinator.room_name.clone();
-        let selection = if matches!(SpotifyBare::of(&uri), Some(SpotifyBare::Artist)) {
-            Some(self.resolve_artist(&households, &coordinator, &uri)?)
+        let selection = if crate::source::is_catalog_source(&uri) {
+            Some(self.resolve_catalog_source(&households, &coordinator, &uri)?)
         } else {
             None
         };
@@ -257,8 +257,11 @@ impl Surface {
             }
         };
         let count = u32::try_from(queued.uris.len()).unwrap_or(u32::MAX);
+        let item_label = selection
+            .as_ref()
+            .map_or("track(s)", |(selection, _)| selection.kind.item_label());
         let mut done = format!(
-            "queued {count} track(s) of {uri} in {zone}'s group at position {}",
+            "queued {count} {item_label} of {uri} in {zone}'s group at position {}",
             queued.first
         );
         if let Some((selection, _)) = &selection {
@@ -296,7 +299,7 @@ fn enqueue_source<T: fsonos_proto::Transport + ?Sized>(
     title: &str,
     next: bool,
     selection: Option<&(
-        crate::source::ArtistSelection,
+        crate::source::SourceSelection,
         control::TrackBatchDestination,
     )>,
 ) -> Result<control::Queued, CoreError> {

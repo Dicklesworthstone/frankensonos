@@ -22,7 +22,7 @@ for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) 
     `https://OPEN.SPOTIFY.COM/intl-fr/embed/${kind}/${ID}/`, `http://play.spotify.com/${kind}/${ID}`,
     `https://open.spotify.com.:443/${kind}/${ID}`]) {
     const parsed = Player.source(uri);
-    assert.equal(parsed.uri, `spotify:${kind}:${ID}`); assert.equal(parsed.container, ['album', 'playlist', 'artist'].includes(kind)); assert.ok(Object.isFrozen(parsed));
+    assert.equal(parsed.uri, `spotify:${kind}:${ID}`); assert.equal(parsed.container, ['album', 'playlist', 'artist', 'show'].includes(kind)); assert.ok(Object.isFrozen(parsed));
   }
 });
 
@@ -91,7 +91,7 @@ function harness(options = {}) {
   return h;
 }
 
-for (const kind of ['track', 'album', 'playlist', 'artist', 'episode']) test(`${kind} playback requires a destination and one confirmed policy-path request`, async () => {
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) test(`${kind} playback requires a destination and one confirmed policy-path request`, async () => {
   const h = harness();
   await h.api.refresh(); h.api.edit('input', `https://open.spotify.com/${kind}/${ID}?si=anything`);
   assert.equal(h.api.state.target, '');
@@ -99,7 +99,7 @@ for (const kind of ['track', 'album', 'playlist', 'artist', 'episode']) test(`${
   h.api.edit('target', 'Den@S2'); assert.equal(await h.api.review(), true);
   const pending = h.api.state.pending;
   assert.equal(h.writes().length, 0);
-  assert.equal(pending.item.container, ['album', 'playlist', 'artist'].includes(kind));
+  assert.equal(pending.item.container, ['album', 'playlist', 'artist', 'show'].includes(kind));
   assert.equal(await h.api.confirm(pending), true); assert.equal(await h.api.confirm(pending), false);
   assert.deepEqual(h.writes(), [['sourcePlay', { body: { zone: 'Den@S2', source_uri: `spotify:${kind}:${ID}` } }]]);
   assert.equal(h.api.state.result.status, 'accepted'); assert.match(h.api.state.result.detail, /Volume capped/);
@@ -332,20 +332,18 @@ test('page-cache transitions consume reviews and remove listeners on disposal', 
   panel.dispose(); assert.equal(win.events.size, 0); assert.equal(doc.events.size, 0); ui.panel.dispose();
 });
 
-test('show links still require an explicit queue mode before any destination read', async () => {
-  const h = harness(); await h.open('spotify:show:' + ID);
-  const before = h.calls.length;
-  assert.equal(await h.api.review(), false);
-  assert.match(h.api.state.message, /added to the queue/);
-  assert.equal(h.calls.length, before);
-  for (const mode of ['next', 'end']) {
+test('shows support all three modes and review replacement against the current queue', async () => {
+  const h = harness(), pending = await h.reviewed('spotify:show:' + ID);
+  assert.equal(pending.before.queue.total, 12); assert.equal(h.writes().length, 0);
+  for (const mode of ['play', 'next', 'end']) {
     const prepared = Player.prepare('spotify:show:' + ID, 'A source', mode);
     assert.equal(prepared.item.kind, 'show'); assert.equal(prepared.mode, mode);
+    assert.equal(prepared.item.container, true);
   }
 });
 
-test('album, playlist and artist replacement bind the old queue revision', async () => {
-  for (const kind of ['album', 'playlist', 'artist']) {
+test('album, playlist, artist and show replacement bind the old queue revision', async () => {
+  for (const kind of ['album', 'playlist', 'artist', 'show']) {
     const h = harness(), pending = await h.reviewed('spotify:' + kind + ':' + ID);
     assert.equal(pending.before.queue.total, 12);
     h.queue.revision = 'changed-after-review';

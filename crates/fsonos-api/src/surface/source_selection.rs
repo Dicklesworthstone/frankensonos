@@ -8,7 +8,7 @@ use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::PlayerId;
 
 use super::Surface;
-use crate::source::ArtistSelection;
+use crate::source::{SourceSelection, is_catalog_source};
 use crate::{Command, ErrorCode, Failure};
 
 impl Surface {
@@ -25,7 +25,7 @@ impl Surface {
         else {
             return Ok(command);
         };
-        if !matches!(SpotifyBare::of(&source_uri), Some(SpotifyBare::Artist)) {
+        if !is_catalog_source(&source_uri) {
             return Ok(Command::Play {
                 coordinator,
                 source_uri,
@@ -33,7 +33,7 @@ impl Surface {
             });
         }
         let (selection, destination) =
-            self.resolve_artist(households, &coordinator, &source_uri)?;
+            self.resolve_catalog_source(households, &coordinator, &source_uri)?;
         Ok(Command::PlayTracks {
             coordinator,
             source_uri,
@@ -43,25 +43,42 @@ impl Surface {
         })
     }
 
-    pub(super) fn resolve_artist(
+    /// Read catalog metadata only. Scene preflight shares the same validation.
+    pub(super) fn catalog_selection(&self, source_uri: &str) -> Result<SourceSelection, Failure> {
+        let sources = self.spotify_sources.as_ref().ok_or_else(|| {
+            Failure::new(
+                ErrorCode::SpotifyAuthRequired,
+                "catalog playback needs the owner's Spotify session",
+            )
+            .with_hint("Sign in with fsonos setup, then play the artist or show link again.")
+        })?;
+        let selection = match SpotifyBare::of(source_uri) {
+            Some(SpotifyBare::Artist) => sources.artist_tracks(source_uri)?,
+            Some(SpotifyBare::Show) => sources.show_episodes(source_uri)?,
+            _ => return Err(Failure::invalid("this source does not need catalog resolution")),
+        };
+        selection.validate_for_source(source_uri)?;
+        Ok(selection)
+    }
+
+    pub(super) fn resolve_catalog_source(
         &self,
         households: &[HouseholdState],
         coordinator: &PlayerId,
         source_uri: &str,
-    ) -> Result<(ArtistSelection, TrackBatchDestination), Failure> {
-        let sources = self.spotify_sources.as_ref().ok_or_else(|| {
-            Failure::new(
+    ) -> Result<(SourceSelection, TrackBatchDestination), Failure> {
+        if self.spotify_sources.is_none() {
+            return Err(Failure::new(
                 ErrorCode::SpotifyAuthRequired,
-                "artist playback needs the owner's Spotify catalog session",
+                "catalog playback needs the owner's Spotify session",
             )
-            .with_hint("Sign in with fsonos setup, then play the artist link again.")
-        })?;
+            .with_hint("Sign in with fsonos setup, then play the artist or show link again."));
+        }
         let host = control::locate(households, coordinator)?.ip;
         self.confirm_source_audience(households, coordinator)?;
         let destination = TrackBatchDestination::read(&*self.transport, host, coordinator)?;
         self.confirm_source_renderer(households, coordinator)?;
-        let selection = sources.artist_tracks(source_uri)?;
-        selection.validate()?;
+        let selection = self.catalog_selection(source_uri)?;
         self.confirm_source_renderer(households, coordinator)?;
         destination.confirm(&*self.transport, host, coordinator)?;
         self.confirm_source_audience(households, coordinator)?;
@@ -135,7 +152,7 @@ impl Surface {
         if before.is_empty() || before != audience(&fresh) {
             return Err(Failure::new(
                 ErrorCode::QueueChanged,
-                "the artist destination changed; reread the rooms before playing or queueing",
+                "the catalog source destination changed; reread the rooms before playing or queueing",
             ));
         }
         Ok(())

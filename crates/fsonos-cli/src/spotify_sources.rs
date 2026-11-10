@@ -1,4 +1,4 @@
-//! Explicit artist playback resolves through the owner's existing Spotify
+//! Explicit artist and show playback resolve through the owner's existing Spotify
 //! sign-in before any speaker command. Each read has its own runtime; one
 //! admission slot bounds concurrency and retains Spotify's cooldown between
 //! fresh sessions, so later sign-ins and saved app settings are picked up.
@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 use asupersync::Cx;
 use asupersync::http::Client;
 use asupersync::time::{timeout, wall_now};
-use fsonos_api::source::{ArtistSelection, ArtistSelectionKind, SpotifySources};
+use fsonos_api::source::{SourceSelection, SourceSelectionKind, SpotifySources};
 use fsonos_api::{ErrorCode, Failure, Surface};
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::artist_playback::{self, SelectionSource};
 use fsonos_spotify::client::{Endpoints, SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
+use fsonos_spotify::show_playback;
 
 use crate::config::{SPOTIFY_REDIRECT_URI, ServeArgs};
 
@@ -75,10 +76,10 @@ impl Sources {
         .ok_or_else(|| {
             Failure::new(
                 ErrorCode::SpotifyAuthRequired,
-                "artist playback needs a configured Spotify app and sign-in",
+                "catalog playback needs a configured Spotify app and sign-in",
             )
             .with_hint(
-                "Run fsonos setup to save your Spotify app and sign in, then retry the artist.",
+                "Run fsonos setup to save your Spotify app and sign in, then retry the artist or show.",
             )
         })?;
         let redirect_uri = self
@@ -96,15 +97,25 @@ impl Sources {
 }
 
 impl SpotifySources for Sources {
-    fn artist_tracks(&self, artist_uri: &str) -> Result<ArtistSelection, Failure> {
+    fn artist_tracks(&self, artist_uri: &str) -> Result<SourceSelection, Failure> {
+        self.resolve(artist_uri, false)
+    }
+
+    fn show_episodes(&self, show_uri: &str) -> Result<SourceSelection, Failure> {
+        self.resolve(show_uri, true)
+    }
+}
+
+impl Sources {
+    fn resolve(&self, source_uri: &str, show: bool) -> Result<SourceSelection, Failure> {
         let mut state = match self.state.try_lock() {
             Ok(state) => state,
             Err(TryLockError::WouldBlock) => {
                 return Err(Failure::new(
                     ErrorCode::NotReady,
-                    "a Spotify artist selection is already being read",
+                    "a Spotify catalog selection is already being read",
                 )
-                .with_hint("Wait for that selection to finish before requesting another artist."));
+                .with_hint("Wait for that selection to finish before requesting another source."));
             }
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
         };
@@ -115,21 +126,21 @@ impl SpotifySources for Sources {
         let config = self.configuration()?;
         let cache = TokenCache::in_data_dir(&self.data_dir);
         let endpoints = self.endpoints.clone();
-        let uri = artist_uri.to_owned();
+        let uri = source_uri.to_owned();
         let worker = std::thread::Builder::new()
-            .name("spotify-artist-selection".into())
+            .name("spotify-catalog-selection".into())
             .stack_size(STACK)
-            .spawn(move || read(config, cache, endpoints, &uri))
+            .spawn(move || read(config, cache, endpoints, &uri, show))
             .map_err(|error| {
                 Failure::new(
                     ErrorCode::Internal,
-                    format!("cannot start Spotify artist selection: {error}"),
+                    format!("cannot start Spotify catalog selection: {error}"),
                 )
             })?;
         let (result, retry_after) = worker.join().map_err(|_| {
             Failure::new(
                 ErrorCode::Internal,
-                "the Spotify artist selection worker stopped unexpectedly",
+                "the Spotify catalog selection worker stopped unexpectedly",
             )
         })?;
         state.record(retry_after);
@@ -145,7 +156,8 @@ fn read(
     cache: TokenCache,
     endpoints: Endpoints,
     uri: &str,
-) -> (Result<ArtistSelection, SpotifyError>, u64) {
+    show: bool,
+) -> (Result<SourceSelection, SpotifyError>, u64) {
     let runtime = match crate::runtime() {
         Ok(runtime) => runtime,
         Err(error) => return (Err(SpotifyError::Http(format!("{error:#}"))), 0),
@@ -162,49 +174,70 @@ fn read(
         let selected = timeout(
             now,
             LOOKUP_LIMIT,
-            Box::pin(artist_playback::resolve(&mut session, &cx, uri)),
+            Box::pin(select(&mut session, &cx, uri, show)),
         )
         .await
         .unwrap_or_else(|_| {
             Err(SpotifyError::Http(
-                "artist catalog lookup exceeded its 45-second deadline".into(),
+                "Spotify catalog lookup exceeded its 45-second deadline".into(),
             ))
         });
-        let result = selected.map(|selection| ArtistSelection {
+        (selected, session.retry_after_secs())
+    })
+}
+
+async fn select(
+    session: &mut Session,
+    cx: &Cx,
+    uri: &str,
+    show: bool,
+) -> Result<SourceSelection, SpotifyError> {
+    if show {
+        let selection = show_playback::resolve(session, cx, uri).await?;
+        Ok(SourceSelection {
+            tracks: selection
+                .episodes
+                .into_iter()
+                .map(|episode| (episode.episode_uri, episode.title))
+                .collect(),
+            kind: SourceSelectionKind::ShowEpisodes,
+        })
+    } else {
+        let selection = artist_playback::resolve(session, cx, uri).await?;
+        Ok(SourceSelection {
             tracks: selection
                 .tracks
                 .into_iter()
                 .map(|track| (track.source_uri, track.title))
                 .collect(),
             kind: match selection.source {
-                SelectionSource::TopTracks => ArtistSelectionKind::TopTracks,
-                SelectionSource::CatalogSample => ArtistSelectionKind::CatalogSample,
+                SelectionSource::TopTracks => SourceSelectionKind::TopTracks,
+                SelectionSource::CatalogSample => SourceSelectionKind::CatalogSample,
             },
-        });
-        (result, session.retry_after_secs())
-    })
+        })
+    }
 }
 
 fn cooldown(seconds: u64) -> Failure {
-    Failure::new(ErrorCode::NotReady, format!("Spotify artist lookup is rate-limited; retry in {seconds} seconds"))
-        .with_hint("Wait for Spotify's cooldown before trying this artist again. Existing playback is unchanged.")
+    Failure::new(ErrorCode::NotReady, format!("Spotify catalog lookup is rate-limited; retry in {seconds} seconds"))
+        .with_hint("Wait for Spotify's cooldown before trying this source again. Existing playback is unchanged.")
 }
 
 fn failure(error: SpotifyError) -> Failure {
     match error {
         SpotifyError::Auth(detail) => Failure::new(ErrorCode::SpotifyAuthRequired, detail)
-            .with_hint("Sign in with fsonos setup, then retry the artist."),
+            .with_hint("Sign in with fsonos setup, then retry the artist or show."),
         SpotifyError::Api { status: 401, .. } => Failure::new(
             ErrorCode::SpotifyAuthRequired,
-            "Spotify did not accept the artist lookup's sign-in",
+            "Spotify did not accept the catalog lookup's sign-in",
         )
-        .with_hint("Sign in with fsonos setup, then retry the artist."),
+        .with_hint("Sign in with fsonos setup, then retry the artist or show."),
         SpotifyError::Config(detail) => Failure::invalid(detail),
         other => Failure::new(
             ErrorCode::NotReady,
-            format!("Spotify artist selection: {other}"),
+            format!("Spotify catalog selection: {other}"),
         )
-        .with_hint("Try a specific track or album, or retry when Spotify's catalog is available."),
+        .with_hint("Try a specific track, album or episode, or retry when Spotify's catalog is available."),
     }
 }
 

@@ -16,45 +16,79 @@ use crate::failure::{ErrorCode, Failure};
 /// Speaker control stays in the shared surface after this lookup completes.
 pub trait SpotifySources: Send + Sync {
     fn artist_tracks(&self, artist_uri: &str) -> Result<ArtistSelection, Failure>;
+
+    fn show_episodes(&self, _show_uri: &str) -> Result<SourceSelection, Failure> {
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this Spotify catalog provider does not resolve shows",
+        ))
+    }
 }
 
-/// How a bounded artist selection was obtained; neither is a discography.
+/// How a bounded catalog selection was obtained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArtistSelectionKind {
+pub enum SourceSelectionKind {
     TopTracks,
     CatalogSample,
+    ShowEpisodes,
 }
 
-impl ArtistSelectionKind {
+impl SourceSelectionKind {
     #[must_use]
     pub const fn description(self) -> &'static str {
         match self {
             Self::TopTracks => "Spotify's artist top tracks",
             Self::CatalogSample => "a bounded sample of the artist's albums",
+            Self::ShowEpisodes => "a bounded selection of the show's episodes in Spotify's order",
+        }
+    }
+
+    #[must_use]
+    pub const fn source_label(self) -> &'static str {
+        match self {
+            Self::TopTracks | Self::CatalogSample => "artist",
+            Self::ShowEpisodes => "show",
+        }
+    }
+
+    #[must_use]
+    pub const fn item_label(self) -> &'static str {
+        match self {
+            Self::TopTracks | Self::CatalogSample => "tracks",
+            Self::ShowEpisodes => "episodes",
         }
     }
 }
 
-/// Actual playable tracks in provider order, with their display titles.
+/// Actual playable queue occurrences in provider order, with display titles.
+/// The `tracks` field holds music tracks or podcast episodes, according to kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArtistSelection {
+pub struct SourceSelection {
     pub tracks: Vec<(String, String)>,
-    pub kind: ArtistSelectionKind,
+    pub kind: SourceSelectionKind,
 }
 
-impl ArtistSelection {
+/// Compatibility names for callers that only resolve artists.
+pub type ArtistSelection = SourceSelection;
+pub type ArtistSelectionKind = SourceSelectionKind;
+
+impl SourceSelection {
     pub(crate) fn validate(&self) -> Result<(), Failure> {
         if self.tracks.is_empty()
             || self.tracks.len() > fsonos_core::control::MAX_SPOTIFY_TRACK_BATCH
         {
             return Err(Failure::new(
                 ErrorCode::NotReady,
-                "Spotify returned no usable bounded artist selection",
+                "Spotify returned no usable bounded source selection",
             ));
         }
+        let prefix = match self.kind {
+            SourceSelectionKind::TopTracks | SourceSelectionKind::CatalogSample => "spotify:track:",
+            SourceSelectionKind::ShowEpisodes => "spotify:episode:",
+        };
         let mut seen = std::collections::HashSet::new();
         for (uri, title) in &self.tracks {
-            if !uri.starts_with("spotify:track:")
+            if !uri.starts_with(prefix)
                 || normalize_source_uri(uri).as_ref() != Ok(uri)
                 || !seen.insert(uri)
                 || title.len() > 4096
@@ -62,18 +96,40 @@ impl ArtistSelection {
             {
                 return Err(Failure::new(
                     ErrorCode::NotReady,
-                    "Spotify returned an invalid artist track selection",
+                    "Spotify returned an invalid source selection",
                 ));
             }
         }
         Ok(())
     }
+
+    pub(crate) fn validate_for_source(&self, source_uri: &str) -> Result<(), Failure> {
+        self.validate()?;
+        let expected = match self.kind {
+            SourceSelectionKind::TopTracks | SourceSelectionKind::CatalogSample => SpotifyBare::Artist,
+            SourceSelectionKind::ShowEpisodes => SpotifyBare::Show,
+        };
+        if SpotifyBare::of(source_uri) != Some(expected) {
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "Spotify returned a selection for a different source kind",
+            ));
+        }
+        Ok(())
+    }
 }
 
-/// A play request may name an artist, which the surface resolves before any
-/// speaker writes. The lower-level renderer still refuses a bare artist URI.
+pub(crate) fn is_catalog_source(source_uri: &str) -> bool {
+    matches!(
+        SpotifyBare::of(source_uri),
+        Some(SpotifyBare::Artist | SpotifyBare::Show)
+    )
+}
+
+/// A play request may name an artist or show, which the surface resolves
+/// before speaker writes. The lower-level renderer still refuses bare containers.
 pub(crate) fn validate_play_request_source(source_uri: &str) -> Result<(), Failure> {
-    if matches!(SpotifyBare::of(source_uri), Some(SpotifyBare::Artist)) {
+    if is_catalog_source(source_uri) {
         return Ok(());
     }
     validate_playable_source(source_uri)
@@ -131,9 +187,9 @@ pub fn normalize_source_uri(raw: &str) -> Result<String, Failure> {
 /// URI normalization is separate: other operations have their own source
 /// capabilities and error contracts.
 ///
-/// This checks direct renderer sources. A surface resolves an artist into
-/// concrete tracks before reaching it; authored scenes still use this native
-/// source contract. Bare artist and show playback remain typed refusals
+/// This checks direct renderer sources. A surface resolves artists and shows
+/// into concrete queue items before reaching it. Bare artist and show URIs
+/// remain typed refusals
 /// (docs/PROTOCOL.md, "Bare Spotify kinds"): the Spotify id cannot address
 /// Sonos' SMAPI shortcut or service container. An episode renders directly.
 pub(crate) fn validate_playable_source(source_uri: &str) -> Result<(), Failure> {

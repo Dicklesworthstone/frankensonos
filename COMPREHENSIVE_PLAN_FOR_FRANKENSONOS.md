@@ -917,6 +917,14 @@ speaker changes. Missing authorization or an invalid selection leaves playback
 and levels intact. See [`docs/ARTIST_PLAYBACK.md`](docs/ARTIST_PLAYBACK.md) for
 scope, partial-failure behavior and validation status.
 
+Show links now use the same guarded play/next/append path. A read-only show
+document supplies its identity and first episode page; the resolver selects
+up to ten distinct playable episodes in provider order without following page
+links or claiming latest/unplayed ordering. Episodes use Sonos' existing
+sid-only renderer metadata. Artist and show lookups share the bounded worker,
+fresh credentials and retained Spotify cooldown; podcast metadata stays
+outside the music library and DJ selection pool.
+
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
 earliest real playback on both S1 and S2, and the fallback §6 calls for when a

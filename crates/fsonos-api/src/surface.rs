@@ -379,7 +379,7 @@ impl Surface {
         self
     }
 
-    /// Resolve Spotify artist links through the owner's read-only session.
+    /// Resolve Spotify artist and show links through the owner's read-only session.
     #[must_use]
     pub fn with_spotify_sources(mut self, sources: Box<dyn crate::source::SpotifySources>) -> Self {
         self.spotify_sources = Some(sources);
@@ -858,10 +858,11 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = if matches!(command, Command::PlayTracks { .. }) {
-            Some(actions::before_state_not_undoable(
-                "artist queue replacement",
-            ))
+        let before = if let Command::PlayTracks { selection, .. } = &command {
+            Some(actions::before_state_not_undoable(&format!(
+                "{} queue replacement",
+                selection.kind.source_label()
+            )))
         } else {
             actions::before_state_with(&snaps, &sessions)
         };
@@ -958,7 +959,7 @@ impl Surface {
             .any(|command| matches!(command, Command::PlayTracks { .. }))
         {
             Some(actions::before_state_not_undoable(
-                "artist queue replacement",
+                "catalog queue replacement",
             ))
         } else {
             actions::before_state_with(&snaps, &[])

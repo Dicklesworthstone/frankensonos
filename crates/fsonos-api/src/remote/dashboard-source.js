@@ -16,9 +16,11 @@ const DashboardSource = (() => {
   }
   function effect(review) {
     const q = review.before.queue;
-    if (review.item.kind === 'artist') {
-      const selection = 'Uses up to 10 tracks from the artist’s top tracks or albums, in Spotify’s order. Requires Spotify sign-in.';
-      if (review.mode === 'play') return 'Replace the current queue with this artist selection and start playback in order. ' + selection;
+    if (review.item.kind === 'artist' || review.item.kind === 'show') {
+      const selection = review.item.kind === 'show'
+        ? 'Uses up to 10 available episodes from the show’s first episode page, in Spotify’s order. Requires Spotify sign-in.'
+        : 'Uses up to 10 tracks from the artist’s top tracks or albums, in Spotify’s order. Requires Spotify sign-in.';
+      if (review.mode === 'play') return 'Replace the current queue with this ' + review.item.kind + ' selection and start playback in order. ' + selection;
       return (review.mode === 'next' && q.playing !== null
         ? 'Add after the playing track without restarting playback. '
         : 'Append to the existing queue without starting or resuming playback. ') + selection;

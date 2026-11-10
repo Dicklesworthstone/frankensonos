@@ -1,10 +1,15 @@
-# Play a Spotify artist
+# Play Spotify artists and shows
 
 An artist link selects up to ten playable tracks in Spotify's order. It uses
 the artist's top tracks when available. If Spotify refuses that endpoint with
 403 or 404, it reads a bounded sample from the artist's albums and singles.
 The response identifies which selection was used. This is a finite selection,
 not artist radio, a complete discography, or a popularity ranking of the fallback.
+
+A show link selects up to ten distinct, available episodes from its first
+episode page, in Spotify's returned order. It does not promise newest or
+unplayed ordering. Episodes remain separate from the music library and the
+DJ's selection pool.
 
 ## Use it
 
@@ -17,11 +22,14 @@ Web sign-in reads metadata; the speakers play through their existing Sonos link.
 fsonos play Kitchen 'https://open.spotify.com/artist/<22-character-id>'
 fsonos play Kitchen 'spotify:artist:<22-character-id>' --next
 fsonos play Kitchen 'spotify:artist:<22-character-id>' --queue
+fsonos play Kitchen 'https://open.spotify.com/show/<22-character-id>'
+fsonos play Kitchen 'spotify:show:<22-character-id>' --next
+fsonos play Kitchen 'spotify:show:<22-character-id>' --queue
 ```
 
 `--direct` works with the same saved Spotify configuration. The running daemon
 and standalone MCP read newly saved app settings and credentials on the next
-artist request, including setup completed after startup.
+artist or show request, including setup completed after startup.
 
 | Action | Result |
 | --- | --- |
@@ -34,12 +42,12 @@ They retain a running DJ. A later queue undo removes only the exact added range.
 Replacing a queue cannot recover its former contents through ordinary action
 undo, and the action history marks that boundary.
 
-HTTP uses the existing `POST /play` and `POST /queue` bodies with an artist
-`source_uri`. MCP uses `play` and `add_to_queue`. The phone and listening-room
+HTTP uses the existing `POST /play` and `POST /queue` bodies with an artist or
+show `source_uri`. MCP uses `play` and `add_to_queue`. The phone and listening-room
 dashboard offer the same three actions, show the selection bound and sign-in
 requirement, and recheck the destination and queue before sending once.
 
-## Selection and failure behavior
+## Artist selection and failure behavior
 
 The resolver keeps distinct tracks credited to the requested artist, skips
 local or explicitly unplayable items, and rejects malformed or inconsistent
@@ -73,17 +81,33 @@ as uncertain and are never automatically replayed. Read the current queue before
 making another deliberate request. These checks cannot reserve a speaker against
 all subsequent actions from another controller.
 
+## Show selection
+
+The show resolver reads one show document using the owner's existing Spotify
+session and account country. It verifies the requested show identity, accepts
+at most the first 50 returned episode entries, and keeps up to ten distinct
+playable, unrestricted episodes in provider order. It never follows a returned
+`next` URL. Missing sign-in, an empty selection, malformed identities or Spotify
+refusal returns an error before speaker changes. No extra OAuth scopes are
+requested. Explicit episodes can be included.
+
+Show playback and queue additions use the same guarded batch operations as
+artists. Episode URIs and metadata use the household's learned Spotify service
+id with the existing episode renderer contract. The shared catalog worker
+retains rate-limit cooldowns across artist and show requests.
+
 ## Scope and validation
 
-Bare artist IDs still do not start reliably through Sonos' native artist
-renderer. This feature sends concrete track URIs instead. Show links remain
-queue-only. Authored scenes do not resolve artist or show sources; use a concrete
-track, album, playlist or DJ scene.
+Bare artist and show IDs do not start reliably through Sonos' native container
+renderers. These workflows send concrete music tracks or episodes instead.
 
-Regression coverage is in `artist_playback`, `spotify_track_batch_sim`,
-`spotify_artist_sim`, the CLI `spotify_sources` tests and
-`e2e_artist_playback`, plus the phone/dashboard source suites. The three affected
-browser suites passed 122 tests in this session. Rust regressions were added but
-could not run locally: compiling the pinned `asupersync` dependency was killed
-before project type checking. GitHub CI is the remaining execution check.
-No physical-speaker or real-account acceptance claim is made by these fixtures.
+Regression coverage is in `artist_playback`, `show_playback`,
+`spotify_track_batch_sim`, `spotify_artist_sim`, `spotify_show_sim`, the CLI
+`spotify_sources` tests and both catalog playback e2e files, plus the
+phone/dashboard source suites. Rust execution of the new catalog workflows
+remains pending in GitHub CI: the local dependency build exceeded available
+resources, then the execution environment became unavailable. The earlier
+browser suites passed 122 tests before show support was added; expanded Node
+suites still need execution. Eleven focused controller checks for the updated
+artist/show modes, queue freshness and show descriptions passed in V8.
+Physical-speaker and real-account acceptance remain separate checks.

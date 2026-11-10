@@ -1,16 +1,18 @@
 //! Render a bounded Spotify catalog expansion through one household account.
-//! Known tracks share queue insertion proofs and staged source replacement.
+//! Music tracks and episodes share queue insertion proofs and staged replacement.
 
 use super::queue_removal::{self, Snapshot};
 use super::{Queued, SourceDestination, addr, pause_confirmed, queue_insert, spotify_params};
 use crate::queue_source::{self, Staged};
 use crate::{CoreError, HouseholdState};
-use fsonos_proto::didl::{spotify_queue_uri, spotify_track_didl};
+use fsonos_proto::didl::{
+    spotify_bare_didl, spotify_bare_uri, spotify_queue_uri, spotify_track_didl,
+};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
 
-/// At most ten actual tracks are resolved by an artist catalog read.
+/// At most ten concrete music tracks or episodes are resolved by a catalog read.
 pub const MAX_SPOTIFY_TRACK_BATCH: usize = 10;
 
 /// The source, group, boot and complete queue observed before catalog lookup.
@@ -60,10 +62,12 @@ fn validate(tracks: &[(&str, &str)]) -> Result<(), CoreError> {
     }
     if tracks.iter().any(|(uri, _)| {
         !uri.strip_prefix("spotify:track:")
+            .or_else(|| uri.strip_prefix("spotify:episode:"))
             .is_some_and(|id| id.len() == 22 && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
     }) {
         return Err(ProtoError::Malformed(
-            "every batch item must be a canonical Spotify track with a 22-character id".into(),
+            "every batch item must be a canonical Spotify track or episode with a 22-character id"
+                .into(),
         )
         .into());
     }
@@ -80,10 +84,19 @@ fn render<T: Transport + ?Sized>(
     Ok(tracks
         .iter()
         .map(|(uri, title)| {
-            (
-                spotify_queue_uri(uri),
-                spotify_track_didl(uri, title, &params),
-            )
+            if uri.starts_with("spotify:episode:") {
+                // Episodes require the existing sid-only renderer contract;
+                // music-track flags and account descriptors are not accepted.
+                (
+                    spotify_bare_uri(uri, params.sid),
+                    spotify_bare_didl(uri, title, params.sid),
+                )
+            } else {
+                (
+                    spotify_queue_uri(uri),
+                    spotify_track_didl(uri, title, &params),
+                )
+            }
         })
         .collect())
 }
@@ -105,8 +118,8 @@ fn requests<'a>(
         .collect()
 }
 
-/// Append a known list of Spotify tracks, or insert it immediately after the
-/// current queue occurrence. Tracks retain their input order; duplicate URIs
+/// Append concrete Spotify music tracks or episodes, or insert them immediately
+/// after the current queue occurrence. Items retain their input order; duplicate URIs
 /// are separate occurrences. The operation never starts or pauses playback.
 ///
 /// Only one household renderer template is learned. Each add is sent once and

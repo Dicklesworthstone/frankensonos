@@ -196,7 +196,7 @@ fn a_search_naming_a_saved_album_or_a_playlist_plays_it() {
 }
 
 #[test]
-fn an_artist_requires_sign_in_a_show_is_refused_and_an_episode_plays() {
+fn artists_and_shows_require_sign_in_and_an_episode_plays() {
     let mut s = Scenario::start("play-spotify-kinds");
     s.sim(SimHousehold::standard());
     let kitchen = s.ip("Kitchen");
@@ -217,8 +217,8 @@ fn an_artist_requires_sign_in_a_show_is_refused_and_an_episode_plays() {
         &run.stderr,
     );
 
-    // Artist selection needs the owner's Spotify sign-in; a show still has
-    // no supported expansion. Both fail before changing the playing queue.
+    // Catalog selections need the owner's Spotify sign-in. Both fail before
+    // changing the currently playing queue when setup is absent.
     for (tag, prefix, code, says) in [
         (
             "play-artist",
@@ -229,8 +229,8 @@ fn an_artist_requires_sign_in_a_show_is_refused_and_an_episode_plays() {
         (
             "play-show",
             "spotify:show:",
-            "NOT_IMPLEMENTED",
-            "a show is a typed refusal naming the service container id",
+            "SPOTIFY_AUTH_REQUIRED",
+            "a show requests Spotify setup before changing playback",
         ),
     ] {
         let uri_in = format!("{prefix}{ALBUM}");
