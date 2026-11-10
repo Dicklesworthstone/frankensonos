@@ -3524,3 +3524,28 @@ PPC binary already in `/tmp/s23rootfs/wifi/` under its own qemu-ppc with the
 S1 libs, since the IPC is arch-independent, or (b) extract the S2's own
 `/wifi/netstartd` from an 86.10/86.11 rootfs with the existing
 `s2_verdict_chroot.sh` unpack path.
+
+**MILESTONE: the S2 daemon now runs persistently in the emulator.** With
+`netstartd` live the watchdog error disappears, the process stays up, and it
+**listens on `:1400` and `:1843`** — previously it exited every 10-15 s.
+
+How the helper was made to run, since its binary is PPC and the chroot is
+MIPS: both trees are on the same box, so the PPC binary is executed with its
+*own* interpreter and private library path —
+
+```
+chroot /tmp/s86 /usr/bin/qemu-ppc /ppclib/ld.so.1 \
+       --library-path /ppclib /wifi/netstartd
+```
+
+with `ld.so.1` + the S1 PPC libs staged under `/ppclib` and the binary at
+`/wifi/netstartd` (copied from `/tmp/s23rootfs/wifi/`). It creates
+`/tmp/netstartd.ipc`, `netstartd.pid` and `netstartd_wac.ipc` and the daemon
+then starts normally. Arch does not matter because the channel is a Unix
+socket.
+
+Remaining wall is now the **shared one**: `:1400` listens but
+`/status/VERSION` still times out (`setav` too, Recv-Q grows) — the **accept
+loop does not run**, exactly as in the S1 emulator. Everything else about the
+S2 boot is now solved: config, device fakes, the codec-id abort (patched) and
+the watchdog helper.
