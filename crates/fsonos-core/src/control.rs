@@ -206,7 +206,9 @@ pub fn check_spotify_source<T: Transport + ?Sized>(
     player: &PlayerId,
     spotify_uri: &str,
 ) -> Result<(), CoreError> {
-    if spotify_uri.starts_with("spotify:track:") || SpotifyBare::of(spotify_uri).is_some() {
+    if spotify_uri.starts_with("spotify:track:")
+        || matches!(SpotifyBare::of(spotify_uri), Some(SpotifyBare::Episode))
+    {
         return spotify_params(t, households, player)?
             .map(|_| ())
             .ok_or(CoreError::NoSpotifyFavorite);

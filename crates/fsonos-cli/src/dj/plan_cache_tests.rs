@@ -815,7 +815,9 @@ fn strict_top_up_keeps_playing_the_retained_work_when_no_new_work_matches() {
 fn another_database_connection_publishes_music_and_retires_an_adopted_account() {
     let database = data_dir().with_file_name("catalog.db");
     let mut writer = SqliteStore::open(&database).unwrap();
-    writer.adopt_spotify_library_owner("original-owner").unwrap();
+    writer
+        .adopt_spotify_library_owner("original-owner")
+        .unwrap();
     apply_library_read(&mut writer, &[song(1, "Artist One")]).unwrap();
     let reader = SqliteStore::open(&database).unwrap();
     let mut state = State::default();
@@ -849,8 +851,7 @@ fn automatic_refill_observes_publication_without_a_sync_notice_on_s1_and_s2() {
         let dj = SpotifyDj::new(None);
         let mut store = MemStore::default();
         store.adopt_spotify_library_owner("original-owner").unwrap();
-        apply_library_read(&mut store, &[song(1, "Artist One"), song(2, "Artist Two")])
-            .unwrap();
+        apply_library_read(&mut store, &[song(1, "Artist One"), song(2, "Artist Two")]).unwrap();
         let clock = clock();
         dj.act(at, &mut store, DjAction::Start, &clock).unwrap();
         let before = dj.state().feeds[&house.coordinator].snapshot().unwrap();
@@ -891,8 +892,7 @@ fn failed_rebuild_after_account_adoption_blocks_skip_and_stale_refill_on_s1_and_
         let dj = SpotifyDj::new(Some(moods_file.clone()));
         let mut store = MemStore::default();
         store.adopt_spotify_library_owner("original-owner").unwrap();
-        apply_library_read(&mut store, &[song(1, "Artist One"), song(2, "Artist Two")])
-            .unwrap();
+        apply_library_read(&mut store, &[song(1, "Artist One"), song(2, "Artist Two")]).unwrap();
         let clock = clock();
         dj.act(at, &mut store, DjAction::Start, &clock).unwrap();
         let before = dj.state().feeds[&house.coordinator].snapshot().unwrap();
@@ -940,9 +940,22 @@ fn failed_rebuild_after_account_adoption_blocks_skip_and_stale_refill_on_s1_and_
 
         std::fs::write(&preferences, "# repaired\n").unwrap();
         apply_library_read(&mut store, &[song(3, "Fresh Artist")]).unwrap();
-        dj.act(at, &mut store, DjAction::Skip, &clock).unwrap();
+        // Advance the maintenance retry boundary without a wall-clock sleep.
+        {
+            let mut state = dj.state();
+            state.plan_retry_at = Some(Instant::now());
+            state.refill_retries.clear();
+        }
+        dj.on_playback(at, &mut store, &playback, &clock);
         let resumed = dj.state().feeds[&house.coordinator].snapshot().unwrap();
-        assert_eq!(resumed.queued.last().unwrap().composer, "Fresh Artist");
+        assert_eq!(resumed.queued[0], before.queued[1]);
+        assert_eq!(resumed.queued[1].composer, "Fresh Artist");
+        assert_eq!(
+            control::get_position_info(&lan, host).unwrap().uri,
+            position.uri,
+            "automatic recovery appends fresh music without restarting playback"
+        );
+        dj.act(at, &mut store, DjAction::Skip, &clock).unwrap();
         assert_eq!(control::get_position_info(&lan, host).unwrap().track, 3);
     }
 }

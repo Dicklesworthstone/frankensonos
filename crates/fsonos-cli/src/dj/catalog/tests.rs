@@ -3,9 +3,10 @@
 use super::super::State;
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
-    CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, MemStore, PlayName,
-    PlayRecord, SpotifyArtistDiscoveryFence, SpotifyLibraryOwner, SpotifyPlaylistPublication,
-    SpotifyPlaylistPublicationFence, Store, StoreError, StoredScene, StoredSchedule,
+    CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, MemStore,
+    PlayName, PlayRecord, SpotifyArtistDiscoveryFence, SpotifyLibraryOwner,
+    SpotifyPlaylistPublication, SpotifyPlaylistPublicationFence, Store, StoreError, StoredScene,
+    StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_spotify::cache::apply_library_read;
@@ -174,7 +175,9 @@ fn unchanged_catalog_and_listening_writes_reuse_the_pool() {
     let (mut store, mut state) = fixture();
     let reads = store.library_reads.get();
     store.record_play("Den", &song(1).source_uri, 1).unwrap();
-    store.save_spotify_heard(&[(song(1).source_uri, 2)]).unwrap();
+    store
+        .save_spotify_heard(&[(song(1).source_uri, 2)])
+        .unwrap();
     store
         .record_feedback(&Feedback {
             at: 3,

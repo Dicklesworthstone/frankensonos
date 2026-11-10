@@ -99,7 +99,7 @@ fn stale_revision_leaves_file_and_plan_untouched_and_returns_current_revision() 
     let current = show(Some(&file)).unwrap();
     let failure = change(&mut state, Some(&file), &request, &store, &clock).unwrap_err();
     assert_eq!(failure.code, ErrorCode::ConfigChanged);
-    assert!(failure.hint.as_ref().unwrap().contains(&current.revision));
+    assert!(failure.hint.contains(&current.revision));
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         "# changed by another editor\n"

@@ -37,7 +37,7 @@ use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, VolumeScope};
 use crate::request::VolumeChange;
-use crate::source::normalize_source_uri;
+use crate::source::{normalize_source_uri, validate_playable_source};
 
 mod dj_direction;
 mod dj_start;
@@ -73,7 +73,7 @@ pub struct SceneGroupDto {
 
 /// What a scene group plays: `keep` (whatever the group has, its queue
 /// say), a `favorite` (by `name`), a `uri` (a stream, or a Spotify track,
-/// album or playlist), a `sonos_playlist` (native id in `name`), the `dj`
+/// album, playlist or episode), a `sonos_playlist` (native id in `name`), the `dj`
 /// (with a `mood` and reusable `direction`, if supplied), a captured `queue`
 /// reference, or a durable `queue_backup`.
 /// References require the original unchanged queue. Backups retain its
@@ -449,15 +449,7 @@ fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
         }
         "uri" => {
             let uri = normalize_source_uri(dto.uri.as_deref().ok_or_else(|| needs("uri"))?)?;
-            let playable = uri.starts_with("spotify:track:")
-                || fsonos_proto::didl::SpotifyContainer::of(&uri).is_some()
-                || fsonos_proto::didl::SpotifyBare::of(&uri).is_some();
-            if uri.starts_with("spotify:") && !playable {
-                return Err(Failure::invalid(format!(
-                    "a scene plays a Spotify track, album, playlist, artist, episode or show, not {uri}"
-                ))
-                .with_hint("Name one of its tracks, albums, playlists, artists, episodes or shows, or use the dj source."));
-            }
+            validate_playable_source(&uri)?;
             Ok(SceneSource::Uri {
                 uri,
                 metadata: String::new(),
@@ -1118,8 +1110,37 @@ impl Surface {
             };
             (plan, _) = Self::permitted_ops(&guard, households, plan);
         }
-        dj_start::check_readiness(self, households, &plan)?;
-        scenes::check_sources(&*self.transport, households, &plan).map_err(scene_failure)
+        self.scene_plan_sources_ready(scene, households, &plan)
+    }
+
+    /// Validate only the operations both callers may perform. This also
+    /// protects legacy saved scenes that predate source-kind validation.
+    fn scene_plan_sources_ready(
+        &self,
+        scene: &Scene,
+        households: &[HouseholdState],
+        plan: &ScenePlan,
+    ) -> Result<(), Failure> {
+        for op in &plan.ops {
+            match op {
+                SceneOp::Uri { uri, .. } => validate_playable_source(uri)?,
+                SceneOp::Play { coordinator } => {
+                    // A prior failed Play may leave this URI loaded, so the
+                    // diff only resumes it instead of selecting it again.
+                    for group in &scene.groups {
+                        if let SceneSource::Uri { uri, .. } = &group.source
+                            && scene_room(households, &group.coordinator)
+                                .is_ok_and(|(_, room)| room.primary == *coordinator)
+                        {
+                            validate_playable_source(uri)?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        dj_start::check_readiness(self, households, plan)?;
+        scenes::check_sources(&*self.transport, households, plan).map_err(scene_failure)
     }
 
     /// [`Self::apply_scene`], its volumes ramping over `req.fade_secs` when
@@ -1339,8 +1360,7 @@ impl Surface {
         // Every source dependency must be available before even the cap-lowering
         // writes below, which can also supersede an existing volume fade.
         // Only permitted operations are checked, exactly as execution sees them.
-        dj_start::check_readiness(self, households, &plan)?;
-        scenes::check_sources(&*self.transport, households, &plan).map_err(scene_failure)?;
+        self.scene_plan_sources_ready(scene, households, &plan)?;
         notes.extend(self.lower_scene_rooms(households, &plan, &clients)?);
         Ok((plan, notes, allowed_fade))
     }

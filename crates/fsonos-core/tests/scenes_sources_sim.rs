@@ -90,7 +90,11 @@ fn only_reads(sim: &SimHandle, since: usize) {
 fn missing_favorites_refuse_before_a_prospective_coordinator_leaves_or_changes_volume() {
     for generation in [1, 2] {
         let (sim, lan, households) = fixture(generation);
-        let member = resolve_room(&households, "Member").unwrap().player.id.clone();
+        let member = resolve_room(&households, "Member")
+            .unwrap()
+            .player
+            .id
+            .clone();
         let proposed = plan(favorite(&member, "Removed station"), &member);
         let before = sim.soap_log().len();
         assert!(matches!(
@@ -115,7 +119,11 @@ fn missing_favorites_refuse_before_a_prospective_coordinator_leaves_or_changes_v
 fn ordinary_favorites_and_multiple_sources_share_one_household_catalog_read() {
     for generation in [1, 2] {
         let (sim, lan, households) = fixture(generation);
-        let member = resolve_room(&households, "Member").unwrap().player.id.clone();
+        let member = resolve_room(&households, "Member")
+            .unwrap()
+            .player
+            .id
+            .clone();
         let lead = resolve_room(&households, "Lead").unwrap().player.id.clone();
         let mut proposed = plan(favorite(&member, "Sim Radio"), &member);
         proposed.ops.push(favorite(&lead, "Aria"));
@@ -136,7 +144,13 @@ fn ordinary_favorites_and_multiple_sources_share_one_household_catalog_read() {
 fn spotify_readiness_uses_the_requested_kinds_actual_renderer_template() {
     for generation in [1, 2] {
         let (sim, lan, households) = fixture(generation);
-        let member = resolve_room(&households, "Member").unwrap().player.id.clone();
+        let member = resolve_room(&households, "Member")
+            .unwrap()
+            .player
+            .id
+            .clone();
+        let episode = plan(uri(&member, "spotify:episode:0SimEpisode"), &member);
+        scenes::check_sources(&lan, &households, &episode).unwrap();
         sim.retain_favorites(generation, |source| source.contains("spotify%3aalbum%3a"))
             .unwrap();
         let before = sim.soap_log().len();
@@ -175,9 +189,9 @@ impl Transport for Shortcut<'_> {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        self.0.soap_post(host, path, action, body).map(|reply| {
-            reply.replace("x-rincon-mp3radio://stream.example.invalid/sim.mp3", "")
-        })
+        self.0
+            .soap_post(host, path, action, body)
+            .map(|reply| reply.replace("x-rincon-mp3radio://stream.example.invalid/sim.mp3", ""))
     }
 }
 
@@ -185,7 +199,11 @@ impl Transport for Shortcut<'_> {
 fn unplayable_shortcuts_and_failed_catalog_reads_do_not_admit_a_scene() {
     for generation in [1, 2] {
         let (sim, lan, households) = fixture(generation);
-        let member = resolve_room(&households, "Member").unwrap().player.id.clone();
+        let member = resolve_room(&households, "Member")
+            .unwrap()
+            .player
+            .id
+            .clone();
         let proposed = plan(favorite(&member, "Sim Radio"), &member);
         let before = sim.soap_log().len();
         assert!(matches!(
@@ -201,6 +219,29 @@ fn unplayable_shortcuts_and_failed_catalog_reads_do_not_admit_a_scene() {
             })))
         ));
         only_reads(&sim, before);
+        sim.shutdown();
+    }
+}
+
+#[test]
+fn unsupported_spotify_kinds_are_refused_before_even_reading_a_catalog() {
+    for generation in [1, 2] {
+        let (sim, lan, households) = fixture(generation);
+        let member = resolve_room(&households, "Member")
+            .unwrap()
+            .player
+            .id
+            .clone();
+        sim.upnp_fault("Member", "Browse", 501).unwrap();
+        let before = sim.soap_log().len();
+        for source in ["spotify:artist:0SimArtist", "spotify:show:0SimShow"] {
+            let proposed = plan(uri(&member, source), &member);
+            assert!(matches!(
+                scenes::check_sources(&lan, &households, &proposed),
+                Err(SceneError::Core(CoreError::Proto(ProtoError::Malformed(_))))
+            ));
+        }
+        assert_eq!(sim.soap_log().len(), before);
         sim.shutdown();
     }
 }

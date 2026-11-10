@@ -8,8 +8,11 @@ use fsonos_api::{ErrorCode, NoteCode, Surface};
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
+use fsonos_core::scenes;
 use fsonos_core::store::MemStore;
+use fsonos_proto::content;
 use fsonos_proto::control as soap;
+use fsonos_proto::didl::{learn_spotify_params, spotify_bare_didl, spotify_bare_uri};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
@@ -50,6 +53,13 @@ impl Transport for CatalogTransport {
 }
 
 fn fixture(policy: Policy) -> (SimHandle, Arc<Surface>, Arc<AtomicBool>) {
+    fixture_with_store(policy, MemStore::default())
+}
+
+fn fixture_with_store(
+    policy: Policy,
+    store: MemStore,
+) -> (SimHandle, Arc<Surface>, Arc<AtomicBool>) {
     let sim = SimHousehold::builder()
         .s1([
             SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
@@ -92,7 +102,7 @@ fn fixture(policy: Policy) -> (SimHandle, Arc<Surface>, Arc<AtomicBool>) {
         policy,
         Box::new(SystemClock),
     )
-    .with_action_log(Box::new(MemStore::default()), "scene-sources-test");
+    .with_action_log(Box::new(store), "scene-sources-test");
     (sim, Arc::new(surface), unavailable)
 }
 
@@ -163,7 +173,10 @@ fn a_missing_favorite_in_one_household_preserves_every_groups_playback_and_level
     for room in ["Kitchen", "Den"] {
         let host = sim.player(room).unwrap().ip;
         assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 85);
-        assert_eq!(soap::get_media_info(&sim.lan(), host).unwrap().uri, ORIGINAL);
+        assert_eq!(
+            soap::get_media_info(&sim.lan(), host).unwrap().uri,
+            ORIGINAL
+        );
         assert_eq!(
             soap::get_transport_info(&sim.lan(), host).unwrap().state,
             TransportState::Playing
@@ -177,6 +190,12 @@ fn missing_spotify_linkage_cannot_pause_music_or_change_groups_for_play_or_silen
         for playing in [false, true] {
             let (sim, surface, _) = fixture(Policy::default());
             seed(&sim, room);
+            let state = if playing {
+                TransportState::Playing
+            } else {
+                soap::pause(&sim.lan(), sim.player(room).unwrap().ip).unwrap();
+                TransportState::Paused
+            };
             surface
                 .save_scene_from(
                     &Client::Cli,
@@ -195,7 +214,7 @@ fn missing_spotify_linkage_cannot_pause_music_or_change_groups_for_play_or_silen
                 soap::get_transport_info(&sim.lan(), sim.player(room).unwrap().ip)
                     .unwrap()
                     .state,
-                TransportState::Playing
+                state
             );
         }
     }
@@ -338,4 +357,186 @@ fn a_source_denied_by_policy_does_not_block_the_scenes_permitted_work() {
         soap::get_volume(&sim.lan(), sim.player("Den").unwrap().ip).unwrap(),
         20
     );
+}
+
+#[test]
+fn scene_authoring_rejects_artists_and_shows_but_episodes_play() {
+    for (room, member) in [("Kitchen", "Office"), ("Den", "Study")] {
+        let (sim, surface, _) = fixture(Policy::default());
+        let before = sim.soap_log().len();
+        for kind in ["artist", "show"] {
+            let source = json!({
+                "kind": "uri",
+                "uri": format!("spotify:{kind}:0123456789ABCDEFabcdef")
+            });
+            let error = surface
+                .save_scene_from(
+                    &Client::Cli,
+                    "Unsupported",
+                    &definition(room, member, source, true),
+                )
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::NotImplemented);
+            assert_eq!(
+                surface.scene(&Client::Cli, "Unsupported").unwrap_err().code,
+                ErrorCode::UnknownScene
+            );
+        }
+        assert_read_only(&sim, before);
+
+        let source = json!({
+            "kind": "uri",
+            "uri": "spotify:episode:0123456789ABCDEFabcdef"
+        });
+        surface
+            .save_scene_from(
+                &Client::Cli,
+                "Episode",
+                &definition(room, member, source, true),
+            )
+            .unwrap();
+        let result = surface.apply_scene(&Client::Cli, "Episode").unwrap();
+        assert!(result.complete && result.changed, "{result:?}");
+        assert_eq!(
+            soap::get_transport_info(&sim.lan(), sim.player(room).unwrap().ip)
+                .unwrap()
+                .state,
+            TransportState::Playing
+        );
+    }
+}
+
+#[test]
+fn legacy_unsupported_sources_preserve_the_house_and_leave_schedules_unclaimed() {
+    for (room, member) in [("Kitchen", "Office"), ("Den", "Study")] {
+        for kind in ["artist", "show"] {
+            let source_uri = format!("spotify:{kind}:0123456789ABCDEFabcdef");
+            let scene: scenes::Scene = serde_json::from_value(json!({
+                "name": "Legacy",
+                "groups": [{
+                    "coordinator": room,
+                    "members": [member],
+                    "source": {
+                        "kind": "uri",
+                        "uri": source_uri
+                    },
+                    "playing": true
+                }],
+                "volumes": {(room): 20, (member): 15},
+                "mutes": {(member): true}
+            }))
+            .unwrap();
+            let mut store = MemStore::default();
+            scenes::save(&mut store, &scene, 0).unwrap();
+            let mut paused = scene.clone();
+            paused.name = "Already paused".into();
+            paused.groups[0].members.clear();
+            paused.groups[0].playing = Some(false);
+            paused.volumes.clear();
+            paused.mutes.clear();
+            scenes::save(&mut store, &paused, 0).unwrap();
+            let policy =
+                Policy::from_toml("[clients.\"tag:blocked\"]\ndeny = [\"play\"]\n").unwrap();
+            let (sim, surface, _) = fixture_with_store(policy, store);
+            seed(&sim, room);
+            let before = sim.soap_log().len();
+            let error = surface
+                .apply_scene_with(
+                    &Client::Tailnet("tag:agent".into()),
+                    "Legacy",
+                    &SceneApplyRequest { fade_secs: Some(1) },
+                )
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::NotImplemented);
+
+            let (scheduler, id, at) = schedule(&surface, "Legacy");
+            assert_eq!(scheduler.tick_at(at, &Utc), [Ran::Fired { id, at }]);
+            assert!(scheduler.wait(Duration::from_secs(10)));
+            assert!(
+                surface.schedules(&Client::Cli).unwrap()[0]
+                    .last_fired
+                    .is_none()
+            );
+            assert_read_only(&sim, before);
+            let host = sim.player(room).unwrap().ip;
+            assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 85);
+            assert_eq!(
+                soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                TransportState::Playing
+            );
+
+            // A failed attempt can leave the same source selected. The next
+            // diff emits only Play, which must not bypass source validation.
+            let catalog = content::browse_all(&sim.lan(), host, "FV:2").unwrap();
+            let sid = learn_spotify_params(&catalog).unwrap().sid;
+            let renderer = spotify_bare_uri(&source_uri, sid);
+            let metadata = spotify_bare_didl(&source_uri, "Legacy source", sid);
+            soap::stop(&sim.lan(), host).unwrap();
+            soap::set_av_transport_uri(&sim.lan(), host, &renderer, &metadata).unwrap();
+            let before_resume = sim.soap_log().len();
+            let error = surface.apply_scene(&Client::Cli, "Legacy").unwrap_err();
+            assert_eq!(error.code, ErrorCode::NotImplemented);
+            assert_eq!(
+                scheduler.tick_at(at + chrono::TimeDelta::minutes(1), &Utc),
+                [Ran::Fired { id, at }]
+            );
+            assert!(scheduler.wait(Duration::from_secs(10)));
+            assert!(
+                surface.schedules(&Client::Cli).unwrap()[0]
+                    .last_fired
+                    .is_none()
+            );
+            let unchanged = surface.apply_scene(&Client::Cli, "Already paused").unwrap();
+            assert!(unchanged.complete && !unchanged.changed, "{unchanged:?}");
+            assert_read_only(&sim, before_resume);
+            assert_eq!(
+                soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                TransportState::Stopped
+            );
+
+            // A forbidden source does not obstruct permitted room changes.
+            let result = surface
+                .apply_scene(&Client::Tailnet("tag:blocked".into()), "Legacy")
+                .unwrap();
+            assert!(result.complete && result.changed, "{result:?}");
+            assert!(
+                result
+                    .notes
+                    .iter()
+                    .any(|note| note.code == NoteCode::Skipped)
+            );
+            assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 20);
+        }
+    }
+}
+
+#[test]
+fn a_captured_renderer_source_still_resumes_without_selecting_it_again() {
+    for room in ["Kitchen", "Den"] {
+        let (sim, surface, _) = fixture(Policy::default());
+        seed(&sim, room);
+        surface.save_scene(&Client::Cli, "Captured").unwrap();
+        let host = sim.player(room).unwrap().ip;
+        soap::pause(&sim.lan(), host).unwrap();
+        let before = sim.soap_log().len();
+        let result = surface.apply_scene(&Client::Cli, "Captured").unwrap();
+        assert!(result.complete && result.changed, "{result:?}");
+        let log = sim.soap_log();
+        assert_eq!(
+            log[before..]
+                .iter()
+                .filter(|call| call.action == "Play")
+                .count(),
+            1
+        );
+        assert!(
+            log[before..]
+                .iter()
+                .all(|call| call.action != "SetAVTransportURI")
+        );
+        assert_eq!(
+            soap::get_transport_info(&sim.lan(), host).unwrap().state,
+            TransportState::Playing
+        );
+    }
 }
