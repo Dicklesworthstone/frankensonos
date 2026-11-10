@@ -16,6 +16,9 @@
 //! * [`library`] — [`library::LibraryItem`], the neutral track metadata both
 //!   the Web API reads and the local library cache produce.
 //!
+//! * [`artist_playback`] — a bounded read-only catalog selection for explicit
+//!   artist playback, resolved to concrete tracks before speaker control.
+//!
 //! * [`cache`] — the library cache: syncing a library read into the store
 //!   and rebuilding the DJ's pool from it.
 //!
@@ -61,6 +64,7 @@
 //!   offline with each work's reason and an hour-by-hour summary, writing
 //!   nothing.
 
+pub mod artist_playback;
 pub mod cache;
 pub mod classical;
 pub mod client;
