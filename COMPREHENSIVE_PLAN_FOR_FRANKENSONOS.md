@@ -744,6 +744,11 @@ their standing preferences on every surface and in the daemon. What is on
   favored, album spacing for both, period balance for classical works. Energy
   comes from tempo markings for classical movements and from the track's genre
   tags (read once per artist, cached) for songs.
+  Alternate recordings and remasters with the same recognized work key share
+  repeat avoidance, including recent or queued music in another room. A small
+  shelf rotates by distinct works while retaining each permitted recording as
+  an intact selection; multiple editions cannot force an early repeat. This
+  uses the existing metadata identity, not acoustic matching.
 - Steering: include and exclude artists, genres and decades on the CLI, HTTP
   and MCP (`--genre`/`--not-genre`/`--decade`, and the dj_steer args), with
   keywords, length and energy bias, and for classical music composers and

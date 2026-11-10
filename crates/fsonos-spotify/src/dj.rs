@@ -14,7 +14,8 @@
 //!   [`DjConfig::work_cooldown_plays`] work plays or
 //!   [`DjConfig::work_cooldown_secs`] seconds, and works heard a while ago stay
 //!   de-weighted until well clear of that. The time-based cooldown is
-//!   house-wide: a work another room played or has queued
+//!   house-wide and shared by recordings with the same work key: a work
+//!   another room played or has queued
 //!   ([`PickContext::elsewhere`]) waits here too. If the cooldown leaves too few works
 //!   (a small library, a long session), the DJ rotates through the
 //!   least-recently-played slice instead of repeating.
@@ -59,7 +60,7 @@
 //! reproduces a set exactly anywhere.
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -646,11 +647,13 @@ pub fn plan<'p>(
 /// work plays (0 = the work heard last).
 #[derive(Default)]
 struct Recency<'p> {
-    work_ago: HashMap<usize, usize>,
-    work_at: HashMap<usize, i64>,
+    // A different recording or reissue is still the same work for repeat
+    // avoidance. Recording indices below only count consecutive movements.
+    work_ago: HashMap<&'p str, usize>,
+    work_at: HashMap<&'p str, i64>,
     /// When each work was last heard in another room
     /// ([`PickContext::elsewhere`]).
-    elsewhere_at: HashMap<usize, i64>,
+    elsewhere_at: HashMap<&'p str, i64>,
     composer_ago: HashMap<&'p str, usize>,
     composer_at: HashMap<&'p str, i64>,
     album_ago: HashMap<&'p str, usize>,
@@ -701,7 +704,7 @@ impl<'p> Recency<'p> {
             };
             let entry = &pool.works[w];
             let composer = entry.composer_key();
-            seen.work_ago.entry(w).or_insert(ago);
+            seen.work_ago.entry(&entry.work_key).or_insert(ago);
             seen.composer_ago.entry(composer).or_insert(ago);
             if !entry.album_key.is_empty() {
                 seen.album_ago
@@ -709,7 +712,7 @@ impl<'p> Recency<'p> {
                     .or_insert(ago);
             }
             if let Some(at) = play.played_at {
-                seen.work_at.entry(w).or_insert(at);
+                seen.work_at.entry(&entry.work_key).or_insert(at);
                 seen.composer_at.entry(composer).or_insert(at);
             }
             if !new_play {
@@ -744,11 +747,14 @@ impl<'p> Recency<'p> {
     }
 
     /// Add when each pool work was last heard in another room.
-    fn heard_elsewhere(mut self, pool: &WorkPool, elsewhere: &[PlayRecord]) -> Self {
+    fn heard_elsewhere(mut self, pool: &'p WorkPool, elsewhere: &[PlayRecord]) -> Self {
         for play in elsewhere {
             let work = pool.by_track.get(play.source_uri.as_str());
             if let (Some(&(w, _)), Some(at)) = (work, play.played_at) {
-                let latest = self.elsewhere_at.entry(w).or_insert(at);
+                let latest = self
+                    .elsewhere_at
+                    .entry(&pool.works[w].work_key)
+                    .or_insert(at);
                 *latest = (*latest).max(at);
             }
         }
@@ -821,32 +827,41 @@ fn eligible(
                 .is_some_and(|now| now.saturating_sub(at) < config.work_cooldown_secs)
         })
     };
-    let elsewhere = |w: &usize| lately(recency.elsewhere_at.get(w));
+    let key = |w: &usize| pool.works[*w].work_key.as_str();
+    let elsewhere = |w: &usize| lately(recency.elsewhere_at.get(key(w)));
     let cooling = |w: &usize| {
         recency
             .work_ago
-            .get(w)
+            .get(key(w))
             .is_some_and(|&ago| ago < config.work_cooldown_plays)
-            || lately(recency.work_at.get(w))
+            || lately(recency.work_at.get(key(w)))
             || elsewhere(w)
     };
+    let distinct = |works: &[usize]| works.iter().map(key).collect::<HashSet<_>>().len();
+    let distinct_allowed = distinct(&allowed);
     let fresh: Vec<usize> = allowed.iter().copied().filter(|w| !cooling(w)).collect();
-    if fresh.len() >= (allowed.len() / 10).max(1) {
+    if distinct(&fresh) >= (distinct_allowed / 10).max(1) {
         return Eligible {
             works: fresh,
             rotation: false,
         };
     }
-    let quarter = (allowed.len() / 4).max(1);
+    let quarter = (distinct_allowed / 4).max(1);
     // Least recently played here first; what another room plays, has queued
     // or played lately goes last, never ahead as "not played here".
     allowed.sort_by_key(|w| {
         (
             elsewhere(w),
-            Reverse(recency.work_ago.get(w).copied().unwrap_or(usize::MAX)),
+            Reverse(recency.work_ago.get(key(w)).copied().unwrap_or(usize::MAX)),
         )
     });
-    allowed.truncate(quarter);
+    // Choose the stalest distinct works, retaining every permitted recording
+    // of each. Many editions must neither force an early repeat nor crowd
+    // other works out of the rotation window.
+    let mut rotating = HashSet::new();
+    allowed.retain(|w| {
+        rotating.contains(key(w)) || (rotating.len() < quarter && rotating.insert(key(w)))
+    });
     Eligible {
         works: allowed,
         rotation: true,
@@ -920,7 +935,7 @@ fn weigh(
             config.album_spacing,
         ),
     );
-    if let Some(&ago) = recency.work_ago.get(&w) {
+    if let Some(&ago) = recency.work_ago.get(work.work_key.as_str()) {
         apply(
             Factor::Recency,
             staleness_pm(ago, config.work_cooldown_plays),
@@ -1285,6 +1300,9 @@ fn surname(name: &str) -> &str {
 
 #[cfg(test)]
 mod ladder_tests;
+
+#[cfg(test)]
+mod recording_tests;
 
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
