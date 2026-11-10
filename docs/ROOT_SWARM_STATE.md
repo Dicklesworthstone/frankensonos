@@ -3510,3 +3510,17 @@ handshake, so it can still be used for the *protocol*, but it needs PPC libs
 (the S1 rootfs) alongside the MIPS ones. The clean route is to extract
 `/wifi/netstartd` from a genuine **S2** rootfs (86.10/86.11 image), which the
 `s2_verdict_chroot.sh` harness already knows how to unpack.
+
+**Correction: the helper talks over a Unix socket `/tmp/netstartd.ipc`** (also
+`/tmp/netstartd.pid`), with port 1410 as a secondary channel — so a TCP
+listener alone was never going to satisfy it, and the S1 rootfs *does* ship
+`/wifi/netstartd` (PPC). On the S1 the helper is **optional** (the daemon
+merely logs `no netstartd PID: getting started buttons won't work` and runs
+on); on the S2 it is **fatal** (the daemon exits after the watchdog fails).
+
+Practical consequence for the harness: the S2 boot needs `/tmp/netstartd.ipc`
+served by a real `netstartd`. Two ways, in order of cheapness — (a) run the
+PPC binary already in `/tmp/s23rootfs/wifi/` under its own qemu-ppc with the
+S1 libs, since the IPC is arch-independent, or (b) extract the S2's own
+`/wifi/netstartd` from an 86.10/86.11 rootfs with the existing
+`s2_verdict_chroot.sh` unpack path.
