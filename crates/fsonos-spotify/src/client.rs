@@ -660,6 +660,20 @@ impl Endpoints {
         format!("{}/shows/{}", self.api, percent_encode(show_id))
     }
 
+    /// The first bounded catalog search page for one content kind. The
+    /// authenticated user's country supplies the market; no additional scope
+    /// or externally hosted audio capability is requested.
+    #[must_use]
+    pub fn search(&self, query: &str, kind: &str, limit: u32) -> String {
+        format!(
+            "{}/search?q={}&type={}&limit={}&offset=0",
+            self.api,
+            percent_encode(query),
+            percent_encode(kind),
+            limit.clamp(1, 10)
+        )
+    }
+
     /// The artists the owner follows (cursor paging: `next` carries on).
     #[must_use]
     pub fn followed_artists(&self) -> String {

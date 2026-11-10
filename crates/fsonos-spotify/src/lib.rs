@@ -22,6 +22,9 @@
 //! * [`show_playback`] — a bounded read-only selection of playable episodes
 //!   for a requested show, separate from the music library and DJ pool.
 //!
+//! * [`catalog_search`] — one read-only catalog page of canonical sources,
+//!   ready to review before choosing playback or adding to a queue.
+//!
 //! * [`cache`] — the library cache: syncing a library read into the store
 //!   and rebuilding the DJ's pool from it.
 //!
@@ -69,6 +72,7 @@
 
 pub mod artist_playback;
 pub mod cache;
+pub mod catalog_search;
 pub mod classical;
 pub mod client;
 pub mod dj;
