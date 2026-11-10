@@ -64,6 +64,9 @@ pub struct Fake {
     pub liked_tracks: Option<String>,
     /// Exact request targets to override for library paging regressions.
     pub library_pages: HashMap<String, String>,
+    /// Exact API request targets to refuse, with an optional Retry-After in
+    /// seconds. Applied after authorization and before successful fixtures.
+    pub api_errors: HashMap<String, (u16, Option<u32>)>,
     /// Answer this many album-tracks requests (any album) with a 429.
     pub rate_limit_albums: u32,
     /// `GET /v1/artists/{id}`: each artist's genres (an id not here is a
@@ -157,10 +160,7 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
             .replace("https://api.spotify.com/v1", &fake.base)
     };
     let uri = req.uri.as_str();
-    if let Some(page) = fake.library_pages.get(uri) {
-        return json(200, rewrite(page.as_bytes()));
-    }
-    if let Some(response) = taste(&fake, uri) {
+    if let Some(response) = api_fixture(&fake, uri) {
         return response;
     }
     if uri.starts_with("/v1/me/albums") && uri.contains("offset=0") {
@@ -202,6 +202,21 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
     } else {
         not_found()
     }
+}
+
+fn api_fixture(fake: &Fake, uri: &str) -> Option<Response> {
+    if let Some((status, retry_after)) = fake.api_errors.get(uri) {
+        let response = json(*status, r#"{"error":"fixture API refusal"}"#);
+        return Some(if let Some(seconds) = retry_after {
+            response.with_header("Retry-After", seconds.to_string())
+        } else {
+            response
+        });
+    }
+    fake.library_pages
+        .get(uri)
+        .map(|page| json(200, page.replace("https://api.spotify.com/v1", &fake.base)))
+        .or_else(|| taste(fake, uri))
 }
 
 /// The owner's taste signals: one followed artist, one top artist, one top

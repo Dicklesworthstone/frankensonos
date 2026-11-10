@@ -652,6 +652,14 @@ impl Endpoints {
         )
     }
 
+    /// A show's identity and its embedded first episode page. The existing
+    /// user token supplies the account country; no playback-position scope
+    /// is needed for catalog metadata.
+    #[must_use]
+    pub fn show(&self, show_id: &str) -> String {
+        format!("{}/shows/{}", self.api, percent_encode(show_id))
+    }
+
     /// The artists the owner follows (cursor paging: `next` carries on).
     #[must_use]
     pub fn followed_artists(&self) -> String {

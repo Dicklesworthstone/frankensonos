@@ -19,6 +19,9 @@
 //! * [`artist_playback`] — a bounded read-only catalog selection for explicit
 //!   artist playback, resolved to concrete tracks before speaker control.
 //!
+//! * [`show_playback`] — a bounded read-only selection of playable episodes
+//!   for a requested show, separate from the music library and DJ pool.
+//!
 //! * [`cache`] — the library cache: syncing a library read into the store
 //!   and rebuilding the DJ's pool from it.
 //!
@@ -83,6 +86,7 @@ pub mod prefs;
 pub mod recent;
 pub mod rehearse;
 pub mod session;
+pub mod show_playback;
 pub mod steer;
 pub mod taste;
 #[cfg(test)]
