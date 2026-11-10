@@ -150,6 +150,16 @@ and delayed reads after changing rooms or closing the preview. Local execution
 of these additions was unavailable because this environment has no Swift
 toolchain; the Native Apple remotes workflow builds and tests them on Apple SDKs.
 
+**Music → Line-in** reads the physical inputs advertised in the selected
+household. Each row retains the exact player UUID alongside its room and input
+name, including bonded secondary inputs. Unreadable players appear separately;
+capability does not imply a connected cable or an incoming signal. **Play now**
+enters the shared command review, rechecking the selected input and destination
+before one submission. It keeps the existing queue and applies the daemon's
+playback policy, volume caps and undo behavior. Changed inputs or groups need a
+new review; cancelled reads, household changes and uncertain replies cannot
+revive or replay a command. See [Native line-in](LINE_IN.md).
+
 Source insertions also retain a bounded destination queue observation during
 review and compare it again before confirmation: revision, entry count and the
 first entry's exact URI. Queue-next and artist/show queue replacement additionally

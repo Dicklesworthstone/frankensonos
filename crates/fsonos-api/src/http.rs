@@ -26,6 +26,7 @@
 //! | `POST /sonos/playlists/save` | [`crate::surface::sonos_playlists::SaveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::SavedSonosPlaylistDto`]: saves the current queue as a new native playlist |
 //! | `POST /library/play` | [`crate::SearchPlayRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /library/search?q=<text>&zone=<room>&limit=<n>` | | `[HitDto]`: the owner's library, and the room's favorites |
+//! | `GET /spotify/search` | | Spotify catalog results for the signed-in account; changes no playback |
 //! | `GET /library/browse` | | the synced library's tracks, albums or playlists, with no Spotify or speaker request |
 //! | `GET /library/playlist?playlist_uri=<uri>` | | a synced playlist's tracks in order, and how much of it is cached, with no Spotify or speaker request |
 //! | `GET /history?zone=<room>&limit=<n>` | | `[PlayDto]`: what played, newest first |

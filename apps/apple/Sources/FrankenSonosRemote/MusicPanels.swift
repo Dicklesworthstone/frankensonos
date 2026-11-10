@@ -31,6 +31,7 @@ private enum MusicLibraryMode: String, CaseIterable {
         case .queue: "Up next"
         case .favorites: "Your favorites"
         case .sonosPlaylists: "Saved on Sonos"
+        case .lineIn: "Line-in"
         case .dj: "A soundtrack for you"
         case .library: "Explore your music"
         case .scenes: "Scenes"
@@ -69,6 +70,7 @@ private enum MusicLibraryMode: String, CaseIterable {
             case .queue: queuePanel
             case .favorites: favoritesPanel
             case .sonosPlaylists: sonosPlaylistsPanel
+            case .lineIn: LineInPanel(bridge: bridge)
             case .dj:
                 DJRehearsalPanel(bridge: bridge)
                 djPanel

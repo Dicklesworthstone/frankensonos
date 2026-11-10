@@ -116,6 +116,12 @@ fileprivate struct CommandObservation: Sendable {
 
     static func read(_ client: DaemonClient, command: NativeCommand, zone: Zone) async throws -> Self {
         try Task.checkCancellation()
+        if case .lineIn(let selection) = command {
+            try selection.validate(await client.lineInSources(zone), in: zone)
+            // Input discovery can be slow. Observe the destination after it,
+            // both before presenting a review and before consuming that review.
+            try Task.checkCancellation()
+        }
         let zones = try await client.zones()
         guard zones.contains(where: { $0.sameGroup(as: zone) }) else {
             throw ContractError.invalid("The selected group changed. Review its current membership again.")

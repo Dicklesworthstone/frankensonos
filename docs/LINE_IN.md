@@ -37,7 +37,7 @@ Line-in is a live source. `--next` and `--queue` are rejected, as are a second
 source, a favorite, a saved playlist or a search in the same play request.
 Start the external source device yourself after selecting its input.
 
-## Phone and dashboard
+## Phone browser and dashboard
 
 In the source selector, choose **Line-in**, choose the destination, then
 **Read line-in sources**. Select an input and review **Play now**. The review
@@ -47,6 +47,20 @@ input and destination; a removed or changed selection requires a new review.
 Changing the destination retires its previous input catalog. Selecting an input
 never starts playback by itself, and an uncertain write is retained for
 inspection rather than automatically sent again.
+
+## Native Apple app
+
+Open **Music → Line-in** to read inputs in the selected S1 or S2 household.
+Each source shows its name, room and exact player UUID, so same-named inputs
+and both jacks of a stereo pair remain distinguishable. Players that could
+not be read appear separately; they do not hide the healthy inputs.
+
+Choose **Play now** and use the existing command review sheet. Preparation and
+confirmation reread the selected input's identity and metadata before the
+fresh destination observation. A changed source or group requires a new
+review. Changing households, leaving the screen or cancelling a read cannot
+revive an old selection, and a lost acknowledgement cannot replay a consumed
+command. Line-in offers no queue action.
 
 ## HTTP and MCP
 
@@ -92,10 +106,11 @@ permission; playback uses `play`.
 
 Playback selects `x-rincon-stream:<source-player>` on the destination's current
 coordinator, then starts it. The destination keeps its queue entries; the action
-snapshot retains its prior source, queue position and playback settings for undo. The operation does
-not regroup rooms or change the source speaker's volume. Existing caps and
-quiet hours apply to every room that will sound in the destination group;
-the CLI retains its configured policy behavior.
+snapshot retains its prior source, queue position and playback settings for undo.
+It does not regroup rooms. A source room outside the destination group keeps
+its playback and volume. Existing caps and quiet hours apply to every room
+that will sound in the destination group, including the input's room when it
+is a member; the CLI retains its configured policy behavior.
 
 Preparation checks the source's current advertised capability and identity,
 same-household membership, destination source and audience, and available boot
@@ -126,7 +141,8 @@ does not configure input gain, autoplay, TV input or device firmware.
 Coverage includes protocol argument/parsing tests, S1/S2 simulator discovery
 and playback, exact stereo-pair source identity, household isolation, retained
 queues, caps, undo, changed sources, interrupted replies, CLI direct/daemon
-routing, HTTP validation, MCP forwarding, and phone/dashboard review state.
+routing, HTTP validation, MCP forwarding, phone/dashboard review state, and
+native Apple catalog, command and screen lifecycle contracts.
 The simulator uses real localhost sockets. Physical line-in audio still needs
 an opt-in check on the owner's speakers; simulator behavior does not establish
 analog audio quality or hardware acceptance.

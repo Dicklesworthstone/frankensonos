@@ -15,7 +15,7 @@ public struct RemoteResult: Identifiable, Sendable {
 /// lifecycle paths run in package tests. Selection is a household-qualified
 /// room anchor; it follows a coordinator change without retargeting a review.
 @MainActor public final class RemoteModel {
-    public enum Panel: String, CaseIterable, Sendable { case queue, favorites, sonosPlaylists, dj, library, scenes, sleep, schedules }
+    public enum Panel: String, CaseIterable, Sendable { case queue, favorites, sonosPlaylists, lineIn, dj, library, scenes, sleep, schedules }
     public enum ActionPhase: String, Sendable { case idle, preparing, confirming }
 
     /// A single UI adapter may observe state changes on the main actor. No
@@ -32,6 +32,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var sonosPlaylists: [SonosPlaylist] = [] { willSet { onChange?() } }
     public private(set) var sonosPlaylistContents: SonosPlaylistContents? { willSet { onChange?() } }
     public private(set) var sonosPlaylistRequest: SonosPlaylistContentsRequest? { willSet { onChange?() } }
+    public private(set) var lineInCatalog: LineInCatalog? { willSet { onChange?() } }
     public private(set) var dj: DJStatus? { willSet { onChange?() } }
     public private(set) var moods: [MoodCatalog.Mood] = [] { willSet { onChange?() } }
     public private(set) var hits: [LibraryHit] = [] { willSet { onChange?() } }
@@ -258,6 +259,14 @@ public struct RemoteResult: Identifiable, Sendable {
         catch { panelProblem = error.localizedDescription }
     }
 
+    public func prepareLineIn(_ source: LineInSource, in expectedZone: Zone) {
+        guard canPrepare && panel == .lineIn && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone),
+              lineInCatalog?.sources.contains(where: { $0.sameSelection(as: source) }) == true else { return }
+        do { prepare(.lineIn(try LineInSelection(source, in: zone)), in: zone) }
+        catch { panelProblem = error.localizedDescription }
+    }
+
     /// Every visible command enters this path; changing a slider does not send
     /// anything. A new review is based on fresh reads, not the cached display.
     public func prepare(_ command: NativeCommand, in expectedZone: Zone? = nil) {
@@ -352,6 +361,7 @@ public struct RemoteResult: Identifiable, Sendable {
         panelTask?.cancel(); panelPending = false
         queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; scenesObservedAt = nil; sleepTimer = nil; sleepObservedAt = nil
         sonosPlaylists = []; sonosPlaylistContents = nil; sonosPlaylistRequest = nil
+        lineInCatalog = nil
         schedules = []; schedulesObservedAt = nil; scheduleScenes = []; scheduleScenesProblem = nil
         panelProblem = nil
         // Keep a cancelled request's slot until it drains, including a
@@ -391,6 +401,7 @@ public struct RemoteResult: Identifiable, Sendable {
                     case .schedules: throw ContractError.invalid("The schedule read was not selected.")
                     case .queue: answer = .queue(try await client.queue(zone, offset: offset))
                     case .favorites: answer = .favorites(try await client.favorites(zone))
+                    case .lineIn: answer = .lineIn(try await client.lineInSources(zone))
                     case .sonosPlaylists:
                         if let sonosRequest {
                             guard sonosRequest.zone.sameGroup(as: zone) else { throw ContractError.invalid("The saved playlist’s group changed.") }
@@ -420,6 +431,7 @@ public struct RemoteResult: Identifiable, Sendable {
                     case .favorites(let value): self.favorites = value
                     case .sonosPlaylists(let value): self.sonosPlaylists = value
                     case .sonosContents(let value): self.sonosPlaylistContents = value
+                    case .lineIn(let value): self.lineInCatalog = value
                     case .scenes(let value): self.scenes = value; self.scenesObservedAt = Date()
                     case .sleep(let value): self.sleepTimer = value; self.sleepObservedAt = Date()
                     case .dj(let value, let moods, let problem): self.dj = value; self.moods = moods; self.panelProblem = problem
@@ -430,6 +442,7 @@ public struct RemoteResult: Identifiable, Sendable {
                 if let self, self.active && self.panelEpoch == token && !Task.isCancelled {
                     self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []; self.scenesObservedAt = nil; self.sleepTimer = nil; self.sleepObservedAt = nil
                     self.sonosPlaylists = []; self.sonosPlaylistContents = nil
+                    self.lineInCatalog = nil
                     self.schedules = []; self.schedulesObservedAt = nil
                     self.scheduleScenes = []; self.scheduleScenesProblem = nil
                     self.panelProblem = error.localizedDescription
@@ -735,5 +748,6 @@ public struct RemoteResult: Identifiable, Sendable {
 private enum PanelAnswer: Sendable {
     case schedules([SavedSchedule], [Scene], String?)
     case sonosPlaylists([SonosPlaylist]), sonosContents(SonosPlaylistContents)
+    case lineIn(LineInCatalog)
     case queue(QueuePage), favorites([Favorite]), dj(DJStatus, [MoodCatalog.Mood], String?), library([LibraryHit]), scenes([Scene]), sleep(SleepTimer?)
 }

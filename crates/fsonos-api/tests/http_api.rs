@@ -562,7 +562,7 @@ fn native_input_routes_reject_invalid_requests_before_speaker_io() {
         "/line-in?zone=Den&mode=append",
     ] {
         let (status, body) = api.get(path);
-        assert_eq!(status, 400, "{path}: {body}");
+        assert_eq!(status, 422, "{path}: {body}");
         assert_eq!(body["code"], "INVALID_ARGUMENT");
     }
     for body in [
@@ -572,7 +572,7 @@ fn native_input_routes_reject_invalid_requests_before_speaker_io() {
         json!({"zone":"Den", "source":"Office", "source_uri":"x-rincon-stream:arbitrary"}),
     ] {
         let (status, reply) = api.post("/line-in/play", &body);
-        assert_eq!(status, 400, "{body}: {reply}");
+        assert_eq!(status, 422, "{body}: {reply}");
     }
     assert!(api.sent.lock().unwrap().is_empty());
     let unknown = Api::start("", &Client::Unknown);

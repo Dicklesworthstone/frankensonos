@@ -17,6 +17,7 @@ public enum NativeCommand: Equatable, Sendable {
     case queueAdd(String, next: Bool)
     case queueFavorite(FavoriteQueue)
     case sonosPlaylist(SonosPlaylistSelection)
+    case lineIn(LineInSelection)
     case playlistTrack(PlaylistTrackSelection)
     case queuePlay(QueueItem, revision: String)
     case queueRemove(QueueItem, revision: String)
@@ -45,6 +46,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd(_, let next): next ? "Queue next" : "Add to queue"
         case .queueFavorite(let favorite): favorite.title
         case .sonosPlaylist(let selection): selection.title
+        case .lineIn(let selection): selection.title
         case .playlistTrack(let selection): selection.title
         case .queuePlay(let item, _): "Play \(item.title)"
         case .queueRemove: "Remove queue entry"
@@ -71,6 +73,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd(let uri, _): Self.sourceExplanation(uri, queued: true)
         case .queueFavorite(let favorite): favorite.explanation
         case .sonosPlaylist(let selection): selection.explanation
+        case .lineIn(let selection): selection.explanation
         case .playlistTrack(let selection): selection.explanation
         case .queueRemove: "Removes this exact revision-bound entry. Removing the current entry can advance or stop playback. Undo requires a complete backup saved by the daemon; check the result."
         case .queueMove(let move): move.explanation
@@ -188,6 +191,8 @@ public enum NativeCommand: Equatable, Sendable {
             path = ["queue"]; body = try favorite.fields(in: zone)
         case .sonosPlaylist(let selection):
             path = selection.path; body = try selection.fields(in: zone)
+        case .lineIn(let selection):
+            path = ["line-in", "play"]; body = try selection.fields(in: zone)
         case .playlistTrack(let selection):
             path = selection.path; body = try selection.fields(in: zone)
         case .queuePlay(let item, let revision), .queueRemove(let item, let revision):

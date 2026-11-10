@@ -1014,8 +1014,9 @@ explicit search, result choice, then the usual room/action review. See
 `docs/SPOTIFY_SEARCH.md` for the request contract and validation coverage.
 
 Native physical inputs are also available as explicit sources. `fsonos line-in
-<room>`, HTTP `GET /line-in`, MCP `list_line_in`, and both browser source
-selectors read the destination household's advertised AudioIn services. Playback
+<room>`, HTTP `GET /line-in`, MCP `list_line_in`, both browser source selectors,
+and the native Apple app's Music → Line-in panel read the destination household's
+advertised AudioIn services. Playback
 uses `play --line-in`, `POST /line-in/play` and `play_line_in` through the shared
 policy, action-log and undo boundary. The exact input player is independent of
 the destination coordinator, including a stereo pair's secondary input. Current
