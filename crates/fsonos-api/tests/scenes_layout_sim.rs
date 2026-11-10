@@ -359,7 +359,7 @@ fn a_failed_topology_witness_is_not_retried_when_the_member_confirms_the_join() 
 }
 
 #[test]
-fn a_failed_source_does_not_pause_the_old_music_in_a_following_step() {
+fn a_failed_paused_source_never_starts_music_in_a_following_step() {
     let sim = sim();
     play(&sim, "A@S1", OLD);
     let s = surface(&sim);
@@ -373,12 +373,14 @@ fn a_failed_source_does_not_pause_the_old_music_in_a_following_step() {
     sim.upnp_fault(&a.0, "SetAVTransportURI", 714).unwrap();
     let mark = sim.soap_log().len();
     let result = s.apply_scene(&Client::Cli, "Layout").unwrap();
-    assert!(!result.complete && result.failed.len() == 2, "{result:?}");
-    assert_eq!(playing(&sim, "A@S1"), (TransportState::Playing, OLD.into()));
+    assert!(!result.complete && result.failed.len() == 1, "{result:?}");
+    let (state, uri) = playing(&sim, "A@S1");
+    assert_ne!(state, TransportState::Playing);
+    assert_eq!(uri, OLD);
     assert!(
         sim.soap_log()[mark..]
             .iter()
-            .all(|e| !matches!(e.action.as_str(), "Pause" | "Stop"))
+            .all(|e| e.action != "Play")
     );
 }
 

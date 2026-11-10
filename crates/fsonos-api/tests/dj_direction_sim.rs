@@ -726,7 +726,7 @@ fn a_capped_scene_checks_prospective_direction_before_lowering_any_volume() {
     let player = f.sim.player("Alpha").unwrap();
     let coordinator = PlayerId(player.uuid.clone());
     soap::set_volume(&f.sim.lan(), player.ip, 90).unwrap();
-    let policy = Policy::from_toml("[clients.\"tag:capped\"]\nmax_volume = 30\n").unwrap();
+    let policy = Policy::from_toml("[defaults]\nmax_volume = 30\n").unwrap();
     let surface = f.surface(Box::new(MemStore::default()), policy);
     steer(&surface, "bright", SteerConstraints::default(), None);
     let definition: SceneDefinition = serde_json::from_value(json!({

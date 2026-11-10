@@ -285,6 +285,21 @@ impl SceneReport {
 
 /// What a scene needs from outside the core.
 pub trait SceneHooks {
+    /// Load a previously resolved Spotify artist or show selection through
+    /// the final group's own account. Catalog reads belong in the surface's
+    /// read-only readiness phase, before any scene write. `households` is the
+    /// confirmed layout after this scene's grouping operations, and `start`
+    /// is false for an explicitly paused scene.
+    fn load_catalog_source(
+        &self,
+        _households: &[HouseholdState],
+        _coordinator: &PlayerId,
+        _uri: &str,
+        _start: bool,
+    ) -> Result<(), String> {
+        Err("this scene has no prepared Spotify catalog selection".into())
+    }
+
     /// Start the DJ in the group `coordinator` leads, in `mood`, or steer
     /// the one already playing there.
     fn start_dj(&self, coordinator: &PlayerId, mood: Option<&str>) -> Result<(), String>;
@@ -563,7 +578,17 @@ fn plan_sources(
                         .and_then(fsonos_proto::didl::spotify_uri_from_renderer_uri)
                         .as_deref()
                         == Some(uri.as_str());
-                (!same).then(|| SceneOp::Uri {
+                // Artist and show links are selection requests, not a native
+                // renderer source. Resolve them on every recall, including
+                // legacy snapshots that retained a bare renderer URI.
+                let catalog = matches!(
+                    fsonos_proto::didl::SpotifyBare::of(uri),
+                    Some(
+                        fsonos_proto::didl::SpotifyBare::Artist
+                            | fsonos_proto::didl::SpotifyBare::Show
+                    )
+                );
+                (!same || catalog).then(|| SceneOp::Uri {
                     coordinator: coordinator.clone(),
                     uri: uri.clone(),
                     metadata: metadata.clone(),
@@ -967,6 +992,20 @@ fn run<T: Transport + ?Sized>(
             playlist,
             start,
         } => sonos_playlist::recall(t, households, coordinator, playlist, *start),
+        SceneOp::Uri {
+            coordinator,
+            uri,
+            start,
+            ..
+        } if matches!(
+            fsonos_proto::didl::SpotifyBare::of(uri),
+            Some(
+                fsonos_proto::didl::SpotifyBare::Artist
+                    | fsonos_proto::didl::SpotifyBare::Show
+            )
+        ) => options
+            .hooks
+            .load_catalog_source(households, coordinator, uri, *start),
         SceneOp::Uri {
             coordinator,
             uri,

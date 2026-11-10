@@ -1005,6 +1005,17 @@ mood). `scene apply` diffs current state against the scene and issues only the
 operations needed. One call replaces five to ten, and it matches how people
 describe what they want ("dinner", "work").
 
+Authored Spotify artist and show sources are resolved on each recall, including
+scheduled scenes. Saving retains the canonical URI without a catalog lookup.
+A readiness phase resolves every permitted source, deduplicates repeated URIs,
+checks the destination households' renderer linkage, and retains group, source,
+boot and queue observations before any scene mutation. Permissions and caps
+are refreshed after catalog reads. Intentional regrouping uses the confirmed
+final audience and each household's own account; paused scenes silently load
+the selected queue. Catalog queue replacement is an action-history undo barrier.
+Scheduled readiness failures remain unclaimed for a later attempt. The new
+S1/S2 simulator regressions are recorded but await execution in CI.
+
 Capturing a non-DJ queue now records its original coordinator, household,
 queue revision, selected occurrence, elapsed position and known play mode.
 Applying that scene can return from a radio source to the saved queue while

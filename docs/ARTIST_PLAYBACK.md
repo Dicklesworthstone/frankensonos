@@ -96,6 +96,46 @@ artists. Episode URIs and metadata use the household's learned Spotify service
 id with the existing episode renderer contract. The shared catalog worker
 retains rate-limit cooldowns across artist and show requests.
 
+## Scenes and scheduled routines
+
+An authored scene can use either catalog URI as a source. Saving records the
+URI without contacting Spotify; each recall resolves a fresh bounded selection.
+For example, the source in a scene definition can be:
+
+```json
+{
+  "groups": [{
+    "coordinator": "Kitchen",
+    "members": [],
+    "source": {
+      "kind": "uri",
+      "uri": "spotify:show:<22-character-id>"
+    },
+    "playing": false
+  }],
+  "volumes": { "Kitchen": 15 }
+}
+```
+
+A paused scene selects the episode queue without sending Play. Setting
+`playing` to true starts the first selected episode. Artist sources use the
+same structure with `spotify:artist:`. The selected items can change between
+recalls because the scene retains the catalog request, not a fixed episode or
+track snapshot.
+
+All permitted source lookups and destination renderer checks finish before
+the scene changes volumes, fades or groups. Repeated sources within a readiness
+phase resolve once across households. The saved writer's and current caller's
+permissions and caps are checked again after lookup. Grouping uses each
+destination household's own renderer, and queue replacement creates an undo
+barrier. Independent speaker changes are checked before the selection is
+consumed; an uncertain scene is not automatically replayed.
+
+Scheduled scene recall uses the same source readiness checks. Missing catalog
+authorization or unavailable results leave the scheduled occurrence unclaimed
+for a later attempt. The scheduler checks readiness again when executing;
+each phase can read a fresh selection. Paused scheduled scenes remain silent.
+
 ## Scope and validation
 
 Bare artist and show IDs do not start reliably through Sonos' native container
@@ -103,7 +143,7 @@ renderers. These workflows send concrete music tracks or episodes instead.
 
 Regression coverage is in `artist_playback`, `show_playback`,
 `spotify_track_batch_sim`, `spotify_artist_sim`, `spotify_show_sim`, the CLI
-`spotify_sources` tests and both catalog playback e2e files, plus the
+`spotify_sources` tests, `scenes_catalog_sim` and both catalog playback e2e files, plus the
 phone/dashboard source suites. Rust execution of the new catalog workflows
 remains pending in GitHub CI: the local dependency build exceeded available
 resources, then the execution environment became unavailable. The earlier

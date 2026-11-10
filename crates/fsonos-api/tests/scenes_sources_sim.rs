@@ -361,7 +361,7 @@ fn a_source_denied_by_policy_does_not_block_the_scenes_permitted_work() {
 }
 
 #[test]
-fn scene_authoring_rejects_artists_and_shows_but_episodes_play() {
+fn scene_authoring_keeps_catalog_sources_for_recall_and_episodes_play_natively() {
     for (room, member) in [("Kitchen", "Office"), ("Den", "Study")] {
         let (sim, surface, _) = fixture(Policy::default());
         let before = sim.soap_log().len();
@@ -370,17 +370,16 @@ fn scene_authoring_rejects_artists_and_shows_but_episodes_play() {
                 "kind": "uri",
                 "uri": format!("spotify:{kind}:0123456789ABCDEFabcdef")
             });
-            let error = surface
+            surface
                 .save_scene_from(
                     &Client::Cli,
-                    "Unsupported",
+                    "Catalog",
                     &definition(room, member, &source, true),
                 )
-                .unwrap_err();
-            assert_eq!(error.code, ErrorCode::NotImplemented);
+                .unwrap();
             assert_eq!(
-                surface.scene(&Client::Cli, "Unsupported").unwrap_err().code,
-                ErrorCode::UnknownScene
+                surface.apply_scene(&Client::Cli, "Catalog").unwrap_err().code,
+                ErrorCode::SpotifyAuthRequired
             );
         }
         assert_read_only(&sim, before);
@@ -408,7 +407,7 @@ fn scene_authoring_rejects_artists_and_shows_but_episodes_play() {
 }
 
 #[test]
-fn legacy_unsupported_sources_preserve_the_house_and_leave_schedules_unclaimed() {
+fn catalog_sources_without_a_session_preserve_the_house_and_leave_schedules_unclaimed() {
     for (room, member) in [("Kitchen", "Office"), ("Den", "Study")] {
         for kind in ["artist", "show"] {
             let source_uri = format!("spotify:{kind}:0123456789ABCDEFabcdef");
@@ -448,7 +447,7 @@ fn legacy_unsupported_sources_preserve_the_house_and_leave_schedules_unclaimed()
                     &SceneApplyRequest { fade_secs: Some(1) },
                 )
                 .unwrap_err();
-            assert_eq!(error.code, ErrorCode::NotImplemented);
+            assert_eq!(error.code, ErrorCode::SpotifyAuthRequired);
 
             let (scheduler, id, at) = schedule(&surface, "Legacy");
             assert_eq!(scheduler.tick_at(at, &Utc), [Ran::Fired { id, at }]);
@@ -466,8 +465,8 @@ fn legacy_unsupported_sources_preserve_the_house_and_leave_schedules_unclaimed()
                 TransportState::Playing
             );
 
-            // A failed attempt can leave the same source selected. The next
-            // diff emits only Play, which must not bypass source validation.
+            // A failed legacy attempt can leave a bare renderer selected.
+            // Recall must still resolve real tracks or episodes before writes.
             let catalog = content::browse_all(&sim.lan(), host, "FV:2").unwrap();
             let sid = learn_spotify_params(&catalog).unwrap().sid;
             let renderer = spotify_bare_uri(&source_uri, sid);
@@ -476,7 +475,7 @@ fn legacy_unsupported_sources_preserve_the_house_and_leave_schedules_unclaimed()
             soap::set_av_transport_uri(&sim.lan(), host, &renderer, &metadata).unwrap();
             let before_resume = sim.soap_log().len();
             let error = surface.apply_scene(&Client::Cli, "Legacy").unwrap_err();
-            assert_eq!(error.code, ErrorCode::NotImplemented);
+            assert_eq!(error.code, ErrorCode::SpotifyAuthRequired);
             assert_eq!(
                 scheduler.tick_at(at + chrono::TimeDelta::minutes(1), &Utc),
                 [Ran::Fired { id, at }]
@@ -487,8 +486,10 @@ fn legacy_unsupported_sources_preserve_the_house_and_leave_schedules_unclaimed()
                     .last_fired
                     .is_none()
             );
-            let unchanged = surface.apply_scene(&Client::Cli, "Already paused").unwrap();
-            assert!(unchanged.complete && !unchanged.changed, "{unchanged:?}");
+            let error = surface
+                .apply_scene(&Client::Cli, "Already paused")
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::SpotifyAuthRequired);
             assert_read_only(&sim, before_resume);
             assert_eq!(
                 soap::get_transport_info(&sim.lan(), host).unwrap().state,

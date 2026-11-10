@@ -37,8 +37,9 @@ use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, VolumeScope};
 use crate::request::VolumeChange;
-use crate::source::{normalize_source_uri, validate_playable_source};
+use crate::source::{is_catalog_source, normalize_source_uri, validate_play_request_source};
 
+mod catalog;
 mod dj_direction;
 mod dj_start;
 mod sonos_playlist;
@@ -73,7 +74,8 @@ pub struct SceneGroupDto {
 
 /// What a scene group plays: `keep` (whatever the group has, its queue
 /// say), a `favorite` (by `name`), a `uri` (a stream, or a Spotify track,
-/// album, playlist or episode), a `sonos_playlist` (native id in `name`), the `dj`
+/// album, playlist, artist, episode or show), a `sonos_playlist` (native id in
+/// `name`), the `dj`
 /// (with a `mood` and reusable `direction`, if supplied), a captured `queue`
 /// reference, or a durable `queue_backup`.
 /// References require the original unchanged queue. Backups retain its
@@ -449,7 +451,7 @@ fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
         }
         "uri" => {
             let uri = normalize_source_uri(dto.uri.as_deref().ok_or_else(|| needs("uri"))?)?;
-            validate_playable_source(&uri)?;
+            validate_play_request_source(&uri)?;
             Ok(SceneSource::Uri {
                 uri,
                 metadata: String::new(),
@@ -766,25 +768,43 @@ fn applied(
     }
 }
 
-/// The DJ a scene starts, through the surface's engine and store.
+/// External scene sources prepared through the surface's catalog and DJ.
 struct SceneDj<'a> {
     surface: &'a Surface,
     households: &'a [HouseholdState],
     /// Who applies the scene: the session's starter.
     client: &'a Client,
+    catalog: &'a catalog::Prepared,
 }
 
 impl<'a> SceneDj<'a> {
-    fn new(surface: &'a Surface, households: &'a [HouseholdState], client: &'a Client) -> Self {
+    fn new(
+        surface: &'a Surface,
+        households: &'a [HouseholdState],
+        client: &'a Client,
+        catalog: &'a catalog::Prepared,
+    ) -> Self {
         Self {
             surface,
             households,
             client,
+            catalog,
         }
     }
 }
 
 impl SceneHooks for SceneDj<'_> {
+    fn load_catalog_source(
+        &self,
+        households: &[HouseholdState],
+        coordinator: &PlayerId,
+        uri: &str,
+        start: bool,
+    ) -> Result<(), String> {
+        self.catalog
+            .load(self.surface, households, coordinator, uri, start)
+    }
+
     fn start_dj(&self, coordinator: &PlayerId, mood: Option<&str>) -> Result<(), String> {
         self.start_dj_with_direction(coordinator, mood, None)
     }
@@ -1111,6 +1131,7 @@ impl Surface {
             (plan, _) = Self::permitted_ops(&guard, households, plan);
         }
         self.scene_plan_sources_ready(scene, households, &plan)
+            .map(|_| ())
     }
 
     /// Validate only the operations both callers may perform. This also
@@ -1120,10 +1141,10 @@ impl Surface {
         scene: &Scene,
         households: &[HouseholdState],
         plan: &ScenePlan,
-    ) -> Result<(), Failure> {
+    ) -> Result<catalog::Prepared, Failure> {
         for op in &plan.ops {
             match op {
-                SceneOp::Uri { uri, .. } => validate_playable_source(uri)?,
+                SceneOp::Uri { uri, .. } => validate_play_request_source(uri)?,
                 SceneOp::Play { coordinator } => {
                     // A prior failed Play may leave this URI loaded, so the
                     // diff only resumes it instead of selecting it again.
@@ -1132,7 +1153,7 @@ impl Surface {
                             && scene_room(households, &group.coordinator)
                                 .is_ok_and(|(_, room)| room.primary == *coordinator)
                         {
-                            validate_playable_source(uri)?;
+                            validate_play_request_source(uri)?;
                         }
                     }
                 }
@@ -1140,7 +1161,20 @@ impl Surface {
             }
         }
         dj_start::check_readiness(self, households, plan)?;
-        scenes::check_sources(&*self.transport, households, plan).map_err(scene_failure)
+        // Core checks local Sonos catalogs and native Spotify renderers. A
+        // catalog source is validated as its concrete selection below, never
+        // as an unsupported bare artist/show renderer.
+        let native = ScenePlan {
+            ops: plan
+                .ops
+                .iter()
+                .filter(|op| !matches!(op, SceneOp::Uri { uri, .. } if is_catalog_source(uri)))
+                .cloned()
+                .collect(),
+            notes: Vec::new(),
+        };
+        scenes::check_sources(&*self.transport, households, &native).map_err(scene_failure)?;
+        catalog::Prepared::read(self, households, plan)
     }
 
     /// [`Self::apply_scene`], its volumes ramping over `req.fade_secs` when
@@ -1203,7 +1237,8 @@ impl Surface {
         let (snaps, missed) =
             actions::capture_zones(&*self.transport, &households, &zones, self.now());
         let plan = scenes::plan_apply(&scene, &households, &snaps).map_err(scene_failure)?;
-        let (plan, notes, fade) = self.bound_scene(client, &scene, &households, plan, fade)?;
+        let (plan, notes, fade, catalog) =
+            self.bound_scene(client, &scene, &households, plan, fade)?;
         if plan.ops.is_empty() {
             return Ok(SceneApplyDto {
                 scene: scene.name.clone(),
@@ -1230,7 +1265,7 @@ impl Surface {
         } else {
             self.scene_store(|store| Ok(actions::capture_sessions(store, &dj_zones)?))?
         };
-        let hooks = SceneDj::new(self, &households, client);
+        let hooks = SceneDj::new(self, &households, client, &catalog);
         let report = self.fader_for(&households, &plan, fade.is_some(), |fader| {
             scenes::apply(
                 &*self.transport,
@@ -1248,7 +1283,12 @@ impl Surface {
             .iter()
             .chain(report.failed.iter().map(|(op, _)| op))
             .any(|op| matches!(op, SceneOp::Leave { .. } | SceneOp::Join { .. }));
-        let backed_up_queue = report
+        let catalog_queue = report
+            .done
+            .iter()
+            .chain(report.failed.iter().map(|(op, _)| op))
+            .any(|op| matches!(op, SceneOp::Uri { uri, .. } if is_catalog_source(uri)));
+        let backed_up_queue = catalog_queue || report
             .done
             .iter()
             .chain(report.failed.iter().map(|(op, _)| op))
@@ -1284,12 +1324,19 @@ impl Surface {
                 missed.len()
             );
         }
+        let before = if catalog_queue {
+            Some(actions::before_state_not_undoable(
+                "scene catalog playback replaced queue contents",
+            ))
+        } else {
+            self.with_after(actions::before_state_with(&snaps, &sessions), &snaps, &[])
+        };
         self.record(
             client,
             format!("{tool}: {}", scene.name),
             decision,
             logged,
-            self.with_after(actions::before_state_with(&snaps, &sessions), &snaps, &[]),
+            before,
         );
         Ok(applied)
     }
@@ -1325,16 +1372,32 @@ impl Surface {
         households: &[HouseholdState],
         mut plan: ScenePlan,
         fade: Option<Duration>,
-    ) -> Result<(ScenePlan, Vec<Note>, Option<Duration>), Failure> {
+    ) -> Result<(ScenePlan, Vec<Note>, Option<Duration>, catalog::Prepared), Failure> {
         let writer = scene
             .writer
             .as_deref()
             .map(super::schedules::client_of)
             .filter(|writer| writer != client);
         let clients: Vec<&Client> = std::iter::once(client).chain(writer.as_ref()).collect();
-        // All step and fade permissions for both identities use one policy.
+        // Only dependencies permitted to both identities are resolved.
         let policy = self.policy();
         let mut notes = Vec::new();
+        for who in &clients {
+            let guard = Guard {
+                policy: policy.clone(),
+                client: who,
+                clock: &*self.clock,
+            };
+            let (permitted, more) = Self::permitted_ops(&guard, households, plan);
+            plan = permitted;
+            notes.extend(more);
+        }
+        // Every source is ready before cap writes, fade cancellation or
+        // regrouping. Catalog work may be slow, so permissions and volume
+        // limits are observed again after it completes.
+        let catalog = self.scene_plan_sources_ready(scene, households, &plan)?;
+        self.guard(client).authorize("apply_scene", false)?;
+        let policy = self.policy();
         let mut allowed_fade = fade;
         for who in &clients {
             let guard = Guard {
@@ -1357,12 +1420,9 @@ impl Surface {
                 });
             }
         }
-        // Every source dependency must be available before even the cap-lowering
-        // writes below, which can also supersede an existing volume fade.
-        // Only permitted operations are checked, exactly as execution sees them.
-        self.scene_plan_sources_ready(scene, households, &plan)?;
+        catalog.confirm(self, households, &plan)?;
         notes.extend(self.lower_scene_rooms(households, &plan, &clients)?);
-        Ok((plan, notes, allowed_fade))
+        Ok((plan, notes, allowed_fade, catalog))
     }
 
     /// `plan` without the steps the house policy denies `client`, each with

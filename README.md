@@ -721,7 +721,9 @@ learned at runtime and kept locally. The full boundary is in
   returned order. Episodes also play directly. See
   [Artist and show playback](docs/ARTIST_PLAYBACK.md).
   Artist/show containers are expanded into concrete tracks or episodes before
-  playback; the speakers use their own linked Spotify account.
+  playback; the speakers use their own linked Spotify account. Authored scenes
+  and scheduled scene recalls also accept these links. Each recall prepares its
+  selections before changing rooms or volumes, and paused scenes load silently.
 - The API and MCP server take their remote caller identity from Tailscale:
   WhoIs on a direct tailnet listener, or the login header behind Serve when
   the daemon runs with `FSONOS_TAILSCALE_SERVE`. Both apply the house policy's
