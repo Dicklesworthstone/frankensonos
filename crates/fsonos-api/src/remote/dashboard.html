@@ -103,10 +103,10 @@
 <dialog id="source-dialog" class="review-dialog source-dialog" aria-labelledby="source-dialog-title" aria-describedby="source-description">
   <header><span class="eyebrow">BRING YOUR NEXT LISTEN</span><button id="close-source" class="icon-button" type="button" aria-label="Close source player"><svg><use href="#i-close"/></svg></button></header>
   <h2 id="source-dialog-title">Find your next source.</h2>
-  <p id="source-description" class="small-note">Search the Spotify catalog, choose a saved Sonos playlist, paste a link, or use an HTTP audio stream. Review the selected group and what will change before sending it.</p>
+  <p id="source-description" class="small-note">Search Spotify, choose a saved Sonos playlist or line-in source, paste a link, or use an HTTP audio stream. Review the selected group and what will change before sending it.</p>
   <p id="source-context" class="review-target"></p>
   <div class="source-fields">
-    <label class="source-address" for="source-type">Music source<select id="source-type"><option value="link">Link or stream</option><option value="playlist">Saved Sonos playlist</option><option value="catalog">Spotify catalog</option></select></label>
+    <label class="source-address" for="source-type">Music source<select id="source-type"><option value="link">Link or stream</option><option value="playlist">Saved Sonos playlist</option><option value="catalog">Spotify catalog</option><option value="line_in">Line-in</option></select></label>
     <section id="source-online" class="source-online" aria-label="Spotify catalog search" hidden>
       <p class="small-note">Search Spotify online using the owner’s connected account. Your cached library and saved Sonos playlists are separate. Choosing a result prepares a source for review.</p>
       <form id="source-catalog-form" class="source-online-form">
@@ -121,13 +121,15 @@
     <p id="source-kinds" class="small-note">Tracks, albums, playlists, artists, episodes and shows can play now or join the queue. Artist and show links select up to 10 tracks or episodes and require Spotify sign-in. HTTP streams play now.</p>
     <label id="source-playlist-field" class="source-address" for="source-playlist" hidden>Saved Sonos playlist<select id="source-playlist" aria-describedby="source-playlist-help" disabled><option value="">Refresh playlists for this group</option></select></label>
     <div id="source-playlist-controls" class="source-catalog-controls" hidden><button id="source-playlist-refresh" class="text-button" type="button">Refresh playlists</button><p id="source-playlist-help" class="small-note" role="status"></p></div>
+    <label id="source-line-in-field" class="source-address" for="source-line-in" hidden>Line-in source<select id="source-line-in" aria-describedby="source-line-in-help" disabled><option value="">Read inputs for this destination</option></select></label>
+    <div id="source-line-in-controls" class="source-catalog-controls" hidden><button id="source-line-in-refresh" class="text-button" type="button">Read line-in sources</button><p id="source-line-in-help" class="small-note" role="status"></p></div>
     <section id="source-contents" class="source-contents" aria-label="Saved playlist contents" hidden>
       <div class="source-catalog-controls"><button id="source-contents-read" class="text-button" type="button">Read tracks</button><button id="source-contents-previous" class="text-button" type="button" hidden>← Previous tracks</button><button id="source-contents-next" class="text-button" type="button" hidden>Next tracks →</button></div>
       <p id="source-contents-help" class="small-note" role="status" aria-live="polite"></p>
       <ol id="source-contents-items" class="source-track-list" aria-label="Saved playlist tracks"></ol>
     </section>
     <label id="source-title-field" for="source-title">Display title <span class="small-note">optional</span><input id="source-title" type="text" maxlength="256" autocomplete="off" placeholder="A name for this source"></label>
-    <label for="source-mode">Action<select id="source-mode"><option value="play">Play now</option><option value="next">Queue next</option><option value="end">Add to end</option></select></label>
+    <label id="source-mode-field" for="source-mode">Action<select id="source-mode"><option value="play">Play now</option><option value="next">Queue next</option><option value="end">Add to end</option></select></label>
   </div>
   <div class="source-actions"><button id="source-review" class="outline-button" type="button" disabled>Review playback</button><button id="source-clear" class="text-button" type="button">Clear draft</button></div>
   <section id="source-preview" class="source-preview" aria-labelledby="source-preview-title" tabindex="-1" hidden>

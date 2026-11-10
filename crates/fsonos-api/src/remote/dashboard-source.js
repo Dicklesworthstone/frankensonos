@@ -1,4 +1,4 @@
-// Links and saved Sonos playlists share the dashboard command lane.
+// Music sources and native inputs share the dashboard command lane.
 'use strict';
 const DashboardSource = (() => {
   const C = typeof DashboardCore !== 'undefined' ? DashboardCore : require('./dashboard-core.js');
@@ -16,6 +16,7 @@ const DashboardSource = (() => {
   }
   function effect(review) {
     const q = review.before.queue;
+    if (review.item.kind === 'line_in') return `Play the analog input from ${review.item.room} in the selected group. The current source is replaced and the existing queue remains available. Cable and signal state are not reported; start your source device yourself.`;
     if (review.item.kind === 'artist' || review.item.kind === 'show') {
       const selection = review.item.kind === 'show'
         ? 'Uses up to 10 available episodes from the show’s first episode page, in Spotify’s order. Requires Spotify sign-in.'
@@ -40,6 +41,7 @@ const DashboardSource = (() => {
     let version = 0, active = true, disposed = false, reading = null;
     const state = { open: false, target: '', scope: '', group: null, sourceType: 'link', input: '', title: '', mode: 'play',
       playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [],
+      lineInSources: [], lineInUnavailable: [], lineIn: '', lineInTarget: '', lineInStatus: 'idle',
       loading: false, writing: false, pending: null, result: null, message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const live = () => !disposed && active && state.open;
@@ -59,12 +61,14 @@ const DashboardSource = (() => {
       ++version; reading?.abort(); reading = null; state.loading = false; state.pending = null;
       catalog.retire();
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
+      if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
       if (message) state.message = message;
     }
     const clearContents = () => { state.contents = null; state.contentsHistory = []; };
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
+    const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
     function destination() {
-      if (!matching()) clearPlaylists();
+      if (!matching()) { clearPlaylists(); clearLineIn(); }
       state.target = target(); state.scope = scope();
       try { state.group = controller.selected() ? P.groups([controller.selected().zone])[0] : null; }
       catch (error) { state.group = null; state.message = C.problem(error); }
@@ -82,19 +86,22 @@ const DashboardSource = (() => {
       publish();
     }
     function edit(field, value) {
-      if (!editable() || typeof value !== 'string' || !['sourceType', 'playlist', 'input', 'title', 'mode'].includes(field)
-          || (field === 'mode' && !Object.hasOwn(P.modes, value))) return false;
-      if (field === 'sourceType' && !['link', 'playlist', 'catalog'].includes(value)) return false;
+      if (!editable() || typeof value !== 'string' || !['sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field)
+          || (field === 'mode' && (!Object.hasOwn(P.modes, value) || state.sourceType === 'line_in' && value !== 'play'))) return false;
+      if (field === 'sourceType' && !['link', 'playlist', 'catalog', 'line_in'].includes(value)) return false;
       if (field === 'playlist' && (state.playlistStatus !== 'ready' || state.playlistTarget !== state.target
           || !state.playlists.some(item => item.id === value))) return false;
-      retire(); if (field === 'sourceType') clearPlaylists();
+      if (field === 'lineIn' && (state.lineInStatus !== 'ready' || state.lineInTarget !== state.target
+          || !state.lineInSources.some(item => item.player === value))) return false;
+      retire(); if (field === 'sourceType') { clearPlaylists(); clearLineIn(); }
+      if (field === 'sourceType' && value === 'line_in') state.mode = 'play';
       if (field === 'playlist') clearContents();
       state[field] = value; state.message = ''; publish(); return true;
     }
     function chooseCatalog(item, items) {
       const incoming = catalog.select(item, items);
       if (!incoming) return false;
-      retire(); clearPlaylists(); state.sourceType = 'link';
+      retire(); clearPlaylists(); clearLineIn(); state.sourceType = 'link';
       state.input = incoming.input; state.title = incoming.title;
       state.message = 'Spotify source selected. Review the destination and action before sending it.';
       publish(); return true;
@@ -112,6 +119,25 @@ const DashboardSource = (() => {
         return true;
       } catch (error) {
         if (live() && v === version) { state.playlistStatus = 'error'; state.message = C.problem(error); }
+        return false;
+      } finally {
+        if (reading === abort) { reading = null; state.loading = false; publish(); }
+      }
+    }
+
+    async function loadLineInSources() {
+      if (!ready() || state.sourceType !== 'line_in') return false;
+      retire(); clearLineIn();
+      const v = version, selected = state.target, abort = new AbortController();
+      reading = abort; state.loading = true; state.lineInStatus = 'loading'; state.message = 'Reading line-in sources…'; publish();
+      try {
+        const value = await call('/line-in?zone=' + encodeURIComponent(selected), undefined, { signal: abort.signal });
+        if (!live() || v !== version || abort.signal.aborted || !matching()) return false;
+        const catalog = P.lineInSources(value);
+        state.lineInSources = catalog.sources; state.lineInUnavailable = catalog.unavailable;
+        state.lineInTarget = selected; state.lineInStatus = 'ready'; state.message = ''; return true;
+      } catch (error) {
+        if (live() && v === version) { state.lineInStatus = 'error'; state.message = C.problem(error); }
         return false;
       } finally {
         if (reading === abort) { reading = null; state.loading = false; publish(); }
@@ -152,6 +178,10 @@ const DashboardSource = (() => {
         const catalog = await call('/sonos/playlists?zone=' + encodeURIComponent(reviewed.target), undefined, options); valid();
         P.verifyPlaylist(catalog, reviewed.item);
       }
+      if (reviewed.item.kind === 'line_in') {
+        const catalog = await call('/line-in?zone=' + encodeURIComponent(reviewed.target), undefined, options); valid();
+        P.verifyLineIn(catalog, reviewed.item);
+      }
       if (reviewed.item.kind === 'sonos_playlist_track') {
         const query = new URLSearchParams(P.trackQuery(reviewed.item, reviewed.target));
         const value = await call('/sonos/playlists/contents?' + query, undefined, options); valid();
@@ -167,14 +197,16 @@ const DashboardSource = (() => {
       return observation(playback, queue, reviewed.zone, reviewed.group, reviewed.mode);
     }
     const canReview = () => !!(ready() && state.sourceType !== 'catalog' && (state.sourceType === 'playlist'
-      ? state.playlist && state.playlistStatus === 'ready' && state.playlistTarget === state.target : state.input.trim()));
+      ? state.playlist && state.playlistStatus === 'ready' && state.playlistTarget === state.target
+      : state.sourceType === 'line_in' ? state.lineIn && state.lineInStatus === 'ready' && state.lineInTarget === state.target : state.input.trim()));
     async function review(prepared = null) {
       if (!canReview()) return null;
       retire();
       const v = version, at = now(), abort = new AbortController();
       let choice;
       try { choice = prepared || (state.sourceType === 'playlist' ? P.preparePlaylist(state.playlist, state.playlists, state.mode)
-        : P.prepare(state.input, state.title, state.mode)); }
+        : state.sourceType === 'line_in' ? P.prepareLineIn(state.lineIn, state.lineInSources, state.mode)
+          : P.prepare(state.input, state.title, state.mode)); }
       catch (error) { state.message = C.problem(error); publish(); return null; }
       const proposed = { ...choice, target: state.target, scope: state.scope, group: state.group,
         zone: controller.selected().zone, version: v, at };
@@ -228,6 +260,7 @@ const DashboardSource = (() => {
           state.message = reviewed.mode === 'play' ? 'Starting the reviewed source…' : 'Adding the reviewed source to the queue…'; publish();
           valid(); reading = null;
           const route = reviewed.item.kind === 'sonos_playlist_track' ? '/sonos/playlists/track'
+            : reviewed.item.kind === 'line_in' ? '/line-in/play'
             : reviewed.mode === 'play' ? reviewed.item.kind === 'sonos_playlist' ? '/sonos/playlists/play' : '/play' : '/queue';
           const value = await send(route, reviewed.body);
           if (reviewed.item.kind === 'sonos_playlist_track') { detail = P.trackOutcome(value, reviewed); return { ...value, done: detail }; }
@@ -237,7 +270,7 @@ const DashboardSource = (() => {
         }, { wholeHouse: false });
         if (!disposed) {
           state.result = Object.freeze({ status: ok ? 'accepted' : controller.state.uncertain ? 'uncertain' : 'not_sent',
-            mode: reviewed.mode, target: reviewed.group.label, source: reviewed.item.id || reviewed.item.uri, title: reviewed.title,
+            mode: reviewed.mode, target: reviewed.group.label, source: reviewed.item.player || reviewed.item.id || reviewed.item.uri, title: reviewed.title,
             detail: ok ? detail : controller.state.message || 'No command was sent. Review the source again.' });
           state.message = state.result.detail;
         }
@@ -261,11 +294,11 @@ const DashboardSource = (() => {
       }
       publish(); return true;
     }
-    return { state, catalog, chooseCatalog, observe, editable, edit, loadPlaylists, loadContents, canReview, review, reviewTrack, canApply, apply, open,
+    return { state, catalog, chooseCatalog, observe, editable, edit, loadPlaylists, loadLineInSources, loadContents, canReview, review, reviewTrack, canApply, apply, open,
       cancelReview() { if (state.writing) return false; retire(); state.message = ''; publish(); return true; },
       clearDraft() {
         if (!editable()) return false;
-        retire(); clearPlaylists(); state.sourceType = 'link'; state.input = ''; state.title = ''; state.mode = 'play';
+        retire(); clearPlaylists(); clearLineIn(); state.sourceType = 'link'; state.input = ''; state.title = ''; state.mode = 'play';
         state.message = 'Source draft cleared. No playback command was sent.'; publish(); return true;
       },
       offer(value) {
@@ -273,10 +306,10 @@ const DashboardSource = (() => {
         let offered;
         try { offered = P.offeredSource(value); }
         catch (error) { state.message = C.problem(error); publish(); return false; }
-        if (state.loading || state.pending || state.input.trim() || state.title.trim() || state.playlist) {
+        if (state.loading || state.pending || state.input.trim() || state.title.trim() || state.playlist || state.lineIn) {
           state.open = true; state.message = 'Finish this source action, or clear its draft before importing another source.'; publish(); return false;
         }
-        open(); clearPlaylists(); state.sourceType = 'link'; state.input = offered.input; state.title = offered.title; state.mode = 'play'; publish(); return true;
+        open(); clearPlaylists(); clearLineIn(); state.sourceType = 'link'; state.input = offered.input; state.title = offered.title; state.mode = 'play'; publish(); return true;
       },
       close() { state.open = false; retire(); publish(); },
       suspend() { active = false; state.open = false; retire(); publish(); },
@@ -289,6 +322,7 @@ const DashboardSource = (() => {
     const $ = id => doc.getElementById(id), dialog = $('source-dialog'), trigger = $('open-source'), preview = $('source-preview');
     let opener = null, reviewFocus = null, shown = null, shownPlaylists = null, shownPlaylistStatus = '', shownContents = null, shownContentsReady = null;
     let shownCatalog = null, shownCatalogReady = null;
+    let shownLineIn = null, shownLineInStatus = '';
     const control = model({ call, controller, completed, now, changed: render });
     function render(s) {
       trigger.disabled = !controller.state.active || (controller.state.busy && !s.writing);
@@ -300,9 +334,12 @@ const DashboardSource = (() => {
         if (input.value !== s[field]) input.value = s[field];
       }
       $('source-type').value = s.sourceType; $('source-type').disabled = !control.editable();
-      const saved = s.sourceType === 'playlist', online = s.sourceType === 'catalog';
-      for (const id of ['source-link-field', 'source-title-field', 'source-kinds']) $(id).hidden = saved || online;
+      const saved = s.sourceType === 'playlist', online = s.sourceType === 'catalog', analog = s.sourceType === 'line_in';
+      for (const id of ['source-link-field', 'source-title-field', 'source-kinds']) $(id).hidden = saved || online || analog;
       for (const id of ['source-playlist-field', 'source-playlist-controls']) $(id).hidden = !saved;
+      for (const id of ['source-line-in-field', 'source-line-in-controls']) $(id).hidden = !analog;
+      $('source-mode-field').hidden = analog;
+      $('source-mode').disabled = !control.editable() || analog;
       $('source-online').hidden = !online;
       if ($('source-catalog-query').value !== s.catalog.query) $('source-catalog-query').value = s.catalog.query;
       $('source-catalog-kind').value = s.catalog.kind;
@@ -335,6 +372,23 @@ const DashboardSource = (() => {
         ? 'Saved on the speakers in this household. Read its tracks before choosing how to play it.'
         : 'This household has no saved Sonos playlists. Open Speaker queue → Save queue as playlist, then refresh here.'
         : s.group ? 'Read saved playlists for the selected group.' : 'Select a listening group first.';
+      if (shownLineIn !== s.lineInSources || shownLineInStatus !== s.lineInStatus) {
+        shownLineIn = s.lineInSources; shownLineInStatus = s.lineInStatus;
+        const caption = s.lineInStatus === 'loading' ? 'Reading inputs…'
+          : s.lineInStatus === 'ready' ? s.lineInSources.length ? 'Choose a line-in source…' : 'No available inputs'
+            : 'Read inputs for this destination';
+        const placeholder = doc.createElement('option'); placeholder.value = ''; placeholder.textContent = caption; placeholder.disabled = true;
+        $('source-line-in').replaceChildren(placeholder);
+        for (const item of s.lineInSources) {
+          const option = doc.createElement('option'); option.value = item.player; option.textContent = P.lineInLabel(item);
+          $('source-line-in').append(option);
+        }
+      }
+      $('source-line-in').value = s.lineIn;
+      $('source-line-in').disabled = !control.editable() || s.loading || s.lineInStatus !== 'ready' || !s.lineInSources.length;
+      $('source-line-in-refresh').disabled = !control.editable() || s.loading || !s.group || !controller.canControl();
+      $('source-line-in-refresh').textContent = s.lineInStatus === 'ready' ? 'Refresh line-in sources' : 'Read line-in sources';
+      $('source-line-in-help').textContent = P.lineInHelp(s);
       $('source-contents').hidden = !saved || !s.playlist || s.playlistStatus !== 'ready';
       $('source-contents-read').disabled = !control.canReview();
       $('source-contents-read').textContent = s.contents ? 'Refresh tracks' : 'Read tracks';
@@ -358,6 +412,7 @@ const DashboardSource = (() => {
         $('source-preview-title').textContent = P.modes[p.mode] + ': ' + (p.title || p.item.uri);
         $('source-preview-source').textContent = p.item.kind === 'sonos_playlist_track'
           ? `Track ${p.item.position} · ${p.item.playlistTitle} · ${p.item.id}`
+          : p.item.kind === 'line_in' ? 'Line-in · ' + P.lineInLabel(p.item)
           : p.item.kind === 'sonos_playlist' ? 'Saved Sonos playlist · ' + p.item.id : p.item.uri;
         $('source-preview-target').textContent = p.group.label;
         $('source-preview-current').textContent = p.before.label;
@@ -391,6 +446,8 @@ const DashboardSource = (() => {
     $('source-catalog-cancel').addEventListener('click', () => control.catalog.cancel());
     $('source-playlist').addEventListener('change', event => control.edit('playlist', event.target.value));
     $('source-playlist-refresh').addEventListener('click', () => { void control.loadPlaylists(); });
+    $('source-line-in').addEventListener('change', event => control.edit('lineIn', event.target.value));
+    $('source-line-in-refresh').addEventListener('click', () => { void control.loadLineInSources(); });
     $('source-contents-read').addEventListener('click', () => { void control.loadContents(); });
     $('source-contents-previous').addEventListener('click', () => { void control.loadContents('previous'); });
     $('source-contents-next').addEventListener('click', () => { void control.loadContents('next'); });

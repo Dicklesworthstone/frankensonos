@@ -1,8 +1,9 @@
-// Play links and saved Sonos playlists through the policy-checked playback API.
+// Play links, saved Sonos playlists and native inputs through the playback API.
 'use strict';
 const SourcePlayerRemote = (() => {
   const routes = { sourcePlay: ['POST', '/play'], sourceQueue: ['POST', '/queue'],
     sourceSpotifySearch: ['GET', '/spotify/search'],
+    sourceLineInSources: ['GET', '/line-in'], sourceLineInPlay: ['POST', '/line-in/play'],
     sourceQueueState: ['GET', '/zones/{room}/queue'],
     sourcePlaylists: ['GET', '/sonos/playlists'], sourcePlaylistPlay: ['POST', '/sonos/playlists/play'],
     sourcePlaylistContents: ['GET', '/sonos/playlists/contents'], sourcePlaylistTrack: ['POST', '/sonos/playlists/track'] };
@@ -265,6 +266,50 @@ const SourcePlayerRemote = (() => {
     }
   }
 
+  function lineInSources(value) {
+    const validText = value => typeof value === 'string' && !/[\p{Cc}]/u.test(value);
+    const players = new Set();
+    const identify = item => {
+      if (!item || !text(item.player) || !validText(item.player) || !text(item.room)
+          || !validText(item.room) || players.has(item.player)) return false;
+      players.add(item.player); return true;
+    };
+    if (!value || !Array.isArray(value.sources) || !Array.isArray(value.unavailable)
+        || value.sources.some(item => !identify(item) || !validText(item.name) || !validText(item.icon))
+        || value.unavailable.some(item => !identify(item) || !text(item.detail) || !validText(item.detail))) {
+      throw new Error('The line-in source list is incomplete. Read the inputs again.');
+    }
+    return Object.freeze({ sources: Object.freeze(value.sources.map(item => Object.freeze({
+      player: item.player, room: item.room, name: item.name, icon: item.icon,
+    }))), unavailable: Object.freeze(value.unavailable.map(item => Object.freeze({
+      player: item.player, room: item.room, detail: item.detail,
+    }))) });
+  }
+
+  const lineInLabel = item => `${item.name || 'Line-in'} · ${item.room}`;
+  function lineInHelp(state) {
+    if (state.lineInStatus !== 'ready') return state.target
+      ? 'Read the line-in sources in this destination’s household.' : 'Choose a destination group first.';
+    const available = state.lineInSources.length
+      ? 'Choose the player supplying analog audio. Cable and signal state are not reported; start your source device yourself.'
+      : state.lineInUnavailable.length ? 'No line-in source could be read. Refresh to retry unavailable players.'
+        : 'No line-in inputs are advertised in this destination’s household.';
+    return [available, ...state.lineInUnavailable.map(item => `${item.room}: ${item.detail}`)].join(' ');
+  }
+  function prepareLineIn(player, catalog, mode) {
+    if (mode !== 'play') throw new Error('Line-in is a live source. Choose Play now.');
+    const selected = catalog.find(item => item.player === player);
+    if (!selected) throw new Error('Choose a line-in source for this destination.');
+    return Object.freeze({ item: Object.freeze({ ...selected, kind: 'line_in', container: false }),
+      title: lineInLabel(selected), mode });
+  }
+  function verifyLineIn(value, item) {
+    const fresh = lineInSources(value).sources.find(source => source.player === item.player);
+    if (!fresh || fresh.room !== item.room || fresh.name !== item.name || fresh.icon !== item.icon) {
+      throw new Error('The selected line-in source changed or became unavailable. Read the inputs and review again.');
+    }
+  }
+
   function contentsRequest(page, history, direction, playlist) {
     if (!['refresh', 'next', 'previous'].includes(direction)) return null;
     if (direction !== 'refresh' && (!page || page.playlist.id !== playlist)) return null;
@@ -362,6 +407,10 @@ const SourcePlayerRemote = (() => {
   }
 
   function commandBody(choice, target) {
+    if (choice.item.kind === 'line_in') {
+      if (choice.mode !== 'play') throw new Error('Line-in cannot be added to the queue.');
+      return { zone: target, source: choice.item.player };
+    }
     if (choice.item.kind === 'sonos_playlist_track') return { zone: target, playlist: choice.item.id,
       position: choice.item.position, expected_revision: choice.item.revision, mode: choice.mode === 'end' ? 'append' : choice.mode };
     return { zone: target, ...(choice.item.kind === 'sonos_playlist'
@@ -374,6 +423,7 @@ const SourcePlayerRemote = (() => {
     let epoch = 0, disposed = false;
     const state = { open: false, groups: [], target: '', sourceType: 'link', input: '', title: '', mode: 'play', pending: null,
       playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [],
+      lineInSources: [], lineInUnavailable: [], lineIn: '', lineInTarget: '', lineInStatus: 'idle',
       reading: false, writing: false, message: '', result: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const catalog = catalogModel({
@@ -388,16 +438,18 @@ const SourcePlayerRemote = (() => {
       ++epoch; state.pending = null; state.reading = false;
       catalog.retire();
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
+      if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
     };
     const clearContents = () => { state.contents = null; state.contentsHistory = []; };
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
+    const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
 
     async function refresh() {
       if (disposed) return false;
       state.open = true;
       if (state.writing) { publish(); return false; }
       const prior = selected();
-      invalidate(); clearPlaylists(); const version = epoch;
+      invalidate(); clearPlaylists(); clearLineIn(); const version = epoch;
       state.reading = true; state.message = ''; publish();
       try {
         const fresh = groups(await call('zones'));
@@ -413,13 +465,16 @@ const SourcePlayerRemote = (() => {
     }
 
     function edit(field, value) {
-      if (disposed || state.writing || !['target', 'sourceType', 'playlist', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
+      if (disposed || state.writing || !['target', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
       if (field === 'target' && !state.groups.some((group) => group.target === value)) return false;
-      if (field === 'mode' && !Object.hasOwn(modes, value)) return false;
-      if (field === 'sourceType' && !['link', 'playlist', 'catalog'].includes(value)) return false;
+      if (field === 'mode' && (!Object.hasOwn(modes, value) || state.sourceType === 'line_in' && value !== 'play')) return false;
+      if (field === 'sourceType' && !['link', 'playlist', 'catalog', 'line_in'].includes(value)) return false;
       if (field === 'playlist' && (state.playlistTarget !== state.target || !state.playlists.some(item => item.id === value))) return false;
+      if (field === 'lineIn' && (state.lineInStatus !== 'ready' || state.lineInTarget !== state.target
+          || !state.lineInSources.some(item => item.player === value))) return false;
       invalidate();
-      if (field === 'target' || field === 'sourceType') clearPlaylists();
+      if (field === 'target' || field === 'sourceType') { clearPlaylists(); clearLineIn(); }
+      if (field === 'sourceType' && value === 'line_in') state.mode = 'play';
       if (field === 'playlist') clearContents();
       state[field] = value; state.message = ''; publish(); return true;
     }
@@ -427,7 +482,7 @@ const SourcePlayerRemote = (() => {
     function chooseCatalog(item, items) {
       const incoming = catalog.select(item, items);
       if (!incoming) return false;
-      invalidate(); clearPlaylists(); state.sourceType = 'link';
+      invalidate(); clearPlaylists(); clearLineIn(); state.sourceType = 'link';
       state.input = incoming.input; state.title = incoming.title;
       state.message = 'Spotify source selected. Review the destination and action before sending it.';
       publish(); return true;
@@ -445,6 +500,22 @@ const SourcePlayerRemote = (() => {
         return true;
       } catch (error) {
         if (current(version)) { state.playlistStatus = 'error'; state.message = problem(error); }
+        return false;
+      } finally { if (current(version)) { state.reading = false; publish(); } }
+    }
+
+    async function loadLineInSources() {
+      const group = selected();
+      if (disposed || !state.open || state.writing || state.reading || state.sourceType !== 'line_in' || !group) return false;
+      invalidate(); clearLineIn(); const version = epoch;
+      state.reading = true; state.lineInStatus = 'loading'; state.message = 'Reading line-in sources…'; publish();
+      try {
+        const catalog = lineInSources(await call('sourceLineInSources', { query: { zone: group.target } }));
+        if (!current(version)) return false;
+        state.lineInSources = catalog.sources; state.lineInUnavailable = catalog.unavailable;
+        state.lineInTarget = group.target; state.lineInStatus = 'ready'; state.message = ''; return true;
+      } catch (error) {
+        if (current(version)) { state.lineInStatus = 'error'; state.message = problem(error); }
         return false;
       } finally { if (current(version)) { state.reading = false; publish(); } }
     }
@@ -474,12 +545,12 @@ const SourcePlayerRemote = (() => {
       try { incoming = offeredSource(value); }
       catch (error) { state.message = problem(error); publish(); return false; }
       state.open = true;
-      if (state.writing || state.reading || state.pending || state.input.trim() || state.title.trim() || state.playlist) {
+      if (state.writing || state.reading || state.pending || state.input.trim() || state.title.trim() || state.playlist || state.lineIn) {
         state.message = 'Finish the current source action, or explicitly clear its draft before importing another source.';
         publish(); return false;
       }
       invalidate(); state.input = incoming.input; state.title = incoming.title;
-      state.target = ''; state.mode = 'play'; state.sourceType = 'link'; clearPlaylists();
+      state.target = ''; state.mode = 'play'; state.sourceType = 'link'; clearPlaylists(); clearLineIn();
       // Refresh only the selectable destinations. Review and confirmation remain
       // separate user actions, and share the existing write coordination lane.
       return refresh();
@@ -487,7 +558,7 @@ const SourcePlayerRemote = (() => {
 
     function clearDraft() {
       if (disposed || state.writing) return false;
-      invalidate(); clearPlaylists(); state.input = ''; state.title = ''; state.target = ''; state.mode = 'play'; state.sourceType = 'link';
+      invalidate(); clearPlaylists(); clearLineIn(); state.input = ''; state.title = ''; state.target = ''; state.mode = 'play'; state.sourceType = 'link';
       state.message = 'Source draft cleared. No playback command was sent.';
       // A previous uncertain outcome is still useful evidence, not erased here.
       publish(); return true;
@@ -497,6 +568,7 @@ const SourcePlayerRemote = (() => {
       const fresh = groups(await call('zones'));
       if (!fresh.some((entry) => entry.signature === group.signature)) throw new Error('The destination group changed. Refresh rooms and review again.');
       if (item.kind === 'sonos_playlist') verifyPlaylist(await call('sourcePlaylists', { query: { zone: group.target } }), item);
+      if (item.kind === 'line_in') verifyLineIn(await call('sourceLineInSources', { query: { zone: group.target } }), item);
       if (item.kind === 'sonos_playlist_track') {
         verifyPlaylistTrack(await call('sourcePlaylistContents', { query: trackQuery(item, group.target) }), item, group);
       }
@@ -522,8 +594,12 @@ const SourcePlayerRemote = (() => {
         if (state.sourceType === 'playlist' && (state.playlistStatus !== 'ready' || state.playlistTarget !== group.target)) {
           throw new Error('Read the saved Sonos playlists for this group first.');
         }
+        if (state.sourceType === 'line_in' && (state.lineInStatus !== 'ready' || state.lineInTarget !== group.target)) {
+          throw new Error('Read the line-in sources for this destination first.');
+        }
         ({ item, title } = choice || (state.sourceType === 'playlist'
-          ? preparePlaylist(state.playlist, state.playlists, mode) : prepare(state.input, state.title, mode)));
+          ? preparePlaylist(state.playlist, state.playlists, mode) : state.sourceType === 'line_in'
+            ? prepareLineIn(state.lineIn, state.lineInSources, mode) : prepare(state.input, state.title, mode)));
       } catch (error) { state.message = problem(error); publish(); return false; }
       state.reading = true; state.message = ''; publish();
       try {
@@ -558,6 +634,7 @@ const SourcePlayerRemote = (() => {
           if (before.signature !== pending.before.signature) throw new Error('Playback or the queue changed since your review. Review the current destination again.');
           sent = true;
           const route = pending.item.kind === 'sonos_playlist_track' ? 'sourcePlaylistTrack'
+            : pending.item.kind === 'line_in' ? 'sourceLineInPlay'
             : pending.mode === 'play' ? pending.item.kind === 'sonos_playlist' ? 'sourcePlaylistPlay' : 'sourcePlay' : 'sourceQueue';
           const response = await call(route, { body: pending.body });
           const detail = pending.item.kind === 'sonos_playlist_track' ? trackOutcome(response, pending)
@@ -580,7 +657,7 @@ const SourcePlayerRemote = (() => {
       return accepted;
     }
 
-    return { state, catalog, chooseCatalog, refresh, edit, loadPlaylists, loadContents, review, reviewTrack, confirm, offer, clearDraft,
+    return { state, catalog, chooseCatalog, refresh, edit, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, clearDraft,
       cancel() { if (!state.writing && !disposed) { invalidate(); state.message = ''; publish(); } },
       close() { state.open = false; invalidate(); state.message = ''; publish(); },
       dispose() { disposed = true; state.open = false; invalidate(); },
@@ -591,7 +668,7 @@ const SourcePlayerRemote = (() => {
     const target = el('select', { 'aria-label': 'Destination group for music' });
     const sourceType = el('select', { 'aria-label': 'Music source' },
       el('option', { value: 'link', text: 'Link or stream' }), el('option', { value: 'playlist', text: 'Saved Sonos playlist' }),
-      el('option', { value: 'catalog', text: 'Spotify catalog' }));
+      el('option', { value: 'catalog', text: 'Spotify catalog' }), el('option', { value: 'line_in', text: 'Line-in' }));
     const catalogInput = el('input', { type: 'search', 'aria-label': 'Search the Spotify catalog',
       placeholder: 'Search music and podcasts on Spotify', autocomplete: 'off', maxlength: MAX_QUERY_BYTES });
     const catalogKind = el('select', { 'aria-label': 'Spotify catalog category' });
@@ -618,10 +695,16 @@ const SourcePlayerRemote = (() => {
       el('div', { class: 'row' }, readContents, previousContents, nextContents), contentsHelp, contentsList);
     const playlistFields = el('div', { class: 'source-catalog', hidden: true },
       el('label', {}, 'Saved Sonos playlist ', playlist), refreshPlaylists, playlistHelp, contentsFields);
+    const lineIn = el('select', { 'aria-label': 'Line-in source' });
+    const refreshLineIn = el('button', { type: 'button', text: 'Read line-in sources' });
+    const lineInDescription = el('p', { class: 'source-help', role: 'status' });
+    const lineInFields = el('div', { class: 'source-catalog', hidden: true },
+      el('label', {}, 'Line-in source ', lineIn), refreshLineIn, lineInDescription);
     const input = el('input', { type: 'text', 'aria-label': 'Spotify link or audio stream address',
       placeholder: 'Spotify link, Spotify URI, or HTTP audio address', autocomplete: 'off', spellcheck: 'false' });
     const mode = el('select', { 'aria-label': 'Play now or add to queue' });
     for (const [value, label] of Object.entries(modes)) mode.append(el('option', { value, text: label }));
+    const modeField = el('label', {}, 'Action ', mode);
     const title = el('input', { type: 'text', 'aria-label': 'Optional display title', placeholder: 'Optional display title', maxlength: MAX_TITLE });
     const refresh = el('button', { type: 'button', text: 'Refresh rooms' });
     const review = el('button', { type: 'button', text: 'Review playback' });
@@ -630,13 +713,14 @@ const SourcePlayerRemote = (() => {
     const result = el('p', { role: 'status', 'aria-live': 'polite' });
     const consent = el('div', { class: 'source-review', hidden: true, tabindex: '-1', 'aria-label': 'Review selected playback' });
     const inputField = el('label', {}, 'Link or stream ', input), titleField = el('label', {}, 'Title ', title);
-    const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Spotify, links & Sonos playlists' }),
-      el('div', {}, el('p', { text: 'Search the Spotify catalog, choose a saved Sonos playlist, paste a link, or send a direct audio stream. Review the destination and action before playing or adding music to the queue.' }),
-        el('label', {}, 'Destination ', target), el('label', {}, 'Music source ', sourceType), inputField, titleField, playlistFields, catalogFields,
-        el('label', {}, 'Action ', mode), el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
-    const node = el('section', { class: 'scenes', 'aria-label': 'Spotify, links and Sonos playlists' }, details);
+    const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Spotify, links, playlists & line-in' }),
+      el('div', {}, el('p', { text: 'Search Spotify, choose a saved Sonos playlist or line-in source, paste a link, or send a direct audio stream. Review the destination and action before playing or adding music to the queue.' }),
+        el('label', {}, 'Destination ', target), el('label', {}, 'Music source ', sourceType), inputField, titleField, playlistFields, catalogFields, lineInFields,
+        modeField, el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
+    const node = el('section', { class: 'scenes', 'aria-label': 'Spotify, links, Sonos playlists and line-in' }, details);
     let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, shownContents = null, shownContentsBusy = null, confirmButton = null;
     let shownCatalog = null, shownCatalogBusy = null;
+    let shownLineIn = null, shownLineInStatus = '';
     const control = model({ call, execute, changed: render });
     function render(state) {
       const busy = state.reading || state.writing;
@@ -646,8 +730,9 @@ const SourcePlayerRemote = (() => {
         for (const group of state.groups) target.append(el('option', { value: group.target, text: group.label }));
       }
       target.value = state.target; mode.value = state.mode; sourceType.value = state.sourceType;
-      const saved = state.sourceType === 'playlist', online = state.sourceType === 'catalog';
-      inputField.hidden = saved || online; titleField.hidden = saved || online; playlistFields.hidden = !saved; catalogFields.hidden = !online;
+      const saved = state.sourceType === 'playlist', online = state.sourceType === 'catalog', analog = state.sourceType === 'line_in';
+      inputField.hidden = saved || online || analog; titleField.hidden = saved || online || analog;
+      playlistFields.hidden = !saved; catalogFields.hidden = !online; lineInFields.hidden = !analog; modeField.hidden = analog;
       if (catalogInput.value !== state.catalog.query) catalogInput.value = state.catalog.query;
       catalogKind.value = state.catalog.kind;
       catalogInput.disabled = busy; catalogKind.disabled = busy;
@@ -674,6 +759,19 @@ const SourcePlayerRemote = (() => {
         ? 'Saved on the speakers in this household. Read its tracks before choosing how to play it.'
         : 'This household has no saved Sonos playlists. Save a playlist in Sonos, then refresh here.'
         : state.target ? 'Read the saved playlists for this destination.' : 'Choose a destination group first.';
+      if (shownLineIn !== state.lineInSources || shownLineInStatus !== state.lineInStatus) {
+        shownLineIn = state.lineInSources; shownLineInStatus = state.lineInStatus;
+        const caption = state.lineInStatus === 'loading' ? 'Reading inputs…'
+          : state.lineInStatus === 'ready' ? state.lineInSources.length ? 'Choose a line-in source…' : 'No available inputs'
+            : 'Read inputs for this destination';
+        lineIn.replaceChildren(el('option', { value: '', text: caption, disabled: true }));
+        for (const item of state.lineInSources) lineIn.append(el('option', { value: item.player, text: lineInLabel(item) }));
+      }
+      lineIn.value = state.lineIn;
+      lineIn.disabled = busy || state.lineInStatus !== 'ready' || !state.lineInSources.length;
+      refreshLineIn.disabled = busy || !state.target;
+      refreshLineIn.textContent = state.lineInStatus === 'ready' ? 'Refresh line-in sources' : 'Read line-in sources';
+      lineInDescription.textContent = lineInHelp(state);
       contentsFields.hidden = !state.playlist || state.playlistStatus !== 'ready';
       readContents.disabled = busy || !state.playlist;
       readContents.textContent = state.contents ? 'Refresh tracks' : 'Read tracks';
@@ -687,8 +785,10 @@ const SourcePlayerRemote = (() => {
       review.textContent = state.mode === 'play' ? 'Review playback' : 'Review queue addition';
       for (const [field, element] of [['input', input], ['title', title]]) if (element.value !== state[field]) element.value = state[field];
       for (const element of [target, sourceType, input, title, mode]) element.disabled = state.writing;
+      mode.disabled = state.writing || analog;
       clear.disabled = state.writing;
-      refresh.disabled = busy; review.disabled = busy || online || !state.target || (saved ? !state.playlist || state.playlistStatus !== 'ready' : !state.input.trim());
+      refresh.disabled = busy; review.disabled = busy || online || !state.target || (saved ? !state.playlist || state.playlistStatus !== 'ready'
+        : analog ? !state.lineIn || state.lineInStatus !== 'ready' : !state.input.trim());
       message.textContent = state.message || (state.reading ? 'Reading the destination…' : '');
       result.textContent = state.result?.detail || '';
       if (shownReview !== state.pending) {
@@ -716,6 +816,7 @@ const SourcePlayerRemote = (() => {
             ...(snapshot && pending.mode !== 'play' && snapshot.playing === null ? [el('p', { text: 'The group is not using its queue. Select an existing queue entry separately when you are ready to start it.' })] : []),
             ...(pending.item.kind === 'sonos_playlist' ? [el('p', { class: 'source-help', text: 'The saved playlist is read again before sending. Its current contents are supplied by this household’s speakers.' })] : []),
             ...(pending.item.kind === 'sonos_playlist_track' ? [el('p', { class: 'source-help', text: `Track ${pending.item.position} from “${pending.item.playlistTitle}”. The exact saved occurrence is checked again before sending.` })] : []),
+            ...(pending.item.kind === 'line_in' ? [el('p', { class: 'source-help', text: `Analog input from ${pending.item.room}. The source is checked again before sending. Cable and signal state are not reported; start your source device yourself.` })] : []),
             el('p', { class: 'source-help', text: 'The destination is checked again before sending. Another controller can still change it afterward. The speakers must support and reach the source.' }),
             el('div', { class: 'row' }, confirmButton, cancel));
           consent.focus?.({ preventScroll: true });
@@ -739,6 +840,8 @@ const SourcePlayerRemote = (() => {
     catalogCancel.addEventListener('click', () => control.catalog.cancel());
     playlist.addEventListener('change', () => control.edit('playlist', playlist.value));
     refreshPlaylists.addEventListener('click', () => { void control.loadPlaylists(); });
+    lineIn.addEventListener('change', () => control.edit('lineIn', lineIn.value));
+    refreshLineIn.addEventListener('click', () => { void control.loadLineInSources(); });
     readContents.addEventListener('click', () => { void control.loadContents(); });
     previousContents.addEventListener('click', () => { void control.loadContents('previous'); });
     nextContents.addEventListener('click', () => { void control.loadContents('next'); });
@@ -778,6 +881,7 @@ const SourcePlayerRemote = (() => {
   }
 
   return { source, prepare, playlists, preparePlaylist, verifyPlaylist, contentsRequest, playlistContents, contentsSummary, renderContents,
+    lineInSources, lineInLabel, lineInHelp, prepareLineIn, verifyLineIn,
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
     commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE,
     catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, CATALOG_LIMIT, MAX_QUERY_BYTES };

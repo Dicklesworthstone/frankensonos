@@ -25,6 +25,35 @@ function documentFixture() {
   },getElementById(id) {if(!nodes.has(id))nodes.set(id,{...doc.createElement('div'),id});return nodes.get(id);}};
   return doc;
 }
+
+test('dashboard line-in controls read explicitly and render input identity before one reviewed play', async () => {
+  const f = await fixture({ dom: true }).ready(), $ = id => f.doc.getElementById(id);
+  const item = { player: 'RINCON_FIXTURE_INPUT', room: 'Record player', name: '<img src=x onerror=alert(1)> Turntable', icon: '1' };
+  const catalog = { sources: [item], unavailable: [{ player: 'RINCON_FIXTURE_OFFLINE', room: 'Other input', detail: 'Player unavailable.' }] };
+  f.read((url, options, read) => url.startsWith('/line-in?') ? copy(catalog) : read(url));
+  f.write((url, body) => {
+    assert.equal(url, '/line-in/play'); assert.deepEqual(body, { zone: 'Den@S2', source: item.player });
+    return { done: 'Playing line-in', changed: true };
+  });
+  $('open-source').fire('click'); $('source-type').value = 'line_in'; $('source-type').fire('change');
+  assert.equal($('source-line-in-field').hidden, false); assert.equal($('source-line-in-controls').hidden, false);
+  assert.equal($('source-link-field').hidden, true); assert.equal($('source-mode-field').hidden, true);
+  assert.equal($('source-mode').disabled, true); assert.equal($('source-review').disabled, true);
+  assert.equal(f.calls.filter(call => call.url.startsWith('/line-in')).length, 0);
+  $('source-line-in-refresh').fire('click'); await settled(() => f.source.state.lineInStatus === 'ready');
+  assert.equal($('source-line-in').children.length, 2);
+  assert.equal($('source-line-in').children[1].textContent, item.name + ' · ' + item.room);
+  assert.equal($('source-line-in').children[1].value, item.player);
+  assert.match($('source-line-in-help').textContent, /Other input: Player unavailable/);
+  $('source-line-in').value = item.player; $('source-line-in').fire('change');
+  assert.equal($('source-review').disabled, false); assert.equal(f.writes().length, 0);
+  $('source-review').fire('click'); await settled(() => f.source.state.pending !== null);
+  assert.match($('source-preview-source').textContent, /Line-in · <img/);
+  assert.match($('source-preview-effect').textContent, /signal state are not reported/);
+  assert.equal($('source-preview-queue').hidden, true); assert.equal($('source-confirm').disabled, false);
+  $('source-confirm').fire('click'); await settled(() => f.source.state.result?.status === 'accepted');
+  assert.equal(f.writes().length, 1); assert.equal(f.calls.filter(call => call.url.startsWith('/line-in?')).length, 3);
+});
 function fixture({demo=false,dom=false,network}={}) {
   const zones=['S2','S1'].map((household,i)=>({household,coordinator_room:'Den',members:i?['Den']:['Den','Side'],transport_state:'playing'}));
   const rows=new Map(zones.map(zone=>[C.key(zone),{zone,transport_state:'playing',volume:20,mute:false,
