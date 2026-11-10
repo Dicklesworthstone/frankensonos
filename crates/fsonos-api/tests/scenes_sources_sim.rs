@@ -113,7 +113,7 @@ fn seed(sim: &SimHandle, room: &str) {
     soap::play(&sim.lan(), host).unwrap();
 }
 
-fn definition(room: &str, member: &str, source: Value, playing: bool) -> SceneDefinition {
+fn definition(room: &str, member: &str, source: &Value, playing: bool) -> SceneDefinition {
     serde_json::from_value(json!({
         "groups": [{"coordinator": room, "members": [member], "source": source, "playing": playing}],
         "volumes": {(room): 20, (member): 15}
@@ -201,7 +201,7 @@ fn missing_spotify_linkage_cannot_pause_music_or_change_groups_for_play_or_silen
                 .save_scene_from(
                     &Client::Cli,
                     "Spotify scene",
-                    &definition(room, member, spotify(), playing),
+                    &definition(room, member, &spotify(), playing),
                 )
                 .unwrap();
             sim.retain_favorites(generation, |_| false).unwrap();
@@ -249,7 +249,7 @@ fn scheduled_favorite_and_spotify_scenes_retry_catalog_reads_before_claiming_the
                 .save_scene_from(
                     &Client::Cli,
                     "Morning",
-                    &definition(room, member, source, true),
+                    &definition(room, member, &source, true),
                 )
                 .unwrap();
             let (scheduler, id, at) = schedule(&surface, "Morning");
@@ -310,7 +310,7 @@ fn an_unavailable_scheduled_source_expires_without_changing_the_house() {
         .save_scene_from(
             &Client::Cli,
             "Morning",
-            &definition("Den", "Study", favorite(), true),
+            &definition("Den", "Study", &favorite(), true),
         )
         .unwrap();
     let (scheduler, id, at) = schedule(&surface, "Morning");
@@ -340,7 +340,7 @@ fn a_source_denied_by_policy_does_not_block_the_scenes_permitted_work() {
         .save_scene_from(
             &Client::Cli,
             "Quiet",
-            &definition("Den", "Study", favorite(), true),
+            &definition("Den", "Study", &favorite(), true),
         )
         .unwrap();
     unavailable.store(true, Ordering::SeqCst);
@@ -374,7 +374,7 @@ fn scene_authoring_rejects_artists_and_shows_but_episodes_play() {
                 .save_scene_from(
                     &Client::Cli,
                     "Unsupported",
-                    &definition(room, member, source, true),
+                    &definition(room, member, &source, true),
                 )
                 .unwrap_err();
             assert_eq!(error.code, ErrorCode::NotImplemented);
@@ -393,7 +393,7 @@ fn scene_authoring_rejects_artists_and_shows_but_episodes_play() {
             .save_scene_from(
                 &Client::Cli,
                 "Episode",
-                &definition(room, member, source, true),
+                &definition(room, member, &source, true),
             )
             .unwrap();
         let result = surface.apply_scene(&Client::Cli, "Episode").unwrap();
@@ -562,7 +562,7 @@ fn silent_loading_requires_both_caller_and_writer_pause_permission() {
                     .save_scene_from(
                         writer,
                         "Quiet",
-                        &definition(room, member, source.clone(), false),
+                        &definition(room, member, &source, false),
                     )
                     .unwrap();
                 // An omitted source does not need its catalog to be ready.
