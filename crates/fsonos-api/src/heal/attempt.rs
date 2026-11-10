@@ -52,6 +52,7 @@ fn read_only(action: &str) -> bool {
     matches!(
         action,
         "Browse"
+            | "GetAudioInputAttributes"
             | "GetZoneGroupState"
             | "GetTransportInfo"
             | "GetTransportSettings"

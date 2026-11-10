@@ -70,6 +70,12 @@ pub enum Command {
         selection: ArtistSelection,
         destination: fsonos_core::control::TrackBatchDestination,
     },
+    /// A native input bound to its physical player and an observed destination.
+    /// Never redirected or automatically replayed onto another coordinator.
+    PlayLineIn {
+        coordinator: PlayerId,
+        prepared: fsonos_core::audio_inputs::PreparedLineIn,
+    },
     /// Play a Sonos favorite (a track, a station, or a container that
     /// replaces the queue) in the group `coordinator` leads.
     PlayFavorite {
@@ -154,6 +160,7 @@ impl Command {
             Self::DjSteer { start, .. } => !start,
             // A move that ran once has nothing left to move.
             Self::PlayTracks { .. }
+            | Self::PlayLineIn { .. }
             | Self::Move { .. }
             | Self::Dj { .. }
             | Self::Nothing { .. } => false,
@@ -166,6 +173,7 @@ impl Command {
         match self {
             Self::Play { coordinator, .. }
             | Self::PlayTracks { coordinator, .. }
+            | Self::PlayLineIn { coordinator, .. }
             | Self::PlayFavorite { coordinator, .. }
             | Self::Transport { coordinator, .. }
             | Self::Dj { coordinator, .. }

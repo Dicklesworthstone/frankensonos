@@ -16,6 +16,8 @@
 //! | `GET /zones/{room}/eq` | | [`crate::surface::eq::EqDto`]: the room's bass, treble and loudness |
 //! | `GET /zones/{room}/play-mode` | | the group's shuffle and repeat, and whether the DJ owns its queue |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
+//! | `GET /line-in?zone=<room>` | | [`crate::LineInSourcesDto`]: native inputs in the destination household |
+//! | `POST /line-in/play` | [`crate::PlayLineInRequest`] | [`crate::OutcomeDto`]: play a native input while retaining the queue |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /sonos/playlists?zone=<room>` | | native saved Sonos playlists, with household-local SQ: ids |
 //! | `GET /sonos/playlists/contents?zone=<room>&playlist=<id>` | | ordered native saved contents with revision-bound continuation; changes no playback |
@@ -121,6 +123,7 @@ use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
 mod house_policy;
 
 mod eq;
+mod line_in;
 
 mod queue;
 
@@ -209,6 +212,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(house_policy::routes(cx));
     routes.extend(controls(cx));
     routes.extend(eq::routes(cx));
+    routes.extend(line_in::routes(cx));
     routes.extend(queue::routes(cx));
     routes.extend(house_verbs(cx));
     routes.extend(announce::routes(cx));

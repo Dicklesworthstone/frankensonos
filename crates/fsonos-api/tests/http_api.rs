@@ -553,6 +553,39 @@ fn unknown_callers_may_read_but_not_control() {
 }
 
 #[test]
+fn native_input_routes_reject_invalid_requests_before_speaker_io() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    for path in [
+        "/line-in",
+        "/line-in?zone=",
+        "/line-in?zone=Den&zone=Other",
+        "/line-in?zone=Den&mode=append",
+    ] {
+        let (status, body) = api.get(path);
+        assert_eq!(status, 400, "{path}: {body}");
+        assert_eq!(body["code"], "INVALID_ARGUMENT");
+    }
+    for body in [
+        json!({"zone":"Den"}),
+        json!({"zone":"Den", "source":""}),
+        json!({"zone":"Den", "source":"Office", "mode":"append"}),
+        json!({"zone":"Den", "source":"Office", "source_uri":"x-rincon-stream:arbitrary"}),
+    ] {
+        let (status, reply) = api.post("/line-in/play", &body);
+        assert_eq!(status, 400, "{body}: {reply}");
+    }
+    assert!(api.sent.lock().unwrap().is_empty());
+    let unknown = Api::start("", &Client::Unknown);
+    let (status, body) = unknown.post(
+        "/line-in/play",
+        &json!({"zone":"Kitchen", "source":"Office"}),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["code"], "POLICY_DENIED");
+    assert!(unknown.sent.lock().unwrap().is_empty());
+}
+
+#[test]
 fn a_tailnet_caller_is_named_by_the_tailnet() {
     // As on a tailnet listener: callers are `unknown` unless the tailnet
     // names them. The namer stands in for Tailscale's WhoIs and knows this
@@ -680,6 +713,22 @@ fn the_openapi_document_describes_every_route() {
         "get_zone_state"
     );
     assert_native_playlist_openapi(&doc);
+    assert_eq!(
+        doc["paths"]["/line-in"]["get"]["operationId"],
+        "list_line_in"
+    );
+    assert_eq!(
+        doc["paths"]["/line-in/play"]["post"]["operationId"],
+        "play_line_in"
+    );
+    let native = &doc["paths"]["/line-in/play"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    let native = native["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(native, |name| &doc["components"]["schemas"][name]);
+    assert_eq!(native["required"], json!(["zone", "source"]));
+    assert!(native["properties"].get("source_uri").is_none());
 
     // Bodies have their schemas, with the required fields.
     let body = &doc["paths"]["/volume"]["post"]["requestBody"];

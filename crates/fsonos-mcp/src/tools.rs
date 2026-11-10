@@ -64,6 +64,9 @@ pub use sonos_playlists::{
 mod spotify_search;
 pub use spotify_search::SearchSpotify;
 
+mod line_in;
+pub use line_in::{ListLineIn, PlayLineIn};
+
 mod controls;
 mod documents;
 

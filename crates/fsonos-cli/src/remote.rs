@@ -36,9 +36,10 @@ use fsonos_api::surface::queue::{QueueAddedDto, QueueDto};
 use fsonos_api::surface::schedules::{FadePauseRequest, SleepTimerDto};
 use fsonos_api::surface::sonos_playlists::{self, PlaySonosPlaylistRequest, SonosPlaylistDto};
 use fsonos_api::{
-    ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, MoveRequest,
-    MuteRequest, OutcomeDto, PartyRequest, PlayDto, PlayFavoriteRequest, PlayRequest, RoomDto,
-    SearchPlayRequest, SearchRequest, UndoDto, ZoneDto, ZoneRequest, ZoneStateDto,
+    ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, LineInSourcesDto,
+    MoveRequest, MuteRequest, OutcomeDto, PartyRequest, PlayDto, PlayFavoriteRequest,
+    PlayLineInRequest, PlayRequest, RoomDto, SearchPlayRequest, SearchRequest, UndoDto, ZoneDto,
+    ZoneRequest, ZoneStateDto,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -782,6 +783,7 @@ fn routable(command: &Command) -> bool {
             | Command::Rooms { alias: None }
             | Command::Favorites { .. }
             | Command::Playlists { .. }
+            | Command::LineIn { .. }
             | Command::Queue { .. }
             | Command::Eq(_)
             | Command::History { .. }
@@ -831,6 +833,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         | Command::Rooms { alias: None }
         | Command::Favorites { .. }
         | Command::Playlists { .. }
+        | Command::LineIn { .. }
         | Command::Queue { .. }
         | Command::History { .. }
         | Command::Log { .. } => read(&daemon, global, command)?,
@@ -959,6 +962,12 @@ fn read(daemon: &Daemon, global: &GlobalArgs, command: &Command) -> anyhow::Resu
             let playlists: Vec<SonosPlaylistDto> =
                 daemon.get(&format!("/sonos/playlists?zone={}", pct(zone)))?;
             emit(json, &playlists, |p| sonos_playlists::text(p))?;
+        }
+        Command::LineIn { zone } => {
+            let request = ZoneRequest { zone: zone.clone() };
+            let zone = request.zone()?;
+            let sources: LineInSourcesDto = daemon.get(&format!("/line-in?zone={}", pct(zone)))?;
+            emit(json, &sources, LineInSourcesDto::text)?;
         }
         Command::Queue {
             zone,
@@ -1101,6 +1110,18 @@ fn control_request(
         return Ok(fade);
     }
     Ok(match command {
+        Command::Play {
+            zone,
+            line_in: Some(source),
+            ..
+        } => {
+            let request = PlayLineInRequest {
+                zone: zone.clone(),
+                source: source.clone(),
+            };
+            request.validate()?;
+            ("/line-in/play", value(serde_json::to_value(request))?)
+        }
         Command::Play {
             zone,
             source_uri,
@@ -1250,6 +1271,45 @@ mod tests {
             vec!["fsonos", "announce", "--file", "clip.wav"],
         ] {
             assert!(routable(&crate::Cli::try_parse_from(args).unwrap().command));
+        }
+    }
+
+    #[test]
+    fn line_in_commands_route_to_the_daemon_without_constructing_renderer_uris() {
+        use clap::Parser;
+        let daemon = Daemon {
+            addr: Endpoint::Socket("127.0.0.1:1".parse().unwrap()),
+            token: None,
+            claim: None,
+        };
+        let read = crate::Cli::try_parse_from(["fsonos", "line-in", "Den & Study@S2"])
+            .unwrap()
+            .command;
+        assert!(routable(&read));
+        for source in ["RINCON_INPUT_RIGHT", "Music Room@S2", "turntable"] {
+            let command = crate::Cli::try_parse_from([
+                "fsonos",
+                "play",
+                "Den & Study@S2",
+                "--line-in",
+                source,
+            ])
+            .unwrap()
+            .command;
+            assert!(routable(&command));
+            assert_eq!(
+                control_request(&daemon, &command).unwrap(),
+                (
+                    "/line-in/play",
+                    serde_json::json!({"zone":"Den & Study@S2", "source":source})
+                )
+            );
+        }
+        for (zone, source) in [(" ", "RINCON_INPUT"), ("Den", " "), ("Den", "bad\nsource")] {
+            let command = crate::Cli::try_parse_from(["fsonos", "play", zone, "--line-in", source])
+                .unwrap()
+                .command;
+            assert!(control_request(&daemon, &command).is_err());
         }
     }
 

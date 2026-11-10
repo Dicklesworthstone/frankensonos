@@ -223,6 +223,8 @@ fn configured_server(
             .tool(Echo)
             .tool(tools::ListRooms)
             .tool(tools::ListPlayers)
+            .tool(tools::ListLineIn)
+            .tool(tools::PlayLineIn)
             .tool(tools::GetZone)
             .tool(tools::ListSonosPlaylists)
             .tool(tools::SonosPlaylistContents)

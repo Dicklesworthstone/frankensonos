@@ -53,6 +53,7 @@ pub mod dj_sync;
 pub mod eq;
 mod heard;
 pub mod house_policy;
+pub mod line_in;
 pub mod queue;
 #[cfg(test)]
 mod relocation_tests;
@@ -1385,12 +1386,36 @@ impl Surface {
         if self.log.is_none() {
             return;
         }
+        let input_uri = match command {
+            Command::PlayLineIn { prepared, .. } => {
+                fsonos_proto::audio_in::source_uri(&prepared.source.player).ok()
+            }
+            _ => None,
+        };
         let (coordinator, uri) = match command {
             Command::Play {
                 coordinator,
                 source_uri,
                 ..
             } => (coordinator, Some(source_uri.as_str())),
+            Command::PlayLineIn { coordinator, .. } => {
+                let Ok(now) = control::playback(&*self.transport, households, coordinator) else {
+                    return;
+                };
+                if now.transport.state != TransportState::Playing {
+                    return;
+                }
+                let Ok(player) = control::locate(households, coordinator) else {
+                    return;
+                };
+                if fsonos_proto::control::get_media_info(&*self.transport, player.ip)
+                    .ok()
+                    .is_none_or(|media| Some(media.uri.as_str()) != input_uri.as_deref())
+                {
+                    return;
+                }
+                (coordinator, input_uri.as_deref())
+            }
             Command::PlayTracks {
                 coordinator,
                 selection,
@@ -2054,6 +2079,7 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
     match command {
         Command::Play { coordinator, .. }
         | Command::PlayTracks { coordinator, .. }
+        | Command::PlayLineIn { coordinator, .. }
         | Command::PlayFavorite { coordinator, .. }
         | Command::Transport { coordinator, .. }
         | Command::Dj { coordinator, .. }

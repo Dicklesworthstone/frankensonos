@@ -117,6 +117,17 @@ pub fn execute<T: Transport + ?Sized>(
             selection,
             destination,
         )?,
+        Command::PlayLineIn {
+            coordinator,
+            prepared,
+        } => {
+            fsonos_core::audio_inputs::play_prepared(transport, households, coordinator, prepared)?;
+            OutcomeDto::sent(format!(
+                "playing {}'s line-in in {}'s group",
+                prepared.source.room,
+                room(coordinator)
+            ))
+        }
         Command::PlayFavorite {
             coordinator,
             favorite,

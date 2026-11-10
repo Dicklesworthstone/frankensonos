@@ -43,6 +43,14 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
             title.as_deref().unwrap_or(source_uri),
             room(coordinator)
         ),
+        Command::PlayLineIn {
+            coordinator,
+            prepared,
+        } => format!(
+            "play {}'s line-in in {}",
+            prepared.source.room,
+            room(coordinator)
+        ),
         Command::PlayFavorite {
             member: coordinator,
             favorite,

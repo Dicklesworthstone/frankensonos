@@ -10,6 +10,7 @@
 //!   spotify-search search the online catalog, then choose a source to play
 //!   favorites  the household's Sonos favorites, numbered
 //!   playlists  playlists saved on the Sonos household, with native ids
+//!   line-in    native audio inputs available on a room's household
 //!   playlist-contents inspect a saved playlist without changing playback
 //!   playlist-track play or queue one observed saved playlist occurrence
 //!   playlist-save save the current group queue as a new Sonos playlist
@@ -18,8 +19,8 @@
 //!              can be used (check)
 //!   doctor     diagnose the setup (exit 0 / 6 warnings / 7 failures)
 //!   setup      a guided first run on the doctor's checks (--yes for scripts)
-//!   play       play a source URI, `--favorite <name>` or `--playlist <name>`
-//!              in a room's group
+//!   play       play a source URI, `--favorite <name>`, `--playlist <name>`
+//!              or `--line-in <source>` in a room's group
 //!   pause / resume / next / previous   transport for a room's group
 //!   queue-play play an existing queue position without adding tracks
 //!   seek       move within the track a room's group is on (1:30, +30, -15)
@@ -83,7 +84,8 @@ use fsonos_api::surface::queue::{QueueAddedDto, QueueDto, QueueRequest};
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
-    PlayFavoriteRequest, PlayRequest, SearchPlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
+    PlayFavoriteRequest, PlayLineInRequest, PlayRequest, SearchPlayRequest, SearchRequest,
+    VolumeRequest, ZoneRequest,
 };
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -133,6 +135,9 @@ enum Command {
     Favorites { zone: String },
     /// List playlists saved on a room's Sonos household, with native SQ: ids.
     Playlists { zone: String },
+    /// List native line-in sources on a room's household. A source's presence
+    /// does not establish that a cable is connected or audio is playing.
+    LineIn { zone: String },
     /// Inspect ordered tracks in a saved Sonos playlist without changing playback.
     /// Continuation pages retain the exact native playlist id and revision.
     PlaylistContents(playlist_cmd::PlaylistContentsArgs),
@@ -237,9 +242,10 @@ enum Command {
         #[command(subcommand)]
         action: policy_cmd::PolicyAction,
     },
-    /// Play a source URI, favorite or saved Sonos playlist in a room's group.
+    /// Play a source URI, favorite, saved Sonos playlist or native line-in
+    /// in a room's group.
     // What --next and --queue add: one source URI, favorite or saved playlist.
-    #[command(group(clap::ArgGroup::new("item").args(["source_uri", "favorite", "playlist"])))]
+    #[command(group(clap::ArgGroup::new("item").args(["source_uri", "favorite", "playlist", "line_in"])))]
     Play {
         /// Room name (`Room@S1` / `Room@S2` picks a household).
         zone: String,
@@ -255,6 +261,11 @@ enum Command {
         /// or SQ: id. Its saved tracks replace the group's current queue.
         #[arg(long, conflicts_with_all = ["source_uri", "favorite", "search", "pick", "title"])]
         playlist: Option<String>,
+        /// Play a native input from `fsonos line-in`: its exact player id,
+        /// source room or single-room alias on the destination's household.
+        /// Retains the queue; a live input cannot be queued.
+        #[arg(long, value_name = "SOURCE", conflicts_with_all = ["source_uri", "favorite", "playlist", "search", "pick", "title", "next", "queue"])]
+        line_in: Option<String>,
         /// Search the library and the room's favorites, and play the best
         /// match (title words, a composer or performer, "bwv 988").
         #[arg(long, value_name = "QUERY", conflicts_with_all = ["source_uri", "favorite", "playlist"])]
@@ -588,6 +599,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 fsonos_api::surface::sonos_playlists::text(p)
             })
         }
+        Command::LineIn { zone } => {
+            ZoneRequest { zone: zone.clone() }.zone()?;
+            let sources = Direct::survey(global)?.line_in_sources(&zone)?;
+            emit(global.json, &sources, fsonos_api::LineInSourcesDto::text)
+        }
         Command::Queue {
             zone,
             offset,
@@ -650,6 +666,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let req =
                 fsonos_api::surface::sonos_playlists::PlaySonosPlaylistRequest { zone, playlist };
             let outcome = Direct::survey(global)?.play_sonos_playlist(&req)?;
+            emit(global.json, &outcome, outcome_text)
+        }
+        Command::Play {
+            zone,
+            line_in: Some(source),
+            ..
+        } => {
+            let request = PlayLineInRequest { zone, source };
+            request.validate()?;
+            let outcome = Direct::survey(global)?.play_line_in(&request)?;
             emit(global.json, &outcome, outcome_text)
         }
         Command::Say(args) => {
@@ -1083,6 +1109,7 @@ fn plan_for<'a>(
         | Command::Status { .. }
         | Command::Favorites { .. }
         | Command::Playlists { .. }
+        | Command::LineIn { .. }
         | Command::PlaylistSave(_)
         | Command::PlaylistContents(_)
         | Command::PlaylistTrack(_)
@@ -1733,6 +1760,64 @@ mod tests {
             let mut args = vec!["fsonos", "play", "Den", "--playlist", "SQ:7"];
             args.extend(extra);
             assert!(Cli::try_parse_from(args.clone()).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn line_in_flags_preserve_exact_source_and_reject_queue_or_other_source_arguments() {
+        assert!(matches!(parse(&["line-in", "Den@S1"]),
+            Command::LineIn { zone } if zone == "Den@S1"));
+        for source in ["RINCON_INPUT_RIGHT", "Music Room@S1", "turntable"] {
+            let command = parse(&["play", "Den@S1", "--line-in", source]);
+            assert!(matches!(&command,
+                Command::Play { line_in: Some(selected), source_uri: None, next: false, queue: false, .. }
+                    if selected == source));
+            assert!(queue_request(&command).is_none());
+        }
+        for extra in [
+            vec!["spotify:track:abc"],
+            vec!["--favorite", "Evening"],
+            vec!["--playlist", "SQ:7"],
+            vec!["--search", "Evening"],
+            vec!["--pick", "1"],
+            vec!["--title", "ignored"],
+            vec!["--next"],
+            vec!["--queue"],
+        ] {
+            let mut args = vec!["fsonos", "play", "Den", "--line-in", "RINCON_INPUT"];
+            args.extend(extra);
+            assert!(Cli::try_parse_from(args.clone()).is_err(), "{args:?}");
+        }
+        assert!(Cli::try_parse_from(["fsonos", "line-in"]).is_err());
+        assert!(Cli::try_parse_from(["fsonos", "play", "Den", "--line-in"]).is_err());
+    }
+
+    #[test]
+    fn line_in_supports_direct_daemon_tailnet_and_json_modes() {
+        for command in [
+            vec!["line-in", "Den@S1"],
+            vec!["play", "Den@S1", "--line-in", "RINCON_INPUT_RIGHT"],
+        ] {
+            for mode in [vec!["--direct"], vec!["--daemon"]] {
+                let args: Vec<_> = std::iter::once("fsonos")
+                    .chain(command.iter().copied())
+                    .chain(mode.iter().copied())
+                    .collect();
+                let cli = Cli::try_parse_from(args).unwrap();
+                assert_eq!(cli.global.direct, mode == ["--direct"]);
+                assert_eq!(cli.global.daemon, mode == ["--daemon"]);
+            }
+            let cli = Cli::try_parse_from(
+                std::iter::once("fsonos")
+                    .chain(command.iter().copied())
+                    .chain(["--json", "--daemon-url", "https://sonos.example.ts.net"]),
+            )
+            .unwrap();
+            assert!(cli.global.json);
+            assert_eq!(
+                cli.global.daemon_url.as_deref(),
+                Some("https://sonos.example.ts.net")
+            );
         }
     }
 

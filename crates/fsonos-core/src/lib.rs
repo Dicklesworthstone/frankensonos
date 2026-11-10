@@ -34,6 +34,7 @@
 
 pub mod actions;
 pub mod announce;
+pub mod audio_inputs;
 pub mod clock;
 pub mod control;
 pub mod dj_direction;
@@ -111,6 +112,12 @@ pub enum CoreError {
     /// contents observation the caller is continuing. Read again from zero.
     #[error("{0}")]
     PlaylistChanged(String),
+    /// The selected player cannot currently supply a native analog input.
+    #[error("{0}")]
+    LineInUnavailable(String),
+    /// A retained line-in source or destination changed before dispatch.
+    #[error("{0}")]
+    LineInChanged(String),
 }
 
 fn list(items: &[String]) -> String {

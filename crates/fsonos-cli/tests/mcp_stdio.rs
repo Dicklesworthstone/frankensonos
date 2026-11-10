@@ -220,6 +220,8 @@ fn control_tools_are_advertised_with_their_arguments() {
         "browse_library",
         "playlist_contents",
         "list_sonos_playlists",
+        "list_line_in",
+        "play_line_in",
         "sonos_playlist_contents",
         "sonos_playlist_track",
         "play_sonos_playlist",
@@ -274,6 +276,14 @@ fn control_tools_are_advertised_with_their_arguments() {
         tool("save_sonos_playlist"),
         tool("add_to_queue"),
     );
+    let inputs = tool("list_line_in");
+    assert_tool_arguments(inputs, &["zone"], &["zone"]);
+    assert_eq!(inputs["annotations"]["readOnlyHint"], true);
+    assert_eq!(inputs["annotations"]["idempotentHint"], true);
+    let input_play = tool("play_line_in");
+    assert_tool_arguments(input_play, &["zone", "source"], &["zone", "source"]);
+    assert_ne!(input_play["annotations"]["readOnlyHint"], true);
+    assert_ne!(input_play["annotations"]["idempotentHint"], true);
     let native_contents = tool("sonos_playlist_contents");
     assert_eq!(native_contents["annotations"]["readOnlyHint"], true);
     assert_eq!(native_contents["annotations"]["idempotentHint"], true);

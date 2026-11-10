@@ -64,6 +64,9 @@ pub use request::{
     VolumeRequest, ZoneRequest,
 };
 pub use surface::Surface;
+pub use surface::line_in::{
+    LineInSourceDto, LineInSourcesDto, LineInUnavailableDto, PlayLineInRequest,
+};
 pub use surface::spotify_search::{SpotifySearchDto, SpotifySearchQuery};
 pub use web::WebPolicy;
 pub use zones::ZoneDto;

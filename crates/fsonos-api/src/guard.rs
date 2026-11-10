@@ -164,6 +164,7 @@ fn sounding_rooms<'h>(households: &'h [HouseholdState], command: &Command) -> Ve
     match command {
         Command::Play { coordinator, .. }
         | Command::PlayTracks { coordinator, .. }
+        | Command::PlayLineIn { coordinator, .. }
         | Command::PlayFavorite { coordinator, .. }
         | Command::Transport {
             coordinator,

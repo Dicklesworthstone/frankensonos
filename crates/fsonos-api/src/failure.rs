@@ -556,6 +556,12 @@ impl From<CoreError> for Failure {
             CoreError::NoSpotifyFavorite => Self::new(ErrorCode::RenderParamsMissing, detail),
             CoreError::RenderParamsStale => Self::new(ErrorCode::RenderParamsStale, detail),
             CoreError::Uncertain(_) => Self::new(ErrorCode::OutcomeUncertain, detail),
+            CoreError::LineInUnavailable(_) => Self::new(ErrorCode::NotReady, detail).with_hint(
+                "Read line-in sources for the destination room and choose a supported input in the same household.",
+            ),
+            CoreError::LineInChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
+                "The input or destination changed. Read the room and its line-in sources again before a new playback request.",
+            ),
             CoreError::PlaylistChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
                 "Read the saved Sonos playlist again from offset 0 without expected_revision; do not combine old and new pages.",
             ),

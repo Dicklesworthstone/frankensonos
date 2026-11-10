@@ -10,8 +10,8 @@ use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::surface::sonos_playlists::{PlaySonosPlaylistRequest, SonosPlaylistDto};
 use fsonos_api::{
     ActionDto, ActionsQuery, Command, DjMoodsDto, DjStatusDto, ErrorCode, Failure, FavoriteDto,
-    HitDto, OutcomeDto, PlayDto, PlayFavoriteRequest, RoomDto, SearchPlayRequest, SearchRequest,
-    Surface, UndoDto, ZoneDto, ZoneStateDto,
+    HitDto, LineInSourcesDto, OutcomeDto, PlayDto, PlayFavoriteRequest, PlayLineInRequest, RoomDto,
+    SearchPlayRequest, SearchRequest, Surface, UndoDto, ZoneDto, ZoneStateDto,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::{Clock, SystemClock};
@@ -338,6 +338,19 @@ impl Direct {
     ) -> Result<OutcomeDto, Failure> {
         self.households()?;
         self.surface.play_sonos_playlist(&Client::Cli, req)
+    }
+
+    /// Native inputs on the selected household, without changing playback.
+    pub fn line_in_sources(&self, zone: &str) -> Result<LineInSourcesDto, Failure> {
+        self.households()?;
+        self.surface.line_in_sources(&Client::Cli, zone)
+    }
+
+    /// A native input uses the shared playback policy, action log and undo.
+    pub fn play_line_in(&self, req: &PlayLineInRequest) -> Result<OutcomeDto, Failure> {
+        req.validate()?;
+        self.households()?;
+        self.surface.play_line_in(&Client::Cli, req)
     }
 
     /// Every player found, by household then room.

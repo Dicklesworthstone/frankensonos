@@ -96,6 +96,14 @@ impl Surface {
         households: &[HouseholdState],
         command: &Command,
     ) -> Result<(), Failure> {
+        if let Command::PlayLineIn {
+            coordinator,
+            prepared,
+        } = command
+        {
+            prepared.confirm(&*self.transport, households, coordinator)?;
+            self.confirm_source_audience(households, coordinator)?;
+        }
         if let Command::PlayTracks {
             coordinator,
             destination,
