@@ -1490,8 +1490,13 @@ fn authorize_op(guard: &Guard<'_>, op: &SceneOp) -> Result<(), Failure> {
     ) {
         guard.authorize("dj_steer", false)?;
     }
-    if matches!(op, SceneOp::SonosPlaylist { start: false, .. }) {
-        // Staging a paused container first pauses the old source.
+    if matches!(
+        op,
+        SceneOp::Favorite { start: false, .. }
+            | SceneOp::Uri { start: false, .. }
+            | SceneOp::SonosPlaylist { start: false, .. }
+    ) {
+        // Silent loading may pause the old source before selecting the new one.
         guard.authorize("pause", false)?;
     }
     let queue = match op {

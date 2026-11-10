@@ -661,6 +661,12 @@ again when executed; a later playback failure is reported without replaying
 the scene. Album and playlist sources can use their household's own container
 favorite without requiring an unrelated track favorite.
 
+A favorite or URI scene with `playing = false` loads its selected music without
+starting it, including when different music was playing or the earlier
+playback snapshot was unavailable. Both the caller's and the saved author's
+pause permissions apply to that silent load, along with permission to play
+the selected source.
+
 Next:
 
 - Real-hardware CI (a nightly `fsonos selftest` against a real house), then

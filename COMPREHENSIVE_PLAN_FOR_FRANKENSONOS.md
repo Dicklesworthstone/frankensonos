@@ -1032,6 +1032,14 @@ period. Sources are resolved again at execution, so these reads do not promise
 an atomic speaker snapshot or replay a failed mutation. Arbitrary stream URLs
 are not fetched during admission.
 
+For Favorite and URI sources, explicit `playing: false` always selects the
+silent loader, even if the prior source was playing or its snapshot is
+missing. The loader confirms inactive transport before selecting the new
+source; it never starts the requested music just to pause it afterward.
+The whole silent source operation requires both its playback permission and
+`pause` for the caller and saved writer. Denied source operations are omitted
+before readiness reads, while independently permitted room changes remain.
+
 ### 12.8 An instant CLI through the daemon
 
 [`d-cli-daemon-client`] The CLI uses a running daemon's warm state when one

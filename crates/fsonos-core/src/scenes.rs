@@ -541,15 +541,10 @@ fn plan_sources(
             });
             continue;
         }
-        // A group that leads but whose state was not read may be playing:
-        // its source takes the old path. One that does not lead yet will
-        // leave its group, which stops it.
-        let maybe_playing = playing_now || (now.is_none() && leads(lead));
-        // A silent group the scene wants paused gets its source loaded
-        // without a sound: played and then paused, it would sound for a
-        // moment. One that plays now is played and then paused, as ever, so
-        // a source that fails leaves its music playing as it was.
-        let start = g.playing != Some(false) || maybe_playing;
+        // An explicit paused source must never start new music, even if
+        // the old source is playing or its state could not be captured.
+        // Loading confirms silence before selecting or replacing its source.
+        let start = g.playing != Some(false);
         let source = match &g.source {
             SceneSource::Keep
             | SceneSource::SonosPlaylist { .. }
@@ -1404,9 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_group_the_scene_pauses_gets_its_new_source_loaded_not_played() {
-        // C is to be paused on station b; it has paused (or stopped on)
-        // station a.
+    fn a_scene_that_requests_silence_loads_its_new_source_without_starting() {
         let h = house(&[&[&["A", "B"], &["C"]]]);
         let mut scene = evening();
         let b = "x-rincon-mp3radio://radio.example/b";
@@ -1426,37 +1419,25 @@ mod tests {
             snaps[1].source = radio();
             snaps
         };
-        for now in [TransportState::Paused, TransportState::Stopped] {
+        for now in [
+            TransportState::Paused,
+            TransportState::Stopped,
+            TransportState::Playing,
+            TransportState::Transitioning,
+            TransportState::Unknown,
+        ] {
             let plan = plan_apply(&scene, &h, &snaps(now)).unwrap();
-            assert!(!uri(false).starts());
             assert_eq!(
                 plan.ops,
                 [uri(false)],
-                "{now:?}: no Play, and no Pause after"
+                "{now:?}: load without Play or a later Pause"
             );
         }
-        // One that plays now is played and paused, as before: a source that
-        // fails leaves its music playing.
-        let plan = plan_apply(&scene, &h, &snaps(TransportState::Playing)).unwrap();
-        assert_eq!(
-            plan.ops,
-            [
-                uri(true),
-                SceneOp::Pause {
-                    coordinator: pid("C")
-                }
-            ]
-        );
-        // One whose state was not read may be playing: the same old path.
+        assert!(!uri(false).starts());
+        // A missing snapshot cannot turn a paused scene into a brief start.
         let plan = plan_apply(&scene, &h, &evening_snaps()[..1]).unwrap();
-        assert!(
-            plan.ops.contains(&uri(true))
-                && plan.ops.contains(&SceneOp::Pause {
-                    coordinator: pid("C")
-                }),
-            "{:?}",
-            plan.ops
-        );
+        assert!(plan.ops.contains(&uri(false)), "{:?}", plan.ops);
+        assert!(!plan.ops.iter().any(SceneOp::starts), "{:?}", plan.ops);
         // To play, it is played.
         scene.groups[1].playing = Some(true);
         let plan = plan_apply(&scene, &h, &evening_snaps()).unwrap();

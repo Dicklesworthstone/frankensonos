@@ -10,6 +10,7 @@ use fsonos_core::snapshot;
 use fsonos_core::store::MemStore;
 use fsonos_core::{HouseholdState, control, favorites, resolve_room};
 use fsonos_proto::control as soap;
+use fsonos_proto::didl::{SpotifyContainer, spotify_uri_from_renderer_uri};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
@@ -289,84 +290,100 @@ fn volumes_fade_the_dj_is_asked_and_failures_are_reported() {
     assert!(matches!(err, SceneError::CrossHousehold { .. }), "{err}");
 }
 
-/// A silent group the scene wants paused, on a source it doesn't have: the
-/// source is loaded, and no Play reaches it, whether the group had paused or
-/// stopped.
+/// A scene that requests a paused source never briefly starts it, including
+/// when old music is playing. Exercise direct and queue-backed loads on S1/S2.
 #[test]
-fn a_silent_group_the_scene_pauses_gets_its_source_without_a_sound() {
+fn paused_scene_sources_load_without_starting_even_while_old_music_plays() {
     const WANTED: &str = "x-rincon-mp3radio://stream.example.invalid/wanted.mp3";
     const OTHER: &str = "x-rincon-mp3radio://stream.example.invalid/other.mp3";
     let sim = sim();
     let lan = sim.lan();
     let h = houses(&sim, &lan);
-    let den = resolve_room(&h, "Den").unwrap().player.ip;
-    let scene = Scene {
-        name: "Quiet".into(),
-        groups: vec![SceneGroup {
-            coordinator: "Den".into(),
-            members: Vec::new(),
-            source: SceneSource::Uri {
-                uri: WANTED.into(),
-                metadata: String::new(),
-            },
-            playing: Some(false),
-        }],
-        volumes: BTreeMap::new(),
-        mutes: BTreeMap::new(),
-        writer: None,
+    let uri = |uri: &str| SceneSource::Uri {
+        uri: uri.into(),
+        metadata: String::new(),
     };
-    for paused in [true, false] {
-        soap::set_av_transport_uri(&lan, den, OTHER, "").unwrap();
-        soap::play(&lan, den).unwrap();
-        if paused {
-            soap::pause(&lan, den).unwrap();
-        } else {
-            soap::stop(&lan, den).unwrap();
+    let favorite = |name: &str| SceneSource::Favorite {
+        name: name.into(),
+        uri: None,
+    };
+    let sources = [
+        uri(WANTED),
+        uri("spotify:track:0123456789ABCDEFabcdef"),
+        uri("spotify:album:0123456789ABCDEFabcdef"),
+        uri("spotify:playlist:0123456789ABCDEFabcdef"),
+        uri("spotify:episode:0123456789ABCDEFabcdef"),
+        favorite("Sim Radio"),
+        favorite("Nocturne in E-flat"),
+        favorite("Sim Symphonies"),
+    ];
+    for room in ["Den", "Living Room"] {
+        let host = resolve_room(&h, room).unwrap().player.ip;
+        let coordinator = id(&h, room);
+        let catalog = favorites::list(&lan, &h, &coordinator).unwrap();
+        for source in &sources {
+            let (expected, container) = match source {
+                SceneSource::Uri { uri, .. } => (uri.clone(), SpotifyContainer::of(uri).is_some()),
+                SceneSource::Favorite { name, .. } => {
+                    let favorite = favorites::find(&catalog, name).unwrap();
+                    (
+                        favorite.uri.clone().unwrap(),
+                        favorite.kind == favorites::FavoriteKind::Container,
+                    )
+                }
+                _ => unreachable!(),
+            };
+            let scene = Scene {
+                name: "Quiet".into(),
+                groups: vec![SceneGroup {
+                    coordinator: room.into(),
+                    members: Vec::new(),
+                    source: source.clone(),
+                    playing: Some(false),
+                }],
+                volumes: BTreeMap::new(),
+                mutes: BTreeMap::new(),
+                writer: None,
+            };
+            for initial in [
+                TransportState::Playing,
+                TransportState::Paused,
+                TransportState::Stopped,
+            ] {
+                soap::set_av_transport_uri(&lan, host, OTHER, "").unwrap();
+                soap::play(&lan, host).unwrap();
+                match initial {
+                    TransportState::Paused => soap::pause(&lan, host).unwrap(),
+                    TransportState::Stopped => soap::stop(&lan, host).unwrap(),
+                    _ => {}
+                }
+                let before = sim.soap_log().len();
+                let (ops, report) = apply(&lan, &h, &scene, &ApplyOptions::default());
+                assert!(report.is_complete(), "{room} {source:?}: {report:?}");
+                assert!(
+                    sim.soap_log()[before..].iter().all(|e| e.action != "Play"),
+                    "{room} {initial:?}: a Play was sent ({ops:?})"
+                );
+                let media = soap::get_media_info(&lan, host).unwrap();
+                if container {
+                    assert_eq!(media.uri, format!("x-rincon-queue:{}#0", coordinator.0));
+                    assert_eq!(soap::get_position_info(&lan, host).unwrap().track, 1);
+                } else {
+                    assert!(
+                        media.uri == expected
+                            || spotify_uri_from_renderer_uri(&media.uri).as_deref()
+                                == Some(expected.as_str()),
+                        "{room} {source:?}: loaded {:?}",
+                        media.uri
+                    );
+                }
+                let state = soap::get_transport_info(&lan, host).unwrap().state;
+                assert!(
+                    matches!(state, TransportState::Paused | TransportState::Stopped),
+                    "{room} {initial:?} {source:?}: {state:?}"
+                );
+            }
         }
-        let before = sim.soap_log().len();
-        let (ops, report) = apply(&lan, &h, &scene, &ApplyOptions::default());
-        assert!(report.failed.is_empty(), "{:?}", report.failed);
-        let plays: Vec<String> = sim.soap_log()[before..]
-            .iter()
-            .filter(|e| e.action == "Play")
-            .map(|e| format!("{} {}", e.room, e.action))
-            .collect();
-        assert!(plays.is_empty(), "paused {paused}: {plays:?} ({ops:?})");
-        assert_eq!(soap::get_media_info(&lan, den).unwrap().uri, WANTED);
-        let state = soap::get_transport_info(&lan, den).unwrap().state;
-        assert!(
-            matches!(state, TransportState::Paused | TransportState::Stopped),
-            "paused {paused}: {state:?}"
-        );
-    }
-    // A favorite of each kind the house has (a stream, a track, an album)
-    // loads the same way.
-    for name in ["Sim Radio", "Nocturne in E-flat", "Sim Symphonies"] {
-        let mut scene = scene.clone();
-        scene.groups[0].source = SceneSource::Favorite {
-            name: name.into(),
-            uri: None,
-        };
-        soap::set_av_transport_uri(&lan, den, OTHER, "").unwrap();
-        soap::play(&lan, den).unwrap();
-        soap::pause(&lan, den).unwrap();
-        let before = sim.soap_log().len();
-        let (ops, report) = apply(&lan, &h, &scene, &ApplyOptions::default());
-        assert!(report.failed.is_empty(), "{name}: {:?}", report.failed);
-        assert!(
-            sim.soap_log()[before..].iter().all(|e| e.action != "Play"),
-            "{name}: a Play was sent ({ops:?})"
-        );
-        assert_ne!(
-            soap::get_media_info(&lan, den).unwrap().uri,
-            OTHER,
-            "{name}"
-        );
-        let state = soap::get_transport_info(&lan, den).unwrap().state;
-        assert!(
-            matches!(state, TransportState::Paused | TransportState::Stopped),
-            "{name}: {state:?}"
-        );
     }
 }
 

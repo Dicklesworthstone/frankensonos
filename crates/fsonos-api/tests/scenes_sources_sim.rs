@@ -187,15 +187,16 @@ fn a_missing_favorite_in_one_household_preserves_every_groups_playback_and_level
 #[test]
 fn missing_spotify_linkage_cannot_pause_music_or_change_groups_for_play_or_silent_load() {
     for (room, member, generation) in [("Kitchen", "Office", 1), ("Den", "Study", 2)] {
-        for playing in [false, true] {
+        for (playing, state) in [
+            (false, TransportState::Playing),
+            (false, TransportState::Paused),
+            (true, TransportState::Playing),
+        ] {
             let (sim, surface, _) = fixture(Policy::default());
             seed(&sim, room);
-            let state = if playing {
-                TransportState::Playing
-            } else {
+            if state == TransportState::Paused {
                 soap::pause(&sim.lan(), sim.player(room).unwrap().ip).unwrap();
-                TransportState::Paused
-            };
+            }
             surface
                 .save_scene_from(
                     &Client::Cli,
@@ -538,5 +539,78 @@ fn a_captured_renderer_source_still_resumes_without_selecting_it_again() {
             soap::get_transport_info(&sim.lan(), host).unwrap().state,
             TransportState::Playing
         );
+    }
+}
+
+#[test]
+fn silent_loading_requires_both_caller_and_writer_pause_permission() {
+    for (room, member) in [("Kitchen", "Office"), ("Den", "Study")] {
+        for source in [favorite(), spotify()] {
+            for writer_denied in [false, true] {
+                let policy =
+                    Policy::from_toml("[clients.\"tag:blocked\"]\ndeny = [\"pause\"]\n").unwrap();
+                let (sim, surface, unavailable) = fixture(policy);
+                seed(&sim, room);
+                let cli = Client::Cli;
+                let blocked = Client::Tailnet("tag:blocked".into());
+                let (writer, caller) = if writer_denied {
+                    (&blocked, &cli)
+                } else {
+                    (&cli, &blocked)
+                };
+                surface
+                    .save_scene_from(
+                        writer,
+                        "Quiet",
+                        &definition(room, member, source.clone(), false),
+                    )
+                    .unwrap();
+                // An omitted source does not need its catalog to be ready.
+                unavailable.store(true, Ordering::SeqCst);
+                let before = sim.soap_log().len();
+                let result = surface.apply_scene(caller, "Quiet").unwrap();
+                assert!(result.complete && result.changed, "{result:?}");
+                assert!(
+                    result
+                        .notes
+                        .iter()
+                        .any(|note| note.code == NoteCode::Skipped)
+                );
+                let calls = sim.soap_log();
+                let transport_writes = [
+                    "Pause",
+                    "Stop",
+                    "Play",
+                    "AddURIToQueue",
+                    "RemoveTrackRangeFromQueue",
+                ];
+                assert!(
+                    calls[before..].iter().all(|call| {
+                        !transport_writes.contains(&call.action.as_str())
+                            && (call.room != room || call.action != "SetAVTransportURI")
+                    }),
+                    "a denied silent load changed playback: {:?}",
+                    &calls[before..]
+                );
+                let host = sim.player(room).unwrap().ip;
+                assert_eq!(
+                    soap::get_media_info(&sim.lan(), host).unwrap().uri,
+                    ORIGINAL
+                );
+                assert_eq!(
+                    soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                    TransportState::Playing
+                );
+                assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 20);
+                let mut house = HouseholdState::default();
+                house.apply_topology(&get_zone_group_state(&sim.lan(), host).unwrap());
+                let joined = house
+                    .rooms
+                    .iter()
+                    .find(|entry| entry.name == member)
+                    .unwrap();
+                assert_eq!(joined.coordinator.0, sim.player(room).unwrap().uuid);
+            }
+        }
     }
 }
