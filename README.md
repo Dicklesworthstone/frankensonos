@@ -558,6 +558,13 @@ next check. The last complete library remains playable while the scan is
 incomplete. Resumed pages are checked again before publication, and an account
 switch or a competing refresh cannot publish an older prepared result.
 
+The DJ also checks the accepted account and catalog revision before selecting
+new music. An account switch or a library update from another process retires
+its stale selection pool, including when a refresh fails after changing the
+store. A failed or inconsistent rebuild cannot select from that old pool;
+already queued music stays in place. An unchanged catalog reuses the cached
+pool, so listening-history updates do not trigger a full library scan.
+
 The sync panel and CLI/HTTP/MCP status distinguish reading, verification, and
 prepared music waiting for publication. Retained page and track counts, retry
 deadlines, and actual failures survive daemon restart, including before the

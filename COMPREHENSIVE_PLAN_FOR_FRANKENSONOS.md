@@ -657,6 +657,15 @@ their standing preferences on every surface and in the daemon. What is on
   intake. These checks detect changes but do not claim an atomic Spotify
   snapshot. Partial scans never replace the public library or advance its
   success timestamp. A completed proof survives failed publication.
+- Before new DJ selections, the cached pool rechecks the store's accepted
+  Spotify account and public catalog revision. Changes made by another refresh
+  or process invalidate it even when no in-process success notification arrives.
+  An unreadable or changed receipt retires the old pool before a rebuild; a
+  rebuild verifies the receipt again before publishing its result. Failed
+  account adoption/publication sequences therefore cannot supply new picks
+  from the retired account. Existing queued works remain intact. Unchanged
+  receipts reuse the pool without rereading the full library, and ordinary
+  listening and feedback do not invalidate that receipt.
 - A full-read attempt also returns a compact account-bound progress report:
   retained pages and track rows, rechecked pages, and reading/verifying/ready
   phase. The daemon persists this report with admission, retry deadlines and

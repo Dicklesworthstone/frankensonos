@@ -8,7 +8,7 @@ use fsonos_api::surface::dj_rehearse::{DjRehearsal, RehearsalLength};
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::{Clock, FakeClock};
 use fsonos_core::playback::PlayerPlayback;
-use fsonos_core::store::{MemStore, Store};
+use fsonos_core::store::{MemStore, SqliteStore, Store};
 use fsonos_proto::control;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
@@ -59,7 +59,7 @@ fn data_dir() -> PathBuf {
 }
 
 #[test]
-fn the_pool_is_rebuilt_only_after_a_sync_or_an_edit_to_moods_or_preferences() {
+fn the_pool_follows_catalog_publication_without_an_in_process_sync_notice() {
     let moods_file = data_dir();
     let moods = Some(&moods_file);
     let mut store = MemStore::default();
@@ -72,14 +72,14 @@ fn the_pool_is_rebuilt_only_after_a_sync_or_an_edit_to_moods_or_preferences() {
     state.refresh(&store, moods, 0).unwrap();
     assert_eq!(state.pool.len(), 2, "the first refresh builds the pool");
 
-    // The cache grows, but nothing says so: the next skip keeps the pool.
+    // Another connection can publish without sending this DJ a notice.
     items.push(song(3, "Artist Three"));
     apply_library_read(&mut store, &items).unwrap();
     state.refresh(&store, moods, 0).unwrap();
     assert_eq!(
         state.pool.len(),
-        2,
-        "kept: nothing it is built from changed"
+        3,
+        "the catalog receipt changes even without a sync notice"
     );
 
     // A library sync (its freshness notice) rebuilds it.
@@ -102,7 +102,7 @@ fn the_pool_is_rebuilt_only_after_a_sync_or_an_edit_to_moods_or_preferences() {
     items.push(song(5, "Artist Five"));
     apply_library_read(&mut store, &items).unwrap();
     state.refresh(&store, moods, 0).unwrap();
-    assert_eq!(state.pool.len(), 4, "kept again");
+    assert_eq!(state.pool.len(), 5, "external publication is visible again");
     std::fs::write(&moods_file, "# the owner's moods\n").unwrap();
     state.refresh(&store, moods, 0).unwrap();
     assert_eq!(state.pool.len(), 5, "rebuilt after a moods edit");
@@ -181,10 +181,17 @@ struct House {
 
 impl House {
     fn new() -> Self {
-        let sim = SimHousehold::builder()
-            .s2([SimPlayerSpec::new("Den", SimModel::One)])
-            .spawn()
-            .unwrap();
+        Self::for_generation(false)
+    }
+
+    fn for_generation(s1: bool) -> Self {
+        let builder = SimHousehold::builder();
+        let builder = if s1 {
+            builder.s1([SimPlayerSpec::new("Den", SimModel::Play5Gen1)])
+        } else {
+            builder.s2([SimPlayerSpec::new("Den", SimModel::One)])
+        };
+        let sim = builder.spawn().unwrap();
         let player = sim.player("Den").unwrap();
         let coordinator = PlayerId(player.uuid.clone());
         let mut house = HouseholdState::default();
@@ -493,7 +500,10 @@ fn steering_accepts_new_moods_only_with_their_validated_preferences_and_library(
     assert!(dj.steer(at, &mut store, &steering, &clock).is_err());
     assert_eq!(store.dj_session(&house.coordinator.0).unwrap(), previous);
     assert!(dj.state().moods.get("afterhours").is_none());
-    assert_eq!(dj.state().pool.works()[0].composer, "Artist One");
+    assert!(
+        dj.state().pool.is_empty(),
+        "a changed catalog cannot fall back to retired music after a failed rebuild"
+    );
     assert!(!dj.state().planned);
     assert!(!library.take_fresh(), "the failed rebuild remains pending");
 
@@ -799,4 +809,140 @@ fn strict_top_up_keeps_playing_the_retained_work_when_no_new_work_matches() {
         dj.state().feeds[&house.coordinator].queued()[0].work_key,
         queued[1].work_key
     );
+}
+
+#[test]
+fn another_database_connection_publishes_music_and_retires_an_adopted_account() {
+    let database = data_dir().with_file_name("catalog.db");
+    let mut writer = SqliteStore::open(&database).unwrap();
+    writer.adopt_spotify_library_owner("original-owner").unwrap();
+    apply_library_read(&mut writer, &[song(1, "Artist One")]).unwrap();
+    let reader = SqliteStore::open(&database).unwrap();
+    let mut state = State::default();
+    state.refresh(&reader, None, 0).unwrap();
+    assert_eq!(state.pool.works()[0].composer, "Artist One");
+
+    apply_library_read(&mut writer, &[song(2, "Artist Two")]).unwrap();
+    state.refresh(&reader, None, 1).unwrap();
+    assert_eq!(state.pool.works()[0].composer, "Artist Two");
+
+    writer
+        .adopt_spotify_library_owner("replacement-owner")
+        .unwrap();
+    state.refresh(&reader, None, 2).unwrap();
+    assert!(
+        state.pool.is_empty(),
+        "adoption retires the previous account before new music is published"
+    );
+    apply_library_read(&mut writer, &[song(3, "Artist Three")]).unwrap();
+    state.refresh(&reader, None, 3).unwrap();
+    assert_eq!(state.pool.works()[0].composer, "Artist Three");
+}
+
+#[test]
+#[allow(clippy::field_reassign_with_default)] // Core keeps its interpolation clock private.
+fn automatic_refill_observes_publication_without_a_sync_notice_on_s1_and_s2() {
+    for s1 in [true, false] {
+        let house = House::for_generation(s1);
+        let lan = house.sim.lan();
+        let at = house.speakers(&lan);
+        let dj = SpotifyDj::new(None);
+        let mut store = MemStore::default();
+        store.adopt_spotify_library_owner("original-owner").unwrap();
+        apply_library_read(&mut store, &[song(1, "Artist One"), song(2, "Artist Two")])
+            .unwrap();
+        let clock = clock();
+        dj.act(at, &mut store, DjAction::Start, &clock).unwrap();
+        let before = dj.state().feeds[&house.coordinator].snapshot().unwrap();
+        assert_eq!(before.queued.len(), 2);
+        apply_library_read(&mut store, &[song(3, "Fresh Artist")]).unwrap();
+
+        let host = house.sim.player("Den").unwrap().ip;
+        control::next(&lan, host).unwrap();
+        let position = control::get_position_info(&lan, host).unwrap();
+        let mut playback = PlayerPlayback::default();
+        playback.transport = Some(TransportState::Playing);
+        playback.media_uri = Some(control::get_media_info(&lan, host).unwrap().uri);
+        playback.queue_position = Some(position.track);
+        playback.track_uri = Some(position.uri.clone());
+        playback.queue_length = Some(2);
+        dj.on_playback(at, &mut store, &playback, &clock);
+        let after = dj.state().feeds[&house.coordinator].snapshot().unwrap();
+        assert_eq!(after.played, before.queued[..1]);
+        assert_eq!(after.queued[0], before.queued[1]);
+        assert_eq!(after.queued[1].composer, "Fresh Artist");
+        assert_eq!(after.queued[1].movements[0].position, Some(3));
+        assert_eq!(
+            control::get_position_info(&lan, host).unwrap().uri,
+            position.uri,
+            "publication changes future picks without replacing queued playback"
+        );
+    }
+}
+
+#[test]
+#[allow(clippy::field_reassign_with_default)] // Core keeps its interpolation clock private.
+fn failed_rebuild_after_account_adoption_blocks_skip_and_stale_refill_on_s1_and_s2() {
+    for s1 in [true, false] {
+        let house = House::for_generation(s1);
+        let lan = house.sim.lan();
+        let at = house.speakers(&lan);
+        let moods_file = data_dir();
+        let dj = SpotifyDj::new(Some(moods_file.clone()));
+        let mut store = MemStore::default();
+        store.adopt_spotify_library_owner("original-owner").unwrap();
+        apply_library_read(&mut store, &[song(1, "Artist One"), song(2, "Artist Two")])
+            .unwrap();
+        let clock = clock();
+        dj.act(at, &mut store, DjAction::Start, &clock).unwrap();
+        let before = dj.state().feeds[&house.coordinator].snapshot().unwrap();
+
+        // A sync has adopted a verified replacement account, but publication
+        // has not completed. A separate bad preference edit blocks rebuilding.
+        store
+            .adopt_spotify_library_owner("replacement-owner")
+            .unwrap();
+        let preferences = moods_file.with_file_name("preferences.toml");
+        std::fs::write(&preferences, "energy = 'broken'\n").unwrap();
+        let calls = house.sim.soap_log().len();
+        assert!(dj.act(at, &mut store, DjAction::Skip, &clock).is_err());
+        assert_eq!(house.sim.soap_log().len(), calls);
+        assert_eq!(
+            dj.state().feeds[&house.coordinator].snapshot().unwrap(),
+            before
+        );
+        assert!(dj.state().pool.is_empty());
+
+        let host = house.sim.player("Den").unwrap().ip;
+        control::next(&lan, host).unwrap();
+        let position = control::get_position_info(&lan, host).unwrap();
+        let mut playback = PlayerPlayback::default();
+        playback.transport = Some(TransportState::Playing);
+        playback.media_uri = Some(control::get_media_info(&lan, host).unwrap().uri);
+        playback.queue_position = Some(position.track);
+        playback.track_uri = Some(position.uri.clone());
+        playback.queue_length = Some(2);
+        let calls = house.sim.soap_log().len();
+        dj.on_playback(at, &mut store, &playback, &clock);
+        assert!(
+            house.sim.soap_log()[calls..].iter().all(|call| !matches!(
+                call.action.as_str(),
+                "AddURIToQueue" | "AddMultipleURIsToQueue" | "Seek" | "Play"
+            )),
+            "automatic refill cannot select the retired account during rebuild backoff"
+        );
+        let held = dj.state().feeds[&house.coordinator].snapshot().unwrap();
+        assert_eq!(held.queued, before.queued[1..]);
+        assert_eq!(
+            control::get_position_info(&lan, host).unwrap().uri,
+            position.uri
+        );
+
+        std::fs::write(&preferences, "# repaired\n").unwrap();
+        apply_library_read(&mut store, &[song(3, "Fresh Artist")]).unwrap();
+        dj.act(at, &mut store, DjAction::Skip, &clock).unwrap();
+        let resumed = dj.state().feeds[&house.coordinator].snapshot().unwrap();
+        assert_eq!(resumed.queued.last().unwrap().composer, "Fresh Artist");
+        assert_eq!(control::get_position_info(&lan, host).unwrap().track, 3);
+    }
 }

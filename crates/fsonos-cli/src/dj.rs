@@ -3,12 +3,12 @@
 //!
 //! A start builds the DJ's pool from the library cache (songs and classical works)
 //! and the owner's feedback, queues the first works and plays them. The pool
-//! is kept for the playback events that follow. Each start rebuilds it, so a
-//! library `fsonos setup` read in another process is picked up. A skip
-//! rebuilds it only when a library sync, preferences.toml or moods.toml
-//! changed since (the rebuild reads the whole library cache: seconds, for a
-//! large library).
-//! Automatic feeding also checks those files at most once every 30 seconds,
+//! is kept while its account and catalog revision remain current. Publications
+//! from another process and account adoption invalidate it before the next
+//! selection, including when the rest of a library sync fails. Each start
+//! rebuilds it; a skip also rebuilds after preferences.toml or moods.toml
+//! changes (a full library read can take seconds for a large library).
+//! Automatic feeding checks those files at most once every 30 seconds,
 //! so external edits apply to future picks without a restart or skip.
 //!
 //! Every pick is steered: the zone's DJ session (from the store) names a
@@ -58,6 +58,7 @@ use std::time::{Duration, Instant};
 
 use crate::dj_view::{self, steer_failure, store_failure};
 
+mod catalog;
 pub(crate) mod configuration;
 pub(crate) mod feedback;
 mod handover;
@@ -187,6 +188,8 @@ struct State {
     problems: HashMap<PlayerId, String>,
     /// What the DJ plans from, as of the last successful rebuild.
     pool: WorkPool,
+    /// The accepted account and public catalog used to build the pool.
+    catalog: Option<catalog::Receipt>,
     feedback: Option<FeedbackModel>,
     moods: Moods,
     /// What each group is hearing, for early skips and full listens.
@@ -195,7 +198,7 @@ struct State {
     /// until the move settles (`DjEngine::moving`).
     held: HashSet<PlayerId>,
     /// The current library and preferences were rebuilt successfully.
-    /// False keeps a failed refresh pending while the last good plan plays.
+    /// False keeps a failed refresh pending while queued music plays.
     planned: bool,
     /// What the plan was built from beyond the library cache: a hash of
     /// moods.toml and preferences.toml as they read then (see
@@ -230,6 +233,7 @@ impl State {
         moods_file: Option<&PathBuf>,
         now: i64,
     ) -> Result<Self, Failure> {
+        let catalog = catalog::Receipt::read(store)?;
         let mut next = Self {
             pool: works_from_store(store)
                 .map_err(|e| Failure::new(ErrorCode::Internal, format!("the DJ's pool: {e}")))?,
@@ -239,11 +243,13 @@ impl State {
             ..Self::default()
         };
         prefs::apply(&mut next, moods_file)?;
+        catalog.confirm(store)?;
+        next.catalog = Some(catalog);
         Ok(next)
     }
 
-    /// Rebuild the pool, feedback and moods without losing the last good
-    /// preferences if any read or validation fails.
+    /// Rebuild the pool, feedback and moods together. A failed read may retain
+    /// the last plan only while its account and catalog are still current.
     fn reload(
         &mut self,
         store: &dyn Store,
@@ -251,11 +257,14 @@ impl State {
         now: i64,
     ) -> Result<(), Failure> {
         let inputs = plan_inputs(moods_file);
-        let candidate = Self::read_plan(store, moods_file, now);
+        let candidate = self
+            .check_catalog(store)
+            .and_then(|()| Self::read_plan(store, moods_file, now));
         self.plan_check_at = Some(Instant::now() + PLAN_CHECK);
         match candidate {
             Ok(next) => {
                 self.pool = next.pool;
+                self.catalog = next.catalog;
                 self.feedback = next.feedback;
                 self.moods = next.moods;
                 self.planned = true;
@@ -265,6 +274,8 @@ impl State {
                 Ok(())
             }
             Err(error) => {
+                // Publication may have changed while the failed read ran.
+                let _ = self.check_catalog(store);
                 // A consumed library-sync notification must not lose this
                 // rebuild: maintenance retries it after the owner repairs it.
                 self.planned = false;
@@ -274,18 +285,19 @@ impl State {
         }
     }
 
-    /// Bring the plan up to date for an explicit request. The pool is rebuilt only when
-    /// what it is built from changed: a library sync (`planned` false), or an
-    /// edit to moods.toml or preferences.toml. Otherwise it is kept and only
-    /// the feedback, which moves with every listen, is read again. A rebuild
-    /// reads the whole library cache under the DJ's lock: seconds, for a
-    /// library of tens of thousands of tracks. A start always rebuilds.
+    /// Bring the plan up to date for an explicit request. The pool is rebuilt
+    /// after account/catalog changes, a library sync, or edits to moods.toml
+    /// or preferences.toml. Otherwise it is kept and only the feedback, which
+    /// moves with every listen, is read again. A rebuild reads the whole
+    /// library cache under the DJ's lock: seconds, for a large library.
+    /// A start always rebuilds.
     fn refresh(
         &mut self,
         store: &dyn Store,
         moods_file: Option<&PathBuf>,
         now: i64,
     ) -> Result<(), Failure> {
+        self.check_catalog(store)?;
         if self.planned && self.plan_inputs == Some(plan_inputs(moods_file)) {
             // Feedback only weights the picks; without it the DJ still plays.
             self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
@@ -1034,10 +1046,13 @@ impl DjEngine for SpotifyDj {
         self.take_library_fresh(&mut state);
         let checked_at = Instant::now();
         state.check_plan_inputs(self.moods_file.as_ref(), checked_at);
+        if let Err(f) = state.check_catalog(store) {
+            tracing::warn!(detail = %f.detail, "the DJ cannot verify its library; new selections wait");
+        }
         if state.reload_due(checked_at)
             && let Err(f) = state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())
         {
-            tracing::warn!(detail = %f.detail, "the DJ retains its last validated plan; rebuild pending");
+            tracing::warn!(detail = %f.detail, "the DJ's selection plan could not be rebuilt; retry pending");
         }
         if state
             .refill_retries
