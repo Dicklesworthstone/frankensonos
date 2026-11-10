@@ -3484,3 +3484,29 @@ Also relevant: `.data` around the two path literals (`0x6e6970+`) is a
 record's `strA`, covering `0x666fbc → 0x66705c…`), i.e. the settings schema
 fragments chained by path — the consumer of that table is where the reader
 lives, and the chain gives an ordered walk to it.
+
+**The S2 daemon's actual exit cause is the missing `netstartd`.** The log is
+explicit and short:
+
+```
+<watchdog,3> Unable to start watchdog helper on port 1410
+<watchdog,4> Watchdog not started
+<mod_zp,1> hhid not available
+```
+
+then the process ends — so the 10-15 s "restart" was the daemon **exiting**
+because its watchdog helper never starts, not a watchdog killing it. The
+helper is `netstartd` (port 1410, `/opt/log/netstartd.log`, `/tmp/netstartd.pid`
+in its own strings) and it is **absent from the `/tmp/s86` extract** (that
+extract has only `bin/conf/etc/htdocs/lib` — no `sbin`, no `wifi`).
+
+Providing a dummy TCP listener on 1410 does not satisfy it (identical log),
+so there is a handshake.
+
+Correction worth keeping: the only `netstartd` on hand came out of
+`65130_rootfs.squashfs` and is **PowerPC** — 65130 is an *S1* rootfs, so it
+cannot run in the MIPS chroot as-is. Arch does not matter for the TCP
+handshake, so it can still be used for the *protocol*, but it needs PPC libs
+(the S1 rootfs) alongside the MIPS ones. The clean route is to extract
+`/wifi/netstartd` from a genuine **S2** rootfs (86.10/86.11 image), which the
+`s2_verdict_chroot.sh` harness already knows how to unpack.
