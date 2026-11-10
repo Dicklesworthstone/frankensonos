@@ -20,7 +20,7 @@ use crate::request::{
     DjStartRequest, DjSteerRequest, GroupRequest, MoveRequest, MuteRequest, PartyRequest,
     PlayFavoriteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
 };
-use crate::source::validate_playable_source;
+use crate::source::{ArtistSelection, validate_play_request_source};
 
 /// Pause, resume, skip or seek on a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +58,15 @@ pub enum Command {
         coordinator: PlayerId,
         source_uri: String,
         title: Option<String>,
+    },
+    /// A catalog source resolved to exact tracks before any speaker changes.
+    /// Its original group, source and queue must still match when it executes.
+    PlayTracks {
+        coordinator: PlayerId,
+        source_uri: String,
+        title: Option<String>,
+        selection: ArtistSelection,
+        destination: fsonos_core::control::TrackBatchDestination,
     },
     /// Play a Sonos favorite (a track, a station, or a container that
     /// replaces the queue) in the group `coordinator` leads.
@@ -138,7 +147,10 @@ impl Command {
             // Steering sets the stored session; starting queues more works.
             Self::DjSteer { start, .. } => !start,
             // A move that ran once has nothing left to move.
-            Self::Move { .. } | Self::Dj { .. } | Self::Nothing { .. } => false,
+            Self::PlayTracks { .. }
+            | Self::Move { .. }
+            | Self::Dj { .. }
+            | Self::Nothing { .. } => false,
         }
     }
 
@@ -147,6 +159,7 @@ impl Command {
     pub fn addressed(&self) -> Option<&PlayerId> {
         match self {
             Self::Play { coordinator, .. }
+            | Self::PlayTracks { coordinator, .. }
             | Self::PlayFavorite { coordinator, .. }
             | Self::Transport { coordinator, .. }
             | Self::Dj { coordinator, .. }
@@ -260,7 +273,7 @@ pub fn resolve<'a>(rooms: impl Into<Rooms<'a>>, room: &str) -> Result<ControlTar
 pub fn plan_play<'a>(rooms: impl Into<Rooms<'a>>, req: &PlayRequest) -> Result<Command, Failure> {
     let req = req.normalized()?;
     let target = resolve(rooms, &req.zone)?;
-    validate_playable_source(&req.source_uri)?;
+    validate_play_request_source(&req.source_uri)?;
     Ok(Command::Play {
         coordinator: target.coordinator.id.clone(),
         source_uri: req.source_uri,

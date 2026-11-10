@@ -38,8 +38,9 @@ pub use loading::{
     load_uri, pause_confirmed,
 };
 pub use spotify_tracks::{
-    MAX_SPOTIFY_TRACK_BATCH, enqueue_spotify_tracks, enqueue_spotify_tracks_bound,
-    load_spotify_tracks, load_spotify_tracks_bound, play_spotify_tracks, play_spotify_tracks_bound,
+    MAX_SPOTIFY_TRACK_BATCH, TrackBatchDestination, enqueue_spotify_tracks,
+    enqueue_spotify_tracks_bound, load_spotify_tracks, load_spotify_tracks_bound,
+    play_spotify_tracks, play_spotify_tracks_bound,
 };
 
 /// How long a player that left its group may take to show alone (real ones

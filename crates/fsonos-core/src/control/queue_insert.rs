@@ -75,7 +75,7 @@ fn inserted<'a>(
     after.uris.get(start..end)
 }
 
-fn still_observed<T: Transport + ?Sized>(
+pub(super) fn still_observed<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
     queue: &Snapshot,

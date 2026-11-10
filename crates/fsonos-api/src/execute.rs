@@ -73,8 +73,9 @@ pub fn execute_guarded<T: Transport + ?Sized>(
 /// replace the group's queue with the album or playlist and play it from the
 /// top; `spotify:episode:` renders on the account id alone (only `?sid=` is
 /// sent). Other renderer URIs play as given, without DIDL metadata. The DJ
-/// answer, `spotify:artist:`, `spotify:show:` and other Spotify kinds return
-/// [`ErrorCode::NotImplemented`] (see [`crate::source`]).
+/// answer and unresolved bare artist/show sources return
+/// [`ErrorCode::NotImplemented`] (see [`crate::source`]). The surface resolves
+/// artist requests to [`Command::PlayTracks`] before invoking this renderer.
 pub fn execute<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -101,22 +102,24 @@ pub fn execute<T: Transport + ?Sized>(
                 room(coordinator)
             ))
         }
+        Command::PlayTracks {
+            coordinator,
+            source_uri,
+            selection,
+            destination,
+            ..
+        } => play_tracks(
+            transport,
+            households,
+            coordinator,
+            source_uri,
+            selection,
+            destination,
+        )?,
         Command::PlayFavorite {
             coordinator,
             favorite,
-        } => {
-            fsonos_core::favorites::play(transport, households, coordinator, favorite)?;
-            let kind = if favorite.id.starts_with("SQ:") {
-                "Sonos playlist"
-            } else {
-                "favorite"
-            };
-            OutcomeDto::sent(format!(
-                "playing the {kind} {:?} in {}'s group",
-                favorite.title,
-                room(coordinator)
-            ))
-        }
+        } => play_favorite(transport, households, coordinator, favorite)?,
         Command::Transport {
             coordinator,
             action,
@@ -169,6 +172,49 @@ pub fn execute<T: Transport + ?Sized>(
         },
     };
     Ok(outcome)
+}
+
+fn play_tracks<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    source_uri: &str,
+    selection: &crate::source::ArtistSelection,
+    destination: &control::TrackBatchDestination,
+) -> Result<OutcomeDto, Failure> {
+    selection.validate()?;
+    let room = &control::locate(households, coordinator)?.room_name;
+    let tracks: Vec<_> = selection
+        .tracks
+        .iter()
+        .map(|(uri, title)| (uri.as_str(), title.as_str()))
+        .collect();
+    control::play_spotify_tracks_bound(transport, households, coordinator, &tracks, destination)
+        .map_err(spotify_failure)?;
+    Ok(OutcomeDto::sent(format!(
+        "playing {} tracks from {source_uri} in {room}'s group ({})",
+        tracks.len(),
+        selection.kind.description()
+    )))
+}
+
+fn play_favorite<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    favorite: &fsonos_core::favorites::Favorite,
+) -> Result<OutcomeDto, Failure> {
+    let room = &control::locate(households, coordinator)?.room_name;
+    fsonos_core::favorites::play(transport, households, coordinator, favorite)?;
+    let kind = if favorite.id.starts_with("SQ:") {
+        "Sonos playlist"
+    } else {
+        "favorite"
+    };
+    Ok(OutcomeDto::sent(format!(
+        "playing the {kind} {:?} in {room}'s group",
+        favorite.title
+    )))
 }
 
 /// A DJ command on a surface without a DJ engine (see

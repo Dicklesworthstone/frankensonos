@@ -26,6 +26,7 @@ const OLD: [&str; 3] = [
     "http://example.invalid/third.mp3",
 ];
 const RADIO: &str = "http://example.invalid/radio.mp3";
+const OWNER_TRACK: &str = "http://example.invalid/owner-added.mp3";
 
 struct Rig {
     sim: SimHandle,
@@ -99,6 +100,8 @@ enum Fault {
     LostSecondBeforeApply,
     SourceBeforeFirstRead,
     MembershipBeforeFirstRead,
+    QueueBeforeFirstRead,
+    QueueBeforePreparation,
     SourceAfterLearning,
     MembershipAfterFirst,
     RebootAfterFirst,
@@ -150,15 +153,29 @@ impl Transport for Replies<'_> {
         if name == "GetZoneGroupState"
             && matches!(
                 self.fault,
-                Fault::SourceBeforeFirstRead | Fault::MembershipBeforeFirstRead
+                Fault::SourceBeforeFirstRead
+                    | Fault::MembershipBeforeFirstRead
+                    | Fault::QueueBeforeFirstRead
             )
             && !self.edited.replace(true)
         {
-            if self.fault == Fault::SourceBeforeFirstRead {
-                soap::set_av_transport_uri(&self.lan, host, RADIO, "")?;
-            } else {
-                soap::join_group(&self.lan, self.rig.peer_host, &self.rig.id)?;
+            match self.fault {
+                Fault::SourceBeforeFirstRead => {
+                    soap::set_av_transport_uri(&self.lan, host, RADIO, "")?;
+                }
+                Fault::QueueBeforeFirstRead => {
+                    soap::enqueue_uri(&self.lan, host, OWNER_TRACK, "", 0, false)?;
+                }
+                _ => soap::join_group(&self.lan, self.rig.peer_host, &self.rig.id)?,
             }
+        }
+        if self.fault == Fault::QueueBeforePreparation
+            && name == "Browse"
+            && body.contains("<ObjectID>Q:0</ObjectID>")
+            && !body.contains("<RequestedCount>1</RequestedCount>")
+            && !self.edited.replace(true)
+        {
+            soap::enqueue_uri(&self.lan, host, OWNER_TRACK, "", 0, false)?;
         }
         if !name.starts_with("Get") && name != "Browse" {
             self.writes.borrow_mut().push(name.into());
@@ -385,11 +402,17 @@ fn retained_destinations_cannot_adopt_a_change_at_the_first_core_read() {
         for fault in [
             Fault::SourceBeforeFirstRead,
             Fault::MembershipBeforeFirstRead,
+            Fault::QueueBeforeFirstRead,
+            Fault::QueueBeforePreparation,
         ] {
             for operation in 0..3 {
                 let rig = Rig::new(s2, true);
+                if operation == 1 {
+                    soap::pause(&rig.sim.lan(), rig.host).unwrap();
+                }
                 let destination =
-                    control::SourceDestination::read(&rig.sim.lan(), rig.host, &rig.id).unwrap();
+                    control::TrackBatchDestination::read(&rig.sim.lan(), rig.host, &rig.id)
+                        .unwrap();
                 let t = Replies::new(&rig, fault);
                 let result = match operation {
                     0 => control::play_spotify_tracks_bound(
@@ -421,7 +444,14 @@ fn retained_destinations_cannot_adopt_a_change_at_the_first_core_read() {
                     "{fault:?} operation {operation} adopted a changed target"
                 );
                 t.only_adds(0);
-                assert_eq!(rig.queue(), OLD);
+                let mut expected: Vec<_> = OLD.iter().map(|uri| (*uri).to_owned()).collect();
+                if matches!(
+                    fault,
+                    Fault::QueueBeforeFirstRead | Fault::QueueBeforePreparation
+                ) {
+                    expected.push(OWNER_TRACK.into());
+                }
+                assert_eq!(rig.queue(), expected);
             }
         }
     }

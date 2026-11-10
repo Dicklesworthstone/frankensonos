@@ -213,8 +213,11 @@ An artist's Set/Add are 200 but Play answers 500 — the id needs Sonos' SMAPI
 shortcut item id (the owner's own favorite stores `10052064artist%3a…` with an
 empty resolution), so the Spotify id alone cannot address it. A show's Play is
 200 and the player returns to `STOPPED` — the service container id is unknown.
-FrankenSonos therefore refuses `spotify:artist:`/`spotify:show:` at play with
-`NOT_IMPLEMENTED` and evidence, while the queue still accepts all three.
+The direct renderer therefore refuses bare artist/show playback with
+`NOT_IMPLEMENTED`. Explicit artist requests now use a separate catalog path:
+read up to ten concrete tracks, then enqueue and play those through the normal
+track renderer. This does not change the bare-id findings below. Show playback
+is still refused. See [Artist playback](ARTIST_PLAYBACK.md).
 
 #### Artist probes on .84, 2026-10-24 (volume 0)
 
@@ -238,7 +241,8 @@ the favorite's stored shape cannot simply be replayed; the open question is
 why Play on an accepted artist answers 200 but never leaves `STOPPED`
 (SMAPI resolution of the artist id, unhinted by any error code). Until one
 substitutes the short id, **Set 200 + Play STOPPED is the documented artist
-result**, and the typed refusal is what the product keeps.
+result**, and the native renderer keeps that typed refusal. Catalog-resolved
+artist requests avoid this wire shape entirely by sending concrete tracks.
 
 Queue edits and the revision guard (verified live on S1 and S2, 2026-10-17;
 stopped groups, two copies of the last track appended, only the copies

@@ -1,7 +1,7 @@
 //! Spotify albums and playlists play, against the virtual households: the
 //! CLI takes an open.spotify.com album link and MCP a playlist URI, and the
 //! sim confirms each replaced the queue with its own tracks and plays from
-//! the first. An artist says it can't play yet, and what plays plays on.
+//! the first. An artist needs Spotify sign-in, and what plays plays on.
 //! A library search that names a saved album plays the whole album, and
 //! one that names a playlist in the owner's list plays the playlist.
 
@@ -196,7 +196,7 @@ fn a_search_naming_a_saved_album_or_a_playlist_plays_it() {
 }
 
 #[test]
-fn an_artist_or_show_is_refused_and_an_episode_plays() {
+fn an_artist_requires_sign_in_a_show_is_refused_and_an_episode_plays() {
     let mut s = Scenario::start("play-spotify-kinds");
     s.sim(SimHousehold::standard());
     let kitchen = s.ip("Kitchen");
@@ -217,18 +217,19 @@ fn an_artist_or_show_is_refused_and_an_episode_plays() {
         &run.stderr,
     );
 
-    // An artist and a show are typed refusals with protocol evidence
-    // (docs/PROTOCOL.md, "Bare Spotify kinds"); nothing reaches the speaker
-    // and the playlist plays on.
-    for (tag, prefix, says) in [
+    // Artist selection needs the owner's Spotify sign-in; a show still has
+    // no supported expansion. Both fail before changing the playing queue.
+    for (tag, prefix, code, says) in [
         (
             "play-artist",
             "spotify:artist:",
-            "an artist is a typed refusal naming the SMAPI shortcut id",
+            "SPOTIFY_AUTH_REQUIRED",
+            "an artist requests Spotify setup before changing playback",
         ),
         (
             "play-show",
             "spotify:show:",
+            "NOT_IMPLEMENTED",
             "a show is a typed refusal naming the service container id",
         ),
     ] {
@@ -240,7 +241,7 @@ fn an_artist_or_show_is_refused_and_an_episode_plays() {
             "cli",
             says,
             !run.ok()
-                && run.stderr.contains("error[NOT_IMPLEMENTED]")
+                && run.stderr.contains(&format!("error[{code}]"))
                 && uri.contains(&format!("{PLAYLIST}1")),
             &run.stderr,
         );
@@ -277,9 +278,11 @@ fn an_artist_or_show_is_refused_and_an_episode_plays() {
     s.check(
         "play-artist-mcp",
         "mcp",
-        "MCP answers the same typed refusal as the CLI",
+        "MCP requests the same Spotify sign-in as the CLI",
         refused["result"]["isError"] == true
-            && refused["result"].to_string().contains("NOT_IMPLEMENTED"),
+            && refused["result"]
+                .to_string()
+                .contains("SPOTIFY_AUTH_REQUIRED"),
         &refused,
     );
     s.finish();

@@ -1,15 +1,55 @@
 //! Render a bounded Spotify catalog expansion through one household account.
 //! Known tracks share queue insertion proofs and staged source replacement.
 
+use super::queue_removal::{self, Snapshot};
 use super::{Queued, SourceDestination, addr, pause_confirmed, queue_insert, spotify_params};
 use crate::queue_source::{self, Staged};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::didl::{spotify_queue_uri, spotify_track_didl};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
+use std::net::IpAddr;
 
 /// At most ten actual tracks are resolved by an artist catalog read.
 pub const MAX_SPOTIFY_TRACK_BATCH: usize = 10;
+
+/// The source, group, boot and complete queue observed before catalog lookup.
+/// Retain this proof until insertion begins, so a changed queue cannot become
+/// the replacement's new baseline merely because its source URI is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackBatchDestination {
+    pub(super) source: SourceDestination,
+    pub(super) queue: Snapshot,
+}
+
+impl TrackBatchDestination {
+    pub fn read<T: Transport + ?Sized>(
+        t: &T,
+        host: IpAddr,
+        coordinator: &PlayerId,
+    ) -> Result<Self, ProtoError> {
+        let source = SourceDestination::read(t, host, coordinator)?;
+        let queue = queue_removal::read(t, host)?;
+        let destination = Self { source, queue };
+        destination.confirm(t, host, coordinator)?;
+        Ok(destination)
+    }
+
+    pub fn confirm<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        host: IpAddr,
+        coordinator: &PlayerId,
+    ) -> Result<(), ProtoError> {
+        self.source.confirm(t, host, coordinator)?;
+        if !queue_insert::still_observed(t, host, &self.queue)? {
+            return Err(ProtoError::Malformed(
+                "the queue changed while resolving Spotify tracks; nothing was added".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 fn validate(tracks: &[(&str, &str)]) -> Result<(), CoreError> {
     if tracks.is_empty() || tracks.len() > MAX_SPOTIFY_TRACK_BATCH {
@@ -82,12 +122,12 @@ pub fn enqueue_spotify_tracks<T: Transport + ?Sized>(
 ) -> Result<Queued, CoreError> {
     validate(tracks)?;
     let host = addr(households, coordinator)?;
-    let destination = SourceDestination::read(t, host, coordinator)?;
+    let destination = TrackBatchDestination::read(t, host, coordinator)?;
     enqueue_spotify_tracks_bound(t, households, coordinator, tracks, next, &destination)
 }
 
 /// Insert a resolved track list only while the destination observed before
-/// catalog lookup still holds. Never adopt a newer group or selected source
+/// catalog lookup still holds. Never adopt a newer queue, group or source
 /// between the surface's admission check and the first core read.
 pub fn enqueue_spotify_tracks_bound<T: Transport + ?Sized>(
     t: &T,
@@ -95,7 +135,7 @@ pub fn enqueue_spotify_tracks_bound<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     tracks: &[(&str, &str)],
     next: bool,
-    destination: &SourceDestination,
+    destination: &TrackBatchDestination,
 ) -> Result<Queued, CoreError> {
     validate(tracks)?;
     let host = addr(households, coordinator)?;
@@ -117,7 +157,7 @@ pub fn play_spotify_tracks<T: Transport + ?Sized>(
 ) -> Result<(), CoreError> {
     validate(tracks)?;
     let host = addr(households, coordinator)?;
-    let destination = SourceDestination::read(t, host, coordinator)?;
+    let destination = TrackBatchDestination::read(t, host, coordinator)?;
     play_spotify_tracks_bound(t, households, coordinator, tracks, &destination)
 }
 
@@ -128,7 +168,7 @@ pub fn play_spotify_tracks_bound<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
     tracks: &[(&str, &str)],
-    destination: &SourceDestination,
+    destination: &TrackBatchDestination,
 ) -> Result<(), CoreError> {
     replace(t, households, coordinator, tracks, true, destination)
 }
@@ -143,7 +183,7 @@ pub fn load_spotify_tracks<T: Transport + ?Sized>(
 ) -> Result<(), CoreError> {
     validate(tracks)?;
     let host = addr(households, coordinator)?;
-    let destination = SourceDestination::read(t, host, coordinator)?;
+    let destination = TrackBatchDestination::read(t, host, coordinator)?;
     load_spotify_tracks_bound(t, households, coordinator, tracks, &destination)
 }
 
@@ -153,7 +193,7 @@ pub fn load_spotify_tracks_bound<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
     tracks: &[(&str, &str)],
-    destination: &SourceDestination,
+    destination: &TrackBatchDestination,
 ) -> Result<(), CoreError> {
     replace(t, households, coordinator, tracks, false, destination)
 }
@@ -164,7 +204,7 @@ fn replace<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     tracks: &[(&str, &str)],
     autoplay: bool,
-    destination: &SourceDestination,
+    destination: &TrackBatchDestination,
 ) -> Result<(), CoreError> {
     validate(tracks)?;
     let host = addr(households, coordinator)?;
@@ -181,7 +221,7 @@ fn replace<T: Transport + ?Sized>(
         t,
         households,
         coordinator,
-        Staged { destination, before: &batch.before, after: &batch.after },
+        Staged { destination: &destination.source, before: &batch.before, after: &batch.after },
         autoplay,
         true,
     ).map_err(|error| CoreError::Uncertain(format!(

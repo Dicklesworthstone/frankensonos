@@ -5,7 +5,7 @@
 use super::{Plan, Queued, Request, Snapshot, inserted, invalid, prepare, read, same_track};
 use super::{still_observed, uncertain};
 use crate::CoreError;
-use crate::control::SourceDestination;
+use crate::control::{SourceDestination, TrackBatchDestination};
 use fsonos_proto::content::MAX_BROWSE_OBJECTS;
 use fsonos_proto::control::{self as soap, Enqueued, PositionInfo};
 use fsonos_proto::{ProtoError, Transport};
@@ -72,20 +72,44 @@ fn receipt<T: Transport + ?Sized>(
     }
 }
 
-pub(in super::super) fn enqueue_batch<T: Transport + ?Sized>(
+fn prepare_batch<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
     coordinator: &PlayerId,
-    destination: &SourceDestination,
-    requests: &[Request<'_>],
+    destination: &TrackBatchDestination,
+    count: usize,
     next: bool,
-) -> Result<Batch, CoreError> {
-    if requests.is_empty() || requests.len() > crate::control::MAX_SPOTIFY_TRACK_BATCH {
+) -> Result<Plan, CoreError> {
+    if count == 0 || count > crate::control::MAX_SPOTIFY_TRACK_BATCH {
         return Err(invalid(
             "a Spotify track batch must contain between 1 and 10 tracks",
         ));
     }
     destination.confirm(t, host, coordinator)?;
+    let plan = prepare(t, host, coordinator, next)?;
+    if plan.before != destination.queue {
+        return Err(invalid(
+            "the queue changed while resolving Spotify tracks; nothing was added",
+        ));
+    }
+    if plan.before.uris.len().saturating_add(count)
+        > usize::try_from(MAX_BROWSE_OBJECTS).unwrap_or(usize::MAX)
+    {
+        return Err(invalid(
+            "the batch exceeds the bounded queue verification limit",
+        ));
+    }
+    Ok(plan)
+}
+
+pub(in super::super) fn enqueue_batch<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    destination: &TrackBatchDestination,
+    requests: &[Request<'_>],
+    next: bool,
+) -> Result<Batch, CoreError> {
     let Plan {
         before,
         playing_queue,
@@ -93,15 +117,9 @@ pub(in super::super) fn enqueue_batch<T: Transport + ?Sized>(
         first,
         position,
         ..
-    } = prepare(t, host, coordinator, next)?;
+    } = prepare_batch(t, host, coordinator, destination, requests.len(), next)?;
     let total = u32::try_from(requests.len()).map_err(|_| invalid("track batch is too large"))?;
-    if before.uris.len().saturating_add(requests.len())
-        > usize::try_from(MAX_BROWSE_OBJECTS).unwrap_or(usize::MAX)
-    {
-        return Err(invalid(
-            "the batch exceeds the bounded queue verification limit",
-        ));
-    }
+    let destination = &destination.source;
     let mut after = before.clone();
     for written in 0..requests.len() {
         guard(t, host, coordinator, destination, &after, position.as_ref()).map_err(|error| {

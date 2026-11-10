@@ -113,6 +113,7 @@ impl Direct {
             ));
         if let Some(dir) = global.data_dir() {
             surface = crate::daemon::with_action_log(surface, &dir, "cli");
+            surface = crate::spotify_sources::install(surface, &dir, None);
         }
         if let Some(checks) = doctor_checks {
             surface = surface.with_doctor_checks(checks);

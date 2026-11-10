@@ -206,18 +206,32 @@ impl Surface {
         .map_err(|f| self.explain(f))?;
         let coordinator = target.coordinator.id.clone();
         let zone = target.coordinator.room_name.clone();
+        let selection = if matches!(SpotifyBare::of(&uri), Some(SpotifyBare::Artist)) {
+            Some(self.resolve_artist(&households, &coordinator, &uri)?)
+        } else {
+            None
+        };
+        // Catalog reads precede mutation; an intervening policy edit or group
+        // change must not borrow the earlier request's authority.
+        self.guard(client).authorize(ADD, false)?;
+        if let Some((_, destination)) = &selection {
+            destination.confirm(&*self.transport, target.coordinator.ip, &coordinator)?;
+            self.confirm_source_audience(&households, &coordinator)?;
+        }
         let title = asked.title.as_deref().unwrap_or(&uri);
         let where_ = if req.next { " next" } else { "" };
         let intent = format!("{ADD}: {zone} {uri}{where_}");
         let watch = Observed::new(&*self.transport);
-        let queued = match control::enqueue_spotify(
+        let written = enqueue_source(
             &watch,
             &households,
             &coordinator,
             &uri,
             title,
             req.next,
-        ) {
+            selection.as_ref(),
+        );
+        let queued = match written {
             Ok(queued) => queued,
             Err(error) => {
                 // Once the add went out, a lost reply, or a read-back that
@@ -247,6 +261,9 @@ impl Surface {
             "queued {count} track(s) of {uri} in {zone}'s group at position {}",
             queued.first
         );
+        if let Some((selection, _)) = &selection {
+            let _ = write!(done, " ({})", selection.kind.description());
+        }
         if !queued.playing_queue {
             done.push_str(" (the group isn't playing its queue: they play when it does)");
         }
@@ -268,6 +285,37 @@ impl Surface {
             count,
             playing_queue: queued.playing_queue,
         })
+    }
+}
+
+fn enqueue_source<T: fsonos_proto::Transport + ?Sized>(
+    transport: &T,
+    households: &[fsonos_core::HouseholdState],
+    coordinator: &fsonos_types::PlayerId,
+    source_uri: &str,
+    title: &str,
+    next: bool,
+    selection: Option<&(
+        crate::source::ArtistSelection,
+        control::TrackBatchDestination,
+    )>,
+) -> Result<control::Queued, CoreError> {
+    if let Some((selection, destination)) = selection {
+        let tracks: Vec<_> = selection
+            .tracks
+            .iter()
+            .map(|(uri, title)| (uri.as_str(), title.as_str()))
+            .collect();
+        control::enqueue_spotify_tracks_bound(
+            transport,
+            households,
+            coordinator,
+            &tracks,
+            next,
+            destination,
+        )
+    } else {
+        control::enqueue_spotify(transport, households, coordinator, source_uri, title, next)
     }
 }
 

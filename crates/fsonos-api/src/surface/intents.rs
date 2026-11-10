@@ -31,6 +31,12 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
             coordinator,
             source_uri,
             title,
+        }
+        | Command::PlayTracks {
+            coordinator,
+            source_uri,
+            title,
+            ..
         } => format!(
             "play {} in {}",
             title.as_deref().unwrap_or(source_uri),

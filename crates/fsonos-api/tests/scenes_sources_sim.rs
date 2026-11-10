@@ -559,11 +559,7 @@ fn silent_loading_requires_both_caller_and_writer_pause_permission() {
                     (&cli, &blocked)
                 };
                 surface
-                    .save_scene_from(
-                        writer,
-                        "Quiet",
-                        &definition(room, member, &source, false),
-                    )
+                    .save_scene_from(writer, "Quiet", &definition(room, member, &source, false))
                     .unwrap();
                 // An omitted source does not need its catalog to be ready.
                 unavailable.store(true, Ordering::SeqCst);

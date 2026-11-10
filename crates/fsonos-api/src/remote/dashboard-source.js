@@ -16,6 +16,13 @@ const DashboardSource = (() => {
   }
   function effect(review) {
     const q = review.before.queue;
+    if (review.item.kind === 'artist') {
+      const selection = 'Uses up to 10 tracks from the artist’s top tracks or albums, in Spotify’s order. Requires Spotify sign-in.';
+      if (review.mode === 'play') return 'Replace the current queue with this artist selection and start playback in order. ' + selection;
+      return (review.mode === 'next' && q.playing !== null
+        ? 'Add after the playing track without restarting playback. '
+        : 'Append to the existing queue without starting or resuming playback. ') + selection;
+    }
     if (review.mode === 'play' && review.item.kind === 'sonos_playlist') {
       return 'Replace the current queue with this saved Sonos playlist and start playback. The speakers supply its current contents.';
     }

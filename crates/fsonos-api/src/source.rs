@@ -12,6 +12,73 @@ use fsonos_proto::didl::{SpotifyBare, SpotifyContainer};
 
 use crate::failure::{ErrorCode, Failure};
 
+/// Read-only Spotify catalog resolution, supplied by the daemon or direct CLI.
+/// Speaker control stays in the shared surface after this lookup completes.
+pub trait SpotifySources: Send + Sync {
+    fn artist_tracks(&self, artist_uri: &str) -> Result<ArtistSelection, Failure>;
+}
+
+/// How a bounded artist selection was obtained; neither is a discography.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtistSelectionKind {
+    TopTracks,
+    CatalogSample,
+}
+
+impl ArtistSelectionKind {
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::TopTracks => "Spotify's artist top tracks",
+            Self::CatalogSample => "a bounded sample of the artist's albums",
+        }
+    }
+}
+
+/// Actual playable tracks in provider order, with their display titles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistSelection {
+    pub tracks: Vec<(String, String)>,
+    pub kind: ArtistSelectionKind,
+}
+
+impl ArtistSelection {
+    pub(crate) fn validate(&self) -> Result<(), Failure> {
+        if self.tracks.is_empty()
+            || self.tracks.len() > fsonos_core::control::MAX_SPOTIFY_TRACK_BATCH
+        {
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "Spotify returned no usable bounded artist selection",
+            ));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (uri, title) in &self.tracks {
+            if !uri.starts_with("spotify:track:")
+                || normalize_source_uri(uri).as_ref() != Ok(uri)
+                || !seen.insert(uri)
+                || title.len() > 4096
+                || title.chars().any(char::is_control)
+            {
+                return Err(Failure::new(
+                    ErrorCode::NotReady,
+                    "Spotify returned an invalid artist track selection",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A play request may name an artist, which the surface resolves before any
+/// speaker writes. The lower-level renderer still refuses a bare artist URI.
+pub(crate) fn validate_play_request_source(source_uri: &str) -> Result<(), Failure> {
+    if matches!(SpotifyBare::of(source_uri), Some(SpotifyBare::Artist)) {
+        return Ok(());
+    }
+    validate_playable_source(source_uri)
+}
+
 /// Longest `source_uri` accepted, in bytes.
 pub const MAX_SOURCE_URI_LEN: usize = 2048;
 
@@ -64,12 +131,11 @@ pub fn normalize_source_uri(raw: &str) -> Result<String, Failure> {
 /// URI normalization is separate: other operations have their own source
 /// capabilities and error contracts.
 ///
-/// Episodes render like tracks; artists and shows are still typed refusals
-/// (docs/PROTOCOL.md, "Bare Spotify kinds"): both are accepted by the
-/// speaker's Set/Add with only the account id, but an artist needs Sonos'
-/// SMAPI shortcut item id, which the Spotify artist id cannot address, and a
-/// show's Play lands back in `STOPPED` because the service container id is
-/// unknown. Queueing them still works, so they are not rejected there.
+/// This checks direct renderer sources. A surface resolves an artist into
+/// concrete tracks before reaching it; authored scenes still use this native
+/// source contract. Bare artist and show playback remain typed refusals
+/// (docs/PROTOCOL.md, "Bare Spotify kinds"): the Spotify id cannot address
+/// Sonos' SMAPI shortcut or service container. An episode renders directly.
 pub(crate) fn validate_playable_source(source_uri: &str) -> Result<(), Failure> {
     if let Some(kind) = SpotifyBare::of(source_uri) {
         return match kind {
@@ -82,7 +148,7 @@ pub(crate) fn validate_playable_source(source_uri: &str) -> Result<(), Failure> 
                      only be addressed by Sonos' SMAPI shortcut item id"
                 ),
             )
-            .with_hint("Queue it and play one of its tracks for now.")),
+            .with_hint("Use an artist link with fsonos play after Spotify sign-in, or choose a concrete track or album for this source.")),
             SpotifyBare::Show => Err(Failure::new(
                 ErrorCode::NotImplemented,
                 format!(

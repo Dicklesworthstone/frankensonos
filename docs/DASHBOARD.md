@@ -107,12 +107,15 @@ are removed when the address becomes its native URI; signed stream addresses are
 sent with their original path, escaping and query intact. An optional display
 title travels with the source.
 
-**Play now** supports Spotify tracks, albums, playlists and episodes, plus audio
-streams. Albums and playlists replace the current queue; individual sources
-replace playback while leaving the existing queue available. Artist and show
-addresses support **Queue next** and **Add to end**. These queue actions also
+**Play now** supports Spotify tracks, albums, playlists, artists and episodes,
+plus audio streams. Albums, playlists and artist selections replace the current
+queue; individual sources replace playback while leaving the existing queue
+available. Artists resolve to up to ten top tracks or an album sample and require
+Spotify sign-in. Show addresses support **Queue next** and **Add to end**. These queue actions also
 accept the other Spotify kinds, but never start or resume playback themselves.
 Queue next appends when the group is not currently using its queue.
+Artist queue actions resolve the same ordered selection without starting music;
+the review describes the sample and the sign-in requirement.
 
 Review shows the exact canonical source, household-qualified destination, current
 playback and effect. Confirmation rechecks group membership and relevant source,

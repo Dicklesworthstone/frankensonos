@@ -325,7 +325,8 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 
 - **Spotify Web API cannot start playback on a Sonos.** Spotify Connect targets
   Spotify-certified endpoints; the Web API's "transfer playback" won't drive a
-  Sonos renderer. So the Web API is used **only to read the owner's library**.
+  Sonos renderer. The Web API reads the owner's library and catalog metadata;
+  explicit artist requests resolve to actual tracks before local Sonos control.
 - **Sonos renders Spotify itself via SMAPI** (the Sonos Music API integration).
   To enqueue a track you hand AVTransport an `x-sonos-spotify:` URI plus
   DIDL-Lite metadata whose `desc` names the Spotify service account
@@ -903,6 +904,18 @@ the house to agents they can bound and reverse. The guardrails live in
   what it could not restore (for example, a queue that was replaced since).
 
 ### 12.6 Favorites, saved Sonos playlists and library search as play sources
+
+Explicit Spotify artist links now resolve through the owner's read-only catalog
+session to at most ten tracks. The top-tracks endpoint is preferred; a 403/404
+uses a bounded album sample, with no full-discography or radio claim. CLI,
+HTTP, MCP, phone and dashboard share play/next/append behavior. Play stages and
+verifies the entire ordered selection before removing the old queue, then
+starts in NORMAL mode. Next and append remain silent and support exact-range
+undo. The pre-lookup source, group, boot and queue are retained across the slow
+catalog read; current policy and rendering availability are checked before
+speaker changes. Missing authorization or an invalid selection leaves playback
+and levels intact. See [`docs/ARTIST_PLAYBACK.md`](docs/ARTIST_PLAYBACK.md) for
+scope, partial-failure behavior and validation status.
 
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the

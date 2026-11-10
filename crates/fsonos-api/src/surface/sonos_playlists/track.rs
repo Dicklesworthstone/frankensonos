@@ -248,7 +248,7 @@ impl Surface {
                 &guard,
                 command.clone(),
             )?;
-            self.remember_play(&command);
+            self.remember_play(&households, &command);
             notes.append(&mut outcome.notes);
             outcome.notes = notes;
             outcome.done = format!(

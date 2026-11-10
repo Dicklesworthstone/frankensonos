@@ -73,6 +73,7 @@ pub mod players;
 mod search_play;
 mod set_runs;
 mod shared_store;
+mod source_selection;
 
 pub mod art;
 
@@ -144,6 +145,8 @@ pub struct Surface {
     /// The redirect URI a Spotify app for this daemon must register
     /// ([`Self::with_spotify_redirect`]), named when there is no app yet.
     spotify_redirect: Option<String>,
+    /// Read-only catalog lookup before materialized source commands.
+    spotify_sources: Option<Box<dyn crate::source::SpotifySources>>,
 }
 
 /// Doctor checks a surface adds to the core's (the daemon's bind and health
@@ -238,6 +241,7 @@ impl Surface {
             sleep: None,
             spotify_auth: None,
             spotify_redirect: None,
+            spotify_sources: None,
         }
     }
 
@@ -372,6 +376,13 @@ impl Surface {
     #[must_use]
     pub fn with_dj(mut self, engine: Box<dyn DjEngine>) -> Self {
         self.dj = Some(engine);
+        self
+    }
+
+    /// Resolve Spotify artist links through the owner's read-only session.
+    #[must_use]
+    pub fn with_spotify_sources(mut self, sources: Box<dyn crate::source::SpotifySources>) -> Self {
+        self.spotify_sources = Some(sources);
         self
     }
 
@@ -698,6 +709,7 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
     ) -> Result<OutcomeDto, Failure> {
+        self.confirm_source_selection(households, command)?;
         let (mut notes, fresh) = match self.lower_before_playing(households, guard, command) {
             Ok(notes) => (notes, None),
             // A level that could not be read because the player moved to a
@@ -805,6 +817,11 @@ impl Surface {
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
         let command = plan(&*self.transport, &rooms).map_err(|f| self.explain(f))?;
+        let command = self.prepare_source(&households, command)?;
+        // Catalog requests can take time. The owner's current authorization
+        // and caps, including an edit made during that read, govern the write.
+        let guard = self.guard(client);
+        guard.authorize(tool, false)?;
         // A volume or mute change ends a sleep fade in flight on the group, so
         // the fade does not override the new level (the timer ends where it is).
         if let Some(sleep) = &self.sleep
@@ -841,7 +858,13 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = actions::before_state_with(&snaps, &sessions);
+        let before = if matches!(command, Command::PlayTracks { .. }) {
+            Some(actions::before_state_not_undoable(
+                "artist queue replacement",
+            ))
+        } else {
+            actions::before_state_with(&snaps, &sessions)
+        };
         let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = self.with_after(before, &snaps, &[]);
         let logged = self.record(client, intent, decision, text, before);
@@ -875,6 +898,12 @@ impl Surface {
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
         let commands = plan(&rooms).map_err(|f| self.explain(f))?;
+        let commands: Vec<_> = commands
+            .into_iter()
+            .map(|command| self.prepare_source(&households, command))
+            .collect::<Result<_, _>>()?;
+        let guard = self.guard(client);
+        guard.authorize(tool, false)?;
         // A volume or mute change ends a sleep fade in flight on each affected
         // group, so the fade does not override the new level.
         if let Some(sleep) = &self.sleep {
@@ -924,7 +953,16 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = actions::before_state_with(&snaps, &[]);
+        let before = if commands
+            .iter()
+            .any(|command| matches!(command, Command::PlayTracks { .. }))
+        {
+            Some(actions::before_state_not_undoable(
+                "artist queue replacement",
+            ))
+        } else {
+            actions::before_state_with(&snaps, &[])
+        };
         let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = self.with_after(before, &snaps, &[]);
         let logged = self.record(client, intent, decision, text, before);
@@ -1288,13 +1326,38 @@ impl Surface {
 
     /// Add a play that went through to the history, under the group's
     /// coordinator (as the DJ records its own), so the DJ hears about it.
-    fn remember_play(&self, command: &Command) {
+    fn remember_play(&self, households: &[HouseholdState], command: &Command) {
+        if self.log.is_none() {
+            return;
+        }
         let (coordinator, uri) = match command {
             Command::Play {
                 coordinator,
                 source_uri,
                 ..
             } => (coordinator, Some(source_uri.as_str())),
+            Command::PlayTracks {
+                coordinator,
+                selection,
+                ..
+            } => {
+                let Some((uri, _)) = selection.tracks.first() else {
+                    return;
+                };
+                // A successful SOAP acknowledgement is not evidence that the
+                // selected first track is playing. Only an observed match
+                // contributes to the DJ's listening and anti-repeat history.
+                let Ok(now) = control::playback(&*self.transport, households, coordinator) else {
+                    return;
+                };
+                if now.transport.state != TransportState::Playing
+                    || now.position.track != 1
+                    || played_uri(&now.position.uri) != *uri
+                {
+                    return;
+                }
+                (coordinator, Some(uri.as_str()))
+            }
             Command::PlayFavorite {
                 coordinator,
                 favorite,
@@ -1326,6 +1389,9 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
     ) -> Result<OutcomeDto, Failure> {
+        // A catalog lookup retained an exact destination. A changed source
+        // must be refused before this intent supersedes any continuation.
+        self.confirm_source_selection(households, command)?;
         // Admission has resolved and authorized this command. Its newer
         // intent wins over announcement continuation even if speaker I/O fails.
         if let Some(sleep) = &self.sleep {
@@ -1336,7 +1402,7 @@ impl Surface {
         let held = self.dj_hold(households, command);
         let result = self.execute(households, guard, command);
         if result.is_ok() {
-            self.remember_play(command);
+            self.remember_play(households, command);
         }
         // A successful no-op did not transfer any music. Release the hold,
         // but keep DJ steering, feeds and timers on their original groups.
@@ -1932,6 +1998,7 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
     };
     match command {
         Command::Play { coordinator, .. }
+        | Command::PlayTracks { coordinator, .. }
         | Command::PlayFavorite { coordinator, .. }
         | Command::Transport { coordinator, .. }
         | Command::Dj { coordinator, .. }

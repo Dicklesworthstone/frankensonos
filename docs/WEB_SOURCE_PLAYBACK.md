@@ -5,7 +5,9 @@ Spotify track, album, playlist, artist, episode or show share link (or its
 `spotify:` URI). The item
 does not have to be in the synced library. An optional title supplies display
 metadata. Select **Review playback**, inspect the group and its current
-source, then **Play now**.
+source, then **Play now**. Show links require **Queue next** or **Queue at end**.
+Artist links require Spotify sign-in and select up to ten actual tracks from
+the artist's top tracks or a small album sample. See [Artist playback](ARTIST_PLAYBACK.md).
 
 Spotify locale, embed and legacy playlist links are normalized to their
 canonical Spotify URI; share tracking parameters are discarded. Shortened
@@ -22,8 +24,9 @@ Embedded sign-in details, local-file and executable URI schemes are refused.
 Source addresses and optional titles pass through the ordinary action log;
 do not paste private access-bearing addresses into a shared controller.
 
-Playing an album or playlist replaces the group's queue. Tracks, artists,
-episodes, shows and streams replace its current source. The review says which effect applies.
+Playing an album, playlist or artist selection replaces the group's queue.
+Tracks, episodes and streams replace its current source. The review says which
+effect applies and binds the queue revision for a replacement.
 The existing policy, volume caps, playback orchestration and action history
 remain authoritative. This is the native `/play` route, not a Spotify Web
 API playback command or a new privileged endpoint.
@@ -41,14 +44,15 @@ Validation: `node --test scripts/test-remote-source-player.cjs` executes the
 shipped parsing, controller, DOM panel and mounting adapter. It also checks
 a real loopback HTTP exchange. Physical Sonos/Spotify acceptance is a separate
 hardware check; the loopback server does not emulate the Rust daemon.
-Artist, episode and show start-to-audio behavior still requires real-device
-qualification; accepting a source or command does not establish audibility.
+The new artist selection path has simulator coverage but still requires
+real-device qualification; accepting a command does not establish audibility.
 
 ## Add Spotify music without interrupting the current source
 
 Select **Queue next** or **Queue at end** in the Action field, then **Review
 queue addition**. All six Spotify source kinds use the existing `/queue`
-contract with `next: true` or `next: false`; no play, resume, source replacement
+contract with `next: true` or `next: false`. Artist links resolve to concrete
+tracks on the daemon using the owner's Spotify sign-in; no play, resume, source replacement
 or volume request is added. Streams are play-only in this panel.
 
 The review shows the existing queue size and, for Queue next, the entry after

@@ -52,7 +52,7 @@ impl Server {
             .with_endpoints(self.fake().endpoints())
     }
 
-    fn set(&self, url: &str, value: Value) {
+    fn set(&self, url: &str, value: &Value) {
         let prefix = format!("http://{}", self.fake().addr);
         let route = url.strip_prefix(&prefix).unwrap().to_owned();
         self.fake()
@@ -63,27 +63,27 @@ impl Server {
             .insert(route, value.to_string());
     }
 
-    fn top(&self, tracks: Vec<Value>) {
+    fn top(&self, tracks: &[Value]) {
         self.set(
             &self.fake().endpoints().artist_top_tracks(ARTIST),
-            json!({ "tracks": tracks }),
+            &json!({ "tracks": tracks }),
         );
     }
 
-    fn albums(&self, albums: Vec<Value>) {
+    fn albums(&self, albums: &[Value]) {
         self.set(
             &self
                 .fake()
                 .endpoints()
                 .artist_albums(ARTIST, CATALOG_ALBUM_LIMIT),
-            page(albums, CATALOG_ALBUM_LIMIT),
+            &page(albums, CATALOG_ALBUM_LIMIT),
         );
     }
 
-    fn tracks(&self, album: usize, tracks: Vec<Value>) {
+    fn tracks(&self, album: usize, tracks: &[Value]) {
         self.set(
             &self.fake().endpoints().album_tracks(&album_id(album), 0),
-            page(tracks, PAGE_LIMIT),
+            &page(tracks, PAGE_LIMIT),
         );
     }
 
@@ -133,7 +133,7 @@ fn track(number: usize) -> Value {
     })
 }
 
-fn page(items: Vec<Value>, limit: u32) -> Value {
+fn page(items: &[Value], limit: u32) -> Value {
     json!({
         "total": items.len() + 100, "offset": 0, "limit": limit, "items": items,
         "next": "https://example.invalid/never-follow-this-page",
@@ -152,7 +152,7 @@ fn top_tracks_preserve_provider_order_metadata_and_explicit_content() {
     local["is_local"] = true.into();
     let mut uncredited = track(6);
     uncredited["artists"] = json!([artist(OTHER)]);
-    server.top(vec![
+    server.top(&[
         explicit.clone(),
         track(1),
         explicit,
@@ -196,7 +196,7 @@ fn top_tracks_preserve_provider_order_metadata_and_explicit_content() {
 #[test]
 fn top_tracks_stop_after_ten_distinct_playable_tracks() {
     let server = Server::new();
-    server.top((1..=20).map(track).collect());
+    server.top(&(1..=20).map(track).collect::<Vec<_>>());
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, true);
@@ -212,8 +212,8 @@ fn only_a_forbidden_or_missing_top_endpoint_uses_the_catalog_fallback() {
     for status in [403, 404] {
         let server = Server::new();
         server.refused_top(status);
-        server.albums(vec![album(1)]);
-        server.tracks(1, (1..=12).map(track).collect());
+        server.albums(&[album(1)]);
+        server.tracks(1, &(1..=12).map(track).collect::<Vec<_>>());
         runtime().block_on(async {
             let cx = Cx::current().unwrap();
             let mut session = server.session(&cx, true);
@@ -242,7 +242,7 @@ fn catalog_verifies_artist_credits_deduplicates_and_reads_at_most_three_albums()
     other_album["artists"] = json!([artist(OTHER)]);
     let mut compilation = album(8);
     compilation["album_type"] = "compilation".into();
-    server.albums(vec![
+    server.albums(&[
         other_album,
         compilation,
         album(1),
@@ -257,10 +257,10 @@ fn catalog_verifies_artist_credits_deduplicates_and_reads_at_most_three_albums()
     unavailable["is_playable"] = false.into();
     let mut explicit = track(1);
     explicit["explicit"] = true.into();
-    server.tracks(1, vec![guest, unavailable, explicit.clone(), explicit]);
-    server.tracks(2, vec![track(1), track(2)]);
-    server.tracks(3, vec![track(3)]);
-    server.tracks(4, vec![track(4)]);
+    server.tracks(1, &[guest, unavailable, explicit.clone(), explicit]);
+    server.tracks(2, &[track(1), track(2)]);
+    server.tracks(3, &[track(3)]);
+    server.tracks(4, &[track(4)]);
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, true);
@@ -304,7 +304,7 @@ fn empty_top_tracks_do_not_change_to_an_unrequested_selection_policy() {
         }],
     ] {
         let server = Server::new();
-        server.top(tracks);
+        server.top(&tracks);
         runtime().block_on(async {
             let cx = Cx::current().unwrap();
             let mut session = server.session(&cx, true);
@@ -320,7 +320,7 @@ fn empty_top_tracks_do_not_change_to_an_unrequested_selection_policy() {
 fn empty_catalog_is_an_error_before_any_playback_can_begin() {
     let server = Server::new();
     server.refused_top(404);
-    server.albums(vec![]);
+    server.albums(&[]);
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, true);
@@ -372,7 +372,7 @@ fn malformed_playable_track_and_album_identities_never_publish_a_partial_selecti
                 malformed.as_object_mut().unwrap().remove("explicit");
             }
         }
-        server.top(vec![track(1), malformed]);
+        server.top(&[track(1), malformed]);
         runtime().block_on(async {
             let cx = Cx::current().unwrap();
             let mut session = server.session(&cx, true);
@@ -393,7 +393,7 @@ fn malformed_catalog_identities_and_page_counters_fail_without_following_links()
     for variant in 0..4 {
         let server = Server::new();
         server.refused_top(403);
-        let mut albums = page(vec![album(1)], CATALOG_ALBUM_LIMIT);
+        let mut albums = page(&[album(1)], CATALOG_ALBUM_LIMIT);
         match variant {
             0 => albums["items"][0]["id"] = "invalid".into(),
             1 => albums["offset"] = 10.into(),
@@ -405,7 +405,7 @@ fn malformed_catalog_identities_and_page_counters_fail_without_following_links()
                 .fake()
                 .endpoints()
                 .artist_albums(ARTIST, CATALOG_ALBUM_LIMIT),
-            albums,
+            &albums,
         );
         runtime().block_on(async {
             let cx = Cx::current().unwrap();
@@ -493,11 +493,11 @@ fn a_transport_error_is_preserved_without_entering_catalog_fallback() {
 fn a_malformed_later_catalog_track_cannot_return_the_earlier_valid_sample() {
     let server = Server::new();
     server.refused_top(403);
-    server.albums(vec![album(1), album(2)]);
-    server.tracks(1, vec![track(1)]);
+    server.albums(&[album(1), album(2)]);
+    server.tracks(1, &[track(1)]);
     let mut malformed = track(2);
     malformed["uri"] = format!("spotify:track:{}", track_id(3)).into();
-    server.tracks(2, vec![malformed]);
+    server.tracks(2, &[malformed]);
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, true);

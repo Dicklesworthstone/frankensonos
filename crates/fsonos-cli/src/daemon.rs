@@ -116,11 +116,14 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
             fsonos_core::inventory::survey_known_first(transport, &seeds, &remembered, wait)?;
         Ok(found.households)
     });
-    Ok(
+    let mut surface =
         Surface::new(global.lan()?, survey, policy, Box::new(SystemClock)).with_dj(Box::new(
             crate::dj::SpotifyDj::new(global.data_dir().map(|d| d.join(crate::dj::MOODS_FILE))),
-        )),
-    )
+        ));
+    if let Some(dir) = global.data_dir() {
+        surface = crate::spotify_sources::install(surface, &dir, None);
+    }
+    Ok(surface)
 }
 
 /// The daemon's surface over a live model of the speakers: surveys and
@@ -182,10 +185,14 @@ pub fn live_surface(
             ),
     ));
     let listener = Arc::downgrade(&live);
-    let surface = surface.with_announcements(fsonos_api::surface::announce::Announcements::new(
-        media,
-        Box::new(move || listener.upgrade()?.snapshot().callback),
-    ));
+    let mut surface =
+        surface.with_announcements(fsonos_api::surface::announce::Announcements::new(
+            media,
+            Box::new(move || listener.upgrade()?.snapshot().callback),
+        ));
+    if let Some(dir) = global.data_dir() {
+        surface = crate::spotify_sources::install(surface, &dir, None);
+    }
     Ok((surface, live))
 }
 
