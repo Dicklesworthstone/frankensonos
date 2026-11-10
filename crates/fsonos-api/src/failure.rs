@@ -523,6 +523,13 @@ impl From<Failure> for ApiError {
     }
 }
 
+/// Raw speaker reads use the same public error contract as core operations.
+impl From<ProtoError> for Failure {
+    fn from(err: ProtoError) -> Self {
+        Self::from(CoreError::from(err))
+    }
+}
+
 /// Core errors carry their own retry-able text (known rooms, qualified
 /// candidates); the mapping picks the code and the suggestions.
 impl From<CoreError> for Failure {
@@ -606,6 +613,59 @@ mod tests {
         }
         for note in NoteCode::ALL {
             assert_eq!(serde_json::to_value(note).unwrap(), json!(note.as_str()));
+        }
+    }
+
+    #[test]
+    fn raw_protocol_failures_preserve_the_public_source_error_contract() {
+        fn read(result: Result<(), ProtoError>) -> Result<(), Failure> {
+            result?;
+            Ok(())
+        }
+
+        let cases = [
+            (
+                ProtoError::Network {
+                    target: "192.0.2.10".into(),
+                    detail: "source read timed out".into(),
+                },
+                ErrorCode::PlayerUnreachable,
+                503,
+                true,
+                None,
+            ),
+            (
+                ProtoError::Malformed("the queue changed during catalog lookup".into()),
+                ErrorCode::UpnpFault,
+                502,
+                false,
+                None,
+            ),
+            (
+                ProtoError::SoapFault {
+                    code: 714,
+                    reason: "Illegal MIME-Type".into(),
+                },
+                ErrorCode::UpnpFault,
+                502,
+                false,
+                Some(714),
+            ),
+        ];
+        for (error, code, status, retryable, upnp_code) in cases {
+            let failure = read(Err(error)).unwrap_err();
+            assert_eq!(
+                (failure.code, failure.status(), failure.retryable()),
+                (code, status, retryable)
+            );
+            assert_eq!(failure.upnp_code, upnp_code);
+            assert_eq!(failure.hint, code.default_hint());
+            let body = serde_json::to_value(failure.body()).unwrap();
+            assert_eq!(body["code"], code.as_str());
+            assert_eq!(body["retryable"], retryable);
+            if let Some(code) = upnp_code {
+                assert_eq!(body["upnp_code"], code);
+            }
         }
     }
 
