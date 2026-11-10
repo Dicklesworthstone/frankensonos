@@ -98,6 +98,12 @@ enum Reply {
     Refused(u16),
 }
 
+#[derive(Clone, Copy)]
+enum ReadFailure {
+    Before,
+    After,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Change {
     None,
@@ -118,8 +124,7 @@ struct Replies<'a> {
     reply: Reply,
     change: Change,
     sent: Cell<bool>,
-    fail_before: bool,
-    fail_after: bool,
+    fail_reads: Option<ReadFailure>,
     missing_boot: bool,
     calls: RefCell<Vec<String>>,
 }
@@ -132,8 +137,7 @@ impl<'a> Replies<'a> {
             reply,
             change: Change::None,
             sent: Cell::new(false),
-            fail_before: false,
-            fail_after: false,
+            fail_reads: None,
             missing_boot: false,
             calls: RefCell::new(Vec::new()),
         }
@@ -209,7 +213,10 @@ impl Transport for Replies<'_> {
         self.calls.borrow_mut().push(action.into());
         let navigation = action == if self.forward { "Next" } else { "Previous" };
         if !navigation {
-            if (!self.sent.get() && self.fail_before) || (self.sent.get() && self.fail_after) {
+            if self.fail_reads.is_some_and(|when| match when {
+                ReadFailure::Before => !self.sent.get(),
+                ReadFailure::After => self.sent.get(),
+            }) {
                 return Err(ProtoError::Network {
                     target: "simulator read".into(),
                     detail: "optional navigation observation unavailable".into(),
@@ -301,7 +308,7 @@ fn acknowledged_steps_return_without_readback_even_when_optional_reads_fail() {
             for fail_before in [false, true] {
                 rig.prepare(if forward { 1 } else { 4 }, TransportState::Playing);
                 let mut t = Replies::new(&rig, forward, Reply::Accepted);
-                t.fail_before = fail_before;
+                t.fail_reads = fail_before.then_some(ReadFailure::Before);
                 rig.step(&t, forward).unwrap();
                 t.one_step_only();
                 assert_eq!(t.calls.borrow().len(), if fail_before { 2 } else { 8 });
@@ -323,16 +330,15 @@ fn unchanged_occurrences_and_failed_evidence_preserve_the_original_lost_reply() 
     for s2 in [false, true] {
         let rig = Rig::new(s2);
         for forward in [true, false] {
-            for (reply, fail_before, fail_after, calls) in [
-                (Reply::Unapplied, false, false, 9),
-                (Reply::Lost, true, false, 2),
-                (Reply::Lost, false, true, 9),
+            for (reply, fail_reads, calls) in [
+                (Reply::Unapplied, None, 9),
+                (Reply::Lost, Some(ReadFailure::Before), 2),
+                (Reply::Lost, Some(ReadFailure::After), 9),
             ] {
                 let start = if forward { 1 } else { 4 };
                 rig.prepare(start, TransportState::Playing);
                 let mut t = Replies::new(&rig, forward, reply);
-                t.fail_before = fail_before;
-                t.fail_after = fail_after;
+                t.fail_reads = fail_reads;
                 original_network(&rig.step(&t, forward).unwrap_err());
                 t.one_step_only();
                 assert_eq!(t.calls.borrow().len(), calls);

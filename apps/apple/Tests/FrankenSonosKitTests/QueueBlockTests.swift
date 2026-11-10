@@ -173,9 +173,14 @@ private func blockMove(_ position: UInt32 = 26, count: UInt32 = 60,
         #expect(saved.detail.contains("Undo is available"))
         #expect(!saved.partial)
         for (key, value) in [("count", JSONValue.integer(1)), ("position", .integer(2)), ("total", .integer(121)),
-                             ("revision", .string("block:r1")), ("zone", .string("Other")), ("undoable", .string("true")), ("changed", .bool(false))] {
+                             ("revision", .string("block:r1")), ("zone", .string("Other")), ("changed", .bool(false))] {
             var wrong = base; wrong[key] = value
             #expect(throws: ClientError.self) { try move.receipt(JSONEncoder().encode(wrong), in: blockZone()) }
+        }
+        // A malformed wire type fails decoding before semantic receipt checks.
+        var malformed = base; malformed["undoable"] = .string("true")
+        #expect(throws: DecodingError.self) {
+            try move.receipt(JSONEncoder().encode(malformed), in: blockZone())
         }
     }
 }
