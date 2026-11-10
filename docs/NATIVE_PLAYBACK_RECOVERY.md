@@ -57,9 +57,9 @@ unchanged; failed observations keep the original write error.
 These are desired-state observations, not proof that no other controller acted
 or that a particular source is still selected. Existing outer coordinator and
 address recovery rules remain in force when a result cannot be established.
-Next and Previous are not state-setting operations and gain no retry or inferred
-success behavior. Existing policy, logging and source-loading checks remain
-shared with the callers; no new endpoint or background polling is added.
+Next and Previous use the stricter occurrence proof described below. Existing
+policy, logging and source-loading checks remain shared with the callers; no
+new endpoint or background polling is added.
 
 ```sh
 cargo test --locked -p fsonos-core --lib control::transport_state
@@ -69,6 +69,60 @@ cargo test --locked -p fsonos-core --test transport_state_recovery_sim --test co
 The simulator cases cover normal and malformed lost acknowledgements for all
 three controls on both generations. Physical-speaker validation remains a
 separate check.
+
+## Next and Previous
+
+All surfaces now use the shared core navigation operation. It sends the native
+Next or Previous exactly once and preserves the renderer's behavior. Optional
+reads before that write collect evidence for recovery; their failure never
+prevents the requested navigation or changes its destination.
+
+An acknowledged navigation returns immediately. A lost or malformed reply can
+be confirmed only for an adjacent, distinct queue occurrence in NORMAL mode,
+with a known coordinator boot epoch. A two-entry queue browse establishes the
+original and expected slots, their metadata, the queue length and its UpdateID.
+Read-back must preserve this exact window, the selected queue and source
+metadata, the coordinator's group including bonded members, boot identity, play
+mode and transport state. Position observations must agree on the expected
+queue occurrence at its beginning within elapsed-time rounding. Equal track
+URIs in different slots remain distinct occurrences.
+
+Shuffle, repeat modes, a missing boot epoch, unknown clocks or transport state,
+a changed queue or source, manual deep seeking, and an unchanged or unexpected
+occurrence leave the original write error intact. Next near the natural end
+cannot distinguish an accepted skip from automatic progression, so it cannot
+confirm success. Queue boundaries and Previous that restarts the same
+occurrence also retain their native acknowledgement or error. Definite SOAP
+faults are returned unchanged; there is no second navigation write, recovery
+loop, source selection, queue edit or playback-state change.
+
+The normal recoverable queue path adds seven optional reads before its one
+write. Successful acknowledgements and explicit SOAP faults need no read-back.
+An ambiguous reply adds at most seven confirmation reads: at most fifteen
+requests including the navigation itself. Initial position and mode filters
+stop irrelevant evidence gathering early. Optional reads have a 750 ms
+preparation budget and a 3 s confirmation budget, checked before each request;
+an in-flight read still uses the transport's own timeout. Once a budget is
+exhausted, no further evidence requests are started. Observations older than
+30 seconds cannot establish a result.
+
+These observations establish a compatible transition, not a transaction or
+proof of causality. Another controller can still select the same occurrence
+during the request or change playback after the observations.
+
+Targeted checks:
+
+```sh
+cargo test --locked -p fsonos-core --lib control::navigation
+cargo test --locked -p fsonos-core --test navigation_recovery_sim --test control
+```
+
+The simulator regressions exercise real S1/S2 loopback requests, accepted writes
+with discarded or malformed replies, unchanged and conflicting observations,
+explicit faults, missing evidence and bounded request counts. They remain
+unexecuted in this editing session: Rust compilation was killed while compiling
+the asupersync dependency, before project checking, and the execution environment
+was subsequently lost. Physical-speaker acceptance remains a separate check.
 
 ## Grouping and moving music
 

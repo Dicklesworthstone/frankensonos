@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod grouping_state;
 mod loading;
+mod navigation;
 mod queue_insert;
 pub mod queue_removal;
 mod queue_start;
@@ -110,20 +111,34 @@ pub fn stop<T: Transport + ?Sized>(
     Ok(transport_state::stop(t, addr(households, coordinator)?)?)
 }
 
+/// Advance once. An uncertain reply can be confirmed only against the exact
+/// adjacent occurrence of an unchanged, normally ordered queue; never replayed.
 pub fn next<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(soap::next(t, addr(households, coordinator)?)?)
+    Ok(navigation::step(
+        t,
+        addr(households, coordinator)?,
+        coordinator,
+        navigation::Step::Next,
+    )?)
 }
 
+/// Go back once, retaining the renderer's native Previous behavior. A lost
+/// reply is recovered only when an exact adjacent queue occurrence proves it.
 pub fn previous<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(soap::previous(t, addr(households, coordinator)?)?)
+    Ok(navigation::step(
+        t,
+        addr(households, coordinator)?,
+        coordinator,
+        navigation::Step::Previous,
+    )?)
 }
 
 /// Where [`seek`] goes in the current track.

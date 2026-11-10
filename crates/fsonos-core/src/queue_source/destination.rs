@@ -92,6 +92,11 @@ impl Destination {
         Ok(())
     }
 
+    /// Navigation recovery needs a known epoch, not two equally absent values.
+    pub(crate) fn has_boot_identity(&self) -> bool {
+        self.boot_seq.is_some()
+    }
+
     /// A source transition cannot change the intended audience or reboot.
     pub(crate) fn same_group(&self, other: &Self) -> bool {
         self.members == other.members && self.boot_seq == other.boot_seq

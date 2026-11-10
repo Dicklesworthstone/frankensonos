@@ -105,6 +105,7 @@ fn group_commands_reach_the_coordinator_address() {
         [
             (ip("192.0.2.13"), "Pause".into()),
             (ip("192.0.2.13"), "Play".into()),
+            (ip("192.0.2.13"), "GetPositionInfo".into()),
             (ip("192.0.2.13"), "Next".into()),
         ]
     );
