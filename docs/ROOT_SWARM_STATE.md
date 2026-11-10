@@ -3549,3 +3549,20 @@ Remaining wall is now the **shared one**: `:1400` listens but
 loop does not run**, exactly as in the S1 emulator. Everything else about the
 S2 boot is now solved: config, device fakes, the codec-id abort (patched) and
 the watchdog helper.
+
+**The accept wall is downstream of the hhid gate — confirmed by thread
+behaviour.** With the daemon stable (netstartd live) and the stub attached:
+
+- only **one** thread is ever cloned, and the clone **succeeds**
+  (`CLONE_VM|…|CLONE_THREAD|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID`
+  → pid, no EINVAL, so the S2 libc needs no clone patch);
+- that thread just `poll(…,10000)`s, and **main parks in `rt_sigsuspend`** —
+  the event pump;
+- nothing else spawns, nothing accepts; `:1400` sits with `Recv-Q` growing.
+
+So the boot is not failing any more — it is *waiting*. The only thing it waits
+for is the `NewMuseHHIDEvent`, which is exactly the state the log names. The
+missing piece is therefore an injected event, not another patch.
+
+Also captured: the daemon **binds `:1410` itself** and netstartd then connects
+to it — the helper is a client of the daemon, not the reverse.
