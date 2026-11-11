@@ -208,3 +208,142 @@ fn exhausted_small_shelves_rotate_works_and_retain_recording_choices() {
         );
     }
 }
+
+/// A common uneven library: several works by one artist, one by another.
+/// Keep both the song and intact classical-recording paths under test.
+fn uneven_shelf(classical: bool) -> WorkPool {
+    let mut tracks = Vec::new();
+    for (prefix, count, artist) in [
+        ("many", 6, "Ludwig van Beethoven"),
+        ("single", 1, "Johann Sebastian Bach"),
+    ] {
+        for number in 1..=count {
+            let album = format!("{prefix}{number}");
+            if classical {
+                let mut movements = recording(&album, number);
+                for movement in &mut movements {
+                    movement.artists[0] = artist.into();
+                }
+                tracks.extend(movements);
+            } else {
+                let mut song = item(
+                    format!("spotify:track:{album}"),
+                    format!("Song {number}"),
+                    &format!("Synthetic {prefix} Artist"),
+                    (album.clone(), format!("spotify:album:{album}")),
+                    180,
+                    Origin::SavedAlbum,
+                );
+                song.genres = vec!["pop".into()];
+                tracks.push(song);
+            }
+        }
+    }
+    let pool = works_of(&tracks);
+    assert_eq!(pool.len(), 7);
+    pool
+}
+
+#[test]
+fn artist_spacing_still_chooses_a_fresh_different_artist() {
+    for classical in [false, true] {
+        let pool = uneven_shelf(classical);
+        let history = [PlayRecord::at(
+            &pool.works()[0].movements[0].track.source_uri,
+            1_000,
+        )];
+        let ctx = PickContext {
+            history: &history,
+            now: Some(1_060),
+            ..PickContext::default()
+        };
+        for seed in 0..64 {
+            let next = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(seed)).unwrap();
+            assert_eq!(next.work.work_key, pool.works()[6].work_key);
+            assert!(!next.reason.has(Factor::Rotation));
+        }
+    }
+}
+
+#[test]
+fn artist_spacing_does_not_repeat_a_work_while_unheard_music_remains() {
+    for classical in [false, true] {
+        let pool = uneven_shelf(classical);
+        let history: Vec<_> = [6, 0, 1]
+            .into_iter()
+            .map(|index| PlayRecord::at(&pool.works()[index].movements[0].track.source_uri, 1_000))
+            .collect();
+        let ctx = PickContext {
+            history: &history,
+            now: Some(1_060),
+            ..PickContext::default()
+        };
+        for seed in 0..64 {
+            let next = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(seed)).unwrap();
+            assert!(
+                pool.works()[2..6]
+                    .iter()
+                    .any(|work| work.work_key == next.work.work_key),
+                "artist spacing must yield to unheard music, not repeat {}",
+                next.work.title
+            );
+            assert!(!next.reason.has(Factor::Rotation));
+            assert_eq!(next.movements.len(), if classical { 2 } else { 1 });
+        }
+    }
+}
+
+#[test]
+fn artist_spacing_does_not_repeat_a_work_queued_in_another_room() {
+    for classical in [false, true] {
+        let pool = uneven_shelf(classical);
+        let history: Vec<_> = [0, 1]
+            .into_iter()
+            .map(|index| PlayRecord::at(&pool.works()[index].movements[0].track.source_uri, 1_000))
+            .collect();
+        let elsewhere = [PlayRecord::at(
+            &pool.works()[6].movements[0].track.source_uri,
+            1_060,
+        )];
+        let ctx = PickContext {
+            history: &history,
+            elsewhere: &elsewhere,
+            now: Some(1_060),
+            ..PickContext::default()
+        };
+        for seed in 0..64 {
+            let next = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(seed)).unwrap();
+            assert_ne!(next.work.work_key, pool.works()[6].work_key);
+            assert!(!next.reason.has(Factor::Rotation));
+        }
+    }
+}
+
+#[test]
+fn artist_spacing_does_not_skip_older_works_when_an_uneven_shelf_rotates() {
+    for classical in [false, true] {
+        let pool = uneven_shelf(classical);
+        let history: Vec<_> = [0, 1, 2, 3, 6, 4, 5]
+            .into_iter()
+            .map(|index| PlayRecord::new(&pool.works()[index].movements[0].track.source_uri))
+            .collect();
+        let ctx = PickContext {
+            history: &history,
+            ..PickContext::default()
+        };
+        let picks = plan(&pool, &ctx, &DjConfig::default(), 21, &mut Rng::new(7));
+        assert_eq!(picks[0].work.work_key, pool.works()[0].work_key);
+        for cycle in picks.chunks_exact(pool.len()) {
+            let keys: HashSet<_> = cycle.iter().map(|pick| &pick.work.work_key).collect();
+            assert_eq!(
+                keys.len(),
+                pool.len(),
+                "hear every work before repeating one"
+            );
+        }
+        for pick in picks {
+            assert!(pick.reason.has(Factor::Rotation));
+            assert_eq!(pick.movements.len(), if classical { 2 } else { 1 });
+        }
+    }
+}

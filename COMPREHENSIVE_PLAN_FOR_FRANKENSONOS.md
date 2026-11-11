@@ -554,6 +554,11 @@ from a genre the DJ was built around.
   is classical). Time-of-day energy, `PickReason`s, steering and feedback use
   the same keys; energy comes from metadata that applies across genres, with
   tempo markings as one more input for classical movements.
+  Work cooldown first determines the fresh candidate set, or the oldest
+  rotation window when too few fresh works remain. Artist spacing then filters
+  only within that set, so an uneven shelf cannot bypass this work-level
+  ordering merely to alternate artists. Recent or queued works from other
+  rooms retain their cooldown and rotation priority.
 - **Start with a direction in one operation.** `dj start` accepts the same
   structured constraints as `dj steer`, with an optional mood and expiry.
   HTTP `POST /dj/start` takes `constraints` and `for_secs`; MCP `dj_start`
