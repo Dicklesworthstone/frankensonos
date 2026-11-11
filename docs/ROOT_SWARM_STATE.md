@@ -3818,3 +3818,21 @@ prefix we preserve.
 Infrastructure note: `python3 -m http.server` is adequate (the community guide
 uses it) but it is worth serving with a real logger; `/status/tmp/upgrade.log`
 is empty on 57.23 so the server log is the only evidence channel.
+
+### Control that settles it: same-version delivery WORKS
+
+Firing the **57.23** package at `.84` (Flags 0, no extra options): the device
+fetches (`GET /same5723?cmaj=57…` → 200), **zero resets**, goes offline, and
+returns on **57.23-74170 about 40 s later** — a real flash cycle through our
+server end to end.
+
+So the delivery machinery, the http server, the URL form and the device's
+fetch path are all good; the 34.16 attempts were **genuine version refusals**
+(the mid-transfer reset is the refusal signature). `.84` will not go down to
+34.16 with any of the `MinVersion` forms tried so far.
+
+Consequence: planting a payload now means doing it on a **57.23 carrier**,
+whose type-4 is enveloped — i.e. the recipient-key question is back in play —
+unless the downgrade incantation is found (worth one more look at how
+`/status/upgradeinfo` / `Flags` are meant to be combined, since the community
+guide never exercises a downgrade).
