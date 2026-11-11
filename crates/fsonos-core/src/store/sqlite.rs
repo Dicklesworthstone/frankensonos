@@ -1511,6 +1511,28 @@ impl Store for SqliteStore {
         Ok(progress)
     }
 
+    fn publish_spotify_artist_continuation(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        fence: &SpotifyArtistDiscoveryFence,
+        entries: &[LibraryEntry],
+    ) -> Result<bool, StoreError> {
+        super::validate_spotify_artist_publication(owner, fence, entries)?;
+        self.in_transaction(|connection| {
+            if read_spotify_owner(connection)?.as_ref() != Some(owner)
+                || read_artist_discovery(connection, owner)?.as_deref() != fence.expected.as_deref()
+            {
+                return Ok(false);
+            }
+            let changed = merge_playlist_library(connection, entries)?;
+            write_artist_discovery(connection, owner, &fence.progress)?;
+            if changed {
+                bump_library_catalog_revision(connection)?;
+            }
+            Ok(true)
+        })
+    }
+
     fn spotify_library_progress(
         &self,
         incoming_id: &str,

@@ -34,8 +34,11 @@ pub const MAX_PLAYLIST_DIRECTORY_ENTRIES: u32 = 100_000;
 pub const MAX_FOLLOWED_ARTISTS: u32 = 100_000;
 /// Maximum aggregate metadata bytes in a followed-artist checkpoint.
 pub const MAX_FOLLOWED_ARTIST_BYTES: usize = 16 * 1024 * 1024;
-/// Maximum serialized artist-discovery cursor and publication receipt.
-pub const MAX_SPOTIFY_ARTIST_DISCOVERY_BYTES: usize = 16 * 1024;
+/// Maximum serialized artist-discovery cohort, cursor and publication receipt.
+/// The reader separately bounds the finite artist list and each metadata field.
+pub const MAX_SPOTIFY_ARTIST_DISCOVERY_BYTES: usize = 16 * 1024 * 1024;
+/// At most 50 artists contribute three candidate samples in one continuation.
+pub const MAX_SPOTIFY_ARTIST_CONTINUATION_ENTRIES: usize = 150;
 /// Maximum compact state retained for an unfinished essential library read.
 /// The Spotify reader also bounds pages, source items and individual metadata.
 pub const MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES: usize = 64 * 1024 * 1024;
@@ -632,11 +635,24 @@ pub trait Store {
 
     /// Fair artist-discovery progress belonging to this adoption of the account.
     /// A stale or returning account receipt cannot see another generation's cursor.
-    /// Progress advances only with an accepted library publication.
+    /// Progress advances only with an accepted full or additive publication.
     fn spotify_artist_discovery(
         &self,
         owner: &SpotifyLibraryOwner,
     ) -> Result<Option<String>, StoreError>;
+
+    /// Add a bounded artist sample batch while the adoption and exact previous
+    /// artist receipt still match. Only candidate Taste rows may be supplied.
+    /// Existing active rows retain their metadata and any stronger weight;
+    /// no unrelated candidate, playlist or listening evidence is retired.
+    /// The new finite-cohort receipt commits atomically with the merged rows.
+    /// Receipt-only progress does not change the public catalog revision.
+    fn publish_spotify_artist_continuation(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        fence: &SpotifyArtistDiscoveryFence,
+        entries: &[LibraryEntry],
+    ) -> Result<bool, StoreError>;
 
     /// Private essential-read progress for a verified incoming account, bound
     /// to the public ownership receipt observed before the read began. None
@@ -1113,6 +1129,65 @@ fn validate_spotify_artist_discovery(
     Ok(())
 }
 
+fn validate_spotify_artist_publication(
+    owner: &SpotifyLibraryOwner,
+    fence: &SpotifyArtistDiscoveryFence,
+    entries: &[LibraryEntry],
+) -> Result<(), StoreError> {
+    validate_spotify_artist_discovery(owner, fence.expected.as_deref(), Some(&fence.progress))?;
+    if fence.progress.is_empty() || fence.expected.as_deref() == Some(fence.progress.as_str()) {
+        return Err(StoreError::Backend(
+            "artist continuation needs a new nonempty publication receipt".into(),
+        ));
+    }
+    if entries.len() > MAX_SPOTIFY_ARTIST_CONTINUATION_ENTRIES {
+        return Err(StoreError::Backend(
+            "artist continuation has too many samples".into(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut bytes = 0_usize;
+    for entry in entries {
+        let source = entry
+            .track
+            .source_uri
+            .strip_prefix("spotify:track:")
+            .is_some_and(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            });
+        if entry.origin != LibraryOrigin::Taste
+            || entry.candidate != Some(true)
+            || !source
+            || !seen.insert(&entry.track.source_uri)
+            || entry.genres.len() > 256
+        {
+            return Err(StoreError::Backend(
+                "artist continuation needs unique playable candidate taste rows".into(),
+            ));
+        }
+        let fields = std::iter::once(entry.track.source_uri.as_str())
+            .chain(std::iter::once(entry.track.title.as_str()))
+            .chain(entry.track.artist.as_deref())
+            .chain(entry.track.album.as_deref())
+            .chain(entry.album_uri.as_deref())
+            .chain(entry.album_artists.as_deref())
+            .chain(entry.artist_id.as_deref())
+            .chain(entry.work_key.as_deref())
+            .chain(entry.genres.iter().map(String::as_str));
+        for field in fields {
+            bytes = bytes.saturating_add(field.len());
+            if field.len() > 16 * 1024 || bytes > MAX_SPOTIFY_ARTIST_DISCOVERY_BYTES {
+                return Err(StoreError::Backend(
+                    "artist sample metadata is too large".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_spotify_followed_directory(
     owner: &SpotifyLibraryOwner,
     expected: Option<&str>,
@@ -1294,6 +1369,25 @@ impl MemStore {
             self.library.insert(entry.track.source_uri.clone(), entry);
         }
         !entries.is_empty()
+    }
+
+    fn merge_playlist_library(&mut self, entries: &[LibraryEntry]) -> bool {
+        let mut changed = false;
+        for incoming in entries {
+            if let Some(current) = self.library.get_mut(&incoming.track.source_uri)
+                && current.is_candidate()
+            {
+                if let Some(weight) =
+                    stronger_playlist_weight(current.taste_weight, incoming.taste_weight)
+                {
+                    current.taste_weight = Some(weight);
+                    changed = true;
+                }
+            } else {
+                changed |= self.write_library(std::slice::from_ref(incoming));
+            }
+        }
+        changed
     }
 
     fn replace_playlists(&mut self, playlists: &[(String, String)]) -> bool {
@@ -1489,6 +1583,29 @@ impl Store for MemStore {
             .get(&owner.owner_id)
             .filter(|(generation, _)| *generation == owner.generation)
             .map(|(_, progress)| progress.clone()))
+    }
+
+    fn publish_spotify_artist_continuation(
+        &mut self,
+        owner: &SpotifyLibraryOwner,
+        fence: &SpotifyArtistDiscoveryFence,
+        entries: &[LibraryEntry],
+    ) -> Result<bool, StoreError> {
+        validate_spotify_artist_publication(owner, fence, entries)?;
+        if self.spotify_library_owner.as_ref() != Some(owner)
+            || self.spotify_artist_discovery(owner)?.as_deref() != fence.expected.as_deref()
+        {
+            return Ok(false);
+        }
+        let changed = self.merge_playlist_library(entries);
+        self.artist_discovery.insert(
+            owner.owner_id.clone(),
+            (owner.generation, fence.progress.clone()),
+        );
+        if changed {
+            self.bump_library_catalog_revision();
+        }
+        Ok(true)
     }
 
     fn spotify_library_progress(
@@ -1690,21 +1807,7 @@ impl Store for MemStore {
         ) {
             return Ok(false);
         }
-        let mut changed = false;
-        for incoming in &publication.entries {
-            if let Some(current) = self.library.get_mut(&incoming.track.source_uri)
-                && current.is_candidate()
-            {
-                if let Some(weight) =
-                    stronger_playlist_weight(current.taste_weight, incoming.taste_weight)
-                {
-                    current.taste_weight = Some(weight);
-                    changed = true;
-                }
-            } else {
-                changed |= self.write_library(std::slice::from_ref(incoming));
-            }
-        }
+        let mut changed = self.merge_playlist_library(&publication.entries);
         if let Some(playlists) = &publication.playlists {
             changed |= self.replace_playlists(playlists);
         }
