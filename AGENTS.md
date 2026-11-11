@@ -41,6 +41,25 @@ The hard rules that still bind every lane, including RE:
 If a task reads as "handle someone's secrets," "dox the owner," or "write to a
 device," stop and ask.
 
+## The css linux box: root must NEVER run the device network daemon
+
+`/tmp/s23rootfs` is the S1 rootfs used for emulator work on **css**
+(`209.145.54.164`). Running the device's own network daemon inside that chroot,
+as root, reconfigures the **host's** NIC and takes css off the network:
+
+```bash
+# THE OFFENDING COMMAND - run only if you accept losing css
+chroot /tmp/s23rootfs /usr/bin/qemu-ppc /wifi/netstartd
+```
+
+- It is deterministic, not flaky: expect the box to disappear, SSH and ICMP
+  included. Recovery is a power-cycle from the Contabo panel, by the owner.
+- Anything listening dies with it, and a reboot wipes `/tmp` — every served
+  payload (`/tmp/aa_www`) is gone afterwards and must be re-staged.
+- It is only needed to silence the emulated daemon's watchdog, which SIGTERMs
+  the daemon a few seconds after its boot stalls. If that window is enough,
+  prefer not starting it at all; otherwise warn the owner first.
+
 ## No Deletion Or Destructive Git
 
 Do not delete files or directories without explicit written permission,
