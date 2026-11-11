@@ -4411,3 +4411,22 @@ Working recipe (all pieces now known):
 Still open: the accepted fd produces no HTTP response (empty body), so the
 request-dispatch path after `accept` is not being satisfied by this fabricated
 context yet. That is the next thing to read, not to poke.
+
+Two shape facts that change the model:
+
+1. **The acceptor handles exactly one connection and returns.** After
+   `accept` it does `getsockname`, one `setsockopt` (level 6, opt 1,
+   TCP_NODELAY) and falls into the epilogue at `0x10407ac4`. It is not a loop;
+   the loop that calls it per connection lives in the caller. So re-entering it
+   once will never serve a request — dispatch is the caller's job.
+2. **That caller is the thread entry `0x104108d4`** (672-byte frame, takes the
+   object in `r3`). Jumping there is the right idea, but it does
+   `lwz r28,84(r3)` and later `lwz r0,492(r28)` — and with the listener object
+   captured from the `listen` helper, `[obj+0x54]` is null, so it faults at
+   `0x104109a0`.
+
+So the object the listen helper holds is the **listener**, not the server
+context this thread needs. Next step is to capture the object that satisfies
+`+0x54` — most directly by breaking where the server *would* create this thread
+(its `pthread_create` call site with `0x104108d4` as the start routine) and
+reading `r3` there. That also tells us what `r4`/`r5` the entry expects.
