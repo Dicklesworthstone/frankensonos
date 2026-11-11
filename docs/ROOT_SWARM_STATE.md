@@ -4112,3 +4112,28 @@ SMB1 command set. Until that exists, the over-read shapes cannot be delivered
 to this client at all.
 
 Verified live: `.84` connects to 209.145.54.164:445 and speaks SMB1 to it.
+
+### Second correction: the S1 daemon uses the KERNEL CIFS client
+
+`libsmb2` is **not present in the S1 rootfs at all** (`/tmp/s23rootfs/lib` has no
+`libsmb2.so*`, and the daemon has no `libsmb2` import). What the S1 daemon does
+have is `/proc/fs/cifs/DebugData` plus the `x-file-cifs:` URI family, i.e. it
+goes through **mount.cifs / the kernel CIFS module**. The `\xffSMBr` SMB1
+negotiate we captured is therefore the *kernel's* CIFS client, and the entire
+`libsmb2` bug list (`smb2_process_read_fixed`, DataOffset/DataLength) describes
+the **S2** binary's client, not the S1's.
+
+Consequences:
+
+- On `.84`/`.202`/`.84`-class hardware the reachable SMB surface is a
+  **2.6-era kernel CIFS client** — a different and considerably larger target
+  (SMB1 transaction/read parsing, `cifs_convert_pathname`, the
+  `CIFSSMBQueryPathInfo` filename copy in that kernel generation).
+- The SMB2 `dropserver.py` is useful for the S2 lane only; for S1 the harness
+  must be an SMB1/CIFS-negotiating server, which `recon/smb1.py` (impacket SMB1)
+  mostly is — its one blocker seen live was `ValueError: Can't find NUL
+  terminator in field 'Service'` while parsing the device's CREATE, which is an
+  impacket strictness issue to work around, not a device problem.
+- `dropserver.py` should be extended to answer SMB1 NEGOTIATE (and ideally
+  advertise 2.0.2 in the SMB1 negotiate so the client upgrades to the already
+  supported SMB2 chain) rather than being pointed at S1 unchanged.
