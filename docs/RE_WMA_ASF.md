@@ -296,3 +296,33 @@ Also worth noting for target selection: `.137` is a **pair member** whose
 coordinator is a different UUID (the powered-off `.202`); the office pair is
 half-dead until that unit is power-cycled, and the lane notes already flag
 member-only `SetAVTransportURI` as a 402/1023 trap.
+
+### Format decode matrix on `.137` (the number that should steer the lane)
+
+Same oracle (20 s file, `GetPositionInfo` sampled at 5 s), one transport
+(`http://`), Jeff's Office unit, 57.23:
+
+| format | TrackDuration | RelTime | verdict |
+|---|---|---|---|
+| MP3 (3 s, separate test) | — | audible | **plays** (owner confirmed) |
+| FLAC | 0:00:20 | 0:00:04 | **plays** |
+| WAV | — | 0:00:04 | **plays** |
+| WMA (genuine, http + DIDL + mms) | 0:00:00 | 0:00:00 | does not play |
+| AAC/M4A | 0:00:00 | 0:00:00 | does not play |
+
+Consequence: **MP3, FLAC and WAV are the formats whose decoders provably run.**
+WMA and AAC are fetched and dropped. Crafting effort should therefore go to a
+decoder that executes — and every WMA PoC verdict so far, including all of
+round 4, was collected on a codec that does not decode a genuine Windows 7
+sample. That does not make the ASF work worthless (the fetch proves the client
+runs up to the parse), but it means a WMA "clean" verdict is indistinguishable
+from "the decoder never engaged", whereas a FLAC or MP3 "clean" verdict is not.
+
+Also established: WAV reports `RelTime` while `TrackDuration` stays 0:00:00, so
+**`RelTime` alone is the position signal** — duration is unreliable on this
+build and must not be used as the pass/fail field.
+
+Next targets, in order of decoder-reach over obscurity: FLAC (old libFLAC,
+highest-value parser in the set that actually decodes), then MP3 frame
+handling, then the HLS client (`sonos.com-hls`, which answered 500 rather than
+fetching — needs its URI shape).
