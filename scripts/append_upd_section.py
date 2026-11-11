@@ -53,11 +53,13 @@ def main():
         if d[o:o + 4] != MAGIC:
             raise SystemExit("bad magic at 0x%x" % o)
         if t == typ and t in ENV_TYPES and same is None:
-            same = recipient_of(d[o + 16:])
+            if d[o + 16:o + 20] == bytes.fromhex("886499ca"):
+                same = recipient_of(d[o + 16:])
         last = (o, t, ln)
         o += ln
-    if last[1] != 17 or last[0] + last[2] != len(d):
-        raise SystemExit("last record is type %d, not a trailing type-17" % last[1])
+    if last[1] not in (17, 0xFFFFFFFF) or last[0] + last[2] != len(d):
+        raise SystemExit("last record is type %d, not a trailing type-17/trailer"
+                         % last[1])
 
     if key:
         if "--recipient" in a:
