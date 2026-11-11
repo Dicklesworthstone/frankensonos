@@ -236,3 +236,27 @@ client is genuinely receiving and parsing them.
 Still zero faults: `iVar9` extremes with a correct preamble and count do not
 push the `FUN_101fdbe8` read out of the mapped buffer, and the wrapped walk
 consumes the stream-properties followers without tripping anything.
+
+### Baseline problem: nothing WMA plays on `.84` (round 4)
+
+A genuine ffmpeg-encoded WMA (`wmav2`, ASF muxer, 3 s tone) was exercised four
+ways: plain `http://` without metadata, `http://` with DIDL
+`protocolInfo="http-get:*:audio/x-ms-wma:*"`, `mms://`, and enqueued then
+played from the queue (`x-rincon-queue:…#0`, `FirstTrackNumberEnqueued=2`).
+Every one answers `SetAVTransportURI` 200 and `Play` 200 and **fetches the
+file** (server log), and every one reports `CurrentTransportState=STOPPED`,
+`TrackDuration 0:00:00`.
+
+So on this unit the ASF client is reached (bytes are fetched and parsed) but
+playback does not start, even for a file ffmpeg considers valid. That means:
+
+- "fetched + device alive" is a **real** verdict — the client receives and
+  parses our bytes — but it is *not* the same as "decoded successfully".
+- Any test whose only claim is "no crash" cannot yet distinguish "walker ran
+  and bounds held" from "walker bailed on our header".
+- Establishing a playing baseline is now the highest-value sub-goal, because
+  without it every negative result stays ambiguous. Candidates: encode with a
+  different muxer/bitrate, arm the URI on the household **coordinator** rather
+  than the member (the round-2 note says member-only SetAVTransportURI is a
+  known 402/1023 trap), or confirm the unit has any WMA-capable service
+  registered at all.
