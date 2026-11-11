@@ -3939,3 +3939,18 @@ flashes images that "demand 30" while the chroot always reads 0). The way to
 see the device's own verdict is the device-side upgrade log, which is not
 reachable at the paths tried (`/status/tmp`, `/status/ramdisk/tmp`,
 `/status/jffs` all empty on this build).
+
+### Appended payload at same version: flashes, but the record is not applied
+
+With `.84` on 57.22 (the exact version of the carrier), the appended package
+cannot fail compatibility — and it did not: the device cycles and returns on
+57.22. But **port 23 stays closed**, so the appended rootfs was not the thing
+flashed: the device re-installed the original type-4 and ignored the extra
+record.
+
+Conclusion on the record level: the 57.x verifier/flasher reads a fixed
+section set (1, 21, 2, 22, 3, 6, 4, 17 + trailer) and a second type-4 after
+the trailer is simply not consulted. To change the rootfs the **type-4 must be
+replaced in place**, which is exactly what the envelope tooling is for — and
+for a 57.22 carrier the recipient is the same `fd88f264…` id, so the open
+question is only which pinned key wraps it.
