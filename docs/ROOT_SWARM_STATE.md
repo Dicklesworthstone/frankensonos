@@ -4349,3 +4349,21 @@ Two things still to fix when the box is back:
 and takes the machine off the network. Owner power-cycled it. Also: a reboot
 clears `/tmp`, so every served payload (`/tmp/aa_www`) is gone with it; payload
 files must be re-staged after any reboot before device tests.
+
+Owner rebooted css after the `netstartd` outage; the rule is now in
+`AGENTS.md` so it survives sessions, and a reboot clears `/tmp` (all payloads
+must be re-staged).
+
+Emulator injection progress after the reboot:
+
+- **Watchdog solved without netstartd**: `handle SIGTERM nostop noprint nopass`
+  — gdb swallows the watchdog's kill, the daemon survives well past it (and
+  `:1400` does reach LISTEN).
+- Jumping straight to `0x10407a20` needs the frame repaired as well as the
+  argument registers: without `r1` the post-accept code crashes at
+  `0x1040e1b8`, and with a patched `r1` it instead lands on a garbage PC
+  (`0x38393600`) — so the remaining work is the frame layout, not the register
+  arguments (`r29=obj`, `r27`/`r31`/`r30` slots are already right).
+- `kill`-breakpoint neutralisation (`set $pc=$lr`) was tried first and loops,
+  because returning from `kill` re-enters it; disabling after the first hit
+  still stalled. SIGTERM `nopass` is the working approach.
