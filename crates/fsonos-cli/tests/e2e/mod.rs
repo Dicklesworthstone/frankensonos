@@ -43,6 +43,8 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod request_gate;
+
 use fsonos_sim::{SimBuilder, SimHandle, SimLan};
 use serde_json::{Value, json};
 use std::fs::{self, File};
@@ -322,13 +324,40 @@ impl Scenario {
         env: &[(&str, &str)],
         unset: &[&str],
     ) -> Run {
+        self.cli_env_during(step, args, env, unset, |_| {})
+    }
+
+    /// Run a CLI command while `during` changes the simulator. A request
+    /// gate can synchronize that change with an actual in-flight command.
+    pub fn cli_during(&mut self, step: &str, args: &[&str], during: impl FnOnce(&mut Self)) -> Run {
+        self.cli_env_during(step, args, &[], &[], during)
+    }
+
+    fn cli_env_during(
+        &mut self,
+        step: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+        unset: &[&str],
+        during: impl FnOnce(&mut Self),
+    ) -> Run {
         let started = Instant::now();
         let mut cmd = self.command();
         for var in unset {
             cmd.env_remove(var);
         }
         cmd.envs(env.iter().copied());
-        let out = cmd.args(args).output().expect("run the fsonos binary");
+        let child = cmd
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run the fsonos binary");
+        during(self);
+        let out = child
+            .wait_with_output()
+            .expect("wait for the fsonos binary");
         let run = Run {
             code: out.status.code(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

@@ -119,7 +119,7 @@ fn replace<T: Transport + ?Sized>(
         t,
         households,
         coordinator,
-        Staged {
+        &Staged {
             destination: &destination,
             before: &before,
             after: &staged,
@@ -142,7 +142,7 @@ pub(crate) fn commit<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
-    staged: Staged<'_>,
+    staged: &Staged<'_>,
     autoplay: bool,
     in_order: bool,
 ) -> Result<(), CoreError> {

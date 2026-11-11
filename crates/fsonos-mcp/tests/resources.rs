@@ -222,6 +222,12 @@ fn resource_reads_yield_and_preserve_documents_and_errors_in_both_protocol_eras(
     let state = json!({"zone": zone(), "transport_state": "playing", "volume": 37});
     let moods = json!({"moods": [], "programs": [], "now": {"source": "none"}});
     let status = json!({"zone": "Room / &@S2", "running": true, "steering": {"source": "none"}});
+    // Older daemons omit the explicit session mood; current documents make
+    // its absence unambiguous without inventing a session or an effective mood.
+    let mut expected_moods = moods.clone();
+    expected_moods["now"]["session_mood"] = Value::Null;
+    let mut expected_status = status.clone();
+    expected_status["steering"]["session_mood"] = Value::Null;
     for modern in [false, true] {
         assert_document(
             &requests,
@@ -249,7 +255,7 @@ fn resource_reads_yield_and_preserve_documents_and_errors_in_both_protocol_eras(
                 ("/dj/moods", moods.clone()),
                 (DJ_PATH, status.clone()),
             ],
-            &json!({"zones": [status.clone()], "moods": moods.clone()}),
+            &json!({"zones": [expected_status.clone()], "moods": expected_moods.clone()}),
         );
         for code in [ErrorCode::PolicyDenied, ErrorCode::NotReady] {
             assert_failure(

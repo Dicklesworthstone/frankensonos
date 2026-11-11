@@ -199,6 +199,43 @@ impl Rig {
     }
 }
 
+/// A member retains its own queue, but must briefly leave to edit it. Restore
+/// the original topology so the concurrent change is the queue alone.
+fn edit_local_queue(lan: &SimLan, target: IpAddr, uri: &str) -> Result<(), ProtoError> {
+    let topology = get_zone_group_state(lan, target)?;
+    let (player, coordinator) = topology
+        .groups
+        .iter()
+        .find_map(|group| {
+            group
+                .members
+                .iter()
+                .find(|member| member.ip() == Some(target))
+                .map(|member| (member.uuid.clone(), group.coordinator.clone()))
+        })
+        .expect("the synthetic target is present in its household");
+    if player != coordinator {
+        soap::leave_group(lan, target, &player)?;
+        assert!(
+            get_zone_group_state(lan, target)?
+                .groups
+                .iter()
+                .any(|group| group.coordinator == player),
+            "the concurrent controller must confirm that its target left"
+        );
+    }
+    soap::add_uri_to_queue(lan, target, uri, "", false)?;
+    if player != coordinator {
+        soap::join_group(lan, target, &coordinator)?;
+    }
+    assert_eq!(
+        get_zone_group_state(lan, target)?,
+        topology,
+        "the concurrent controller must restore the original topology"
+    );
+    Ok(())
+}
+
 fn source(kind: &str) -> Value {
     let id = source_uri(kind).rsplit(':').next().unwrap();
     json!({"kind": "uri", "uri": format!("https://open.spotify.com/{kind}/{id}?si=scene")})
@@ -423,14 +460,8 @@ fn a_queue_edit_during_lookup_preserves_the_edit_and_prevents_caps_or_regrouping
         let target = rig.sim.player(destination).unwrap().ip;
         let catalog = Catalog {
             during_lookup: Some(Box::new(move || {
-                soap::add_uri_to_queue(
-                    &during.lan(),
-                    target,
-                    "http://example.invalid/newer.mp3",
-                    "",
-                    false,
-                )
-                .unwrap();
+                edit_local_queue(&during.lan(), target, "http://example.invalid/newer.mp3")
+                    .unwrap();
             })),
             ..Catalog::ready()
         };
@@ -448,12 +479,24 @@ fn a_queue_edit_during_lookup_preserves_the_edit_and_prevents_caps_or_regrouping
         let error = surface.apply_scene(&Client::McpStdio, "Music").unwrap_err();
         assert!(error.detail.contains("changed"), "{error:?}");
         let writes = rig.writes(marker);
+        let expected = if destination == "Office" {
+            vec!["SetAVTransportURI", "AddURIToQueue", "SetAVTransportURI"]
+        } else {
+            vec!["AddURIToQueue"]
+        };
         assert_eq!(
-            writes.len(),
-            1,
+            writes
+                .iter()
+                .map(|entry| entry.action.as_str())
+                .collect::<Vec<_>>(),
+            expected,
             "only the newer user's edit may write: {writes:?}"
         );
-        assert_eq!(writes[0].action, "AddURIToQueue");
+        assert!(
+            writes
+                .iter()
+                .all(|entry| entry.player == rig.sim.player(destination).unwrap().uuid)
+        );
         assert_eq!(soap::get_volume(&rig.sim.lan(), target).unwrap(), 85);
         assert!(!soap::get_mute(&rig.sim.lan(), target).unwrap());
         let queue = browse_all(&rig.sim.lan(), target, QUEUE).unwrap();
@@ -629,12 +672,10 @@ impl Transport for ChangeDuringVolume {
         let answer = self.lan.soap_post(host, path, action, body)?;
         if action.ends_with("#SetVolume\"") && !self.once.swap(true, Ordering::SeqCst) {
             if self.change == "queue" {
-                soap::add_uri_to_queue(
+                edit_local_queue(
                     &self.lan,
                     self.target,
                     "http://example.invalid/after-cap.mp3",
-                    "",
-                    false,
                 )?;
             } else {
                 soap::set_av_transport_uri(

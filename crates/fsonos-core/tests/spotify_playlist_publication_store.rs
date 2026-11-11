@@ -234,7 +234,7 @@ fn rejected_evidence(store: &mut dyn Store) {
     let good = publication(vec![entry("New")]);
 
     let mut stale = good.clone();
-    stale.expected_directory = None;
+    stale.expected_directory = Some("older directory".into());
     assert!(
         !store
             .publish_spotify_playlist_continuation(&owner, &stale)
@@ -269,14 +269,15 @@ fn rejected_evidence(store: &mut dyn Store) {
         "a late proof mismatch must prevent every write"
     );
 
-    for invalid in 0..5 {
+    for invalid in 0..6 {
         let mut bad = good.clone();
         match invalid {
             0 => bad.entries[0].candidate = Some(false),
             1 => bad.entries[0].origin = LibraryOrigin::LikedTrack,
             2 => bad.entries[0].track.source_uri = "spotify:track:Unproved".into(),
             3 => bad.entries.push(bad.entries[0].clone()),
-            _ => bad.observations[0].contents.revision = "invalid revision".into(),
+            4 => bad.observations[0].contents.revision = "invalid revision".into(),
+            _ => bad.expected_directory = None,
         }
         assert!(
             store

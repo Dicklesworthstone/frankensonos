@@ -381,7 +381,13 @@ mod tests {
         ] {
             let lower = text.to_ascii_lowercase();
             for secret in [
-                "token",
+                "access_token",
+                "accesstoken",
+                "refresh_token",
+                "refreshtoken",
+                "client_secret",
+                "clientsecret",
+                "bearer ",
                 "authorization",
                 "x-fsonos",
                 "tailscale-user",

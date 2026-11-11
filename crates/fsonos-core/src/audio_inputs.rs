@@ -307,15 +307,15 @@ pub fn play_prepared<T: Transport + ?Sized>(
         result
     };
     match result {
-        Err(error) if checked.may_have_changed.get() => Err(uncertain(error)),
+        Err(error) if checked.may_have_changed.get() => Err(uncertain(&error)),
         Err(error) => Err(error),
         Ok(()) => prepared
             .confirm_at(transport, households, coordinator, true)
-            .map_err(uncertain),
+            .map_err(|error| uncertain(&error)),
     }
 }
 
-fn uncertain(error: CoreError) -> CoreError {
+fn uncertain(error: &CoreError) -> CoreError {
     CoreError::Uncertain(format!(
         "line-in playback was not confirmed: {error}; a source or playback write may have taken effect; \
          nothing was replayed; inspect the destination before trying again"

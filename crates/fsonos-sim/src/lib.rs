@@ -498,6 +498,19 @@ fn household(sw_gen: u8) -> Household {
     for (id, favorite) in favorites.iter_mut().enumerate() {
         favorite.id = id;
     }
+    let saved_playlists = saved_playlists(sw_gen, &favorites);
+    Household {
+        id: format!("SIM_HOUSEHOLD_S{sw_gen}"),
+        sw_gen,
+        params,
+        favorites,
+        saved_playlists,
+        saved_playlists_update_id: 1,
+        offered_update: None,
+    }
+}
+
+fn saved_playlists(sw_gen: u8, favorites: &[Favorite]) -> Vec<SavedPlaylist> {
     let saved_track = |index: usize| {
         let favorite = &favorites[index];
         QueueItem {
@@ -509,7 +522,7 @@ fn household(sw_gen: u8) -> Household {
             duration_ms: 180_000,
         }
     };
-    let saved_playlists = vec![
+    vec![
         SavedPlaylist {
             id: 1,
             title: format!("Saved Mix S{sw_gen}"),
@@ -522,16 +535,7 @@ fn household(sw_gen: u8) -> Household {
             tag: "item",
             tracks: vec![saved_track(1), saved_track(0), saved_track(1)],
         },
-    ];
-    Household {
-        id: format!("SIM_HOUSEHOLD_S{sw_gen}"),
-        sw_gen,
-        params,
-        favorites,
-        saved_playlists,
-        saved_playlists_update_id: 1,
-        offered_update: None,
-    }
+    ]
 }
 
 /// Running virtual households. Dropping it stops every listener.

@@ -856,6 +856,42 @@ impl State {
         Ok(vec![("AssignedObjectID", format!("SQ:{id}"))])
     }
 
+    fn set_transport_uri(&mut self, p: usize, args: &Args<'_>, now: u64) -> Result<Out, Fault> {
+        // The hidden half of a pair follows its primary.
+        self.require_not_secondary(p)?;
+        let uri = args.get("CurrentURI")?.to_string();
+        let metadata = args.get("CurrentURIMetaData")?.to_string();
+        if let Some(target) = uri.strip_prefix("x-rincon:") {
+            return self.join_uri(p, target);
+        }
+        // Any other source makes a member leave its group first.
+        if self.players[p].coordinator != p {
+            self.make_standalone(p);
+        }
+        let own_queue = format!("x-rincon-queue:{}#0", self.players[p].uuid);
+        let source = if uri == own_queue {
+            Source::Queue
+        } else {
+            self.check_renderable(p, &uri, &metadata)?;
+            Source::Uri
+        };
+        let length = if source == Source::Uri {
+            didl_duration_ms(&metadata)
+        } else {
+            0
+        };
+        let t = &mut self.players[p].transport;
+        t.set_state(TransportState::Stopped, now);
+        t.source = source;
+        t.uri_duration_ms = length;
+        t.fetched = false;
+        t.uri = uri;
+        t.uri_metadata = metadata;
+        t.track = usize::from(source == Source::Queue && !t.queue.is_empty());
+        t.position_ms = 0;
+        Ok(Vec::new())
+    }
+
     /// What the transport plays from: its URI and its queue.
     fn av_sources(
         &mut self,
@@ -867,41 +903,7 @@ impl State {
         match action {
             "SetPlayMode" => self.set_play_mode(p, args),
             "SaveQueue" => self.save_queue(p, args),
-            "SetAVTransportURI" => {
-                // The hidden half of a pair follows its primary.
-                self.require_not_secondary(p)?;
-                let uri = args.get("CurrentURI")?.to_string();
-                let metadata = args.get("CurrentURIMetaData")?.to_string();
-                if let Some(target) = uri.strip_prefix("x-rincon:") {
-                    return self.join_uri(p, target);
-                }
-                // Any other source makes a member leave its group first.
-                if self.players[p].coordinator != p {
-                    self.make_standalone(p);
-                }
-                let own_queue = format!("x-rincon-queue:{}#0", self.players[p].uuid);
-                let source = if uri == own_queue {
-                    Source::Queue
-                } else {
-                    self.check_renderable(p, &uri, &metadata)?;
-                    Source::Uri
-                };
-                let length = if source == Source::Uri {
-                    didl_duration_ms(&metadata)
-                } else {
-                    0
-                };
-                let t = &mut self.players[p].transport;
-                t.set_state(TransportState::Stopped, now);
-                t.source = source;
-                t.uri_duration_ms = length;
-                t.fetched = false;
-                t.uri = uri;
-                t.uri_metadata = metadata;
-                t.track = usize::from(source == Source::Queue && !t.queue.is_empty());
-                t.position_ms = 0;
-                Ok(Vec::new())
-            }
+            "SetAVTransportURI" => self.set_transport_uri(p, args, now),
             "AddURIToQueue" => {
                 self.require_coordinator(p)?;
                 let uri = args.get("EnqueuedURI")?.to_string();

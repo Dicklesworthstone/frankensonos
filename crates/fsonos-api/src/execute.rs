@@ -671,7 +671,14 @@ mod tests {
                 action,
             };
             let out = execute(&t, &houses, &cmd).unwrap();
-            assert_eq!(t.actions(), [soap]);
+            let expected = if matches!(action, TransportAction::Next | TransportAction::Previous) {
+                vec!["GetPositionInfo", soap]
+            } else {
+                vec![soap]
+            };
+            assert_eq!(t.actions(), expected);
+            let coordinator = control::locate(&houses, &id("RINCON_DEN")).unwrap().ip;
+            assert!(t.sent.borrow().iter().all(|(host, _)| *host == coordinator));
             assert_eq!(out, OutcomeDto::sent(verb.to_string()));
         }
     }

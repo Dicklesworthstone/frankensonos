@@ -8,7 +8,7 @@ use fsonos_core::policy::{CARRIES, CLASSES, class_of};
 use fsonos_mcp::{Profile, server_with};
 
 /// Mutating tools in no class, and what holds them to the policy instead.
-const HELD_AS_OTHERS: [(&str, &str); 6] = [
+const HELD_AS_OTHERS: [(&str, &str); 7] = [
     (
         "echo",
         "nothing to hold: it answers its text and reaches no speaker",
@@ -20,6 +20,10 @@ const HELD_AS_OTHERS: [(&str, &str); 6] = [
     (
         "search_and_play",
         "play or play_favorite, whichever it carries out",
+    ),
+    (
+        "play_line_in",
+        "play; the shared line-in surface authorizes it before discovery or writes",
     ),
     (
         "play_sonos_playlist",

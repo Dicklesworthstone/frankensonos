@@ -14,6 +14,7 @@
 
 mod e2e;
 
+use e2e::request_gate::RequestGate;
 use e2e::{Scenario, http};
 use fsonos_proto::control::{
     get_group_volume, get_volume, join_group, leave_group, play, set_av_transport_uri, set_volume,
@@ -76,6 +77,7 @@ fn serve_heals_around_reboots_regrouping_and_power_loss() {
     );
     // Where the Kitchen will move to: routed before serve reads the routes.
     let spare = s.spare_route();
+    let moved_request = RequestGate::routed(&s, "Kitchen", "<DesiredVolume>31</DesiredVolume>");
 
     let mut daemon = s.spawn(
         "serve",
@@ -107,7 +109,7 @@ fn serve_heals_around_reboots_regrouping_and_power_loss() {
     check_reboot(&mut s, &api);
     check_ungrouped(&mut s, &api);
     check_reelect(&mut s, &api);
-    check_moved(&mut s, spare);
+    check_moved(&mut s, spare, &moved_request);
     check_power_loss(&mut s, &api);
 
     let code = daemon.interrupt(Duration::from_secs(10));
@@ -357,12 +359,12 @@ fn check_reelect(s: &mut Scenario, api: &str) {
     }
 }
 
-/// The Kitchen moves to `spare` (a DHCP lease change) while the S1
-/// household's events are silenced, so the daemon still has its old address,
-/// which now refuses connections. A volume command through the daemon finds
-/// it at the new one and lands there (a HEALED note); the next goes there at
-/// once; a `--direct` run, which surveys afresh, finds it too.
-fn check_moved(s: &mut Scenario, spare: (Ipv4Addr, SocketAddr)) {
+/// Hold a volume command after the daemon selects the Kitchen's old
+/// address, then move it to `spare` (a DHCP lease change). Silencing events
+/// alone is insufficient: a pending survey can proactively learn the new
+/// address, in which case no command recovery or HEALED note is needed.
+/// This in-flight request must recover, and the next goes there at once.
+fn check_moved(s: &mut Scenario, spare: (Ipv4Addr, SocketAddr), gate: &RequestGate) {
     let silenced = ["Kitchen", "Office", "Bridge"];
     for room in silenced {
         let _ = s
@@ -370,48 +372,50 @@ fn check_moved(s: &mut Scenario, spare: (Ipv4Addr, SocketAddr)) {
             .map(|sim| sim.drop_notifies(room, Some(NotifyDrop::Next(10_000))));
     }
     let (to, at) = spare;
-    let moved = s.sim_handle_mut().map(|sim| sim.move_to("Kitchen", to, at));
-    s.check(
-        "moved",
-        "sim",
-        "the Kitchen moves to a new address; its old one refuses connections",
-        matches!(moved, Some(Ok(_))),
-        format!("{moved:?} -> {to} at {at}"),
+    let run = s.cli_during(
+        "moved-daemon",
+        &["--daemon", "--json", "volume", "Kitchen", "31"],
+        |s| {
+            let request = gate.wait(Duration::from_secs(10));
+            s.check(
+                "moved",
+                "cli",
+                "the daemon sends SetVolume to the old address before the Kitchen moves",
+                request.as_ref().is_some_and(|r| r.contains("#SetVolume")),
+                format!("{request:?}"),
+            );
+            let moved = s.sim_handle_mut().map(|sim| sim.move_to("Kitchen", to, at));
+            s.check(
+                "moved",
+                "sim",
+                "the Kitchen moves to a new address; its old listener refuses connections",
+                matches!(moved, Some(Ok(_))),
+                format!("{moved:?} -> {to} at {at}"),
+            );
+            gate.release();
+        },
     );
     let to = IpAddr::V4(to);
-    for (step, level, assertion) in [
-        (
-            "moved-daemon",
-            31,
-            "a volume command through the daemon finds the Kitchen at its new address and lands \
-             there (a HEALED note)",
-        ),
-        (
-            "moved-again",
-            32,
-            "the next one goes to the new address at once (no HEALED note)",
-        ),
-    ] {
-        let run = s.cli(
-            step,
-            &[
-                "--daemon",
-                "--json",
-                "volume",
-                "Kitchen",
-                &level.to_string(),
-            ],
-        );
-        let now = get_volume(&s.lan(), to).ok();
-        let healed = run.stdout.contains("HEALED");
-        s.check(
-            "moved",
-            "cli",
-            assertion,
-            run.ok() && healed == (step == "moved-daemon") && now == Some(level),
-            format!("{run:?}; volume at {to}: {now:?}"),
-        );
-    }
+    let now = get_volume(&s.lan(), to).ok();
+    s.check(
+        "moved",
+        "cli",
+        "the in-flight command finds the Kitchen at its new address and lands there (a HEALED note)",
+        run.ok() && run.stdout.contains("HEALED") && now == Some(31),
+        format!("{run:?}; volume at {to}: {now:?}"),
+    );
+    let run = s.cli(
+        "moved-again",
+        &["--daemon", "--json", "volume", "Kitchen", "32"],
+    );
+    let now = get_volume(&s.lan(), to).ok();
+    s.check(
+        "moved",
+        "cli",
+        "the next one goes to the new address at once (no HEALED note)",
+        run.ok() && !run.stdout.contains("HEALED") && now == Some(32),
+        format!("{run:?}; volume at {to}: {now:?}"),
+    );
     let run = s.cli(
         "moved-direct",
         &["--direct", "--json", "volume", "Kitchen", "33"],

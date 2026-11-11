@@ -313,7 +313,7 @@ impl ErrorCode {
                 "The speaker may have done it: read its state (get_queue, get_zone_state) before sending it again."
             }
             Self::ConfigChanged => {
-                "Read the configuration again, merge your edits, and save with its new revision; do not resend unchanged."
+                "Reread configuration, merge your edits, and save with its new revision; do not resend unchanged."
             }
         }
     }

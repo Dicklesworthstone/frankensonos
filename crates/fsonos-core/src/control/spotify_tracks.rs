@@ -234,7 +234,7 @@ fn replace<T: Transport + ?Sized>(
         t,
         households,
         coordinator,
-        Staged { destination: &destination.source, before: &batch.before, after: &batch.after },
+        &Staged { destination: &destination.source, before: &batch.before, after: &batch.after },
         autoplay,
         true,
     ).map_err(|error| CoreError::Uncertain(format!(
