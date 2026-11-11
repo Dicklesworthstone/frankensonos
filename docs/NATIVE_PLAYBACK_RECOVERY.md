@@ -48,6 +48,12 @@ or stopped playback, and Stop requires stopped playback. Resume uses the shared
 bounded source-start transition wait and checks coordinator ownership around
 the playing-state observation. No control write is repeated by these helpers.
 
+Direct source starts, queue starts and resume reject a confirmation that
+reports `ERROR_OCCURRED`, even if the transport state still says `PLAYING` or
+`TRANSITIONING`. That explicit renderer failure ends the read-back attempt
+immediately and retains the original lost-reply error. Missing or unknown
+status values keep their existing behavior; they are not rewritten to `OK`.
+
 A definite Pause/701 still preserves already-inactive playback or stops an
 active unpausable stream. A lost Pause reply is not treated as a 701: it cannot
 escalate into Stop. An uncertain Stop in the definite-701 fallback can itself
@@ -63,12 +69,20 @@ new endpoint or background polling is added.
 
 ```sh
 cargo test --locked -p fsonos-core --lib control::transport_state
+cargo test --locked -p fsonos-core --lib control::source_start
 cargo test --locked -p fsonos-core --test transport_state_recovery_sim --test control_sim
+cargo test --locked -p fsonos-core --test start_transition_sim
 ```
 
 The simulator cases cover normal and malformed lost acknowledgements for all
 three controls on both generations. Physical-speaker validation remains a
 separate check.
+
+The renderer-status regressions also cover lost replies for direct playback,
+queue playback and resume on both simulated generations, preserving queue
+contents and sending each playback write once. These new simulator cases still
+require execution: the workspace build was killed with exit 137 in the existing
+asupersync dependency before project checks completed.
 
 ## Next and Previous
 
