@@ -4137,3 +4137,33 @@ Consequences:
 - `dropserver.py` should be extended to answer SMB1 NEGOTIATE (and ideally
   advertise 2.0.2 in the SMB1 negotiate so the client upgrades to the already
   supported SMB2 chain) rather than being pointed at S1 unchanged.
+
+### SMB1 responder working — chain reaches the targeted TRANS2
+
+`recon/smb4149/dropserver.py` now answers SMB1: NEGOTIATE (advertising 2.002,
+though this kernel client declines and stays SMB1), SESSION_SETUP_ANDX, and
+TREE_CONNECT_ANDX, with the security blob located by its `NTLMSSP\0` signature
+rather than by word offsets (the client's word count varies).
+
+Observed chain from `.84` in one `getaa`, in order:
+
+```
+0x72 NEGOTIATE -> 0x73 SESSION_SETUP (anonymous: SecurityBlobLength 0,
+     NativeOS "Windows 2000 2195") -> 0x75 TREE_CONNECT -> 0x32 TRANS2
+     sub=0x0 (TRANS2_QUERY_PATH_INFORMATION)
+```
+
+**That is the `FileName` over-read site.** The anonymous session is a notable
+fact in itself: no credentials are needed for the art path, so the harness
+never has to complete NTLM.
+
+TRANS2 parameter block captured for the next step
+(`0000000200e803000000000000000000000200420000000000010003000300000401`,
+WordCount 15). Next: answer `TRANS2_QUERY_PATH_INFORMATION` with a
+`FILE_NAME_INFORMATION` payload whose `FileNameLength` is set from `--fnlen`,
+which is the shape the lane already documents, and the surplus bytes are the
+over-read.
+
+Not corrected yet, on purpose: the server currently returns `None` for TRANS2,
+so the client waits out its timeout — the parameter block above is captured
+verbatim for whoever implements the reply.
