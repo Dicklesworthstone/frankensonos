@@ -4083,3 +4083,32 @@ likely wants a *track* URI (artist/title context) rather than a bare image, and
 `smb://` is not accepted as a transport URI without the usual shim prefix.
 Next: feed `m=1` with a track-shaped URI, and try the `x-file-cifs://` form with
 `m=1` rather than as a transport URI.
+
+### CORRECTION: the art client speaks **SMB1**, not SMB2
+
+Ran the hand-rolled SMB2 chain server (`recon/smb4149/dropserver.py`) at `.84`.
+On port 4450 the client connected and hung up without a byte; on port 445 it
+connected and sent:
+
+```
+non-SMB2 pdu b'\xffSMBr\x00\x00\x00'
+```
+
+`0xFF 'SMB' 0x72` is an **SMB1 NEGOTIATE**. The client waits ~15 s for an answer
+and the `getaa` times out (000). So libsmb2 here starts (and, absent an SMB2
+negotiate, stays) on **SMB1**.
+
+That re-scopes the lane: the parser bugs written up as
+`smb2_process_read_fixed` (`DataOffset==0x50`, no `DataLength<=PDU`, no
+`DataLength<=asked`) live in the SMB2 path and are **not reached** by this
+client as it stands. The reachable surface is the SMB1 code
+(`smb1_read_andx`, QUERY_PATH/QUERY_INFO handling in smb1.c), and the impacket
+server's earlier crash (`ValueError: Can't find NUL terminator in field
+'Service'`) was in **SMB1** CREATE parsing — consistent with that.
+
+Practical consequence: the harness to build is an SMB1 reply server with the
+same field control, or dropserver extended to answer SMB1 NEGOTIATE and the
+SMB1 command set. Until that exists, the over-read shapes cannot be delivered
+to this client at all.
+
+Verified live: `.84` connects to 209.145.54.164:445 and speaks SMB1 to it.
