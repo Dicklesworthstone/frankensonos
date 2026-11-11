@@ -4490,3 +4490,20 @@ separated in this build and the emulator never reaches the accepting stage.
 Practical consequence: any future "is it accepting" test must be done on a
 plain run, never under the debugger, and the real target is now the stall at
 `htsnk` (network bring-up), not thread creation itself.
+
+**`/sys` was missing from the chroot and it matters.** Mounting it (as `/proc`
+already was) moves the boot much further: the trace now reaches
+`<thread> anacapa … Starting` three times — the per-port server threads — and
+30+ threads exist, where before the run stopped at the `htsnk` subscriptions.
+
+So the previous stall was, at least partly, a missing-filesystem problem, not a
+network-only one. Still not serving: all three ports bind, an "anacapa" thread
+exists per port, but none sits in `accept`/`accept4` and the request stays
+queued.
+
+Two things to carry forward:
+
+- mounting `/sys` is **safe** (unlike `netstartd`) and should be part of the
+  standard emulator bring-up alongside `/proc` and the `/dev` nodes;
+- the remaining gate is *after* the server threads start, so it is now about
+  what those threads wait for before `accept`, not about creating them.
