@@ -4306,3 +4306,40 @@ Real result — the trivial form works:
 It survives and the daemon keeps booting, but nothing is accepted: `Recv-Q` on `:1400` climbs 2 → 3 while the loop sits in the pre-accept wait helper **`0x10408838`** (called as `(4, 0)` then `(0, 0)`).
 
 Next surgical step is therefore to jump **past** the helper, straight to `0x10407a20`, with the registers the loop expects at that point: `r29 = obj`, `r27 = sockaddr scratch`, `r31 = out-fd scratch`, and `r3` reloaded from `[r29]` by the code itself at 0x10407a20… (the three `mr`/`addi` at 0x10407a20-0x10407a28 set up `accept`'s arguments). One accept will then run; after it the code falls into the helper anyway, which is fine for a first proof.
+
+### INCIDENT: css went offline from `netstartd`
+
+Trying to silence the daemon's watchdog (it SIGTERMs the emulated daemon once
+the boot stops progressing, which is what kept ending the injection runs), I
+started `netstartd` from the **s23rootfs chroot**:
+
+```
+chroot /tmp/s23rootfs /usr/bin/qemu-ppc /wifi/netstartd
+```
+
+That brought the host **completely off the network**: SSH and even ICMP to
+209.145.54.164 stopped, while the Sonos units stayed reachable locally
+(`.137`, `.84`, `.135` all 200). Reason: `netstartd` configures network
+interfaces, and inside that chroot it is reconfiguring the *host's* NIC, not an
+isolated one. Needs a power-cycle from the Contabo panel to come back.
+
+Rule for next time: either run netstartd only where it has been proven safe
+(the S2 `s86` chroot, where it worked), or expect the box to drop and plan for
+it — i.e. do not start it casually in the middle of a debug session.
+
+### Where the injection stands (all coordinates recorded before the outage)
+
+Working: break at `0x104072e0` *after skipping the first hit* (`ignore 1 1` —
+the first `listen` is the watchdog on 1410, not HTTP), take `$r31` (the real
+server object, fd **34** in the last run), set `r29=obj`, `r27=sockaddr`,
+`r31`/`r30` = out slots, `$pc = 0x10407a20` — that bypasses the blocking wait
+helper and runs `accept` directly. `:1400` then appears in `LISTEN`.
+
+Two things still to fix when the box is back:
+
+1. **r30/r31 must be set** — jumping past the prologue means the `mr r31,r4` /
+   `mr r30,r9` never happen, and without them the post-accept stores fault
+   (observed SIGSEGV at `0x10407a44`, `stw r3,0(r30)`).
+2. **watchdog window** — the emulated daemon is SIGTERMed a few seconds after
+   the boot stops advancing, so the curl has to land fast, or the watchdog has
+   to be satisfied without breaking host networking.
