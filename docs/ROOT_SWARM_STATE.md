@@ -4447,3 +4447,19 @@ httpd keeps at `[obj+0x54]` is the real server context. Next probes, cheapest
 first: `find` in `.bss` for a word whose `+0x54` points at a struct with a
 non-null `+492`, or break `0x104108d4`'s descriptor creation (fn==
 `0x104108d4`) via the wrapper and read `[desc+16]`.
+
+**The bug is now observable, not inferred.** Instrumenting the thread wrapper
+`0x10408514` and logging every descriptor's `[+12]` entry for the first ~35 s of
+boot yields exactly **one** thread — `fn=0x104124c4`, which is a timer
+(`time@plt`, 4752-byte frame). The HTTP acceptor `0x104108d4` is **never started
+at all**. That is the same conclusion the live `Recv-Q` growth gave, now seen in
+code rather than inferred from sockets.
+
+Corollary: since the entry never reaches the wrapper, the code that builds its
+descriptor is what to look for, and the descriptor is a plain struct written
+somewhere with `[+12] = entry`. A `lis 0x1041` + `addi 0x8d4` scan found no
+materialising site, so the address is built another way (table in `.data`,
+relative load, or a computed offset) — those are the shapes to try next.
+
+Reminder of where the daemon's whole thread convention lives, for context:
+wrapper `0x10408514`, `r0=[desc+12]`, `r3=[desc+16]`, `bctrl`.
