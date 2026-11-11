@@ -277,3 +277,46 @@ dispatch it.
 MP4 remains the ranking's #1 on bug-density grounds, but our hand-built boxes
 never reached the decoder, so the immediate task there is a valid minimal
 baseline (demuxer-only would do), not more mutating.
+
+### `.aa` delivery grammar, recovered from the app (2026-11-11)
+
+Playability gate said `.aa` doesn't play; the reason is now known and it is a
+**service** problem, not a codec one.
+
+The unit advertises `audio/audible` in `ConnectionManager.GetProtocolInfo`
+(alongside `audio/mp4`, `audio/x-ms-wma`, `audio/aiff`, `audio/flac`), so the
+format is supported. Plain `http://…/x.aa` is fetched and then dropped
+(broken pipe, `Play` → UPnP **701**), with or without DIDL, correct
+`Content-Type`, Range support, magic `0x57955A16`, or `acelp85`→`acelp16`.
+
+The app (`com.sonos.acr2`, jadx) gives the real grammar —
+`TrackSonosItem.getEnqueuedUri()`:
+
+```java
+new EnqueuedUri("x-sonos-http:".concat(itemId.addQueryParams(toFlags).build()))
+```
+
+and `SonosItemId.build()` produces
+
+```
+<legacyFlagsHex><urlencoded objectId>?sid=<serviceId>&flags=<flags>&sn=<accountId>
+```
+
+so a full URI is `x-sonos-http:<flagsHex><objectId>?sid=N&flags=N&sn=N` (the
+legacy flag hex is *prepended*, the id URL-encoded, `sn` is the account id).
+
+The daemon agrees: `x-sonos-http:` and `x-sonos-mms:` prefixes,
+`x-sonosapi-radio:ST:%s?sid=%d&flags=%x`, and the errors
+**`No descriptor for sid=%u`** / **`No account for sid=%u`**. So the sid must
+resolve to a *registered service descriptor*, which only exists if an Audible
+account is linked to the household.
+
+Tested shapes: `x-sonos-http://…` (accepted, never fetched), `x-sonos-http:<enc
+url>?sid=N&flags=8224&sn=1` (rejected 500 for sids 1/2/27). Remaining gate: a
+real sid for Audible in this household — obtainable from the app's service
+list / the household's service registry, not guessable.
+
+Everything downstream of that is already built: the `.aa` fire rig exists, the
+container parser is mapped (`aadec`-equivalent: size, magic, TOC, dictionary,
+`codec`/`HeaderSeed`/`HeaderKey`, TEA-derived file key), and the S2 daemon's
+startup `abort()` sits in the codec-id switch that dispatches it.
