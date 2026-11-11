@@ -3,8 +3,8 @@
 
 use fsonos_core::store::{
     LibraryEntry, LibraryOrigin, MAX_SPOTIFY_ARTIST_CONTINUATION_ENTRIES,
-    MAX_SPOTIFY_ARTIST_DISCOVERY_BYTES, MemStore, SpotifyArtistDiscoveryFence,
-    SpotifyLibraryOwner, SqliteStore, Store,
+    MAX_SPOTIFY_ARTIST_DISCOVERY_BYTES, MemStore, SpotifyArtistDiscoveryFence, SpotifyLibraryOwner,
+    SqliteStore, Store,
 };
 use fsonos_types::Track;
 
@@ -130,7 +130,13 @@ fn additive_merge(store: &mut dyn Store) {
         before + 1,
         "receipt-only progress is not a catalog change"
     );
-    assert!(publish(store, &owner, Some("second batch"), "finished", &[]));
+    assert!(publish(
+        store,
+        &owner,
+        Some("second batch"),
+        "finished",
+        &[]
+    ));
     assert_eq!(revision(store), before + 1);
 }
 
@@ -409,7 +415,8 @@ fn sqlite_failure_after_the_candidate_and_receipt_writes_rolls_both_back() {
     let before = store.library().unwrap();
     let raw = fsqlite::AsyncConnection::open_sync(path.to_string_lossy()).unwrap();
     // The revision write is last, after both candidates and the new receipt.
-    raw.execute_sync("DROP TABLE library_catalog_clock").unwrap();
+    raw.execute_sync("DROP TABLE library_catalog_clock")
+        .unwrap();
     assert!(
         store
             .publish_spotify_artist_continuation(

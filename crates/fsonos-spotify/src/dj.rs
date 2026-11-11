@@ -1403,6 +1403,10 @@ mod tests {
         let pool = works_of(&mixed_items());
         let config = DjConfig::default();
         let window = config.artist_cooldown_works;
+        let work_first = DjConfig {
+            artist_cooldown_works: 0,
+            ..config.clone()
+        };
         let genre_shares = |picks: &[PlannedWork<'_>]| {
             let mut shares: BTreeMap<String, usize> = BTreeMap::new();
             for p in picks {
@@ -1424,34 +1428,88 @@ mod tests {
         for seed in 1..=3 {
             let picks = simulate(&pool, &config, seed, 300, Some(14));
             let log = || transcript(seed, &pool, &picks);
-            // No artist (or composer) twice inside the window.
+            // An unheard tail can contain only recently heard artists or one
+            // genre. Space them whenever compatible alternatives remain,
+            // without admitting a work the cooldown or rotation passed over.
+            let (admitted, _) = pool.allowed(None);
+            let mut history = Vec::new();
+            let mut now = MIDNIGHT;
+            let mut genre_run = 0;
+            let mut forced_genre_steps = 0;
             for (i, p) in picks.iter().enumerate() {
-                for back in 1..=window.min(i) {
-                    assert_ne!(
-                        p.work.composer_key(),
-                        picks[i - back].work.composer_key(),
-                        "pick {i}\n{}",
+                let ctx = PickContext {
+                    history: &history,
+                    now: Some(now),
+                    ..PickContext::default()
+                };
+                let recency = Recency::scan(&pool, &history, &config);
+                let candidates = eligible(
+                    &pool,
+                    admitted.clone(),
+                    config.allow_long_works,
+                    &recency,
+                    &ctx,
+                    &work_first,
+                );
+                let choices: Vec<&Work> =
+                    candidates.works.iter().map(|&w| &pool.works[w]).collect();
+                assert!(
+                    choices.iter().any(|&work| std::ptr::eq(work, p.work)),
+                    "artist spacing bypassed work eligibility at pick {i}\n{}",
+                    log()
+                );
+                let recent = &picks[i.saturating_sub(window)..i];
+                let artist_is_fresh = |work: &Work| {
+                    recent
+                        .iter()
+                        .all(|past| past.work.composer_key() != work.composer_key())
+                };
+                let spaced: Vec<&Work> = choices
+                    .iter()
+                    .copied()
+                    .filter(|work| artist_is_fresh(work))
+                    .collect();
+                let compatible = if spaced.is_empty() {
+                    &choices
+                } else {
+                    assert!(artist_is_fresh(p.work), "pick {i}\n{}", log());
+                    &spaced
+                };
+                genre_run = if i > 0 && picks[i - 1].work.genre() == p.work.genre() {
+                    genre_run + 1
+                } else {
+                    1
+                };
+                let another_genre = compatible.iter().any(|work| work.genre() != p.work.genre());
+                if genre_run > 1 && !another_genre {
+                    forced_genre_steps += 1;
+                }
+                if genre_run > 5 {
+                    assert!(
+                        !another_genre,
+                        "a different genre could break the run at pick {i}\n{}",
                         log()
                     );
                 }
+                for movement in p.movements {
+                    history.push(PlayRecord::at(movement.track.source_uri.clone(), now));
+                    now += i64::from(movement.track.duration_secs.unwrap());
+                }
             }
-            // Genres alternate: back to back well under two thirds as often
-            // as independent draws would make them, and never more than five
-            // in a row (classical is half this library, and once most songs
-            // have played, the cooldown leaves mostly classical works).
-            let works: Vec<&Work> = picks.iter().map(|p| p.work).collect();
-            assert!(
-                longest_run(&works, |w| w.genre().map(str::to_owned)) <= 5,
-                "{}",
-                log()
-            );
+            // When a different genre is eligible, repeats stay well under two
+            // thirds as frequent as independent draws. Forced same-genre steps
+            // in an unheard tail provide no choice, so exclude them from both
+            // the repeats and the opportunities to alternate.
             let same = picks
                 .windows(2)
                 .filter(|pair| pair[0].work.genre() == pair[1].work.genre())
                 .count();
+            let comparison_steps = picks.len() - 1 - forced_genre_steps;
             assert!(
-                same * 1000 * 3 < independent_pm * (picks.len() - 1) * 2,
-                "{same} same-genre steps\n{}",
+                comparison_steps > 0
+                    && (same - forced_genre_steps) * 1000 * 3
+                        < independent_pm * comparison_steps * 2,
+                "{same} same-genre steps ({forced_genre_steps} forced); {comparison_steps} comparisons with a genre choice\n{}",
                 log()
             );
             // Reasons name the artist factors for songs and the genre balance.
