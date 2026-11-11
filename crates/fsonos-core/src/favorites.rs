@@ -297,3 +297,30 @@ pub fn play<T: Transport + ?Sized>(
         )?),
     }
 }
+
+/// Play a favorite, retaining a receipt when the favorite replaces the
+/// queue (including a saved Sonos playlist). Direct tracks and streams do
+/// not replace queue contents and return `None` on success.
+pub fn play_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    favorite: &Favorite,
+) -> Result<Option<control::QueueReplacement>, FavoriteError> {
+    if !matches!(favorite.kind, FavoriteKind::Container) {
+        return play(t, households, coordinator, favorite).map(|()| None);
+    }
+    let uri = favorite
+        .uri
+        .as_deref()
+        .ok_or_else(|| FavoriteError::Unplayable {
+            title: favorite.title.clone(),
+        })?;
+    Ok(Some(queue_source::play_with_receipt(
+        t,
+        households,
+        coordinator,
+        uri,
+        &favorite.metadata,
+    )?))
+}

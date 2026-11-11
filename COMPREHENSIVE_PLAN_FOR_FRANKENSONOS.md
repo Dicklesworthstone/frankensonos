@@ -918,6 +918,18 @@ media or queue read; unreadable or subsequently changed levels require a new
 read before normal undo. Existing action rows retain their previous full-zone
 restoration behavior.
 
+Eligible direct queue-replacing playback now retains a durable content backup,
+using the same restoration machinery as native removal and reordering. Spotify
+albums/playlists, resolved artist/show selections, native Sonos playlists and
+container favorites bind the original selected queue to the completed staged
+replacement's exact receipt. Undo reconstructs its full ordered contents,
+duplicate occurrence, elapsed time, mode and quiet intent after a daemon
+restart. Both the original backup and recorded result are bounded; unavailable,
+changed or uncertain proof leaves an explicit action-history barrier. Exact
+policy reductions made before Play are retained, and mixed command sets require
+complete proof for every attempted replacement. Scene replacements retain their
+existing behavior. See [`docs/QUEUE_UNDO.md`](docs/QUEUE_UNDO.md).
+
 ### 12.6 Favorites, saved Sonos playlists and library search as play sources
 
 Explicit Spotify artist links now resolve through the owner's read-only catalog

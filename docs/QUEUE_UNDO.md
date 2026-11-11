@@ -1,10 +1,12 @@
-# Undo a queue removal or move
+# Undo queue edits and replacement playback
 
-Confirmed native queue removals and moves can retain a complete, durable undo
-backup. The response's `undoable` field is the authority: it becomes `true`
-only after the daemon saves the backup and the exact confirmed result in its
-action log. A successful edit remains successful if logging fails, but its
-response reports `undoable: false`.
+Confirmed native queue removals, moves and eligible playback replacements can
+retain a complete, durable undo backup. Native removal and move responses report
+`undoable: true` only after the daemon saves the backup and exact confirmed
+result in its action log. Playback commands keep their existing response shape;
+use action history and the undo preview to inspect recovery eligibility. A
+successful speaker operation remains successful if logging fails, but cannot
+promise durable recovery without its saved action.
 
 Undo restores the original ordered contents, including duplicate occurrences,
 the original selected slot and position, the saved shuffle/repeat mode, and
@@ -25,14 +27,28 @@ The CLI's `fsonos undo`, MCP `undo_last`, and legacy `POST /undo` use the same
 queue recovery. The normal one-hour undo age limit and caller policy apply.
 Neither a preview nor `undoable: true` reserves the speaker state indefinitely.
 
-## Which edits can be recovered
+## Which actions can be recovered
 
 The original queue must be nonempty, selected as the coordinator's own queue,
 fully readable, and within both backup limits: **1,000 entries and 4 MiB of
 serialized queue metadata**. Each entry must have replayable metadata. A
-complete backup is taken before the native edit and bound to that exact
-revision and requested range. After the edit, the daemon proves the complete
-expected order at the native operation's confirmed revision before saving it.
+complete backup is taken before the native operation and bound to that exact
+revision. For a removal or move, it also binds the requested range and resulting
+selected occurrence. After the edit, the daemon proves the complete expected
+order at the native operation's confirmed revision before saving it.
+
+Playback replacement covers Spotify albums and playlists, resolved artist-track
+and show-episode selections, native Sonos playlists, and container favorites.
+The replacement must finish successfully and start its confirmed new queue.
+Its receipt binds the original ordered queue and playback to the staged append,
+prefix removal, and exact final revision and contents. The recorded result must
+also fit within 1,000 entries and 4 MiB of renderer URI text. This
+allows a short old queue to be recovered after playing a longer album.
+
+Caps applied before playback are retained as exact acknowledged reductions.
+Undo does not restore a higher pre-cap volume. A multi-group command requires a
+complete replacement proof for every attempted replacement; partial results
+cannot expose a partial queue restore as an undoable whole action.
 
 An inactive queue, an unselected or initially empty queue, an oversized or
 unreadable queue, and an unconfirmed edit do not gain a partial backup. Their
@@ -40,8 +56,9 @@ changed or uncertain actions remain barriers, so undo cannot skip past them
 and restore a stale earlier queue reference. No-op moves create no barrier.
 Deleting every entry from a previously selected eligible queue can be undone.
 
-This feature covers native removal and reordering. It does not add content
-backup to playback replacement or every operation that changes a queue.
+Scene-driven replacement and silent source loading keep their existing undo
+behavior. This feature does not make every operation that changes a queue
+recoverable.
 
 ## A later listener's changes take precedence
 
@@ -76,7 +93,10 @@ automatic rollback or stale reference-only restore follows it. Read the
 speaker queue before deciding what to do next. Undo itself has no redo.
 
 Regression sources cover S1/S2 localhost speakers, duplicate and current-entry
-removal, complete deletion, reordering, paused and advancing playback, SQLite
-close/reopen, changed ownership, policy caps, lost replies and partial staging.
+removal, complete deletion, reordering, album/playlist and ordered catalog
+replacement, paused and advancing playback, SQLite close/reopen, changed
+ownership, policy caps, lost replies and partial staging. Surface regressions
+also exercise the shared checked-undo implementation under HTTP and MCP caller
+identities.
 These fixtures are separate from physical-speaker qualification; check the
 matching CI results for executed Rust validation.

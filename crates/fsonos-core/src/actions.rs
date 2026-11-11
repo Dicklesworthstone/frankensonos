@@ -44,7 +44,8 @@ pub use house_config::{
 };
 pub use levels::{LevelAfter, LevelScope, capture_level_after, with_level_after, with_level_scope};
 pub use queue::{
-    PendingQueueUndo, QueueUndo, capture_queue_undo, finish_queue_undo, with_queue_undo,
+    PendingQueueUndo, QueueUndo, capture_queue_undo, finish_queue_replacement, finish_queue_undo,
+    with_queue_undo,
 };
 
 /// Retention: the newest this many actions are kept…
@@ -122,7 +123,7 @@ pub struct BeforeState {
     #[serde(default)]
     pub queued: Vec<QueuedBefore>,
     /// Complete bounded contents and exact post-edit proof for native queue
-    /// removal/reordering. Older action rows have no queue reconstruction.
+    /// removal/reordering or replacement. Older action rows have no queue reconstruction.
     #[serde(default)]
     pub queue_undo: Vec<QueueUndo>,
     /// The touched rooms just after the action ([`with_after`]); none in

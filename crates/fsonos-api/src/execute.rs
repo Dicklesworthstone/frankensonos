@@ -47,6 +47,22 @@ impl OutcomeDto {
     }
 }
 
+/// Native confirmation retained only inside one command. Public responses do
+/// not expose renderer metadata; the surface uses this proof for durable undo.
+pub(crate) struct Executed {
+    pub outcome: OutcomeDto,
+    pub replacement: Option<control::QueueReplacement>,
+}
+
+impl From<OutcomeDto> for Executed {
+    fn from(outcome: OutcomeDto) -> Self {
+        Self {
+            outcome,
+            replacement: None,
+        }
+    }
+}
+
 /// [`execute`] under the house policy: bound `command` by `guard` (a capped
 /// caller's volume may be lowered), carry it out, and attach the notes. The
 /// caller authorizes the tool with [`Guard::authorize`] before planning.
@@ -81,27 +97,43 @@ pub fn execute<T: Transport + ?Sized>(
     households: &[HouseholdState],
     command: &Command,
 ) -> Result<OutcomeDto, Failure> {
-    let room = |id: &PlayerId| {
-        control::locate(households, id).map_or_else(|_| id.0.clone(), |p| p.room_name.clone())
-    };
-    let outcome = match command {
+    execute_command(transport, households, command, false).map(|executed| executed.outcome)
+}
+
+pub(crate) fn execute_with_receipt<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    command: &Command,
+) -> Result<Executed, Failure> {
+    execute_command(transport, households, command, true)
+}
+
+fn execute_command<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    command: &Command,
+    receipt: bool,
+) -> Result<Executed, Failure> {
+    match command {
         Command::Play {
             coordinator,
             source_uri,
             title,
             ..
         } => {
-            play(
+            let replacement = play(
                 transport,
                 households,
                 coordinator,
                 source_uri,
                 title.as_deref(),
+                receipt,
             )?;
-            OutcomeDto::sent(format!(
-                "playing {source_uri} in {}'s group",
-                room(coordinator)
-            ))
+            let room = &control::locate(households, coordinator)?.room_name;
+            Ok(Executed {
+                outcome: OutcomeDto::sent(format!("playing {source_uri} in {room}'s group")),
+                replacement,
+            })
         }
         Command::PlayTracks {
             coordinator,
@@ -116,7 +148,27 @@ pub fn execute<T: Transport + ?Sized>(
             source_uri,
             selection,
             destination,
-        )?,
+            receipt,
+        ),
+        Command::PlayFavorite {
+            coordinator,
+            favorite,
+            ..
+        } => play_favorite(transport, households, coordinator, favorite, receipt),
+        _ => execute_other(transport, households, command).map(Executed::from),
+    }
+}
+
+/// Commands that retain the queue need no replacement receipt.
+fn execute_other<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    command: &Command,
+) -> Result<OutcomeDto, Failure> {
+    let room = |id: &PlayerId| {
+        control::locate(households, id).map_or_else(|_| id.0.clone(), |p| p.room_name.clone())
+    };
+    Ok(match command {
         Command::PlayLineIn {
             coordinator,
             prepared,
@@ -128,11 +180,6 @@ pub fn execute<T: Transport + ?Sized>(
                 room(coordinator)
             ))
         }
-        Command::PlayFavorite {
-            coordinator,
-            favorite,
-            ..
-        } => play_favorite(transport, households, coordinator, favorite)?,
         Command::Transport {
             coordinator,
             action,
@@ -185,8 +232,10 @@ pub fn execute<T: Transport + ?Sized>(
             changed: false,
             ..OutcomeDto::sent(reason.clone())
         },
-    };
-    Ok(outcome)
+        Command::Play { .. } | Command::PlayTracks { .. } | Command::PlayFavorite { .. } => {
+            unreachable!("source commands retain their replacement receipt above")
+        }
+    })
 }
 
 fn play_tracks<T: Transport + ?Sized>(
@@ -196,7 +245,8 @@ fn play_tracks<T: Transport + ?Sized>(
     source_uri: &str,
     selection: &crate::source::SourceSelection,
     destination: &control::TrackBatchDestination,
-) -> Result<OutcomeDto, Failure> {
+    receipt: bool,
+) -> Result<Executed, Failure> {
     selection.validate_for_source(source_uri)?;
     let room = &control::locate(households, coordinator)?.room_name;
     let tracks: Vec<_> = selection
@@ -204,14 +254,37 @@ fn play_tracks<T: Transport + ?Sized>(
         .iter()
         .map(|(uri, title)| (uri.as_str(), title.as_str()))
         .collect();
-    control::play_spotify_tracks_bound(transport, households, coordinator, &tracks, destination)
+    let replacement = if receipt {
+        Some(
+            control::play_spotify_tracks_bound_with_receipt(
+                transport,
+                households,
+                coordinator,
+                &tracks,
+                destination,
+            )
+            .map_err(spotify_failure)?,
+        )
+    } else {
+        control::play_spotify_tracks_bound(
+            transport,
+            households,
+            coordinator,
+            &tracks,
+            destination,
+        )
         .map_err(spotify_failure)?;
-    Ok(OutcomeDto::sent(format!(
-        "playing {} {} from {source_uri} in {room}'s group ({})",
-        tracks.len(),
-        selection.kind.item_label(),
-        selection.kind.description()
-    )))
+        None
+    };
+    Ok(Executed {
+        outcome: OutcomeDto::sent(format!(
+            "playing {} {} from {source_uri} in {room}'s group ({})",
+            tracks.len(),
+            selection.kind.item_label(),
+            selection.kind.description()
+        )),
+        replacement,
+    })
 }
 
 fn play_favorite<T: Transport + ?Sized>(
@@ -219,18 +292,27 @@ fn play_favorite<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
     favorite: &fsonos_core::favorites::Favorite,
-) -> Result<OutcomeDto, Failure> {
+    receipt: bool,
+) -> Result<Executed, Failure> {
     let room = &control::locate(households, coordinator)?.room_name;
-    fsonos_core::favorites::play(transport, households, coordinator, favorite)?;
+    let replacement = if receipt {
+        fsonos_core::favorites::play_with_receipt(transport, households, coordinator, favorite)?
+    } else {
+        fsonos_core::favorites::play(transport, households, coordinator, favorite)?;
+        None
+    };
     let kind = if favorite.id.starts_with("SQ:") {
         "Sonos playlist"
     } else {
         "favorite"
     };
-    Ok(OutcomeDto::sent(format!(
-        "playing the {kind} {:?} in {room}'s group",
-        favorite.title
-    )))
+    Ok(Executed {
+        outcome: OutcomeDto::sent(format!(
+            "playing the {kind} {:?} in {room}'s group",
+            favorite.title
+        )),
+        replacement,
+    })
 }
 
 /// A DJ command on a surface without a DJ engine (see
@@ -369,19 +451,34 @@ fn play<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     source_uri: &str,
     title: Option<&str>,
-) -> Result<(), Failure> {
+    receipt: bool,
+) -> Result<Option<control::QueueReplacement>, Failure> {
     validate_playable_source(source_uri)?;
     let title = title.unwrap_or(source_uri);
     if source_uri.starts_with("spotify:track:") {
         return control::play_spotify_track(transport, households, coordinator, source_uri, title)
+            .map(|()| None)
             .map_err(spotify_failure);
     }
     if SpotifyBare::of(source_uri).is_some() {
         return control::play_spotify_bare(transport, households, coordinator, source_uri, title)
+            .map(|()| None)
             .map_err(spotify_failure);
     }
     if let Some(kind) = SpotifyContainer::of(source_uri) {
-        return control::play_spotify_container(
+        if !receipt {
+            return control::play_spotify_container(
+                transport,
+                households,
+                coordinator,
+                kind,
+                source_uri,
+                title,
+            )
+            .map(|()| None)
+            .map_err(spotify_failure);
+        }
+        return control::play_spotify_container_with_receipt(
             transport,
             households,
             coordinator,
@@ -389,10 +486,11 @@ fn play<T: Transport + ?Sized>(
             source_uri,
             title,
         )
+        .map(Some)
         .map_err(spotify_failure);
     }
     control::play_uri(transport, households, coordinator, source_uri, "")?;
-    Ok(())
+    Ok(None)
 }
 
 /// A Spotify render's failure, saying what to do about it.

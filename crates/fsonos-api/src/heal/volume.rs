@@ -1,6 +1,6 @@
 //! An absolute volume retry cannot spend the caller's step allowance twice.
 
-use crate::execute::OutcomeDto;
+use crate::execute::Executed;
 use crate::failure::Failure;
 use crate::guard::{Guard, Note};
 use crate::plan::Command;
@@ -13,16 +13,24 @@ use fsonos_proto::Transport;
 pub(super) struct RetryVolume {
     ceiling: Option<u8>,
     notes: Vec<Note>,
+    receipt: bool,
 }
 
 impl RetryVolume {
+    pub(super) fn new(receipt: bool) -> Self {
+        Self {
+            receipt,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn execute<T: Transport + ?Sized>(
         &mut self,
         transport: &T,
         households: &[HouseholdState],
         guard: &Guard<'_>,
         mut command: Command,
-    ) -> Result<OutcomeDto, Failure> {
+    ) -> Result<Executed, Failure> {
         let absolute = if let Command::Volume {
             change: VolumeChange::Set(level),
             ..
@@ -55,9 +63,13 @@ impl RetryVolume {
             }
             notes.clone_from(&self.notes);
         }
-        let mut outcome = crate::execute::execute(transport, households, &command)?;
-        notes.append(&mut outcome.notes);
-        outcome.notes = notes;
-        Ok(outcome)
+        let mut executed = if self.receipt {
+            crate::execute::execute_with_receipt(transport, households, &command)?
+        } else {
+            crate::execute::execute(transport, households, &command)?.into()
+        };
+        notes.append(&mut executed.outcome.notes);
+        executed.outcome.notes = notes;
+        Ok(executed)
     }
 }

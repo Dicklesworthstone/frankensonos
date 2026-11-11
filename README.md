@@ -486,6 +486,13 @@ deny = ["volume"]
   puts it back anyway. And it stops at a newer change it cannot put back (a
   queue edit, a sleep timer, a fade-out) rather than reach past it and roll
   back an older action instead.
+  Eligible native queue removals, moves and successful playback replacements
+  retain complete queue contents for recovery. Playing an album, playlist,
+  resolved artist/show selection or container favorite can therefore be undone
+  after a daemon restart, restoring duplicate occurrences, the selected track,
+  elapsed time, shuffle/repeat mode and quiet playback intent. Queue ownership
+  checks still apply with `--force`, and undo preserves policy volume reductions.
+  See [Queue undo](docs/QUEUE_UNDO.md) for the bounds and eligibility rules.
 - Callers the daemon cannot identify get read-only tools; the API and MCP
   listeners refuse wildcard and public binds (unless you pass
   `--allow-unsafe-bind`); the HTTP API checks Host and Origin and accepts POST

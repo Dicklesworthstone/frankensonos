@@ -2,7 +2,10 @@
 //! Music tracks and episodes share queue insertion proofs and staged replacement.
 
 use super::queue_removal::{self, Snapshot};
-use super::{Queued, SourceDestination, addr, pause_confirmed, queue_insert, spotify_params};
+use super::{
+    QueueReplacement, Queued, SourceDestination, addr, pause_confirmed, queue_insert,
+    spotify_params,
+};
 use crate::queue_source::{self, Staged};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::didl::{
@@ -183,7 +186,34 @@ pub fn play_spotify_tracks_bound<T: Transport + ?Sized>(
     tracks: &[(&str, &str)],
     destination: &TrackBatchDestination,
 ) -> Result<(), CoreError> {
-    replace(t, households, coordinator, tracks, true, destination)
+    replace(t, households, coordinator, tracks, true, destination, false).map(|_| ())
+}
+
+/// The same guarded, ordered replacement as [`play_spotify_tracks_bound`],
+/// retaining its exact native result for bounded queue undo. A failed
+/// replacement never returns a receipt.
+pub fn play_spotify_tracks_bound_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    tracks: &[(&str, &str)],
+    destination: &TrackBatchDestination,
+) -> Result<QueueReplacement, CoreError> {
+    replace(t, households, coordinator, tracks, true, destination, true)
+}
+
+/// Resolve the destination and replace with an ordered track list, retaining
+/// the successful mutation receipt for [`crate::actions::finish_queue_replacement`].
+pub fn play_spotify_tracks_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    tracks: &[(&str, &str)],
+) -> Result<QueueReplacement, CoreError> {
+    validate(tracks)?;
+    let host = addr(households, coordinator)?;
+    let destination = TrackBatchDestination::read(t, host, coordinator)?;
+    play_spotify_tracks_bound_with_receipt(t, households, coordinator, tracks, &destination)
 }
 
 /// Stage and select the exact track list without Play. A playing old source is
@@ -208,7 +238,16 @@ pub fn load_spotify_tracks_bound<T: Transport + ?Sized>(
     tracks: &[(&str, &str)],
     destination: &TrackBatchDestination,
 ) -> Result<(), CoreError> {
-    replace(t, households, coordinator, tracks, false, destination)
+    replace(
+        t,
+        households,
+        coordinator,
+        tracks,
+        false,
+        destination,
+        false,
+    )
+    .map(|_| ())
 }
 
 fn replace<T: Transport + ?Sized>(
@@ -218,12 +257,16 @@ fn replace<T: Transport + ?Sized>(
     tracks: &[(&str, &str)],
     autoplay: bool,
     destination: &TrackBatchDestination,
-) -> Result<(), CoreError> {
+    receipt: bool,
+) -> Result<QueueReplacement, CoreError> {
     validate(tracks)?;
     let host = addr(households, coordinator)?;
     destination.confirm(t, host, coordinator)?;
     let rendered = render(t, households, coordinator, tracks)?;
     destination.confirm(t, host, coordinator)?;
+    let owner = receipt
+        .then(|| queue_source::replacement_owner(t, host, coordinator))
+        .flatten();
     if !autoplay {
         pause_confirmed(t, households, coordinator)?;
         destination.confirm(t, host, coordinator)?;
@@ -234,7 +277,12 @@ fn replace<T: Transport + ?Sized>(
         t,
         households,
         coordinator,
-        &Staged { destination: &destination.source, before: &batch.before, after: &batch.after },
+        Staged {
+            destination: &destination.source,
+            before: &batch.before,
+            after: &batch.after,
+            owner,
+        },
         autoplay,
         true,
     ).map_err(|error| CoreError::Uncertain(format!(

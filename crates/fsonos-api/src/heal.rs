@@ -14,7 +14,7 @@ use fsonos_types::PlayerId;
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
-use crate::execute::OutcomeDto;
+use crate::execute::{Executed, OutcomeDto};
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::Command;
@@ -32,9 +32,16 @@ pub fn execute_healing<T: Transport + ?Sized>(
     command: &Command,
     fresh: impl FnOnce() -> Option<Vec<HouseholdState>>,
 ) -> Result<OutcomeDto, Failure> {
-    execute_healing_with(transport, households, guard, command, fresh, |_, _| {
-        Ok(Vec::new())
-    })
+    execute_healing_with(
+        transport,
+        households,
+        guard,
+        command,
+        false,
+        fresh,
+        |_, _| Ok(Vec::new()),
+    )
+    .map(|executed| executed.outcome)
 }
 
 /// The surface rechecks playback caps and continuation ownership for the
@@ -45,11 +52,12 @@ pub(crate) fn execute_healing_with<T: Transport + ?Sized>(
     households: &[HouseholdState],
     guard: &Guard<'_>,
     command: &Command,
+    receipt: bool,
     fresh: impl FnOnce() -> Option<Vec<HouseholdState>>,
     prepare_retry: impl Fn(&[HouseholdState], &Command) -> Result<Vec<Note>, Failure>,
-) -> Result<OutcomeDto, Failure> {
+) -> Result<Executed, Failure> {
     let can_readdress = Cell::new(true);
-    let volume = RefCell::new(volume::RetryVolume::default());
+    let volume = RefCell::new(volume::RetryVolume::new(receipt));
     let result = on_new_coordinator(
         transport,
         households,
@@ -92,12 +100,12 @@ pub(crate) fn execute_healing_with<T: Transport + ?Sized>(
                 outcome = %retried.as_ref().map_or_else(|f| f.detail.clone(), |_| "ok".into()),
                 "player moved; retried at its new address"
             );
-            retried.map(|mut outcome| {
-                notes.append(&mut outcome.notes);
-                outcome.notes = notes;
+            retried.map(|mut executed| {
+                notes.append(&mut executed.outcome.notes);
+                executed.outcome.notes = notes;
                 let room = room(&moved, player);
                 healed(
-                    outcome,
+                    executed,
                     format!(
                         "{room} had moved from {from} to {to}; the command was sent to {}",
                         destination.as_deref().unwrap_or(&room)
@@ -158,7 +166,7 @@ fn observed_execute<T: Transport + ?Sized>(
     guard: &Guard<'_>,
     command: Command,
     volume: &RefCell<volume::RetryVolume>,
-) -> (Result<OutcomeDto, Failure>, bool) {
+) -> (Result<Executed, Failure>, bool) {
     let observed = attempt::Observed::new(transport);
     let result = volume
         .borrow_mut()
@@ -188,7 +196,7 @@ fn on_new_coordinator<T: Transport + ?Sized>(
     can_readdress: &Cell<bool>,
     volume: &RefCell<volume::RetryVolume>,
     prepare_retry: &impl Fn(&[HouseholdState], &Command) -> Result<Vec<Note>, Failure>,
-) -> Result<OutcomeDto, Failure> {
+) -> Result<Executed, Failure> {
     let Some(member) = command.group_member() else {
         let (result, blocked) =
             observed_execute(transport, households, guard, command.clone(), volume);
@@ -222,10 +230,10 @@ fn on_new_coordinator<T: Transport + ?Sized>(
             Vec::new()
         };
         let (result, blocked) = observed_execute(transport, hs, guard, command, volume);
-        let result = result.map(|mut outcome| {
-            notes.append(&mut outcome.notes);
-            outcome.notes = notes;
-            outcome
+        let result = result.map(|mut executed| {
+            notes.append(&mut executed.outcome.notes);
+            executed.outcome.notes = notes;
+            executed
         });
         if blocked {
             can_readdress.set(false);
@@ -276,12 +284,12 @@ fn on_new_coordinator<T: Transport + ?Sized>(
     }
 }
 
-fn healed(mut outcome: OutcomeDto, detail: String) -> OutcomeDto {
-    outcome.notes.push(Note {
+fn healed(mut executed: Executed, detail: String) -> Executed {
+    executed.outcome.notes.push(Note {
         code: NoteCode::Healed,
         detail,
     });
-    outcome
+    executed
 }
 
 fn address(households: &[HouseholdState], player: &PlayerId) -> Option<IpAddr> {

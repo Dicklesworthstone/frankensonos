@@ -12,14 +12,16 @@ use std::cell::Cell;
 use std::time::Instant;
 
 mod proof;
+mod replacement;
 use proof::{Fenced, Proof};
+pub use replacement::finish_queue_replacement;
 
 fn unavailable(detail: impl std::fmt::Display) -> CoreError {
     CoreError::NotUndoable(format!("queue undo unavailable: {detail}"))
 }
 
-/// A bounded backup read before an edit. Bind it to the actual removal or
-/// movement, then finish only with that operation's confirmed native result.
+/// A bounded backup read before an edit. Bind a removal or movement before
+/// execution, or finish a replacement using its successful native receipt.
 #[derive(Debug)]
 pub struct PendingQueueUndo {
     snapshot: ZoneSnapshot,
@@ -227,14 +229,15 @@ impl QueueUndo {
     fn validate(&self) -> Result<(), CoreError> {
         self.backup.validate().map_err(unavailable)?;
         let saved = &self.backup.reference;
-        if self.version != 1
+        if !matches!(self.version, 1 | 2)
             || self.snapshot.coordinator != saved.coordinator
             || self.snapshot.household != saved.household
             || self.after.binding.coordinator != saved.coordinator
             || self.after.binding.boot() != saved.boot_seq
             || self.after.revision == 0
             || self.after.revision == saved.update_id
-            || self.after.uris.len() > self.backup.entries.len()
+            || (self.version == 1 && self.after.uris.len() > self.backup.entries.len())
+            || (self.version == 2 && !replacement::valid_result(&self.after))
             || self.snapshot.play_mode != saved.play_mode
             || self.snapshot.source
                 != (SnapshotSource::Queue {

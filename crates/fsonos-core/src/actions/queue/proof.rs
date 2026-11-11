@@ -198,7 +198,7 @@ pub(super) struct Playback {
 }
 
 impl Playback {
-    fn from_owner(owner: &Owner) -> Self {
+    pub(super) fn from_owner(owner: &Owner) -> Self {
         let p = &owner.playback;
         Self {
             source: p.media.uri.clone(),

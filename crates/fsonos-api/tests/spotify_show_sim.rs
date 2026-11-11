@@ -237,6 +237,7 @@ fn show_play_replaces_the_coordinators_queue_with_ordered_episodes_and_caps() {
         let rig = Rig::new(generation);
         let calls = Arc::new(AtomicUsize::new(0));
         let surface = rig.with_catalog(Catalog::ready(&calls), capped_policy());
+        let original = rig.queue();
         let marker = rig.sim.soap_log().len();
         let result = surface
             .control(&Client::McpStdio, "play", |rooms| {
@@ -288,11 +289,20 @@ fn show_play_replaces_the_coordinators_queue_with_ordered_episodes_and_caps() {
             .unwrap();
         assert_eq!(heard.len(), 1);
         assert_eq!(heard[0].source_uri, EPISODES[0]);
-        let marker = rig.sim.soap_log().len();
-        let refused = surface.undo(&Client::McpStdio, true).unwrap_err();
-        assert_eq!(refused.code, ErrorCode::InvalidArgument);
-        assert!(rig.writes_since(marker).is_empty());
-        assert_eq!(rig.queue(), selection().tracks);
+        let restored = surface.undo(&Client::McpStdio, true).unwrap().unwrap();
+        assert!(restored.failures.is_empty(), "{restored:?}");
+        assert_eq!(rig.queue(), original);
+        assert_eq!(
+            soap::get_position_info(&rig.sim.lan(), rig.lead)
+                .unwrap()
+                .track,
+            2
+        );
+        assert_eq!(
+            get_play_mode(&rig.sim.lan(), rig.lead).unwrap(),
+            PlayMode::ShuffleRepeatOne
+        );
+        assert_eq!(rig.volumes(), [25, 25, 60]);
     }
 }
 

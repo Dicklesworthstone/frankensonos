@@ -30,6 +30,7 @@ pub(super) struct SetRun {
     pub(super) snaps: Vec<ZoneSnapshot>,
     pub(super) missed: Vec<(PlayerId, String)>,
     pub(super) outcomes: Vec<Result<OutcomeDto, Failure>>,
+    pub(super) queue_undo: Vec<actions::QueueUndo>,
     /// A recovered attempt reached rooms outside its captured audience.
     pub(super) unsafe_undo: bool,
 }
@@ -39,6 +40,7 @@ struct Ran {
     snaps: Vec<ZoneSnapshot>,
     missed: Vec<(PlayerId, String)>,
     outcome: Result<OutcomeDto, Failure>,
+    queue_undo: Option<actions::QueueUndo>,
     unsafe_undo: bool,
 }
 
@@ -69,34 +71,20 @@ impl Surface {
                 }
             }
             let (snaps, missed) = captured(&every);
-            let mut outcomes = Vec::new();
-            let mut unsafe_undo = false;
-            for command in commands {
-                let recovery = recovery::Audience::new(households, command);
-                let outcome = self.execute_following(households, guard, command, &recovery);
-                unsafe_undo |= recovery.unsafe_undo(&outcome);
-                let ends = outcome.as_ref().is_err_and(|f| ends_set(commands.len(), f));
-                outcomes.push(outcome);
-                if ends {
-                    break;
-                }
-            }
-            return SetRun {
-                snaps,
-                missed,
-                outcomes,
-                unsafe_undo,
-            };
+            return self.run_sequential(households, guard, commands, snaps, missed);
         }
         let one = |command: &Command, zones: &[PlayerId]| {
             let (snaps, missed) = captured(zones);
             let recovery = recovery::Audience::new(households, command);
-            let outcome = self.execute_following(households, guard, command, &recovery);
+            let mut queue_undo = None;
+            let outcome =
+                self.execute_following(households, guard, command, &recovery, &mut queue_undo);
             let unsafe_undo = recovery.unsafe_undo(&outcome);
             Ran {
                 snaps,
                 missed,
                 outcome,
+                queue_undo,
                 unsafe_undo,
             }
         };
@@ -105,6 +93,7 @@ impl Surface {
             snaps: Vec::new(),
             missed: Vec::new(),
             outcomes: Vec::new(),
+            queue_undo: Vec::new(),
             unsafe_undo: false,
         };
         for (commands, zones) in commands.chunks(IN_FLIGHT).zip(zones.chunks(IN_FLIGHT)) {
@@ -135,10 +124,44 @@ impl Surface {
                 run.snaps.extend(ran.snaps);
                 run.missed.extend(ran.missed);
                 run.outcomes.push(ran.outcome);
+                run.queue_undo.extend(ran.queue_undo);
                 run.unsafe_undo |= ran.unsafe_undo;
             }
         }
         run
+    }
+
+    fn run_sequential(
+        &self,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        commands: &[Command],
+        snaps: Vec<ZoneSnapshot>,
+        missed: Vec<(PlayerId, String)>,
+    ) -> SetRun {
+        let mut outcomes = Vec::new();
+        let mut queue_undo = Vec::new();
+        let mut unsafe_undo = false;
+        for command in commands {
+            let recovery = recovery::Audience::new(households, command);
+            let mut restored_queue = None;
+            let outcome =
+                self.execute_following(households, guard, command, &recovery, &mut restored_queue);
+            queue_undo.extend(restored_queue);
+            unsafe_undo |= recovery.unsafe_undo(&outcome);
+            let ends = outcome.as_ref().is_err_and(|f| ends_set(commands.len(), f));
+            outcomes.push(outcome);
+            if ends {
+                break;
+            }
+        }
+        SetRun {
+            snaps,
+            missed,
+            outcomes,
+            queue_undo,
+            unsafe_undo,
+        }
     }
 }
 
