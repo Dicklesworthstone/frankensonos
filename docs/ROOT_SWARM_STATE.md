@@ -3973,3 +3973,25 @@ Two consequences for the next attempt:
 2. Because a wrong key yields a garbage rootfs, the device-side digest check is
    the safety net; do the first replace on a unit we can afford to lose or with
    the stock package ready to re-flash.
+
+### The device DOES check the type-17 signature
+
+Built a same-version replacement on the genuine 57.23 package: type-4 swapped
+for a repacked 57.23 rootfs (the tree with the unlock flag and the inetd
+telnet line), enveloped to the pinned key `0xDAE0`, type-17 prefix digest
+rewritten by `build_upd_rootfs` (which already does this), type-22 digest still
+valid. Fired at `.84`.
+
+Result: **reset = rejected**, device stays on 57.23, port 23 closed.
+
+Everything differs from the working stock package by exactly three things —
+the replaced record, the rewritten digest, and the now-stale signature — so the
+flasher is validating the type-17 signature (or the envelope key), and the
+"appends/edits are outside the signature" premise does **not** hold for the
+57.x flasher as implemented here.
+
+Rootfs payload sizing note for whoever picks this up: the real 57.23 type-4 is
+4,571,498 bytes; a repack of our `/tmp/s23rootfs` tree lands at 7,070,042 with
+`/proc`, `/root`, `/ramdisk`, the core dump and the duplicate `anacapad`
+copies excluded — same-version userland (so kernel modules match), but 55 %
+larger than the original, which may or may not fit the partition.
