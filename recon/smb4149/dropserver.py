@@ -130,6 +130,51 @@ def ntlmssp_challenge(target: str = "SONOSDROP") -> bytes:
     return blob
 
 
+def smb1_session_setup_reply(mid: int, status: int, blob: bytes, uid: int) -> bytes:
+    """SMB1 SESSION_SETUP_ANDX response (MS-CIFS 2.2.4.2 / 2.2.4.6).
+
+    WordCount 4: AndXCommand=0xFF, AndXReserved, AndXOffset, Action. The
+    security blob (NTLMSSP challenge or type-3 ack) rides in the data area.
+    """
+    hdr = bytearray(32)
+    hdr[0:4] = b"\xffSMB"
+    hdr[4] = 0x73
+    struct.pack_into("<I", hdr, 5, status)
+    hdr[9] = 0x98
+    struct.pack_into("<H", hdr, 10, 0xC803)
+    struct.pack_into("<H", hdr, 28, uid & 0xFFFF)   # UID
+    struct.pack_into("<H", hdr, 30, mid & 0xFFFF)
+    words = bytearray([4])
+    words += bytes([0xFF, 0x00])                    # AndXCommand, reserved
+    words += struct.pack("<H", 0)                   # AndXOffset
+    words += struct.pack("<H", 0)                   # Action
+    dcnt = len(blob) + 32                            # blob offset in the empty area
+    body = bytes(words) + struct.pack("<H", dcnt) + blob
+    return bytes(hdr) + body
+
+
+def smb1_generic_reply(cmd: int, mid: int, status: int, uid: int, tid: int,
+                       words: int = 0) -> bytes:
+    """Bare SMB1 reply with the given WordCount whose words are all zero.
+
+    Good enough for the AndX responses whose parameters the CIFS client does
+    not act on (TREE_CONNECT with caps echoed as zero, etc.).
+    """
+    hdr = bytearray(32)
+    hdr[0:4] = b"\xffSMB"
+    hdr[4] = cmd + 0x80
+    struct.pack_into("<I", hdr, 5, status)
+    hdr[9] = 0x98
+    struct.pack_into("<H", hdr, 10, 0xC803)
+    struct.pack_into("<H", hdr, 24, tid & 0xFFFF)
+    struct.pack_into("<H", hdr, 28, uid & 0xFFFF)
+    struct.pack_into("<H", hdr, 30, mid & 0xFFFF)
+    words_bytes = bytearray([words]) + b"\x00" * (words * 2)
+    if words >= 2:
+        words_bytes[1] = 0xFF             # AndXCommand: none
+    return bytes(hdr) + bytes(words_bytes) + struct.pack("<H", 0)
+
+
 def smb1_negotiate_reply(mid: int, dialect: int) -> bytes:
     """SMB1 NEGOTIATE response advertising an SMB2 dialect (MS-CIFS 2.2.4).
 
@@ -301,11 +346,32 @@ class DropServer:
         cmd = pdu[4]
         mid = struct.unpack("<H", pdu[30:32])[0]
         log("smb1 cmd=%#x len=%d" % (cmd, len(pdu)), self.fh)
+        if cmd == 0x73:                       # SESSION_SETUP_ANDX
+            blob = b""
+            i = pdu.find(b"NTLMSSP\x00")
+            if i >= 0:
+                blob = pdu[i:]
+            ntlm_type = struct.unpack("<I", blob[8:12])[0] if len(blob) >= 12 else 0
+            log("smb1 session setup ntlm type=%d blob=%d B" % (ntlm_type, len(blob)),
+                self.fh)
+            log("smb1 ss raw %s" % pdu[32:].hex(), self.fh)
+            if ntlm_type == 1:
+                self.sid = SESSION_ID
+                return smb1_session_setup_reply(mid, STATUS_MORE_PROCESSING,
+                                                ntlmssp_challenge(), 1)
+            return smb1_generic_reply(0x73, mid, 0, uid=1, tid=0, words=4)
+        if cmd == 0x32:                       # TRANSACTION2
+            wc = pdu[32]
+            sub = struct.unpack("<H", pdu[34:36])[0] if len(pdu) > 36 else 0
+            log("smb1 trans2 sub=%#x wc=%d name=%s" % (sub, wc, pdu[34:80].hex()), self.fh)
+            return None
+        if cmd == 0x75:                       # TREE_CONNECT_ANDX
+            self.tid = 1
+            return smb1_generic_reply(cmd, mid, 0, uid=1, tid=1, words=3)
         if cmd != 0x72:
             log("smb1 unhandled cmd %#x" % cmd, self.fh)
             return None
-        if self.profile == "force-202" or True:
-            return smb1_negotiate_reply(mid, 0x0202)
+        return smb1_negotiate_reply(mid, 0x0202)
 
     def react(self, pdu: bytes) -> bytes | None:
         if pdu[:4] == b"\xffSMB":
