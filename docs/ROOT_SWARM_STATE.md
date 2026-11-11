@@ -4430,3 +4430,20 @@ context this thread needs. Next step is to capture the object that satisfies
 `+0x54` — most directly by breaking where the server *would* create this thread
 (its `pthread_create` call site with `0x104108d4` as the start routine) and
 reading `r3` there. That also tells us what `r4`/`r5` the entry expects.
+
+Found the daemon's threading convention: every thread goes through **one common
+wrapper `0x10408514`**, whose argument is a small descriptor and which does
+`r0 = [desc+12]; r3 = [desc+16]; mtctr r0; bctrl` — i.e. **`+12` is the entry
+point and `+16` its argument**. That is how the daemon starts threads, and it
+also means a descriptor can be synthesised rather than guessed.
+
+Also: the object the `listen` helper holds (`$r31`) is **not** the argument the
+HTTP thread entry wants. Passing it to `0x104108d4` faults at `0x104109a0` on
+`lwz r0,492(r28)` where `r28 = [obj+0x54]`, and `+0x54` is null there even when
+injecting later in boot (tried at the 4th listener).
+
+Open question is therefore object *identity*, not mechanics: whatever struct the
+httpd keeps at `[obj+0x54]` is the real server context. Next probes, cheapest
+first: `find` in `.bss` for a word whose `+0x54` points at a struct with a
+non-null `+492`, or break `0x104108d4`'s descriptor creation (fn==
+`0x104108d4`) via the wrapper and read `[desc+16]`.
