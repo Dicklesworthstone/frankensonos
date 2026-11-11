@@ -1,8 +1,8 @@
 //! Compact saved-library progress lives beside admission, never page bodies.
 
 use super::{
-    Checkpoint, LibrarySyncDto, Path, Running, STAMP, SyncedDto, followed_status, genre_status,
-    recent_status,
+    Checkpoint, LibrarySyncDto, Path, Running, STAMP, SyncedDto, artist_status, followed_status,
+    genre_status, recent_status,
 };
 use fsonos_api::surface::dj_sync::{SavedLibraryIntakeDto, SavedLibraryIntakePhase};
 use fsonos_spotify::cache::SavedLibraryPhase;
@@ -54,6 +54,7 @@ pub(in crate::dj::sync) fn status(data_dir: &Path, running: &Running, now: i64) 
         .with_library_intake(intake_status(&saved, running.intake, now))
         .with_followed_artists(followed_status(&saved, running.followed, now))
         .with_recent_listening(recent_status(&saved, running, now))
+        .with_artist_sampling(artist_status(&saved, running.artists, now))
 }
 
 #[cfg(test)]

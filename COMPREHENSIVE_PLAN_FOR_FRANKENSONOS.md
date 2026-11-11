@@ -710,18 +710,25 @@ their standing preferences on every surface and in the daemon. What is on
   reader shares cooldowns and rotates with playlist, album and genre work.
   HTTP, MCP, CLI and web expose reading/verifying/ready states, counts, cache
   limits and deadlines independently of the last completed full refresh.
-- Followed/top-artist track discovery rotates on every accepted full refresh,
-  rather than selecting the same calendar-day slice. A bounded cursor orders
-  stable artist IDs, resumes after the last attempted artist, and wraps fairly.
-  Each pass still samples at most 50 artists and three tracks per artist using
-  the existing top-tracks/catalog fallback. Failed artists yield without
-  advancing past unattempted reads after a global halt. Migration 23 binds the
-  cursor to the account adoption; the exact prior cursor, library publication
-  and fresh publication nonce commit together. Failed/stale refreshes retain
-  the cursor and essential read. Lead-artist IDs prevent namesake collisions;
-  hashed unread IDs/names retain deferred samples and guest-credit evidence.
-  Sync notes distinguish samples deferred by this pass from full discography
-  coverage and explain that another explicit sync advances the rotation.
+- Followed/top-artist track discovery starts with an accepted full refresh and
+  finishes its finite backlog in bounded background passes. Each pass attempts
+  at most 50 artists and samples three tracks per artist with the existing
+  top-tracks/catalog fallback. Stable IDs distinguish namesakes; captured taste
+  signals retain their weights and guest-credit behavior without rereading saved
+  music or the followed/top directories. Unavailable artists yield to later
+  ones while accepted cached music remains playable. Completed cohorts go idle.
+  Migration 23's existing account-bound opaque progress now retains the finite
+  cohort as well as its fair cursor; legacy cursors remain readable and receive
+  a cohort at the next full refresh. Additive publication atomically compares
+  account generation and the exact prior progress, preserves current saved
+  metadata and stronger weights, and advances the receipt with the samples.
+  Delayed full or background reads cannot overwrite newer accepted artist work.
+  The fifth continuation reader shares durable admission, cooldown and fair
+  scheduling with playlist, album, genre and followed-directory work, without
+  advancing the last successful full-refresh timestamp. CLI, HTTP, MCP and the
+  web sync panel expose pending/completed samples and retry deadlines. Private
+  evidence has explicit count, byte and age limits. See
+  [`docs/ARTIST_SAMPLING.md`](docs/ARTIST_SAMPLING.md).
 - Recent listening also has a lightweight reader independent of full-library
   publication. Before each due background library/enrichment check, it reads at
   most the latest 50 Spotify plays between account identity checks. It shares

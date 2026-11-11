@@ -18,6 +18,9 @@ const followed = (overrides = {}) => ({ pending: true, phase: 'reading', pages: 
 const recent = (overrides = {}) => ({ running: false, checked_at: 1790000800,
   received: 50, accepted: 45, skipped: 2, more_available: true, missing_scope: false,
   requires_refresh: false, retry_at: 1790001700, not_before: null, error: null, ...overrides });
+const samples = (overrides = {}) => ({ pending: 70, completed: 50, attempted: 50,
+  limited: false, running: false, retry_at: 1790000900, not_before: 1790003600,
+  requires_refresh: false, ...overrides });
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -41,6 +44,7 @@ test('old completed DTOs keep omitted notes and pending genres at their defaults
   assert.equal(s.library_intake, null);
   assert.equal(s.followed_artists, null);
   assert.equal(s.recent_listening, null);
+  assert.equal(s.artist_sampling, null);
   assert.equal(remote.statusOf({ done: 'Not read yet', running: false }).last, null);
   assert.ok(Object.isFrozen(s) && Object.isFrozen(s.last) && Object.isFrozen(s.last.notes));
 });
@@ -567,4 +571,122 @@ test('the shipped script and style are embedded and retain the no-external-code 
     for (const banned of ['innerHTML','localStorage','sessionStorage','eval(', 'http://','https://']) assert.ok(!source.includes(banned), `${file}: ${banned}`);
   }
   assert.ok(embed.includes("connect-src 'self'; base-uri 'none'; form-action 'none';"));
+});
+
+test('artist sampling keeps immutable cohort totals separate from full-refresh history', () => {
+  const raw = status({ artist_sampling: samples({ completed: 100, pending: 20 }) });
+  const parsed = remote.statusOf(raw);
+  raw.artist_sampling.completed = 1;
+  assert.deepEqual(parsed.artist_sampling, samples({ completed: 100, pending: 20 }));
+  assert.ok(Object.isFrozen(parsed.artist_sampling));
+  assert.equal(parsed.last.at, completed().at);
+  assert.equal(parsed.artist_sampling.attempted, 50);
+  assert.equal(parsed.artist_sampling.owner, undefined);
+  assert.equal(parsed.artist_sampling.cycle, undefined);
+});
+
+test('malformed artist sampling cannot authorize a refresh or conflicting workers', async () => {
+  for (const value of [[], {}, samples({ pending: -1 }), samples({ completed: 2 ** 53 }),
+    samples({ attempted: 1.5 }), samples({ limited: 'no' }), samples({ requires_refresh: 1 }),
+    samples({ running: true }), samples({ retry_at: 'later' }), samples({ not_before: 8640000000001 })]) {
+    const raw = status({ artist_sampling: value });
+    assert.throws(() => remote.statusOf(raw));
+    const h = harness(() => raw);
+    assert.equal(await h.model.open(), false);
+    assert.equal(await h.model.start(), false);
+    assert.equal(h.calls.length, 1);
+    h.model.dispose();
+  }
+  for (const other of [{ genre_enrichment: genres({ running: true }) },
+    { library_intake: intake({ running: true }) }, { followed_artists: followed({ running: true }) },
+    { recent_listening: recent({ running: true }) }]) {
+    assert.throws(() => remote.statusOf(status({ running: true, ...other,
+      artist_sampling: samples({ running: true }) })));
+  }
+});
+
+test('pending artist samples are observed across background passes until the cohort finishes', async () => {
+  let answer = status({ artist_sampling: samples() });
+  const h = harness(() => answer);
+  await h.model.open();
+  assert.equal(h.fire(), remote.PENDING_POLL_MS); await settle();
+  answer = status({ running: true, artist_sampling: samples({ running: true }) });
+  h.fire(); await settle();
+  assert.equal([...h.timers.values()][0].delay, remote.POLL_MS);
+  answer = status({ artist_sampling: samples({ completed: 100, pending: 20 }) });
+  h.fire(); await settle();
+  assert.equal(h.model.state.status.artist_sampling.completed, 100);
+  assert.equal(h.model.state.status.last.at, completed().at);
+  answer = status({ artist_sampling: samples({ completed: 120, attempted: 20, pending: 0,
+    retry_at: null, not_before: null }) });
+  h.fire(); await settle();
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.model.state.status.artist_sampling.completed, 120);
+  assert.ok(h.calls.every(([operation]) => operation === 'librarySyncStatus'));
+  h.model.dispose();
+});
+
+test('sample discovery shares one status timer with other readers and stops while hidden', async () => {
+  let answer = status({ artist_sampling: samples(), genre_enrichment: genres(), followed_artists: followed() });
+  const h = harness(() => answer); await h.model.open();
+  assert.equal(h.timers.size, 1);
+  h.model.setVisible(false); assert.equal(h.timers.size, 0);
+  h.model.setVisible(true); await settle(); assert.equal(h.timers.size, 1);
+  answer = status({ artist_sampling: samples() }); h.fire(); await settle();
+  assert.equal(h.timers.size, 1);
+  h.model.close(); assert.equal(h.timers.size, 0);
+  assert.ok(h.calls.every(([operation]) => operation === 'librarySyncStatus'));
+  h.model.dispose();
+});
+
+test('sample cache limits stop automatic status polling but required refresh remains visible', async () => {
+  let answer = status({ artist_sampling: samples({ limited: true }) });
+  const h = harness(() => answer); await h.model.open();
+  assert.equal(h.timers.size, 0);
+  answer = status({ artist_sampling: samples({ requires_refresh: true }) });
+  await h.model.refresh();
+  assert.equal(h.timers.size, 1);
+  assert.equal(h.model.state.status.last.at, completed().at);
+  h.model.dispose();
+});
+
+test('sampling errors retain confirmed progress without manufacturing completion', async () => {
+  const h = harness(() => status({ error: 'Spotify is unavailable', artist_sampling: samples() }));
+  await h.model.open();
+  assert.equal(h.model.state.status.error, 'Spotify is unavailable');
+  assert.equal(h.model.state.status.artist_sampling.pending, 70);
+  assert.equal(h.model.state.status.artist_sampling.completed, 50);
+  assert.equal(h.fire(), remote.PENDING_POLL_MS); await settle();
+  assert.ok(h.calls.every(([operation]) => operation === 'librarySyncStatus'));
+  h.model.dispose();
+});
+
+test('the sync panel shows cohort progress and the shared cooldown without changing full-refresh time', async (t) => {
+  const h = panelHarness(t, status({ genre_enrichment: genres(), artist_sampling: samples() }));
+  await h.panel.model.open(); let nodes = h.nodes();
+  assert.ok(nodes.some((node) => node.textContent === 'Artist sample discovery'));
+  assert.ok(nodes.some((node) => node.textContent === 'Last completed full refresh'));
+  const counts = nodes.filter((node) => node.tag === 'dl').map((node) => node.children.map((child) => child.textContent));
+  assert.ok(counts.some((values) => values.join('|') === 'Artists left to sample|70|Artists sampled in this refresh cycle|50|Attempted in the latest pass|50'));
+  const retry = nodes.find((node) => node.tag === 'p' && node.children[0]?.textContent === 'Next artist-sample pass no earlier than ');
+  assert.equal(retry.children[1].datetime, new Date(samples().not_before * 1000).toISOString());
+  assert.equal(nodes.filter((node) => node.textContent === 'Spotify cooldown ends at ').length, 1);
+  await h.answer(status({ artist_sampling: samples({ pending: 0, completed: 120, attempted: 20,
+    retry_at: null, not_before: null }) }));
+  nodes = h.nodes();
+  assert.ok(nodes.some((node) => node.textContent === 'Artist sampling is complete for this refresh cycle.'));
+  assert.ok(!nodes.some((node) => node.textContent.includes('Next artist-sample pass')));
+  assert.ok(nodes.some((node) => node.tag === 'time' && node.datetime === new Date(completed().at * 1000).toISOString()));
+});
+
+test('the sync panel distinguishes an active sample pass from a cache limit or required full read', async (t) => {
+  const h = panelHarness(t, status({ running: true, artist_sampling: samples({ running: true }) }));
+  await h.panel.model.open();
+  assert.ok(h.nodes().some((node) => node.textContent === 'Reading artist samples in a bounded background pass.'));
+  await h.answer(status({ artist_sampling: samples({ limited: true }) }));
+  assert.ok(h.nodes().some((node) => node.textContent.includes('Automatic sample reads are paused')));
+  assert.ok(!h.nodes().some((node) => node.textContent.includes('Next artist-sample pass')));
+  await h.answer(status({ artist_sampling: samples({ requires_refresh: true }) }));
+  assert.ok(h.nodes().some((node) => node.textContent === 'A full library refresh is needed before artist sampling can continue.'));
+  assert.ok(!h.nodes().some((node) => node.textContent === 'Artist sampling is complete for this refresh cycle.'));
 });

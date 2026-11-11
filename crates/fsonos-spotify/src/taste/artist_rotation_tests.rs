@@ -7,6 +7,9 @@ use fsonos_core::store::SqliteStore;
 const OWNER: &str = "test-owner";
 const SCOPE: &str = "user-follow-read";
 
+#[path = "artist_continuation_tests.rs"]
+mod continuation;
+
 fn id(number: usize) -> String {
     format!("RotationArtist{number:04}")
 }

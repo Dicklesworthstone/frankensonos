@@ -232,6 +232,7 @@ pub async fn continue_genres<S: Store + ?Sized>(
         );
     }
     Ok(LibrarySyncDetailed {
+        artist_samples: super::ArtistContinuation::default(),
         library,
         genres,
         genre_continuation: state,

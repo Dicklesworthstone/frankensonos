@@ -78,13 +78,27 @@ const LibrarySyncRemote = (() => {
         verified_pages: v.verified_pages, limited: v.limited, running: v.running,
         retry_at: v.retry_at ?? null, not_before: v.not_before ?? null, requires_refresh: v.requires_refresh });
     }
+    let samples = null;
+    if (value.artist_sampling != null) {
+      const v = value.artist_sampling;
+      if (!object(v) || !['pending', 'completed', 'attempted'].every((key) => count(v[key]))
+          || !['limited', 'running', 'requires_refresh'].every((key) => typeof v[key] === 'boolean')
+          || (v.running && (!value.running || genres?.running || intake?.running || followed?.running))
+          || (v.retry_at != null && !timestamp(v.retry_at))
+          || (v.not_before != null && !timestamp(v.not_before))) {
+        throw new Error('The artist sampling progress is unreadable. Check status again.');
+      }
+      samples = Object.freeze({ pending: v.pending, completed: v.completed, attempted: v.attempted,
+        limited: v.limited, running: v.running, retry_at: v.retry_at ?? null,
+        not_before: v.not_before ?? null, requires_refresh: v.requires_refresh });
+    }
     let recent = null;
     if (value.recent_listening != null) {
       const v = value.recent_listening;
       if (!object(v) || !['running', 'more_available', 'missing_scope', 'requires_refresh'].every((key) => typeof v[key] === 'boolean')
           || !['received', 'accepted', 'skipped'].every((key) => count(v[key]) && v[key] <= 50)
           || v.accepted + v.skipped > v.received || (v.missing_scope && v.requires_refresh)
-          || (v.running && (!value.running || genres?.running || intake?.running || followed?.running))
+          || (v.running && (!value.running || genres?.running || intake?.running || followed?.running || samples?.running))
           || (v.checked_at != null && (!timestamp(v.checked_at) || v.checked_at < 0))
           || (v.checked_at == null && v.accepted > 0)
           || (v.retry_at != null && !timestamp(v.retry_at))
@@ -99,7 +113,7 @@ const LibrarySyncRemote = (() => {
     }
     return Object.freeze({ done: value.done, running: value.running, last,
       error: value.error ?? null, genre_enrichment: genres, library_intake: intake, followed_artists: followed,
-      recent_listening: recent });
+      recent_listening: recent, artist_sampling: samples });
   }
 
   function model({ call, changed = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
@@ -116,8 +130,10 @@ const LibrarySyncRemote = (() => {
       stopTimer();
       const genres = state.status?.genre_enrichment;
       const followed = state.status?.followed_artists;
+      const samples = state.status?.artist_sampling;
       const pending = state.status?.library_intake?.pending || (genres && (genres.pending > 0 || genres.requires_refresh))
-        || (followed && (followed.pending || followed.requires_refresh));
+        || (followed && (followed.pending || followed.requires_refresh))
+        || (samples && ((samples.pending > 0 && !samples.limited) || samples.requires_refresh));
       if (!active() || state.busy || readFlight || (!failures && !state.status?.running && !pending)) return;
       const delay = failures ? Math.min(MAX_BACKOFF_MS, POLL_MS * 2 ** Math.min(failures, 5))
         : state.status?.running ? POLL_MS : PENDING_POLL_MS;
@@ -309,6 +325,26 @@ const LibrarySyncRemote = (() => {
               if (deadlines.length) deadline(label, Math.max(...deadlines));
             }
           }
+          if (observed.artist_sampling) {
+            const samples = observed.artist_sampling;
+            facts.append(el('h3', { text: 'Artist sample discovery' }),
+              el('p', { text: samples.requires_refresh ? 'A full library refresh is needed before artist sampling can continue.'
+                : samples.limited ? 'Artist sampling reached its cache limit. Automatic sample reads are paused for this refresh cycle.'
+                  : samples.running ? 'Reading artist samples in a bounded background pass.'
+                    : samples.pending ? 'The daemon continues sampling the remaining artists. Successful reads expand future DJ choices; already queued music stays queued.'
+                      : 'Artist sampling is complete for this refresh cycle.' }));
+            facts.append(el('dl', { class: 'library-sync-counts' },
+              el('dt', { text: 'Artists left to sample' }), el('dd', { text: samples.pending.toLocaleString() }),
+              el('dt', { text: 'Artists sampled in this refresh cycle' }), el('dd', { text: samples.completed.toLocaleString() }),
+              el('dt', { text: 'Attempted in the latest pass' }), el('dd', { text: samples.attempted.toLocaleString() })));
+            if (samples.not_before !== observed.library_intake?.not_before
+                && samples.not_before !== observed.genre_enrichment?.not_before
+                && samples.not_before !== observed.followed_artists?.not_before) deadline('Spotify cooldown ends at', samples.not_before);
+            if (!samples.running && samples.pending && !samples.requires_refresh && !samples.limited) {
+              const deadlines = [samples.retry_at, samples.not_before].filter((at) => at !== null);
+              if (deadlines.length) deadline('Next artist-sample pass no earlier than', Math.max(...deadlines));
+            }
+          }
           if (observed.recent_listening) {
             const recent = observed.recent_listening;
             facts.append(el('h3', { text: 'Recent listening on Spotify' }),
@@ -330,7 +366,8 @@ const LibrarySyncRemote = (() => {
             if (recent.more_available) facts.append(el('p', { text: 'This window may omit older plays.' }));
             if (recent.not_before !== observed.library_intake?.not_before
                 && recent.not_before !== observed.genre_enrichment?.not_before
-                && recent.not_before !== observed.followed_artists?.not_before) deadline('Spotify cooldown ends at', recent.not_before);
+                && recent.not_before !== observed.followed_artists?.not_before
+                && recent.not_before !== observed.artist_sampling?.not_before) deadline('Spotify cooldown ends at', recent.not_before);
             if (!recent.running) deadline('Next listening check no earlier than', recent.retry_at);
           }
         }

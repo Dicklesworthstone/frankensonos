@@ -248,6 +248,7 @@ pub async fn continue_albums<S: Store + ?Sized>(
         );
     }
     Ok(LibrarySyncDetailed {
+        artist_samples: super::ArtistContinuation::default(),
         library,
         genres: GenreRead::default(),
         genre_continuation: super::GenreContinuation::default(),
