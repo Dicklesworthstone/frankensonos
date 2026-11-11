@@ -3857,3 +3857,43 @@ being the documented lever.
 Everything up to the version gate is proven twice over (stock 57.23 flashes
 cleanly through our server), which is exactly the state the bead needs: the
 remaining work is one gate, not a chain.
+
+## Offline updater oracle — run `/bin/upgrade` directly, no device
+
+The 57.23 updater is a **plain executable that runs in the chroot** and logs
+every decision with a named failure reason:
+
+```
+chroot /tmp/s23rootfs /usr/bin/qemu-ppc /bin/upgrade <URL> <infofile>
+```
+
+`<infofile>` is the `/var/run/upgradeinfo` grammar (`Key: [value]` lines —
+`URL`, `Flags`, `MinVersion`, `PrevSWGenMinVersion`, `CurrentVersion`,
+`SonosID`, `HouseholdID`, …; two related strings sit at file 0x175e0 and the
+key table at 0x17860). The URL is **argv[1]**, not a field — passing it as a
+field makes the tool treat the filename as the URL.
+
+First run against the stock 34.16 file names the refusal the device gives:
+
+```
+upgrade to version 34.16-37101
+Compatible with model 16 submodels 2-5 revisions 0-4294967294 (any region)
+compatible with hardware feature set 30
+My hardware feature set is 0
+Failed compatibility check
+Upgrade failed: (10) attempted to upgrade to an incompatible version
+```
+
+So the gate is a **compatibility** check, not a version floor, and it is
+model/submodel/feature-set driven. Model and submodel pass for our case (the
+device reports `subm=4`, inside 2-5); in the chroot it trips only on
+`hardware feature set 0 vs 30`, which is an emulator artefact.
+
+Payload validation: the **append** variant parses identically to stock through
+the same path (same "upgrade to version", same compatibility line), i.e. the
+appended record does not disturb parsing. The **replace** variant needs a
+re-run (first attempt hit a transient network error).
+
+Also: in the S1 rootfs `/tmp` is a symlink to `/ramdisk/tmp` — that is why
+status endpoints for `/tmp/upgrade.log` return nothing and why a chrooted run
+needs `/ramdisk/tmp` to exist.
