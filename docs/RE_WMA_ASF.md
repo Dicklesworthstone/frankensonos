@@ -326,3 +326,24 @@ Next targets, in order of decoder-reach over obscurity: FLAC (old libFLAC,
 highest-value parser in the set that actually decodes), then MP3 frame
 handling, then the HLS client (`sonos.com-hls`, which answered 500 rather than
 fetching — needs its URI shape).
+
+### The re-scope this forces: FLAC, statically linked, libFLAC 1.3.4
+
+The daemon has **libFLAC statically linked** (no `libFLAC.so` in the rootfs;
+35 `FLAC__*` strings resolve, with the encoder banner `reference libFLAC 1.3.4
+20220220`). Combined with the decode matrix — FLAC plays, WMA does not — this
+makes FLAC the highest-value target in the media family:
+
+- the decoder provably runs on attacker bytes (a normal FLAC reaches audible
+  playback, so a fault is attributable rather than ambiguous);
+- the same library only ever sees attacker data through `SetAVTransportURI`,
+  so it is pre-auth;
+- 1.3.4 is a 2022 build with a large parser surface: STREAMINFO/metadata-block
+  walker, FRAME_HEADER, fixed/blocksize/rice residual paths, and the
+  `FLAC__bitreader` window — all reachable before any audio is output.
+
+Deliverable next step: a FLAC mutator (metadata-block length/count lies, frame
+header blocksize/order lies, residual partition lies) driven through the same
+harness, with `RelTime` advancing as the "decoder engaged" oracle and
+`/status/zp` staying up as the "no fault" oracle. Keep a known-good FLAC as the
+control in every batch — the format matrix is only useful if re-checked.
