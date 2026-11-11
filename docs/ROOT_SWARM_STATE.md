@@ -4538,3 +4538,18 @@ That matters for method: the emulator's stall has to be found by *thread state*,
 not by the tail of the trace. Current evidence stands at: 14 threads, all three
 ports bound, an `anacapa` thread per port, and none of them ever entering
 `accept`.
+
+State after the dspconfigparam correction: runs reach `muse` (logging an empty
+`householdId`) and `evt_dispatch` / `mixthrd` starts, with 19 threads, but still
+**no `accept`** — the samples are dominated by `rt_sigsuspend` (130), i.e. threads
+parked on an internal event loop.
+
+Safe addition tried: css has `eth0..eth3` but no wireless interface, and these
+are Wi-Fi-class players, so a **dummy `wlan0`** was created
+(`ip link add wlan0 type dummy; ip link set wlan0 up`). It is present and
+harmless; it did not by itself produce an accept, and runs vary in how far they
+get (one reached `muse`, the next stopped at `mixthrd`), so its effect needs
+repeat runs before any claim.
+
+Thread-state is the right instrument from here: 130 = parked event loop,
+270 = sigtimedwait, 288 = accept (what we are waiting for).
