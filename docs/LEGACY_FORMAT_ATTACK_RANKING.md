@@ -347,3 +347,39 @@ reconcile them.
 Ranked position: OGG now takes #1 over MP4 (decodes where MP4 does not),
 AIFF second (also decodes, simpler chunk walker), MP4 third pending a real
 seed.
+
+### AAC/ADTS plays — and the legacy scheme table is in rodata
+
+**Surgical finding (right protocolInfo, not brute force):** `audio/aac` with a
+raw ADTS stream plays. `RelTime` climbed 4 → 9 → 14 on a 20 s file. So the AAC
+path — which ee's own AUDIO CODEC ATTACK SURFACE memory calls the *highest
+bug-density* target because it is proprietary and unaudited, with no
+libavcodec in the rootfs and no ffmpeg strings — is reachable and decodes.
+That makes it the target with the best code-per-delivery ratio.
+
+ADTS length handling is **defensive** on first contact:
+
+| mutant | result |
+|---|---|
+| frame_length = 0x1FFF on an early frame | plays |
+| frame_length += 0x400 on an early frame | plays |
+| frame_length = 0 | stalls at 0:00:00 |
+| buffer_fullness = 0x7FF | plays |
+| syncword cleared on a frame | plays |
+| 0x1FFF on the **last** frame of the whole file | plays |
+| 0x1FFF on the last frame of a **687-byte** file (declared 8191) | plays |
+
+So the demuxer clamps declared length to the buffer and resyncs; single-field
+header lies are not enough. The interesting AAC surface is therefore *inside*
+the frame (codebook/spectral/id_syn_ele sequences), not the ADTS header.
+
+Also recovered, from the scheme table at file 0x472700 (rodata):
+`rtsp`, `aac:`, `file:`, `rhap:`, `radio-rhap:`, `radio-radea:`,
+`radio-npsdy:`, `pndrradio-http://`, `pndrradioad://`, `lfmtrack:`. These are
+the legacy-service prefixes the user asked about — `rhap:` Rhapsody,
+`radio-radea:` Rhapsody radio, `radio-npsdy:` **Napster**, `lfmtrack:` Last.fm.
+
+Empirically `rhap:http://…/x.aac` does **not** fetch (0 requests; the position
+that appeared was the previous track). So those prefixes expect their own
+payload grammar rather than a URL — the next thing to read in code now that we
+know the table exists.
