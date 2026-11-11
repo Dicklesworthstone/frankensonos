@@ -3995,3 +3995,32 @@ Rootfs payload sizing note for whoever picks this up: the real 57.23 type-4 is
 `/proc`, `/root`, `/ramdisk`, the core dump and the duplicate `anacapad`
 copies excluded — same-version userland (so kernel modules match), but 55 %
 larger than the original, which may or may not fit the partition.
+
+### Structural verdict on the type-17 signature
+
+Dumped the record: `621da74d` magic, header_len 364 (== payload length, i.e. the
+whole record is the header), a list1 count of 2 at 0x10 whose entries are
+`type(4) len(4) value`, and the digest (a 32-byte SHA-256 preceded by a `01`
+tag) sitting inside **list2**, which is exactly the region the RSA signature
+covers. So any change to the prefix necessarily rewrites a signed byte and
+invalidates the signature. Our verifier's MISMATCH is the arithmetic
+consequence, not a bug in the tool.
+
+That makes the trade-off explicit, and it is now the whole problem:
+
+- **Replace** the type-4 → digest must be rewritten → signature dies. Needs the
+  vendor key to recover, or a verifier that tolerates it (it does not).
+- **Append** after the trailer → prefix untouched, signature and digest stay
+  valid (verified PASS) → but the flasher does not consult the appended record.
+
+So the key-free path is not "make the edit valid", it is "make an appended
+record *count*". Candidate mechanisms left, in order of cheapness: a section
+type the flasher treats as a patch/marker rather than a payload (type 5 is the
+unexplored one — it exists in stock files at 17 bytes with flags 0), a
+duplicate record type it prefers from the tail, or a second package concatenated
+after the trailer.
+
+Error vocabulary for a device-side attempt (from `/bin/upgrade`, so the
+expectations are on record): `upgrade file signature verification failed`,
+`No valid signature`, `upgrade file corrupt data (MD5 signature mis-match)`,
+`Sonos signature verification failed`.
