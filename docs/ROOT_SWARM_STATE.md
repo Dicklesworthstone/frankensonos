@@ -4256,3 +4256,37 @@ Mitigations for the next pass, in order: split into two attaches (first create
 the listener and leave it), use `set can-use-hw-watchpoints 0`, or do the setup
 with fewer calls by writing a small static stub. The ABI facts above stand and
 are the expensive part — they do not need rediscovering.
+
+### It connects — but the fabricated server object is not enough
+
+Correcting the previous entry: splitting the work across two attaches **does not
+work** — qemu-user's stub accepts one connection only, and re-attaching after a
+`detach` fails with `Ignoring packet error` / `unrecognized item "timeout" in
+qSupported`.
+
+What does work, in a *single* session with the call count kept at five
+(`malloc`, `socket`, `bind`, `listen`, `pthread_create`) is:
+
+- `bind`/`listen` return 0 on port 1500 and the listener is up;
+- `pthread_create` returns **0** and the acceptor thread starts;
+- a `curl` to `127.0.0.1:1500` now **connects and completes** instead of hanging
+  — the accept loop is genuinely running under gdb, on demand.
+
+Remaining gap: the connection returns an **empty response** (no status line, no
+body). The acceptor only dereferences `[r3+0]` (the listen fd), which the fake
+64-byte object supplies, but the request-dispatch path after `accept()` evidently
+needs the real HTTP server object. Two ways to close it: find the object
+instance in memory (it is reachable from the module/topology state) and pass the
+real one, or extend the fake until the dispatcher stops faulting.
+
+Trampoline as built (verified decoding) — heap-resident, pointers derived from
+the same allocation, branch computed relative to itself:
+
+```
+lis r4,0x1065 ; ori r4,r4,0x<st+32>
+lis r9,0x1065 ; ori r9,r9,0x<st+40>
+b 0x10407970
+```
+
+Also confirmed again: gdb 17.1 is the newest available on this box (Ubuntu
+26.04), so upgrading gdb is not the lever — the flakiness is qemu-user's gdbstub.
