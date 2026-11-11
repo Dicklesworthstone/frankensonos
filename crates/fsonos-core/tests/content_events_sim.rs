@@ -139,7 +139,10 @@ fn paused_same_length_edits_and_catalog_changes_are_distinct_native_events() {
         assert_eq!(soap::get_position_info(&*f.lan, f.host).unwrap(), before);
         assert_eq!(soap::get_transport_info(&*f.lan, f.host).unwrap(), state);
         assert_eq!(
-            browse_snapshot(&*f.lan, f.host, QUEUE).unwrap().objects.len(),
+            browse_snapshot(&*f.lan, f.host, QUEUE)
+                .unwrap()
+                .objects
+                .len(),
             3
         );
         assert!(
@@ -205,7 +208,10 @@ fn native_content_leases_renew_recover_gaps_and_reject_malformed_or_retired_stre
             .unwrap()
             .unwrap();
         let due = rec.subscriptions.next_due().unwrap();
-        assert_eq!(rec.subscriptions.renew_due(&*f.lan, callback, due).renewed, 1);
+        assert_eq!(
+            rec.subscriptions.renew_due(&*f.lan, callback, due).renewed,
+            1
+        );
         f.reorder(3, 2);
         let after_renewal = receive(&sink);
         assert_eq!(after_renewal.sid, initial.sid);

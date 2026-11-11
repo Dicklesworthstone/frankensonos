@@ -450,14 +450,8 @@ impl Reconciler {
         } else {
             Vec::new()
         };
-        let applied = if service == Service::ContentDirectory {
-            initial::validate(service, n)
-                .and_then(|()| fsonos_proto::content::parse_update(n))
-                .map(|update| (Changes::default(), Some(update)))
-        } else {
-            initial::apply(&mut self.households, playback, &player, service, n, now)
-                .map(|changes| (changes, None))
-        };
+        let applied =
+            initial::apply_event(&mut self.households, playback, &player, service, n, now);
         let (changes, content) = applied.inspect_err(|_| {
             // An unreadable event loses state just as a missing one does.
             // Keep its SEQ unconsumed: a corrected retry on the old SID

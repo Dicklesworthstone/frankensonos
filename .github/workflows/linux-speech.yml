@@ -219,6 +219,12 @@ jobs:
       - name: MCP idle resource subscription regressions
         if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         run: python3 scripts/test-vendored-mcp.py
+      - name: Native controller and daemon restart regressions
+        if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        run: |
+          cargo test --locked -p fsonos-core --test content_events_sim --test live_sim
+          cargo test --locked -p fsonos-api --test action_log_sim
+          cargo test --locked -p fsonos-cli --test e2e_events_reconnect
       - name: Regression, simulator, and real Linux speech tests
         if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         # e2e_stream drives `fsonos stream` with the FFmpeg installed above.

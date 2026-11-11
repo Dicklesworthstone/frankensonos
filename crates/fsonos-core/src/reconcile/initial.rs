@@ -7,6 +7,7 @@ use crate::HouseholdState;
 use crate::events::{self, Service};
 use crate::playback::{Changes, Playback};
 use fsonos_proto::ProtoError;
+use fsonos_proto::content::ContentUpdate;
 use fsonos_proto::gena::Notify;
 use fsonos_types::PlayerId;
 use std::time::Instant;
@@ -21,6 +22,26 @@ pub(super) fn apply(
 ) -> Result<Changes, ProtoError> {
     validate(service, notify)?;
     events::apply(households, playback, player, service, notify, now)
+}
+
+/// Validate and apply an event, keeping content evidence separate until its
+/// sequence is accepted. Content counters never become playback state.
+pub(super) fn apply_event(
+    households: &mut [HouseholdState],
+    playback: &mut Playback,
+    player: &PlayerId,
+    service: Service,
+    notify: &Notify,
+    now: Instant,
+) -> Result<(Changes, Option<ContentUpdate>), ProtoError> {
+    if service == Service::ContentDirectory {
+        validate(service, notify)?;
+        let update = fsonos_proto::content::parse_update(notify)?;
+        Ok((Changes::default(), Some(update)))
+    } else {
+        let changes = apply(households, playback, player, service, notify, now)?;
+        Ok((changes, None))
+    }
 }
 
 fn level(value: Option<&str>) -> bool {

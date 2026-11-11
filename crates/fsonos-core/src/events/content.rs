@@ -76,8 +76,7 @@ impl Observed {
             }
             // A long-lived speaker can name arbitrarily many saved playlists.
             // Eviction causes only a conservative future invalidation.
-            if !self.containers.contains_key(name)
-                && self.containers.len() == MAX_UPDATE_CONTAINERS
+            if !self.containers.contains_key(name) && self.containers.len() == MAX_UPDATE_CONTAINERS
             {
                 self.containers.pop_first();
             }
@@ -381,7 +380,7 @@ mod tests {
                 &mut playback,
                 &bad_again,
                 callback,
-                now + Duration::from_secs(1),
+                now + Duration::from_secs(1)
             )
             .is_err()
         );

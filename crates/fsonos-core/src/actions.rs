@@ -736,19 +736,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     let now_sessions = capture_sessions(store, &steered)?;
 
     let (zones, failures) = restore_zones(t, households, &before, queue::later(at, started), vet);
-    let mut sessions = Vec::new();
-    let mut session_failures = Vec::new();
-    for session in &before.dj_sessions {
-        let put_back = match &session.row {
-            Some(row) => store.save_dj_session(row),
-            None => store.delete_dj_session(&session.coordinator),
-        };
-        let coordinator = PlayerId(session.coordinator.clone());
-        match put_back {
-            Ok(()) => sessions.push(coordinator),
-            Err(e) => session_failures.push((coordinator, e.to_string())),
-        }
-    }
+    let (sessions, session_failures) = put_back_sessions(store, &before.dj_sessions);
     let (tones, tone_failures) = put_back_tones(t, households, &before.tones);
     let (unqueued, unqueue_failures) = take_off_queued(t, households, &before.queued);
     let config = house_config::put_back_config(store, &before, at);
@@ -827,6 +815,24 @@ fn named(households: &[HouseholdState], coordinators: &[PlayerId]) -> Vec<String
 
 /// What an undo put back, and what it could not (with why).
 type Outcomes = (Vec<PlayerId>, Vec<(PlayerId, String)>);
+
+/// Put back each coordinator's retained DJ session.
+fn put_back_sessions<S: Store + ?Sized>(store: &mut S, before: &[SessionBefore]) -> Outcomes {
+    let mut sessions = Vec::new();
+    let mut session_failures = Vec::new();
+    for session in before {
+        let put_back = match &session.row {
+            Some(row) => store.save_dj_session(row),
+            None => store.delete_dj_session(&session.coordinator),
+        };
+        let coordinator = PlayerId(session.coordinator.clone());
+        match put_back {
+            Ok(()) => sessions.push(coordinator),
+            Err(e) => session_failures.push((coordinator, e.to_string())),
+        }
+    }
+    (sessions, session_failures)
+}
 
 /// Each room's tone in `tones` put back on its player.
 fn put_back_tones<T: Transport + ?Sized>(
