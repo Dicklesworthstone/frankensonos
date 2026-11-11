@@ -250,3 +250,30 @@ Playlists: ASX (XML → expat-adjacent) + SCPLS + M3U.
 | MP3 | `audio/mp3`/`audio/mpeg` | SetAVTransportURI + hls-radio |
 | AIFF | `sonos.com-http:*:audio/aiff:*` | SetAVTransportURI |
 | WAV | `audio/wav`/`audio/x-wav` | SetAVTransportURI (+ hls-radio TS wrap proven) |
+
+## Playability gate on `.137` (2026-11-11) — what actually decodes
+
+Owner's gate: a format only counts if a **real sample plays and is audible**.
+
+| # | format | real sample | verdict |
+|---|---|---|---|
+| 1 | MP4/ALAC | ffmpeg-made m4a | **does not play**; hand-built box-lie files also 0:00:00, so this needs a real seed before it can be judged |
+| 3 | Audible `.aa` | genuine `samples.ffmpeg.org/audible/…acelp85_maihde.aa` (5.7 MB, 89 min, ffmpeg parses it) | **does not play** — 2004-vintage `.aa` is DRM'd; `SetAVTransportURI` answers 500 plain / 200 via the radio shim, `RelTime` stays 0 |
+| 5 | AIFF | ffmpeg `pcm_s16be` | **PLAYS** — duration 0:00:20, `RelTime` advancing, tone audible |
+| 6 | WAV | ffmpeg | plays (`RelTime` advances; duration field unreliable) |
+| 4 | MP3 | ffmpeg | plays (owner-confirmed) |
+| 2 | WMA | genuine Windows 7 sample | **does not play**, three transports |
+| 7 | SBC | — | not reachable by `SetAVTransportURI` at all: SBC is the Bluetooth transport codec, so it needs a bonded BT source, not a URI |
+
+So of the ranked list, the only **newly viable** parser target is **AIFF**: it is
+entry #5, a FORM/COMM/SSND chunk walker (same under-defended class as WAV), it
+decodes on hardware, and the oracle is unambiguous.
+
+`.aa` is not dead, just blocked on content: a **DRM-free** `.aa` would settle it,
+since the codec handler clearly exists (`audio/audible`, `.aa` strings) and the
+S2 daemon's startup `abort()` sits in the very codec-id switch that would
+dispatch it.
+
+MP4 remains the ranking's #1 on bug-density grounds, but our hand-built boxes
+never reached the decoder, so the immediate task there is a valid minimal
+baseline (demuxer-only would do), not more mutating.
