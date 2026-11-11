@@ -4391,3 +4391,23 @@ commands, so the run ends at the breakpoint rather than at a served request.
 Next lever is harness shape, not more reverse engineering — fewer scripted steps
 (a single `-ex` chain) or a breakpoint action list that sets the registers and
 resumes in one stop.
+
+**Milestone: the injected thread reaches and executes `accept`.** Verified with a
+second breakpoint at `0x10407a2c` (given its own `silent/continue` command list —
+without one gdb freezes the whole guest at the hit, which cost a round). The
+daemon then continues booting past `mixthrd` / `htsnk` and stays up with
+`SIGTERM` swallowed.
+
+Working recipe (all pieces now known):
+
+- `handle SIGTERM nostop noprint nopass`
+- break `0x104072e0`, `ignore 1 1` (first hit is the watchdog's 1410 listener)
+- in that hit's `commands`: delete it, `$obj = $r31`, scratch `$base = $sp-1536`,
+  set **r3=obj and six out-pointers r4..r9** into scratch, set `r31`/`r30` slots
+  with `[r31]=-1` (accept result) and `[r30]=4` (the loop's continue code),
+  `$pc = 0x10407970`, continue
+- any diagnostic breakpoint also needs `commands/silent/continue`
+
+Still open: the accepted fd produces no HTTP response (empty body), so the
+request-dispatch path after `accept` is not being satisfied by this fabricated
+context yet. That is the next thing to read, not to poke.
