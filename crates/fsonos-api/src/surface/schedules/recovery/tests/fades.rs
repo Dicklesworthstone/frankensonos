@@ -8,6 +8,8 @@ use fsonos_proto::control as soap;
 use fsonos_types::TransportState;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+mod queue_play;
+
 struct Crash<'a> {
     inner: &'a dyn Transport,
     action: &'static str,

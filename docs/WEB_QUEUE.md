@@ -31,6 +31,13 @@ both its exact renderer URI and the opaque revision returned with that page to
 quiet hours and its playback undo behavior. A changed selection is refused,
 not silently redirected to a different track at the same position.
 
+An accepted queue selection cancels an older sleep fade or announcement
+continuation, so the older operation cannot pause or resume over the track you
+just chose. If an older pause is already in progress, playback waits for it and
+checks the queue and group again before starting. A selection already stale or
+denied by house policy leaves the sleep timer alone. An ordinary future sleep
+timer also remains armed after you choose another track.
+
 ## Add music
 
 Expand **Add music** and paste a Spotify track, album, playlist, artist, episode

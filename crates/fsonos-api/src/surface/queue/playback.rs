@@ -179,6 +179,19 @@ impl Surface {
             if read()? != selected {
                 return Err(changed_during(req));
             }
+            if let Some(sleep) = &self.sleep {
+                // An accepted queue selection is newer playback intent, just
+                // like play/resume: retire announcement continuations and due
+                // sleep fades before they can pause the selected track.
+                sleep.playback_changing(&coordinator);
+                // An old Pause may already own its write. Waiting it out must
+                // not let a concurrent queue edit or regroup invalidate the
+                // selection we checked before committing the new intent.
+                self.queue_group_unchanged(host, &group)?;
+                if read()? != selected {
+                    return Err(changed_during(req));
+                }
+            }
             control::play_queue_from(&*self.transport, &households, &coordinator, req.position)?;
             Ok(OutcomeDto {
                 done: format!(
