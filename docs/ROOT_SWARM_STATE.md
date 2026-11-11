@@ -4463,3 +4463,15 @@ relative load, or a computed offset) — those are the shapes to try next.
 
 Reminder of where the daemon's whole thread convention lives, for context:
 wrapper `0x10408514`, `r0=[desc+12]`, `r3=[desc+16]`, `bctrl`.
+
+Negative result worth recording: a chunked `.bss`+heap scan (15 s into boot)
+for any dword `v` in `0x10548000..0x10780000` where `[v+0x54]` is itself a
+pointer and `[[v+0x54]+492]` is non-null — the shape `0x104108d4` dereferences —
+returns **zero candidates**. So either that entry is not the HTTP thread at all,
+or `+0x54` is not an object pointer the way the code suggests, and my assumption
+needs re-testing rather than more scanning.
+
+Also worth knowing for scripting: `/tmp` on css still holds many stale
+root-owned `.cmd` files from November, so `sudo tee`-less redirects fail with
+"permission denied" (`/tmp` itself is 1777, the files are not). Writing the gdb
+script locally and `scp`-ing it avoids the whole class of problem.
