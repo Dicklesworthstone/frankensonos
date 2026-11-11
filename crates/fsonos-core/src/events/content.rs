@@ -18,7 +18,11 @@ pub struct ContentChanges {
 }
 
 impl ContentChanges {
-    pub const ALL: Self = Self { queue: true, favorites: true, playlists: true };
+    pub const ALL: Self = Self {
+        queue: true,
+        favorites: true,
+        playlists: true,
+    };
 
     #[must_use]
     pub fn is_empty(self) -> bool {
@@ -72,7 +76,9 @@ impl Observed {
             }
             // A long-lived speaker can name arbitrarily many saved playlists.
             // Eviction causes only a conservative future invalidation.
-            if !self.containers.contains_key(name) && self.containers.len() == MAX_UPDATE_CONTAINERS {
+            if !self.containers.contains_key(name)
+                && self.containers.len() == MAX_UPDATE_CONTAINERS
+            {
                 self.containers.pop_first();
             }
             self.containers.insert(name.clone(), *counter);
@@ -103,15 +109,23 @@ impl Subscriptions {
                     && active.sid == observed.sid
             })
         });
-        let Some(player) = self.active.iter().find(|active| {
-            active.sid == notify.sid && active.want.service == Service::ContentDirectory
-        }).map(|active| active.want.player.clone()) else {
+        let Some(player) = self
+            .active
+            .iter()
+            .find(|active| {
+                active.sid == notify.sid && active.want.service == Service::ContentDirectory
+            })
+            .map(|active| active.want.player.clone())
+        else {
             return ContentChanges::default();
         };
         let observed = self.content.0.entry(player).or_default();
         let fresh = observed.sid != notify.sid;
         if fresh || missed || notify.seq == 0 {
-            *observed = Observed { sid: notify.sid.clone(), ..Observed::default() };
+            *observed = Observed {
+                sid: notify.sid.clone(),
+                ..Observed::default()
+            };
         }
         let changes = observed.apply(update);
         if fresh || missed || notify.seq == 0 {
@@ -142,17 +156,38 @@ mod tests {
         assert!(state.apply(&update).is_empty());
         update.containers.insert("Q:0".into(), 2);
         update.system_update_id = Some(11);
-        assert_eq!(state.apply(&update), ContentChanges { queue: true, ..ContentChanges::default() });
+        assert_eq!(
+            state.apply(&update),
+            ContentChanges {
+                queue: true,
+                ..ContentChanges::default()
+            }
+        );
         update.saved_queues_update_id = Some("saved-b".into());
-        assert_eq!(state.apply(&update), ContentChanges { playlists: true, ..ContentChanges::default() });
+        assert_eq!(
+            state.apply(&update),
+            ContentChanges {
+                playlists: true,
+                ..ContentChanges::default()
+            }
+        );
         update.favorites_update_id = Some("fav-b".into());
-        assert_eq!(state.apply(&update), ContentChanges { favorites: true, ..ContentChanges::default() });
+        assert_eq!(
+            state.apply(&update),
+            ContentChanges {
+                favorites: true,
+                ..ContentChanges::default()
+            }
+        );
     }
 
     #[test]
     fn system_only_changes_invalidate_all_but_known_unrelated_containers_do_not() {
         let mut state = Observed::default();
-        let mut update = ContentUpdate { system_update_id: Some(5), ..ContentUpdate::default() };
+        let mut update = ContentUpdate {
+            system_update_id: Some(5),
+            ..ContentUpdate::default()
+        };
         assert_eq!(state.apply(&update), ContentChanges::ALL);
         assert!(state.apply(&update).is_empty());
         update.system_update_id = Some(0); // Counter wrap is still a change.
@@ -184,21 +219,39 @@ mod tests {
         assert_eq!(state.apply(&update), ContentChanges::ALL);
         update.system_update_id = Some(4);
         update.favorites_update_id = Some("favorite-b".into());
-        assert_eq!(state.apply(&update), ContentChanges {
-            favorites: true,
-            ..ContentChanges::default()
-        });
+        assert_eq!(
+            state.apply(&update),
+            ContentChanges {
+                favorites: true,
+                ..ContentChanges::default()
+            }
+        );
     }
 
     #[test]
     fn saved_playlist_and_favorite_children_invalidate_their_catalog_only() {
         for (name, expected) in [
-            ("SQ:7", ContentChanges { playlists: true, ..ContentChanges::default() }),
-            ("FV:2/4", ContentChanges { favorites: true, ..ContentChanges::default() }),
+            (
+                "SQ:7",
+                ContentChanges {
+                    playlists: true,
+                    ..ContentChanges::default()
+                },
+            ),
+            (
+                "FV:2/4",
+                ContentChanges {
+                    favorites: true,
+                    ..ContentChanges::default()
+                },
+            ),
             ("Q:1", ContentChanges::default()),
             ("FV:20", ContentChanges::default()),
         ] {
-            let update = ContentUpdate { containers: BTreeMap::from([(name.into(), 1)]), ..ContentUpdate::default() };
+            let update = ContentUpdate {
+                containers: BTreeMap::from([(name.into(), 1)]),
+                ..ContentUpdate::default()
+            };
             assert_eq!(Observed::default().apply(&update), expected);
         }
     }
@@ -207,7 +260,10 @@ mod tests {
     fn retained_container_observations_remain_bounded() {
         let mut state = Observed::default();
         for id in 0..(MAX_UPDATE_CONTAINERS * 3) {
-            let update = ContentUpdate { containers: BTreeMap::from([(format!("SQ:{id}"), 1)]), ..ContentUpdate::default() };
+            let update = ContentUpdate {
+                containers: BTreeMap::from([(format!("SQ:{id}"), 1)]),
+                ..ContentUpdate::default()
+            };
             assert!(state.apply(&update).playlists);
             assert!(state.containers.len() <= MAX_UPDATE_CONTAINERS);
         }
@@ -234,7 +290,10 @@ mod tests {
                 if self.refuse.get() {
                     return Err(ProtoError::Malformed("test subscribe failure".into()));
                 }
-                Ok(Subscription { sid: format!("uuid:content-{}", self.calls.get()), timeout_secs: 300 })
+                Ok(Subscription {
+                    sid: format!("uuid:content-{}", self.calls.get()),
+                    timeout_secs: 300,
+                })
             }
             fn renew(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
                 panic!("malformed stream needs replacement, not renewal");
@@ -245,37 +304,105 @@ mod tests {
         }
         let callback = |_: Service| "http://127.0.0.1:3400/ContentDirectory".into();
         let event = |sid: &str, seq, pairs: &str| Notify {
-            sid: sid.into(), seq, path: "/ContentDirectory".into(),
+            sid: sid.into(),
+            seq,
+            path: "/ContentDirectory".into(),
             properties: vec![("ContainerUpdateIDs".into(), pairs.into())],
         };
         let now = Instant::now();
         let provider = Provider::default();
         let mut rec = Reconciler::new(RETRY, RETRY, now);
-        rec.subscriptions.sync(&provider, &[Want {
-            player: PlayerId("content-player".into()), host: std::net::Ipv4Addr::LOCALHOST.into(),
-            service: Service::ContentDirectory,
-        }], callback, now);
+        rec.subscriptions.sync(
+            &provider,
+            &[Want {
+                player: PlayerId("content-player".into()),
+                host: std::net::Ipv4Addr::LOCALHOST.into(),
+                service: Service::ContentDirectory,
+            }],
+            callback,
+            now,
+        );
         let mut playback = Playback::default();
         let initial = event("uuid:content-1", 0, "Q:0,1");
-        assert_eq!(rec.on_notify(&provider, &mut playback, &initial, callback, now).unwrap().unwrap().content, ContentChanges::ALL);
+        assert_eq!(
+            rec.on_notify(&provider, &mut playback, &initial, callback, now)
+                .unwrap()
+                .unwrap()
+                .content,
+            ContentChanges::ALL
+        );
         provider.refuse.set(true);
         let malformed = event("uuid:content-1", 1, "Q:0,broken");
-        assert!(rec.on_notify(&provider, &mut playback, &malformed, callback, now).is_err());
+        assert!(
+            rec.on_notify(&provider, &mut playback, &malformed, callback, now)
+                .is_err()
+        );
         assert_eq!(provider.calls.get(), 2);
         assert_eq!(rec.subscriptions.next_due(), Some(now + RETRY));
         let corrected = event("uuid:content-1", 1, "Q:0,2");
-        assert_eq!(rec.on_notify(&provider, &mut playback, &corrected, callback, now).unwrap().unwrap().content, ContentChanges { queue: true, ..ContentChanges::default() });
-        assert!(rec.on_notify(&provider, &mut playback, &corrected, callback, now).unwrap().is_none());
+        assert_eq!(
+            rec.on_notify(&provider, &mut playback, &corrected, callback, now)
+                .unwrap()
+                .unwrap()
+                .content,
+            ContentChanges {
+                queue: true,
+                ..ContentChanges::default()
+            }
+        );
+        assert!(
+            rec.on_notify(&provider, &mut playback, &corrected, callback, now)
+                .unwrap()
+                .is_none()
+        );
         let repeated = event("uuid:content-1", 2, "Q:0,2");
-        assert!(rec.on_notify(&provider, &mut playback, &repeated, callback, now).unwrap().unwrap().content.is_empty());
+        assert!(
+            rec.on_notify(&provider, &mut playback, &repeated, callback, now)
+                .unwrap()
+                .unwrap()
+                .content
+                .is_empty()
+        );
         let bad_again = event("uuid:content-1", 3, "Q:0,bad");
-        assert!(rec.on_notify(&provider, &mut playback, &bad_again, callback, now + Duration::from_secs(1)).is_err());
-        assert_eq!(provider.calls.get(), 2, "malformed events cannot bypass retry backoff");
+        assert!(
+            rec.on_notify(
+                &provider,
+                &mut playback,
+                &bad_again,
+                callback,
+                now + Duration::from_secs(1),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            provider.calls.get(),
+            2,
+            "malformed events cannot bypass retry backoff"
+        );
         provider.refuse.set(false);
-        assert_eq!(rec.subscriptions.renew_due(&provider, callback, now + RETRY).resubscribed, 1);
+        assert_eq!(
+            rec.subscriptions
+                .renew_due(&provider, callback, now + RETRY)
+                .resubscribed,
+            1
+        );
         let fresh = event("uuid:content-3", 0, "Q:0,2");
-        assert_eq!(rec.on_notify(&provider, &mut playback, &fresh, callback, now + RETRY).unwrap().unwrap().content, ContentChanges::ALL);
-        assert!(rec.on_notify(&provider, &mut playback, &bad_again, callback, now + RETRY).unwrap().is_none());
-        assert_eq!(rec.subscriptions.content.0.len(), 1, "retired lease evidence is pruned");
+        assert_eq!(
+            rec.on_notify(&provider, &mut playback, &fresh, callback, now + RETRY)
+                .unwrap()
+                .unwrap()
+                .content,
+            ContentChanges::ALL
+        );
+        assert!(
+            rec.on_notify(&provider, &mut playback, &bad_again, callback, now + RETRY)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            rec.subscriptions.content.0.len(),
+            1,
+            "retired lease evidence is pruned"
+        );
     }
 }

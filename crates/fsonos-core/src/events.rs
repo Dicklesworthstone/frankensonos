@@ -17,7 +17,8 @@ use fsonos_proto::ProtoError;
 use fsonos_proto::gena::{Notify, Subscription};
 use fsonos_proto::net::Lan;
 use fsonos_proto::soap::{
-    AV_TRANSPORT, CONTENT_DIRECTORY, GROUP_RENDERING_CONTROL, RENDERING_CONTROL, ZONE_GROUP_TOPOLOGY,
+    AV_TRANSPORT, CONTENT_DIRECTORY, GROUP_RENDERING_CONTROL, RENDERING_CONTROL,
+    ZONE_GROUP_TOPOLOGY,
 };
 use fsonos_proto::topology::parse_zone_group_state;
 use fsonos_types::PlayerId;

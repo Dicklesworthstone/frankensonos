@@ -100,7 +100,10 @@ pub fn parse_update(notify: &Notify) -> Result<ContentUpdate, ProtoError> {
                     let revision = counter(fields.next().ok_or_else(malformed)?)?;
                     if container.is_empty()
                         || update.containers.len() == MAX_UPDATE_CONTAINERS
-                        || update.containers.insert(container.to_owned(), revision).is_some()
+                        || update
+                            .containers
+                            .insert(container.to_owned(), revision)
+                            .is_some()
                     {
                         return Err(malformed());
                     }
@@ -120,7 +123,10 @@ mod tests {
             sid: "uuid:content-test".into(),
             seq: 0,
             path: "/ContentDirectory".into(),
-            properties: properties.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(),
+            properties: properties
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect(),
         }
     }
 
@@ -132,35 +138,85 @@ mod tests {
             ("FavoritesUpdateID", "favorite-revision"),
             ("SavedQueuesUpdateID", "saved-revision"),
             ("ShareIndexInProgress", "1"),
-        ])).unwrap();
+        ]))
+        .unwrap();
         assert_eq!(update.system_update_id, Some(u32::MAX));
         assert_eq!(update.containers["Q:0"], 0);
         assert_eq!(update.containers["FV:2"], 12);
         assert_eq!(update.containers["SQ:7"], 81);
-        assert_eq!(update.favorites_update_id.as_deref(), Some("favorite-revision"));
-        assert_eq!(update.saved_queues_update_id.as_deref(), Some("saved-revision"));
+        assert_eq!(
+            update.favorites_update_id.as_deref(),
+            Some("favorite-revision")
+        );
+        assert_eq!(
+            update.saved_queues_update_id.as_deref(),
+            Some("saved-revision")
+        );
         assert!(update.has_counters());
     }
 
     #[test]
     fn empty_lists_are_evidence_but_unrelated_properties_are_not() {
-        assert!(parse_update(&event(&[("ContainerUpdateIDs", "")])).unwrap().has_counters());
-        assert!(!parse_update(&event(&[("ShareIndexInProgress", "0")])).unwrap().has_counters());
+        assert!(
+            parse_update(&event(&[("ContainerUpdateIDs", "")]))
+                .unwrap()
+                .has_counters()
+        );
+        assert!(
+            !parse_update(&event(&[("ShareIndexInProgress", "0")]))
+                .unwrap()
+                .has_counters()
+        );
     }
 
     #[test]
     fn malformed_or_ambiguous_evidence_is_not_silently_truncated() {
-        for value in ["Q:0", "Q:0,1,", "Q:0,no", "Q:0,-1", "Q:0,4294967296", ",1", "Q:0,1,Q:0,2"] {
-            assert!(parse_update(&event(&[("ContainerUpdateIDs", value)])).is_err(), "{value}");
+        for value in [
+            "Q:0",
+            "Q:0,1,",
+            "Q:0,no",
+            "Q:0,-1",
+            "Q:0,4294967296",
+            ",1",
+            "Q:0,1,Q:0,2",
+        ] {
+            assert!(
+                parse_update(&event(&[("ContainerUpdateIDs", value)])).is_err(),
+                "{value}"
+            );
         }
-        for name in ["SystemUpdateID", "ContainerUpdateIDs", "FavoritesUpdateID", "SavedQueuesUpdateID"] {
-            let value = if name == "ContainerUpdateIDs" { "Q:0,1" } else { "1" };
+        for name in [
+            "SystemUpdateID",
+            "ContainerUpdateIDs",
+            "FavoritesUpdateID",
+            "SavedQueuesUpdateID",
+        ] {
+            let value = if name == "ContainerUpdateIDs" {
+                "Q:0,1"
+            } else {
+                "1"
+            };
             assert!(parse_update(&event(&[(name, value), (name, value)])).is_err());
         }
-        let many = (0..=MAX_UPDATE_CONTAINERS).map(|n| format!("SQ:{n},1")).collect::<Vec<_>>().join(",");
+        let many = (0..=MAX_UPDATE_CONTAINERS)
+            .map(|n| format!("SQ:{n},1"))
+            .collect::<Vec<_>>()
+            .join(",");
         assert!(parse_update(&event(&[("ContainerUpdateIDs", &many)])).is_err());
-        assert!(parse_update(&event(&[("FavoritesUpdateID", &"a".repeat(MAX_TOKEN_BYTES + 1))])).is_err());
+        assert!(
+            parse_update(&event(&[(
+                "FavoritesUpdateID",
+                &"a".repeat(MAX_TOKEN_BYTES + 1)
+            )]))
+            .is_err()
+        );
         assert!(parse_update(&event(&[("FavoritesUpdateID", "a\nb")])).is_err());
-        assert!(parse_update(&event(&[("ContainerUpdateIDs", &"a".repeat(MAX_UPDATE_BYTES + 1))])).is_err());
+        assert!(
+            parse_update(&event(&[(
+                "ContainerUpdateIDs",
+                &"a".repeat(MAX_UPDATE_BYTES + 1)
+            )]))
+            .is_err()
+        );
     }
 }
