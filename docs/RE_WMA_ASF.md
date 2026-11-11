@@ -181,3 +181,31 @@ Round-2 denominator: 5 new ASF PoCs + 3 RTSP SDP variants, all STOPPED/up, zero 
   field the SDP parser must fill: control URL at `+0x811`, `b=AS` bitrate at
   `+0x40`-ish). Device-side logs (`rtspSetupResp`, `processSDPResponse: didn't see
   %d/%d/%d`) are devmode-gated on 57.23 — same oracle wall as the token lane.
+
+### Round 4 (2026-11-11): generator rebuilt, two real constraints found
+
+The round-2 kit had been lost with `/tmp`, so `recon/gen_asf.py` is a fresh
+minimal generator (spec-correct header, file properties, stream properties,
+one data object, `--wrap` / `--follow` / `--min-packet` / `--payload`). Two of
+my own bugs here are worth keeping, because both are parser constraints the
+lane notes already documented and both silently mask a test:
+
+1. **The preamble object count is a hard bound** — `FUN_101fc6b0` errors out
+   with code 7 once it is exhausted. A file that emits seven objects while the
+   preamble says 2 never reaches the objects after the second, so a wrap test
+   looks like "no fault" when the walker simply stopped. The count must equal
+   the objects emitted.
+2. **The two preamble bytes must both be `0x01`** (`FUN_101fc0dc` returns
+   `0x80000003` unless byte == 1). Writing `01 02` rejects the header at the
+   preamble.
+
+Delivery confirmed on `.84`: `SetAVTransportURI` (`x-rincon-mp3radio://http://…`,
+URI `audio/x-ms-wma` DIDL) → 200, and the device **fetches** the file
+(repeat GETs in the server log are the fetch oracle). `Play` answers 500 on
+this unit as a transport quirk but the ASF client runs anyway.
+
+Verdicts so far this round: well-formed baseline, wrap-with-follows (count
+fixed), wrap-with-follows (preamble fixed) — all fetched, all parsed, device
+up, **no fault**. Consistent with the lane's 16/16 clean history: the wrap keeps
+the loop alive but the bytes consumed after the wrap are not yet landing
+somewhere fatal.
