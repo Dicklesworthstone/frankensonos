@@ -4507,3 +4507,24 @@ Two things to carry forward:
   standard emulator bring-up alongside `/proc` and the `/dev` nodes;
 - the remaining gate is *after* the server threads start, so it is now about
   what those threads wait for before `accept`, not about creating them.
+
+**Static xref hunting works now.** The reason every earlier "no references"
+result came back empty is that this binary keeps most pointer references in a
+**relocation table applied at load**, not as literal pointers in the file. Two
+consequences, both now proven:
+
+- `r2 -q -e bin.relocs.apply=true -a ppc -b 32 -c 'aaa; axt @ <addr>'` **resolves
+  them** — for the dspconfigparam message it returned exactly two sites
+  (`0x100db3e0` in `fcn.100db320`, `0x10254110` in `fcn.10253fc8`).
+- Independently, scanning the *live* process through `/proc/<pid>/mem` finds the
+  same references, and the fact they appear on the stack (`0x407fc4ec…`) shows
+  they are built with `addi r5,r5,-imm`, not loaded from a pool.
+
+So: any future "where is this string used" question has a working method, and
+earlier notes saying "no pointer, no lis/addi site" describe the file, not the
+program.
+
+Also: `/sys` alone did not change the endpoint after all — with it mounted the
+run still stops at `dspconfigparam: Unsupported PPC/Connectx Submodel`, and the
+message is logged on a path that branches back to `0x10254084` rather than
+returning, so the stall is further along that path, not at the log.
