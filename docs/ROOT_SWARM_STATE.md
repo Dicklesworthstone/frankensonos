@@ -4290,3 +4290,19 @@ b 0x10407970
 
 Also confirmed again: gdb 17.1 is the newest available on this box (Ubuntu
 26.04), so upgrading gdb is not the lever — the flakiness is qemu-user's gdbstub.
+
+### Hijack into the acceptor: works, and where it stops
+
+Two more dead ends and one real result.
+
+Dead ends: `malloc` from the `listen` stop **deadlocks** (the call never returns), and a stack-resident trampoline **SIGSEGVs on its first instruction** — the stack page is not executable under this qemu/libc. So no trampoline at all: set the argument registers and the PC directly.
+
+Real result — the trivial form works:
+
+1. break at **0x104072e0** (right after the 1400 `listen()` in the helper, where `r31` already holds the server object and `[r31+0]` already holds the fd);
+2. `$obj = $r31` → **0x1064ddf0, fd 29** (note: the `.bss` candidate 0x106445a8 found by scanning for fd 13 is a *different* server — the scan is not sufficient);
+3. `set $r3=$obj; $r4=stack; $r9=stack+8; $pc=0x10407970; continue`.
+
+It survives and the daemon keeps booting, but nothing is accepted: `Recv-Q` on `:1400` climbs 2 → 3 while the loop sits in the pre-accept wait helper **`0x10408838`** (called as `(4, 0)` then `(0, 0)`).
+
+Next surgical step is therefore to jump **past** the helper, straight to `0x10407a20`, with the registers the loop expects at that point: `r29 = obj`, `r27 = sockaddr scratch`, `r31 = out-fd scratch`, and `r3` reloaded from `[r29]` by the code itself at 0x10407a20… (the three `mr`/`addi` at 0x10407a20-0x10407a28 set up `accept`'s arguments). One accept will then run; after it the code falls into the helper anyway, which is fine for a first proof.
