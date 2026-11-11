@@ -4569,3 +4569,22 @@ Also: `axt` finds no direct reference for `enter_sonos_net`
 (`0x10491cfc`) even with relocs applied, so the event name is likely built or
 tabled rather than referenced inline — same class of dead end as before
 renumbering; thread-state and runtime probes keep being the reliable tools.
+
+Audio device bring-up, two steps, both advancing the boot:
+
+- `/proc/driver/audio/{dsp,audioctl}` — `/proc` is the host's, so `/proc/driver`
+  is a **tmpfs mounted over it** with those two files created inside. The
+  `Can't get fd from sound device` failure stops and the run moves on to
+  `dapst: could not preemptively turn on the amp`.
+- `/dev/audioctl` and `/dev/dsp_dev` — plain empty, mode 666, in the chroot's
+  `/dev`. With those the trace passes the amp message and reaches
+  `<internalevts> Observer "rc_impl" subscribed to event "orienta…"` and
+  `"dpimpl" … "sonar_ca…"`.
+
+Still no `accept` and no response, but each of these is a real removed obstacle
+and they belong in the standard bring-up next to `/proc`, `/sys` and the
+`/dev` character nodes.
+
+Note the shape of the log now — `Observer … subscribed to event …` lines are the
+same family as the `htsnk` stall, i.e. the daemon is wiring internal events; the
+next blocker will most likely be another missing device or file of this class.
