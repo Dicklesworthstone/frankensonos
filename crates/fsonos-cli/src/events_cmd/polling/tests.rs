@@ -233,7 +233,7 @@ fn exhausted_read_retries_preserve_the_last_cursor_and_resume_hint() {
     let failure = failure.downcast_ref::<Failure>().unwrap();
     assert_eq!(failure.code, ErrorCode::NotReady);
     assert!(failure.hint.contains("--since 27"));
-    assert!(failure.hint.contains("--daemon-url"));
+    assert!(failure.hint.contains("same daemon options"));
 }
 
 #[test]

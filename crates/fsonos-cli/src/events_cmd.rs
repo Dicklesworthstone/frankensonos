@@ -3,16 +3,15 @@
 //! per change in words (a room's volume or play state, a player going
 //! offline, a logged action, the DJ's picks), or with `--json` an object per
 //! line (`{id, event, data}`) for a script. `--since <id>` first replays what
-//! came after that event; `--count` stops after that many. Daemon URLs, including
-//! Tailscale Serve HTTPS, use cursor-preserving long polls through the HTTP client.
+//! came after that event; `--count` stops after that many. Local and URL clients,
+//! including Tailscale Serve HTTPS, share cursor-preserving bounded journal reads.
 
 use clap::Args;
-use fsonos_api::events::HEARTBEAT;
 use fsonos_api::{ActionDto, DjStatusDto, DjWorkDto, ErrorCode, Failure};
 use fsonos_core::clock::{Clock, SystemClock};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Write};
 
 use crate::config::GlobalArgs;
 use crate::direct;
@@ -32,9 +31,9 @@ pub struct EventsArgs {
 }
 
 /// `fsonos events`: print the daemon's events until `--count`, the reader
-/// going away, or the stream ending.
+/// going away, or a terminal read failure after bounded retries.
 pub fn run(global: &GlobalArgs, args: &EventsArgs) -> anyhow::Result<()> {
-    let Some(daemon) = Daemon::find(global, true)? else {
+    let Some(mut daemon) = Daemon::find(global, true)? else {
         return Err(Failure::new(
             ErrorCode::NotReady,
             "fsonos events streams from the daemon, and --direct never asks it",
@@ -48,45 +47,21 @@ pub fn run(global: &GlobalArgs, args: &EventsArgs) -> anyhow::Result<()> {
         limit: args.count,
         shown: 0,
     };
-    if daemon.uses_url() {
-        return polling::run(
-            move |since, wait| daemon.events_after(since, wait),
-            args.since,
-            |event| output.show(&event),
-        );
-    }
-    let path = args
-        .since
-        .map_or_else(|| "/events".to_owned(), |id| format!("/events?since={id}"));
-    // Three heartbeats missed: the daemon is gone, not the house quiet.
-    let quiet = HEARTBEAT * 3;
-    let (reader, chunked) = daemon.open_stream(&path, quiet)?;
-    let mut body: Box<dyn BufRead> = if chunked {
-        Box::new(BufReader::new(Chunked::new(reader)))
-    } else {
-        Box::new(reader)
-    };
-    let mut parser = Parser::default();
-    let mut last = args.since;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match body.read_line(&mut line) {
-            Ok(0) => return Err(ended(None, quiet, last).into()),
-            Ok(_) => {}
-            Err(e) => return Err(ended(Some(&e), quiet, last).into()),
-        }
-        let Some(event) = parser.line(line.trim_end_matches(['\n', '\r'])) else {
-            continue;
-        };
-        last = event.id.or(last);
-        if !output.show(&event)? {
-            return Ok(());
-        }
-    }
+    let global = global.clone();
+    polling::run(
+        move |since, wait| {
+            // A restarted local daemon may have a new listener or CLI token.
+            // Reapply route confinement before each read, without another
+            // health request or any discovery of the speaker LAN.
+            daemon.refresh_local(&global)?;
+            daemon.events_after(since, wait)
+        },
+        args.since,
+        |event| output.show(&event),
+    )
 }
 
-/// SSE and URL polling print the same lines and count reset notices alike.
+/// Local and remote readers print the same lines and count reset notices alike.
 struct Output<W> {
     writer: W,
     json: bool,
@@ -118,86 +93,6 @@ impl<W: Write> Output<W> {
     }
 }
 
-/// The stream ended (`why` is `None` when the daemon closed it): what to
-/// say, and how to pick up after `last`, the last event shown.
-fn ended(why: Option<&io::Error>, quiet: std::time::Duration, last: Option<u64>) -> Failure {
-    let detail = match why {
-        None => "the daemon closed the event stream".to_owned(),
-        Some(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) =>
-        {
-            format!(
-                "the daemon's event stream went quiet: no event or heartbeat in {} s",
-                quiet.as_secs()
-            )
-        }
-        Some(e) => format!("the daemon's event stream broke: {e}"),
-    };
-    let hint = last.map_or_else(
-        || "Check that fsonos serve runs, then run fsonos events again.".to_owned(),
-        |id| format!("Check that fsonos serve runs; `fsonos events --since {id}` picks up after the last event."),
-    );
-    Failure::new(ErrorCode::NotReady, detail).with_hint(hint)
-}
-
-/// The body of a chunked HTTP response, read as one stream.
-struct Chunked<R> {
-    inner: R,
-    /// What is left of the chunk being read.
-    left: usize,
-    done: bool,
-}
-
-impl<R> Chunked<R> {
-    fn new(inner: R) -> Self {
-        Self {
-            inner,
-            left: 0,
-            done: false,
-        }
-    }
-}
-
-impl<R: BufRead> Read for Chunked<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.done || buf.is_empty() {
-            return Ok(0);
-        }
-        if self.left == 0 {
-            // The next size line, past the CRLF that ends the chunk before.
-            let mut size = String::new();
-            while size.trim().is_empty() {
-                size.clear();
-                if self.inner.read_line(&mut size)? == 0 {
-                    self.done = true;
-                    return Ok(0);
-                }
-            }
-            let hex = size.split(';').next().unwrap_or_default().trim();
-            self.left = usize::from_str_radix(hex, 16).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("bad chunk size {hex:?}"),
-                )
-            })?;
-            if self.left == 0 {
-                self.done = true;
-                return Ok(0);
-            }
-        }
-        let want = buf.len().min(self.left);
-        let n = self.inner.read(&mut buf[..want])?;
-        if n == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        self.left -= n;
-        Ok(n)
-    }
-}
-
 /// One server-sent event.
 #[derive(Debug, Clone, PartialEq)]
 struct Event {
@@ -210,49 +105,6 @@ impl Event {
     /// `--json`: `{id, event, data}`, on one line.
     fn json(&self) -> Value {
         json!({ "id": self.id, "event": self.kind, "data": self.data })
-    }
-}
-
-/// Server-sent events out of their lines: fields gather until a blank line
-/// ends the event; comments (the heartbeat) are skipped.
-#[derive(Debug, Default)]
-struct Parser {
-    id: Option<u64>,
-    kind: Option<String>,
-    data: Vec<String>,
-}
-
-impl Parser {
-    /// Take one line (its newline gone): the event it completes, if any.
-    fn line(&mut self, line: &str) -> Option<Event> {
-        if line.is_empty() {
-            let (id, kind, data) = (
-                self.id.take(),
-                self.kind.take(),
-                std::mem::take(&mut self.data),
-            );
-            if kind.is_none() && data.is_empty() {
-                return None;
-            }
-            let data = data.join("\n");
-            return Some(Event {
-                id,
-                kind: kind.unwrap_or_else(|| "message".to_owned()),
-                data: serde_json::from_str(&data).unwrap_or(Value::String(data)),
-            });
-        }
-        if line.starts_with(':') {
-            return None;
-        }
-        let (field, value) = line.split_once(':').unwrap_or((line, ""));
-        let value = value.strip_prefix(' ').unwrap_or(value);
-        match field {
-            "id" => self.id = value.parse().ok(),
-            "event" => self.kind = Some(value.to_owned()),
-            "data" => self.data.push(value.to_owned()),
-            _ => {}
-        }
-        None
     }
 }
 
@@ -397,64 +249,6 @@ mod tests {
         };
         assert!(!output.show(&event).unwrap());
         assert_eq!(output.shown, 0);
-    }
-
-    /// `body` as one chunk per piece, then the last (empty) chunk.
-    fn chunked(pieces: &[&str]) -> Vec<u8> {
-        let mut out = String::new();
-        for piece in pieces {
-            let _ = write!(out, "{:x}\r\n{piece}\r\n", piece.len());
-        }
-        out.push_str("0\r\n\r\n");
-        out.into_bytes()
-    }
-
-    fn events_of(raw: &[u8]) -> Vec<Event> {
-        let mut body = BufReader::new(Chunked::new(raw));
-        let mut parser = Parser::default();
-        let mut seen = Vec::new();
-        let mut line = String::new();
-        while body.read_line(&mut line).unwrap() > 0 {
-            seen.extend(parser.line(line.trim_end_matches(['\n', '\r'])));
-            line.clear();
-        }
-        seen
-    }
-
-    #[test]
-    fn a_chunked_stream_reads_as_its_events_and_skips_heartbeats() {
-        let raw = chunked(&[
-            ": heartbeat\n\n",
-            "id: 7\nevent: zone.state\ndata: {\"room\":\"Kitchen\",\"volume\":41}\n\n",
-            // An event split across chunks, its data over two lines.
-            "id: 8\nevent: note\ndata: one",
-            "\ndata: two\n\n",
-            ": heartbeat\n\n",
-        ]);
-        let seen = events_of(&raw);
-        assert_eq!(
-            seen,
-            [
-                Event {
-                    id: Some(7),
-                    kind: "zone.state".into(),
-                    data: json!({ "room": "Kitchen", "volume": 41 }),
-                },
-                Event {
-                    id: Some(8),
-                    kind: "note".into(),
-                    data: json!("one\ntwo"),
-                },
-            ]
-        );
-        assert_eq!(
-            seen[0].json(),
-            json!({ "id": 7, "event": "zone.state", "data": { "room": "Kitchen", "volume": 41 } })
-        );
-        let bad = b"zz\r\nx\r\n";
-        let mut body = BufReader::new(Chunked::new(&bad[..]));
-        let err = body.read_line(&mut String::new()).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

@@ -301,12 +301,15 @@ diagnosis. An unavailable or refusing daemon returns an error; an ordinary
 `fsonos doctor` or an explicit `--direct` diagnoses the local host.
 
 `fsonos events` follows a daemon URL over HTTP or certificate-validated HTTPS,
-using the same event journal as the local stream. `--since <id>` resumes after
+using the same bounded event-journal reader as the local follower. `--since <id>` resumes after
 a previously printed event; `--count N` stops after N lines. Temporary read
 failures retry three times with backoff and retain the cursor. When the daemon
 reports lost journal history, an `events.reset` line comes before the available
-events, so consumers know to reread current state. Ctrl-C stops a
-waiting follower promptly.
+events, so consumers know to reread current state. Local followers also recover
+from brief disconnects and reload the daemon address and caller token after a
+restart, retaining simulator route confinement. Both paths validate the cursor,
+preserve `--count`, and stop promptly on Ctrl-C, including during a waiting read
+or retry backoff.
 
 - `fsonos tailscale setup` maps HTTPS on 443 (API) and 8443 (MCP) to the
   daemon's loopback ports, refuses to run while Funnel is on for either port,

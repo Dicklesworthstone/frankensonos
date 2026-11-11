@@ -1,4 +1,4 @@
-//! URL clients follow the daemon's bounded JSON event reads over HTTP or HTTPS.
+//! Local and URL clients follow bounded journal reads over HTTP or HTTPS.
 //! Only read failures are retried; one cursor covers quiet polls and reconnects.
 
 use super::Event;
@@ -162,9 +162,9 @@ fn follow(
             Err(mut failure) => {
                 if failure.code == ErrorCode::NotReady {
                     failure.hint = since.map_or_else(
-                        || "Check the daemon URL and tailnet connection, then run fsonos events again.".into(),
+                        || "Check that the selected daemon is running and reachable, then run fsonos events again.".into(),
                         |id| format!(
-                            "Check the daemon URL and tailnet connection; run fsonos events --since {id} with the same --daemon-url to continue."
+                            "Check that the selected daemon is running and reachable; run fsonos events --since {id} with the same daemon options to continue."
                         ),
                     );
                 }
