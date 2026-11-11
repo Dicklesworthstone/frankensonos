@@ -4196,3 +4196,41 @@ also tells us what r9 is, which the trampoline otherwise has to guess.
 
 Also: `r2 pD` over the whole 5 MB text did not finish in 600 s; per-range
 `objdump` slices are the reliable tool here, as used above.
+
+### Injection harness: working, with one bug left
+
+The procedure is now reproducible (script `/tmp/gi4.cmd` on css):
+
+1. attach, `break *0x10546360` (an early `pthread_create`), continue, delete it;
+2. `malloc` a sockaddr, `socket(2,1,0)`, `bind(:1500)`, `listen()`;
+3. `malloc` a 64-byte trampoline and a state block, write `fd` at `[state+0]`;
+4. `pthread_create(t, 0, trampoline, state)`;
+5. continue, then connect to `127.0.0.1:1500`.
+
+Trampoline words (PPC, big-endian) as currently written:
+
+```
+lis r4, 0x1065 ; ori r4,r4,0x0100     # out-fd pointer   (currently wrong: heap addr)
+lis r9, 0x1065 ; ori r9,r9,0x0140     # r9 scratch       (same)
+b 0x10407970                          # fourth word computed relative to itself
+```
+
+Two confirmed mistakes and one unknown:
+
+- `r4`/`r9` still point at the *fixed* addresses `0x10650100/0x10650140` while the
+  trampoline and state now live on the heap — those offsets must be derived from
+  `$st`/`$tr` the same way the branch is.
+- the branch word must be computed from the trampoline's own address
+  (`0x48000000 | ((0x10407970 - (unsigned int)$tr - 16) & 0x03FFFFFC)`); the
+  first attempt used a precomputed constant for a different address. gdb needs
+  the `(unsigned int)` cast or it refuses pointer arithmetic.
+- last run: `pthread_create` returned, a new thread appeared, then the target
+  took a signal and qemu disconnected — consistent with the trampoline jumping
+  with bad `r4`/`r9`.
+
+Also learned: writing the trampoline into the fixed `0x10650080` region crashed
+`__libc_start_main`, so **heap addresses are the right place**; `0x1065xxxx` is
+live `.bss`.
+
+Once this links up, `/status/VERSION` over the injected listener is the proof and
+the emulator becomes a live target for request-driven debugging.
