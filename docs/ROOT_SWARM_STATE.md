@@ -4234,3 +4234,25 @@ live `.bss`.
 
 Once this links up, `/status/VERSION` over the injected listener is the proof and
 the emulator becomes a live target for request-driven debugging.
+
+Update on the same harness: the trampoline is now **verified correct in
+memory** — decoded in place it reads
+
+```
+0x10656bd8  lis r4,0x1065 ; ori r4,r4,0x6c30   -> $st+16
+0x10656be0  lis r9,0x1065 ; ori r9,r9,0x6c40   -> $st+32
+0x10656be8  b 0x10407970
+```
+
+so the argument setup and the branch are right. What fails now is the **gdb
+side**: across the multi-call script gdb-multiarch aborts with its own internal
+error ("This is a bug, please report it") and takes qemu's gdbstub with it, so
+the daemon dies before a request can be driven through. Earlier variants died
+mid-call with a target signal instead.
+
+Practical read: qemu-user's gdbstub does not tolerate this many scripted
+`call`s (socket/bind/listen + 3 mallocs + pthread_create + writes) in one batch.
+Mitigations for the next pass, in order: split into two attaches (first create
+the listener and leave it), use `set can-use-hw-watchpoints 0`, or do the setup
+with fewer calls by writing a small static stub. The ABI facts above stand and
+are the expensive part — they do not need rediscovering.
