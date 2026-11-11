@@ -4343,3 +4343,9 @@ Two things still to fix when the box is back:
 2. **watchdog window** — the emulated daemon is SIGTERMed a few seconds after
    the boot stops advancing, so the curl has to land fast, or the watchdog has
    to be satisfied without breaking host networking.
+
+**RULE (after the 2026-11-11 outage):** never start `netstartd` inside the S1
+`/tmp/s23rootfs` chroot on the shared css box — it reconfigures the *host* NIC
+and takes the machine off the network. Owner power-cycled it. Also: a reboot
+clears `/tmp`, so every served payload (`/tmp/aa_www`) is gone with it; payload
+files must be re-staged after any reboot before device tests.
