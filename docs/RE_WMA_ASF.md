@@ -260,3 +260,39 @@ playback does not start, even for a file ffmpeg considers valid. That means:
   than the member (the round-2 note says member-only SetAVTransportURI is a
   known 402/1023 trap), or confirm the unit has any WMA-capable service
   registered at all.
+
+### Corrected baseline (2026-11-11, Jeff's Office `.137`) — MP3 plays, WMA does not
+
+Earlier in this round I concluded "nothing plays"; the owner then heard the test
+tone, so the verdict oracle was wrong: a 3 s clip had already finished by the
+time the state was polled. Corrected procedure is a **long** file plus
+`GetPositionInfo` (`RelTime`/`TrackDuration`) sampled mid-play, not
+`GetTransportState` after the fact.
+
+With that oracle, on `192.168.5.137` (Jeff's Office, 57.23, hardware 1.16):
+
+| file | transport | setAV | play | duration | position |
+|---|---|---|---|---|---|
+| ffmpeg MP3 3 s | http | 200 | 200 | — | **audible (owner confirmed tone)** |
+| genuine WMA (Mr. Scruff, 6 MB) | http | 200 | 200 | 0:00:00 | 0:00:00 |
+| same WMA + `audio/x-ms-wma` DIDL | http | 200 | 200 | 0:00:00 | 0:00:00 |
+| same WMA | mms | 200 | 200 | 0:00:00 | 0:00:00 |
+
+So: **delivery and decode work (MP3), the ASF/WMA decoder does not produce
+playback on this build at all** — three transports, with and without DIDL. The
+file is fetched every time (server log), so the client receives and starts the
+ASF path, but nothing decodes.
+
+That is the single most important fact for this lane: every PoC verdict of the
+form "fetched, STOPPED, up" (20 of them, including all of round 4) was taken on
+a format that does not play even when completely genuine. Negative verdicts
+therefore cannot distinguish "our craft was rejected by the parser" from "the
+decoder never ran". Either the ASF path needs an additional precondition
+(a music-service / registry entry, or a specific `ProtocolInfo` the household
+has registered), or WMA is effectively dead on 57.23 for local files — and the
+same must be proven for **every** format before more crafting is spent.
+
+Also worth noting for target selection: `.137` is a **pair member** whose
+coordinator is a different UUID (the powered-off `.202`); the office pair is
+half-dead until that unit is power-cycled, and the lane notes already flag
+member-only `SetAVTransportURI` as a 402/1023 trap.
