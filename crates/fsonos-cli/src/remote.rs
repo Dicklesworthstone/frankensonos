@@ -199,7 +199,7 @@ pub(crate) fn read_daemon_file(dir: &Path) -> Option<DaemonFile> {
 
 /// Where a daemon answers: its loopback socket (from daemon.json or
 /// `FSONOS_HTTP_ADDR`), or a URL (`--daemon-url`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Endpoint {
     Socket(SocketAddr),
     Url(String),
@@ -355,16 +355,19 @@ impl Daemon {
         self.call("GET", path, None, CALL)
     }
 
-    /// Refresh a long-lived local reader after daemon restarts. URL readers
-    /// keep their explicitly selected endpoint and never acquire local rights.
-    pub fn refresh_local(&mut self, global: &GlobalArgs) -> Result<(), Failure> {
+    /// Refresh a long-lived local reader after daemon restarts. Returns whether
+    /// its socket or caller token changed after route confinement succeeded.
+    /// URL readers keep their endpoint and never acquire local rights.
+    pub fn refresh_local(&mut self, global: &GlobalArgs) -> Result<bool, Failure> {
         if matches!(self.addr, Endpoint::Socket(_)) {
-            let claim = self.claim;
-            *self = Self::local(global, true)?
+            let mut refreshed = Self::local(global, true)?
                 .ok_or_else(|| Failure::new(ErrorCode::NotReady, "no local daemon is known"))?;
-            self.claim = claim;
+            let changed = self.addr != refreshed.addr || self.token != refreshed.token;
+            refreshed.claim = self.claim;
+            *self = refreshed;
+            return Ok(changed);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// Read the journal after one cursor, with a finite network deadline.
@@ -1678,7 +1681,8 @@ mod tests {
         file.http.set_port(2);
         file.cli_token = "replacement-local-token".into();
         write_daemon_file(dir.path(), &file).unwrap();
-        daemon.refresh_local(&global).unwrap();
+        assert!(daemon.refresh_local(&global).unwrap());
+        assert!(!daemon.refresh_local(&global).unwrap());
         assert_eq!(daemon.addr.to_string(), "127.0.0.1:2");
         assert_eq!(daemon.token.as_deref(), Some("replacement-local-token"));
         assert_eq!(daemon.claim, Some("mcp-stdio"));
@@ -1697,7 +1701,7 @@ mod tests {
             token: None,
             claim: None,
         };
-        remote.refresh_local(&global).unwrap();
+        assert!(!remote.refresh_local(&global).unwrap());
         assert_eq!(remote.addr.to_string(), "https://example.test");
         assert!(remote.token.is_none());
     }

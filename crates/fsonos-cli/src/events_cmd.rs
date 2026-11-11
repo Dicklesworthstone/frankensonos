@@ -54,7 +54,21 @@ pub fn run(global: &GlobalArgs, args: &EventsArgs) -> anyhow::Result<()> {
             // Reapply route confinement before each read, without another
             // health request or any discovery of the speaker LAN.
             daemon.refresh_local(&global)?;
-            daemon.events_after(since, wait)
+            match daemon.events_after(since, wait) {
+                Err(failure)
+                    if failure.code == ErrorCode::PolicyDenied
+                        && daemon.refresh_local(&global).unwrap_or(false) =>
+                {
+                    // The daemon can rotate between resolution and this GET.
+                    // Retry only a proved new local identity; an unchanged
+                    // policy refusal, URL, or failed route check stays final.
+                    Err(Failure::new(
+                        ErrorCode::NotReady,
+                        "the local daemon changed while reading events",
+                    ))
+                }
+                result => result,
+            }
         },
         args.since,
         |event| output.show(&event),
@@ -211,6 +225,17 @@ fn dj(d: &Value) -> String {
 mod tests {
     use super::*;
 
+    struct Closed;
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn both_transports_share_json_output_count_and_broken_pipe_exit() {
         let event = Event {
@@ -231,16 +256,6 @@ mod tests {
             event.json()
         );
 
-        struct Closed;
-        impl Write for Closed {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let mut output = Output {
             writer: Closed,
             json: true,

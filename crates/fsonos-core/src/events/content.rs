@@ -141,6 +141,13 @@ impl Subscriptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::{RETRY, Subscriber, Want};
+    use crate::playback::Playback;
+    use crate::reconcile::Reconciler;
+    use fsonos_proto::ProtoError;
+    use fsonos_proto::gena::Subscription;
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn repeated_counters_do_not_invalidate_unrelated_collections() {
@@ -269,48 +276,52 @@ mod tests {
         }
     }
 
-    #[test]
-    fn failed_refresh_preserves_counter_proof_and_corrected_sequence_until_retry() {
-        use crate::events::{RETRY, Subscriber, Want};
-        use crate::playback::Playback;
-        use crate::reconcile::Reconciler;
-        use fsonos_proto::ProtoError;
-        use fsonos_proto::gena::Subscription;
-        use std::cell::Cell;
-        use std::time::{Duration, Instant};
+    #[derive(Default)]
+    struct ContentProvider {
+        calls: Cell<u32>,
+        refuse: Cell<bool>,
+    }
 
-        #[derive(Default)]
-        struct Provider {
-            calls: Cell<u32>,
-            refuse: Cell<bool>,
+    impl Subscriber for ContentProvider {
+        fn subscribe(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
+            self.calls.set(self.calls.get() + 1);
+            if self.refuse.get() {
+                return Err(ProtoError::Malformed("test subscribe failure".into()));
+            }
+            Ok(Subscription {
+                sid: format!("uuid:content-{}", self.calls.get()),
+                timeout_secs: 300,
+            })
         }
-        impl Subscriber for Provider {
-            fn subscribe(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
-                self.calls.set(self.calls.get() + 1);
-                if self.refuse.get() {
-                    return Err(ProtoError::Malformed("test subscribe failure".into()));
-                }
-                Ok(Subscription {
-                    sid: format!("uuid:content-{}", self.calls.get()),
-                    timeout_secs: 300,
-                })
-            }
-            fn renew(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
-                panic!("malformed stream needs replacement, not renewal");
-            }
-            fn unsubscribe(&self, _: &Want, _: &str) -> Result<(), ProtoError> {
-                Ok(())
-            }
+
+        fn renew(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
+            panic!("malformed stream needs replacement, not renewal");
         }
-        let callback = |_: Service| "http://127.0.0.1:3400/ContentDirectory".into();
-        let event = |sid: &str, seq, pairs: &str| Notify {
+
+        fn unsubscribe(&self, _: &Want, _: &str) -> Result<(), ProtoError> {
+            Ok(())
+        }
+    }
+
+    fn content_callback(_: Service) -> String {
+        "http://127.0.0.1:3400/ContentDirectory".into()
+    }
+
+    fn content_event(sid: &str, seq: u32, pairs: &str) -> Notify {
+        Notify {
             sid: sid.into(),
             seq,
             path: "/ContentDirectory".into(),
             properties: vec![("ContainerUpdateIDs".into(), pairs.into())],
-        };
+        }
+    }
+
+    #[test]
+    fn failed_refresh_preserves_counter_proof_and_corrected_sequence_until_retry() {
+        let callback = content_callback;
+        let event = content_event;
         let now = Instant::now();
-        let provider = Provider::default();
+        let provider = ContentProvider::default();
         let mut rec = Reconciler::new(RETRY, RETRY, now);
         rec.subscriptions.sync(
             &provider,
