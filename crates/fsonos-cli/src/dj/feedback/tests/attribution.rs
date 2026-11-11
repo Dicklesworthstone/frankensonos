@@ -155,6 +155,9 @@ impl LiveFeedback {
             state.pool = WorkPool::from_works(works.clone());
             state.planned = true;
             state.plan_inputs = Some(crate::dj::plan_inputs(None));
+            state
+                .starters
+                .insert(id.clone(), vec![fsonos_core::policy::Client::Cli]);
             state.feeds.insert(
                 id.clone(),
                 QueueFeed::restore(

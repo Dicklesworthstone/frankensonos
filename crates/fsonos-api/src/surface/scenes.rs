@@ -829,13 +829,15 @@ impl SceneHooks for SceneDj<'_> {
             {
                 return Ok(Err(refused));
             }
-            Ok(dj.act(at, store, DjAction::Start, &*s.clock))
+            let was_feeding = dj.feeds(coordinator);
+            let started = dj.act_as(at, store, DjAction::Start, &*s.clock, self.client);
+            if started.is_ok() || (!was_feeding && dj.feeds(coordinator)) {
+                s.dj_starters.started(coordinator, self.client);
+            }
+            Ok(started)
         });
         match started {
-            Ok(Some(Ok(_))) => {
-                s.dj_starters.started(coordinator, self.client);
-                Ok(())
-            }
+            Ok(Some(Ok(_))) => Ok(()),
             Ok(Some(Err(f))) | Err(f) => Err(f.detail),
             Ok(None) => Err("the DJ needs the daemon's store".into()),
         }

@@ -6,7 +6,7 @@
 //! and a session the agent started restarts within its caps even when the
 //! owner exempted the DJ itself from them.
 
-use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
+use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStarter, DjStatusDto, DjSteer};
 use fsonos_api::plan::{DjAction, plan_dj, plan_play};
 use fsonos_api::surface::{Surface, Survey, follow};
 use fsonos_api::{ErrorCode, Failure, OutcomeDto, PlayRequest, ZoneRequest};
@@ -38,6 +38,8 @@ struct Restarting {
     running: AtomicBool,
     /// Set when it restarted a stopped group.
     restarted: Arc<AtomicBool>,
+    /// A restored engine's authoritative policy identities.
+    restored_starter: Option<DjStarter>,
 }
 
 fn not_implemented() -> Failure {
@@ -110,6 +112,12 @@ impl DjEngine for Restarting {
         self.running.load(Ordering::SeqCst)
     }
 
+    fn starter(&self, _: &PlayerId) -> DjStarter {
+        self.restored_starter
+            .clone()
+            .unwrap_or(DjStarter::Unsupported)
+    }
+
     fn on_playback(
         &self,
         at: DjSpeakers<'_>,
@@ -155,8 +163,15 @@ struct Rig {
 /// One S1 Kitchen, the daemon's live model, and the surface following it
 /// with a [`Restarting`] DJ under [`POLICY`].
 fn rig() -> Rig {
+    rig_with(Restarting::default())
+}
+
+fn rig_with(engine: Restarting) -> Rig {
     let sim = SimHousehold::builder()
-        .s1([SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1)])
+        .s1([
+            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+        ])
         .spawn()
         .unwrap();
     let lan = Arc::new(
@@ -173,7 +188,6 @@ fn rig() -> Rig {
     );
     let kitchen = sim.players()[0].ip;
     let kitchen_id = PlayerId(sim.players()[0].uuid.clone());
-    let engine = Restarting::default();
     let restarted = Arc::clone(&engine.restarted);
     let survey: Survey = Box::new(|_| Ok(Vec::new()));
     let surface = Arc::new(
@@ -289,5 +303,30 @@ fn a_capped_skip_on_a_paused_session_starts_it_within_the_cap() {
     let out = rig.dj(&Client::McpStdio, DjAction::Skip);
     assert!(eventually(|| rig.playing()), "{out:?}");
     assert_eq!(rig.volume(), 30, "{out:?}");
+    rig.sim.shutdown();
+}
+
+#[test]
+fn a_restored_session_caps_every_room_in_its_current_group_before_restarting() {
+    let rig = rig_with(Restarting {
+        running: AtomicBool::new(true),
+        restored_starter: Some(DjStarter::Known(vec![Client::Cli, Client::McpStdio])),
+        ..Restarting::default()
+    });
+    owner_plays(&rig);
+    let office = rig.sim.player("Office").unwrap();
+    set_volume(&rig.sim.lan(), office.ip, 90).unwrap();
+    fsonos_proto::control::join_group(&rig.sim.lan(), office.ip, &rig.kitchen_id).unwrap();
+    assert!(eventually(|| {
+        rig.live.households().iter().any(|house| {
+            house
+                .groups
+                .iter()
+                .any(|group| group.coordinator == rig.kitchen_id && group.members.len() == 2)
+        })
+    }));
+    rig.runs_dry_at_80();
+    assert_eq!(rig.volume(), 30);
+    assert_eq!(get_volume(&rig.sim.lan(), office.ip).unwrap(), 30);
     rig.sim.shutdown();
 }

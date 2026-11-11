@@ -7,6 +7,9 @@
 //! session started at noon. They keep to the caps of whoever started the
 //! session as well: when policy.toml exempts the DJ (`[clients.dj] capped =
 //! false`), a session a capped agent started still restarts within the caps.
+//! Persistent engines retain that caller with the feed. Legacy feeds with
+//! no caller keep their queue and status, but cannot automatically Play until
+//! an explicit start establishes the policy identity again.
 
 use fsonos_core::HouseholdState;
 use fsonos_core::policy::Client;
@@ -18,6 +21,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use super::Surface;
+use crate::dj::DjStarter;
 use crate::plan::{Command, DjAction, TransportAction};
 
 /// The policy client the DJ's own actions are held to, and logged as.
@@ -29,12 +33,11 @@ pub(super) struct DjCaps<'a> {
     pub(super) households: &'a [HouseholdState],
     pub(super) coordinator: &'a PlayerId,
     /// Who started the session ([`Starters`]), held to its caps too.
-    pub(super) starter: Option<Client>,
+    pub(super) starter: DjStarter,
 }
 
-/// Who started the DJ in each group, by coordinator. Kept in memory: a
-/// session the daemon resumes after a restart has no starter, and its own
-/// starts are held to the DJ's caps alone.
+/// A fallback for engines that do not retain their own policy identity.
+/// Persistent engines supply their authoritative starter with each feed.
 #[derive(Default)]
 pub(super) struct Starters(Mutex<HashMap<PlayerId, Client>>);
 
@@ -100,13 +103,24 @@ impl DjCaps<'_> {
     /// before it plays. Each pass lowers the rooms above that client's cap
     /// (none for an uncapped client), so a room ends within both.
     fn lower(&self) -> Result<(), ProtoError> {
+        let starter = match &self.starter {
+            DjStarter::Known(clients) if !clients.is_empty() => clients.as_slice(),
+            DjStarter::Unsupported => &[],
+            DjStarter::Missing | DjStarter::Known(_) => {
+                return Err(ProtoError::Malformed(
+                    "the saved DJ feed has no initiating policy client; explicitly start the DJ \
+                     again before it can restart playback"
+                        .into(),
+                ));
+            }
+        };
         let dj = Client::Tailnet(DJ_CLIENT.to_owned());
         let start = Command::Transport {
             member: self.coordinator.clone(),
             coordinator: self.coordinator.clone(),
             action: TransportAction::Resume,
         };
-        for client in std::iter::once(&dj).chain(self.starter.as_ref()) {
+        for client in std::iter::once(&dj).chain(starter) {
             self.surface
                 .lower_before_playing(self.households, &self.surface.guard(client), &start)
                 .map_err(|f| ProtoError::Network {
@@ -174,7 +188,7 @@ mod tests {
             surface: &s,
             households: &h,
             coordinator: &den,
-            starter: None,
+            starter: DjStarter::Unsupported,
         };
         let host = h[0].player(&den).unwrap().ip;
         caps.soap_post(host, "/MediaRenderer/AVTransport/Control", ADD, "")
@@ -225,5 +239,30 @@ mod tests {
         };
         starters.carried_out(&stop, &Client::Cli);
         assert_eq!(starters.of(&kitchen), None);
+    }
+
+    #[test]
+    fn missing_persistent_provenance_cannot_use_the_djs_exemption() {
+        for starter in [DjStarter::Missing, DjStarter::Known(Vec::new())] {
+            let (s, sent) = surface("<CurrentVolume>80</CurrentVolume>", households());
+            let h = households();
+            let den = id("RINCON_DEN");
+            let caps = DjCaps {
+                surface: &s,
+                households: &h,
+                coordinator: &den,
+                starter,
+            };
+            let host = h[0].player(&den).unwrap().ip;
+            // An accepted queue add is retained; only automatic Play needs
+            // the lost identity. Missing evidence causes no volume writes.
+            caps.soap_post(host, "/MediaRenderer/AVTransport/Control", ADD, "")
+                .unwrap();
+            let error = caps
+                .soap_post(host, "/MediaRenderer/AVTransport/Control", PLAY, "")
+                .unwrap_err();
+            assert!(error.to_string().contains("initiating policy client"));
+            assert_eq!(*sent.lock().unwrap(), ["AddURIToQueue"]);
+        }
     }
 }

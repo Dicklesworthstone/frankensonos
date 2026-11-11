@@ -31,7 +31,8 @@
 
 use chrono::{Datelike, Timelike};
 use fsonos_api::dj::{
-    DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer, DjSteeringDto, SteerConstraints,
+    DjEngine, DjMoodsDto, DjSpeakers, DjStarter, DjStatusDto, DjSteer, DjSteeringDto,
+    SteerConstraints,
 };
 use fsonos_api::plan::DjAction;
 use fsonos_api::surface::dj_config::{DjConfigDto, DjConfigureRequest, DjConfiguredDto};
@@ -42,6 +43,7 @@ use fsonos_api::surface::dj_sync::LibrarySyncDto;
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
+use fsonos_core::policy::Client;
 use fsonos_core::store::{Action, LoggedAction, Store};
 use fsonos_core::{CoreError, control};
 use fsonos_spotify::cache::works_from_store;
@@ -71,6 +73,10 @@ mod readiness;
 mod rehearsal;
 mod retry;
 pub(crate) mod saved;
+#[cfg(test)]
+mod starter_race_tests;
+#[cfg(test)]
+mod starter_tests;
 pub(crate) mod sync;
 
 /// The moods file's name inside the data directory.
@@ -119,10 +125,11 @@ impl SpotifyDj {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
             let mut state = self.state();
-            let (feeds, handover) = saved::load(path, seed);
+            let (feeds, handover, starters) = saved::load(path, seed);
             state.feeds = feeds;
             state.handover = handover;
-            state.saved = saved::encode(&state.feeds, &state.handover);
+            state.starters = starters;
+            state.saved = saved::encode(&state.feeds, &state.handover, &state.starters);
             if !state.feeds.is_empty() {
                 tracing::info!(
                     feeds = state.feeds.len(),
@@ -160,25 +167,43 @@ impl SpotifyDj {
 
     /// Save running feeds and their group evidence, if either changed.
     fn save(&self, state: &mut State) {
+        if let Err(error) = self.save_checked(state) {
+            tracing::warn!(detail = %error.detail, "the DJ's feeds weren't saved: a restart may forget them");
+        }
+    }
+
+    /// Starts must durably retain every applicable caller before they can
+    /// change an already saved queue. A later best-effort save may leave this
+    /// stricter revision behind, but cannot restore an earlier exemption.
+    fn save_checked(&self, state: &mut State) -> Result<(), Failure> {
+        let State {
+            feeds, starters, ..
+        } = state;
+        starters.retain(|id, _| feeds.get(id).is_some_and(QueueFeed::is_active));
         let Some(path) = &self.feeds_file else {
-            return;
+            return Ok(());
         };
-        let text = saved::encode(&state.feeds, &state.handover);
+        let text = saved::encode(&state.feeds, &state.handover, &state.starters);
         if text == state.saved {
-            return;
+            return Ok(());
         }
-        match saved::write(path, &text) {
-            Ok(()) => state.saved = text,
-            Err(e) => {
-                tracing::warn!(error = %e, "the DJ's feeds weren't saved: a restart may forget them");
-            }
-        }
+        saved::write(path, &text).map_err(|error| {
+            Failure::new(
+                ErrorCode::Internal,
+                format!("the DJ's feed and initiating policy could not be saved: {error}"),
+            )
+        })?;
+        state.saved = text;
+        Ok(())
     }
 }
 
 #[derive(Default)]
 struct State {
     feeds: HashMap<PlayerId, QueueFeed>,
+    /// The initiating policy identity, saved atomically with its feed.
+    /// An absent identity on a restored feed forbids automatic Play.
+    starters: HashMap<PlayerId, Vec<Client>>,
     /// The groups whose queues the feeds owned before a coordinator changed.
     handover: handover::Tracker,
     /// Failed automatic top-ups, bounded independently for each group.
@@ -226,6 +251,20 @@ struct Context {
 }
 
 impl State {
+    fn starter(&self, coordinator: &PlayerId) -> DjStarter {
+        self.starters
+            .get(coordinator)
+            .filter(|clients| {
+                !clients.is_empty()
+                    && self
+                        .feeds
+                        .get(coordinator)
+                        .is_some_and(QueueFeed::is_active)
+            })
+            .cloned()
+            .map_or(DjStarter::Missing, DjStarter::Known)
+    }
+
     /// Read the same validated plan for a start or a read-only preflight.
     /// Keeping it separate lets admission leave the running plan untouched.
     fn read_plan(
@@ -838,15 +877,66 @@ impl DjEngine for SpotifyDj {
         action: DjAction,
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
+        // A direct engine caller supplies no authenticated surface identity.
+        self.act_as(at, store, action, clock, &Client::Unknown)
+    }
+
+    fn act_as(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        action: DjAction,
+        clock: &dyn Clock,
+        client: &Client,
+    ) -> Result<OutcomeDto, Failure> {
+        if action == DjAction::Start && saved::identity(client).is_none() {
+            return Err(Failure::invalid(
+                "the DJ's initiating policy client is invalid",
+            ));
+        }
         let mut state = self.state();
+        let was_feeding = state
+            .feeds
+            .get(at.coordinator)
+            .is_some_and(QueueFeed::is_active);
+        if action == DjAction::Start {
+            if was_feeding
+                && let Some(starters) = state.starters.get_mut(at.coordinator)
+                && !starters.contains(client)
+            {
+                // A failed restart can replace stale owned items before its
+                // Play fails. Retain both callers until a successful start;
+                // missing legacy provenance remains missing on failure.
+                starters.push(client.clone());
+            }
+            // Flush pending ownership removal too: a previous failed Stop
+            // save must not leave an older uncapped feed on disk while a new
+            // caller starts music. Failure here sends no speaker writes.
+            self.save_checked(&mut state)?;
+        }
         // Explicit commands are never held behind automatic retry backoff.
         state.refill_retries.remove(at.coordinator);
         state.problems.remove(at.coordinator);
         let done = self.carry_out(&mut state, at, store, action, clock);
+        if action == DjAction::Start
+            && state
+                .feeds
+                .get(at.coordinator)
+                .is_some_and(QueueFeed::is_active)
+            && (done.is_ok() || !was_feeding)
+        {
+            state
+                .starters
+                .insert(at.coordinator.clone(), vec![client.clone()]);
+        }
         state.handover.remember(at.households, at.coordinator);
         // Even a failed start can leave a feed running, part-queued.
         self.save(&mut state);
         done
+    }
+
+    fn starter(&self, coordinator: &PlayerId) -> DjStarter {
+        self.state().starter(coordinator)
     }
 
     fn steer(
@@ -984,6 +1074,7 @@ impl DjEngine for SpotifyDj {
         state.refill_retries.remove(to);
         let State {
             feeds,
+            starters,
             listening,
             held,
             problems,
@@ -996,6 +1087,11 @@ impl DjEngine for SpotifyDj {
         if let Some(mut feed) = feeds.remove(from) {
             feed.rekey(to);
             feeds.insert(to.clone(), feed);
+            let starter = starters.remove(from);
+            starters.remove(to);
+            if let Some(starter) = starter {
+                starters.insert(to.clone(), starter);
+            }
         }
         if let Some(problem) = problems.remove(from) {
             problems.insert(to.clone(), problem);
@@ -1022,8 +1118,41 @@ impl DjEngine for SpotifyDj {
         playback: &PlayerPlayback,
         clock: &dyn Clock,
     ) {
+        let expected = self.starter(at.coordinator);
+        self.on_playback_with_starter(at, store, playback, clock, &expected);
+    }
+
+    fn on_playback_with_starter(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        playback: &PlayerPlayback,
+        clock: &dyn Clock,
+        expected: &DjStarter,
+    ) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.starter(at.coordinator) != *expected {
+            return;
+        }
         if !state.feeds.contains_key(at.coordinator) || state.held.contains(at.coordinator) {
+            return;
+        }
+        if matches!(expected, DjStarter::Missing)
+            && (playback.transport == Some(fsonos_types::TransportState::Stopped)
+                || playback.transport_status.as_deref() == Some("ERROR_OCCURRED"))
+        {
+            // Do not let renderer-error recovery interpret a policy refusal
+            // as loss of queue ownership. Ordinary playing observations can
+            // still record and refill this retained legacy feed.
+            if let Some(listening) = state.listening.get_mut(at.coordinator) {
+                listening.interrupt();
+            }
+            state.problems.insert(
+                at.coordinator.clone(),
+                "Automatic playback is waiting because this saved DJ feed has no initiating \
+                 policy client; explicitly start the DJ to establish its current limits"
+                    .into(),
+            );
             return;
         }
         if !playback.is_queue_of(at.coordinator) {

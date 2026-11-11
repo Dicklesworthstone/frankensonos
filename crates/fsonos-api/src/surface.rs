@@ -438,7 +438,15 @@ impl Surface {
             surface: self,
             households: &households,
             coordinator: player,
-            starter: self.dj_starters.of(player),
+            starter: match dj.starter(player) {
+                crate::dj::DjStarter::Unsupported => self
+                    .dj_starters
+                    .of(player)
+                    .map_or(crate::dj::DjStarter::Unsupported, |client| {
+                        crate::dj::DjStarter::Known(vec![client])
+                    }),
+                starter => starter,
+            },
         };
         let at = DjSpeakers {
             transport: &caps,
@@ -446,7 +454,7 @@ impl Surface {
             coordinator: player,
         };
         let fed = self.with_dj_store(|store| {
-            dj.on_playback(at, store, &playback, &*self.clock);
+            dj.on_playback_with_starter(at, store, &playback, &*self.clock, &caps.starter);
             self.publish_dj(&**dj, at, store, playback.queue_position);
             Ok(())
         });
@@ -763,8 +771,9 @@ impl Surface {
             };
             return self
                 .with_dj_store(|store| {
-                    let done = run_dj(&**dj, at, store, command, &*self.clock);
-                    if done.is_ok() {
+                    let was_feeding = dj.feeds(coordinator);
+                    let done = run_dj(&**dj, at, store, command, &*self.clock, guard.client);
+                    if done.is_ok() || (!was_feeding && dj.feeds(coordinator)) {
                         self.dj_starters.carried_out(command, guard.client);
                     }
                     let queue_position = self
@@ -1817,15 +1826,16 @@ fn run_dj(
     store: &mut dyn Store,
     command: &Command,
     clock: &dyn Clock,
+    client: &Client,
 ) -> Result<OutcomeDto, Failure> {
     match command {
-        Command::Dj { action, .. } => dj.act(at, store, *action, clock),
+        Command::Dj { action, .. } => dj.act_as(at, store, *action, clock, client),
         Command::DjSteer { steer, start, .. } => {
             let steered = dj.steer(at, store, steer, clock)?;
             if !start {
                 return Ok(steered);
             }
-            let started = dj.act(at, store, DjAction::Start, clock)?;
+            let started = dj.act_as(at, store, DjAction::Start, clock, client)?;
             Ok(OutcomeDto {
                 done: format!("{}; {}", steered.done, started.done),
                 ..started

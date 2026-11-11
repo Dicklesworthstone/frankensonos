@@ -227,6 +227,11 @@ impl SpotifyDj {
             };
             feed.rekey(to);
             state.feeds.insert(to.clone(), feed);
+            let starter = state.starters.remove(from);
+            state.starters.remove(to);
+            if let Some(starter) = starter {
+                state.starters.insert(to.clone(), starter);
+            }
             if let Some(listening) = state.listening.remove(from) {
                 state.listening.insert(to.clone(), listening);
             }
@@ -319,8 +324,9 @@ fn matches_queue(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fsonos_api::dj::DjEngine;
+    use fsonos_api::dj::{DjEngine, DjStarter};
     use fsonos_core::playback::EventSource;
+    use fsonos_core::policy::Client;
     use fsonos_core::store::MemStore;
     use fsonos_proto::control;
     use fsonos_proto::didl::{spotify_queue_uri, spotify_track_didl};
@@ -460,12 +466,17 @@ mod tests {
     fn reelection_moves_the_feed_steering_and_history_without_speaker_writes() {
         for generation in [1, 2] {
             let (sim, dj, mut store, from, to) = fixture(generation);
+            dj.state()
+                .starters
+                .insert(from.clone(), vec![Client::McpStdio]);
             sim.reelect_coordinator("Den").unwrap();
             let after = snapshot(&sim);
             let before = sim.soap_log().len();
             dj.on_topology(&sim.lan(), &after, &mut store);
             assert!(!dj.feeds(&from));
             assert!(dj.feeds(&to));
+            assert_eq!(dj.starter(&from), DjStarter::Missing);
+            assert_eq!(dj.starter(&to), DjStarter::Known(vec![Client::McpStdio]));
             assert_eq!(dj.take_handovers(), [(from.clone(), to.clone())]);
             let adopted = dj.state().feeds[&to].snapshot().unwrap();
             assert_eq!(adopted.earlier, vec![from.0.clone()]);

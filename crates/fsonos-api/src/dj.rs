@@ -16,6 +16,7 @@ use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
+use fsonos_core::policy::Client;
 use fsonos_core::store::{LoggedAction, Store};
 use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
@@ -41,6 +42,21 @@ pub struct DjSpeakers<'a> {
     pub households: &'a [HouseholdState],
     /// The coordinator of the group the DJ feeds.
     pub coordinator: &'a PlayerId,
+}
+
+/// The policy identity attached to a running DJ feed. A persistent engine
+/// distinguishes an old feed with missing provenance from an engine that
+/// relies on the surface's in-memory bookkeeping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DjStarter {
+    /// This engine does not retain caller identities; use the surface's copy.
+    Unsupported,
+    /// Re-evaluate every retained caller's current policy. A partially failed
+    /// restart keeps its previous caller as well as the incoming caller until
+    /// a successful explicit start establishes one identity again.
+    Known(Vec<Client>),
+    /// The feed is retained, but automatic Play needs an explicit new start.
+    Missing,
 }
 
 /// Runs the DJ; see the module docs.
@@ -72,6 +88,30 @@ pub trait DjEngine: Send + Sync {
         action: DjAction,
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure>;
+
+    /// Act for the authenticated caller. Persistent engines bind the client
+    /// to a newly owned feed, including a start that partially fails, and
+    /// save both together. A failed restart must preserve the previous
+    /// starter of an already owned feed. Existing engines keep `act`.
+    fn act_as(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        action: DjAction,
+        clock: &dyn Clock,
+        client: &Client,
+    ) -> Result<OutcomeDto, Failure> {
+        let _ = client;
+        self.act(at, store, action, clock)
+    }
+
+    /// The initiating policy client of this feed, including after restart
+    /// or coordinator handoff. Missing persistent provenance must never fall
+    /// back to a stale in-memory identity or the DJ's own exemption.
+    fn starter(&self, coordinator: &PlayerId) -> DjStarter {
+        let _ = coordinator;
+        DjStarter::Unsupported
+    }
 
     /// Replace or clear the steering of the group `at.coordinator` leads (its
     /// stored session). An unknown mood is `UNKNOWN_MOOD`; constraints the DJ
@@ -167,6 +207,22 @@ pub trait DjEngine: Send + Sync {
         playback: &PlayerPlayback,
         clock: &dyn Clock,
     );
+
+    /// Feed only while the caller identities used by the surface's playback
+    /// caps still belong to this feed. Persistent engines compare `expected`
+    /// under the same lock held through playback, so a concurrent start or
+    /// handoff cannot reuse an earlier caller's exemption.
+    fn on_playback_with_starter(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        playback: &PlayerPlayback,
+        clock: &dyn Clock,
+        expected: &DjStarter,
+    ) {
+        let _ = expected;
+        self.on_playback(at, store, playback, clock);
+    }
 
     /// The action-log rows the engine wrote since the last call (its own
     /// top-ups), for the surface to announce on the event stream. The

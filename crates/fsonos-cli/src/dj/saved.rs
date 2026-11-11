@@ -1,10 +1,13 @@
 //! The daemon's running DJ feeds, kept across a restart: `dj-feeds.json` in
 //! the data directory, rewritten whenever a feed or its group changes. Feed
-//! snapshots and the last known group membership are replaced together so a
-//! restart can recover a queue whose old coordinator has disappeared. Queue
+//! snapshots, initiating policy clients and the last known group membership
+//! are replaced together so a restart can recover a queue whose old
+//! coordinator has disappeared. Queue
 //! ownership is still verified against the speakers before any handover.
 
 use super::handover::{Origin, Tracker};
+use fsonos_api::surface::schedules::client_of;
+use fsonos_core::policy::Client;
 use fsonos_spotify::dj::DjConfig;
 use fsonos_spotify::feed::{FeedSnapshot, QueueFeed};
 use fsonos_types::PlayerId;
@@ -22,16 +25,42 @@ static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
 #[derive(Serialize, Deserialize)]
 struct Saved {
     feeds: Vec<FeedSnapshot>,
+    /// Policy identities only: caps are read from the current policy at each
+    /// Play. Legacy feeds remain readable without acquiring an exemption.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    starters: BTreeMap<String, Vec<String>>,
     /// Older files contain only feeds; they still recover when the former
     /// coordinator remains listed in its successor's group.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     groups: BTreeMap<String, Origin>,
 }
 
+type Loaded = (
+    HashMap<PlayerId, QueueFeed>,
+    Tracker,
+    HashMap<PlayerId, Vec<Client>>,
+);
+
+fn client(key: &str) -> Option<Client> {
+    (!key.is_empty()
+        && key.len() <= 1024
+        && key.trim() == key
+        && !key.chars().any(char::is_control))
+    .then(|| client_of(key))
+}
+
+/// Only a canonical policy key that recreates the same identity may persist.
+/// A tailnet principal cannot acquire a built-in client's identity on reopen.
+pub(super) fn identity(starter: &Client) -> Option<String> {
+    client(starter.key())
+        .filter(|decoded| decoded == starter)
+        .map(|_| starter.key().to_owned())
+}
+
 /// Restore feeds and their group evidence from the same file revision.
 /// Missing or unreadable files give an empty state (failures are logged).
-pub(super) fn load(path: &Path, seed: u64) -> (HashMap<PlayerId, QueueFeed>, Tracker) {
-    let empty = || (HashMap::new(), Tracker::default());
+pub(super) fn load(path: &Path, seed: u64) -> Loaded {
+    let empty = || (HashMap::new(), Tracker::default(), HashMap::new());
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == ErrorKind::NotFound => return empty(),
@@ -66,13 +95,35 @@ pub(super) fn load(path: &Path, seed: u64) -> (HashMap<PlayerId, QueueFeed>, Tra
                 })
                 .collect();
             let tracker = Tracker::restore(saved.groups, &feeds);
+            let starters = saved
+                .starters
+                .into_iter()
+                .filter_map(|(zone, keys)| {
+                    let id = PlayerId(zone);
+                    if keys.is_empty() || !feeds.get(&id).is_some_and(QueueFeed::is_active) {
+                        return None;
+                    }
+                    // Reject the entire binding if any identity is invalid;
+                    // dropping one could silently discard its tighter caps.
+                    let clients: Option<Vec<_>> = keys.iter().map(|key| client(key)).collect();
+                    clients.map(|clients| {
+                        let mut unique = Vec::new();
+                        for client in clients {
+                            if !unique.contains(&client) {
+                                unique.push(client);
+                            }
+                        }
+                        (id, unique)
+                    })
+                })
+                .collect();
             // The file says what runs: without them, so they are let go once.
             if !empty.is_empty()
-                && let Err(e) = write(path, &encode(&feeds, &tracker))
+                && let Err(e) = write(path, &encode(&feeds, &tracker, &starters))
             {
                 tracing::warn!(error = %e, "the DJ's saved feeds were not rewritten");
             }
-            (feeds, tracker)
+            (feeds, tracker, starters)
         }
         Err(e) => {
             tracing::warn!(error = %e, "the DJ's saved feeds are malformed; it starts afresh");
@@ -83,11 +134,29 @@ pub(super) fn load(path: &Path, seed: u64) -> (HashMap<PlayerId, QueueFeed>, Tra
 
 /// Running feeds and their group evidence, ordered by coordinator. Stopped
 /// feeds and their former groups are omitted. Retry deadlines never persist.
-pub(super) fn encode(feeds: &HashMap<PlayerId, QueueFeed>, tracker: &Tracker) -> String {
+pub(super) fn encode(
+    feeds: &HashMap<PlayerId, QueueFeed>,
+    tracker: &Tracker,
+    starters: &HashMap<PlayerId, Vec<Client>>,
+) -> String {
     let groups = tracker.snapshot(feeds);
+    let starters = starters
+        .iter()
+        .filter(|(id, _)| feeds.get(*id).is_some_and(QueueFeed::is_active))
+        .filter(|(_, clients)| !clients.is_empty())
+        .filter_map(|(id, clients)| {
+            let keys: Option<Vec<_>> = clients.iter().map(identity).collect();
+            keys.map(|keys| (id.0.clone(), keys))
+        })
+        .collect();
     let mut feeds: Vec<FeedSnapshot> = feeds.values().filter_map(QueueFeed::snapshot).collect();
     feeds.sort_by(|a, b| a.zone.cmp(&b.zone));
-    serde_json::to_string_pretty(&Saved { feeds, groups }).unwrap_or_default()
+    serde_json::to_string_pretty(&Saved {
+        feeds,
+        starters,
+        groups,
+    })
+    .unwrap_or_default()
 }
 
 /// Replace `path` with a complete, durable revision. Each writer owns a
@@ -208,7 +277,8 @@ mod tests {
             })
             .collect();
         let tracker = Tracker::default();
-        let text = encode(&feeds, &tracker);
+        let starters = HashMap::new();
+        let text = encode(&feeds, &tracker, &starters);
         assert!(
             text.find(office) < text.find(kitchen),
             "in coordinator order: {text}"
@@ -216,13 +286,13 @@ mod tests {
         write(&path, &text).unwrap();
         assert!(!path.with_extension("json.partial").exists());
 
-        let (read, tracker) = load(&path, 2);
+        let (read, tracker, starters) = load(&path, 2);
         assert_eq!(read.len(), 2);
         let back = &read[&PlayerId(kitchen.into())];
         assert!(back.is_active());
         assert_eq!(back.snapshot(), Some(snapshot(kitchen)), "whole");
         assert_eq!(
-            encode(&read, &tracker),
+            encode(&read, &tracker, &starters),
             text,
             "read back, it saves the same"
         );
@@ -233,7 +303,7 @@ mod tests {
             PlayerId(kitchen.into()),
             QueueFeed::new(&PlayerId(kitchen.into()), DjConfig::default(), 3),
         );
-        let only_office = encode(&stopped, &tracker);
+        let only_office = encode(&stopped, &tracker, &starters);
         assert!(only_office.contains(office) && !only_office.contains(kitchen));
 
         // A malformed file is ignored.
@@ -254,6 +324,7 @@ mod tests {
             QueueFeed::restore(snapshot(&id.0), DjConfig::default(), 1),
         )]);
         let mut tracker = Tracker::default();
+        let starters = HashMap::new();
         let mut house = HouseholdState {
             id: Some(HouseholdId("test-household".into())),
             groups: vec![ZoneGroup {
@@ -263,26 +334,29 @@ mod tests {
             ..HouseholdState::default()
         };
         tracker.remember(std::slice::from_ref(&house), &id);
-        let text = encode(&feeds, &tracker);
+        let text = encode(&feeds, &tracker, &starters);
         write(&path, &text).unwrap();
-        let (restored, known) = load(&path, 9);
-        assert_eq!(encode(&restored, &known), text);
+        let (restored, known, starters) = load(&path, 9);
+        assert_eq!(encode(&restored, &known, &starters), text);
         assert_eq!(known.snapshot(&restored).len(), 1);
 
         // A differently ordered topology is the same durable evidence.
         house.groups[0].members.reverse();
         tracker.remember(&[house], &id);
-        assert_eq!(encode(&feeds, &tracker), text);
+        assert_eq!(encode(&feeds, &tracker, &starters), text);
         feeds.insert(id.clone(), QueueFeed::new(&id, DjConfig::default(), 1));
-        let stopped: Saved = serde_json::from_str(&encode(&feeds, &tracker)).unwrap();
-        assert!(stopped.feeds.is_empty() && stopped.groups.is_empty());
+        let stopped: Saved = serde_json::from_str(&encode(&feeds, &tracker, &starters)).unwrap();
+        assert!(
+            stopped.feeds.is_empty() && stopped.groups.is_empty() && stopped.starters.is_empty()
+        );
 
         // The original JSON shape has no groups field.
         let legacy = serde_json::json!({"feeds": [snapshot(&id.0)]});
         write(&path, &legacy.to_string()).unwrap();
-        let (old, unknown) = load(&path, 9);
+        let (old, unknown, starters) = load(&path, 9);
         assert_eq!(old[&id].snapshot(), Some(snapshot(&id.0)));
         assert!(unknown.snapshot(&old).is_empty());
+        assert!(starters.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -301,12 +375,12 @@ mod tests {
         };
         let text = serde_json::json!({"feeds": [empty, snapshot(office)]});
         write(&path, &text.to_string()).unwrap();
-        let (feeds, tracker) = load(&path, 1);
+        let (feeds, tracker, starters) = load(&path, 1);
         assert_eq!(feeds.keys().collect::<Vec<_>>(), [&PlayerId(office.into())]);
-        assert!(!encode(&feeds, &tracker).contains(kitchen));
+        assert!(!encode(&feeds, &tracker, &starters).contains(kitchen));
         // The file is rewritten without it, so a restart lets go once.
         let rewritten = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(rewritten, encode(&feeds, &tracker));
+        assert_eq!(rewritten, encode(&feeds, &tracker, &starters));
         assert!(!rewritten.contains(kitchen) && rewritten.contains(office));
         let _ = std::fs::remove_dir_all(dir);
     }

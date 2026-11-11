@@ -6,6 +6,36 @@ same `fsonos_core::control::queue_removal` implementation as manual queue edits
 and logged enqueue undo. There is no separate interpretation of a deletion's
 acknowledgement in the automatic feed.
 
+## Playback limits survive a restart
+
+The daemon saves the policy identity of whoever starts a DJ feed in the same
+atomic `dj-feeds.json` revision as its queued works and group membership. Before
+automatically restarting playback, it applies both the DJ's current policy and
+the initiating caller's current policy to every room in the current group.
+Changes to room caps and quiet hours therefore apply to a resumed feed too,
+including when the owner has exempted the `dj` client from volume caps.
+
+A start that queues music and then fails still retains its caller. If a failed
+restart leaves an existing feed active, both the previous and incoming callers'
+limits remain in force; a successful explicit start establishes the new caller
+alone. The stricter identities are saved before engine start or queue mutations.
+If that save fails, the engine does not start; the surface may already have
+lowered rooms to the caller's safe volume. If the final save fails after music
+starts, the earlier revision still includes the incoming caller's limits.
+Policy identities follow the feed through explicit moves and spontaneous
+coordinator changes, and disappear from saved state when ownership ends.
+
+Old saved feeds have no initiating identity. Their queues and status remain
+available, and already playing music can still be observed and refilled, but
+automatic restarts wait. Run `fsonos dj start ROOM` once to establish the caller
+and current limits. A failed attempt preserves that wait. Only policy identities
+are stored here; volume limits are read afresh from `policy.toml` when needed.
+
+An exhausted queue also waits when live group membership no longer matches the
+household snapshot used to apply caps. After that snapshot catches up, recovery
+can continue. A group or player boot change during observation or refill
+invalidates that attempt without replaying accepted queue additions.
+
 ## Current preferences and library
 
 An uninterrupted DJ picks up edits to `preferences.toml` and `moods.toml`
