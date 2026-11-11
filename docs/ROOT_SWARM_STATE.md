@@ -4054,3 +4054,32 @@ does not read those.
 
 `build_upd_rootfs` now has `--sign-key` / `--no-sign` wired (default `--key`), so
 the moment a signing key appears it is a one-flag change.
+
+## /getaa + SMB: harness works, call shape unresolved
+
+Pivot after the signature verdict: the signature-free lanes. Set up the SMB
+harness on css (impacket installed **for root as well as the user** — the
+systemd-run service runs as root and fails with ModuleNotFoundError otherwise;
+share must be `/root/smbshare` because the script expands `~` under root, and
+the first server crash was exactly that: `FileNotFoundError: /root/smbshare/.`
+inside `queryFsInformation`).
+
+**Proof the device reaches libsmb2**: with the server listening on 445, a
+`getaa` for `smb://209.145.54.164/S/a.jpg` produced a server-side traceback in
+the SMB QUERY_INFO path — i.e. `.84` connected and negotiated. So the lane's
+transport is live against real hardware.
+
+Route shape learned from the binary (`/getaa?u=%s&v=%u`, `/getaa?m=1&u=%s`):
+
+| Request | Result |
+|---|---|
+| `getaa?u=<smb://…>` | 404, no connection |
+| `getaa?m=1&u=<http://…/a.jpg>` | **500** (active form) |
+| `getaa?u=<http://…/a.jpg>&v=0/1` | 404 |
+| `setav` with bare `smb://…` | 500 |
+
+So `m=1` is the live handler and it fails on a plain image URL; the daemon
+likely wants a *track* URI (artist/title context) rather than a bare image, and
+`smb://` is not accepted as a transport URI without the usual shim prefix.
+Next: feed `m=1` with a track-shaped URI, and try the `x-file-cifs://` form with
+`m=1` rather than as a transport URI.
