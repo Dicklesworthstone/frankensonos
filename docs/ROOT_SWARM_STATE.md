@@ -4475,3 +4475,18 @@ Also worth knowing for scripting: `/tmp` on css still holds many stale
 root-owned `.cmd` files from November, so `sudo tee`-less redirects fail with
 "permission denied" (`/tmp` itself is 1777, the files are not). Writing the gdb
 script locally and `scp`-ing it avoids the whole class of problem.
+
+Correction to the previous entry: "the accept thread is never created" was measured
+under gdb, and **gdb distorts this boot** — with breakpoints only two listeners
+ever appear (1400, 1443) and later init never runs. In a **plain** run all three
+ports (1400/1443/1843) bind and the trace reaches mixthrd/htsnk.
+
+But the conclusion survives the correction: even in a plain run there are only
+8 threads and **none is in `accept`/`accept4`** (states are sigsuspend/futex/
+ppoll/sigtimedwait), `Recv-Q` grows, and the boot stops at
+`htsnk … enter_sonos_net` / `enter_station_mode`. So binding and accepting are
+separated in this build and the emulator never reaches the accepting stage.
+
+Practical consequence: any future "is it accepting" test must be done on a
+plain run, never under the debugger, and the real target is now the stall at
+`htsnk` (network bring-up), not thread creation itself.
