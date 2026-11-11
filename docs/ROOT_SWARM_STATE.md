@@ -4553,3 +4553,19 @@ repeat runs before any claim.
 
 Thread-state is the right instrument from here: 130 = parked event loop,
 270 = sigtimedwait, 288 = accept (what we are waiting for).
+
+Repeat data: three short runs each stopped at a *different* point (asyncfile,
+internalevts, zp "Restoring AVT"), and at 60-80 s the runs land consistently on
+`<mixthrd,0> thread started` and go no further. So it is not one fixed halt, it
+is **mixthrd**, and the daemon enters that thread having already logged
+`Can't get fd from sound device`.
+
+That is the next concrete gap: the mixer has no audio device. The binary looks
+for `/proc/driver/audio/dsp` (earlier string dump), which cannot simply be
+created because `/proc` is the host's — so the options are a bind-mount over an
+existing path, or finding the fallback node it tries next and providing that.
+
+Also: `axt` finds no direct reference for `enter_sonos_net`
+(`0x10491cfc`) even with relocs applied, so the event name is likely built or
+tabled rather than referenced inline — same class of dead end as before
+renumbering; thread-state and runtime probes keep being the reliable tools.
