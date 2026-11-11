@@ -3954,3 +3954,22 @@ the trailer is simply not consulted. To change the rootfs the **type-4 must be
 replaced in place**, which is exactly what the envelope tooling is for — and
 for a 57.22 carrier the recipient is the same `fd88f264…` id, so the open
 question is only which pinned key wraps it.
+
+### The chroot oracle cannot judge keys
+
+Built two in-place replacements of the 57.22 type-4 with the same payload —
+one enveloped to the pinned key `0xDAE0`, one to a freshly generated 2048-bit
+control key — and ran both through `/bin/upgrade`. The output is **identical**
+(`upgrade to version 57.22-65130`, then the same compatibility refusal):
+compatibility is decided before any decryption, and the chroot always reports
+feature set 0, so the oracle never reaches the envelope. Key correctness can
+only be settled on a device.
+
+Two consequences for the next attempt:
+
+1. A replace-variant must also **recompute the type-22 rcbundle digest** —
+   replacing the type-4 changes the bundle, and the current `build_upd_rootfs`
+   re-checks the digest but the replacement path does not rewrite it.
+2. Because a wrong key yields a garbage rootfs, the device-side digest check is
+   the safety net; do the first replace on a unit we can afford to lose or with
+   the stock package ready to re-flash.
