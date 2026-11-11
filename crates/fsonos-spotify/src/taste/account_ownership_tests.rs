@@ -406,18 +406,23 @@ fn continuation_cannot_publish_after_an_account_switch_during_http_even_when_tha
                 )]
             );
             assert_eq!(store.spotify_heard().unwrap(), [(uri(SHARED), 123)]);
-            let pending = store
-                .playlist_progress(FIRST, "spotify:playlist:Account00025")
-                .unwrap()
-                .unwrap();
-            assert_eq!(
-                serde_json::from_str::<Value>(&pending).unwrap()["applied"],
-                false
+            assert!(
+                store
+                    .playlist_progress(FIRST, "spotify:playlist:Account00025")
+                    .unwrap()
+                    .is_none(),
+                "the losing reader cannot save a checkpoint under a retired adoption"
             );
             store.close().unwrap();
             let reopened = SqliteStore::open(&file).unwrap();
             assert_eq!(reopened.spotify_library_owner().unwrap(), Some(owner));
             assert!(pool_from_store(&reopened).unwrap().get(&uri(25)).is_none());
+            assert!(
+                reopened
+                    .playlist_progress(FIRST, "spotify:playlist:Account00025")
+                    .unwrap()
+                    .is_none()
+            );
             assert!(
                 reopened
                     .playlist_contents("spotify:playlist:CurrentList")

@@ -11,10 +11,12 @@ use fsonos_core::control;
 use fsonos_core::store::MemStore;
 use fsonos_proto::ProtoError;
 use fsonos_proto::content::{QUEUE, browse_snapshot};
+use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
 use std::cell::Cell;
 use std::net::IpAddr;
+use std::time::Duration;
 
 const ROOM: &str = "Exhaustion Room";
 const OTHER: &str = "Other Room";
@@ -199,6 +201,207 @@ fn a_genuine_exhausted_queue_is_fed_and_starts_the_first_new_work() {
             TransportState::Playing
         );
         assert!(feed.is_active());
+    }
+}
+
+#[test]
+fn a_new_group_member_waits_for_the_snapshot_used_by_playback_caps() {
+    for s2 in [false, true] {
+        let mut rig = Rig::new(s2);
+        let mut feed = rig.feed();
+        let event = rig.event();
+        let before = feed.snapshot();
+        let other = rig.sim.player(OTHER).unwrap().ip;
+        soap::set_volume(&rig.lan, other, 90).unwrap();
+        soap::join_group(&rig.lan, other, &rig.id).unwrap();
+
+        let start = rig.sim.soap_log().len();
+        assert_eq!(rig.tick(&rig.lan, &mut feed, &event).unwrap(), 0);
+        assert!(rig.writes_since(start).is_empty());
+        assert_eq!(feed.snapshot(), before);
+        assert_eq!(soap::get_volume(&rig.lan, other).unwrap(), 90);
+        assert_eq!(
+            soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
+            TransportState::Stopped
+        );
+
+        // The cap wrapper receives this same snapshot. Only after it knows
+        // the complete audience can recovery delegate Play to that wrapper.
+        rig.houses[0].apply_topology(&get_zone_group_state(&rig.lan, rig.host).unwrap());
+        assert!(rig.tick(&rig.lan, &mut feed, &event).unwrap() > 0);
+        assert_eq!(
+            soap::get_position_info(&rig.lan, rig.host).unwrap().track,
+            5
+        );
+        assert_eq!(
+            soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
+            TransportState::Playing
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum AudienceChange {
+    Join,
+    Reboot,
+}
+
+impl AudienceChange {
+    fn apply(self, rig: &Rig) -> Result<(), ProtoError> {
+        match self {
+            Self::Join => {
+                let other = rig.sim.player(OTHER).unwrap().ip;
+                soap::join_group(&rig.lan, other, &rig.id)
+            }
+            Self::Reboot => {
+                rig.sim.reboot(ROOM, Duration::ZERO).unwrap();
+                Ok(())
+            }
+        }
+    }
+
+    fn writes(self) -> &'static [&'static str] {
+        match self {
+            Self::Join => &["SetAVTransportURI"],
+            Self::Reboot => &[],
+        }
+    }
+}
+
+enum ChangeDuring {
+    Observation,
+    RefillReadback,
+}
+
+struct AudienceDuringRead<'a> {
+    rig: &'a Rig,
+    change: AudienceChange,
+    during: ChangeDuring,
+    added: Cell<bool>,
+    changed: Cell<bool>,
+}
+
+impl Transport for AudienceDuringRead<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let response = self.rig.lan.soap_post(host, path, action, body)?;
+        if action.contains("#AddURIToQueue") {
+            self.added.set(true);
+        }
+        let observed = match self.during {
+            ChangeDuring::Observation => action.contains("#GetPositionInfo"),
+            // The append has succeeded and its final owner read returned.
+            // No append needs replaying, but starting playback still needs
+            // the audience and boot established before that append.
+            ChangeDuring::RefillReadback => self.added.get() && action.contains("#GetMediaInfo"),
+        };
+        if observed && !self.changed.replace(true) {
+            self.change.apply(self.rig)?;
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_join_or_reboot_during_observation_defers_recovery_without_writes() {
+    for s2 in [false, true] {
+        for change in [AudienceChange::Join, AudienceChange::Reboot] {
+            let rig = Rig::new(s2);
+            let mut feed = rig.feed();
+            let event = rig.event();
+            let before = feed.snapshot();
+            let observer = AudienceDuringRead {
+                rig: &rig,
+                change,
+                during: ChangeDuring::Observation,
+                added: Cell::new(false),
+                changed: Cell::new(false),
+            };
+            let start = rig.sim.soap_log().len();
+            assert_eq!(rig.tick(&observer, &mut feed, &event).unwrap(), 0);
+            assert!(observer.changed.get(), "{change:?}");
+            assert_eq!(rig.writes_since(start), change.writes(), "{change:?}");
+            assert_eq!(feed.snapshot(), before, "{change:?}");
+            assert!(feed.dry_end.is_none());
+        }
+    }
+}
+
+#[test]
+fn a_join_or_reboot_after_refilling_preserves_the_add_but_does_not_start_it() {
+    for s2 in [false, true] {
+        for change in [AudienceChange::Join, AudienceChange::Reboot] {
+            let mut rig = Rig::new(s2);
+            let mut feed = rig.feed();
+            let event = rig.event();
+            let observer = AudienceDuringRead {
+                rig: &rig,
+                change,
+                during: ChangeDuring::RefillReadback,
+                added: Cell::new(false),
+                changed: Cell::new(false),
+            };
+            let start = rig.sim.soap_log().len();
+            assert_eq!(rig.tick(&observer, &mut feed, &event).unwrap(), 1);
+            assert!(observer.changed.get(), "{change:?}");
+            let expected: Vec<_> = std::iter::once("AddURIToQueue")
+                .chain(change.writes().iter().copied())
+                .collect();
+            assert_eq!(rig.writes_since(start), expected, "{change:?}");
+            assert_eq!(
+                soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
+                TransportState::Stopped
+            );
+            assert_eq!(feed.dry_end, Some(4));
+            assert!(feed.is_active());
+
+            // A fresh event and snapshot establish a new attempt. Resume the
+            // already accepted successor without duplicating its queue add.
+            rig.houses[0].apply_topology(&get_zone_group_state(&rig.lan, rig.host).unwrap());
+            let event = rig.event();
+            let start = rig.sim.soap_log().len();
+            assert_eq!(rig.tick(&rig.lan, &mut feed, &event).unwrap(), 0);
+            assert!(
+                rig.writes_since(start)
+                    .iter()
+                    .all(|write| write != "AddURIToQueue")
+            );
+            assert_eq!(
+                soap::get_position_info(&rig.lan, rig.host).unwrap().track,
+                5
+            );
+            assert_eq!(
+                soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
+                TransportState::Playing
+            );
+            assert!(feed.dry_end.is_none());
+        }
+    }
+}
+
+#[test]
+fn a_coordinator_handoff_with_the_same_members_does_not_restart_the_old_player() {
+    for s2 in [false, true] {
+        let mut rig = Rig::new(s2);
+        let other = rig.sim.player(OTHER).unwrap();
+        soap::join_group(&rig.lan, other.ip, &rig.id).unwrap();
+        rig.houses[0].apply_topology(&get_zone_group_state(&rig.lan, rig.host).unwrap());
+        let mut feed = rig.feed();
+        let event = rig.event();
+        let before = feed.snapshot();
+        let other = PlayerId(other.uuid.clone());
+        soap::delegate_group_and_rejoin(&rig.lan, rig.host, &other).unwrap();
+
+        let start = rig.sim.soap_log().len();
+        assert_eq!(rig.tick(&rig.lan, &mut feed, &event).unwrap(), 0);
+        assert!(rig.writes_since(start).is_empty());
+        assert_eq!(feed.snapshot(), before);
+        assert!(feed.dry_end.is_none());
     }
 }
 

@@ -725,7 +725,14 @@ mod tests {
             .filter(|l| l.contains("FakeArtist000000000009/top-tracks"))
             .count();
         assert_eq!(asked, 1, "{:?}", fake.log);
-        assert!(taste.artists_unread.is_empty(), "{taste:?}");
+        assert_eq!(taste.artists_unread, ["frédéric chopin"]);
+        assert_eq!(read.artist_reads_pending, 1);
+        assert!(
+            read.artist_tracks_unread
+                .as_deref()
+                .is_some_and(|detail| detail.contains("no playable tracks")),
+            "an empty sample retains that artist's previous music: {read:?}"
+        );
         let theirs: Vec<&LibraryItem> = taste
             .tracks
             .iter()

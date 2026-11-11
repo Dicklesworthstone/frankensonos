@@ -491,6 +491,9 @@ fn genre_discovery_exposes_new_classical_works_for_album_completion() {
         let mut store = MemStore::default();
         store.adopt_spotify_library_owner(OWNER).unwrap();
         let mut item = held(0);
+        // Genre evidence identifies classical music; a numbered movement
+        // supplies the separate evidence that its work needs completion.
+        item.title = "Synthetic Work: II. Lento".into();
         item.album_uri = Some("spotify:album:GenreRecording".into());
         item.track_number = Some(2);
         apply_library_read(&mut store, std::slice::from_ref(&item)).unwrap();
@@ -510,6 +513,13 @@ fn genre_discovery_exposes_new_classical_works_for_album_completion() {
                 .work_of(&item.source_uri)
                 .unwrap()
                 .is_classical()
+        );
+        assert!(
+            works_from_store(&store)
+                .unwrap()
+                .work_of(&item.source_uri)
+                .unwrap()
+                .needs_expansion()
         );
         assert!(server.calls("/v1/albums/").is_empty());
     });

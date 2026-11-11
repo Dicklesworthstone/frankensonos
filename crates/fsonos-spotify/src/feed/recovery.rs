@@ -50,13 +50,17 @@ pub struct RecoveryNotice {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct Group {
+pub(super) struct Group {
+    id: String,
     members: Vec<PlayerId>,
     boot: Option<u32>,
+    generation: Option<u8>,
 }
 
 impl Group {
-    fn read<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<Option<Self>, FeedError> {
+    pub(super) fn read<T: Transport + ?Sized>(
+        at: &Speakers<'_, T>,
+    ) -> Result<Option<Self>, FeedError> {
         let host = host_of(at)?;
         let topology = get_zone_group_state(at.transport, host)?;
         let mut groups = topology
@@ -100,8 +104,10 @@ impl Group {
         expected.sort_by(|left, right| left.0.cmp(&right.0));
         expected.dedup();
         Ok((members == expected).then_some(Self {
+            id: group.id.clone(),
             members,
             boot: own.boot_seq,
+            generation: own.sw_gen,
         }))
     }
 }

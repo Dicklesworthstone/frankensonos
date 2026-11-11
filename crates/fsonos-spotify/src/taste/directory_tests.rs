@@ -187,6 +187,7 @@ fn failed_or_invalid_resume_pages_preserve_the_last_checkpoint_and_published_dir
         // A background attempt records the full reconciliation it will owe,
         // even when no additional directory page can be accepted this time.
         before["reconcile"] = true.into();
+        let mut previous_publication = before["publication"].take();
         let listed = store.playlists().unwrap();
         let route = format!("/v1/me/playlists?offset={WINDOW}");
         let good = server.state.lock().unwrap().pages[&route].clone();
@@ -222,7 +223,15 @@ fn failed_or_invalid_resume_pages_preserve_the_last_checkpoint_and_published_dir
                 (failed.playlists.pending, failed.playlists.advanced),
                 (1, 0)
             );
-            assert_eq!(checkpoint(&store, &owner), before);
+            let mut after = checkpoint(&store, &owner);
+            let publication = after["publication"].take();
+            assert!(publication.as_str().is_some_and(|value| !value.is_empty()));
+            assert_ne!(
+                publication, previous_publication,
+                "accepting retained playlist observations fences older full refreshes"
+            );
+            previous_publication = publication;
+            assert_eq!(after, before, "failed intake preserves the accepted prefix");
             assert_eq!(store.playlists().unwrap(), listed);
             assert!(store.playlist_progress(OWNER, PREVIOUS).unwrap().is_some());
             assert!(!failed.notes.is_empty());

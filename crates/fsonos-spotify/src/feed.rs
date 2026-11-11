@@ -788,6 +788,9 @@ impl QueueFeed {
         store: &mut S,
         end: u32,
     ) -> Result<usize, FeedError> {
+        let Some(group) = recovery::Group::read(at)? else {
+            return Ok(0);
+        };
         // A failed add forgets the queue's length, and a top-up waits for the
         // queue to be read back first, as on_playback does for other events.
         if self.queue_len.is_none() {
@@ -807,6 +810,11 @@ impl QueueFeed {
             .iter()
             .any(|w| w.last().is_some_and(|last| last > end))
         {
+            // Refilling can take many HTTP exchanges. Retain the original
+            // audience and boot through them, not just the exhaustion read.
+            if recovery::Group::read(at)?.as_ref() != Some(&group) {
+                return Ok(queued);
+            }
             let next = end + 1;
             mode::start(at, next)?;
             self.playing = Some(next);

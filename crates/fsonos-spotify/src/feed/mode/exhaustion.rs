@@ -7,10 +7,10 @@ use fsonos_proto::Transport;
 use fsonos_proto::content::{BrowseFlag, BrowseSnapshot, QUEUE, browse, browse_snapshot};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::TransportState;
 
 use super::{FeedError, QueueFeed, Speakers, host_of};
+use crate::feed::recovery::Group;
 
 /// Only the existing dry-queue/retry predicate adds observations. Evaluate it
 /// on a provisional feed: neither failed reads nor stale notifications consume
@@ -34,12 +34,12 @@ pub(super) fn permits<T: Transport + ?Sized>(
     }
     let host = host_of(at)?;
     let own_queue = format!("x-rincon-queue:{}#0", at.coordinator.0);
-    let topology = get_zone_group_state(at.transport, host)?;
-    if !topology
-        .groups
-        .iter()
-        .any(|group| group.coordinator == *at.coordinator)
-        || soap::get_media_info(at.transport, host)?.uri != own_queue
+    // Playback caps use the supplied household snapshot. A newly joined
+    // room must reach that snapshot before an automatic restart may sound.
+    let Some(group) = Group::read(at)? else {
+        return Ok(false);
+    };
+    if soap::get_media_info(at.transport, host)?.uri != own_queue
         || !stopped_without_error(at.transport, host)?
     {
         return Ok(false);
@@ -66,11 +66,7 @@ pub(super) fn permits<T: Transport + ?Sized>(
     }
     // A read can race a pause, seek, source switch or coordinator handoff.
     // Recheck around the observation; never send Play to obtain the evidence.
-    let topology = get_zone_group_state(at.transport, host)?;
-    if !topology
-        .groups
-        .iter()
-        .any(|group| group.coordinator == *at.coordinator)
+    if Group::read(at)?.as_ref() != Some(&group)
         || soap::get_media_info(at.transport, host)?.uri != own_queue
     {
         return Ok(false);

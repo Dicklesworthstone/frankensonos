@@ -105,7 +105,8 @@ fn unknown_and_buffering_observations_do_not_claim_listening() {
     let mut observation = PlayerPlayback::default();
     observation.media_uri = Some(format!("x-rincon-queue:{}#0", rig.coordinator.0));
     observation.queue_position = first.position;
-    observation.track_uri = Some(spotify_queue_uri(&first.uri));
+    // GENA reports a renderer URI, not the bare encoded AddURIToQueue input.
+    observation.track_uri = Some(format!("x-sonos-spotify:{}", spotify_queue_uri(&first.uri)));
     observation.queue_length = feed.queue_len;
     for state in [
         None,

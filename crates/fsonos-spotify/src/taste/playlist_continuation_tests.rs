@@ -605,16 +605,13 @@ fn a_failed_late_album_keeps_accepted_playlist_music_and_reports_the_missing_wor
                     continued
                         .notes
                         .iter()
-                        .any(|note| note.contains("1 album couldn't be read"))
+                        .any(|note| note.starts_with(WORK_ALBUM) && note.contains("404"))
                 );
                 assert_eq!(store.album_misses().unwrap().len(), 1);
             } else {
-                assert!(
-                    continued
-                        .notes
-                        .iter()
-                        .any(|note| note.contains("album read stopped early"))
-                );
+                assert!(continued.notes.iter().any(|note| {
+                    note.starts_with("album completion paused:") && note.contains("429")
+                }));
                 assert!(continued.playlists.retry_after_secs > 0);
                 assert!(store.album_misses().unwrap().is_empty());
             }
