@@ -69,6 +69,7 @@ pub mod announce;
 mod bridge;
 mod dj_caps;
 mod intents;
+mod level_undo;
 mod outside;
 mod playback_caps;
 pub mod players;
@@ -918,6 +919,13 @@ impl Surface {
         } else {
             actions::before_state_with(&snaps, &sessions)
         };
+        let before = level_undo::scope(
+            before,
+            &households,
+            &guard,
+            std::slice::from_ref(&command),
+            &snaps,
+        );
         let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = recovery::protect(before, recovery.unsafe_undo(&result));
         let before = self.with_after(before, &snaps, &[]);
@@ -1001,6 +1009,12 @@ impl Surface {
         let run = self.run_set(&households, &guard, &commands, true);
         let unsafe_undo = run.unsafe_undo;
         let (snaps, missed) = (run.snaps, run.missed);
+        let attempted: Vec<_> = commands
+            .iter()
+            .zip(&run.outcomes)
+            .filter(|(_, result)| level_undo::may_have_changed(result))
+            .map(|(command, _)| command.clone())
+            .collect();
         let result = set_runs::merged(&households, &commands, run.outcomes);
         if regroups {
             self.invalidate();
@@ -1018,6 +1032,7 @@ impl Surface {
         } else {
             actions::before_state_with(&snaps, &[])
         };
+        let before = level_undo::scope(before, &households, &guard, &attempted, &snaps);
         let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = recovery::protect(before, unsafe_undo);
         let before = self.with_after(before, &snaps, &[]);
@@ -1045,6 +1060,13 @@ impl Surface {
         let Ok(households) = self.households() else {
             return before;
         };
+        if let Some(scope) = before
+            .as_deref()
+            .and_then(|saved| actions::BeforeState::parse(saved).ok())
+            .and_then(|saved| saved.level_scope)
+        {
+            return level_undo::after(&*self.transport, &households, before, &scope, snaps, levels);
+        }
         let mut after = actions::rooms_after(&*self.transport, &households, &rooms);
         for room in &mut after {
             if let Some(&(_, level)) = levels.iter().find(|(p, _)| *p == room.player) {

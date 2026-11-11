@@ -386,6 +386,13 @@ documents itself at `GET /openapi.json`.
 
 ## Safety for a house run by agents
 
+Undoing a volume, mute or volume fade restores the affected room settings while
+music continues from its current track and position. Group-volume undo restores
+each targeted room's earlier level. Later source changes, pauses, and settings
+in other rooms remain intact; changed or unreadable settings in the actual undo
+scope require another review. Current volume caps still apply. Actions recorded
+by older versions keep their original full-zone undo behavior.
+
 ```toml
 # policy.toml in the data directory. A missing file falls back to the
 # [defaults] below only (no quiet hours, room caps or client tables until you

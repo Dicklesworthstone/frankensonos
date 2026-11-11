@@ -1686,6 +1686,13 @@ impl Surface {
             &targets,
             self.now(),
         );
+        let before = super::level_undo::scope(
+            fsonos_core::actions::before_state_with(&snaps, &[]),
+            &households,
+            &guard,
+            &planned,
+            &snaps,
+        );
         let own;
         let fader = if let Some(sleep) = &self.sleep {
             &sleep.fader
@@ -1702,6 +1709,8 @@ impl Surface {
         // The rooms whose speakers still ramp themselves when the call
         // answers, and the level each reaches.
         let mut ramping: Vec<(PlayerId, u8)> = Vec::new();
+        let mut superseded = Vec::new();
+        let mut dispatched = false;
         let ramped = bounded.and_then(|bounded| {
             let (mut lanes, mut notes) = (Vec::new(), Vec::new());
             for (command, noted) in bounded {
@@ -1717,6 +1726,7 @@ impl Surface {
             }
             // Every room to its own level in one fade; a room whose volume
             // is changed meanwhile drops out and keeps it.
+            dispatched = !lanes.is_empty();
             let (left, mut done) = if let Some(over) = over {
                 (
                     fader
@@ -1742,6 +1752,7 @@ impl Surface {
             if overridden {
                 done.push_str(" (a room's volume was changed meanwhile and stays as set)");
             }
+            superseded = left;
             Ok(OutcomeDto {
                 done,
                 changed: true,
@@ -1749,7 +1760,16 @@ impl Surface {
                 notes,
             })
         });
-        let before = fsonos_core::actions::before_state_with(&snaps, &[]);
+        let before = if dispatched && ramped.is_err() {
+            // A failed multi-room fade has no complete receipt of which
+            // players a newer manual action superseded. Its current levels
+            // cannot become proof that this older fade still owns them.
+            Some(fsonos_core::actions::before_state_not_undoable(
+                "failed volume fade: partial writes and newer manual levels cannot be distinguished",
+            ))
+        } else {
+            super::level_undo::omit(before, &superseded)
+        };
         let (decision, text, before) = super::log_entry(&ramped, before, missed.len());
         let before = self.with_after(before, &snaps, &ramping);
         let intent = format!("set_volume: {room} to {level} {pace}");

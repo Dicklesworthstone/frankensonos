@@ -908,6 +908,16 @@ the house to agents they can bound and reverse. The guardrails live in
   `fsonos log`, `fsonos undo`, MCP `recent_actions` and `undo_last`. Undo says
   what it could not restore (for example, a queue that was replaced since).
 
+New volume, mute, group-volume and volume-fade actions retain the exact room
+players and level fields they changed. Their undo restores those fields while
+preserving the current source, queue occurrence, playback state, grouping and
+unrelated room settings. Unmute also retains any volume lowered by its cap;
+current caps still apply on restoration. A room manually overridden during a
+fade leaves that fade's undo scope. Field-specific observations require no
+media or queue read; unreadable or subsequently changed levels require a new
+read before normal undo. Existing action rows retain their previous full-zone
+restoration behavior.
+
 ### 12.6 Favorites, saved Sonos playlists and library search as play sources
 
 Explicit Spotify artist links now resolve through the owner's read-only catalog

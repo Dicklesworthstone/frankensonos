@@ -35,11 +35,13 @@ use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
 mod house_config;
+mod levels;
 mod queue;
 pub use house_config::{
     SceneBefore, SceneRow, ScheduleBefore, ScheduleRow, before_state_config, scene_row,
     schedule_row,
 };
+pub use levels::{LevelAfter, LevelScope, capture_level_after, with_level_after, with_level_scope};
 pub use queue::{
     PendingQueueUndo, QueueUndo, capture_queue_undo, finish_queue_undo, with_queue_undo,
 };
@@ -126,6 +128,14 @@ pub struct BeforeState {
     /// rows logged before undo checked for changes.
     #[serde(default)]
     pub after: Vec<RoomAfter>,
+    /// New level-only actions restore these exact players and fields. Missing
+    /// in older rows, which retain their complete zone restore semantics.
+    #[serde(default)]
+    pub level_scope: Option<Vec<LevelScope>>,
+    /// Field-specific proof after a scoped level action, independent of the
+    /// group's source, transport, queue and other room settings.
+    #[serde(default)]
+    pub level_after: Vec<LevelAfter>,
     /// Set on a write undo cannot put back: what it was (a queue edit, a
     /// sleep timer, a fade-out). See [`before_state_not_undoable`].
     #[serde(default)]
@@ -642,6 +652,9 @@ fn restore_zones<T: Transport + ?Sized>(
     at: i64,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> ZoneOutcomes {
+    if before.level_scope.is_some() {
+        return levels::restore(t, households, before, vet);
+    }
     let started = Instant::now();
     let mut zones = Vec::new();
     let mut failures = Vec::new();
@@ -692,12 +705,29 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     // Even --force cannot overwrite a queue that no longer matches the exact
     // confirmed edit. Check every saved queue before any independent restore.
     queue::refuse_if_changed(t, households, &before.queue_undo, at)?;
+    // A scope is never permission to invent a missing prior level, including
+    // on a forced undo. Validate the whole restore before any writes.
+    levels::validate(households, &before)?;
+    let level_state = before
+        .level_scope
+        .as_ref()
+        .map(|_| levels::observe(t, households, &target, &before, force))
+        .transpose()?;
     if !force {
-        refuse_if_changed(t, households, &target, &before)?;
+        if level_state.is_none() {
+            refuse_if_changed(t, households, &target, &before)?;
+        }
         house_config::refuse_if_changed(store, &target, &before)?;
     }
     let coordinators: Vec<PlayerId> = before.zones.iter().map(|s| s.coordinator.clone()).collect();
-    let (now, _) = capture_zones(t, households, &coordinators, at);
+    // A level-only undo must not depend on playback reads or stop a later
+    // queue occurrence. Its own audit row keeps just the levels it observed;
+    // undo rows cannot be undone, so they need no full restoration snapshot.
+    let now = if level_state.is_some() {
+        Vec::new()
+    } else {
+        capture_zones(t, households, &coordinators, at).0
+    };
     let steered: Vec<PlayerId> = before
         .dj_sessions
         .iter()
@@ -751,7 +781,15 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
             intent: format!("undo #{}: {}", target.id, target.action.intent),
             decision: "allow".into(),
             result: summary.clone(),
-            before_state: before_state_with(&now, &now_sessions),
+            before_state: level_state.map_or_else(
+                || before_state_with(&now, &now_sessions),
+                |levels| {
+                    Some(
+                        serde_json::json!({ "levels": levels, "dj_sessions": now_sessions })
+                            .to_string(),
+                    )
+                },
+            ),
             undo_of: Some(target.id),
         },
     )?;
