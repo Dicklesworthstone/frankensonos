@@ -3836,3 +3836,24 @@ whose type-4 is enveloped — i.e. the recipient-key question is back in play �
 unless the downgrade incantation is found (worth one more look at how
 `/status/upgradeinfo` / `Flags` are meant to be combined, since the community
 guide never exercises a downgrade).
+
+### Downgrade attempts, all negative (2026-11-11)
+
+The 57.23 updater only carries the strings `PrevSWGenMinVersion` and
+`MinVersion` (no `allow_policy_bypass` — that was 34.16's updater), and both
+are reached indirectly (no literal pointers in the file), so the option
+grammar cannot be read off statically without more work. Tried against `.84`:
+
+| Flags | ExtraOptions | Result |
+|---|---|---|
+| 3 | `PrevSWGenMinVersion:[34.16-37101]` | device went offline ~15 s, returned on **57.23** — a reboot, not an install |
+| 1 | `MinVersion:[0.0-0]` | refused (reset) |
+| 0 | both keys `[1.0-1]` | refused (reset) |
+
+So Flags 3 forces a cycle but 34.16 is still not applied. Downgrade on this
+build remains unsolved; treat `MinVersion` as unproven on 57.23 despite it
+being the documented lever.
+
+Everything up to the version gate is proven twice over (stock 57.23 flashes
+cleanly through our server), which is exactly the state the bead needs: the
+remaining work is one gate, not a chain.
