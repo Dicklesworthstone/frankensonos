@@ -130,6 +130,35 @@ def ntlmssp_challenge(target: str = "SONOSDROP") -> bytes:
     return blob
 
 
+def smb1_negotiate_reply(mid: int, dialect: int) -> bytes:
+    """SMB1 NEGOTIATE response advertising an SMB2 dialect (MS-CIFS 2.2.4).
+
+    Dialect index 0x0202 / 0x0210 in this reply is how a server tells a client
+    to continue in SMB2 framing; the kernel CIFS client honours it.
+    """
+    hdr = bytearray(32)
+    hdr[0:4] = b"\xffSMB"
+    hdr[4] = 0x72                            # NEGOTIATE
+    struct.pack_into("<I", hdr, 5, 0)        # Status
+    hdr[9] = 0x98                            # Flags: response, case-insens
+    struct.pack_into("<H", hdr, 10, 0xC803)  # Flags2: unicode, NT status, long names
+    struct.pack_into("<H", hdr, 30, mid & 0xFFFF)
+    words = bytearray([17])                  # WordCount
+    words += struct.pack("<H", dialect)      # DialectIndex
+    words.append(0x03)                       # SecurityMode
+    words += struct.pack("<H", 50)           # MaxMpxCount
+    words += struct.pack("<H", 1)            # MaxVcNumber
+    words += struct.pack("<I", 0x10000)      # MaxBufferSize
+    words += struct.pack("<I", 0x10000)      # MaxRawSize
+    words += struct.pack("<I", 0)            # SessionKey
+    words += struct.pack("<I", 0x50)         # Capabilities
+    words += b"\x00" * 8                     # SystemTime
+    words += struct.pack("<h", 0)            # ServerTimeZone
+    words.append(0)                          # ChallengeLength
+    body = bytes(words) + struct.pack("<H", 0)   # ByteCount
+    return bytes(hdr) + body
+
+
 def negotiate_reply(profile: str, offered: list[int], mid: int, sid: int) -> bytes:
     """SMB2 NEGOTIATE response per profile (MS-SMB2 2.2.64 layout):
     StructureSize u16, SecurityMode u16, DialectRevision u16,
@@ -262,9 +291,27 @@ class DropServer:
         self.sid = 0
         self.tid = 0
 
+    def react_smb1(self, pdu: bytes) -> bytes | None:
+        """Answer the kernel CIFS negotiate and hand the client to SMB2.
+
+        The S1 art caller goes through the kernel CIFS client, which opens with
+        an SMB1 NEGOTIATE. Replying with dialect index 0x0202 makes it switch
+        to SMB2 framing, after which the rest of this server applies unchanged.
+        """
+        cmd = pdu[4]
+        mid = struct.unpack("<H", pdu[30:32])[0]
+        log("smb1 cmd=%#x len=%d" % (cmd, len(pdu)), self.fh)
+        if cmd != 0x72:
+            log("smb1 unhandled cmd %#x" % cmd, self.fh)
+            return None
+        if self.profile == "force-202" or True:
+            return smb1_negotiate_reply(mid, 0x0202)
+
     def react(self, pdu: bytes) -> bytes | None:
+        if pdu[:4] == b"\xffSMB":
+            return self.react_smb1(pdu)
         if pdu[:4] != b"\xfeSMB":
-            log("non-SMB2 pdu %r" % pdu[:8], self.fh)
+            log("non-SMB pdu %r" % pdu[:8], self.fh)
             return None
         cmd = pdu[12]
         status_flags = struct.unpack("<I", pdu[8:12])[0]
