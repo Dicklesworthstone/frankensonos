@@ -39,6 +39,7 @@ use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::cache::{
     AlbumContinuation, LibrarySyncDetailed, SavedLibraryProgress, continue_albums,
+    continue_artist_samples,
     continue_followed_artists, continue_genres, continue_playlists_with_albums,
     sync_library_attempt_with_albums,
 };
@@ -84,6 +85,7 @@ struct Running {
     running: bool,
     genres: bool,
     followed: bool,
+    artists: bool,
     intake: bool,
     recent: bool,
     error: Option<String>,
@@ -176,6 +178,7 @@ impl LibrarySync {
         state.running = true;
         state.genres = false;
         state.followed = false;
+        state.artists = false;
         state.intake = true;
         state.error = None;
         true
@@ -285,6 +288,15 @@ impl LibrarySync {
                         }
                         Pass::Followed(owner) => {
                             continue_followed_artists(&mut session, &cx, &mut store, &owner).await
+                        }
+                        Pass::Artists(previous) => {
+                            continue_artist_samples(
+                                &mut session,
+                                &cx,
+                                &mut store,
+                                previous.as_ref(),
+                            )
+                            .await
                         }
                     };
                     Ok(ReadResult {

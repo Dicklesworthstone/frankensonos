@@ -20,6 +20,8 @@
 pub mod library;
 pub mod playlist;
 
+mod artists;
+pub use artists::ArtistSamplingDto;
 mod genres;
 pub use genres::GenreEnrichmentDto;
 mod intake;
@@ -66,6 +68,9 @@ pub struct LibrarySyncDto {
     /// or cursor payloads. Independent of the last completed full refresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub followed_artists: Option<FollowedArtistsDto>,
+    /// Current finite-cohort sample discovery, separate from directory intake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist_sampling: Option<ArtistSamplingDto>,
     /// Lightweight listening freshness, independent of full library publication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recent_listening: Option<RecentListeningDto>,
@@ -122,6 +127,7 @@ impl LibrarySyncDto {
             genre_enrichment: None,
             library_intake: None,
             followed_artists: None,
+            artist_sampling: None,
             recent_listening: None,
         };
         state.done = state.text();
@@ -151,6 +157,14 @@ impl LibrarySyncDto {
     #[must_use]
     pub fn with_followed_artists(mut self, artists: Option<FollowedArtistsDto>) -> Self {
         self.followed_artists = artists;
+        self.done = self.text();
+        self
+    }
+
+    /// Add finite-cohort sample progress without changing the last full refresh.
+    #[must_use]
+    pub fn with_artist_sampling(mut self, samples: Option<ArtistSamplingDto>) -> Self {
+        self.artist_sampling = samples;
         self.done = self.text();
         self
     }
@@ -188,6 +202,12 @@ impl LibrarySyncDto {
         {
             return artists.text();
         }
+        if self.running
+            && let Some(samples) = &self.artist_sampling
+            && samples.running
+        {
+            return samples.text();
+        }
         let pending = self
             .library_intake
             .as_ref()
@@ -201,7 +221,8 @@ impl LibrarySyncDto {
             (false, _, Some(error))
                 if self.genre_enrichment.is_some()
                     || self.library_intake.is_some()
-                    || self.followed_artists.is_some() =>
+                    || self.followed_artists.is_some()
+                    || self.artist_sampling.is_some() =>
             {
                 format!("The last library update failed: {error}")
             }
@@ -232,6 +253,9 @@ impl LibrarySyncDto {
         }
         if let Some(artists) = &self.followed_artists {
             let _ = write!(text, " {}", artists.text());
+        }
+        if let Some(samples) = &self.artist_sampling {
+            let _ = write!(text, " {}", samples.text());
         }
         if let Some(recent) = &self.recent_listening {
             let _ = write!(text, " {}", recent.text());

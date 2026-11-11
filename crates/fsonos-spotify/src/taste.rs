@@ -27,8 +27,9 @@
 //! budget reached) keeps what it read; the sync then keeps the taste-only
 //! tracks it cached before, rather than retiring what it didn't get to read.
 //! Playlist scans and accepted artist samples resume after their last attempted
-//! ID, including across restarts. Repeated full refreshes on the same day give
-//! later artists their turn; a failed publication never advances their cursor.
+//! ID, including across restarts. An accepted full refresh also saves its finite
+//! artist backlog for bounded background passes; failed publications never
+//! advance that cursor or discard unfinished samples.
 
 use std::collections::{HashMap, HashSet};
 
@@ -51,7 +52,14 @@ mod followed;
 mod paging;
 mod playlist_scan;
 
-pub(crate) use artist_scan::prepare_publication as prepare_artist_publication;
+pub use artist_scan::{
+    ARTIST_DISCOVERY_MAX_AGE_SECS, ARTIST_DISCOVERY_MAX_ARTISTS, ARTIST_DISCOVERY_MAX_BYTES,
+    ARTIST_SAMPLE_BUDGET, ArtistContinuation,
+};
+pub(crate) use artist_scan::{
+    Progress as ArtistDiscovery, prepare_publication as prepare_artist_publication,
+};
+pub(crate) use artists::read_pending_artist_samples;
 pub use continuation::PlaylistContinuation;
 use continuation::Scan;
 pub(crate) use continuation::read_pending_playlists;
@@ -107,6 +115,8 @@ pub struct TasteRead {
     pub artist_tracks: usize,
     /// Distinct artists whose bounded sample was attempted in this pass.
     pub artist_reads: usize,
+    /// Artist samples successfully read during this pass.
+    pub artist_samples_completed: usize,
     /// Artists deferred or unsuccessful in this refresh, including previously
     /// cached samples. This is not a count of unexplored discographies.
     /// Accepted full refreshes continue from the last attempted artist.
@@ -159,6 +169,8 @@ pub struct Taste {
     pub(crate) artists_unread_ids: Vec<String>,
     /// Last attempted artist, published atomically with this full library.
     pub(crate) artist_cursor: Option<String>,
+    /// Finite pending IDs and captured weights, published with the full union.
+    pub(crate) artist_cohort: Option<artist_scan::Cohort>,
     track_pm: HashMap<String, u32>,
     artist_pm: HashMap<String, u32>,
     /// The genres the names of the owner's playlists state ("Late Night
@@ -327,6 +339,26 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
     if playlists {
         reader.playlist_taste(store, &mut taste, now).await;
     }
+    sample_artists(
+        &mut reader,
+        &mut taste,
+        &artists,
+        saved,
+        u8::from(follow) | (u8::from(top) << 1),
+        now,
+    )
+    .await;
+    (taste, read)
+}
+
+async fn sample_artists(
+    reader: &mut Reader<'_>,
+    taste: &mut Taste,
+    artists: &[Artist],
+    saved: &[LibraryItem],
+    scopes: u8,
+    now: i64,
+) {
     let covered = covered_artists(saved, &taste.tracks);
     // Artist IDs distinguish namesakes and survive renamed profiles.
     let unsaved = artists
@@ -335,6 +367,7 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
         .collect();
     let (selected, later) = artist_scan::select(unsaved, taste.artist_cursor.as_deref());
     let samples = reader.artist_tracks(&selected).await;
+    reader.read.artist_samples_completed = samples.successful.len();
     for item in samples.tracks {
         // Weighed as the artist's: `Taste::weigh` multiplies in ARTIST_PM.
         taste.track(item, 1000);
@@ -351,9 +384,16 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
         }
     }
     reader.read.artist_reads_pending = taste.artists_unread_ids.len();
+    taste.artist_cohort = Some(artist_scan::Cohort::seed(
+        &taste.artist_pm,
+        &taste.artists_unread_ids,
+        reader.read.artist_samples_completed,
+        scopes,
+        now,
+    ));
     if reader.read.artist_reads_pending > 0 {
         let next = format!(
-            "{} artist samples deferred; run dj sync again to continue after the last attempted artist",
+            "{} artist samples deferred; bounded background passes continue after the last attempted artist, or run dj sync again",
             reader.read.artist_reads_pending
         );
         match &mut reader.read.artist_tracks_unread {
@@ -364,7 +404,6 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
             reason => *reason = Some(next),
         }
     }
-    (taste, read)
 }
 
 /// Lead-artist IDs already represented by this read's saved music or direct

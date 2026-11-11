@@ -1,10 +1,15 @@
 //! Read-only artist discovery when the app cannot use Spotify's top tracks.
 //! The fallback is a catalog sample, not a substitute popularity ranking.
 
-use super::{ARTIST_TRACKS, Artist, LibraryItem, Origin, Reader, endpoints_own, valid_taste_track};
+use super::{
+    ARTIST_TRACKS, Artist, LibraryItem, Origin, Reader, TasteRead, endpoints_own, valid_taste_track,
+};
 use crate::SpotifyError;
 use crate::client::{Album, ArtistTopTracks, PAGE_LIMIT, Paging, SimplifiedTrack, decode};
 use crate::expand::halts;
+use crate::session::Session;
+use asupersync::Cx;
+use fsonos_core::store::SpotifyLibraryOwner;
 use std::collections::HashSet;
 
 /// One directory page, then at most three first track pages, per artist.
@@ -14,11 +19,34 @@ const CATALOG_ALBUM_LIMIT: u32 = 10;
 const MAX_CATALOG_ALBUMS: usize = 3;
 
 #[derive(Default)]
-pub(super) struct ArtistSamples {
-    pub(super) tracks: Vec<LibraryItem>,
-    pub(super) unread_names: Vec<String>,
-    pub(super) unread_ids: Vec<String>,
-    pub(super) last_attempted: Option<String>,
+pub(crate) struct ArtistSamples {
+    pub(crate) tracks: Vec<LibraryItem>,
+    pub(crate) unread_names: Vec<String>,
+    pub(crate) unread_ids: Vec<String>,
+    pub(crate) last_attempted: Option<String>,
+    pub(crate) successful: Vec<String>,
+}
+
+/// The existing sampler, with its cohort and identity already checked by the
+/// cache continuation. No saved-library or personal directory reads occur here.
+pub(crate) async fn read_pending_artist_samples(
+    session: &mut Session,
+    cx: &Cx,
+    owner: &SpotifyLibraryOwner,
+    artists: &[Artist],
+) -> (ArtistSamples, TasteRead) {
+    let mut read = TasteRead::default();
+    let samples = Reader {
+        session,
+        cx,
+        read: &mut read,
+        owner: Some(&owner.owner_id),
+        receipt: Some(owner),
+    }
+    .artist_tracks(&artists.iter().collect::<Vec<_>>())
+    .await;
+    read.artist_samples_completed = samples.successful.len();
+    (samples, read)
 }
 
 impl ArtistSamples {
@@ -56,6 +84,7 @@ impl Reader<'_> {
                 Ok(sample) => {
                     self.read.artist_tracks += sample.len();
                     samples.tracks.extend(sample);
+                    samples.successful.push(id.to_owned());
                 }
                 Err(error) if halts(&error) && !endpoints_own(&error) => {
                     self.read.halted = Some(format!("artist tracks: {error}"));

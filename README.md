@@ -664,15 +664,23 @@ takes turns with playlist, album, and genre completion and shares Spotify's
 cooldown. Private evidence is bounded to 100,000 artists, 16 MiB, and seven days;
 a reached cache bound is reported as incomplete and stops automatic intake.
 
-Followed and top artists without music in the fresh library now get a fair
-turn on every accepted sync. Each refresh samples at most 50 artists and up to
-three tracks each, then the next sync continues after the last attempted
-artist—even on the same day or after restart. Artist IDs distinguish namesakes;
-cached samples for deferred or unavailable artists remain playable. The cursor
-and new music commit together, so a failed or superseded publication cannot
-skip a batch. Sync notes report deferred samples and explain that another
-`fsonos dj sync` advances the rotation. This is bounded sampling, not complete
-discography coverage; artist-track sampling still runs during full refreshes.
+Followed and top artists without music in the fresh library get a fair turn
+through [background artist sampling](docs/ARTIST_SAMPLING.md). A full refresh
+samples at most 50 artists and up to three tracks each, then saves a finite
+backlog for the daemon to finish in similarly bounded passes. Progress survives
+restarts and shares cooldowns and fair scheduling with playlist, album, genre
+and followed-directory work. Once the cohort is complete, its background reads
+stop until a new full refresh establishes another cohort.
+
+Artist IDs distinguish namesakes, and captured artist signals preserve taste
+weights without rereading saved music or the artist directories. Publication
+adds playable samples while preserving current saved-track metadata and stronger
+weights; the account generation, exact prior progress and new music commit
+together. Failed or superseded passes cannot skip a batch or overwrite a newer
+account. Cached samples for deferred or unavailable artists remain playable.
+CLI, HTTP, MCP and the web sync panel show artist-sampling progress separately
+from the last full refresh. This remains a bounded sample of each artist's
+catalog, with the existing catalog fallback when top tracks are unavailable.
 
 DJ starts, live steering and rehearsals accept `--strict` to keep all requested
 steering filters, including exclusions, even when matching music is scarce.

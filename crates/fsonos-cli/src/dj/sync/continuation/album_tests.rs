@@ -110,6 +110,7 @@ fn report(albums: AlbumContinuation) -> LibrarySyncDetailed {
         genres: GenreRead::default(),
         genre_continuation: GenreContinuation::default(),
         followed_artists: fsonos_spotify::taste::FollowedArtistContinuation::default(),
+        artist_samples: fsonos_spotify::cache::ArtistContinuation::default(),
         playlists: playlists(0),
         albums,
         notes: Vec::new(),

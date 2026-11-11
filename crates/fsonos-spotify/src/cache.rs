@@ -34,6 +34,7 @@ use crate::taste::{
 };
 
 mod albums;
+mod artists;
 mod followed;
 #[cfg(test)]
 mod genre_cache_tests;
@@ -43,8 +44,13 @@ mod playlists;
 mod publication_tests;
 mod saved;
 pub use crate::library::{SavedLibraryPhase, SavedLibraryProgress};
+pub use crate::taste::{
+    ARTIST_DISCOVERY_MAX_AGE_SECS, ARTIST_DISCOVERY_MAX_ARTISTS, ARTIST_DISCOVERY_MAX_BYTES,
+    ARTIST_SAMPLE_BUDGET, ArtistContinuation,
+};
 use crate::works::group_works;
 pub use albums::{ALBUM_PAGE_BUDGET, AlbumContinuation, continue_albums};
+pub use artists::continue_artist_samples;
 pub use followed::continue_followed_artists;
 pub use genre_completion::{GENRE_READ_BUDGET, GenreContinuation, continue_genres};
 pub use playlists::{continue_playlists, continue_playlists_with_albums};
@@ -75,6 +81,8 @@ pub struct LibrarySyncDetailed {
     pub playlists: PlaylistContinuation,
     /// Account-bound followed-artist directory intake and verification.
     pub followed_artists: FollowedArtistContinuation,
+    /// Finite samples remaining from the last accepted full read's artist cohort.
+    pub artist_samples: ArtistContinuation,
     /// Missing whole-work album lists for a separate bounded continuation.
     pub albums: AlbumContinuation,
     /// What the best-effort reads couldn't read this time, a sentence each
@@ -277,56 +285,7 @@ async fn sync_library_observed<S: Store + ?Sized>(
     )
     .await;
     items.extend(taste.tracks.iter().cloned());
-    if read.incomplete() {
-        // An unfinished read keeps what the last one found: every track's
-        // weight, and the taste-only tracks (not retired for being missed).
-        let cached = store.library()?;
-        let weights: HashMap<&str, u32> = cached
-            .iter()
-            .filter_map(|e| Some((e.track.source_uri.as_str(), e.taste_weight?)))
-            .collect();
-        for item in &mut items {
-            if item.taste_pm.is_none() {
-                item.taste_pm = weights.get(item.source_uri.as_str()).copied();
-            }
-        }
-        items.extend(
-            cached
-                .iter()
-                .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
-                .map(from_entry),
-        );
-    } else if !taste.artists_unread.is_empty() {
-        // Keep cached music credited to an unread artist, including a guest
-        // credit: catalog samples can contain shared releases. Preserve the
-        // actual lead artist and all other metadata in the cached item.
-        let cached = store.library()?;
-        let unread_ids: HashSet<&str> = taste
-            .artists_unread_ids
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let unread_names: HashSet<&str> = taste.artists_unread.iter().map(String::as_str).collect();
-        items.extend(
-            cached
-                .iter()
-                .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
-                .filter(|e| {
-                    e.artist_id
-                        .as_deref()
-                        .is_some_and(|id| unread_ids.contains(id))
-                        || e.track.artist.as_deref().is_some_and(|joined| {
-                            split_artists(joined)
-                                .iter()
-                                // A known lead ID takes precedence over its
-                                // name. Guest IDs are not stored yet.
-                                .skip(usize::from(e.artist_id.is_some()))
-                                .any(|name| unread_names.contains(name.to_lowercase().as_str()))
-                        })
-                })
-                .map(from_entry),
-        );
-    }
+    retain_unread_taste(store, &mut items, &taste, &read)?;
     taste.weigh(&mut items);
     let genres = tag_genres(session, cx, store, &mut items, now).await;
     // Songs whose artists carry no tags get the best guess there is: what
@@ -375,11 +334,32 @@ async fn sync_library_observed<S: Store + ?Sized>(
             read.followed_continuation.pending = false;
         }
     }
+    finish_full_publication(
+        session, cx, store, &receipt, previous_albums, report, read, genres, now,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the accepted full read and its bounded enrichment share one ownership receipt"
+)]
+async fn finish_full_publication<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    receipt: &SpotifyLibraryOwner,
+    previous_albums: Option<&AlbumContinuation>,
+    report: LibrarySync,
+    read: TasteRead,
+    genres: GenreRead,
+    now: i64,
+) -> Result<LibrarySyncDetailed, SpotifyError> {
     let mut notes = sync_notes(&read, &genres, &Expansion::default());
     let completion =
-        albums::complete_verified(session, cx, store, &receipt, previous_albums, &mut notes)
+        albums::complete_verified(session, cx, store, receipt, previous_albums, &mut notes)
             .await?;
-    let mut genre_continuation = genre_completion::status(store, &receipt, now)?;
+    let mut genre_continuation = genre_completion::status(store, receipt, now)?;
     if !genre_continuation.requires_refresh {
         genre_continuation.completed = genres.fetched;
     }
@@ -388,15 +368,84 @@ async fn sync_library_observed<S: Store + ?Sized>(
     playlists.retry_after_secs = session.retry_after_secs();
     let mut followed_artists = read.followed_continuation;
     followed_artists.retry_after_secs = session.retry_after_secs();
+    let mut artist_samples = artists::status(store, receipt, now)?;
+    artist_samples.attempted = read.artist_reads;
+    artist_samples.retry_after_secs = session.retry_after_secs();
+    if artist_samples.limited {
+        notes.push(
+            "artist sampling reached its private metadata limit; automatic samples are stopped"
+                .into(),
+        );
+    }
     Ok(LibrarySyncDetailed {
         library: report,
         genres,
         genre_continuation,
         playlists,
         followed_artists,
+        artist_samples,
         albums: completion,
         notes,
     })
+}
+
+fn retain_unread_taste<S: Store + ?Sized>(
+    store: &S,
+    items: &mut Vec<LibraryItem>,
+    taste: &Taste,
+    read: &TasteRead,
+) -> Result<(), SpotifyError> {
+    if read.incomplete() {
+        // An unfinished read keeps what the last one found: every track's
+        // weight, and the taste-only tracks (not retired for being missed).
+        let cached = store.library()?;
+        let weights: HashMap<&str, u32> = cached
+            .iter()
+            .filter_map(|e| Some((e.track.source_uri.as_str(), e.taste_weight?)))
+            .collect();
+        for item in items.iter_mut() {
+            if item.taste_pm.is_none() {
+                item.taste_pm = weights.get(item.source_uri.as_str()).copied();
+            }
+        }
+        items.extend(
+            cached
+                .iter()
+                .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
+                .map(from_entry),
+        );
+    } else if !taste.artists_unread.is_empty() {
+        // Keep cached music credited to an unread artist, including a guest
+        // credit: catalog samples can contain shared releases. Preserve the
+        // actual lead artist and all other metadata in the cached item.
+        let cached = store.library()?;
+        let unread_ids: HashSet<&str> = taste
+            .artists_unread_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let unread_names: HashSet<&str> = taste.artists_unread.iter().map(String::as_str).collect();
+        items.extend(
+            cached
+                .iter()
+                .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
+                .filter(|e| {
+                    e.artist_id
+                        .as_deref()
+                        .is_some_and(|id| unread_ids.contains(id))
+                        || e.track.artist.as_deref().is_some_and(|joined| {
+                            split_artists(joined)
+                                .iter()
+                                // A known lead ID takes precedence over its
+                                // name. Guest IDs are not stored yet.
+                                .skip(usize::from(e.artist_id.is_some()))
+                                .any(|name| unread_names.contains(name.to_lowercase().as_str()))
+                        })
+                })
+                .map(from_entry),
+        );
+    }
+    Ok(())
 }
 
 fn acknowledge_playlists(taste: &Taste, continuation: &mut PlaylistContinuation) {
@@ -452,8 +501,11 @@ fn publish_saved_library<S: Store + ?Sized>(
         playlist_base,
         &taste.playlist_contents,
     )?;
-    let artist_fence =
-        crate::taste::prepare_artist_publication(artist_base, taste.artist_cursor.as_deref())?;
+    let artist_fence = crate::taste::prepare_artist_publication(
+        artist_base,
+        taste.artist_cursor.as_deref(),
+        taste.artist_cohort.as_ref(),
+    )?;
     if store.publish_spotify_library_from_progress(
         owner,
         proof,

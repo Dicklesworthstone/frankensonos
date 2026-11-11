@@ -63,6 +63,7 @@ pub async fn continue_followed_artists<S: Store + ?Sized>(
     let mut followed_artists = read.followed_continuation;
     followed_artists.retry_after_secs = session.retry_after_secs();
     Ok(LibrarySyncDetailed {
+        artist_samples: super::ArtistContinuation::default(),
         library,
         genres,
         genre_continuation: super::GenreContinuation::default(),

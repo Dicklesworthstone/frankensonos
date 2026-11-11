@@ -135,6 +135,7 @@ pub async fn continue_playlists_with_albums<S: Store + ?Sized>(
     // Report the durable candidate set, never a pre-publication copy.
     let library = summarize(&candidate_items(store)?);
     Ok(LibrarySyncDetailed {
+        artist_samples: super::ArtistContinuation::default(),
         library,
         genres,
         genre_continuation,

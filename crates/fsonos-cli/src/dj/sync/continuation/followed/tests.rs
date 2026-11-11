@@ -90,6 +90,7 @@ fn report(followed: FollowedArtistContinuation) -> LibrarySyncDetailed {
             ..Default::default()
         },
         followed_artists: followed,
+        artist_samples: fsonos_spotify::cache::ArtistContinuation::default(),
         albums: serde_json::from_value(json!({
             "owner":"test-owner", "generation":1, "pending":0
         }))

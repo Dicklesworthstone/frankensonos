@@ -109,6 +109,7 @@ struct Script {
     calls: Vec<String>,
     base: String,
     before_response: Option<ResponseHook>,
+    replace_page_on_request: Option<(String, String, Value)>,
 }
 
 struct Server {
@@ -143,6 +144,14 @@ impl Server {
                                 return response(401, "{}");
                             }
                             let uri = req.uri.as_str();
+                            if state
+                                .replace_page_on_request
+                                .as_ref()
+                                .is_some_and(|(route, _, _)| route == path(uri))
+                                && let Some((_, route, body)) = state.replace_page_on_request.take()
+                            {
+                                state.pages.insert(route, body);
+                            }
                             if state
                                 .before_response
                                 .as_ref()
