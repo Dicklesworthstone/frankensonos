@@ -4528,3 +4528,13 @@ Also: `/sys` alone did not change the endpoint after all — with it mounted the
 run still stops at `dspconfigparam: Unsupported PPC/Connectx Submodel`, and the
 message is logged on a path that branches back to `0x10254084` rather than
 returning, so the stall is further along that path, not at the log.
+
+`dspconfigparam` is **not** the stall. The message path branches to `0x10254084`,
+which calls `0x10253cf8` and then runs the epilogue (`blr` at `0x102540a8`) — the
+helper finishes normally. The trace simply ends there because nothing after it
+logs, so "last log line" was being read as "stuck here".
+
+That matters for method: the emulator's stall has to be found by *thread state*,
+not by the tail of the trace. Current evidence stands at: 14 threads, all three
+ports bound, an `anacapa` thread per port, and none of them ever entering
+`accept`.
