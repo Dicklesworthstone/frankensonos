@@ -4024,3 +4024,33 @@ Error vocabulary for a device-side attempt (from `/bin/upgrade`, so the
 expectations are on record): `upgrade file signature verification failed`,
 `No valid signature`, `upgrade file corrupt data (MD5 signature mis-match)`,
 `Sonos signature verification failed`.
+
+### The signature cannot be regenerated — no signing key exists here
+
+Decisive experiment chain:
+
+1. `model16-private.pem` (in-repo) RSA-OAEP-signs a message and the result
+   **fails to verify** against every pinned SPKI, including key #2. The key is
+   the **content key** (it decrypts envelope sections, per RE_MDP3), *not* the
+   signing key.
+2. `3416-sig99.upd` verifying `signature: ok` proves nothing about signing: it
+   leaves list2 untouched, so the stock signature still matches; its prefix
+   digest is stale, which is why it reports FAIL.
+3. Firing a package with **stale digest but valid signature** (`rsd`) is
+   **rejected** by the device, exactly like the earlier attempt with a valid
+   digest and a broken signature. So the flasher enforces *both*, and it can
+   only enforce both if the digest is signed — which it is (`payload[0x10:0x49]`
+   spans list1 through the digest).
+
+Therefore: **any byte change to the file prefix requires Sonos's signing
+private key.** Every in-place rootfs edit is dead without it, and the
+digest-rewrite work in `build_upd_rootfs` only helps when the signature is
+recomputed by someone who has that key.
+
+This is the single most valuable conclusion of the day, because it retires a
+whole class of attempts. Signed edits still usable in practice: only those that
+leave the prefix untouched — which is the appended-record case, and the flasher
+does not read those.
+
+`build_upd_rootfs` now has `--sign-key` / `--no-sign` wired (default `--key`), so
+the moment a signing key appears it is a one-flag change.

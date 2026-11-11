@@ -124,6 +124,9 @@ def main():
     out = a[a.index("--out") + 1] if "--out" in a else base + ".patched"
     bump = "--bump-build" in a
     raw = "--raw" in a
+    sign_key = a[a.index("--sign-key") + 1] if "--sign-key" in a else key
+    if "--no-sign" in a:
+        sign_key = None
 
     d = open(base, "rb").read()
     recs = list(records(d))
@@ -161,6 +164,21 @@ def main():
     prefix2, stored2, _dg, signed = type17_digest(bytes(new), sign_off, sign_tot)
     if prefix2 != stored2:
         raise SystemExit("digest rewrite failed (%s != %s)" % (prefix2, stored2))
+
+    if sign_key:
+        payload = bytes(new[sign_off + 16:sign_off + sign_tot])
+        signed_part = payload[0x10:0x49]
+        with tempfile.NamedTemporaryFile() as m:
+            m.write(signed_part)
+            m.flush()
+            sig = subprocess.run(
+                ["openssl", "pkeyutl", "-sign", "-inkey", sign_key,
+                 "-rawin", "-digest", "sha256", "-in", m.name],
+                capture_output=True, check=True).stdout
+        if len(sig) != 256:
+            raise SystemExit("signature is %d bytes" % len(sig))
+        new[sign_off + sign_tot - 256:sign_off + sign_tot] = sig
+        print("type-17   re-signed over 0x39 bytes with %s" % os.path.basename(sign_key))
 
     open(out, "wb").write(new)
     print("base      %d bytes" % len(d))
