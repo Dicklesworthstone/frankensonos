@@ -3897,3 +3897,23 @@ re-run (first attempt hit a transient network error).
 Also: in the S1 rootfs `/tmp` is a symlink to `/ramdisk/tmp` — that is why
 status endpoints for `/tmp/upgrade.log` return nothing and why a chrooted run
 needs `/ramdisk/tmp` to exist.
+
+### The block is `HwFeatures`, and the device really has none
+
+`/status/zp` on `.84` reports **`HwFeatures>0x0`** — the exact value the
+updater prints as `My hardware feature set is 0` before `Failed compatibility
+check`. So the chroot failure is **not** an emulator artefact: `.84` reports
+feature set 0 and the 34.16 `-1-16` package demands **30**. That is the whole
+refusal, and it is why every `MinVersion` variant was irrelevant — the version
+floor is never reached.
+
+The offline oracle also priced the other route: appending an enveloped type-4
+to the 57.22 package parses cleanly (aircraft-grade: the record is read, the
+base's own version `57.22-65130` is what gets reported) and then fails the
+*same* compatibility check. So encasing our payload is fine — the blocker is
+image choice, not the enclosure, and not the key (decryption of the appended
+record was never even exercised because compatibility is decided first).
+
+Consequence for planning: stop trying 34.16 on `.84`. We need either
+(a) an image whose requirement is feature set 0, or (b) a way to satisfy the
+check on the device. Only then does the payload question matter again.
