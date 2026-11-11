@@ -4167,3 +4167,32 @@ over-read.
 Not corrected yet, on purpose: the server currently returns `None` for TRANS2,
 so the client waits out its timeout — the parameter block above is captured
 verbatim for whoever implements the reply.
+
+## Emulator: reaching into a live daemon (and what the acceptor really is)
+
+Answering "we control the emulator, can't we just call `accept()`": yes, and the
+useful form is to start the real acceptor thread from gdb rather than accept by
+hand. Established:
+
+- `bl accept@plt` exists at exactly two sites: **0x1023bf14** and **0x10407a2c**.
+  The second is inside the HTTP service acceptor at **0x10407970**.
+- That function begins `stwu r1,-96(r1)`, and immediately does `mr r29,r3` and
+  `mr r31,r4`, plus `mr r30,r9`. So its ABI is **r3 = server object (the listen
+  fd is at `[r3+0]`), r4 = out-parameter for the accepted fd, r9 = a third
+  argument**. It is therefore *not* a bare `pthread_create` start routine.
+- Live injection works: from gdb, `socket()/bind()/listen()` on port 1500 then
+  `pthread_create(&t, 0, 0x10407970, server)` returns 0 and the listener comes
+  up. Two gdb gotchas cost a round each — attaching stops at `ld.so` before libc
+  is live (break on an early `pthread_create` first), and the breakpoint fires
+  *inside* our own call (disable it before injecting).
+- With a bare create the thread immediately **SIGSEGVs at 0x10407a34
+  (`stw r3,0(r31)`)**, because `r31`/`r30` were never set: r31 comes from r4 and
+  r30 from r9.
+
+Two ways forward, both cheap: (a) hand-assemble a 4-instruction PPC trampoline
+(`li r4,scratch; li r9,x; b 0x10407970`) and start *that*, or (b) find the real
+caller of 0x10407970 and copy the argument setup it uses. (b) is better — it
+also tells us what r9 is, which the trampoline otherwise has to guess.
+
+Also: `r2 pD` over the whole 5 MB text did not finish in 600 s; per-range
+`objdump` slices are the reliable tool here, as used above.
