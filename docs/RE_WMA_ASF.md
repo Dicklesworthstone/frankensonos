@@ -209,3 +209,30 @@ fixed), wrap-with-follows (preamble fixed) — all fetched, all parsed, device
 up, **no fault**. Consistent with the lane's 16/16 clean history: the wrap keeps
 the loop alive but the bytes consumed after the wrap are not yet landing
 somewhere fatal.
+
+### Round 4 sweep results (`.84`, 57.23) — no fault, but the MMS path is the live one
+
+Generator now takes `--scramble` (three attacker bytes in the stream-properties
+time offset, the `iVar9` source for `FUN_101fdbe8`) and
+`--follow-kind streamprop` (followers shaped like stream-properties objects so
+the wrapped walker drives the real dispatcher `FUN_101fcc64` instead of benign
+file-properties bodies).
+
+| PoC | shape | over http | over mms |
+|---|---|---|---|
+| j1 | min-packet `0x40`, scramble `0xFFFFFF` | fetched, alive | fetched, alive |
+| j2 | min-packet `0x4000`, scramble `0xFFFFFF` | fetched, alive | fetched, alive |
+| j3 | min-packet `0x800`, scramble `0x400000` | fetched, alive | fetched, alive |
+| e1s | wrap + 3 stream-properties followers, min-packet `0x40`, scramble `0xFFFFFF` | fetched, alive | fetched, alive |
+
+**Transport difference worth keeping**: over `http://` the `Play` action answers
+500; over `mms://` it answers **200** and the device behaves normally. `mms://`
+is therefore the transport to use for anything that must reach the header
+walker — the plain-http path reaches the framer but not obviously the
+`FUN_101fc4a8` MMS preamble, which is where the count/`0x01`/`0x01`
+requirements actually live. Every file was fetched (>=3 GETs each), so the
+client is genuinely receiving and parsing them.
+
+Still zero faults: `iVar9` extremes with a correct preamble and count do not
+push the `FUN_101fdbe8` read out of the mapped buffer, and the wrapped walk
+consumes the stream-properties followers without tripping anything.
