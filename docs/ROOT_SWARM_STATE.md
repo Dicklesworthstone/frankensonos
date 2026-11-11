@@ -3778,3 +3778,43 @@ recipient id — it is a Sonos-internal key label, not a fingerprint — and the
 id does not appear anywhere in the rootfs, so the mapping is not locally
 resolvable. Encrypting to one of the three pinned keys and keeping the id is
 the experiment when a 57.23-lineage payload is wanted.
+
+## Live device test, 2026-11-11 — the payload is not the problem
+
+Obtained the genuine 34.16 bridge (`34.16-37101-1-16.upd`, SHA-256
+`84632e02…f2`, matches the community archive) and a documented URL/hook:
+`/etc/Configure:62-71` on 34.16 runs `inetd` when
+`/etc/unlocked_build_flag` **or** `/jffs/system/Configure.dev` exists and then
+`sh /jffs/system/Configure.dev`. The 34.16 type-4 payload is **plain `sqsh`**
+(no 886499ca envelope, no type-17 at all — the file ends in a
+`0xFFFFFFFF` trailer whose body is a signature blob), so a 34.16 carrier needs
+no key.
+
+Built both variants of a patched image (unlock flag + `telnet … telnetd -l
+/bin/sh` in `inetd.conf`, repacked big-endian v3 with a locally built
+squashfs 3.4 at the original 64K block size, 4,014,080 bytes — byte-identical
+size to stock):
+
+- **append** a second type-4 after the trailer (`pwnd3416`);
+- **replace** the type-4 in place (`pwn2`).
+
+Then fired `BeginSoftwareUpdate` at `.84` (57.23, hardware `1.16` — the very
+model the bridge is for), three times, with `MinVersion` extra options.
+
+**Result: every attempt — including the untouched genuine file — is fetched
+(`GET /stock3416?cmaj=57…` → 200 from 96.246.163.109) and then reset
+mid-transfer.** So `.84` on 57.23 refuses the 34.16 bridge itself; the
+patch, the append and the replace are all innocent until the downgrade is
+accepted. Note this is a *downgrade*; the community guide only documents
+16.x → 34.16 → 57.23 (two upgrades), so the refusal is expected and the
+`MinVersion` forms tried (`&#10;MinVersion:[1.0-1]`, `MinVersion:[34.16-37101]`,
+Flags 0 and 1) do not clear it.
+
+Correction to the SESSION-7 claim as applied to devices: appending keeps
+**our** verifier's digests valid, but the device does not accept an appended
+record on this carrier — the trailer signature evidently binds more than the
+prefix we preserve.
+
+Infrastructure note: `python3 -m http.server` is adequate (the community guide
+uses it) but it is worth serving with a real logger; `/status/tmp/upgrade.log`
+is empty on 57.23 so the server log is the only evidence channel.
