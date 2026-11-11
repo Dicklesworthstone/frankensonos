@@ -320,3 +320,30 @@ Everything downstream of that is already built: the `.aa` fire rig exists, the
 container parser is mapped (`aadec`-equivalent: size, magic, TOC, dictionary,
 `codec`/`HeaderSeed`/`HeaderKey`, TEA-derived file key), and the S2 daemon's
 startup `abort()` sits in the codec-id switch that dispatches it.
+
+### NEW TOP TARGET: OGG/Vorbis — plays, and Sonos wrote the page parser
+
+The advertised `GetProtocolInfo` list is the authoritative accepted-format
+menu (24 entries): `application/ogg`, `audio/ogg`, `audio/aiff`, `audio/x-aiff`,
+`audio/mpegurl` family, `audio/mp4`, `audio/x-m4a`, `audio/flac`, `audio/mp3`,
+`audio/mpeg`, `audio/wav`, `audio/x-wav`, `audio/wma`, `audio/x-ms-wma`,
+`audio/audible`.
+
+Testing the ones not yet proven: **OGG/Vorbis PLAYS** (real 20 s file,
+`TrackDuration 0:00:20`, `RelTime` advancing). Binary evidence:
+
+- `Xiph.Org libVorbis 1.3.7` **statically linked**, and
+- a **Sonos-written OGG page parser** (`OGG_VORBIS_ID_PAGE_SIZE_BYTES`,
+  `vorbis_packet_blocksize returned %ld (%zu)`, "stream opened: resetting ogg
+  headers").
+
+That is the same shape as the MP4 finding — custom, unaudited container code
+rather than a library boundary — except this one **provably decodes**, so a
+fault is attributable. OGG pages are a lacing/segment table: `segcount`, up to
+255 lacing values, granule, page sequence, a body whose length the lacing
+implies. Every one of those is attacker-controlled and the parser must
+reconcile them.
+
+Ranked position: OGG now takes #1 over MP4 (decodes where MP4 does not),
+AIFF second (also decodes, simpler chunk walker), MP4 third pending a real
+seed.
