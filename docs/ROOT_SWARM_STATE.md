@@ -3733,3 +3733,19 @@ Instrumentation notes for the next attempt (both bit me):
 - `continue&` starts the target but the following `interrupt` in batch mode
   only prints "Use the interrupt command to stop the target"; to sample all
   threads, break at an address that is *certain* to run late instead.
+
+**Proof there is no accept (not a slow response):** with three concurrent
+connects the listen queue goes from `Recv-Q 1` to `Recv-Q 4` and stays — the
+kernel completes the handshakes, the daemon never drains them. `ss -tn` shows
+no established sockets.
+
+The boot stops right after the `internalevts` subscription burst that follows
+mixthrd — `Observer "htsnk" subscribed to event "enter_sonos_net"` (and
+`enter_station_mode`). `htsnk` is the Sonos-net sink, so the HTTP server's
+accepting appears to be gated behind SonosNet bring-up, which never completes
+without real network peers. That is a plausible structural reason the accept
+loop never runs in emulation at all, independent of every bug fixed so far.
+
+Instrumentation caution: `clock_gettime` is far too hot to break on with a
+modest `ignore` count — at 60 ignores the boot had still not reached the
+sample in 45 s, because every stop costs seconds under qemu-user.
