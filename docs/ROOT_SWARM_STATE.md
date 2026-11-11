@@ -3917,3 +3917,25 @@ record was never even exercised because compatibility is decided first).
 Consequence for planning: stop trying 34.16 on `.84`. We need either
 (a) an image whose requirement is feature set 0, or (b) a way to satisfy the
 check on the device. Only then does the payload question matter again.
+
+### A real downgrade works — the 34.16 refusal is compatibility
+
+Firing the genuine **57.22-65130** package at `.84` (Flags 0, no extra
+options): fetched, **zero resets**, device offline ~50 s, and it comes back on
+**57.22-65130**. So the version floor does not block downgrades on this build
+at all — `MinVersion` was never the issue, and the earlier 34.16 resets are
+genuine **compatibility** refusals, exactly the `(10) attempted to upgrade to
+an incompatible version` the offline oracle prints.
+
+State change worth knowing: `.84` is now on **57.22**, i.e. one step below the
+household's other unit. That is reversible (57.23 flashes back) but it means
+`.84` is currently the lower-version unit.
+
+Revised picture of the wall: the package must satisfy the model/submodel/
+feature-set compatibility tuple. `.84` is `subm=4`, which is inside the
+package's 2-5, so submodel is not it; feature set is the remaining candidate
+and the chroot cannot measure the device's real value (the device runs and
+flashes images that "demand 30" while the chroot always reads 0). The way to
+see the device's own verdict is the device-side upgrade log, which is not
+reachable at the paths tried (`/status/tmp`, `/status/ramdisk/tmp`,
+`/status/jffs` all empty on this build).
