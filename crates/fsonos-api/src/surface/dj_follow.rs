@@ -43,6 +43,13 @@ fn handle(surface: &Weak<Surface>, event: Option<&LiveEvent>) -> bool {
     // implied ownership or a direct household survey.
     let snapshot = live.snapshot();
     drop(live);
+    // Queue length and the playing URI cannot detect a same-size edit in a
+    // paused queue. Retire the old proof before any topology or feed work.
+    if let Some(dj) = &surface.dj {
+        for player in queue_invalidations(&snapshot, event) {
+            dj.on_queue_changed(&player);
+        }
+    }
     // A spontaneous election can transfer the queue without a move command.
     // Reconcile ownership before filtering targets by the feeds they own.
     if let Some(dj) = &surface.dj
@@ -66,12 +73,34 @@ fn handle(surface: &Weak<Surface>, event: Option<&LiveEvent>) -> bool {
     true
 }
 
+fn queue_invalidations(snapshot: &Snapshot, event: Option<&LiveEvent>) -> Vec<PlayerId> {
+    match event {
+        Some(LiveEvent::ContentChanged { player, changes }) if changes.queue => {
+            vec![player.clone()]
+        }
+        Some(LiveEvent::Resync) => {
+            // Invalidate offline and incomplete feeds too: they must not reuse
+            // the pre-gap proof when their playback observations recover.
+            let mut seen = HashSet::new();
+            snapshot
+                .households
+                .iter()
+                .flat_map(|household| &household.groups)
+                .map(|group| group.coordinator.clone())
+                .filter(|player| seen.insert(player.clone()))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn targets(
     snapshot: &Snapshot,
     event: Option<&LiveEvent>,
     feeds: impl Fn(&PlayerId) -> bool,
 ) -> Vec<PlayerId> {
     let only = match event {
+        Some(LiveEvent::ContentChanged { player, changes }) if changes.queue => Some(player),
         Some(
             LiveEvent::Playback { player, .. }
             | LiveEvent::Health {
@@ -82,7 +111,7 @@ fn targets(
         // After an upstream gap, reconcile every currently owned feed from
         // the snapshot, not the identities of whatever deltas survived.
         Some(LiveEvent::Topology | LiveEvent::Resync) | None => None,
-        Some(LiveEvent::Health { .. }) => return Vec::new(),
+        Some(LiveEvent::Health { .. } | LiveEvent::ContentChanged { .. }) => return Vec::new(),
     };
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -142,6 +171,7 @@ fn drive<T>(events: &Receiver<T>, interval: Duration, mut handle: impl FnMut(Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fsonos_core::events::ContentChanges;
     use fsonos_core::playback::{Changes, EventSource};
     use fsonos_proto::gena::Notify;
     use std::sync::mpsc;
@@ -326,6 +356,56 @@ mod tests {
         assert!(targets(&snapshot, Some(&LiveEvent::Resync), |_| false).is_empty());
         snapshot.households.clear();
         assert!(targets(&snapshot, Some(&LiveEvent::Resync), |_| true).is_empty());
+    }
+
+    #[test]
+    fn content_changes_revisit_only_the_edited_current_queue() {
+        let (mut snapshot, ids) = snapshot();
+        let event = LiveEvent::ContentChanged {
+            player: ids[0].clone(),
+            changes: ContentChanges {
+                queue: true,
+                ..ContentChanges::default()
+            },
+        };
+        assert_eq!(queue_invalidations(&snapshot, Some(&event)), ids[..1]);
+        assert_eq!(targets(&snapshot, Some(&event), |_| true), ids[..1]);
+        for household in &mut snapshot.households {
+            household.groups.retain(|group| group.coordinator != ids[0]);
+        }
+        // Retire the original feed's proof but do not redirect a delayed edit
+        // to whichever unrelated group its player may have joined.
+        assert_eq!(queue_invalidations(&snapshot, Some(&event)), ids[..1]);
+        assert!(targets(&snapshot, Some(&event), |_| true).is_empty());
+    }
+
+    #[test]
+    fn catalog_only_changes_do_not_touch_dj_queues() {
+        let (snapshot, ids) = snapshot();
+        let event = LiveEvent::ContentChanged {
+            player: ids[0].clone(),
+            changes: ContentChanges {
+                favorites: true,
+                playlists: true,
+                ..ContentChanges::default()
+            },
+        };
+        assert!(queue_invalidations(&snapshot, Some(&event)).is_empty());
+        assert!(targets(&snapshot, Some(&event), |_| true).is_empty());
+    }
+
+    #[test]
+    fn resync_retires_queue_proofs_even_when_a_feed_cannot_run_yet() {
+        let (mut snapshot, ids) = snapshot();
+        snapshot.health.missing(&ids[0], "offline");
+        snapshot.playback.remove(&ids[1]);
+        snapshot.households.push(snapshot.households[0].clone());
+        assert_eq!(
+            queue_invalidations(&snapshot, Some(&LiveEvent::Resync)),
+            ids
+        );
+        assert!(queue_invalidations(&snapshot, Some(&LiveEvent::Topology)).is_empty());
+        assert!(queue_invalidations(&snapshot, None).is_empty());
     }
 
     #[test]

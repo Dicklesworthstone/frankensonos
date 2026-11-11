@@ -49,6 +49,8 @@ sim = ["dep:fsonos-sim"]
 tailscale-live = []
 
 [dev-dependencies]
+# Isolated daemon files for event-reconnect and caller-identity regressions.
+tempfile = { workspace = true }
 # The e2e harness (tests/e2e) drives the binary against virtual players.
 fsonos-sim = { workspace = true }
 # A fake Spotify for the library refresh through the daemon

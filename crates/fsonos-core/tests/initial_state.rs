@@ -100,6 +100,7 @@ fn a_quiet_subscription_is_replaced_without_waiting_for_a_delta_or_lease() {
         Service::RenderingControl,
         Service::GroupRenderingControl,
         Service::ZoneGroupTopology,
+        Service::ContentDirectory,
     ] {
         let s = Silent::new(1800);
         let mut subs = Subscriptions::default();

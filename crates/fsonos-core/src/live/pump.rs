@@ -132,13 +132,13 @@ mod tests {
         rec.households.push(house);
         rec.schedule.succeeded(Instant::now());
         let wants = wanted(&rec.households);
-        assert_eq!(wants.len(), 4);
+        assert_eq!(wants.len(), 5);
         let id = wants[0].player.clone();
         let local = lan.local_address_toward(host).unwrap();
         let sink = EventSink::start(SocketAddr::new(local, 0)).unwrap();
         let callback = |service: Service| sink.callback_url(service.tag());
         if drop_initial {
-            sim.drop_notifies("Room", Some(NotifyDrop::Next(4)))
+            sim.drop_notifies("Room", Some(NotifyDrop::Next(5)))
                 .unwrap();
         }
         let report = rec.subscriptions.sync(&*lan, &wants, callback, started);
@@ -208,7 +208,7 @@ mod tests {
                 .iter()
                 .filter(|e| matches!(e.event, GenaEvent::Subscribed { .. }))
                 .count();
-            assert_eq!(subscribed, 4, "buffered events were not lost");
+            assert_eq!(subscribed, 5, "buffered events were not lost");
             assert_eq!(sim.soap_log().len(), calls);
             let published = engine.snapshot.lock().unwrap();
             assert_eq!(published.playback.of(&id), Some(state));
@@ -255,7 +255,7 @@ mod tests {
                 .iter()
                 .filter(|e| matches!(e.event, GenaEvent::Subscribed { .. }))
                 .count();
-            assert_eq!(subscribed, 8, "each silent service replaced once");
+            assert_eq!(subscribed, 10, "each silent service replaced once");
             assert_eq!(sim.soap_log().len(), calls);
             engine.release(&mut model);
             sim.shutdown();

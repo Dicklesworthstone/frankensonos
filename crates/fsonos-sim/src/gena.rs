@@ -32,6 +32,7 @@ pub(crate) enum EventService {
     RenderingControl,
     GroupRenderingControl,
     ZoneGroupTopology,
+    ContentDirectory,
 }
 
 impl EventService {
@@ -46,6 +47,9 @@ impl EventService {
                 Some(Self::GroupRenderingControl)
             }
             "/ZoneGroupTopology/Event" => Some(Self::ZoneGroupTopology),
+            "/MediaServer/ContentDirectory/Event" if model.is_renderer() => {
+                Some(Self::ContentDirectory)
+            }
             _ => None,
         }
     }
@@ -56,6 +60,7 @@ impl EventService {
             Self::RenderingControl => "RenderingControl",
             Self::GroupRenderingControl => "GroupRenderingControl",
             Self::ZoneGroupTopology => "ZoneGroupTopology",
+            Self::ContentDirectory => "ContentDirectory",
         }
     }
 }
@@ -219,6 +224,7 @@ impl State {
                 EventService::RenderingControl => self.rcs_vars(player),
                 EventService::GroupRenderingControl => self.grc_props(player),
                 EventService::ZoneGroupTopology => self.zgt_props(player),
+                EventService::ContentDirectory => self.content_props(player),
             };
             let again = service == EventService::AvTransport && self.seeked.contains(&player);
             let send: Vec<&(String, String)> = match &self.subscriptions[i].sent {
@@ -235,7 +241,11 @@ impl State {
             }
             let body = event_body(service, &send);
             let sub = &mut self.subscriptions[i];
-            let seq = if sub.sent.is_some() { sub.seq + 1 } else { 0 };
+            let seq = if sub.sent.is_some() {
+                sub.seq.wrapping_add(1).max(1)
+            } else {
+                0
+            };
             sub.seq = seq;
             sub.sent = Some(vars.clone());
             let (sid, callback) = (sub.sid.clone(), sub.callback.clone());
@@ -391,6 +401,34 @@ impl State {
         .collect()
     }
 
+    /// Queue revisions are per coordinator; favorites and native playlists
+    /// are household catalogs. Same-length edits still change these counters.
+    fn content_props(&self, p: usize) -> Vec<(String, String)> {
+        let player = &self.players[p];
+        let house = &self.households[player.household];
+        let queue = player.transport.queue_update_id;
+        let system = queue
+            .wrapping_add(house.favorites_update_id)
+            .wrapping_add(house.saved_playlists_update_id);
+        [
+            ("SystemUpdateID", system.to_string()),
+            ("ContainerUpdateIDs", format!("Q:0,{queue}")),
+            ("FavoritesUpdateID", house.favorites_update_id.to_string()),
+            (
+                "SavedQueuesUpdateID",
+                house.saved_playlists_update_id.to_string(),
+            ),
+        ]
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                name.to_string(),
+                format!("<e:property><{name}>{value}</{name}></e:property>"),
+            )
+        })
+        .collect()
+    }
+
     /// ZoneGroupTopology properties as seen from `p`.
     fn zgt_props(&self, p: usize) -> Vec<(String, String)> {
         let h = self.players[p].household;
@@ -441,7 +479,9 @@ fn event_body(service: EventService, vars: &[&(String, String)]) -> String {
     }
     let open = "<e:propertyset xmlns:e=\"urn:schemas-upnp-org:event-1-0\">";
     match service {
-        EventService::ZoneGroupTopology | EventService::GroupRenderingControl => {
+        EventService::ZoneGroupTopology
+        | EventService::GroupRenderingControl
+        | EventService::ContentDirectory => {
             format!("{open}{inner}</e:propertyset>")
         }
         EventService::AvTransport | EventService::RenderingControl => {

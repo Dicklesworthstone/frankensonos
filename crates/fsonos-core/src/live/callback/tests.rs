@@ -62,7 +62,7 @@ fn fixture(generation: u8) -> (SimHandle, Engine, Model, tempfile::TempDir) {
     let events = engine.survey(&mut model, now);
     engine.publish(&model, events);
     assert_eq!(model.rec.households.len(), 1);
-    assert_eq!(model.rec.subscriptions.len(), 4);
+    assert_eq!(model.rec.subscriptions.len(), 5);
     assert!(model.sink.as_ref().unwrap().local_addr().ip().is_loopback());
     while engine.next_event(&mut model, Duration::ZERO).is_some() {}
     model.rec.subscriptions.defer_network();
@@ -165,7 +165,7 @@ fn real_overflow_preserves_media_and_repairs_a_quiet_lost_tail_on_s1_and_s2() {
             "a dropped final event must surface without another callback"
         );
         assert_eq!(model.sink.as_ref().unwrap().local_addr(), addr);
-        assert_eq!(model.rec.subscriptions.len(), 4);
+        assert_eq!(model.rec.subscriptions.len(), 5);
         assert!(!plan.current(&model.rec));
         assert!(model.rec.schedule.due(Instant::now()));
         assert_eq!(model.playback.of(&id).unwrap().volume, before);

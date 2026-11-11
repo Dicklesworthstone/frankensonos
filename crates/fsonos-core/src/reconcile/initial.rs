@@ -33,7 +33,7 @@ fn mute(value: Option<&str>) -> bool {
     value.is_some_and(|value| matches!(value.trim(), "0" | "1"))
 }
 
-fn validate(service: Service, notify: &Notify) -> Result<(), ProtoError> {
+pub(super) fn validate(service: Service, notify: &Notify) -> Result<(), ProtoError> {
     if notify.seq != 0 {
         return Ok(());
     }
@@ -51,6 +51,7 @@ fn validate(service: Service, notify: &Notify) -> Result<(), ProtoError> {
             level(notify.property("GroupVolume")) && mute(notify.property("GroupMute"))
         }
         Service::ZoneGroupTopology => notify.property("ZoneGroupState").is_some(),
+        Service::ContentDirectory => fsonos_proto::content::parse_update(notify)?.has_counters(),
     };
     if complete {
         Ok(())
@@ -102,6 +103,7 @@ mod tests {
             Service::RenderingControl,
             Service::GroupRenderingControl,
             Service::ZoneGroupTopology,
+            Service::ContentDirectory,
         ] {
             assert!(validate(service, &notify(service, 0, Vec::new())).is_err());
             assert!(validate(service, &notify(service, 1, Vec::new())).is_ok());
@@ -293,7 +295,7 @@ mod tests {
             let sink = EventSink::start(SocketAddr::new(local, 0)).unwrap();
             let callback = |service: Service| sink.callback_url(service.tag());
             let report = rec.subscriptions.sync(&lan, &wants, callback, now);
-            assert_eq!(report.subscribed, 4);
+            assert_eq!(report.subscribed, 5);
             assert!(report.failed.is_empty());
             let mut playback = Playback::default();
             let mut accepted = HashSet::new();
@@ -339,7 +341,7 @@ mod tests {
                 .iter()
                 .filter(|entry| matches!(entry.event, GenaEvent::Subscribed { .. }))
                 .count();
-            assert_eq!(subscriptions, 5, "only the incomplete service was replaced");
+            assert_eq!(subscriptions, 6, "only the incomplete service was replaced");
             rec.subscriptions.unsubscribe_all(&lan);
             sim.shutdown();
         }

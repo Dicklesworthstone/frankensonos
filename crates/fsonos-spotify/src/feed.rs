@@ -516,6 +516,18 @@ impl QueueFeed {
         self.active
     }
 
+    /// A queue notification (or lost event coverage) invalidates the feed's
+    /// cached positions even when playback and queue length did not change.
+    /// The next queue playback observation reconciles a complete, consistent
+    /// Browse before trimming, completing or adding works. This makes no
+    /// speaker requests and retains ownership until that read succeeds.
+    /// An exhausted queue's original end remains a retry cursor: automatic
+    /// restart still requires fresh, exact queue and playback evidence.
+    pub fn invalidate_queue(&mut self) {
+        self.queue_len = None;
+        self.accepted_playback = false;
+    }
+
     fn lookahead(&self) -> usize {
         self.lookahead.max(1)
     }
@@ -1511,6 +1523,7 @@ mod tests {
     use crate::test_shelf::{MIDNIGHT, shelf_items, song_items, works_of};
 
     mod history;
+    mod invalidation;
     mod navigation;
     mod recovery;
     mod source;

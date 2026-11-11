@@ -231,6 +231,8 @@ pub struct RefreshReport {
 pub struct NotifyReport {
     /// What the event changed in the playback state.
     pub changes: Changes,
+    /// Collections invalidated by an accepted ContentDirectory event.
+    pub content: events::ContentChanges,
     /// Players a topology event showed had rebooted (`BootSeq` rose); their
     /// subscriptions were replaced.
     pub rebooted: Vec<PlayerId>,
@@ -448,21 +450,32 @@ impl Reconciler {
         } else {
             Vec::new()
         };
-        let changes = initial::apply(&mut self.households, playback, &player, service, n, now)
-            .inspect_err(|_| {
-                // An unreadable event loses state just as a missing one does.
-                // Keep its SEQ unconsumed: a corrected retry on the old SID
-                // remains usable if the fresh subscription cannot be made.
-                let recovery = self.subscriptions.refresh(lan, &n.sid, &callback_url, now);
-                self.health.record(&recovery, now);
-            })?;
+        let applied = if service == Service::ContentDirectory {
+            initial::validate(service, n)
+                .and_then(|()| fsonos_proto::content::parse_update(n))
+                .map(|update| (Changes::default(), Some(update)))
+        } else {
+            initial::apply(&mut self.households, playback, &player, service, n, now)
+                .map(|changes| (changes, None))
+        };
+        let (changes, content) = applied.inspect_err(|_| {
+            // An unreadable event loses state just as a missing one does.
+            // Keep its SEQ unconsumed: a corrected retry on the old SID
+            // remains usable if the fresh subscription cannot be made.
+            let recovery = self.subscriptions.refresh(lan, &n.sid, &callback_url, now);
+            self.health.record(&recovery, now);
+        })?;
         if service == Service::ZoneGroupTopology {
             self.invalidate_inventory();
         }
         self.health.ok(&player, now);
         let missed = self.subscriptions.missed(n);
+        let content = content.map_or_else(events::ContentChanges::default, |update| {
+            self.subscriptions.content_changes(n, &update, missed)
+        });
         let mut report = NotifyReport {
             changes,
+            content,
             ..NotifyReport::default()
         };
         if missed {

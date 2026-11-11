@@ -13,9 +13,10 @@
 //!
 //! | `event:` | `data:` |
 //! |---|---|
-//! | `zone.state` | `{player, room, transport?, transport_status?, track?, volume?, mute?, group_volume?, queue_length?, metadata_changed?, source_changed?, shuffle?, repeat?, play_mode?}`: only what changed (`repeat`: `off`, `all` or `one`; `play_mode` as `set_play_mode` takes it) |
+//! | `zone.state` | `{player, room, transport?, transport_status?, track?, volume?, mute?, group_volume?, queue_length?, queue_changed?, metadata_changed?, source_changed?, shuffle?, repeat?, play_mode?}`: only what changed (`repeat`: `off`, `all` or `one`; `play_mode` as `set_play_mode` takes it) |
 //! | `topology.changed` | `{households, rooms}` (read `GET /zones` for the new shape) |
 //! | `player.health` | `{player, room, health}`: `healthy`, `degraded` or `offline` |
+//! | `catalog.changed` | `{player, room?, household?, favorites, playlists}`: reread the indicated native household catalogs; no catalog contents or revision is implied |
 //! | `action.logged` | the action as `GET /actions` shows it |
 //! | `dj.status` | `{player, zone, running, now?, next, steering, problem?}` as `GET /zones/{room}/dj` shows it: what the DJ plays, the works it picked next and why, its steering, and what it last ran into feeding the queue (`problem`), sent when that changes (a pick, a new work, a start, skip, stop or steer, a top-up that fails) |
 //! | `events.reset` | `{oldest}`: events before it are gone |
@@ -23,6 +24,10 @@
 //! `metadata_changed: true` asks clients to reread the zone's track details,
 //! including for a radio song whose stream URI did not change. It does not
 //! mean the queue advanced or authorize playback or artwork from another host.
+//!
+//! `queue_changed: true` invalidates the speaker queue even when its length,
+//! current track and playback state stayed unchanged. Reread its revision and
+//! ordered contents before acting on saved positions or selections.
 //!
 //! `source_changed: true` asks clients to reread playback when the active
 //! AVTransport source changes, even if the current track and transport state
@@ -62,6 +67,8 @@ use crate::zones::transport_state_name;
 use fsonos_core::policy::Client;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod content_tests;
 mod delivery;
 #[cfg(test)]
 mod metadata_tests;
@@ -90,7 +97,7 @@ pub struct EventDto {
     /// Increasing from 1: pass the newest you have as `since`.
     pub id: u64,
     /// What happened: `zone.state`, `topology.changed`, `player.health`,
-    /// `action.logged` or `dj.status` (see the event stream's table).
+    /// `action.logged`, `dj.status` or `catalog.changed` (see the event stream's table).
     pub event: String,
     /// The details: for `zone.state`, only what changed.
     pub data: Value,
@@ -429,6 +436,27 @@ impl EventBus {
                     data.insert("play_mode".into(), json!(mode.as_str()));
                 }
                 self.publish("zone.state", Value::Object(data));
+            }
+            LiveEvent::ContentChanged { player, changes } => {
+                if changes.queue {
+                    let mut data = player_fields(player, households);
+                    data.insert("queue_changed".into(), json!(true));
+                    self.publish("zone.state", Value::Object(data));
+                }
+                if changes.favorites || changes.playlists {
+                    let mut data = player_fields(player, households);
+                    let labels = fsonos_core::rooms::household_labels(households);
+                    if let Some((_, label)) = households
+                        .iter()
+                        .zip(labels)
+                        .find(|(household, _)| household.player(player).is_some())
+                    {
+                        data.insert("household".into(), json!(label));
+                    }
+                    data.insert("favorites".into(), json!(changes.favorites));
+                    data.insert("playlists".into(), json!(changes.playlists));
+                    self.publish("catalog.changed", Value::Object(data));
+                }
             }
             LiveEvent::Topology => {
                 let rooms: usize = households.iter().map(|h| h.rooms.len()).sum();

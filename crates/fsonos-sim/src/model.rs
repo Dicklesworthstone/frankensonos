@@ -89,6 +89,7 @@ pub(crate) struct Household {
     pub sw_gen: u8,
     pub params: SpotifyRenderParams,
     pub favorites: Vec<Favorite>,
+    pub favorites_update_id: u32,
     pub saved_playlists: Vec<SavedPlaylist>,
     pub saved_playlists_update_id: u32,
     /// The software version an `AvailableSoftwareUpdate` offers, if any
@@ -1485,13 +1486,14 @@ impl State {
         };
         let (items, returned, total, update_id) = match object {
             "FV:2" => {
-                let favs = &self.households[self.players[p].household].favorites;
+                let house = &self.households[self.players[p].household];
+                let favs = &house.favorites;
                 let (from, to) = window(favs.len());
                 (
                     docs::favorite_items(&favs[from..to], from),
                     to - from,
                     favs.len(),
-                    1,
+                    house.favorites_update_id,
                 )
             }
             "SQ:" => {

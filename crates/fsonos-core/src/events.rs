@@ -1,9 +1,9 @@
 //! The daemon's event engine: keep a GENA subscription alive for every
 //! service the live state needs, and route each NOTIFY to its player.
 //!
-//! [`wanted`] says which subscriptions the households need: AVTransport and
-//! GroupRenderingControl on each group coordinator, RenderingControl on every
-//! renderer, and ZoneGroupTopology once per household. [`Subscriptions`]
+//! [`wanted`] says which subscriptions the households need: AVTransport,
+//! GroupRenderingControl and ContentDirectory on each group coordinator,
+//! RenderingControl on every renderer, and ZoneGroupTopology once per household. [`Subscriptions`]
 //! reconciles the active set with that (subscribing what is missing,
 //! dropping what is gone), renews before expiry, and resubscribes when a
 //! renewal fails (a rebooted player answers 412). [`apply`] folds a routed
@@ -17,7 +17,7 @@ use fsonos_proto::ProtoError;
 use fsonos_proto::gena::{Notify, Subscription};
 use fsonos_proto::net::Lan;
 use fsonos_proto::soap::{
-    AV_TRANSPORT, GROUP_RENDERING_CONTROL, RENDERING_CONTROL, ZONE_GROUP_TOPOLOGY,
+    AV_TRANSPORT, CONTENT_DIRECTORY, GROUP_RENDERING_CONTROL, RENDERING_CONTROL, ZONE_GROUP_TOPOLOGY,
 };
 use fsonos_proto::topology::parse_zone_group_state;
 use fsonos_types::PlayerId;
@@ -26,7 +26,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod content;
 mod maintenance;
+pub use content::ContentChanges;
 
 /// The subscription timeout requested; renewals happen halfway through
 /// whatever the player grants.
@@ -43,6 +45,7 @@ pub enum Service {
     RenderingControl,
     GroupRenderingControl,
     ZoneGroupTopology,
+    ContentDirectory,
 }
 
 impl Service {
@@ -53,6 +56,7 @@ impl Service {
             Self::RenderingControl => RENDERING_CONTROL.event_path,
             Self::GroupRenderingControl => GROUP_RENDERING_CONTROL.event_path,
             Self::ZoneGroupTopology => ZONE_GROUP_TOPOLOGY.event_path,
+            Self::ContentDirectory => CONTENT_DIRECTORY.event_path,
         }
     }
 
@@ -64,6 +68,7 @@ impl Service {
             Self::RenderingControl => "RenderingControl",
             Self::GroupRenderingControl => "GroupRenderingControl",
             Self::ZoneGroupTopology => "ZoneGroupTopology",
+            Self::ContentDirectory => "ContentDirectory",
         }
     }
 }
@@ -97,6 +102,7 @@ pub fn wanted(households: &[HouseholdState]) -> Vec<Want> {
         for g in &h.groups {
             out.extend(want(&g.coordinator, Service::AvTransport));
             out.extend(want(&g.coordinator, Service::GroupRenderingControl));
+            out.extend(want(&g.coordinator, Service::ContentDirectory));
         }
         for p in &h.players {
             out.extend(want(&p.id, Service::RenderingControl));
@@ -199,6 +205,8 @@ pub struct Subscriptions {
     deferred_refresh: bool,
     /// The live controller also queues new roles, reboots and obsolete-SID cleanup.
     deferred_sync: bool,
+    /// Only event counters are retained; queues and catalogs remain explicit reads.
+    content: content::Tracker,
 }
 
 impl Subscriptions {
@@ -634,6 +642,10 @@ pub fn apply(
         Service::AvTransport => EventSource::AvTransport,
         Service::RenderingControl => EventSource::RenderingControl,
         Service::GroupRenderingControl => EventSource::GroupRenderingControl,
+        Service::ContentDirectory => {
+            fsonos_proto::content::parse_update(n)?;
+            return Ok(Changes::default());
+        }
         Service::ZoneGroupTopology => {
             if let Some(doc) = n.property("ZoneGroupState") {
                 let zgs = parse_zone_group_state(doc)?;
@@ -983,6 +995,7 @@ mod tests {
             Service::RenderingControl,
             Service::GroupRenderingControl,
             Service::ZoneGroupTopology,
+            Service::ContentDirectory,
         ] {
             let subscriber = TestSubscriber::default();
             let mut subs = Subscriptions::default();
