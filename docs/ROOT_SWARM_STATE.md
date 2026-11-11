@@ -4367,3 +4367,27 @@ Emulator injection progress after the reboot:
 - `kill`-breakpoint neutralisation (`set $pc=$lr`) was tried first and loops,
   because returning from `kill` re-enters it; disabling after the first hit
   still stalled. SIGTERM `nopass` is the working approach.
+
+The acceptor's full signature came out of this: the prologue does `mr r31,r4`,
+`mr r30,r9`, **`mr r25,r6`, `mr r26,r5`**, and the real caller also passes `r7`
+and `r8` — so it takes **six** out-parameter pointers, not one. That is why
+earlier jumps died at `stw r3,0(r31)` and then `stw r0,0(r26)`: each missing
+register is used as a store target.
+
+Also established:
+
+- `accept` without a pending connection returns `EAGAIN`, the loop treats that
+  as fatal and exits — so jumping *past* the wait helper only works if a
+  connection is already queued; jumping to the function start `0x10407970` is
+  the correct entry.
+- returning needs the **original** `r1`: giving the function a substitute frame
+  makes the epilogue restore a caller frame that was never the one it saved, and
+  control lands on `0x0`. So leave `r1` alone and put scratch below `sp`.
+- watchdog stays handled by `handle SIGTERM nostop noprint nopass`.
+
+Last state: with all six out-pointers supplied and `r1` untouched, gdb stops at
+the injection point and then stalls before executing the script's remaining
+commands, so the run ends at the breakpoint rather than at a served request.
+Next lever is harness shape, not more reverse engineering — fewer scripted steps
+(a single `-ex` chain) or a breakpoint action list that sets the registers and
+resumes in one stop.
