@@ -1248,6 +1248,25 @@ Native iOS and macOS remotes (`apps/apple`) speak the same
 HTTP API over the tailnet; whether they are a first-class surface of this
 plan is the owner's open decision (bead 8hhv.13).
 
+Native queue and catalog changes also arrive through coordinator
+ContentDirectory subscriptions. A paused reorder or replacement with the same
+queue length emits `zone.state` with `queue_changed: true`; favorites and saved
+Sonos playlists emit a household-scoped `catalog.changed`. Bounded counter
+parsing and per-lease deduplication reuse renewal, sequence-gap and reboot
+recovery. Initial or replaced leases and missed events retire prior observations.
+These are invalidations, never queue revisions that can authorize a write.
+
+The phone and dashboard coalesce affected reads, retire stale reviews and fence
+late catalog replies without issuing playback commands. Closed views stay lazy.
+The DJ invalidates its queue evidence before its next applicable reconciliation,
+including for a same-length external edit. Its own append notifications retain
+full-listen attribution, refill backoff and the exhausted-queue retry cursor;
+fresh queue and ownership checks still gate automatic mutations. MCP consumers
+receive the same journal events. See [Event delivery](docs/EVENT_DELIVERY.md)
+and [Live queues](docs/WEB_QUEUE_LIVE.md). Added Rust/simulator regressions await
+execution because the existing asupersync dependency build was killed before
+project checks completed; focused browser regressions ran successfully.
+
 ### 12.14 Self-healing identity
 
 [`b-self-healing`] Everything is keyed by player UUID, never by IP. An

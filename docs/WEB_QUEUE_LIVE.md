@@ -6,6 +6,12 @@ playback, DJ, topology, health, action-log and reconnect refreshes. Closed queue
 make no requests. There is no additional event connection or queue polling
 interval; healthy quiet queues do not reread themselves.
 
+Native ContentDirectory events also invalidate the queue through
+`zone.state` with `queue_changed: true`. This includes an external edit that
+keeps the same track count while playback is paused. Both browser remotes
+consume that signal, retire reviewed queue edits and reread the current
+revision and ordered contents through their existing shared read lane.
+
 An incoming invalidation immediately makes the displayed snapshot read-only.
 The next shared group refresh reads that page. Its current-entry marker,
 titles and counts update together. A selection and destination draft survive

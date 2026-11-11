@@ -80,6 +80,41 @@ async function fixture(kind) {
 }
 
 for (const kind of ['phone', 'dashboard']) {
+  test(kind + ': native playlist changes retire reviewed occurrences only in their own household', async () => {
+    const f = await fixture(kind), reviewed = await f.review(), page = f.api.state.contents;
+    f.api.catalogChanged({ household: 'S2', favorites: false, playlists: true });
+    assert.equal(f.api.state.pending, reviewed); assert.equal(f.api.state.contents, page);
+    f.api.catalogChanged({ household: 'S1', favorites: true, playlists: false });
+    assert.equal(f.api.state.pending, reviewed);
+    f.api.catalogChanged({ household: 'S1', favorites: false, playlists: true });
+    assert.equal(f.api.state.pending, null); assert.equal(f.api.state.contents, null);
+    assert.equal(f.api.state.playlist, ''); assert.deepEqual(f.api.state.playlists, []);
+    assert.equal(await f.confirm(reviewed), false); assert.equal(f.writes().length, 0);
+  });
+
+  test(kind + ': a catalog event fences an outstanding saved-track read', async () => {
+    const f = await fixture(kind), held = deferred(); let waiting = false;
+    f.read(async (url, read) => {
+      const value = read(url);
+      if (url.includes('/contents?')) { waiting = true; await held.promise; }
+      return value;
+    });
+    const task = f.api.loadContents(); await until(() => waiting);
+    f.api.catalogChanged({ household: 'S1', favorites: false, playlists: true });
+    held.resolve(); assert.equal(await task, false);
+    assert.equal(f.api.state.contents, null); assert.equal(f.api.state.pending, null); assert.equal(f.writes().length, 0);
+  });
+
+  test(kind + ': a catalog event during a submitted native track action preserves its one outcome', async () => {
+    const f = await fixture(kind), reviewed = await f.review(), held = deferred();
+    f.write(async (url, body, write) => { await held.promise; return write(url, body); });
+    const task = f.confirm(reviewed); await until(() => f.writes().length === 1);
+    f.api.catalogChanged({ household: 'S1', favorites: false, playlists: true });
+    assert.equal(f.api.state.contents, null); assert.equal(f.api.state.pending, null);
+    held.resolve(); assert.equal(await task, true); assert.equal(f.api.state.result.status, 'accepted');
+    assert.equal(await f.confirm(reviewed), false); assert.equal(f.writes().length, 1);
+  });
+
   for (const mode of ['play', 'next', 'end']) {
     test(`${kind}: ${mode} acts once on the second duplicate occurrence with native revision`, async () => {
       const f = await fixture(kind), reviewed = await f.review(2, mode);

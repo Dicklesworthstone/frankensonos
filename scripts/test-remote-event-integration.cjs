@@ -34,6 +34,7 @@ class Events {
   listeners = new Map();
   addEventListener(type, listener) { if (!this.listeners.has(type)) this.listeners.set(type, []); this.listeners.get(type).push(listener); }
   emit(type, data = {}) { for (const listener of this.listeners.get(type) || []) listener({ type, data: JSON.stringify(data) }); }
+  dispatchEvent(event) { for (const listener of this.listeners.get(event.type) || []) listener(event); return true; }
 }
 class Element {
   textContent = ''; value = ''; children = []; disabled = false;
@@ -65,6 +66,7 @@ function runtime(t, { feed = true, globals = {} } = {}) {
   let answer = async () => [];
   const math = Object.create(Math); math.random = () => 0;
   const context = { window, document, Math: math, AbortController, TextDecoder, ReadableStream, URLSearchParams,
+    CustomEvent: class { constructor(type, options = {}) { this.type = type; this.detail = options.detail; } },
     setTimeout: time.schedule, clearTimeout: time.cancel, performance: { now: time.now },
     fetch: async (url, init) => {
       requests.push({ url, init });
@@ -266,4 +268,37 @@ test('renderer error and null status events refresh the existing remote card wit
     else assert.equal(r.parts.state.textContent, 'stopped');
   }
   assert.equal(mutationRequests(h).length, 0);
+});
+
+test('same-length native queue edits refresh a paused room once per burst', async t => {
+  const h = runtime(t), r = room(h); r.zone.transport_state = 'paused';
+  h.answer(async url => url === '/zones' ? [r.zone] : { ...r.state(), transport_state: 'paused', queue_length: 3 });
+  await h.time.tick(300); const before = h.requests.length, observed = r.observed();
+  h.streams[0].send('event: zone.state\ndata: {"room":"Den","queue_changed":true}\n\n'.repeat(60));
+  await h.time.tick(300);
+  assert.equal(h.requests.slice(before).filter(r => r.url.endsWith('/state')).length, 1);
+  assert.equal(r.observed(), observed + 1); assert.equal(r.parts.lastState.queue_length, 3);
+  assert.equal(reads(h), 1); assert.equal(mutationRequests(h).length, 0);
+});
+
+test('catalog events reach the native catalog lane without rereading unrelated playback', async () => {
+  const h = reconciler(), received = [], c = h.create({ catalog: change => received.push(change) });
+  c.resume(); h.feed.emit('open'); await h.time.tick(300); received.length = 0;
+  h.feed.emit('catalog.changed', { household: 'S1', favorites: true, playlists: false });
+  await h.time.tick(300);
+  assert.deepEqual(JSON.parse(JSON.stringify(received)), [{ household: 'S1', favorites: true, playlists: false }]);
+  assert.deepEqual(h.starts, ['all']);
+  h.feed.emit('catalog.changed', []); assert.equal(received.at(-1), null);
+  c.dispose();
+});
+
+test('the actual phone page forwards native catalog changes and journal gaps to its open panels', async t => {
+  const h = runtime(t); await h.time.tick(300); const received = [];
+  h.document.addEventListener('fsonos:catalog-changed', event => received.push(event.detail));
+  h.streams[0].send('event: catalog.changed\ndata: {"household":"S2","favorites":false,"playlists":true}\n\n');
+  await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(received)), [{ household: 'S2', favorites: false, playlists: true }]);
+  assert.equal(reads(h), 1);
+  h.streams[0].send('event: events.reset\ndata: {"oldest":3}\n\n'); await settle();
+  assert.equal(received.at(-1), null); assert.equal(mutationRequests(h).length, 0);
 });

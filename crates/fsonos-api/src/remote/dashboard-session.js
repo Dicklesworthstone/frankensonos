@@ -244,8 +244,13 @@ const DashboardSession = (() => {
     }
     async function confirm(r) {
       if (demo || !r || r !== state.pending || !ready() || r.target !== controller.state.selected) return false;
-      const id = ++intent; state.pending = null; emit();
-      const valid = (check) => { check(); if (!active || disposed || intent !== id) fail('The reviewed action was cancelled.'); };
+      const id = ++intent, searched = searchVersion; state.pending = null; emit();
+      const valid = (check) => {
+        check();
+        if (!active || disposed || intent !== id || (r.hit?.favorite && searched !== searchVersion)) {
+          fail('The reviewed action was cancelled.');
+        }
+      };
       const ok = await controller.mutate(async ({ item, target, check, send }) => {
         valid(check);
         if (r.kind === 'scene') {
@@ -317,6 +322,19 @@ const DashboardSession = (() => {
       emit(); if (ok && active && !disposed) await load(); return ok;
     }
     return { state, load, catalog, search, review, reviewLibrary, reviewQueue, reviewScene, confirm, cancel,
+      queueChanged(room = null) {
+        const item = selection();
+        if (!disposed && state.pending?.kind === 'queue'
+            && (!room || item?.zone.members.includes(room))) cancel();
+      },
+      catalogChanged(change = null) {
+        if (disposed || change?.favorites === false
+            || change?.household && selection()?.zone.household !== change.household) return;
+        ++searchVersion; state.hits = []; state.searching = false;
+        if (state.pending?.hit?.favorite) cancel();
+        if (state.query) state.searchError = 'The household favorites changed. Search again for current results.';
+        emit();
+      },
       suspend() { active = false; ++version; ++searchVersion; ++catalogVersion; state.loading = state.searching = false; cancel(); },
       resume() { if (!disposed) active = true; },
       dispose() { disposed = true; active = false; ++version; ++intent; ++searchVersion; ++catalogVersion; },

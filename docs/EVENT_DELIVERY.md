@@ -2,8 +2,8 @@
 
 `GET /events` still sends numbered server-sent events. `Last-Event-ID` or
 `since` resumes after a cursor. `GET /events?wait=30` returns one JSON event
-batch; retain `last_id` as the next request's `since`. The existing event
-names, payloads and HTTP authorization remain unchanged.
+batch; retain `last_id` as the next request's `since`. HTTP authorization is
+shared with the other daemon reads.
 
 ## One journal, shared wakeups
 
@@ -42,6 +42,35 @@ current zone state again. The marker does not publish a source address, imply
 a track advance, or authorize a playback command. Existing consumers that
 refresh on `zone.state` receive these transitions through the same journal.
 
+## Native queue and catalog changes
+
+The daemon subscribes to each coordinator's ContentDirectory events alongside
+its playback events. A `zone.state` event with `queue_changed: true` asks readers
+to discard old queue observations, including edits that kept the same number
+of tracks while playback was paused. It carries no inferred queue length,
+revision or track transition. Read the current queue again before using an
+old occurrence, search result or reviewed edit.
+
+`catalog.changed` identifies the native catalogs that need rereading through
+the boolean `favorites` and `playlists` fields. Its `household`, when available,
+uses the same label as the zone API (`S1`, `S2` or the disambiguated household
+id). An absent household means readers cannot safely narrow the invalidation.
+The event contains no catalog entries or playback command. Specific container
+updates invalidate their catalog; an ambiguous system update or new
+subscription invalidates all relevant native content. Repeated unchanged
+counters do not generate new changes.
+
+Both browser remotes refresh an open queue through their existing coalesced
+read lane and retire pending queue edits immediately. The phone remote
+refreshes affected household favorites with one fixed deadline per burst;
+open native-playlist and favorite-search views discard stale selections and
+ask for a fresh explicit read. An event arriving during an earlier catalog
+read prevents that response from restoring old choices. Disconnects and
+journal resets invalidate catalog observations too. These notifications never
+resend a command or acknowledge an uncertain write. The DJ retires its cached
+queue proof before reconciliation, and MCP event/resource consumers receive
+the same journal changes.
+
 ## Compatibility and limits
 
 SSE comments keep the existing 15-second heartbeat interval; HTTP long polls
@@ -58,7 +87,8 @@ proof of a daemon identity. An out-of-range cursor, including the maximum
 u64 value, produces a reset without arithmetic overflow. A restarted daemon
 that happens to reuse an in-range number cannot be distinguished by that
 number alone. Reconcile current state when a connection opens, as the web
-remote does. This does not implement MCP resource subscriptions.
+remote does. MCP resource subscriptions also invalidate their documents when
+the shared journal advances or loses continuity.
 
 ## Regression coverage
 
@@ -74,3 +104,12 @@ Run `cargo test -p fsonos-api --lib events` and
 `cargo test -p fsonos-api --test event_delivery_http`. A committed test is not
 evidence of a passing run; inspect a recorded verifying run or run the commands
 above.
+
+Native content regressions are in `events::content_tests` and
+`surface::dj_follow::tests`. Browser coverage includes same-length paused
+queue edits, household isolation, coalesced catalog reads, late-response
+rejection and preserving the outcome of a command already sent:
+
+```sh
+node --test scripts/test-remote-catalogs.cjs scripts/test-remote-event-integration.cjs scripts/test-dashboard-live-integration.cjs scripts/test-sonos-playlist-track-actions.cjs
+```

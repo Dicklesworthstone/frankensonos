@@ -658,6 +658,13 @@ const SourcePlayerRemote = (() => {
     }
 
     return { state, catalog, chooseCatalog, refresh, edit, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, clearDraft,
+      catalogChanged(change = null) {
+        if (disposed || change?.playlists === false || state.sourceType !== 'playlist'
+            || change?.household && selected()?.household !== change.household) return;
+        invalidate(); clearPlaylists();
+        state.message = 'The saved Sonos playlists changed. Read the current list and choose a source again.';
+        publish();
+      },
       cancel() { if (!state.writing && !disposed) { invalidate(); state.message = ''; publish(); } },
       close() { state.open = false; invalidate(); state.message = ''; publish(); },
       dispose() { disposed = true; state.open = false; invalidate(); },
@@ -857,10 +864,12 @@ const SourcePlayerRemote = (() => {
       else if (!control.state.open) void refreshSources();
     });
     const hide = () => { if (doc.hidden) control.close(); else if (details.open) void refreshSources(); };
+    const catalogChanged = event => control.catalogChanged(event.detail);
     const win = doc.defaultView;
     const pagehide = () => control.close();
     const pageshow = () => { if (!doc.hidden && details.open) void refreshSources(); };
     doc.addEventListener('visibilitychange', hide);
+    doc.addEventListener('fsonos:catalog-changed', catalogChanged);
     win?.addEventListener('pagehide', pagehide);
     win?.addEventListener('pageshow', pageshow);
     render(control.state);
@@ -874,6 +883,7 @@ const SourcePlayerRemote = (() => {
       return offered;
     }, dispose() {
       doc.removeEventListener('visibilitychange', hide);
+      doc.removeEventListener('fsonos:catalog-changed', catalogChanged);
       win?.removeEventListener('pagehide', pagehide);
       win?.removeEventListener('pageshow', pageshow);
       control.dispose();

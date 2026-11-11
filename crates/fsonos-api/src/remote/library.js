@@ -448,6 +448,11 @@ const LibraryRemote = (() => {
     }
 
     return { state, refreshRooms, target, query, search, recent, browse, openAlbum, openPlaylist, refresh,
+      catalogChanged(change = null) {
+        if (disposed || state.view !== 'search' || change?.favorites === false
+            || change?.household && destination()?.household !== change.household) return;
+        invalidate(); state.message = 'The household favorites changed. Search again for current results.'; publish();
+      },
       next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, routine, cancel, confirm,
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; invalidate(); } };
@@ -602,7 +607,12 @@ const LibraryRemote = (() => {
 
     node.addEventListener('toggle', () => { if (node.open) control.refreshRooms(); else control.close(); });
     render(control.state);
-    return { node, dispose: control.dispose };
+    const catalogChanged = event => control.catalogChanged(event.detail);
+    document.addEventListener('fsonos:catalog-changed', catalogChanged);
+    return { node, dispose() {
+      document.removeEventListener('fsonos:catalog-changed', catalogChanged);
+      control.dispose();
+    } };
   }
 
   return { model, panel, routes, LIMIT, MAX_QUERY, routineSourceOf, albumCoverage };

@@ -94,6 +94,22 @@ can drive:
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)); editing room aliases (`fsonos rooms alias`) and checking `policy.toml` (`fsonos policy check`) are the CLI's alone, as they work on the data directory's files |
 | **A house without speakers** | `fsonos sim` starts virtual S1 and S2 households on loopback, so you can try every command, or develop an agent, with no hardware |
 
+### Changes made in other Sonos controllers
+
+The daemon subscribes to native queue, favorite and saved-playlist changes.
+Editing a paused queue in another controller can refresh an open queue view
+even when its length and selected track stay the same. Both browser remotes
+retire obsolete queue and catalog reviews; late replies cannot restore stale
+selections. Reads are coalesced by the affected group or household, with no
+periodic queue polling.
+
+The DJ also rechecks an invalidated queue before automatic maintenance,
+preserving manually inserted music and relinquishing a completely replaced
+queue. Its own queue additions retain listening-feedback continuity and bounded
+retry backoff. HTTP, CLI and MCP event consumers receive `queue_changed`
+in `zone.state` and household-scoped `catalog.changed` notifications.
+See [Event delivery](docs/EVENT_DELIVERY.md) for the contract.
+
 ### Playback errors and DJ recovery
 
 `fsonos status ROOM`, API state, MCP and live events expose the speaker's
