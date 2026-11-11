@@ -3749,3 +3749,32 @@ loop never runs in emulation at all, independent of every bug fixed so far.
 Instrumentation caution: `clock_gettime` is far too hot to break on with a
 modest `ignore` count — at 60 ignores the boot had still not reached the
 sample in 45 s, because every stop costs seconds under qemu-user.
+
+## Decision — 2026-11-11: the update route is the best value, and it needs no key
+
+Judged against the alternative (keep fighting the emulator's accept loop):
+
+- The emulator's accept is **gated on SonosNet bring-up** and would still need
+  every subsequent device behaviour reproduced. It is a research instrument,
+  not a delivery route.
+- The **.upd append route** is delivery. Verified today: `append_upd_section`
+  now envelopes type 3/4/6 with a recipient key (reusing
+  `build_upd_rootfs.envelope`), the recipient id is inherited from the base, the
+  prefix digest is unchanged, and `verify_upd` returns **PASS** with the
+  type-17 signature still valid on the appended package.
+- The blocker *looked* like key material, but 57.23 section payloads are
+  enveloped (886499ca, RSA-OAEP-wrapped AES, recipient id `fd88f264…`, keytype
+  3). **34.16-lineage images are unencrypted**, so a 34.16 carrier takes raw
+  appended records and needs no key at all — the `MinVersion: [1.0-1]`
+  ExtraOptions injection already clears the downgrade floor (proven in the
+  chroot harness).
+
+So the shortest real chain is: 34.16 image → append our rootfs record (raw) →
+`MinVersion` extra option → BSU. Next concrete step is obtaining a 34.16 image.
+
+Also established, for anyone resuming: the pinned SPKIs in
+`libsonoscrypto.so.1` (`0xD8B8/0xDAE0/0xDC08/0xDED8`) do **not** hash to the
+recipient id — it is a Sonos-internal key label, not a fingerprint — and the
+id does not appear anywhere in the rootfs, so the mapping is not locally
+resolvable. Encrypting to one of the three pinned keys and keeping the id is
+the experiment when a 57.23-lineage payload is wanted.
