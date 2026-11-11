@@ -160,7 +160,7 @@ fn reconcile(surface: &Surface, snapshot: &Snapshot, event: Option<&LiveEvent>) 
             player,
             health: Health::Healthy,
         }) => Some(player),
-        Some(LiveEvent::Health { .. }) => return,
+        Some(LiveEvent::Health { .. } | LiveEvent::ContentChanged { .. }) => return,
         Some(LiveEvent::Topology | LiveEvent::Resync) | None => None,
     };
     // Keep the household/group order stable when multiple tracks are observed

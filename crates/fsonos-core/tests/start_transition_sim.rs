@@ -20,6 +20,8 @@ const OWNER: &str = "x-rincon-mp3radio://example.invalid/owner.mp3";
 #[derive(Clone, Copy)]
 enum DuringTransition {
     Settle,
+    ErrorPlaying,
+    ErrorTransitioning,
     SourceChanged,
     QueueEdited,
     Paused,
@@ -94,7 +96,22 @@ impl Transport for Transition {
                 _ => {}
             }
         }
-        if read == 1 || (read == 2 && matches!(self.mode, DuringTransition::Settle)) {
+        let response = if matches!(
+            self.mode,
+            DuringTransition::ErrorPlaying | DuringTransition::ErrorTransitioning
+        ) && read == 1
+        {
+            assert!(response.contains("<CurrentTransportStatus>OK</CurrentTransportStatus>"));
+            response.replace(
+                "<CurrentTransportStatus>OK</CurrentTransportStatus>",
+                "<CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus>",
+            )
+        } else {
+            response
+        };
+        if (read == 1 && !matches!(self.mode, DuringTransition::ErrorPlaying))
+            || (read == 2 && matches!(self.mode, DuringTransition::Settle))
+        {
             assert!(response.contains(">PLAYING<"));
             return Ok(response.replacen(">PLAYING<", ">TRANSITIONING<", 1));
         }
@@ -179,6 +196,54 @@ fn transitioning_direct_and_queue_starts_settle_without_another_play_on_s1_and_s
             let position = soap::get_position_info(&f.sim.lan(), f.host).unwrap();
             assert_eq!(position.uri, if queue { SECOND } else { STREAM });
             assert_eq!(f.queue(), [FIRST, SECOND]);
+        }
+    }
+}
+
+#[test]
+fn renderer_errors_cannot_confirm_lost_direct_or_queue_play_replies_on_s1_and_s2() {
+    for generation in [1, 2] {
+        for queue in [false, true] {
+            for mode in [
+                DuringTransition::ErrorPlaying,
+                DuringTransition::ErrorTransitioning,
+            ] {
+                let f = Fixture::new(generation);
+                let transport = Transition::new(&f.sim, mode);
+                let error = f.start(&transport, queue).unwrap_err().to_string();
+                assert!(error.contains("injected lost Play reply"));
+                assert_writes(&transport, queue);
+                assert_eq!(transport.status_reads.get(), 1);
+                assert_eq!(f.queue(), [FIRST, SECOND]);
+                let position = soap::get_position_info(&f.sim.lan(), f.host).unwrap();
+                assert_eq!(position.uri, if queue { SECOND } else { STREAM });
+            }
+        }
+    }
+}
+
+#[test]
+fn renderer_errors_cannot_confirm_lost_resume_replies_on_s1_and_s2() {
+    for generation in [1, 2] {
+        for mode in [
+            DuringTransition::ErrorPlaying,
+            DuringTransition::ErrorTransitioning,
+        ] {
+            let f = Fixture::new(generation);
+            control::play_queue_from(&f.sim.lan(), &f.houses, &f.id, 2).unwrap();
+            soap::pause(&f.sim.lan(), f.host).unwrap();
+            let transport = Transition::new(&f.sim, mode);
+            let error = control::resume(&transport, &f.houses, &f.id)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("injected lost Play reply"));
+            assert_eq!(transport.writes.borrow().as_slice(), ["Play"]);
+            assert_eq!(transport.status_reads.get(), 1);
+            assert_eq!(f.queue(), [FIRST, SECOND]);
+            assert_eq!(
+                soap::get_position_info(&f.sim.lan(), f.host).unwrap().uri,
+                SECOND
+            );
         }
     }
 }

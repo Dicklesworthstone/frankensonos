@@ -82,7 +82,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "What changed in the house since an event id: playback and track changes, volume and mute, regroups, players going offline, logged actions (who did what), and the DJ's picks. Call it without `since` to get the newest event id, then with `since` (the last_id you got) and `wait_secs` (0-60, default 0) to wait for the next changes; each answer has a new last_id. A `reset` means events were missed: read list_zones afresh. Needs the daemon (`fsonos serve`).",
+    description = "What changed in the house since an event id: playback and track changes, volume and mute, regroups, players going offline, logged actions (who did what), and the DJ's picks. A zone.state with queue_changed asks you to reread the queue before using saved positions; catalog.changed identifies household favorites or saved Sonos playlists that need rereading. Call it without `since` to get the newest event id, then with `since` (the last_id you got) and `wait_secs` (0-60, default 0) to wait for the next changes; each answer has a new last_id. A `reset` means events were missed: read list_zones and any observed queues or native catalogs afresh. Needs the daemon (`fsonos serve`).",
     annotations(read_only)
 )]
 async fn events(

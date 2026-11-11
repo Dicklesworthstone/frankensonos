@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use crate::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto};
 use crate::events::{EventBus, ResourceChanges};
-use crate::execute::OutcomeDto;
+use crate::execute::{Executed, OutcomeDto};
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::Guard;
 use crate::plan::{Command, DjAction, Rooms, plan_play_favorite, resolve};
@@ -74,6 +74,7 @@ mod outside;
 mod playback_caps;
 pub mod players;
 mod recovery;
+mod replacement_undo;
 mod search_play;
 mod set_runs;
 mod shared_store;
@@ -721,35 +722,48 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
         recovery: &recovery::Audience,
+        queue_undo: &mut Option<actions::QueueUndo>,
     ) -> Result<OutcomeDto, Failure> {
         self.confirm_source_selection(households, command)?;
-        let (mut notes, fresh) = match self.lower_before_playing(households, guard, command) {
-            Ok(notes) => (notes, None),
-            // A level that could not be read because the player moved to a
-            // new address: surveyed again once and carried out there, as a
-            // command's own failure is healed (`crate::heal`).
-            Err(f) if f.code == ErrorCode::PlayerUnreachable && command.repeat_safe() => {
-                let Some(fresh) = self.resurvey() else {
-                    return Err(f);
-                };
-                let command = crate::heal::current_command(households, &fresh, command)?;
-                recovery.observe(&fresh, &command);
-                (
-                    self.prepare_recovery(&fresh, guard, &command)?,
-                    Some((fresh, command)),
-                )
-            }
-            Err(f) => return Err(f),
-        };
+        let pending = replacement_undo::capture(self, households, command);
+        let (mut lowered, fresh) =
+            match self.lower_before_playing_with_caps(households, guard, command) {
+                Ok(lowered) => (lowered, None),
+                // A level that could not be read because the player moved to a
+                // new address: surveyed again once and carried out there, as a
+                // command's own failure is healed (`crate::heal`).
+                Err(f) if f.code == ErrorCode::PlayerUnreachable && command.repeat_safe() => {
+                    let Some(fresh) = self.resurvey() else {
+                        return Err(f);
+                    };
+                    let command = crate::heal::current_command(households, &fresh, command)?;
+                    recovery.observe(&fresh, &command);
+                    (
+                        playback_caps::Lowered {
+                            notes: self.prepare_recovery(&fresh, guard, &command)?,
+                            volumes: Vec::new(),
+                        },
+                        Some((fresh, command)),
+                    )
+                }
+                Err(f) => return Err(f),
+            };
         let (households, command) = fresh
             .as_ref()
             .map_or((households, command), |(houses, planned)| {
                 (houses.as_slice(), planned)
             });
-        let mut outcome = self.carry_out(households, guard, command, recovery)?;
-        notes.append(&mut outcome.notes);
-        outcome.notes = notes;
-        Ok(outcome)
+        // A readdressed command needs its own backup; never associate the
+        // original player's queue with a recovered destination.
+        let pending = pending.filter(|_| fresh.is_none());
+        let pending = replacement_undo::confirm(self, households, pending, &lowered.volumes);
+        let mut executed =
+            self.carry_out(households, guard, command, recovery, pending.is_some())?;
+        *queue_undo =
+            replacement_undo::finish(self, households, pending, executed.replacement.as_ref());
+        lowered.notes.append(&mut executed.outcome.notes);
+        executed.outcome.notes = lowered.notes;
+        Ok(executed.outcome)
     }
 
     /// [`Self::execute`] once the music it starts is within the caps: the DJ,
@@ -760,7 +774,8 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
         recovery: &recovery::Audience,
-    ) -> Result<OutcomeDto, Failure> {
+        receipt: bool,
+    ) -> Result<Executed, Failure> {
         if let Command::Dj { coordinator, .. } | Command::DjSteer { coordinator, .. } = command
             && let Some(dj) = &self.dj
         {
@@ -782,7 +797,8 @@ impl Surface {
                     self.publish_dj(&**dj, at, store, queue_position);
                     Ok(done)
                 })?
-                .unwrap_or_else(|| Err(no_dj_store()));
+                .unwrap_or_else(|| Err(no_dj_store()))
+                .map(Executed::from);
         }
         let destination = std::cell::RefCell::new(None);
         let result = crate::heal::execute_healing_with(
@@ -790,6 +806,7 @@ impl Surface {
             households,
             guard,
             command,
+            receipt,
             || self.resurvey(),
             |houses, planned| {
                 recovery.observe(houses, planned);
@@ -894,9 +911,11 @@ impl Surface {
         }
         let regroups = regroups(&command);
         let recovery = recovery::Audience::new(&households, &command);
+        let mut queue_undo = None;
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
-            let result = self.execute_following(&households, &guard, &command, &recovery);
+            let result =
+                self.execute_following(&households, &guard, &command, &recovery, &mut queue_undo);
             if regroups {
                 self.invalidate();
             }
@@ -913,21 +932,19 @@ impl Surface {
             self.now(),
         );
         let sessions = self.sessions_before(&command);
-        let result = self.execute_following(&households, &guard, &command, &recovery);
+        let result =
+            self.execute_following(&households, &guard, &command, &recovery, &mut queue_undo);
         if regroups {
             self.invalidate();
         }
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = if let Command::PlayTracks { selection, .. } = &command {
-            Some(actions::before_state_not_undoable(&format!(
-                "{} queue replacement",
-                selection.kind.source_label()
-            )))
-        } else {
-            actions::before_state_with(&snaps, &sessions)
-        };
+        let before = replacement_undo::attach(
+            actions::before_state_with(&snaps, &sessions),
+            std::slice::from_ref(&command),
+            queue_undo.as_slice(),
+        );
         let before = level_undo::scope(
             before,
             &households,
@@ -1024,6 +1041,11 @@ impl Surface {
             .filter(|(_, result)| level_undo::may_have_changed(result))
             .map(|(command, _)| command.clone())
             .collect();
+        let before = replacement_undo::attach(
+            actions::before_state_with(&snaps, &[]),
+            &commands[..run.outcomes.len()],
+            &run.queue_undo,
+        );
         let result = set_runs::merged(&households, &commands, run.outcomes);
         if regroups {
             self.invalidate();
@@ -1031,16 +1053,6 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = if commands
-            .iter()
-            .any(|command| matches!(command, Command::PlayTracks { .. }))
-        {
-            Some(actions::before_state_not_undoable(
-                "catalog queue replacement",
-            ))
-        } else {
-            actions::before_state_with(&snaps, &[])
-        };
         let before = level_undo::scope(before, &households, &guard, &attempted, &snaps);
         let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = recovery::protect(before, unsafe_undo);
@@ -1501,7 +1513,13 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
         recovery: &recovery::Audience,
+        queue_undo: &mut Option<actions::QueueUndo>,
     ) -> Result<OutcomeDto, Failure> {
+        let _changing = self
+            .log
+            .as_ref()
+            .filter(|_| replacement_undo::replaces(command))
+            .map(|log| log.restoring.read().unwrap_or_else(PoisonError::into_inner));
         // A catalog lookup retained an exact destination. A changed source
         // must be refused before this intent supersedes any continuation.
         self.confirm_source_selection(households, command)?;
@@ -1513,7 +1531,7 @@ impl Surface {
             }
         }
         let held = self.dj_hold(households, command);
-        let result = self.execute(households, guard, command, recovery);
+        let result = self.execute(households, guard, command, recovery, queue_undo);
         // A successful no-op did not transfer any music. Release the hold,
         // but keep DJ steering, feeds and timers on their original groups.
         let moved = result.as_ref().is_ok_and(|outcome| outcome.changed);

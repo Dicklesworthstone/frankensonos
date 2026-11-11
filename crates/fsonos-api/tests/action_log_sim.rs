@@ -3,15 +3,15 @@
 //! sockets, the way the HTTP API and MCP tools drive it.
 
 use fsonos_api::plan::{
-    TransportAction, VolumeScope, plan_group, plan_play, plan_transport_set, plan_ungroup_set,
-    plan_volume, plan_volume_set,
+    TransportAction, plan_group, plan_play, plan_transport_set, plan_ungroup_set, plan_volume,
+    plan_volume_set,
 };
 use fsonos_api::surface::schedules::{FadePauseRequest, SleepRequest};
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_api::{
-    Command, ErrorCode, GroupRequest, NoteCode, PlayRequest, VolumeChange, VolumeRequest,
-    ZoneRequest,
+    Command, ErrorCode, GroupRequest, NoteCode, PlayRequest, VolumeRequest, ZoneRequest,
 };
+use fsonos_core::actions::BeforeState;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{ActionFilter, MemStore};
@@ -43,6 +43,20 @@ fn sim() -> SimHandle {
 
 fn surface(sim: &SimHandle) -> Surface {
     surface_over(sim, Box::new(sim.lan()))
+}
+
+/// These membership checks exercise playback undo's complete zone restoration.
+fn assert_full_snapshot(surface: &Surface, zones: usize) {
+    let actions = surface
+        .recent_actions(&agent(), &ActionFilter::default())
+        .unwrap();
+    assert_eq!(actions.len(), 1, "the playback action was logged");
+    let before = BeforeState::parse(actions[0].action.before_state.as_deref().unwrap()).unwrap();
+    assert!(
+        before.level_scope.is_none(),
+        "playback keeps full zone undo"
+    );
+    assert_eq!(before.zones.len(), zones);
 }
 
 /// [`surface`] over `transport` instead of the sim's LAN.
@@ -660,8 +674,8 @@ fn undo_stops_at_a_sleep_timer_or_a_fade_out_but_not_at_cancelling_none() {
     sim.shutdown();
 }
 
-/// A room grouped into the action's zone since is a change too: putting the
-/// zone back would take that room out of its group again.
+/// A room grouped into the playback action's zone since is a change too:
+/// putting the zone back would take that room out of its group again.
 #[test]
 fn undo_refuses_after_a_room_joined_the_group_since() {
     let sim = sim();
@@ -669,10 +683,20 @@ fn undo_refuses_after_a_room_joined_the_group_since() {
     let houses = now(&sim);
     let (kitchen, office) = (id(&houses, "Kitchen"), id(&houses, "Office"));
     let s = surface(&sim);
-    s.control(&agent(), "set_volume", |h| {
-        plan_volume(h, &volume_req("Kitchen", 30))
-    })
-    .unwrap();
+    let outcome = s
+        .control(&agent(), "play", |h| {
+            plan_play(
+                h,
+                &PlayRequest {
+                    zone: "Kitchen".into(),
+                    source_uri: STREAM.into(),
+                    title: None,
+                },
+            )
+        })
+        .unwrap();
+    assert!(outcome.changed, "{outcome:?}");
+    assert_full_snapshot(&s, 1);
     // The Sonos app groups the Office into the Kitchen.
     control::join(&lan, &houses, &office, &kitchen).unwrap();
     let refused = s.undo(&agent(), false).unwrap_err();
@@ -716,24 +740,26 @@ fn undo_sees_a_joined_duplicate_room_name_across_households() {
     );
     assert_ne!(s1_kitchen, s2_kitchen, "the names match; the rooms do not");
     let surface = multi_surface(&sim);
-    surface
-        .control_set(&agent(), "set_volume", |_| {
+    let outcome = surface
+        .control_set(&agent(), "play", |_| {
             Ok(vec![
-                Command::Volume {
+                Command::Play {
                     member: s1_kitchen.clone(),
-                    target: s1_kitchen.clone(),
-                    scope: VolumeScope::Room,
-                    change: VolumeChange::Set(30),
+                    coordinator: s1_kitchen.clone(),
+                    source_uri: STREAM.into(),
+                    title: None,
                 },
-                Command::Volume {
+                Command::Play {
                     member: s2_living.clone(),
-                    target: s2_living.clone(),
-                    scope: VolumeScope::Room,
-                    change: VolumeChange::Set(30),
+                    coordinator: s2_living.clone(),
+                    source_uri: STREAM.into(),
+                    title: None,
                 },
             ])
         })
         .unwrap();
+    assert!(outcome.changed, "{outcome:?}");
+    assert_full_snapshot(&surface, 2);
 
     control::join(&lan, &houses, &s2_kitchen, &s2_living).unwrap();
     let refused = surface.undo(&agent(), false).unwrap_err();

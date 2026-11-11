@@ -8,6 +8,9 @@ use crate::didl::{DidlObject, parse_didl};
 use crate::{ProtoError, Transport, soap};
 use std::net::IpAddr;
 
+mod updates;
+pub use updates::{ContentUpdate, MAX_UPDATE_CONTAINERS, parse_update};
+
 /// Sonos favorites (the household-wide "My Sonos" list).
 pub const FAVORITES: &str = "FV:2";
 /// The coordinator's play queue.

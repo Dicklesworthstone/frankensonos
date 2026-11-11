@@ -102,6 +102,7 @@ fn feed(queued: QueuedWork) -> QueueFeed {
             playing: Some(1),
             recorded: None,
             played: Vec::new(),
+            dry_end: None,
             recovery: Default::default(),
         },
         DjConfig::default(),
@@ -175,6 +176,7 @@ impl LiveFeedback {
                         playing: Some(1),
                         recorded: None,
                         played: Vec::new(),
+                        dry_end: None,
                         recovery: Default::default(),
                     },
                     DjConfig::default(),
@@ -356,6 +358,91 @@ fn a_failed_top_up_preserves_valid_listening_evidence() {
             signals[0].performer,
             FeedbackSignal::about(&rig.works[0], Signal::FullListen, 0).performer
         );
+    }
+}
+
+#[test]
+fn queue_notifications_keep_a_full_listen_when_the_occurrence_survives() {
+    for generation in [1, 2] {
+        let mut rig = LiveFeedback::new(generation);
+        let mut event = rig.seek(1);
+        for position in [2, 3, 4] {
+            // A queue event can be our own append or an edit elsewhere in
+            // the queue. Only reconciliation can determine lost ownership.
+            rig.advance(90);
+            rig.dj.on_queue_changed(&rig.id);
+            rig.observe(&event);
+            assert!(rig.accepted());
+            rig.advance(90);
+            event = rig.seek(position);
+        }
+        let signals = rig.signals();
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].signal, Signal::FullListen.value());
+        assert_eq!(
+            signals[0].performer,
+            FeedbackSignal::about(&rig.works[0], Signal::FullListen, 0).performer
+        );
+    }
+}
+
+#[test]
+fn a_same_length_current_replacement_breaks_listening_after_reconciliation() {
+    for generation in [1, 2] {
+        let mut rig = LiveFeedback::new(generation);
+        let stale = rig.seek(1);
+        rig.advance(10);
+        let host = rig.sim.player("Feedback Room").unwrap().ip;
+        soap::remove_track_range_from_queue(&rig.sim.lan(), host, 0, 1, 1).unwrap();
+        soap::enqueue_uri(
+            &rig.sim.lan(),
+            host,
+            "http://example.invalid/owner.mp3",
+            "",
+            1,
+            false,
+        )
+        .unwrap();
+        control::play_queue_from(&rig.sim.lan(), &rig.households, &rig.id, 1).unwrap();
+        rig.dj.on_queue_changed(&rig.id);
+        // Length, slot and cached track are all unchanged. The CD event must
+        // make the old track lose its claim before it can teach an early skip.
+        rig.observe(&stale);
+        assert!(rig.signals().is_empty());
+        assert!(!rig.dj.state().listening[&rig.id].advancing);
+        assert!(!rig.dj.state().listening[&rig.id].prefix_complete);
+        for position in [2, 3, 4] {
+            rig.advance(180);
+            rig.seek(position);
+        }
+        assert!(
+            rig.signals().is_empty(),
+            "a replaced opening movement cannot earn a whole-work completion"
+        );
+    }
+}
+
+#[test]
+fn queue_notifications_do_not_bypass_a_failed_top_up_backoff() {
+    for generation in [1, 2] {
+        let mut rig = LiveFeedback::new(generation);
+        let event = rig.seek(1);
+        rig.dj.state().feeds.get_mut(&rig.id).unwrap().lookahead = 3;
+        rig.sim
+            .upnp_fault("Feedback Room", "AddURIToQueue", 701)
+            .unwrap();
+        rig.observe(&event);
+        assert!(rig.dj.state().refill_retries.contains_key(&rig.id));
+        let before = rig.sim.soap_log().len();
+        rig.dj.on_queue_changed(&rig.id);
+        rig.observe(&event);
+        assert!(rig.dj.state().refill_retries.contains_key(&rig.id));
+        assert_eq!(
+            rig.sim.soap_log().len(),
+            before,
+            "a self notification cannot turn a failed top-up into a retry loop"
+        );
+        assert!(rig.signals().is_empty());
     }
 }
 

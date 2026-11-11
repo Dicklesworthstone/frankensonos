@@ -404,3 +404,33 @@ test('status-only renderer errors and null clears flow through the live page wit
   assert.equal(h.snapshotCount(),1,'a status-only event uses the existing group scope');
   assert.equal(h.writes().length,0);h.close();
 });
+
+test('a native same-length paused queue edit consumes its review and rereads exact entries once', async () => {
+  const h = setup(); h.data.state = 'paused'; await h.ready(); h.queue.open(); await settle();
+  const selected = h.queue.select(2), review = h.session.reviewQueue(selected, 'play');
+  assert.ok(review); const before = h.requests.length;
+  h.override(url => url === '/zones/Den%40S2/queue?offset=0&limit=40'
+    ? new Response(JSON.stringify({ zone: 'Den', total: 3, revision: 'queue:external', playing: 1,
+      items: Array.from({ length: 3 }, (_, i) => ({ position: i + 1,
+        title: i === 1 ? 'External replacement' : 'Track ' + (i + 1),
+        uri: i === 1 ? 'fixture:replacement' : 'fixture:track:' + (i + 1) })) }))
+    : undefined);
+  h.frame('event: zone.state\ndata: {"room":"Den","queue_changed":true}\n\n'.repeat(60));
+  await settle(); assert.equal(h.session.state.pending, null); assert.throws(() => Q.choiceOf(selected));
+  await h.t.tick(350);
+  assert.equal(h.queue.state.page.total, 3); assert.equal(h.queue.state.page.revision, 'queue:external');
+  assert.equal(h.queue.state.page.items[1].title, 'External replacement');
+  assert.equal(h.requests.slice(before).filter(r => r.url.includes('/queue?')).length, 1);
+  assert.equal(h.snapshotCount(), 1); assert.equal(h.writes().length, 0); h.close();
+});
+
+test('native catalog events invalidate browser catalogs without a playback refresh', async () => {
+  const h = setup(); await h.ready(); const received = [], before = h.requests.length;
+  h.context.sourcePlayer = { catalogChanged: change => received.push(JSON.parse(JSON.stringify(change))) };
+  h.session.state.query = 'radio'; h.session.state.hits = [{ favorite: 'FV:old' }];
+  delta(h, 'catalog.changed', { household: 'S2', favorites: true, playlists: true });
+  await h.t.tick(350);
+  assert.deepEqual(received, [{ household: 'S2', favorites: true, playlists: true }]);
+  assert.deepEqual(h.session.state.hits, []); assert.match(h.session.state.searchError, /favorites changed/);
+  assert.equal(h.requests.length, before); assert.equal(h.writes().length, 0); h.close();
+});

@@ -391,6 +391,11 @@ pub struct FeedSnapshot {
     /// Bound renderer-error recovery even across a daemon restart.
     #[serde(default)]
     pub recovery: RecoveryBudget,
+    /// The exhausted queue's original end while refilling or starting its
+    /// successor. This is a retry cursor, not permission to play: fresh queue,
+    /// source, occurrence and group observations must still confirm it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dry_end: Option<u32>,
 }
 
 impl QueueFeed {
@@ -429,6 +434,7 @@ impl QueueFeed {
             recorded: self.recorded.clone(),
             played: self.played.clone(),
             recovery: self.recovery.clone(),
+            dry_end: self.dry_end,
         })
     }
 
@@ -450,7 +456,7 @@ impl QueueFeed {
             recorded: snapshot.recorded,
             queue_len: None,
             trim_error: None,
-            dry_end: None,
+            dry_end: snapshot.dry_end,
             jumped: false,
             recovery: snapshot.recovery,
             recovery_notice: None,
@@ -514,6 +520,18 @@ impl QueueFeed {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// A queue notification (or lost event coverage) invalidates the feed's
+    /// cached positions even when playback and queue length did not change.
+    /// The next queue playback observation reconciles a complete, consistent
+    /// Browse before trimming, completing or adding works. This makes no
+    /// speaker requests and retains ownership until that read succeeds.
+    /// An exhausted queue's original end remains a retry cursor: automatic
+    /// restart still requires fresh, exact queue and playback evidence.
+    pub fn invalidate_queue(&mut self) {
+        self.queue_len = None;
+        self.accepted_playback = false;
     }
 
     fn lookahead(&self) -> usize {
@@ -816,7 +834,28 @@ impl QueueFeed {
                 return Ok(queued);
             }
             let next = end + 1;
-            mode::start(at, next)?;
+            if let Err(error) = mode::start(at, next) {
+                // Queue starts already confirm lost stage replies without
+                // repeating writes. If that confirmation failed, a durable
+                // continuation must not replay an uncertain source/seek/Play.
+                if matches!(
+                    &error,
+                    FeedError::Core(
+                        CoreError::Proto(
+                            ProtoError::Network { .. }
+                                | ProtoError::Malformed(_)
+                                | ProtoError::NotWired(_)
+                        ) | CoreError::Uncertain(_)
+                    )
+                ) {
+                    self.release();
+                    return Err(FeedError::RecoveryStopped(format!(
+                        "the exhausted queue's restart was not confirmed ({error}); \
+                         it will not be replayed"
+                    )));
+                }
+                return Err(error);
+            }
             self.playing = Some(next);
             self.jumped = true;
             self.dry_end = None;
@@ -1511,6 +1550,7 @@ mod tests {
     use crate::test_shelf::{MIDNIGHT, shelf_items, song_items, works_of};
 
     mod history;
+    mod invalidation;
     mod navigation;
     mod recovery;
     mod source;

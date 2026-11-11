@@ -114,6 +114,7 @@ impl Store for FailingStore {
         fn adopt_spotify_library_owner( &mut self, owner_id: &str, ) -> Result<(SpotifyLibraryOwner, bool), StoreError>;
         fn publish_spotify_library( &mut self, owner: &SpotifyLibraryOwner, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>, ) -> Result<bool, StoreError>;
         fn publish_spotify_playlist_continuation(&mut self, owner: &SpotifyLibraryOwner, publication: &SpotifyPlaylistPublication) -> Result<bool, StoreError>;
+        fn publish_spotify_artist_continuation(&mut self, owner: &SpotifyLibraryOwner, fence: &SpotifyArtistDiscoveryFence, entries: &[LibraryEntry]) -> Result<bool, StoreError>;
         fn save_spotify_playlist_progress(&mut self, owner: &SpotifyLibraryOwner, playlist_uri: &str, expected: Option<&str>, progress: &str) -> Result<bool, StoreError>;
         fn acknowledge_spotify_playlist( &mut self, owner: &SpotifyLibraryOwner, playlist_uri: &str, expected: &str, applied: &str, ) -> Result<bool, StoreError>;
         fn save_render_params( &mut self, household: &str, params: &SpotifyRenderParams, learned_at: i64, ) -> Result<(), StoreError>;

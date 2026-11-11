@@ -94,6 +94,22 @@ can drive:
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)); editing room aliases (`fsonos rooms alias`) and checking `policy.toml` (`fsonos policy check`) are the CLI's alone, as they work on the data directory's files |
 | **A house without speakers** | `fsonos sim` starts virtual S1 and S2 households on loopback, so you can try every command, or develop an agent, with no hardware |
 
+### Changes made in other Sonos controllers
+
+The daemon subscribes to native queue, favorite and saved-playlist changes.
+Editing a paused queue in another controller can refresh an open queue view
+even when its length and selected track stay the same. Both browser remotes
+retire obsolete queue and catalog reviews; late replies cannot restore stale
+selections. Reads are coalesced by the affected group or household, with no
+periodic queue polling.
+
+The DJ also rechecks an invalidated queue before automatic maintenance,
+preserving manually inserted music and relinquishing a completely replaced
+queue. Its own queue additions retain listening-feedback continuity and bounded
+retry backoff. HTTP, CLI and MCP event consumers receive `queue_changed`
+in `zone.state` and household-scoped `catalog.changed` notifications.
+See [Event delivery](docs/EVENT_DELIVERY.md) for the contract.
+
 ### Playback errors and DJ recovery
 
 `fsonos status ROOM`, API state, MCP and live events expose the speaker's
@@ -109,6 +125,15 @@ daemon restarts. A failed or ambiguous command stops automatic management;
 the DJ does not replay it or clear the queue. Renderer failures do not teach
 the DJ that the listener disliked the music. The action log distinguishes an
 observed successful recovery from a continuation that has only been requested.
+
+An ordinary exhausted queue also retains its pending continuation across daemon
+restarts. If refilling succeeded but the speaker explicitly refused playback,
+the DJ can retry from the first movement after the old end without adding the
+same music twice. Every retry checks the current queue, source, selected
+occurrence, group and coordinator boot; a user pause or replacement queue is
+left alone. Before retrying, the daemon durably consumes the saved continuation.
+A failed checkpoint postpones playback, and an unconfirmed command stops
+automatic management without replaying it after another restart.
 
 This addition includes simulator regression cases. Its Rust build and test
 execution remain unverified: the restored local environment still kills the
@@ -301,12 +326,15 @@ diagnosis. An unavailable or refusing daemon returns an error; an ordinary
 `fsonos doctor` or an explicit `--direct` diagnoses the local host.
 
 `fsonos events` follows a daemon URL over HTTP or certificate-validated HTTPS,
-using the same event journal as the local stream. `--since <id>` resumes after
+using the same bounded event-journal reader as the local follower. `--since <id>` resumes after
 a previously printed event; `--count N` stops after N lines. Temporary read
 failures retry three times with backoff and retain the cursor. When the daemon
 reports lost journal history, an `events.reset` line comes before the available
-events, so consumers know to reread current state. Ctrl-C stops a
-waiting follower promptly.
+events, so consumers know to reread current state. Local followers also recover
+from brief disconnects and reload the daemon address and caller token after a
+restart, retaining simulator route confinement. Both paths validate the cursor,
+preserve `--count`, and stop promptly on Ctrl-C, including during a waiting read
+or retry backoff.
 
 - `fsonos tailscale setup` maps HTTPS on 443 (API) and 8443 (MCP) to the
   daemon's loopback ports, refuses to run while Funnel is on for either port,
@@ -458,6 +486,13 @@ deny = ["volume"]
   puts it back anyway. And it stops at a newer change it cannot put back (a
   queue edit, a sleep timer, a fade-out) rather than reach past it and roll
   back an older action instead.
+  Eligible native queue removals, moves and successful playback replacements
+  retain complete queue contents for recovery. Playing an album, playlist,
+  resolved artist/show selection or container favorite can therefore be undone
+  after a daemon restart, restoring duplicate occurrences, the selected track,
+  elapsed time, shuffle/repeat mode and quiet playback intent. Queue ownership
+  checks still apply with `--force`, and undo preserves policy volume reductions.
+  See [Queue undo](docs/QUEUE_UNDO.md) for the bounds and eligibility rules.
 - Callers the daemon cannot identify get read-only tools; the API and MCP
   listeners refuse wildcard and public binds (unless you pass
   `--allow-unsafe-bind`); the HTTP API checks Host and Origin and accepts POST

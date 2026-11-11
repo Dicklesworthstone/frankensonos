@@ -1,6 +1,7 @@
 //! Complete a direct source start when a reply, rather than its effect, is
 //! lost. Each write is sent once. Read-back must establish the requested
-//! source and coordinator before advancing; a Play reply also needs Playing.
+//! source and coordinator before advancing; a Play reply also needs Playing
+//! without an explicitly reported renderer error.
 //! Definite refusals keep their meaning for the caller's existing recovery.
 
 use fsonos_proto::control::{self as soap, MediaInfo};
@@ -155,7 +156,14 @@ fn wait_with_budget<T: Transport + ?Sized>(
         if (attempt > 0 && started.elapsed() >= budget) || !unchanged()? {
             return Ok(false);
         }
-        match soap::get_transport_info(transport, host)?.state {
+        let info = soap::get_transport_info(transport, host)?;
+        // State and status are independent: a renderer can still report
+        // PLAYING or TRANSITIONING while its source has failed. That is not
+        // proof that the lost Play succeeded, nor a reason to wait or replay it.
+        if info.status == "ERROR_OCCURRED" {
+            return Ok(false);
+        }
+        match info.state {
             TransportState::Playing => return unchanged(),
             TransportState::Transitioning => {}
             _ => return Ok(false),
@@ -177,6 +185,7 @@ mod tests {
 
     struct Status {
         state: &'static str,
+        status: Option<&'static str>,
         calls: Cell<u32>,
     }
 
@@ -184,7 +193,15 @@ mod tests {
         fn new(state: &'static str) -> Self {
             Self {
                 state,
+                status: None,
                 calls: Cell::new(0),
+            }
+        }
+
+        fn with_status(state: &'static str, status: &'static str) -> Self {
+            Self {
+                status: Some(status),
+                ..Self::new(state)
             }
         }
     }
@@ -199,10 +216,14 @@ mod tests {
         ) -> Result<String, ProtoError> {
             assert!(action.ends_with("#GetTransportInfo\""));
             self.calls.set(self.calls.get() + 1);
+            let status = self.status.map_or_else(String::new, |status| {
+                format!("<CurrentTransportStatus>{status}</CurrentTransportStatus>")
+            });
             Ok(format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">\
                  <s:Body><u:GetTransportInfoResponse xmlns:u=\"urn:x\">\
                  <CurrentTransportState>{}</CurrentTransportState>\
+                 {status}\
                  </u:GetTransportInfoResponse></s:Body></s:Envelope>",
                 self.state
             ))
@@ -223,6 +244,37 @@ mod tests {
             let t = Status::new(state);
             let host = Ipv4Addr::LOCALHOST.into();
             assert!(!wait_for_playing(&t, host, || Ok(true)).unwrap());
+            assert_eq!(t.calls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn renderer_errors_never_confirm_or_extend_a_lost_play_reply() {
+        for state in ["PLAYING", "TRANSITIONING"] {
+            let t = Status::with_status(state, " ERROR_OCCURRED ");
+            let host = Ipv4Addr::LOCALHOST.into();
+            let mut proofs = 0;
+            assert!(
+                !wait_for_playing(&t, host, || {
+                    proofs += 1;
+                    Ok(true)
+                })
+                .unwrap()
+            );
+            assert_eq!(t.calls.get(), 1, "an explicit renderer error ends recovery");
+            assert_eq!(proofs, 1);
+        }
+    }
+
+    #[test]
+    fn playing_with_no_reported_error_keeps_the_existing_confirmation_contract() {
+        for status in [None, Some(""), Some("OK"), Some("vendor-specific")] {
+            let t = Status {
+                status,
+                ..Status::new("PLAYING")
+            };
+            let host = Ipv4Addr::LOCALHOST.into();
+            assert!(wait_for_playing(&t, host, || Ok(true)).unwrap());
             assert_eq!(t.calls.get(), 1);
         }
     }

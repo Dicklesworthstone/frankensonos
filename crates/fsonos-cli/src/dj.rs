@@ -62,6 +62,7 @@ use crate::dj_view::{self, steer_failure, store_failure};
 
 mod catalog;
 pub(crate) mod configuration;
+mod continuation;
 pub(crate) mod feedback;
 mod handover;
 #[cfg(test)]
@@ -1111,6 +1112,16 @@ impl DjEngine for SpotifyDj {
         self.reconcile_topology(transport, snapshot, store);
     }
 
+    fn on_queue_changed(&self, coordinator: &PlayerId) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(feed) = state.feeds.get_mut(coordinator) {
+            feed.invalidate_queue();
+            // Reconciliation decides whether the heard occurrence survived.
+            // Our own appends must not interrupt an otherwise full listen.
+            // They must also retain an outstanding refill's bounded backoff.
+        }
+    }
+
     fn on_playback(
         &self,
         at: DjSpeakers<'_>,
@@ -1222,6 +1233,9 @@ impl DjEngine for SpotifyDj {
                 return;
             }
         };
+        if !continuation::prepare(self, &mut state, at.coordinator, playback) {
+            return;
+        }
         let State {
             feeds,
             refill_retries,

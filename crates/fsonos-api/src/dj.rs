@@ -183,6 +183,13 @@ pub trait DjEngine: Send + Sync {
         let _ = (from, to);
     }
 
+    /// Retire the cached queue identity after a native content invalidation.
+    /// This callback performs no speaker I/O; the next feed pass reconciles
+    /// the actual revision and ordered contents before mutating the queue.
+    fn on_queue_changed(&self, coordinator: &PlayerId) {
+        let _ = coordinator;
+    }
+
     /// Reconcile feed ownership before processing playback, including after
     /// a spontaneous coordinator re-election. The engine must prove that a
     /// replacement inherited its queue before moving a feed or its steering.

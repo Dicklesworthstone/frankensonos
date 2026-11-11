@@ -156,6 +156,7 @@ mod tests {
                 playing: None,
                 recorded: None,
                 played: Vec::new(),
+                dry_end: None,
                 recovery: Default::default(),
             },
             DjConfig::default(),

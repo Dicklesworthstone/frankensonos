@@ -16,8 +16,9 @@
 //! The row also keeps each touched room's state just after the action
 //! ([`RoomAfter`]: its volume, mute, group and what the group plays). Undo
 //! puts a zone back only while its rooms are still that way: one someone
-//! changed since (the Sonos app, another caller) is left as it is and named,
-//! unless the undo is forced ([`undo_last_vetted`]).
+//! changed since (the Sonos app, another caller), or whose current state cannot
+//! be verified, is left as it is and named, unless the undo is forced
+//! ([`undo_last_vetted`]).
 //!
 //! The surfaces own the flow (authorize, plan, bound by the policy, capture,
 //! execute, [`record`]); this module owns the parts every surface shares, so
@@ -43,7 +44,8 @@ pub use house_config::{
 };
 pub use levels::{LevelAfter, LevelScope, capture_level_after, with_level_after, with_level_scope};
 pub use queue::{
-    PendingQueueUndo, QueueUndo, capture_queue_undo, finish_queue_undo, with_queue_undo,
+    PendingQueueUndo, QueueUndo, capture_queue_undo, finish_queue_replacement, finish_queue_undo,
+    with_queue_undo,
 };
 
 /// Retention: the newest this many actions are kept…
@@ -121,7 +123,7 @@ pub struct BeforeState {
     #[serde(default)]
     pub queued: Vec<QueuedBefore>,
     /// Complete bounded contents and exact post-edit proof for native queue
-    /// removal/reordering. Older action rows have no queue reconstruction.
+    /// removal/reordering or replacement. Older action rows have no queue reconstruction.
     #[serde(default)]
     pub queue_undo: Vec<QueueUndo>,
     /// The touched rooms just after the action ([`with_after`]); none in
@@ -169,8 +171,8 @@ pub struct RoomAfter {
 }
 
 /// The state of `rooms` (primaries, duplicates ignored) now, read from the
-/// players: a room that does not answer is left out, and undo then does not
-/// check it.
+/// players: a room that does not answer is left out. During undo, a missing
+/// read for a still-addressable room cannot confirm its saved after-state.
 pub fn rooms_after<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -265,8 +267,10 @@ fn room_name(households: &[HouseholdState], id: &PlayerId) -> String {
 /// would put back: each room's volume, mute, group and source against
 /// `after`, read again now, and any room grouped in since that is not one
 /// of `touched` (the action's rooms, resolved in the same household), which
-/// the restore would take out again. `None` when nothing did (or nothing
-/// was kept).
+/// the restore would take out again. Unreadable rooms remain unverified, not
+/// unchanged. A room absent from inventory has no restoration target and can
+/// still be reported as skipped while surviving zones are restored. `None`
+/// when no protected room changed or failed verification (or none was kept).
 fn drift<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -282,10 +286,13 @@ fn drift<T: Transport + ?Sized>(
     let now = rooms_after(t, households, &players);
     let mut changes = Vec::new();
     for was in &kept {
+        let room = room_name(households, &was.player);
         let Some(is) = now.iter().find(|room| room.player == was.player) else {
+            if households.iter().any(|h| h.player(&was.player).is_some()) {
+                changes.push(format!("{room}'s current state could not be verified"));
+            }
             continue;
         };
-        let room = room_name(households, &was.player);
         if volume_moved(was, is.volume) {
             changes.push(format!("{room}'s volume {} -> {}", was.volume, is.volume));
         }
@@ -332,9 +339,10 @@ fn drift<T: Transport + ?Sized>(
     (!changes.is_empty()).then(|| changes.join(", "))
 }
 
-/// Refuse to undo `target` when someone changed its zones since (see
-/// [`drift`]): nothing is put back and nothing is logged, so the action
-/// stays undoable and a forced undo still puts back this same action.
+/// Refuse to undo `target` when someone changed its zones since, or a saved
+/// room's current state cannot be verified (see [`drift`]): nothing is put back
+/// and nothing is logged, so the action stays undoable and a forced undo still
+/// puts back this same action.
 fn refuse_if_changed<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -580,8 +588,9 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
 /// [`UNDO_MAX_AGE_SECS`] is refused instead ([`CoreError::NotUndoable`], see
 /// [`undo_target`]): the house has moved on since.
 /// Each zone step passes through `vet` first ([`snapshot::restore_vetted`]).
-/// When someone changed the action's rooms since (see [`RoomAfter`]),
-/// nothing is put back and the undo is refused, naming the changes
+/// When someone changed the action's rooms since (see [`RoomAfter`]), or a
+/// still-addressable room cannot be verified, nothing is put back and the
+/// undo is refused, naming the changed or unverified rooms
 /// ([`CoreError::NotUndoable`]); the action stays undoable. `force` puts it
 /// back anyway.
 #[allow(clippy::too_many_arguments)] // undo_last's arguments, force and the vet
@@ -736,19 +745,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     let now_sessions = capture_sessions(store, &steered)?;
 
     let (zones, failures) = restore_zones(t, households, &before, queue::later(at, started), vet);
-    let mut sessions = Vec::new();
-    let mut session_failures = Vec::new();
-    for session in &before.dj_sessions {
-        let put_back = match &session.row {
-            Some(row) => store.save_dj_session(row),
-            None => store.delete_dj_session(&session.coordinator),
-        };
-        let coordinator = PlayerId(session.coordinator.clone());
-        match put_back {
-            Ok(()) => sessions.push(coordinator),
-            Err(e) => session_failures.push((coordinator, e.to_string())),
-        }
-    }
+    let (sessions, session_failures) = put_back_sessions(store, &before.dj_sessions);
     let (tones, tone_failures) = put_back_tones(t, households, &before.tones);
     let (unqueued, unqueue_failures) = take_off_queued(t, households, &before.queued);
     let config = house_config::put_back_config(store, &before, at);
@@ -827,6 +824,24 @@ fn named(households: &[HouseholdState], coordinators: &[PlayerId]) -> Vec<String
 
 /// What an undo put back, and what it could not (with why).
 type Outcomes = (Vec<PlayerId>, Vec<(PlayerId, String)>);
+
+/// Put back each coordinator's retained DJ session.
+fn put_back_sessions<S: Store + ?Sized>(store: &mut S, before: &[SessionBefore]) -> Outcomes {
+    let mut sessions = Vec::new();
+    let mut session_failures = Vec::new();
+    for session in before {
+        let put_back = match &session.row {
+            Some(row) => store.save_dj_session(row),
+            None => store.delete_dj_session(&session.coordinator),
+        };
+        let coordinator = PlayerId(session.coordinator.clone());
+        match put_back {
+            Ok(()) => sessions.push(coordinator),
+            Err(e) => session_failures.push((coordinator, e.to_string())),
+        }
+    }
+    (sessions, session_failures)
+}
 
 /// Each room's tone in `tones` put back on its player.
 fn put_back_tones<T: Transport + ?Sized>(

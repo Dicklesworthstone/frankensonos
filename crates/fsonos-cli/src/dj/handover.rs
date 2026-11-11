@@ -370,6 +370,7 @@ mod tests {
             playing: Some(1),
             recorded: Some((1, TRACKS[0].into())),
             played: Vec::new(),
+            dry_end: None,
             recovery: Default::default(),
         }
     }

@@ -17,7 +17,7 @@
 //! The DJ's reads (`fsonos dj status|why|moods`, see `crate::dj_cmd`), its
 //! feedback and preferences (`fsonos dj like|dislike|prefs`) and
 //! `fsonos scene apply` find it the same way; `fsonos events` streams
-//! from it ([`Daemon::open_stream`]) and has no direct mode.
+//! from its journal ([`Daemon::events_after`]) and has no direct mode.
 //!
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
@@ -45,8 +45,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::Write as _;
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -199,7 +199,7 @@ pub(crate) fn read_daemon_file(dir: &Path) -> Option<DaemonFile> {
 
 /// Where a daemon answers: its loopback socket (from daemon.json or
 /// `FSONOS_HTTP_ADDR`), or a URL (`--daemon-url`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Endpoint {
     Socket(SocketAddr),
     Url(String),
@@ -235,6 +235,21 @@ impl Daemon {
         if let Some(url) = &global.daemon_url {
             return Self::at_url(url).map(Some);
         }
+        let Some(daemon) = Self::local(global, require)? else {
+            return Ok(None);
+        };
+        match daemon.healthy() {
+            Ok(()) => Ok(Some(daemon)),
+            Err(why) => refuse(
+                require,
+                &format!("no daemon answered at {}: {why}", daemon.addr),
+            ),
+        }
+    }
+
+    /// Resolve the local address and caller token without a network probe.
+    /// Every resolution retains the same simulator-route confinement as find.
+    fn local(global: &GlobalArgs, require: bool) -> Result<Option<Self>, Failure> {
         let file = global.data_dir().as_deref().and_then(read_daemon_file);
         // `FSONOS_HTTP_ADDR` is also serve's bind address: a wildcard or port 0
         // there says where to listen, not where to connect.
@@ -279,15 +294,11 @@ impl Daemon {
             // the CLI's: run directly so the policy reads the same.
             return Ok(None);
         }
-        let daemon = Self {
+        Ok(Some(Self {
             addr: Endpoint::Socket(addr),
             token,
             claim: None,
-        };
-        match daemon.healthy() {
-            Ok(()) => Ok(Some(daemon)),
-            Err(why) => refuse(require, &format!("no daemon answered at {addr}: {why}")),
-        }
+        }))
     }
 
     /// The daemon at `url` (`--daemon-url`), which must answer: a remote
@@ -344,11 +355,19 @@ impl Daemon {
         self.call("GET", path, None, CALL)
     }
 
-    /// A URL may be HTTPS behind Tailscale Serve. Its event follower uses
-    /// bounded JSON reads through the same validating HTTP client as commands.
-    #[must_use]
-    pub fn uses_url(&self) -> bool {
-        matches!(self.addr, Endpoint::Url(_))
+    /// Refresh a long-lived local reader after daemon restarts. Returns whether
+    /// its socket or caller token changed after route confinement succeeded.
+    /// URL readers keep their endpoint and never acquire local rights.
+    pub fn refresh_local(&mut self, global: &GlobalArgs) -> Result<bool, Failure> {
+        if matches!(self.addr, Endpoint::Socket(_)) {
+            let mut refreshed = Self::local(global, true)?
+                .ok_or_else(|| Failure::new(ErrorCode::NotReady, "no local daemon is known"))?;
+            let changed = self.addr != refreshed.addr || self.token != refreshed.token;
+            refreshed.claim = self.claim;
+            *self = refreshed;
+            return Ok(changed);
+        }
+        Ok(false)
     }
 
     /// Read the journal after one cursor, with a finite network deadline.
@@ -468,53 +487,6 @@ impl Daemon {
             });
         }
         Err(refused(method, path, status, &text))
-    }
-
-    /// `GET path` held open, as server-sent events are: the body as it
-    /// arrives once the daemon answered 200, and whether it comes chunked.
-    /// A read waits at most `quiet`.
-    pub fn open_stream(
-        &self,
-        path: &str,
-        quiet: Duration,
-    ) -> Result<(BufReader<TcpStream>, bool), Failure> {
-        let lost = |e: io::Error| {
-            Failure::new(
-                ErrorCode::NotReady,
-                format!("the daemon at {} did not answer GET {path}: {e}", self.addr),
-            )
-            .with_hint("Check that fsonos serve runs.")
-        };
-        let Endpoint::Socket(addr) = &self.addr else {
-            return Err(Failure::new(
-                ErrorCode::NotImplemented,
-                format!(
-                    "the event stream comes only from a daemon on this machine, not {}",
-                    self.addr
-                ),
-            )
-            .with_hint("Run fsonos events on the daemon's host, or read GET /events there."));
-        };
-        let mut stream = TcpStream::connect_timeout(addr, PROBE).map_err(lost)?;
-        stream.set_read_timeout(Some(quiet)).map_err(lost)?;
-        stream.set_write_timeout(Some(CALL)).map_err(lost)?;
-        let request = self.request("GET", path, "", "text/event-stream");
-        stream.write_all(request.as_bytes()).map_err(lost)?;
-        let mut reader = BufReader::new(stream);
-        let mut head = Vec::new();
-        while !head.ends_with(b"\r\n\r\n") {
-            if reader.read_until(b'\n', &mut head).map_err(lost)? == 0 {
-                return Err(lost(io::ErrorKind::UnexpectedEof.into()));
-            }
-        }
-        let (status, chunked) = parse_head(&String::from_utf8_lossy(&head))
-            .ok_or_else(|| lost(io::ErrorKind::InvalidData.into()))?;
-        if status != 200 {
-            reader.read_to_end(&mut head).map_err(lost)?;
-            let (status, text) = parse_response(&head).map_err(lost)?;
-            return Err(refused("GET", path, status, &text));
-        }
-        Ok((reader, chunked))
     }
 
     /// One HTTP/1.1 exchange over a fresh loopback connection (or through
@@ -1215,6 +1187,7 @@ fn control_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Read};
 
     #[test]
     fn long_running_commands_share_the_web_remotes_response_budget() {
@@ -1675,6 +1648,62 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(daemon.healthy().is_err());
         assert!(started.elapsed() < PROBE * 4, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn event_readers_refresh_local_credentials_without_crossing_route_boundaries() {
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let routes = dir.path().join("routes.toml");
+        std::fs::write(&routes, "[routes]\n").unwrap();
+        let global = crate::Cli::try_parse_from([
+            "fsonos",
+            "--data-dir",
+            dir.path().to_str().unwrap(),
+            "--routes",
+            routes.to_str().unwrap(),
+            "events",
+        ])
+        .unwrap()
+        .global;
+        let mut file = DaemonFile {
+            http: "127.0.0.1:1".parse().unwrap(),
+            cli_token: "old-local-token".into(),
+            pid: 1,
+            routes: Some(routes),
+            serve: None,
+        };
+        write_daemon_file(dir.path(), &file).unwrap();
+        let mut daemon = Daemon::local(&global, true)
+            .unwrap()
+            .unwrap()
+            .for_stdio_mcp();
+        file.http.set_port(2);
+        file.cli_token = "replacement-local-token".into();
+        write_daemon_file(dir.path(), &file).unwrap();
+        assert!(daemon.refresh_local(&global).unwrap());
+        assert!(!daemon.refresh_local(&global).unwrap());
+        assert_eq!(daemon.addr.to_string(), "127.0.0.1:2");
+        assert_eq!(daemon.token.as_deref(), Some("replacement-local-token"));
+        assert_eq!(daemon.claim, Some("mcp-stdio"));
+
+        file.routes = None;
+        file.http.set_port(3);
+        write_daemon_file(dir.path(), &file).unwrap();
+        assert_eq!(
+            daemon.refresh_local(&global).unwrap_err().code,
+            ErrorCode::NotReady
+        );
+        assert_eq!(daemon.addr.to_string(), "127.0.0.1:2");
+
+        let mut remote = Daemon {
+            addr: Endpoint::Url("https://example.test".into()),
+            token: None,
+            claim: None,
+        };
+        assert!(!remote.refresh_local(&global).unwrap());
+        assert_eq!(remote.addr.to_string(), "https://example.test");
+        assert!(remote.token.is_none());
     }
 
     /// A daemon that answers `GET /health` (and nothing else), for `n`

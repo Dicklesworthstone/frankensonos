@@ -12,6 +12,9 @@ use fsonos_types::PlayerId;
 const STREAM: &str = "x-rincon-mp3radio://stream.example.invalid/first.mp3";
 const OTHER: &str = "x-rincon-mp3radio://stream.example.invalid/other.mp3";
 
+#[path = "actions_sim/read_failures.rs"]
+mod read_failures;
+
 fn sim() -> SimHandle {
     SimHousehold::builder()
         .s1([

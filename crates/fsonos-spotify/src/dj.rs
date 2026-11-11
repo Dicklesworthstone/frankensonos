@@ -20,7 +20,8 @@
 //!   (a small library, a long session), the DJ rotates through the
 //!   least-recently-played slice instead of repeating.
 //! * **Spread.** No artist or composer recurs within
-//!   [`DjConfig::artist_cooldown_works`] works while any other qualifies. The
+//!   [`DjConfig::artist_cooldown_works`] works while another qualifies among
+//!   the fresh works or the oldest rotation candidates. The
 //!   same artist, composer or album is strongly de-weighted for a few works
 //!   and recovers quadratically; same-genre and same-period runs are damped
 //!   and genres or periods missing from the last few works are favored;
@@ -155,8 +156,8 @@ pub struct DjConfig {
     pub work_cooldown_plays: usize,
     /// …nor within this many seconds (when history carries timestamps).
     pub work_cooldown_secs: i64,
-    /// Hard: no artist (a song's lead artist, a classical work's composer)
-    /// recurs within this many work plays, while any other work qualifies.
+    /// No artist (a song's lead artist, a classical work's composer) recurs
+    /// within this many work plays while another qualifies after anti-repeat.
     pub artist_cooldown_works: usize,
     /// Soft: work plays over which a composer recovers from being heard.
     pub composer_spacing: usize,
@@ -793,22 +794,6 @@ fn eligible(
     if allowed.is_empty() {
         allowed = admitted;
     }
-    // No artist twice within the window — unless that would leave nothing.
-    if config.artist_cooldown_works > 0 {
-        let spaced: Vec<usize> = allowed
-            .iter()
-            .copied()
-            .filter(|&w| {
-                recency
-                    .composer_ago
-                    .get(pool.works[w].composer_key())
-                    .is_none_or(|&ago| ago >= config.artist_cooldown_works)
-            })
-            .collect();
-        if !spaced.is_empty() {
-            allowed = spaced;
-        }
-    }
     // Twice-disliked works sit out — unless the owner's preferences favor
     // them, or that would leave nothing.
     if let Some(model) = ctx.feedback {
@@ -840,32 +825,53 @@ fn eligible(
     let distinct = |works: &[usize]| works.iter().map(key).collect::<HashSet<_>>().len();
     let distinct_allowed = distinct(&allowed);
     let fresh: Vec<usize> = allowed.iter().copied().filter(|w| !cooling(w)).collect();
-    if distinct(&fresh) >= (distinct_allowed / 10).max(1) {
-        return Eligible {
+    let mut eligible = if distinct(&fresh) >= (distinct_allowed / 10).max(1) {
+        Eligible {
             works: fresh,
             rotation: false,
-        };
+        }
+    } else {
+        let quarter = (distinct_allowed / 4).max(1);
+        // Least recently played here first; what another room plays, has queued
+        // or played lately goes last, never ahead as "not played here".
+        allowed.sort_by_key(|w| {
+            (
+                elsewhere(w),
+                Reverse(recency.work_ago.get(key(w)).copied().unwrap_or(usize::MAX)),
+            )
+        });
+        // Choose the stalest distinct works, retaining every permitted recording
+        // of each. Many editions must neither force an early repeat nor crowd
+        // other works out of the rotation window.
+        let mut rotating = HashSet::new();
+        allowed.retain(|w| {
+            rotating.contains(key(w)) || (rotating.len() < quarter && rotating.insert(key(w)))
+        });
+        Eligible {
+            works: allowed,
+            rotation: true,
+        }
+    };
+    // Space artists within the eligible music. Filtering earlier can leave
+    // only a recently heard work from a scarce artist, forcing a repeat while
+    // fresh or older works from a prolific artist are still waiting.
+    if config.artist_cooldown_works > 0 {
+        let spaced: Vec<usize> = eligible
+            .works
+            .iter()
+            .copied()
+            .filter(|&w| {
+                recency
+                    .composer_ago
+                    .get(pool.works[w].composer_key())
+                    .is_none_or(|&ago| ago >= config.artist_cooldown_works)
+            })
+            .collect();
+        if !spaced.is_empty() {
+            eligible.works = spaced;
+        }
     }
-    let quarter = (distinct_allowed / 4).max(1);
-    // Least recently played here first; what another room plays, has queued
-    // or played lately goes last, never ahead as "not played here".
-    allowed.sort_by_key(|w| {
-        (
-            elsewhere(w),
-            Reverse(recency.work_ago.get(key(w)).copied().unwrap_or(usize::MAX)),
-        )
-    });
-    // Choose the stalest distinct works, retaining every permitted recording
-    // of each. Many editions must neither force an early repeat nor crowd
-    // other works out of the rotation window.
-    let mut rotating = HashSet::new();
-    allowed.retain(|w| {
-        rotating.contains(key(w)) || (rotating.len() < quarter && rotating.insert(key(w)))
-    });
-    Eligible {
-        works: allowed,
-        rotation: true,
-    }
+    eligible
 }
 
 const SCALE: u64 = 1_000_000_000;

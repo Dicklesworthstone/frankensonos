@@ -5,7 +5,7 @@ const DashboardLive = (() => {
   const EVENTS = ['zone.state', 'topology.changed', 'player.health', 'action.logged', 'dj.status'];
   function create({ connect = null, reload, invalidate = () => {}, connection = () => {},
     blocked = () => false, retryAfter = () => 0, observed = () => {}, demo = false,
-    eventTargets = () => null, failedTargets = () => null, reconciled = ok => ok,
+    eventTargets = () => null, failedTargets = () => null, reconciled = ok => ok, content = () => {},
     schedule = setTimeout, cancel = clearTimeout, now = () => globalThis.performance?.now() ?? Date.now() }) {
     let active = false, disposed = false, busy = false, connected = false;
     let pending = false, full = false, explicit = false, failed = false, generation = 0, lifetime = 0;
@@ -78,7 +78,25 @@ const DashboardLive = (() => {
         request(false, true);
       });
       for (const name of EVENTS) next.addEventListener(name, event => {
-        if (current()) request(false, false, eventScope(name, event));
+        if (!current()) return;
+        if (name === 'zone.state') {
+          try {
+            const change = JSON.parse(event.data);
+            if (change?.queue_changed === true) notify(content, 'queue', change);
+          } catch (_) { /* The snapshot read below repairs an unreadable delta. */ }
+        }
+        request(false, false, eventScope(name, event));
+      });
+      next.addEventListener('catalog.changed', event => {
+        if (!current()) return;
+        let change = null;
+        try {
+          const value = JSON.parse(event.data);
+          if (value && !Array.isArray(value) && typeof value === 'object'
+              && typeof value.favorites === 'boolean' && typeof value.playlists === 'boolean'
+              && (value.household == null || typeof value.household === 'string' && value.household.trim() && value.household.length <= 512)) change = value;
+        } catch (_) { /* An unknown scope invalidates every native catalog view. */ }
+        notify(content, 'catalog', change);
       });
       for (const name of ['events.reset', 'reset']) next.addEventListener(name, () => {
         if (current()) { notify(connection, false); request(false, true); }

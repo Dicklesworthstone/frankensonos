@@ -277,3 +277,49 @@ test('synchronously thrown read failures still have exactly one future recovery 
   assert.equal(h.time.pending, 1);
   await h.time.tick(5000); assert.equal(h.reads.length, 4); assert.equal(h.time.pending, 1);
 });
+
+test('native favorite events retire only that household and coalesce a burst without polling', async () => {
+  const h = harness(); await start(h, [zone('Den', 'S1'), zone('Den', 'S2')]);
+  for (let n = 0; n < 60; n++) h.model.invalidate({ household: 'S1', favorites: true, playlists: false });
+  assert.equal(h.reads.length, 3); await h.time.tick(h.CatalogRemote.COALESCE - 1);
+  assert.equal(h.reads.length, 3); await h.time.tick(1);
+  assert.equal(h.reads.filter(r => r.kind === 'favorites' && r.household === 'S1').length, 2);
+  assert.equal(h.reads.filter(r => r.kind === 'favorites' && r.household === 'S2').length, 1);
+  assert.equal(h.reads.filter(r => r.kind === 'moods').length, 1);
+  await h.time.tick(600000); assert.equal(h.reads.length, 4); assert.equal(h.time.pending, 0);
+});
+
+test('an external edit during a favorites read fences its answer and schedules one fresh read', async () => {
+  const held = deferred(); let reads = 0;
+  const h = harness(s => s.kind === 'favorites' && ++reads === 1 ? held.promise : Promise.resolve('current'));
+  await start(h); h.model.invalidate({ household: 'S2', favorites: true, playlists: false });
+  await h.time.tick(h.CatalogRemote.COALESCE); assert.equal(reads, 1, 'no overlapping reads');
+  held.resolve('stale'); await settle();
+  assert.equal(reads, 2); assert.ok(h.values.every(value => value.value === 'current'));
+  assert.equal(h.values.filter(value => value.source.kind === 'favorites').length, 1);
+});
+
+test('a native catalog update immediately removes old selectable favorite IDs until a fresh read', async () => {
+  let current = favorite;
+  const h = runtime(async name => name === 'favorites' ? [current] : { moods: [] });
+  const parts = addCard(h); h.catalogs.reconcile([zone()]); h.catalogs.resume(); await settle();
+  assert.equal(parts.favorite.disabled, false); current = { ...favorite, id: 'FV:new', title: 'Updated favorite' };
+  h.catalogs.invalidate({ household: 'S2', favorites: true, playlists: false });
+  assert.equal(h.house.favorites.has('S2'), false); assert.equal(parts.favorite.disabled, true);
+  assert.equal(parts.favorite.children.length, 1);
+  await h.time.tick(h.CatalogRemote.COALESCE);
+  assert.equal(parts.favorite.disabled, false); assert.equal(parts.favorite.children[1].value, 'FV:new');
+});
+
+test('catalog invalidation respects a server retry floor and does not start work while hidden', async () => {
+  let reads = 0;
+  const h = harness(async s => {
+    if (s.kind === 'favorites' && ++reads === 1) throw Object.assign(new Error('rate limited'), { status: 429, retryAfter: 180000 });
+    return [];
+  });
+  await start(h); h.model.suspend();
+  h.model.invalidate({ household: 'S2', favorites: true, playlists: false });
+  await h.time.tick(179999); assert.equal(reads, 1); assert.equal(h.time.pending, 0);
+  h.model.resume(); await settle(); assert.equal(reads, 1);
+  await h.time.tick(1); assert.equal(reads, 2); assert.equal(h.time.pending, 0);
+});

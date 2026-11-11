@@ -874,7 +874,7 @@ const LiveRemote = (() => {
   const MAX_PENDING = 64;
   const ROOM_CONCURRENCY = 4;
 
-  function model({ connect, reload, refresh, status = () => {}, invalidate = () => {},
+  function model({ connect, reload, refresh, status = () => {}, invalidate = () => {}, catalog = () => {},
     schedule = setTimeout, cancel = clearTimeout }) {
     let active = false, disposed = false, connected = false, busy = false;
     let full = false, synced = false, failedRead = false, generation = 0;
@@ -960,6 +960,7 @@ const LiveRemote = (() => {
       ++generation;
       // Fence observations started on the previous connection, not commands.
       invalidate(null, true);
+      catalog(null);
     }
 
     function openFeed() {
@@ -998,6 +999,17 @@ const LiveRemote = (() => {
           request(change && !Array.isArray(change) ? change[field] : null);
         });
       }
+      feed.addEventListener('catalog.changed', (event) => {
+        if (!current()) return;
+        let change = null;
+        try {
+          const value = JSON.parse(event.data);
+          if (value && !Array.isArray(value) && typeof value === 'object'
+              && typeof value.favorites === 'boolean' && typeof value.playlists === 'boolean'
+              && (value.household == null || typeof value.household === 'string' && value.household.trim() && value.household.length <= 512)) change = value;
+        } catch (_) { /* An unreadable scope invalidates all native catalogs. */ }
+        catalog(change);
+      });
       feed.addEventListener('events.reset', () => {
         if (!current()) return;
         loseContinuity();
@@ -1050,7 +1062,7 @@ const LiveRemote = (() => {
 // Catalog reads have their own recovery lane: a failed favorites/moods read
 // must not hide controls until a page reload or force whole-house polling.
 const CatalogRemote = (() => {
-  const FIRST = 5000, MAX = 60000, CONCURRENCY = 4;
+  const FIRST = 5000, MAX = 60000, CONCURRENCY = 4, COALESCE = 300;
   const keyOf = (kind, household = '') => JSON.stringify([kind, household]);
 
   function sources(zones) {
@@ -1071,11 +1083,12 @@ const CatalogRemote = (() => {
     const slots = new Map();
     let active = false, disposed = false, running = 0, timer = null;
     const clear = () => { if (timer !== null) cancel(timer); timer = null; };
-    const reset = (slot) => { ++slot.epoch; slot.done = false; slot.due = Math.max(now(), slot.notBefore); slot.delay = FIRST; };
+    const reset = (slot) => { ++slot.epoch; slot.signaled = false; slot.done = false; slot.due = Math.max(now(), slot.notBefore); slot.delay = FIRST; };
 
     async function run(slot) {
       const source = slot.source, epoch = slot.epoch;
       const current = () => active && slots.get(source.key) === slot && slot.epoch === epoch;
+      slot.signaled = false;
       slot.busy = true;
       ++running;
       try {
@@ -1155,12 +1168,25 @@ const CatalogRemote = (() => {
     }
 
     return { reconcile, resume, suspend,
+      invalidate(change = null) {
+        if (disposed || change?.favorites === false) return;
+        for (const slot of slots.values()) {
+          if (slot.source.kind !== 'favorites' || change?.household && slot.source.household !== change.household) continue;
+          ++slot.epoch; slot.done = false;
+          // Keep the first deadline through a burst, including edits arriving
+          // during a read. The older response cannot republish stale choices.
+          if (!slot.signaled) slot.due = Math.max(now() + COALESCE, slot.notBefore);
+          slot.signaled = true;
+          status(slot.source, 'stale');
+        }
+        pump();
+      },
       refresh() { if (active) { for (const slot of slots.values()) reset(slot); pump(); } },
       dispose() { disposed = true; suspend(); slots.clear(); },
     };
   }
 
-  return { model, sources, keyOf, FIRST, MAX, CONCURRENCY };
+  return { model, sources, keyOf, FIRST, MAX, CONCURRENCY, COALESCE };
 })();
 
 const catalogs = CatalogRemote.model({
@@ -1170,6 +1196,7 @@ const catalogs = CatalogRemote.model({
     else house.moods = value;
   },
   status(source, phase) {
+    if (phase === 'stale' && source.kind === 'favorites') house.favorites.delete(source.household);
     house.catalogStatus.set(source.key, phase);
     for (const parts of house.cards.values()) {
       if (source.kind === 'favorites' && parts.zone.household === source.household) fillFavorites(parts);
@@ -1203,6 +1230,12 @@ function listen() {
       else for (const zone of zones) await refreshZone(zone);
     },
     status: (text) => { $('live').textContent = text; },
+    catalog(change) {
+      catalogs.invalidate(change);
+      if (typeof CustomEvent === 'function' && typeof document.dispatchEvent === 'function') {
+        document.dispatchEvent(new CustomEvent('fsonos:catalog-changed', { detail: change }));
+      }
+    },
     invalidate: (room, lost = false) => {
       if (lost) { ++house.readVersion; requestJson.cancelReads(); }
       const matches = typeof room === 'string' ? LiveRemote.affected(house.zones, room) : [];

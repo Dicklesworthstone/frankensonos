@@ -55,14 +55,14 @@ fn repeated_initial_loss_recovers_all_services_without_a_delta_or_poll() {
         let now = Instant::now();
         let mut rec = reconciler(&lan, host, now);
         let wants = wanted(&rec.households);
-        assert_eq!(wants.len(), 4);
+        assert_eq!(wants.len(), 5);
         let id = wants[0].player.clone();
         let sink = listener(&lan, host);
         let callback = |service: Service| sink.callback_url(service.tag());
         // Lose both the initial burst and the first replacement's burst.
-        sim.drop_notifies(room, Some(NotifyDrop::Next(8))).unwrap();
+        sim.drop_notifies(room, Some(NotifyDrop::Next(10))).unwrap();
         let subscribed = rec.subscriptions.sync(&lan, &wants, callback, now);
-        assert_eq!(subscribed.subscribed, 4);
+        assert_eq!(subscribed.subscribed, 5);
         assert!(subscribed.failed.is_empty());
         assert!(sink.recv_timeout(Duration::from_millis(50)).is_none());
         let calls = sim.soap_log().len();
@@ -71,11 +71,11 @@ fn repeated_initial_loss_recovers_all_services_without_a_delta_or_poll() {
             let due = now + INITIAL_STATE_WAIT * ((1 << attempt) - 1);
             assert_eq!(rec.subscriptions.next_due(), Some(due));
             let report = rec.subscriptions.renew_due(&lan, callback, due);
-            assert_eq!(report.resubscribed, 4);
+            assert_eq!(report.resubscribed, 5);
             assert_eq!(report.renewed, 0);
             assert!(report.failed.is_empty());
             assert!(report.answered.is_empty());
-            assert_eq!(report.unanswered.len(), 4);
+            assert_eq!(report.unanswered.len(), 5);
             if attempt == 1 {
                 assert!(sink.recv_timeout(Duration::from_millis(50)).is_none());
                 assert!(playback.of(&id).is_none());
@@ -83,7 +83,7 @@ fn repeated_initial_loss_recovers_all_services_without_a_delta_or_poll() {
         }
         let due = now + INITIAL_STATE_WAIT * 3;
         let mut services = HashSet::new();
-        for _ in 0..4 {
+        for _ in 0..5 {
             let initial = receive(&sink);
             assert_eq!(initial.seq, 0);
             let (_, service) = rec.subscriptions.route(&initial).unwrap();
@@ -92,7 +92,7 @@ fn repeated_initial_loss_recovers_all_services_without_a_delta_or_poll() {
                 .unwrap()
                 .unwrap();
         }
-        assert_eq!(services.len(), 4);
+        assert_eq!(services.len(), 5);
         let state = playback.of(&id).unwrap();
         assert_eq!(state.transport, Some(TransportState::Stopped));
         assert_eq!(state.volume, Some(23));
@@ -106,7 +106,7 @@ fn repeated_initial_loss_recovers_all_services_without_a_delta_or_poll() {
                 e.player == player.uuid && matches!(e.event, GenaEvent::Dropped { seq: 0, .. })
             })
             .count();
-        assert_eq!(dropped, 8);
+        assert_eq!(dropped, 10);
         assert_eq!(
             sim.soap_log().len(),
             calls,

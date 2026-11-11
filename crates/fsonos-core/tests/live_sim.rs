@@ -388,22 +388,22 @@ fn grouping_changes_resubscribe_without_waiting_for_a_survey() {
     let lan = routed(&sim);
     let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
     assert!(live.wait_ready(Duration::from_secs(10)));
-    assert!(eventually(Duration::from_secs(5), || live
-        .snapshot()
-        .subscriptions
-        > 0));
+    assert!(eventually(Duration::from_secs(5), || {
+        let snapshot = live.snapshot();
+        snapshot.subscriptions == wanted(&snapshot.households).len()
+    }));
     let all = live.snapshot().subscriptions;
     let surveyed = live.snapshot().surveyed_at;
 
-    // The Office joins the Kitchen: as a member it needs no AVTransport or
-    // group-volume subscription of its own.
+    // The Office joins the Kitchen: as a member it needs no AVTransport,
+    // group-volume or ContentDirectory subscription of its own.
     let houses = live.households();
     let kitchen = resolve_room(&houses, "Kitchen").unwrap();
     let office = resolve_room(&houses, "Office").unwrap();
     assert!(grouping::group(&*lan, &houses, &kitchen, &[office]).is_complete());
     assert!(
         eventually(Duration::from_secs(5), || live.snapshot().subscriptions
-            == all - 2),
+            == all - 3),
         "{} of {all}",
         live.snapshot().subscriptions
     );

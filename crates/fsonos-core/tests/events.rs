@@ -114,6 +114,7 @@ fn every_household_gets_topology_once_and_each_service_where_it_belongs() {
             "one per coordinator"
         );
         assert_eq!(mine(Service::GroupRenderingControl), h.groups.len());
+        assert_eq!(mine(Service::ContentDirectory), h.groups.len());
         assert_eq!(
             mine(Service::RenderingControl),
             h.players.len(),

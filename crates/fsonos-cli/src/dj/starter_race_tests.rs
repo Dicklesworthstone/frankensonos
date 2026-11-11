@@ -73,6 +73,7 @@ fn running() -> Running {
         playing: Some(1),
         recorded: None,
         played: Vec::new(),
+        dry_end: None,
         recovery: Default::default(),
     };
     let dj = SpotifyDj::new(None);

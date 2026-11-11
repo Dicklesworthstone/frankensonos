@@ -504,6 +504,7 @@ fn household(sw_gen: u8) -> Household {
         sw_gen,
         params,
         favorites,
+        favorites_update_id: 1,
         saved_playlists,
         saved_playlists_update_id: 1,
         offered_update: None,
@@ -637,7 +638,12 @@ impl SimHandle {
             .iter_mut()
             .find(|h| h.sw_gen == sw_gen)
             .ok_or_else(|| SimError::Invalid(format!("no S{sw_gen} household")))?;
+        let before = household.favorites.len();
         household.favorites.retain(|f| keep(&f.uri));
+        if household.favorites.len() != before {
+            household.favorites_update_id = household.favorites_update_id.wrapping_add(1);
+            state.flush_events();
+        }
         Ok(())
     }
 

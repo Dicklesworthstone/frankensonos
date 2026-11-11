@@ -290,3 +290,39 @@ test('newly mismatched movement metadata is checked again before feedback dispat
   assert.equal(await f.session.confirm(r),false);assert.equal(f.writes().length,0);
   assert.match(f.controller.state.message,/does not match playback/);
 });
+
+test('native favorite changes fence an already running favorite preflight without affecting other households', async () => {
+  for (const [change, allowed] of [
+    [{ household: 'S2', favorites: true, playlists: false }, false],
+    [{ household: 'S1', favorites: true, playlists: false }, true],
+    [{ household: 'S2', favorites: false, playlists: true }, true],
+  ]) {
+    const f = await fixture().ready();
+    f.data.hits = [{ title: 'Radio', kind: 'favorite', favorite: 'FV:2/7' }];
+    await f.session.search('Radio');
+    const reviewed = f.session.review('play', { hit: f.session.state.hits[0] }), held = deferred();
+    let waiting = false;
+    f.setHook(url => {
+      if (url.startsWith('/library/search')) { waiting = true; return held.promise; }
+    });
+    const action = f.session.confirm(reviewed); await tick();
+    assert.equal(waiting, true); assert.equal(f.session.state.pending, null);
+    f.session.catalogChanged(change); held.resolve(clone(f.data.hits));
+    assert.equal(await action, allowed); assert.equal(f.writes().length, allowed ? 1 : 0);
+    if (!allowed) assert.equal(f.controller.state.uncertain, false);
+  }
+});
+
+test('native favorite changes preserve the single outcome of an already submitted favorite command', async () => {
+  const f = await fixture().ready();
+  f.data.hits = [{ title: 'Radio', kind: 'favorite', favorite: 'FV:2/7' }];
+  await f.session.search('Radio');
+  const reviewed = f.session.review('play', { hit: f.session.state.hits[0] }), held = deferred();
+  f.setHook((url, body) => body === undefined ? undefined : held.promise);
+  const action = f.session.confirm(reviewed); await tick(); assert.equal(f.writes().length, 1);
+  f.session.catalogChanged({ household: 'S2', favorites: true, playlists: false });
+  held.resolve({ done: 'Favorite accepted once', changed: true });
+  assert.equal(await action, true); assert.equal(f.controller.state.uncertain, false);
+  assert.equal(await f.session.confirm(reviewed), false); assert.equal(f.writes().length, 1);
+  assert.equal(f.controller.state.message, 'Favorite accepted once');
+});

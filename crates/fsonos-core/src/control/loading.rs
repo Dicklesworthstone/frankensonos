@@ -223,6 +223,53 @@ pub(super) fn spotify_container<T: Transport + ?Sized>(
     title: &str,
     autoplay: bool,
 ) -> Result<(), CoreError> {
+    spotify_container_render(
+        t,
+        households,
+        coordinator,
+        kind,
+        spotify_uri,
+        title,
+        |uri, metadata| {
+            if autoplay {
+                crate::queue_source::play(t, households, coordinator, uri, metadata)
+            } else {
+                crate::queue_source::load(t, households, coordinator, uri, metadata)
+            }
+        },
+    )
+}
+
+pub(super) fn spotify_container_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    kind: SpotifyContainer,
+    spotify_uri: &str,
+    title: &str,
+) -> Result<super::QueueReplacement, CoreError> {
+    spotify_container_render(
+        t,
+        households,
+        coordinator,
+        kind,
+        spotify_uri,
+        title,
+        |uri, metadata| {
+            crate::queue_source::play_with_receipt(t, households, coordinator, uri, metadata)
+        },
+    )
+}
+
+fn spotify_container_render<T: Transport + ?Sized, R>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    kind: SpotifyContainer,
+    spotify_uri: &str,
+    title: &str,
+    render: impl Fn(&str, &str) -> Result<R, CoreError>,
+) -> Result<R, CoreError> {
     let host = addr(households, coordinator)?;
     let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
@@ -232,13 +279,7 @@ pub(super) fn spotify_container<T: Transport + ?Sized>(
         }
         .ok_or(CoreError::NoSpotifyFavorite)
     };
-    let render = |(uri, metadata): &(String, String)| {
-        if autoplay {
-            crate::queue_source::play(t, households, coordinator, uri, metadata)
-        } else {
-            crate::queue_source::load(t, households, coordinator, uri, metadata)
-        }
-    };
+    let render = |(uri, metadata): &(String, String)| render(uri, metadata);
     let initial = source(None)?;
     match render(&initial) {
         Err(error) if is_render_800(&error) => match render(&source(Some(&initial))?) {

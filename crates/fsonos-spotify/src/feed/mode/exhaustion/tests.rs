@@ -18,6 +18,8 @@ use std::cell::Cell;
 use std::net::IpAddr;
 use std::time::Duration;
 
+mod restart;
+
 const ROOM: &str = "Exhaustion Room";
 const OTHER: &str = "Other Room";
 const TRACKS: [&str; 4] = [
@@ -111,6 +113,7 @@ impl Rig {
                 }],
                 played: Vec::new(),
                 recovery: Default::default(),
+                dry_end: None,
                 playing: Some(4),
                 recorded: Some((4, TRACKS[3].into())),
             },
@@ -684,6 +687,45 @@ fn a_pending_retry_can_play_its_already_queued_successor() {
         // The successor is already queued, so recovery starts it without
         // adding another work. The return value counts newly queued works.
         assert_eq!(rig.tick(&rig.lan, &mut feed, &event).unwrap(), 0);
+        assert_eq!(
+            soap::get_position_info(&rig.lan, rig.host).unwrap().track,
+            5
+        );
+        assert_eq!(
+            soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
+            TransportState::Playing
+        );
+        assert!(feed.dry_end.is_none());
+    }
+}
+
+#[test]
+fn its_own_queue_notification_preserves_a_failed_exhaustion_restart() {
+    for s2 in [false, true] {
+        let rig = Rig::new(s2);
+        let mut feed = rig.feed();
+        let event = rig.event();
+        // The append succeeds but the speaker refuses to start it. Its
+        // ContentDirectory event arrives after the failed attempt returns.
+        rig.sim.upnp_fault(ROOM, "Play", 701).unwrap();
+        assert!(rig.tick(&rig.lan, &mut feed, &event).is_err());
+        assert_eq!(feed.dry_end, Some(4));
+        assert_eq!(feed.left_at(), Some(5));
+        feed.invalidate_queue();
+        assert_eq!(feed.dry_end, Some(4));
+        assert_eq!(feed.queue_len, None);
+        rig.sim.clear_faults(ROOM).unwrap();
+
+        // Recheck the entire queue and current state, then play the already
+        // accepted successor without adding it a second time.
+        let event = rig.event();
+        let start = rig.sim.soap_log().len();
+        assert_eq!(rig.tick(&rig.lan, &mut feed, &event).unwrap(), 0);
+        assert!(
+            rig.writes_since(start)
+                .iter()
+                .all(|write| write != "AddURIToQueue")
+        );
         assert_eq!(
             soap::get_position_info(&rig.lan, rig.host).unwrap().track,
             5

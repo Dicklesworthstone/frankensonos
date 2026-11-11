@@ -229,7 +229,11 @@ fn queue_request(next: bool) -> QueueAddRequest {
     }
 }
 
-fn assert_artist_play_history_and_undo(surface: &Surface, rig: &Rig) {
+fn assert_artist_play_history_and_undo(
+    surface: &Surface,
+    rig: &Rig,
+    original: &[(String, String)],
+) {
     let heard = surface
         .recent_plays(&Client::McpStdio, Some("Member"), 10)
         .unwrap();
@@ -245,12 +249,29 @@ fn assert_artist_play_history_and_undo(surface: &Surface, rig: &Rig) {
     assert_eq!(action.intent, "play: play Selected artist in Lead");
     assert!(action.result.contains("3 tracks"));
     assert!(action.decision.starts_with("clamp:"));
-    let marker = rig.sim.soap_log().len();
-    let refused = surface.undo(&Client::McpStdio, true).unwrap_err();
-    assert_eq!(refused.code, ErrorCode::InvalidArgument);
-    assert!(refused.detail.contains("artist queue replacement"));
-    assert!(rig.writes_since(marker).is_empty());
-    assert_eq!(rig.queue(), selection().tracks);
+    let preview = surface.preview_undo(&Client::McpStdio).unwrap().unwrap();
+    assert_eq!(preview.id, actions[0].id);
+    assert!(preview.undoable);
+    let restored = surface.undo_checked(&Client::McpStdio, preview.id).unwrap();
+    assert_eq!(restored.undone, Some(preview.id));
+    assert!(restored.failures.is_empty(), "{restored:?}");
+    assert_eq!(rig.queue(), original);
+    assert_eq!(
+        soap::get_position_info(&rig.sim.lan(), rig.lead)
+            .unwrap()
+            .track,
+        2
+    );
+    assert_eq!(
+        get_play_mode(&rig.sim.lan(), rig.lead).unwrap(),
+        PlayMode::ShuffleRepeatOne
+    );
+    assert_eq!(
+        soap::get_transport_info(&rig.sim.lan(), rig.lead)
+            .unwrap()
+            .state,
+        TransportState::Playing
+    );
     assert_eq!(rig.volumes(), [25, 25, 60]);
 }
 
@@ -260,6 +281,7 @@ fn an_artist_play_targets_the_coordinator_caps_its_audience_and_replaces_in_orde
         let rig = Rig::new(generation);
         let calls = Arc::new(AtomicUsize::new(0));
         let surface = rig.with_catalog(Catalog::ready(&calls), capped_policy());
+        let original = rig.queue();
         let marker = rig.sim.soap_log().len();
         let result = surface
             .control(&Client::McpStdio, "play", |rooms| {
@@ -325,7 +347,7 @@ fn an_artist_play_targets_the_coordinator_caps_its_audience_and_replaces_in_orde
                 .unwrap()
                 .is_empty()
         );
-        assert_artist_play_history_and_undo(&surface, &rig);
+        assert_artist_play_history_and_undo(&surface, &rig, &original);
     }
 }
 

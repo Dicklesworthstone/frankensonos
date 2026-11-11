@@ -17,6 +17,14 @@ use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::Command;
 
+/// Exact acknowledged reductions made by this command, retained separately
+/// from their user-facing notes so queue undo never guesses changed levels.
+#[derive(Default)]
+pub(super) struct Lowered {
+    pub notes: Vec<Note>,
+    pub volumes: Vec<(PlayerId, u8)>,
+}
+
 impl Surface {
     /// Lower the rooms `command` will start music in to `guard`'s caps, if
     /// any stands above them; the notes saying so.
@@ -26,9 +34,19 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
     ) -> Result<Vec<Note>, Failure> {
+        self.lower_before_playing_with_caps(households, guard, command)
+            .map(|lowered| lowered.notes)
+    }
+
+    pub(super) fn lower_before_playing_with_caps(
+        &self,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        command: &Command,
+    ) -> Result<Lowered, Failure> {
         // Without a DJ here a DJ start is refused: nothing to lower for it.
         if matches!(command, Command::Dj { .. } | Command::DjSteer { .. }) && self.dj.is_none() {
-            return Ok(Vec::new());
+            return Ok(Lowered::default());
         }
         let mut over = Vec::new();
         for (room, cap, why) in guard.playback_caps(households, command) {
@@ -36,7 +54,7 @@ impl Surface {
                 over.push((room, level, cap, why));
             }
         }
-        self.lower(households, over)
+        self.lower_with_caps(households, over)
     }
 
     /// Before a scene's sources start: lower each room `plan` starts music
@@ -95,21 +113,31 @@ impl Surface {
         households: &[HouseholdState],
         over: Vec<(&Room, u8, u8, String)>,
     ) -> Result<Vec<Note>, Failure> {
+        self.lower_with_caps(households, over)
+            .map(|lowered| lowered.notes)
+    }
+
+    fn lower_with_caps(
+        &self,
+        households: &[HouseholdState],
+        over: Vec<(&Room, u8, u8, String)>,
+    ) -> Result<Lowered, Failure> {
         if over.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Lowered::default());
         }
         // A fade in flight there would raise them again a step later.
         let players: Vec<PlayerId> = over.iter().map(|(r, ..)| r.primary.clone()).collect();
         self.volumes_changing(households, &players);
-        let mut notes = Vec::new();
+        let mut lowered = Lowered::default();
         for (room, level, cap, why) in over {
             control::set_volume(&*self.transport, households, &room.primary, cap)?;
-            notes.push(Note {
+            lowered.volumes.push((room.primary.clone(), cap));
+            lowered.notes.push(Note {
                 code: NoteCode::VolumeClamped,
                 detail: format!("{} lowered from {level} to {cap} first: {why}", room.name),
             });
         }
-        Ok(notes)
+        Ok(lowered)
     }
 }
 

@@ -554,6 +554,11 @@ from a genre the DJ was built around.
   is classical). Time-of-day energy, `PickReason`s, steering and feedback use
   the same keys; energy comes from metadata that applies across genres, with
   tempo markings as one more input for classical movements.
+  Work cooldown first determines the fresh candidate set, or the oldest
+  rotation window when too few fresh works remain. Artist spacing then filters
+  only within that set, so an uneven shelf cannot bypass this work-level
+  ordering merely to alternate artists. Recent or queued works from other
+  rooms retain their cooldown and rotation priority.
 - **Start with a direction in one operation.** `dj start` accepts the same
   structured constraints as `dj steer`, with an optional mood and expiry.
   HTTP `POST /dj/start` takes `constraints` and `for_secs`; MCP `dj_start`
@@ -918,6 +923,18 @@ media or queue read; unreadable or subsequently changed levels require a new
 read before normal undo. Existing action rows retain their previous full-zone
 restoration behavior.
 
+Eligible direct queue-replacing playback now retains a durable content backup,
+using the same restoration machinery as native removal and reordering. Spotify
+albums/playlists, resolved artist/show selections, native Sonos playlists and
+container favorites bind the original selected queue to the completed staged
+replacement's exact receipt. Undo reconstructs its full ordered contents,
+duplicate occurrence, elapsed time, mode and quiet intent after a daemon
+restart. Both the original backup and recorded result are bounded; unavailable,
+changed or uncertain proof leaves an explicit action-history barrier. Exact
+policy reductions made before Play are retained, and mixed command sets require
+complete proof for every attempted replacement. Scene replacements retain their
+existing behavior. See [`docs/QUEUE_UNDO.md`](docs/QUEUE_UNDO.md).
+
 ### 12.6 Favorites, saved Sonos playlists and library search as play sources
 
 Explicit Spotify artist links now resolve through the owner's read-only catalog
@@ -1159,6 +1176,16 @@ an accepted continuation whose playback is still unconfirmed. Speaker errors
 interrupt implicit taste feedback, so they cannot become dislikes or completed
 listens, and cannot enter ordinary dry-queue restart logic.
 
+Ordinary exhaustion retains the original queue end in saved feeds until the DJ
+has refilled and confirmed playback of its successor. A daemon restart can
+therefore finish a refill whose final Play was explicitly refused, after fresh
+source, occurrence, complete queue, audience and boot checks. The daemon consumes
+both the pending end and its old playing-position evidence on disk before a
+retry; a crash or failed subsequent save cannot replay an uncertain mutation.
+Failed checkpoint writes defer the attempt with bounded backoff. A definite
+speaker refusal can rearm the cursor, while an unconfirmed start ends automatic
+management and leaves the queue intact. Older saved files remain readable.
+
 These renderer-error changes include protocol, simulator, live-state, surface
 and DJ regression cases. Rust compilation and test execution for the additions
 remain unverified after dependency-build memory failures and the execution
@@ -1247,6 +1274,25 @@ or membership retire them. Neither workflow adds background polling. See
 Native iOS and macOS remotes (`apps/apple`) speak the same
 HTTP API over the tailnet; whether they are a first-class surface of this
 plan is the owner's open decision (bead 8hhv.13).
+
+Native queue and catalog changes also arrive through coordinator
+ContentDirectory subscriptions. A paused reorder or replacement with the same
+queue length emits `zone.state` with `queue_changed: true`; favorites and saved
+Sonos playlists emit a household-scoped `catalog.changed`. Bounded counter
+parsing and per-lease deduplication reuse renewal, sequence-gap and reboot
+recovery. Initial or replaced leases and missed events retire prior observations.
+These are invalidations, never queue revisions that can authorize a write.
+
+The phone and dashboard coalesce affected reads, retire stale reviews and fence
+late catalog replies without issuing playback commands. Closed views stay lazy.
+The DJ invalidates its queue evidence before its next applicable reconciliation,
+including for a same-length external edit. Its own append notifications retain
+full-listen attribution, refill backoff and the exhausted-queue retry cursor;
+fresh queue and ownership checks still gate automatic mutations. MCP consumers
+receive the same journal events. See [Event delivery](docs/EVENT_DELIVERY.md)
+and [Live queues](docs/WEB_QUEUE_LIVE.md). Added Rust/simulator regressions await
+execution because the existing asupersync dependency build was killed before
+project checks completed; focused browser regressions ran successfully.
 
 ### 12.14 Self-healing identity
 

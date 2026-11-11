@@ -148,6 +148,12 @@ pub enum LiveEvent {
     /// A player's playback changed: transport, track, volume, mute or group
     /// volume.
     Playback { player: PlayerId, changes: Changes },
+    /// A native queue or household catalog changed. Consumers reread only
+    /// what they display or manage; no playback or queue data is inferred.
+    ContentChanged {
+        player: PlayerId,
+        changes: crate::events::ContentChanges,
+    },
     /// The households changed: grouping, rooms, or players joining, leaving
     /// or moving. Read [`Live::households`] for the new shape.
     Topology,
@@ -828,6 +834,12 @@ impl Engine {
                 if let Some((player, service)) = from {
                     if service == Service::ZoneGroupTopology {
                         progress::refresh_bootstrap(m);
+                    }
+                    if !report.content.is_empty() {
+                        pushed.push(LiveEvent::ContentChanged {
+                            player: player.clone(),
+                            changes: report.content,
+                        });
                     }
                     if !report.changes.is_empty() {
                         pushed.push(LiveEvent::Playback {

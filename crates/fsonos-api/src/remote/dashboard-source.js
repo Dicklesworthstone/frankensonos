@@ -295,6 +295,12 @@ const DashboardSource = (() => {
       publish(); return true;
     }
     return { state, catalog, chooseCatalog, observe, editable, edit, loadPlaylists, loadLineInSources, loadContents, canReview, review, reviewTrack, canApply, apply, open,
+      catalogChanged(change = null) {
+        if (disposed || change?.playlists === false || state.sourceType !== 'playlist'
+            || change?.household && state.group?.household !== change.household) return;
+        retire('The saved Sonos playlists changed. Read the current list and choose a source again.');
+        clearPlaylists(); publish();
+      },
       cancelReview() { if (state.writing) return false; retire(); state.message = ''; publish(); return true; },
       clearDraft() {
         if (!editable()) return false;

@@ -162,7 +162,7 @@ fn releasing_the_requested_port_restores_subscriptions_and_event_driven_updates(
         model.rec.subscriptions.len(),
         wanted(&model.rec.households).len()
     );
-    assert_eq!(model.rec.subscriptions.len(), 8);
+    assert_eq!(model.rec.subscriptions.len(), 10);
     assert!(model.last_error.is_none());
     assert!(model.rec.schedule.next_at() > Instant::now() + EVENTLESS_RETRY);
     let snapshot = engine.snapshot.lock().unwrap().clone();
@@ -273,7 +273,7 @@ fn the_real_live_worker_becomes_ready_without_a_callback_and_can_recover_it() {
     let until = Instant::now() + Duration::from_secs(10);
     loop {
         let snapshot = live.snapshot();
-        if snapshot.callback.is_some() && snapshot.subscriptions == 8 {
+        if snapshot.callback.is_some() && snapshot.subscriptions == 10 {
             assert!(snapshot.last_error.is_none());
             break;
         }
