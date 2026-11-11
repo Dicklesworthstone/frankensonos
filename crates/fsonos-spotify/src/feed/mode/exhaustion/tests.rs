@@ -18,6 +18,8 @@ use std::cell::Cell;
 use std::net::IpAddr;
 use std::time::Duration;
 
+mod restart;
+
 const ROOM: &str = "Exhaustion Room";
 const OTHER: &str = "Other Room";
 const TRACKS: [&str; 4] = [
@@ -111,6 +113,7 @@ impl Rig {
                 }],
                 played: Vec::new(),
                 recovery: Default::default(),
+                dry_end: None,
                 playing: Some(4),
                 recorded: Some((4, TRACKS[3].into())),
             },

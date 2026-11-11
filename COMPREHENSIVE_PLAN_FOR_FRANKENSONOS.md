@@ -1159,6 +1159,16 @@ an accepted continuation whose playback is still unconfirmed. Speaker errors
 interrupt implicit taste feedback, so they cannot become dislikes or completed
 listens, and cannot enter ordinary dry-queue restart logic.
 
+Ordinary exhaustion retains the original queue end in saved feeds until the DJ
+has refilled and confirmed playback of its successor. A daemon restart can
+therefore finish a refill whose final Play was explicitly refused, after fresh
+source, occurrence, complete queue, audience and boot checks. The daemon consumes
+both the pending end and its old playing-position evidence on disk before a
+retry; a crash or failed subsequent save cannot replay an uncertain mutation.
+Failed checkpoint writes defer the attempt with bounded backoff. A definite
+speaker refusal can rearm the cursor, while an unconfirmed start ends automatic
+management and leaves the queue intact. Older saved files remain readable.
+
 These renderer-error changes include protocol, simulator, live-state, surface
 and DJ regression cases. Rust compilation and test execution for the additions
 remain unverified after dependency-build memory failures and the execution

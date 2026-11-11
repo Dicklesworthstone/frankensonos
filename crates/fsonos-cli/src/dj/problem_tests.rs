@@ -49,6 +49,7 @@ fn fed(den: &PlayerId) -> FeedSnapshot {
         playing: Some(2),
         recorded: None,
         played: Vec::new(),
+        dry_end: None,
         recovery: Default::default(),
     }
 }

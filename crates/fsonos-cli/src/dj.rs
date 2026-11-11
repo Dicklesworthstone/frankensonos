@@ -62,6 +62,7 @@ use crate::dj_view::{self, steer_failure, store_failure};
 
 mod catalog;
 pub(crate) mod configuration;
+mod continuation;
 pub(crate) mod feedback;
 mod handover;
 #[cfg(test)]
@@ -1232,6 +1233,9 @@ impl DjEngine for SpotifyDj {
                 return;
             }
         };
+        if !continuation::prepare(self, &mut state, at.coordinator, playback) {
+            return;
+        }
         let State {
             feeds,
             refill_retries,

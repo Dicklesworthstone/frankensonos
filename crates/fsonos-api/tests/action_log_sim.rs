@@ -52,7 +52,10 @@ fn assert_full_snapshot(surface: &Surface, zones: usize) {
         .unwrap();
     assert_eq!(actions.len(), 1, "the playback action was logged");
     let before = BeforeState::parse(actions[0].action.before_state.as_deref().unwrap()).unwrap();
-    assert!(before.level_scope.is_none(), "playback keeps full zone undo");
+    assert!(
+        before.level_scope.is_none(),
+        "playback keeps full zone undo"
+    );
     assert_eq!(before.zones.len(), zones);
 }
 

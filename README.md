@@ -126,6 +126,15 @@ the DJ does not replay it or clear the queue. Renderer failures do not teach
 the DJ that the listener disliked the music. The action log distinguishes an
 observed successful recovery from a continuation that has only been requested.
 
+An ordinary exhausted queue also retains its pending continuation across daemon
+restarts. If refilling succeeded but the speaker explicitly refused playback,
+the DJ can retry from the first movement after the old end without adding the
+same music twice. Every retry checks the current queue, source, selected
+occurrence, group and coordinator boot; a user pause or replacement queue is
+left alone. Before retrying, the daemon durably consumes the saved continuation.
+A failed checkpoint postpones playback, and an unconfirmed command stops
+automatic management without replaying it after another restart.
+
 This addition includes simulator regression cases. Its Rust build and test
 execution remain unverified: the restored local environment still kills the
 existing `asupersync` dependency build before project code is checked. Browser

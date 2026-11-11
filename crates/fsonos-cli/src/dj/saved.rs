@@ -139,6 +139,39 @@ pub(super) fn encode(
     tracker: &Tracker,
     starters: &HashMap<PlayerId, Vec<Client>>,
 ) -> String {
+    encode_saved(&snapshot(feeds, tracker, starters))
+}
+
+/// Consume a pending automatic continuation before it can write to a speaker.
+/// The live feed retains its cursor for this attempt. A crash or failed save
+/// afterward leaves the retained queue readable, but cannot replay a possibly
+/// completed Play. Forget the old playing position too: before a successful
+/// refill, that position alone could rediscover the same exhausted end.
+pub(super) fn encode_before_continuation(
+    feeds: &HashMap<PlayerId, QueueFeed>,
+    tracker: &Tracker,
+    starters: &HashMap<PlayerId, Vec<Client>>,
+    coordinator: &PlayerId,
+) -> Option<String> {
+    let mut saved = snapshot(feeds, tracker, starters);
+    let feed = saved
+        .feeds
+        .iter_mut()
+        .find(|feed| feed.zone == coordinator.0 && feed.dry_end.is_some())?;
+    feed.dry_end = None;
+    feed.playing = None;
+    Some(encode_saved(&saved))
+}
+
+fn encode_saved(saved: &Saved) -> String {
+    serde_json::to_string_pretty(saved).unwrap_or_default()
+}
+
+fn snapshot(
+    feeds: &HashMap<PlayerId, QueueFeed>,
+    tracker: &Tracker,
+    starters: &HashMap<PlayerId, Vec<Client>>,
+) -> Saved {
     let groups = tracker.snapshot(feeds);
     let starters = starters
         .iter()
@@ -151,12 +184,11 @@ pub(super) fn encode(
         .collect();
     let mut feeds: Vec<FeedSnapshot> = feeds.values().filter_map(QueueFeed::snapshot).collect();
     feeds.sort_by(|a, b| a.zone.cmp(&b.zone));
-    serde_json::to_string_pretty(&Saved {
+    Saved {
         feeds,
         starters,
         groups,
-    })
-    .unwrap_or_default()
+    }
 }
 
 /// Replace `path` with a complete, durable revision. Each writer owns a
@@ -255,6 +287,7 @@ mod tests {
             playing: Some(1),
             recorded: Some((1, "spotify:track:simsaved10000000000000".into())),
             played: Vec::new(),
+            dry_end: None,
             recovery: Default::default(),
         }
     }
