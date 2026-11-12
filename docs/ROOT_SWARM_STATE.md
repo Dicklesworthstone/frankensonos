@@ -4814,3 +4814,13 @@ larger player/channel container that other code must initialise first).
 That is the general rule for this pivot: only self-contained functions are
 callable with synthetic state, and the daemon's constructors mostly are not.
 The practical targets are therefore leaf-ish parsers, not object graph builders.
+
+**Direct leaf call works.** `call ((void(*)(char*,int,void*))0x1034c848)(mime, 0, out)`
+with a stack-written `"audio/aac"` string and an output buffer **returns
+cleanly** — no crash, no hang. Combined with the earlier single-arg crash, the
+rule is confirmed: supply the real arg count and a leaf function is callable from
+gdb with fully synthetic state.
+
+That is the harness we wanted, and it side-steps HTTP entirely: any single
+self-contained parser can now be driven with crafted bytes and watched under
+breakpoints, with `RelTime`/`/status` on hardware as the cross-check.
