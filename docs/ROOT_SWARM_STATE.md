@@ -4683,3 +4683,29 @@ Two operational traps, both hit today:
 Negative result: `[obj+0x54]` is **nil on the channel object too**
 (`0x40d7c138`), not only on the listeners. So `0x104108d4` takes a third kind of
 context, and the field is not the discriminator people (I) assumed.
+
+Thread-name → body map from the real starter `0x10405720` (breakpoint prints
+`r4` name, `r5` body, `r6` arg), first 12 threads of a boot:
+
+```
+watchdog    -> 0x104124c4
+asyncfileio -> 0x10174aa4
+nodetx_chsrc-> 0x102cc4c0
+evt_dispatch-> 0x10286844
+mixthrd     -> 0x100df25c
+sntp_server -> 0x102cfa6c
+nodetx_vli  -> 0x102cc4c0
+ai_vli      -> 0x102bf308
+artfetch    -> 0x100fe4b8
+chsrc       -> 0x10146aa0
+sntp_chsnk  -> 0x102cfa6c
+```
+
+**There is no acceptor/server thread in that list.** Plenty of player threads —
+including `artfetch`, the thread behind `/getaa` — but nothing that could be
+accepting on 1400/1443/1843. That is now a direct observation rather than an
+inference from socket state.
+
+Useful side findings: several bodies are shared (`0x102cc4c0` for both
+`nodetx_*` names, `0x102cfa6c` for both `sntp_*`), and one name pointer
+(`0x1071c7d0`) is a heap string, so names are not all rodata.
