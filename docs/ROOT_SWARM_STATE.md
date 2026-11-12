@@ -4882,3 +4882,14 @@ halves and a stack slot in `r6`, then calls. So the walker is invoked *per tag
 class* by small wrappers rather than from arbitrary code — which means the
 harness should drive **one of these wrappers**, not the walker itself, and the
 wrapper is the thing whose arity/semantics to read next.
+
+All of the environment work is now one command: `scripts/emu_s1_bringup.sh`.
+It creates the character nodes, mounts `/proc` and `/sys` (idempotently — they
+vanish on every reboot), sets up `/proc/driver/audio` via the tmpfs plus the
+`/dev` audio nodes, writes the 16-byte `/dev/chk` record, and writes the
+`dhcpMac` / `householdLocationId` / `hhid` settings. It deliberately does **not**
+start `netstartd`.
+
+Smoke test after running it: `Invalid Event Size`, `Can't get fd from sound
+device` and `failed to open proc fs` are all **absent** (0 occurrences each) and
+the boot reaches `zp: Restoring AVT and track queue`.
