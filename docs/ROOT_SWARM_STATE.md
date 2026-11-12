@@ -4874,3 +4874,11 @@ several out/callback pointers.
 Consequence for the harness: calling it blind is not viable; the correct order is
 to find its **caller** (which supplies those arguments) and read what each one is,
 then either synthesise them or invoke the caller instead.
+
+The walker has exactly two callers, both in the same container module
+(`0x100b75a0`, `0x100b7db8`). The first is a thin wrapper: it clears two stack
+halves (`sth r0` at `16/18(r1)`), passes `r5 = 1`, points `r7`/`r8` at those
+halves and a stack slot in `r6`, then calls. So the walker is invoked *per tag
+class* by small wrappers rather than from arbitrary code — which means the
+harness should drive **one of these wrappers**, not the walker itself, and the
+wrapper is the thing whose arity/semantics to read next.
