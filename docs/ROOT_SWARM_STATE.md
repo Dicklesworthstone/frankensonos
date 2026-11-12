@@ -4999,3 +4999,14 @@ not reaching the handler loop. Either `accept` is returning `-1` on the pass we
 hit (the connection arrived between iterations) or the patched fall-through jumps
 somewhere unexpected — the next read is `0x10412698-0x104126cc` in full, which is
 also where the accepted fd is stored.
+
+Measured the post-accept branch properly: after the acceptor returns,
+`0x1041269c` tests r3 and `bne 0x10412828` — and `0x10412828` **is the request
+handler** (it `snprintf`s, reads the request line into `r1+192` with a 256 limit,
+demands >15 bytes, then reads 4096 into `r1+448` and `strncmp`s 16 bytes against a
+constant — i.e. it parses an HTTP request).
+
+Timing caveat that cost two runs: under the debugger the daemon reaches `accept`
+later than 12 s, so a curl sent at 12 s arrives before the thread is listening on
+the breakpoint and nothing fires. Curl must be sent **after** confirming an
+`accept`-blocked thread exists, or later still.
