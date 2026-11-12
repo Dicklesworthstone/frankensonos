@@ -4629,3 +4629,21 @@ next question is who writes to that channel (the peer side), and whether it is a
 thread that failed to start earlier or a producer gated on a later stage.
 
 Environment work is done for now; this is the first genuinely internal blocker.
+
+The lines immediately before the stall, in order:
+
+```
+<chsrc,2> running stopRoutine
+<nodetx,2> endTransmission
+<dspconfigparam,0> Unsupported PPC/Connectx Submodel
+```
+
+i.e. the daemon brings the **audio/transmission path up, stops it again, configures
+the DSP**, then goes quiet — the signature of the "not in a group / nothing to
+play" idle path rather than of a failed init. That fits: a fresh household-less
+player has no coordinator and no queue, so the node transmitter ends its
+transmission and the daemon idles.
+
+Also: run-to-run spread is still wide (this run produced no `anacapa` lines in
+35 s), so single-sample conclusions remain unreliable and repeats are mandatory
+before claiming anything.
