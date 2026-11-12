@@ -4756,3 +4756,19 @@ Forcing `[obj+133]=1` at the gate produced a SIGSEGV inside libpthread instead o
 an accept, so the byte alone is not sufficient — the rest of that object's state
 must also be wrong. Next: read `fcn` around `0x104121c0` to see what r28==1 means
 and what else it prepares, rather than poking the byte again.
+
+The deferral is explicit: `<cloudrequest,5> defer cloud registration due to
+missing required field(s): sonosId,householdLocationId,dhcpMac`.
+
+Supplied the two that are settings-shaped — `dhcpMac` in
+`/jffs/settings/netsettings.json`, `householdLocationId` + `householdSettings.
+restricted-admin.settings.hhid` in `householdsettings.json` (values:
+`00-0E-58-80-10-8A`, `HHID_111…`). After that the `defer cloud` line no longer
+appears at all, so those two are accepted as present; `sonosId` is still unfilled
+(2 occurrences in the binary, no obvious settings key yet) and the run now stops
+one stage earlier at `chsnk: Channel Sink in stopped state`.
+
+Also tried this round: patching the dispatcher gate (`beq` at `0x104125f0` → nop)
+so it no longer requires `+133`. It keeps the thread alive but still no `accept`,
+confirmed by syscall sampling (0 threads in 288). Backup of the pre-patch binary
+is `/tmp/s23_anacapad_pregate`.
