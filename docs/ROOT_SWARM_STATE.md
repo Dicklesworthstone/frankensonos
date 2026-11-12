@@ -4987,3 +4987,15 @@ build: `/tmp/s23_anacapad_pregate` (pre-gate) and `anacapad.orig` (stock).
 
 Remaining gap is the *response*: accepted sockets sit unread, so the post-accept
 handling that should parse and answer is still not running.
+
+Post-accept handling is a **callback list**: `obj+340` is a count, entries are
+12 bytes (`r29 += 12`), and each is invoked through the pointer at `+196` with
+the argument at `+204`, until one returns non-zero. So a connection is read by a
+registered handler, not by the dispatcher itself.
+
+Breakpoint at `0x104126cc` (first instruction after the acceptor call returns
+into that loop) does not fire, even with a connection driven in, so control is
+not reaching the handler loop. Either `accept` is returning `-1` on the pass we
+hit (the connection arrived between iterations) or the patched fall-through jumps
+somewhere unexpected — the next read is `0x10412698-0x104126cc` in full, which is
+also where the accepted fd is stored.
