@@ -8,8 +8,9 @@ Choose **New routine**, then choose an action and an explicit destination:
 
 - **Start the DJ:** a group and an optional mood; leaving the mood automatic
   uses the daemon's time-of-day program.
-- **Apply a scene:** an existing scene. The review includes the scene's group,
-  source, volume and mute definition.
+- **Apply a scene:** an existing scene, including one that loads a native saved
+  Sonos playlist. The review includes the scene's group, source, volume and mute
+  definition, and a native playlist's pinned household, `SQ:` id and title.
 - **Set room volume:** one physical room, including a member of a larger group,
   and a level from 0 to 100, still subject to house safety limits.
 - **Pause a group:** optionally fade first, over 0 to 600 seconds. Zero pauses
@@ -42,6 +43,14 @@ the selected group, scene and mood, and checks for an equivalent fixed-time
 routine before sending. Creation and management share a single in-flight write
 limit in the panel. Editing, refreshing or closing invalidates unsent reviews;
 a stale confirmation button cannot approve a newer review.
+
+Native playlist scenes appear alongside other saved scenes in both the phone
+remote and dashboard routine choosers. Choosing one and creating its routine
+reads the stored scene, so no online speaker or Spotify session is needed to
+complete this form. A changed saved playlist binding requires a new review.
+When the routine runs, the daemon checks the destination and native catalog,
+then loads that playlist's current contents with the scene's playback intent.
+See [Saved Sonos playlist scenes](SONOS_PLAYLIST_SCENES.md) for recall behavior.
 
 These are preflight checks, **not an atomic cross-client lock**. Another client
 can change a definition between the read and write. Schedules refer to rooms,

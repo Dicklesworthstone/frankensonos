@@ -189,13 +189,22 @@ const SchedulesRemote = (() => {
           || !Object.values(v.mutes).every((b) => typeof b === 'boolean')
           || !v.groups.every((g) => g && text(g.coordinator, 256) && Array.isArray(g.members)
             && g.members.every((r) => text(r, 256)) && object(g.source)
-            && ['keep', 'favorite', 'uri', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
+            && ['keep', 'favorite', 'sonos_playlist', 'uri', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
+            && (g.source.kind === 'sonos_playlist' || g.source.playlist == null)
             && (g.source.kind === 'dj' || g.source.direction == null)
             && (['queue', 'queue_backup'].includes(g.source.kind) || g.source.queue == null)
             && (g.playing == null || typeof g.playing === 'boolean'))) {
         throw new Error('A saved scene is incomplete or ambiguous.');
       }
       for (const group of v.groups) {
+        if (group.source.kind === 'sonos_playlist') {
+          const source = group.source, playlist = source.playlist;
+          if (!object(playlist) || !text(playlist.id, 1024) || !/^SQ:\d+$/.test(playlist.id)
+              || !text(playlist.household, 1024) || !text(playlist.title, 1024)
+              || source.name !== playlist.id || source.uri != null || source.mood != null) {
+            throw new Error('The saved Sonos playlist identity is unreadable.');
+          }
+        }
         if (['queue', 'queue_backup'].includes(group.source.kind)) {
           const queue = queueApi().read(group.source.queue);
           if ((group.source.kind === 'queue_backup') !== (queue.total != null)) {

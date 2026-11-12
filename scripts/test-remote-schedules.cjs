@@ -303,6 +303,11 @@ const groups = () => [{ household: 'S2', coordinator_room: 'Studio', members: ['
   { household: 'S1', coordinator_room: 'Studio', members: ['Studio'] }];
 const scenes = () => [{ name: 'Evening & quiet', saved: 1700000000, groups: [{ coordinator: 'Studio',
   members: ['Den'], source: { kind: 'keep' } }], volumes: { Studio: 20 }, mutes: { Den: false } }];
+const nativeScene = (household = 'S2') => ({ name: `Morning playlist ${household}`, saved: 1700000000,
+  groups: [{ coordinator: `Studio@${household}`, members: [], playing: true,
+    source: { kind: 'sonos_playlist', name: 'SQ:7',
+      playlist: { household: `SIM_HOUSEHOLD_${household}`, id: 'SQ:7', title: 'Morning & strings' } } }],
+  volumes: { [`Studio@${household}`]: 20 }, mutes: {} });
 const moods = () => ({ moods: [{ name: 'bright', constraints: { energy_bias: 10 } }] });
 function builderFixture() {
   const data = { rows: [], groups: groups(), scenes: scenes(), moods: moods() };
@@ -335,6 +340,76 @@ async function draft(f, action = 'dj_start') {
   assert.equal(await f.control.beginCreate(action), true);
   f.control.edit(action === 'apply_scene' ? 'scene' : 'zone', action === 'apply_scene' ? 'Evening & quiet' : 'Studio@S2');
 }
+
+test('native Sonos playlist scenes stay available beside other scenes in the routine chooser', () => {
+  const catalog = [...scenes(), nativeScene('S1'), nativeScene('S2')];
+  const options = Schedules.scenesOf(catalog);
+  assert.deepEqual(options.map(scene => scene.name), catalog.map(scene => scene.name));
+  for (let i = 1; i < options.length; i++) {
+    assert.deepEqual(JSON.parse(options[i].details).groups[0].source, catalog[i].groups[0].source);
+  }
+});
+
+test('native playlist routine creation supports selection, draft edits, review and one scheduled write', async () => {
+  for (const household of ['S1', 'S2']) {
+    const f = builderFixture(), scene = nativeScene(household);
+    f.data.scenes.push(scene);
+    await draft(f, 'apply_scene');
+    assert.equal(f.control.edit('scene', scene.name), true);
+    assert.equal(f.control.reviewCreate(), true);
+    const older = f.control.state.pending;
+    assert.deepEqual(JSON.parse(older.destination.details).groups[0].source.playlist,
+      scene.groups[0].source.playlist);
+    assert.equal(f.control.edit('time', '08:15'), true);
+    assert.equal(await f.control.confirm(older), false);
+    assert.deepEqual(f.writes, []);
+    assert.equal(f.control.reviewCreate(), true);
+    const reviewed = f.control.state.pending;
+    assert.equal(await f.control.confirm(reviewed), true);
+    assert.equal(await f.control.confirm(reviewed), false);
+    assert.deepEqual(f.writes, [{ when: 'weekdays 08:15', action: 'apply_scene', scene: scene.name }]);
+    assert.ok(f.calls.every(call => ['schedules', 'scheduleScenes', 'scheduleAdd'].includes(call.name)),
+      'saving a routine reads stored definitions without consulting speakers or starting music');
+  }
+});
+
+test('a native playlist binding changed after routine review requires a new review', async () => {
+  for (const change of [
+    source => { source.playlist.household = 'SIM_DIFFERENT_HOUSEHOLD'; },
+    source => { source.name = source.playlist.id = 'SQ:8'; },
+    source => { source.playlist.title = 'Renamed playlist'; },
+  ]) {
+    const f = builderFixture(), scene = nativeScene();
+    f.data.scenes.push(scene);
+    await draft(f, 'apply_scene');
+    f.control.edit('scene', scene.name);
+    assert.equal(f.control.reviewCreate(), true);
+    const reviewed = f.control.state.pending;
+    change(scene.groups[0].source);
+    assert.equal(await f.control.confirm(reviewed), false);
+    assert.deepEqual(f.writes, []);
+    assert.match(f.control.state.message, /scene or mood changed/);
+  }
+});
+
+test('native playlist routine choices require the saved household, exact id and title', () => {
+  for (const change of [
+    source => { delete source.playlist; },
+    source => { source.playlist = []; },
+    source => { source.playlist.id = 'FV:2/7'; },
+    source => { source.playlist.id = 'SQ:7suffix'; },
+    source => { source.playlist.id = 'SQ:8'; },
+    source => { source.playlist.household = ''; },
+    source => { source.playlist.title = ''; },
+    source => { source.uri = 'spotify:playlist:0SIM000000000000000001'; },
+    source => { source.mood = 'calm'; },
+    source => { source.kind = 'keep'; },
+  ]) {
+    const scene = nativeScene();
+    change(scene.groups[0].source);
+    assert.throws(() => Schedules.scenesOf([scene]));
+  }
+});
 
 const directionDraft = {
   include_composers: ' Bach ', exclude_composers: 'Wagner',
