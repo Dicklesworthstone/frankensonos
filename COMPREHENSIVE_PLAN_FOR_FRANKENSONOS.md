@@ -939,8 +939,13 @@ duplicate occurrence, elapsed time, mode and quiet intent after a daemon
 restart. Both the original backup and recorded result are bounded; unavailable,
 changed or uncertain proof leaves an explicit action-history barrier. Exact
 policy reductions made before Play are retained, and mixed command sets require
-complete proof for every attempted replacement. Scene replacements retain their
-existing behavior. See [`docs/QUEUE_UNDO.md`](docs/QUEUE_UNDO.md).
+complete proof for every attempted replacement. Eligible scene replacements
+now retain the same bounded recovery for playing and silent loads on unchanged
+groups, plus the volume and mute fields the scene changed. Undo reconstructs
+and verifies the original queue silently before restoring those levels and
+resuming its original play intent. Failed steps, superseded fades, regrouping,
+DJ changes and queue-backup recalls remain whole-action barriers. See
+[`docs/QUEUE_UNDO.md`](docs/QUEUE_UNDO.md).
 
 ### 12.6 Favorites, saved Sonos playlists and library search as play sources
 
@@ -963,6 +968,17 @@ links or claiming latest/unplayed ordering. Episodes use Sonos' existing
 sid-only renderer metadata. Artist and show lookups share the bounded worker,
 fresh credentials and retained Spotify cooldown; podcast metadata stays
 outside the music library and DJ selection pool.
+
+Explicit ordered selections now share `POST /queue/tracks`, CLI `queue-tracks`
+and MCP `add_tracks_to_queue`. One request inserts 1–10 concrete Spotify tracks
+or episodes next or at the end, retaining intentional duplicates and current
+playback. The phone and dashboard select exact entries from one cached page,
+review the ordered list and destination, then recheck catalog, group, playback
+and queue before submission. The optional destination revision is separate from
+the library revision. One successful batch has one inserted-range undo record;
+an uncertain partial batch is not replayed and leaves an undo barrier. The
+existing `add_to_queue` policy and bounded insertion engine apply throughout.
+See [`docs/QUEUE_TRACK_SELECTIONS.md`](docs/QUEUE_TRACK_SELECTIONS.md).
 
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
@@ -1076,7 +1092,9 @@ checks the destination households' renderer linkage, and retains group, source,
 boot and queue observations before any scene mutation. Permissions and caps
 are refreshed after catalog reads. Intentional regrouping uses the confirmed
 final audience and each household's own account; paused scenes silently load
-the selected queue. Catalog queue replacement is an action-history undo barrier.
+the selected queue. Completed catalog replacements on unchanged groups can
+retain complete queue and scoped-level undo; missing restoration proof leaves
+an action-history barrier.
 Scheduled readiness failures remain unclaimed for a later attempt. The new
 S1/S2 simulator regressions are recorded but await execution in CI.
 
@@ -1106,8 +1124,9 @@ sources are checked before caps or grouping writes and again at source
 execution, including the final coordinator and group membership. Caller and
 saved-writer playback permissions and caps both apply. Schedules use the
 existing ApplyScene action and check catalog readiness before claiming a run;
-partial or uncertain writes are not replayed. Queue replacement remains
-outside action-history undo. CLI, HTTP, MCP and the browser scene editor share
+partial or uncertain writes are not replayed. Completed replacements on
+unchanged groups can retain complete queue and scoped-level undo for both
+playing and silent loads. CLI, HTTP, MCP and the browser scene editor share
 this source; see `docs/SONOS_PLAYLIST_SCENES.md`. Browser regressions pass;
 the new S1/S2 simulator cases remain unexecuted behind the local dependency
 build failure.

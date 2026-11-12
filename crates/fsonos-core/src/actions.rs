@@ -44,8 +44,9 @@ pub use house_config::{
 };
 pub use levels::{LevelAfter, LevelScope, capture_level_after, with_level_after, with_level_scope};
 pub use queue::{
-    PendingQueueUndo, QueueUndo, capture_queue_undo, finish_queue_replacement, finish_queue_undo,
-    with_queue_undo,
+    PendingQueueUndo, PendingSceneQueueUndo, QueueUndo, capture_queue_undo,
+    capture_scene_queue_undo, finish_queue_replacement, finish_queue_undo,
+    finish_scene_queue_replacement, with_queue_undo,
 };
 
 /// Retention: the newest this many actions are kept…

@@ -5,6 +5,8 @@
 //! `POST /queue`, `fsonos play --queue|--next`), logged so `undo` takes the
 //! tracks off again. [`QueueRequest`] also accepts native household favorites
 //! and saved Sonos playlists.
+//! [`QueueTracksRequest`] adds an explicit ordered selection of 1–10 Spotify
+//! tracks or episodes in one playback-preserving, undoable range.
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
@@ -38,6 +40,9 @@ pub use movement::{MOVE, QueueMoveRequest, QueueMovedDto};
 
 mod removal;
 pub use removal::{QueueRemoveRequest, QueueRemovedDto, REMOVE};
+
+mod tracks;
+pub use tracks::{MAX_QUEUE_TRACKS, QueueTrackInput, QueueTracksRequest};
 
 /// The tool name the queue read is authorized as.
 pub const TOOL: &str = "get_queue";

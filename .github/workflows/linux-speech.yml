@@ -22,6 +22,7 @@ on:
       - "scripts/test-remote-library.cjs"
       - "scripts/test-remote-library-browse.cjs"
       - "scripts/test-playlist-contents.cjs"
+      - "scripts/test-library-track-selection.cjs"
       - "scripts/test-remote-library-sync.cjs"
       - "scripts/test-remote-spotify-connect.cjs"
       - "scripts/test-remote-room-sets.cjs"
@@ -141,7 +142,7 @@ jobs:
         run: node --test scripts/test-remote-equalizer.cjs scripts/test-remote-fades.cjs scripts/test-remote-sound-copy.cjs
       - name: Web library client regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-library.cjs scripts/test-remote-library-browse.cjs scripts/test-playlist-contents.cjs scripts/test-remote-library-sync.cjs scripts/test-remote-spotify-connect.cjs
+        run: node --test scripts/test-remote-library.cjs scripts/test-remote-library-browse.cjs scripts/test-playlist-contents.cjs scripts/test-library-track-selection.cjs scripts/test-remote-library-sync.cjs scripts/test-remote-spotify-connect.cjs
       - name: Web room grouping regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs scripts/test-remote-room-sets.cjs

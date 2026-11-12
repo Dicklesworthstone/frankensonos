@@ -3,6 +3,8 @@
 const DashboardLibrary = (() => {
   const P = typeof PlaylistContents !== 'undefined' ? PlaylistContents
     : typeof require === 'function' ? require('./playlist-contents.js') : null;
+  const Q = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote
+    : typeof require === 'function' ? require('./queue-tracks.js') : null;
   const LIMIT = 50;
   const KINDS = Object.freeze({ tracks: 'track', albums: 'album', playlists: 'playlist' });
   const uint = (v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
@@ -107,15 +109,35 @@ const DashboardLibrary = (() => {
     return Object.freeze({ query, revision: value.revision, albumObservation, item });
   }
 
+  function selectionOf(value) {
+    if (!Q || !value || !text(value.revision, 256) || !value.revision.trim()
+        || !Array.isArray(value.rows) || !value.rows.length || value.rows.length > Q.MAX_TRACKS) {
+      fail(`Select 1 to ${Q?.MAX_TRACKS || 10} tracks from a fresh library page.`);
+    }
+    const query = queryOf({ ...value.query, expected_revision: value.query?.playlist_uri ? value.revision : null });
+    if (query.kind !== 'tracks') fail('Select individual cached tracks. Containers are not expanded.');
+    const albumObservation = albumObservationOf(value.albumObservation, query.album_uri);
+    let previous = -1;
+    const rows = Object.freeze(value.rows.map(row => {
+      if (!row || !uint(row.index) || row.index >= LIMIT || row.index <= previous) fail('The selected track positions are unreadable.');
+      previous = row.index;
+      const item = itemOf(row.item, query);
+      if (!item.explicit_known && albumObservation?.coverage !== 'complete') fail('Choose this track from a complete album observation.');
+      return Object.freeze({ index: row.index, item });
+    }));
+    Q.tracksOf(rows.map(row => row.item));
+    return Object.freeze({ query, revision: value.revision, albumObservation, rows });
+  }
+
   function model({ call, changed = () => {} }) {
     const state = { open: false, active: true, kind: 'albums', filter: '', album: null, playlist: null,
-      page: null, loading: false, stale: true, resetRequired: false, error: '' };
+      page: null, loading: false, stale: true, resetRequired: false, error: '', selected: [] };
     let disposed = false, epoch = 0, running = null, queued = null;
     const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const available = () => !disposed && state.active && state.open;
     const ready = () => available() && !state.loading && !state.stale && !state.resetRequired && state.page;
     function invalidate() {
-      ++epoch; state.stale = true;
+      ++epoch; state.stale = true; state.selected = [];
       if (queued) { queued.resolve(false); queued = null; }
       state.loading = available() && !!running;
     }
@@ -174,6 +196,24 @@ const DashboardLibrary = (() => {
       if (!ready() || !state.page.items.includes(item)) return null;
       return choiceOf({ query: state.page.query, revision: state.page.revision, albumObservation: state.page.albumObservation, item });
     }
+    function selectTrack(item, checked) {
+      const index = state.page?.items.indexOf(item) ?? -1;
+      if (!Q || !ready() || state.kind !== 'tracks' || index < 0 || !Q.supported(item.source_uri)
+          || typeof checked !== 'boolean') return false;
+      const selected = state.selected.filter(position => position !== index);
+      if (checked) {
+        if (selected.length >= Q.MAX_TRACKS) { state.error = `Select at most ${Q.MAX_TRACKS} tracks from this page.`; emit(); return false; }
+        selected.push(index);
+      }
+      state.selected = selected.sort((a, b) => a - b); state.error = ''; emit(); return true;
+    }
+    function clearSelection() { state.selected = []; emit(); }
+    function chooseTracks() {
+      if (!Q || !ready() || !state.selected.length || state.kind !== 'tracks') return null;
+      return selectionOf({ query: state.page.query, revision: state.page.revision,
+        albumObservation: state.page.albumObservation,
+        rows: state.selected.map(index => ({ index, item: state.page.items[index] })) });
+    }
     function album(item) {
       if (!choose(item) || item.kind !== 'album') return Promise.resolve(false);
       state.album = Object.freeze({ uri: item.source_uri, title: item.title });
@@ -187,7 +227,7 @@ const DashboardLibrary = (() => {
       state.album = null; state.kind = 'tracks'; state.filter = '';
       return refresh();
     }
-    return { state, refresh, browse, edit, choose, album, playlist,
+    return { state, refresh, browse, edit, choose, selectTrack, clearSelection, chooseTracks, album, playlist,
       next: (page) => turn(true, page), previous: (page) => turn(false, page),
       open() { if (disposed || !state.active) return Promise.resolve(false); state.open = true; return refresh(); },
       close() { state.open = false; invalidate(); emit(); },
@@ -196,7 +236,7 @@ const DashboardLibrary = (() => {
       dispose() { disposed = true; state.open = false; invalidate(); },
     };
   }
-  return { LIMIT, KINDS, queryOf, urlOf, pageOf, choiceOf, model, albumCoverage,
+  return { LIMIT, KINDS, MAX_TRACKS: Q?.MAX_TRACKS || 10, queryOf, urlOf, pageOf, choiceOf, selectionOf, model, albumCoverage,
     playlistCoverage: (page) => P.describe(page) };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardLibrary;

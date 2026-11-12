@@ -3,6 +3,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
+//! | `POST /queue/tracks` | [`crate::surface::queue::QueueTracksRequest`] | [`crate::surface::queue::QueueAddedDto`] |
 //! | `POST /queue/remove` | [`crate::surface::queue::QueueRemoveRequest`] | [`crate::surface::queue::QueueRemovedDto`] |
 //! | `POST /queue/play` | [`crate::surface::queue::QueuePlayRequest`] | [`crate::OutcomeDto`] |
 
@@ -12,7 +13,7 @@ use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
     ADD, MOVE, PLAY, QueueAddedDto, QueueMoveRequest, QueueMovedDto, QueuePlayRequest,
-    QueueRemoveRequest, QueueRemovedDto, QueueRequest, REMOVE,
+    QueueRemoveRequest, QueueRemovedDto, QueueRequest, QueueTracksRequest, REMOVE,
 };
 
 mod mode;
@@ -32,6 +33,17 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<QueueRequest>(true)
         .response_schema::<QueueAddedDto>(200, "Where the tracks went"),
+        cx.route(
+            &Op::post(
+                "/queue/tracks",
+                "add_tracks_to_queue",
+                CONTROL,
+                "Queue an ordered selection of 1-10 Spotify tracks or episodes next or at the end, preserving duplicates and playback (one undoable range)",
+            ),
+            |s, c, req| answer(body::<QueueTracksRequest>(req).and_then(|r| s.queue_tracks(c, &r))),
+        )
+        .request_schema::<QueueTracksRequest>(true)
+        .response_schema::<QueueAddedDto>(200, "The complete ordered selection was queued"),
         cx.route(
             &Op::post(
                 "/queue/play",

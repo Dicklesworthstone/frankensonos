@@ -50,7 +50,7 @@ impl PendingQueueUndo {
     }
 }
 
-pub(super) fn valid_result(after: &Proof) -> bool {
+pub(super) fn valid_queue(after: &Proof) -> bool {
     !after.uris.is_empty()
         && after.uris.len() <= MAX_QUEUE_BACKUP_ENTRIES
         && after
@@ -67,7 +67,10 @@ pub(super) fn valid_result(after: &Proof) -> bool {
         && after.playback.source == format!("x-rincon-queue:{}#0", after.binding.coordinator.0)
         && after.playback.metadata.is_empty()
         && after.playback.track == 1
-        && after.playback.state == TransportState::Playing
+}
+
+pub(super) fn valid_result(after: &Proof) -> bool {
+    valid_queue(after) && after.playback.state == TransportState::Playing
 }
 
 /// Finish bounded queue undo only after this request successfully replaced
@@ -128,6 +131,7 @@ pub fn finish_queue_replacement<T: Transport + ?Sized>(
         snapshot: pending.snapshot,
         backup: pending.backup,
         after,
+        scene: None,
     };
     undo.validate()?;
     Ok(undo)

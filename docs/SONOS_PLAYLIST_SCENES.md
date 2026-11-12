@@ -102,6 +102,12 @@ room's catalog. Ordinary scene capture still captures the active queue using
 the existing [queue bookmark or backup rules](SCENE_QUEUES.md); use an authored
 source to recall a saved Sonos playlist by identity.
 
+The Listening Room scene chooser accepts these saved sources alongside other
+scene kinds. Its review displays the native playlist's title, id and household,
+preserves the scene's playing or silent-load intent, and rechecks the complete
+saved definition before applying it. A renamed or rebound playlist source
+requires a fresh review instead of changing an already confirmed choice.
+
 ## Identity, permissions and failure behavior
 
 Saving pins the observed household, native id and exact title. Recall refuses
@@ -131,7 +137,17 @@ appended tracks, or a partly completed scene. Concurrent external changes can
 still occur between observations and commands. Inspect the current house and
 queue before deciding to apply again.
 
-Replacing a queue is **not recoverable through action-history undo**. Undo can
-attempt the prior transport and room settings but cannot reconstruct the
-replaced queue contents. Save a native playlist or a durable queue backup
-beforehand when those contents must be retained.
+An eligible playlist scene retains **complete action-history undo** when the
+original selected queue has a readable, bounded backup and every scene step
+finishes on unchanged groups. Undo reconstructs the original ordered entries,
+duplicate occurrence, position and mode in silence, restores the scene's volume
+and mute fields under current caps, then resumes only the original play intent.
+Both playing and silent playlist loads qualify. A later queue, playback, group
+or room-level change refuses recovery, including with `--force`.
+
+Scenes with regrouping, DJ changes, queue-backup recall, failed writes or
+superseded fades retain an undo barrier, as do empty, inactive or unbacked
+original queues. Check the apply result and undo preview; a successful apply
+alone does not promise recovery. See [Queue undo](QUEUE_UNDO.md) for limits and
+the checked restore flow. A separately saved native playlist or durable queue
+backup remains useful when the original contents must survive later edits.

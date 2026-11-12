@@ -227,6 +227,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "play_sonos_playlist",
         "save_sonos_playlist",
         "add_to_queue",
+        "add_tracks_to_queue",
         "announce",
     ] {
         let t = tool(name);
@@ -261,6 +262,13 @@ fn control_tools_are_advertised_with_their_arguments() {
         queue_search,
         &["zone", "query", "offset", "limit", "expected_revision"],
         &["zone", "query"],
+    );
+    let queue_tracks = tool("add_tracks_to_queue");
+    assert_ne!(queue_tracks["annotations"]["readOnlyHint"], true);
+    assert_tool_arguments(
+        queue_tracks,
+        &["zone", "tracks", "next", "expected_revision"],
+        &["zone", "tracks"],
     );
     let playlist = tool("playlist_contents");
     assert_eq!(playlist["annotations"]["readOnlyHint"], true);

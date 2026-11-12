@@ -285,6 +285,23 @@ impl SceneReport {
 
 /// What a scene needs from outside the core.
 pub trait SceneHooks {
+    /// Record an actual queue-replacing source attempt. Return true to retain
+    /// its native completion receipt. A false return still records the attempt
+    /// for a surface's whole-action undo barrier, without extra proof reads.
+    fn queue_replacement_started(&self, _coordinator: &PlayerId) -> bool {
+        false
+    }
+
+    /// A successfully completed container or catalog replacement. Failed or
+    /// uncertain operations never supply this receipt. Queue-backup recall is
+    /// reported as an attempt but is not supported by scene action-history undo.
+    fn queue_replacement_finished(
+        &self,
+        _coordinator: &PlayerId,
+        _receipt: control::QueueReplacement,
+    ) {
+    }
+
     /// Load a previously resolved Spotify artist or show selection through
     /// the final group's own account. Catalog reads belong in the surface's
     /// read-only readiness phase, before any scene write. `households` is the
@@ -908,6 +925,7 @@ fn play_source<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     uri: &str,
     metadata: &str,
+    hooks: &dyn SceneHooks,
 ) -> Result<(), CoreError> {
     if uri.starts_with("spotify:track:") {
         return control::play_spotify_track(t, households, coordinator, uri, uri);
@@ -916,6 +934,18 @@ fn play_source<T: Transport + ?Sized>(
         return control::play_spotify_bare(t, households, coordinator, uri, uri);
     }
     if let Some(kind) = fsonos_proto::didl::SpotifyContainer::of(uri) {
+        if hooks.queue_replacement_started(coordinator) {
+            let receipt = control::play_spotify_container_with_receipt(
+                t,
+                households,
+                coordinator,
+                kind,
+                uri,
+                uri,
+            )?;
+            hooks.queue_replacement_finished(coordinator, receipt);
+            return Ok(());
+        }
         return control::play_spotify_container(t, households, coordinator, kind, uri, uri);
     }
     control::play_uri(t, households, coordinator, uri, metadata)
@@ -929,16 +959,29 @@ fn load_source<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     uri: &str,
     metadata: &str,
+    hooks: &dyn SceneHooks,
 ) -> Result<(), CoreError> {
+    if let Some(kind) = fsonos_proto::didl::SpotifyContainer::of(uri) {
+        if hooks.queue_replacement_started(coordinator) {
+            let receipt = control::load_spotify_container_with_receipt(
+                t,
+                households,
+                coordinator,
+                kind,
+                uri,
+                uri,
+            )?;
+            hooks.queue_replacement_finished(coordinator, receipt);
+            return Ok(());
+        }
+        return control::load_spotify_container(t, households, coordinator, kind, uri, uri);
+    }
     control::pause_confirmed(t, households, coordinator)?;
     if uri.starts_with("spotify:track:") {
         return control::load_spotify_track(t, households, coordinator, uri, uri);
     }
     if fsonos_proto::didl::SpotifyBare::of(uri).is_some() {
         return control::load_spotify_bare(t, households, coordinator, uri, uri);
-    }
-    if let Some(kind) = fsonos_proto::didl::SpotifyContainer::of(uri) {
-        return control::load_spotify_container(t, households, coordinator, kind, uri, uri);
     }
     control::load_uri(t, households, coordinator, uri, metadata)
 }
@@ -980,6 +1023,22 @@ fn run<T: Transport + ?Sized>(
                 }
             };
             let favorite = sources::favorite(list, name).map_err(|e| e.to_string())?;
+            if favorite.kind == favorites::FavoriteKind::Container
+                && options.hooks.queue_replacement_started(coordinator)
+            {
+                let receipt = if *start {
+                    favorites::play_with_receipt(t, households, coordinator, favorite)
+                } else {
+                    favorites::load_with_receipt(t, households, coordinator, favorite)
+                }
+                .map_err(|e| e.to_string())?;
+                if let Some(receipt) = receipt {
+                    options
+                        .hooks
+                        .queue_replacement_finished(coordinator, receipt);
+                }
+                return Ok(true);
+            }
             let done = if *start {
                 favorites::play(t, households, coordinator, favorite)
             } else {
@@ -991,7 +1050,7 @@ fn run<T: Transport + ?Sized>(
             coordinator,
             playlist,
             start,
-        } => sonos_playlist::recall(t, households, coordinator, playlist, *start),
+        } => sonos_playlist::recall(t, households, coordinator, playlist, *start, options.hooks),
         SceneOp::Uri {
             coordinator,
             uri,
@@ -1011,13 +1070,13 @@ fn run<T: Transport + ?Sized>(
             uri,
             metadata,
             start: true,
-        } => play_source(t, households, coordinator, uri, metadata).map_err(s),
+        } => play_source(t, households, coordinator, uri, metadata, options.hooks).map_err(s),
         SceneOp::Uri {
             coordinator,
             uri,
             metadata,
             start: false,
-        } => load_source(t, households, coordinator, uri, metadata).map_err(s),
+        } => load_source(t, households, coordinator, uri, metadata, options.hooks).map_err(s),
         SceneOp::Queue {
             coordinator,
             queue,
@@ -1030,6 +1089,7 @@ fn run<T: Transport + ?Sized>(
             backup,
             start,
         } => {
+            options.hooks.queue_replacement_started(coordinator);
             return queue_backup::restore(t, households, coordinator, backup, *start);
         }
         SceneOp::Dj {

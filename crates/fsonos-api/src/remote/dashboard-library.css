@@ -12,3 +12,7 @@
 .dashboard-library button { min-height: 2.75rem; white-space: normal; max-width: 100%; overflow-wrap: anywhere; }
 .dashboard-library :focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
 .dashboard-library [hidden] { display: none; }
+.dashboard-library-select-track { display: flex; align-items: center; gap: .6rem; min-height: 2.75rem; cursor: pointer; }
+.dashboard-library-select-track input { width: 1.25rem; height: 1.25rem; }
+.review-track-selection { padding-inline-start: 1.5rem; overflow-wrap: anywhere; }
+.review-track-selection li { margin-block: .7rem; }

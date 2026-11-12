@@ -250,6 +250,18 @@ pub fn load_spotify_tracks_bound<T: Transport + ?Sized>(
     .map(|_| ())
 }
 
+/// Silently load the guarded ordered selection, retaining its completed
+/// replacement receipt for scene undo without changing direct-play recovery.
+pub fn load_spotify_tracks_bound_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    tracks: &[(&str, &str)],
+    destination: &TrackBatchDestination,
+) -> Result<QueueReplacement, CoreError> {
+    replace(t, households, coordinator, tracks, false, destination, true)
+}
+
 fn replace<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -264,12 +276,13 @@ fn replace<T: Transport + ?Sized>(
     destination.confirm(t, host, coordinator)?;
     let rendered = render(t, households, coordinator, tracks)?;
     destination.confirm(t, host, coordinator)?;
-    let owner = receipt
+    let mut owner = receipt
         .then(|| queue_source::replacement_owner(t, host, coordinator))
         .flatten();
     if !autoplay {
         pause_confirmed(t, households, coordinator)?;
         destination.confirm(t, host, coordinator)?;
+        owner = owner.and_then(|owner| owner.after_pause(t, host, coordinator));
     }
     let requests = requests(tracks, &rendered, false);
     let batch = queue_insert::enqueue_batch(t, host, coordinator, destination, &requests, false)?;

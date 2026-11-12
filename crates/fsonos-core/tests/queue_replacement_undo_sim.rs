@@ -33,6 +33,9 @@ const EPISODES: [(&str, &str); 2] = [
     ("spotify:episode:0000000000000000000002", "Second episode"),
 ];
 
+#[path = "queue_replacement_undo_sim/scenes.rs"]
+mod scene_undo;
+
 struct Fixture {
     sim: SimHandle,
     lan: SimLan,

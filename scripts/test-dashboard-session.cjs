@@ -60,6 +60,40 @@ test('scene and mood catalogs reject incomplete shapes and duplicated names',()=
   for(const v of [null,[{...scene(),volumes:{bad:101}}],[scene(),scene()]])assert.throws(()=>S.scenes(v));
   assert.throws(()=>S.moods({moods:[{name:'focus',constraints:{}},{name:'focus',constraints:{}}]}));
 });
+const nativePlaylistSource = () => ({ kind: 'sonos_playlist', name: 'SQ:9',
+  playlist: { household: 'SIM_HOUSEHOLD_S1', id: 'SQ:9', title: 'Saved evening playlist' } });
+test('a native playlist scene remains selectable alongside the rest of the dashboard catalog', async () => {
+  for (const playing of [true, false]) {
+    const f = fixture(); f.data.scene.groups[0].source = nativePlaylistSource(); f.data.scene.groups[0].playing = playing;
+    f.setHook(url => url === '/scenes' ? [clone(f.data.scene), { ...scene(), name: 'Other music' }] : undefined);
+    await f.ready(); assert.equal(f.session.state.catalogError, '');
+    assert.deepEqual(f.session.state.scenes.map(value => value.name), ['Dinner', 'Other music']);
+    const review = await f.session.reviewScene('Dinner'); assert.ok(review);
+    assert.equal(review.scene.groups[0].playing, playing);
+    assert.match(S.sceneSource(review.scene.groups[0].source), /Saved evening playlist/);
+    assert.match(S.sceneSource(review.scene.groups[0].source), /SQ:9.*SIM_HOUSEHOLD_S1/);
+    assert.equal(await f.session.confirm(review), true);
+    assert.deepEqual(f.writes(), [{ url: '/scenes/Dinner/apply', body: {} }]);
+  }
+});
+test('native playlist scene parsing rejects incomplete, conflicting or hidden identities', () => {
+  const good = nativePlaylistSource();
+  for (const source of [{ ...good, playlist: null }, { ...good, name: 'SQ:10' },
+    { ...good, playlist: { ...good.playlist, household: '' } }, { ...good, playlist: { ...good.playlist, title: '' } },
+    { ...good, playlist: { ...good.playlist, id: 'FV:2/9' } }, { ...good, uri: 'spotify:playlist:ignored' },
+    { ...good, mood: 'ignored' }, { ...good, direction: {} }, { ...good, queue: {} }, { ...good, kind: 'keep' }]) {
+    const value = scene(); value.groups[0].source = source; assert.throws(() => S.scene(value));
+  }
+});
+test('changed saved playlist binding or title cancels a previously reviewed dashboard scene', async () => {
+  for (const field of ['household', 'id', 'title']) {
+    const f = fixture(); f.data.scene.groups[0].source = nativePlaylistSource(); await f.ready();
+    const review = await f.session.reviewScene('Dinner'); assert.ok(review);
+    f.data.scene.groups[0].source.playlist[field] = field === 'id' ? 'SQ:10' : 'Changed identity';
+    if (field === 'id') f.data.scene.groups[0].source.name = 'SQ:10';
+    assert.equal(await f.session.confirm(review), false); assert.equal(f.writes().length, 0);
+  }
+});
 test('dashboard queue backups retain count and make queue replacement explicit',()=>{
   const value=queueScene();value.groups[0].source.kind='queue_backup';value.groups[0].source.queue.total=4;
   const decoded=S.scene(value);

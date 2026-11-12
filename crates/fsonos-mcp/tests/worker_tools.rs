@@ -10,7 +10,9 @@ use fsonos_mcp::tools::dj_feedback::DjFeedback;
 use fsonos_mcp::tools::dj_prefs::{DjPrefer, DjPreferences};
 use fsonos_mcp::tools::dj_rehearse::DjRehearse;
 use fsonos_mcp::tools::dj_sync::DjSyncStatus;
-use fsonos_mcp::tools::{AddToQueue, Backend, Daemon, DjStart, DjSteer, SearchQueue, install};
+use fsonos_mcp::tools::{
+    AddToQueue, AddTracksToQueue, Backend, Daemon, DjStart, DjSteer, SearchQueue, install,
+};
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -166,6 +168,20 @@ fn cases() -> Vec<Case> {
             path: "/queue",
         },
         Case {
+            handler: Box::new(AddTracksToQueue),
+            arguments: json!({
+                "zone": "Kitchen@S2", "next": true,
+                "tracks": [
+                    {"source_uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"},
+                    {"source_uri": "spotify:episode:512ojhOuo1ktJprKbVcKyQ", "title": "Episode"},
+                    {"source_uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"}
+                ],
+                "expected_revision": "queue-revision"
+            }),
+            method: "POST",
+            path: "/queue/tracks",
+        },
+        Case {
             handler: Box::new(DjFeedback),
             arguments: json!({"signal": "like", "zone": "Kitchen@S2"}),
             method: "POST",
@@ -249,6 +265,20 @@ fn queue_and_dj_handlers_yield_and_preserve_terminal_daemon_failures_in_both_era
                 assert_eq!(
                     request.body.as_ref().unwrap()["constraints"]["strict"],
                     true
+                );
+            }
+            if case.path == "/queue/tracks" {
+                assert_eq!(
+                    request.body,
+                    Some(json!({
+                        "zone": "Kitchen@S2", "next": true,
+                        "tracks": [
+                            {"source_uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"},
+                            {"source_uri": "spotify:episode:512ojhOuo1ktJprKbVcKyQ", "title": "Episode"},
+                            {"source_uri": "spotify:track:4uLU6hMCjMI75M1A2tKUQC"}
+                        ],
+                        "expected_revision": "queue-revision"
+                    }))
                 );
             }
             let failure = Failure::new(ErrorCode::PlayerUnreachable, "reply lost after dispatch");

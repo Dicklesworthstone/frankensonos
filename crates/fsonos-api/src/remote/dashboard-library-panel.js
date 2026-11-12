@@ -39,8 +39,16 @@ const DashboardLibraryPanel = (() => {
     form.append(categoryLabel, filterLabel, refresh, back);
     const navigation = el('nav', null, 'dashboard-library-pages'); navigation.setAttribute('aria-label', 'Cached library pages');
     const range = el('span'); navigation.append(previous, range, next);
+    const selectedCount = el('span');
+    const selectedNext = button('Queue selected next', () => { void selectTracks('next'); });
+    const selectedEnd = button('Add selected to end', () => { void selectTracks('append'); });
+    const selectedClear = button('Clear selection', () => control.clearSelection());
+    const selectedActions = el('div', null, 'dashboard-library-actions');
+    selectedActions.setAttribute('role', 'group'); selectedActions.setAttribute('aria-label', 'Selected track actions');
+    selectedActions.append(selectedCount, selectedNext, selectedEnd, selectedClear);
+    const selectionHelp = el('p', `Select up to ${L.MAX_TRACKS} tracks on this page. The queue uses listing order, including repeated occurrences. Changing the page or filter clears the selection.`, 'small-note');
     body.append(el('p', 'Browse the daemon’s saved cache. It may be older or incomplete; browsing does not sync Spotify.', 'small-note'),
-      scope, form, status, rows, navigation); node.append(body);
+      scope, form, status, selectionHelp, selectedActions, rows, navigation); node.append(body);
     (doc.getElementById('search-results') || dialog.lastElementChild)?.before(node);
     let disposed = false, timer = null, focusAlbum = false, lastPage = null;
     const visible = () => !disposed && !doc.hidden && dialog.open && node.open && node.isConnected && !node.closest('[hidden], [inert]');
@@ -60,6 +68,17 @@ const DashboardLibraryPanel = (() => {
         status.textContent = 'The destination changed. Refresh before reviewing music.';
       }
     }
+    async function selectTracks(action) {
+      if (!visible() || !controller.canControl() || session.state.pending) return;
+      const selected = controller.selected(), choice = control.chooseTracks();
+      if (!selected || !choice) return;
+      const destination = Object.freeze({ target: C.key(selected.zone), shape: C.shape(selected.zone) });
+      close(); dialog.close();
+      if (!await session.reviewLibraryTracks(choice, action, destination) && !disposed && !doc.hidden) {
+        dialog.showModal(); node.open = true;
+        status.textContent = session.state.error || 'The destination changed. Refresh before reviewing the selected tracks.';
+      }
+    }
     function render(state) {
       if (disposed) return;
       const selected = controller.selected(), destination = selected
@@ -72,6 +91,11 @@ const DashboardLibraryPanel = (() => {
       back.hidden = !state.album && !state.playlist;
       back.textContent = state.playlist ? 'Back to playlists' : 'Back to albums';
       const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired;
+      selectionHelp.hidden = selectedActions.hidden = state.kind !== 'tracks';
+      selectedCount.textContent = `${state.selected.length} selected`;
+      selectedNext.disabled = selectedEnd.disabled = !usable || !state.selected.length || !destination
+        || !controller.canControl() || !!session.state.pending;
+      selectedClear.disabled = !usable || !state.selected.length;
       previous.disabled = !usable || !p || p.query.offset === 0;
       next.disabled = !usable || !p || p.next === null;
       range.textContent = p?.total ? `${p.query.offset + 1}–${p.query.offset + p.items.length} of ${p.total}` : '';
@@ -82,7 +106,7 @@ const DashboardLibraryPanel = (() => {
       const focus = rows.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
       const scroll = p === lastPage ? rows.scrollTop : 0; lastPage = p;
       rows.replaceChildren();
-      for (const item of p?.items || []) {
+      for (const [index, item] of (p?.items || []).entries()) {
         const name = item.title || `Untitled ${item.kind}`;
         const row = el('li', null, 'dashboard-library-item'), info = el('div');
         info.append(el('strong', item.position ? `${item.position}. ${name}` : name), el('p', item.subtitle || (state.album ? 'Artist unavailable' : ''), 'small-note'));
@@ -91,6 +115,15 @@ const DashboardLibraryPanel = (() => {
         if (item.explicit_known === false) info.append(el('span', 'Explicit-content metadata unavailable', 'small-note'));
         else if (item.explicit) info.append(el('span', 'Explicit', 'small-note'));
         const actions = el('div', null, 'dashboard-library-actions');
+        if (state.kind === 'tracks') {
+          const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = state.selected.includes(index);
+          checkbox.dataset.catalogKey = `select:${index}`;
+          checkbox.setAttribute('aria-label', `Select ${item.position ? `playlist position ${item.position}, ` : ''}${name}`);
+          checkbox.disabled = !usable || (!checkbox.checked && state.selected.length >= L.MAX_TRACKS);
+          checkbox.addEventListener('change', () => { if (visible()) control.selectTrack(item, checkbox.checked); });
+          const label = el('label', null, 'dashboard-library-select-track'); label.append(checkbox, doc.createTextNode('Select for queue'));
+          info.append(label);
+        }
         if (item.kind === 'album' || item.kind === 'playlist') {
           const tracks = button('View cached tracks', () => {
             if (!visible()) return;
@@ -114,7 +147,7 @@ const DashboardLibraryPanel = (() => {
       }
       rows.scrollTop = scroll;
       if (focusAlbum && !state.loading) { focusAlbum = false; if (visible()) status.focus({ preventScroll: true }); }
-      else if (focus && visible()) [...rows.querySelectorAll('button')].find(b => b.dataset.catalogKey === focus)?.focus({ preventScroll: true });
+      else if (focus && visible()) [...rows.querySelectorAll('[data-catalog-key]')].find(b => b.dataset.catalogKey === focus)?.focus({ preventScroll: true });
     }
     const toggle = () => {
       clearTimer();

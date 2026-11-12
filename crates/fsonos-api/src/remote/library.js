@@ -4,6 +4,8 @@
 const LibraryRemote = (() => {
   const P = typeof PlaylistContents !== 'undefined' ? PlaylistContents
     : typeof require === 'function' ? require('./playlist-contents.js') : null;
+  const Q = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote
+    : typeof require === 'function' ? require('./queue-tracks.js') : null;
   const LIMIT = 50;
   const MAX_QUERY = 512;
   const routes = {
@@ -13,6 +15,7 @@ const LibraryRemote = (() => {
     libraryHistory: ['GET', '/history'],
     libraryPlay: ['POST', '/play'],
     libraryAdd: ['POST', '/queue'],
+    libraryTracks: ['POST', '/queue/tracks'],
   };
   const text = (value) => typeof value === 'string' && value.trim() !== '';
   const number = (value) => Number.isInteger(value) && value >= 0 && value <= 4294967295;
@@ -168,12 +171,13 @@ const LibraryRemote = (() => {
     let disposed = false;
     const state = { open: false, zones: [], target: '', query: '', hits: [], view: 'search',
       loaded: false, loading: false, writing: false, pending: null, message: '',
-      page: null, browseKind: 'tracks', browseAlbum: null, browsePlaylist: null };
+      page: null, browseKind: 'tracks', browseAlbum: null, browsePlaylist: null, selected: [] };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
     const destination = () => state.zones.find((zone) => zone.target === state.target);
     const invalidate = () => {
       ++epoch;
       state.pending = null;
+      state.selected = [];
       state.page = null;
       state.hits = [];
       state.loaded = false;
@@ -214,8 +218,9 @@ const LibraryRemote = (() => {
       // Cached browsing is independent of the destination. Keep its observed
       // page, but consume any review and invalidate an outstanding read.
       const cached = state.view === 'browse' && state.loaded ? state.page : null;
+      const selected = state.selected;
       invalidate();
-      if (cached) { state.page = cached; state.hits = cached.hits; state.loaded = true; }
+      if (cached) { state.page = cached; state.hits = cached.hits; state.loaded = true; state.selected = selected; }
       state.target = value;
       state.message = '';
       publish();
@@ -334,6 +339,61 @@ const LibraryRemote = (() => {
     const search = () => read('search');
     const recent = () => read('history');
 
+    function selectTrack(index, checked, expected = state.hits[index]) {
+      const hit = state.hits[index];
+      if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded
+          || state.view !== 'browse' || state.browseKind !== 'tracks' || !state.page
+          || !hit || hit !== expected || !Q.supported(hit.source) || typeof checked !== 'boolean') return false;
+      const selected = state.selected.filter(position => position !== index);
+      if (checked) {
+        if (selected.length >= Q.MAX_TRACKS) {
+          state.message = `Select at most ${Q.MAX_TRACKS} tracks from this page.`; publish(); return false;
+        }
+        selected.push(index);
+      }
+      state.selected = selected.sort((a, b) => a - b);
+      state.message = ''; publish(); return true;
+    }
+
+    function clearSelection() {
+      if (disposed || state.writing || state.loading) return;
+      state.selected = []; state.pending = null; state.message = ''; publish();
+    }
+
+    async function chooseTracks(action) {
+      const zone = destination(), page = state.page;
+      if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded
+          || state.view !== 'browse' || state.browseKind !== 'tracks' || !page || !zone
+          || !state.selected.length || !['append', 'next'].includes(action)) return false;
+      const rows = Object.freeze(state.selected.map(index => Object.freeze({ index, hit: state.hits[index] })));
+      const query = Object.freeze({ kind: 'tracks', offset: page.offset, limit: LIMIT,
+        ...(state.browseAlbum ? { album_uri: state.browseAlbum.uri } : {}),
+        ...(state.query.trim() ? { q: state.query.trim() } : {}) });
+      const playlistQuery = state.browsePlaylist ? P.queryOf({ playlist_uri: state.browsePlaylist.uri,
+        offset: page.offset, q: state.query, expected_revision: page.revision }) : null;
+      const catalog = Object.freeze({ rows, query, playlistQuery, album: state.browseAlbum,
+        revision: page.revision, albumObservation: page.albumObservation ?? null });
+      const version = ++epoch;
+      state.loading = true; state.message = 'Reading the destination queue for review…'; publish();
+      try {
+        const tracks = Q.tracksOf(rows.map(({ hit }) => ({ source_uri: hit.source, title: hit.title })));
+        const [queueValue, playbackValue] = await Promise.all([
+          call('queue', { params: { room: zone.target }, query: { offset: 0, limit: 1 } }),
+          call('state', { params: { room: zone.target } }),
+        ]);
+        if (!current(version)) return false;
+        const queue = Q.queueOf(queueValue, zone.target), playback = Q.playbackOf(playbackValue, zone);
+        state.pending = Object.freeze({ tracks: catalog, zone, action, version, queue, playback,
+          route: 'libraryTracks', body: Q.body(zone.target, tracks, action === 'next', queue) });
+        state.message = ''; return true;
+      } catch (error) {
+        if (current(version)) state.message = message(error);
+        return false;
+      } finally {
+        if (current(version)) { state.loading = false; publish(); }
+      }
+    }
+
     function choose(index, action, expected = state.hits[index]) {
       const zone = destination();
       const hit = state.hits[index];
@@ -405,7 +465,29 @@ const LibraryRemote = (() => {
             throw new Error('The cached playlist selection changed. Read it again before choosing music.');
           }
         }
-        if (pending.hit.favorite) {
+        if (pending.tracks) {
+          const catalog = pending.tracks;
+          const value = await call(catalog.playlistQuery ? 'libraryPlaylist' : 'libraryBrowse', {
+            query: catalog.playlistQuery ? P.parameters(catalog.playlistQuery) : catalog.query });
+          if (!current(version)) return false;
+          const page = catalog.playlistQuery ? playlistPageOf(value, catalog.playlistQuery)
+            : pageOf(value, 'tracks', catalog.query.offset, catalog.album);
+          if (page.revision !== catalog.revision
+              || JSON.stringify(page.albumObservation ?? null) !== JSON.stringify(catalog.albumObservation)
+              || !catalog.rows.every(({ index, hit }) => JSON.stringify(page.hits[index]) === JSON.stringify(hit))) {
+            throw new Error('The cached library selection changed. Refresh its listing and review again.');
+          }
+          const [queueValue, playbackValue] = await Promise.all([
+            call('queue', { params: { room: pending.zone.target }, query: { offset: 0, limit: 1 } }),
+            call('state', { params: { room: pending.zone.target } }),
+          ]);
+          if (!current(version)) return false;
+          Q.verifyQueue(pending.queue, Q.queueOf(queueValue, pending.zone.target), pending.action === 'next');
+          if (Q.playbackOf(playbackValue, pending.zone) !== pending.playback) {
+            throw new Error('Playback changed since review. Review the selected tracks again.');
+          }
+        }
+        if (pending.hit?.favorite) {
           const favorites = await call('favorites', { query: { zone: pending.zone.target } });
           if (!current(version)) return false;
           const matches = Array.isArray(favorites) ? favorites.filter((favorite) => favorite
@@ -422,6 +504,7 @@ const LibraryRemote = (() => {
         state.message = 'Sending the reviewed action…';
         publish();
         const result = await call(pending.route, { body: pending.body });
+        if (pending.tracks) Q.receipt(result, pending.body, pending.queue);
         const valid = result && text(result.done) && (pending.action === 'play'
           ? typeof result.changed === 'boolean'
           : number(result.first) && result.first > 0 && number(result.count) && result.count > 0
@@ -432,10 +515,12 @@ const LibraryRemote = (() => {
           throw new Error('The action returned an unreadable result; its outcome is uncertain.');
         }
         state.message = [result.done, ...(notes || []).map((note) => note.detail)].join(' ');
+        state.selected = [];
         return true;
       } catch (error) {
         state.hits = [];
         state.loaded = false;
+        state.selected = [];
         state.message = `${message(error)}${sent
           ? ' Read the room and queue before trying again; the request was not repeated.' : ' No playback request was sent.'}`;
         return false;
@@ -453,7 +538,7 @@ const LibraryRemote = (() => {
             || change?.household && destination()?.household !== change.household) return;
         invalidate(); state.message = 'The household favorites changed. Search again for current results.'; publish();
       },
-      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, routine, cancel, confirm,
+      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, chooseTracks, routine, cancel, confirm,
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; invalidate(); } };
   }
@@ -528,7 +613,22 @@ const LibraryRemote = (() => {
       search.setAttribute('aria-pressed', String(state.view === 'search'));
       status.textContent = state.message || (state.loading ? 'Reading…' : '');
       results.replaceChildren();
-      if (state.pending) {
+      if (state.pending?.tracks) {
+        const pending = state.pending, label = pending.action === 'next' ? 'Queue selected next' : 'Add selected to end';
+        const list = el('ol');
+        for (const { hit } of pending.tracks.rows) list.append(el('li', { text: [hit.title || 'Untitled track', hit.subtitle,
+          hit.position ? `Playlist position ${hit.position}` : hit.disc != null ? `Disc ${hit.disc}, track ${hit.track ?? '?'}` : '',
+          hit.explicitKnown === false ? 'Explicit-content metadata unavailable' : hit.explicit ? 'Explicit' : '',
+          hit.source].filter(Boolean).join(' · ') }));
+        results.append(el('div', { class: 'library-review', role: 'group', 'aria-label': 'Review selected tracks' },
+          el('strong', { text: `${label}: ${pending.tracks.rows.length} track(s)` }),
+          el('p', { text: `Destination: ${pending.zone.label}` }), list,
+          el('p', { text: 'Adds this exact list in the shown order, including repeated occurrences. Playback stays as it is. The whole successful selection has one undo record.' }),
+          pending.action === 'next' && pending.queue.playing === null
+            ? el('p', { text: 'This group is not playing its queue. The selection will be added to its end without changing the source.' }) : null,
+          el('div', { class: 'row' }, button('Cancel', () => control.cancel()),
+            button(`Confirm ${label.toLowerCase()}`, () => control.confirm(pending)))));
+      } else if (state.pending) {
         const pending = state.pending;
         const label = { play: 'Play now', append: 'Add to end', next: 'Queue next' }[pending.action];
         const warning = pending.action !== 'play' ? 'Adds to the queue without starting playback.'
@@ -558,6 +658,16 @@ const LibraryRemote = (() => {
           : count ? `${count} match(es)${count === LIMIT ? '; refine the search for more specific results' : ''}.`
             : 'No matches. Try different words or sync your Spotify library on the daemon.';
         results.append(el('p', { text: heading }));
+        if (Q && state.view === 'browse' && state.browseKind === 'tracks') {
+          const choose = action => { reviewFocus = `selected-${action}`; void control.chooseTracks(action); };
+          const locked = busy || !state.selected.length || !state.target;
+          results.append(el('p', { text: `Select up to ${Q.MAX_TRACKS} tracks from this page. They are queued in listing order, including repeated occurrences. Changing the page or filter clears the selection.` }),
+            el('div', { class: 'row', role: 'group', 'aria-label': 'Selected track actions' },
+              el('span', { text: `${state.selected.length} selected` }),
+              button('Queue selected next', () => choose('next'), locked, 'selected-next'),
+              button('Add selected to end', () => choose('append'), locked, 'selected-append'),
+              button('Clear selection', () => control.clearSelection(), busy || !state.selected.length)));
+        }
         const list = el('ul', { class: 'library-hits' });
         state.hits.forEach((hit, index) => {
           const row = el('li', {}, el('div', { class: 'track' },
@@ -569,6 +679,14 @@ const LibraryRemote = (() => {
           }
           const actions = el('div', { class: 'row' });
           if (state.view === 'browse') {
+            if (Q && state.browseKind === 'tracks' && Q.supported(hit.source)) {
+              const checked = state.selected.includes(index);
+              const checkbox = el('input', { type: 'checkbox', checked, 'data-library-focus': `select-${index}`,
+                disabled: busy || (!checked && state.selected.length >= Q.MAX_TRACKS),
+                'aria-label': `Select ${hit.position ? `playlist position ${hit.position}, ` : ''}${hit.title || 'Untitled track'}`,
+                onchange: event => control.selectTrack(index, event.target.checked, hit) });
+              row.append(el('label', { class: 'library-select-track' }, checkbox, 'Select for queue'));
+            }
             if (hit.kind === 'album') {
               row.append(el('p', { class: 'by', text: `${hit.cachedTracks} cached track(s); the album may contain more.` }));
               actions.append(button('View cached tracks', () => control.openAlbum(index, hit),

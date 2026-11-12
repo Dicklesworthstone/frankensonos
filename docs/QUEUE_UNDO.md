@@ -1,4 +1,4 @@
-# Undo queue edits and replacement playback
+# Undo queue edits, replacement playback and scenes
 
 Confirmed native queue removals, moves and eligible playback replacements can
 retain a complete, durable undo backup. Native removal and move responses report
@@ -56,9 +56,30 @@ changed or uncertain actions remain barriers, so undo cannot skip past them
 and restore a stale earlier queue reference. No-op moves create no barrier.
 Deleting every entry from a previously selected eligible queue can be undone.
 
-Scene-driven replacement and silent source loading keep their existing undo
-behavior. This feature does not make every operation that changes a queue
-recoverable.
+## Queue-replacing scenes
+
+A scene can retain the same complete queue recovery for Spotify albums and
+playlists, resolved artist tracks and show episodes, native Sonos playlists,
+and container favorites. Both playing and silent scene loads are eligible.
+Every affected group must keep its original physical membership, and every
+scene step must complete. Each replaced queue must have its own complete
+backup and confirmed replacement receipt; otherwise the entire action remains
+an undo barrier.
+
+Scene undo also restores the volume and mute fields that the scene deliberately
+changed in those groups. Its baseline is captured after policy cap reductions,
+so undo keeps those reductions and applies the restoring caller's current caps.
+The original queue is reconstructed and verified in silence before any room
+level is raised or a room is unmuted. Playback resumes only if the original
+queue was playing. A paused or stopped original queue stays silent.
+
+Completed volume fades can retain recovery. A manual fade takeover, failed
+step, missing receipt, or changed final state prevents it, even if the eventual
+levels happen to match the requested scene. Scenes that regroup rooms, start
+the DJ, or recall a durable queue backup remain outside this recovery scope.
+Initially empty, inactive, unreadable or oversized original queues still cannot
+be recovered. The apply response reports when replaced contents cannot be
+restored; use the action history and undo preview to inspect eligibility.
 
 ## A later listener's changes take precedence
 
@@ -73,9 +94,11 @@ pause/resume, mode, queue, group, reboot, or room level prevents recovery.
 The restoring caller must be allowed to pause, add and remove queue entries,
 select the queue and seek; restoring a known play mode also requires that
 permission. An audible restore requires resume and volume permissions and
-applies current policy caps before any playback can start. Recovery never
-raises room volume back to an older setting. Quiet restoration does not
-require permission to resume or set volume.
+applies current policy caps before any playback can start. Direct replacement
+and native edit recovery preserve room levels apart from required reductions.
+Scene recovery separately checks permission for its saved volume and mute
+fields, including when the original queue was silent; it never needs resume
+permission merely to rebuild a quiet queue.
 
 ## Reconstruction and uncertainty
 
@@ -94,7 +117,8 @@ speaker queue before deciding what to do next. Undo itself has no redo.
 
 Regression sources cover S1/S2 localhost speakers, duplicate and current-entry
 removal, complete deletion, reordering, album/playlist and ordered catalog
-replacement, paused and advancing playback, SQLite close/reopen, changed
+replacement, playing and silent scene loads, completed and superseded fades,
+scoped volume/mute recovery, paused and advancing playback, SQLite close/reopen, changed
 ownership, policy caps, lost replies and partial staging. Surface regressions
 also exercise the shared checked-undo implementation under HTTP and MCP caller
 identities.

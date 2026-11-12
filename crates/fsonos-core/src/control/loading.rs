@@ -214,6 +214,29 @@ pub fn load_spotify_container<T: Transport + ?Sized>(
     spotify_container(t, households, coordinator, kind, spotify_uri, title, false)
 }
 
+/// Silently replace a container source and retain its exact completed receipt.
+/// The receipt alone does not make the prior queue eligible for undo.
+pub fn load_spotify_container_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    kind: SpotifyContainer,
+    spotify_uri: &str,
+    title: &str,
+) -> Result<super::QueueReplacement, CoreError> {
+    spotify_container_render(
+        t,
+        households,
+        coordinator,
+        kind,
+        spotify_uri,
+        title,
+        |uri, metadata| {
+            crate::queue_source::load_with_receipt(t, households, coordinator, uri, metadata)
+        },
+    )
+}
+
 pub(super) fn spotify_container<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],

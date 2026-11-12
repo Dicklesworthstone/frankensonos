@@ -1,7 +1,7 @@
 //! Household-bound native playlist sources. A scene remembers an identity,
 //! not a renderer URI or a frozen copy of the playlist's contents.
 
-use super::{SceneOp, ScenePlan};
+use super::{SceneHooks, SceneOp, ScenePlan};
 use crate::favorites::{self, Favorite};
 use crate::{CoreError, HouseholdState, control, playlists};
 use fsonos_proto::topology::get_zone_group_state;
@@ -222,6 +222,7 @@ pub(super) fn recall<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     playlist: &SonosPlaylistReference,
     start: bool,
+    hooks: &dyn SceneHooks,
 ) -> Result<(), String> {
     let current = playlist
         .resolve(t, households, coordinator)
@@ -230,6 +231,18 @@ pub(super) fn recall<T: Transport + ?Sized>(
     // Dispatch must instead retain the execution engine's confirmed audience,
     // including every room covered by its playback volume caps.
     confirm_audience(t, households, coordinator).map_err(|e| e.to_string())?;
+    if hooks.queue_replacement_started(coordinator) {
+        let receipt = if start {
+            favorites::play_with_receipt(t, households, coordinator, &current)
+        } else {
+            favorites::load_with_receipt(t, households, coordinator, &current)
+        }
+        .map_err(|e| e.to_string())?;
+        if let Some(receipt) = receipt {
+            hooks.queue_replacement_finished(coordinator, receipt);
+        }
+        return Ok(());
+    }
     let result = if start {
         favorites::play(t, households, coordinator, &current)
     } else {

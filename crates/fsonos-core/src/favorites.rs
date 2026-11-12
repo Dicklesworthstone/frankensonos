@@ -324,3 +324,29 @@ pub fn play_with_receipt<T: Transport + ?Sized>(
         &favorite.metadata,
     )?))
 }
+
+/// Load without Play, retaining a receipt only for a completed container
+/// replacement. Tracks and streams keep their existing silent-load behavior.
+pub fn load_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    favorite: &Favorite,
+) -> Result<Option<control::QueueReplacement>, FavoriteError> {
+    if !matches!(favorite.kind, FavoriteKind::Container) {
+        return load(t, households, coordinator, favorite).map(|()| None);
+    }
+    let uri = favorite
+        .uri
+        .as_deref()
+        .ok_or_else(|| FavoriteError::Unplayable {
+            title: favorite.title.clone(),
+        })?;
+    Ok(Some(queue_source::load_with_receipt(
+        t,
+        households,
+        coordinator,
+        uri,
+        &favorite.metadata,
+    )?))
+}

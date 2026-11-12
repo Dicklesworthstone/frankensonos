@@ -413,6 +413,11 @@
     if (r === reviewed) return; reviewed = r;
     $('review-title').textContent = r.title; $('review-target').textContent = `${r.label} · ${r.target}`;
     $('review-description').textContent = r.detail; $('review-details').replaceChildren();
+    if (r.trackSelection) {
+      const list = el('ol', 'review-track-selection');
+      for (const entry of r.trackSelection) list.append(el('li', '', entry));
+      $('review-details').append(list);
+    }
     if (r.work) {
       const row = el('div', 'review-spec'); row.append(el('h3', '', r.work.title), el('p', '', `${r.work.composer} · ${r.work.movements} movement${r.work.movements === 1 ? '' : 's'}`)); $('review-details').append(row);
     }
