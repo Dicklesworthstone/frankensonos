@@ -4851,3 +4851,16 @@ dynamically another way.
 Given the effort spent, the direct-call harness plus `memcmp`-break is still the
 cheapest route to *watching a parser*, and the blocker there is only that the
 parser needs bytes to chew on — which the harness can supply by hand.
+
+**Box-walker candidate found: `0x100b6f4c`.** It big-endian-reads a u32, byte-swaps
+it with a `rlwinm`/`or` sequence, `memcmp`s 4 bytes against a stack-built tag,
+branches on mismatch, then immediately does `cmplwi cr7,r31,15` on the same value
+— i.e. tag compare + size sanity, exactly the ISO-BMFF shape.
+
+This was reached by a targeted search rather than tag scanning: enumerate
+`bl memcmp` sites and keep only those preceded by `li r5,4` (4-byte compares).
+That filter cuts 249 memcmp sites to a short list and the `0x100b7xxx` cluster is
+the container code.
+
+Static work is now paying off again; keep using the arity-of-arguments filter
+style instead of hunting strings.
