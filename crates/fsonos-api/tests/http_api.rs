@@ -752,6 +752,24 @@ fn the_openapi_document_describes_every_route() {
     assert!(announcement["properties"]["wav_base64"].is_object());
     assert!(announcement["properties"].get("file").is_none());
 
+    let batch = &doc["paths"]["/queue/tracks"]["post"];
+    assert_eq!(batch["operationId"], "add_tracks_to_queue");
+    let schema = &batch["requestBody"]["content"]["application/json"]["schema"];
+    let selection = schema["$ref"]
+        .as_str()
+        .and_then(|reference| reference.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    for field in ["zone", "tracks", "next", "expected_revision"] {
+        assert!(
+            selection["properties"][field].is_object(),
+            "{field}: {selection}"
+        );
+    }
+    let required = selection["required"].as_array().unwrap();
+    assert_eq!(required.len(), 2);
+    assert!(required.contains(&json!("zone")));
+    assert!(required.contains(&json!("tracks")));
+
     // Error answers carry the wire codes.
     let not_found = doc["paths"]["/zones/{room}"]["get"]["responses"]["404"]["description"]
         .as_str()

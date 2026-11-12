@@ -63,7 +63,7 @@ const RequestRemote = (() => {
     // Queue expansion, scene fades and spoken announcements can legitimately
     // outlast ordinary controls. Do not interrupt them at a read's deadline.
     if (pathname === '/announce') return ANNOUNCE_TIMEOUT;
-    if (pathname === '/queue' || pathname === '/sonos/playlists/play' || pathname.startsWith('/dj/')
+    if (pathname === '/queue' || pathname === '/queue/tracks' || pathname === '/sonos/playlists/play' || pathname.startsWith('/dj/')
         || /^\/scenes\/[^/]+\/apply$/.test(pathname)) return LONG_WRITE_TIMEOUT;
     return WRITE_TIMEOUT;
   }

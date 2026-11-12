@@ -23,6 +23,7 @@
 //!              or `--line-in <source>` in a room's group
 //!   pause / resume / next / previous   transport for a room's group
 //!   queue-play play an existing queue position without adding tracks
+//!   queue-tracks quietly queue an ordered selection of tracks or episodes
 //!   seek       move within the track a room's group is on (1:30, +30, -15)
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
 //!   mute       mute or unmute a room
@@ -59,6 +60,7 @@ mod policy_cmd;
 mod queue_edit_cmd;
 mod queue_play_cmd;
 mod queue_search_cmd;
+mod queue_tracks_cmd;
 mod remote;
 mod rooms_cmd;
 mod scene_cmd;
@@ -168,6 +170,9 @@ enum Command {
     /// Find title, artist or album words in the existing group queue. Returns
     /// absolute positions, exact renderer URIs and a revision for guarded actions.
     QueueSearch(queue_search_cmd::QueueSearchArgs),
+    /// Quietly append 1-10 Spotify tracks or episodes in the supplied order,
+    /// or insert them next. Preserves duplicates; undo restores the queue.
+    QueueTracks(queue_tracks_cmd::QueueTracksArgs),
     /// Play an existing queue position without adding or removing tracks.
     /// Use `queue <room>` or `queue-search` to find positions first; `undo`
     /// restores playback.
@@ -561,6 +566,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Eq(args) => eq_cmd::run(global, &args),
         Command::QueuePlay(args) => queue_play_cmd::run(global, &args),
         Command::QueueSearch(args) => queue_search_cmd::run(global, &args),
+        Command::QueueTracks(args) => queue_tracks_cmd::run(global, &args),
         Command::SpotifySearch(args) => spotify_search_cmd::run(global, &args),
         Command::QueueRemove(args) => queue_edit_cmd::remove(global, &args),
         Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
@@ -1116,6 +1122,7 @@ fn plan_for<'a>(
         | Command::Queue { .. }
         | Command::QueuePlay(_)
         | Command::QueueSearch(_)
+        | Command::QueueTracks(_)
         | Command::QueueRemove(_)
         | Command::QueueMove(_)
         | Command::PlayMode(_)

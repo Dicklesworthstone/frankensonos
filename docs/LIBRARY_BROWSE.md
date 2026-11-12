@@ -117,5 +117,12 @@ refresh from the beginning; it never combines pages from two listings.
 
 Closing the panel invalidates an unsent action. A failed or unreadable write
 is not retried; read the room and queue before deliberately trying again.
-The remote uses the same existing embedded library assets and public play/queue
-routes, with no new automatic sync, microphone capture or playback polling.
+
+To queue several individual tracks, mark **Select for queue** beside up to ten
+entries on the current page, then choose **Queue selected next** or **Add selected
+to end**. Review shows every occurrence in listing order and its explicit group.
+Repeated album or playlist entries stay repeated; changing the catalog context
+clears the selection. Confirmation rereads the catalog, source, group and queue
+and sends one `POST /queue/tracks`, preserving playback and recording one
+undoable range. See [Ordered track selections](QUEUE_TRACK_SELECTIONS.md) for
+limits, CLI/MCP use and partial-failure handling.

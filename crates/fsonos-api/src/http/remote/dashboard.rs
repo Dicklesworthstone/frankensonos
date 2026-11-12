@@ -10,6 +10,7 @@ const PAGE: &str = include_str!("../../remote/dashboard.html");
 const STYLE: &str = include_str!("../../remote/dashboard.css");
 const LIBRARY: &str = include_str!("../../remote/dashboard-library.js");
 const PLAYLIST: &str = include_str!("../../remote/playlist-contents.js");
+const QUEUE_TRACKS: &str = include_str!("../../remote/queue-tracks.js");
 const LIBRARY_PANEL: &str = include_str!("../../remote/dashboard-library-panel.js");
 const LIBRARY_STYLE: &str = include_str!("../../remote/dashboard-library.css");
 const EVENTS: &str = include_str!("../../remote/event-feed.js");
@@ -109,7 +110,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{DJ_CONFIGURATION}\n{DJ_CONFIGURATION_PANEL}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{SOURCE_PLAYER}\n{SOURCE}\n{PLAYLIST_SAVE}\n{PLAYLIST_SAVE_PANEL}\n{SPOTIFY_CONNECT}\n{LIBRARY_SYNC}\n{MUSIC}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{DJ_CONFIGURATION}\n{DJ_CONFIGURATION_PANEL}\n{QUEUE_TRACKS}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{SOURCE_PLAYER}\n{SOURCE}\n{PLAYLIST_SAVE}\n{PLAYLIST_SAVE_PANEL}\n{SPOTIFY_CONNECT}\n{LIBRARY_SYNC}\n{MUSIC}\n{SCRIPT}"
                     ),
                 )
             },

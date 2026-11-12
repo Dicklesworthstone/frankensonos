@@ -6,6 +6,8 @@ const DashboardSession = (() => {
     : typeof require === 'function' ? require('./dashboard-queue.js') : null;
   const libraryApi = () => typeof DashboardLibrary !== 'undefined' ? DashboardLibrary
     : typeof require === 'function' ? require('./dashboard-library.js') : null;
+  const queueTracksApi = () => typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote
+    : typeof require === 'function' ? require('./queue-tracks.js') : null;
   const directionApi = () => typeof DjDirection !== 'undefined' ? DjDirection : require('./dj-direction.js');
   const sceneQueueApi = () => typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
   const text = (v, max = 4096) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
@@ -57,7 +59,8 @@ const DashboardSession = (() => {
   function scene(v) {
     if (!object(v) || !text(v.name, 256) || !Number.isSafeInteger(v.saved)
         || !list(v.groups, (g) => object(g) && text(g.coordinator) && list(g.members, text)
-          && object(g.source) && ['keep', 'favorite', 'uri', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
+          && object(g.source) && ['keep', 'favorite', 'sonos_playlist', 'uri', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
+          && (g.source.kind === 'sonos_playlist' || g.source.playlist == null)
           && (['queue', 'queue_backup'].includes(g.source.kind) || g.source.queue == null)
           && (g.source.kind === 'dj' || g.source.direction == null)
           && (g.source.kind !== 'favorite' || text(g.source.name))
@@ -69,6 +72,14 @@ const DashboardSession = (() => {
         || Object.entries(v.mutes).some(([r, m]) => !text(r) || typeof m !== 'boolean')) fail('The saved scene is unreadable.');
     const copy = clone(v);
     for (const group of copy.groups) {
+      if (group.source.kind === 'sonos_playlist') {
+        const source = group.source, playlist = source.playlist;
+        if (!object(playlist) || !text(playlist.id, 1024) || !/^SQ:\d+$/.test(playlist.id)
+            || !text(playlist.household, 1024) || !text(playlist.title, 1024)
+            || source.name !== playlist.id || source.uri != null || source.mood != null) {
+          fail('The saved Sonos playlist identity is unreadable.');
+        }
+      }
       if (['queue', 'queue_backup'].includes(group.source.kind)) {
         group.source.queue = sceneQueueApi().read(group.source.queue);
         if ((group.source.kind === 'queue_backup') !== (group.source.queue.total != null)) fail('The saved queue source kind is unreadable.');
@@ -79,6 +90,7 @@ const DashboardSession = (() => {
   }
   function sceneSource(source) {
     return ['queue', 'queue_backup'].includes(source.kind) ? sceneQueueApi().describe(source.queue)
+      : source.kind === 'sonos_playlist' ? `Saved Sonos playlist “${source.playlist.title}” (${source.playlist.id}, household ${source.playlist.household}; replaces the queue)`
       : source.kind === 'dj' && source.direction != null ? directionApi().describe(source.direction, source.mood)
         : `${source.kind}${source.mood ? ` · ${source.mood}` : ''}${source.name ? ` · ${source.name}` : ''}${source.uri ? ` · ${source.uri}` : ''}`;
   }
@@ -211,6 +223,32 @@ const DashboardSession = (() => {
         body: { zone: target, source_uri: source.source_uri, title: name, ...(action === 'play' ? {} : { next: action === 'next' }) } });
       emit(); return state.pending;
     }
+    async function reviewLibraryTracks(value, action, destination) {
+      const L = libraryApi(), Q = queueTracksApi();
+      if (!L || !Q || !ready() || state.pending || !['append', 'next'].includes(action)) return null;
+      const item = selection();
+      if (!item || destination?.target !== C.key(item.zone) || destination?.shape !== C.shape(item.zone)) return null;
+      const target = C.key(item.zone), playback = playbackIdentity(item), id = ++intent;
+      try {
+        const catalog = L.selectionOf(value), tracks = Q.tracksOf(catalog.rows.map(row => row.item));
+        const queue = Q.queueOf(await call(`/zones/${encodeURIComponent(target)}/queue?offset=0&limit=1`), target);
+        if (!ready() || id !== intent || state.pending || target !== controller.state.selected
+            || playbackIdentity(selection()) !== playback) return null;
+        const label = action === 'next' ? 'Queue selected next' : 'Add selected to end';
+        const entries = catalog.rows.map(({ item: source }) => `${source.title || 'Untitled track'}${source.subtitle ? ` — ${source.subtitle}` : ''}${source.position ? ` (playlist position ${source.position})` : catalog.query.album_uri ? ` (disc ${source.disc_number ?? '?'}, track ${source.track_number ?? '?'})` : ''}${source.explicit_known === false ? ' [explicit metadata unavailable]' : source.explicit ? ' [explicit]' : ''} · ${source.source_uri}`);
+        state.result = null; state.error = '';
+        state.pending = freeze({ kind: 'library_tracks', target, label: item.zone.members.join(' + '),
+          title: `${label}: ${tracks.length} track(s)`,
+          detail: `Adds the exact selection below in listing order, preserving repeated occurrences. Playback stays as it is. One successful selection has one undo record.${action === 'next' && queue.playing === null ? ' This group is not playing its queue, so the selection is added at the end.' : ''}`,
+          trackSelection: entries,
+          playback, catalogTracks: catalog, queue, libraryAction: action, url: '/queue/tracks',
+          body: Q.body(target, tracks, action === 'next', queue) });
+        emit(); return state.pending;
+      } catch (error) {
+        if (id === intent && ready()) { state.error = C.problem(error); emit(); }
+        return null;
+      }
+    }
     function reviewQueue(value, action, insertBefore) {
       const Q = queueApi();
       if (!Q || !ready() || state.pending) return null;
@@ -276,6 +314,23 @@ const DashboardSession = (() => {
               valid(check);
               if (stable(available.find((m) => m.name === r.mood.name)) !== stable(r.mood)) fail('The mood definition changed. Refresh moods.');
             }
+          } else if (r.catalogTracks) {
+            const L = libraryApi(), Q = queueTracksApi(), catalog = r.catalogTracks;
+            if (!L || !Q) fail('The library browser is unavailable. Refresh the page.');
+            const page = L.pageOf(await call(L.urlOf(catalog.query)), catalog.query);
+            valid(check);
+            if (page.revision !== catalog.revision || stable(page.albumObservation ?? null) !== stable(catalog.albumObservation)
+                || !catalog.rows.every(({ index, item: source }) => stable(page.items[index]) === stable(source))) {
+              fail('The cached library selection changed. Refresh its listing and review again.');
+            }
+            const [queueValue, playbackValue] = await Promise.all([
+              call(`/zones/${encodeURIComponent(target)}/queue?offset=0&limit=1`),
+              call(`/zones/${encodeURIComponent(target)}/state`),
+            ]);
+            valid(check); Q.verifyQueue(r.queue, Q.queueOf(queueValue, target), r.libraryAction === 'next');
+            if (playbackIdentity({ zone: item.zone, state: C.playback(playbackValue, item.zone) }) !== r.playback) {
+              fail('Playback changed since review. Review the selected tracks again.');
+            }
           } else if (r.catalog) {
             const L = libraryApi();
             if (!L) fail('The library browser is unavailable. Refresh the page.');
@@ -296,6 +351,7 @@ const DashboardSession = (() => {
         if (r.queueEdit) queueApi().submitted(r.queueEdit);
         const result = await delivery;
         if (r.queueEdit) return queueApi().receipt(result, r.queueEdit);
+        if (r.catalogTracks) return queueTracksApi().receipt(result, r.body, r.queue);
         if (r.kind === 'like' || r.kind === 'dislike') {
           if (!result || result.zone !== item.zone.coordinator_room || result.signal !== r.kind || !text(result.work)
               || result.composer !== r.work.composer || result.work !== `${r.work.composer}: ${r.work.title}` || !text(result.done)) fail('The feedback acknowledgement was incomplete.');
@@ -321,10 +377,10 @@ const DashboardSession = (() => {
       }, { wholeHouse: r.kind === 'scene' });
       emit(); if (ok && active && !disposed) await load(); return ok;
     }
-    return { state, load, catalog, search, review, reviewLibrary, reviewQueue, reviewScene, confirm, cancel,
+    return { state, load, catalog, search, review, reviewLibrary, reviewLibraryTracks, reviewQueue, reviewScene, confirm, cancel,
       queueChanged(room = null) {
         const item = selection();
-        if (!disposed && state.pending?.kind === 'queue'
+        if (!disposed && ['queue', 'library_tracks'].includes(state.pending?.kind)
             && (!room || item?.zone.members.includes(room))) cancel();
       },
       catalogChanged(change = null) {

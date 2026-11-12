@@ -89,6 +89,7 @@ fn command_timeout(path: &str) -> Duration {
         .and_then(|tail| tail.strip_suffix("/apply"))
         .is_some_and(|name| !name.is_empty() && !name.contains('/'));
     if path == "/queue"
+        || path == "/queue/tracks"
         || path == "/sonos/playlists/play"
         || path.starts_with("/dj/")
         || scene_apply
@@ -1194,6 +1195,8 @@ mod tests {
         for path in [
             "/queue",
             "/queue?trace=1",
+            "/queue/tracks",
+            "/queue/tracks?trace=1",
             "/sonos/playlists/play",
             "/sonos/playlists/play?trace=1",
             "/dj/start",

@@ -48,6 +48,13 @@ start playback. If the group is on a radio or another source, use an entry's
 Play button to activate the queue. The server's result explains where the
 addition went and whether the group is playing its queue.
 
+For an ordered selection of cached tracks, open **Find music**, browse an album,
+playlist or track page, and check up to ten entries. **Queue selected next** and
+**Add selected to end** review and submit them together, preserving repeated
+occurrences and current playback with one undo record. The same capability is
+available in the Listening Room, CLI and MCP. See
+[Ordered track selections](QUEUE_TRACK_SELECTIONS.md).
+
 ## Remove a range
 
 Select one entry, or up to 100 consecutive entries across pages, then

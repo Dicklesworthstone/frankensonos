@@ -21,6 +21,14 @@ command review, naming the exact group, source and effect. Play now replaces
 the current source, and album/playlist playback replaces the group's queue.
 The two queue actions add music without starting paused playback.
 
+For several individual tracks, use the row checkboxes, then **Queue selected
+next** or **Add selected to end**. The review lists up to ten exact occurrences
+in their catalog order, including repeated URIs, before one `POST /queue/tracks`.
+The action preserves playback and has one undo record. Selection stays within
+the current page and clears on navigation or filtering. See
+[Ordered track selections](QUEUE_TRACK_SELECTIONS.md) for the destination queue
+check, partial-failure behavior and equivalent CLI/MCP calls.
+
 Confirmation uses the same single-command lane as transport, DJ and scene
 controls. It checks playback/group identity, rereads the exact catalog page,
 and verifies its revision and selected entry before one native `/play` or
@@ -51,20 +59,20 @@ allows normal refresh again. Same-title items keep distinct source identities.
 ## Checks
 
 ```sh
-node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs scripts/test-dashboard-session.cjs
+node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs scripts/test-dashboard-session.cjs scripts/test-library-track-selection.cjs
 python3 scripts/test-dashboard-library-browser.py --chromium /path/to/chromium
 ```
 
-The combined Node run passes 106 tests: 72 catalog/command checks and 34 unchanged
-session regressions, with three real loopback HTTP cases. Twelve Chromium
-component cases exercise the shipped catalog, core, session and workspace
-modules, including actual controls, review handoff, retained targets, hidden
-preflight, failed acknowledgement, and long metadata at 320/390/768/1440 pixels.
-The browser host, HTTP responses, review presentation and unrelated queue
-collaborator are fixtures; this is not full-page or live-daemon acceptance.
+The Node suites cover catalog and command state, actual selection controls,
+ordered review, repeated occurrences, destination changes, cancellation and
+uncertain HTTP replies. Chromium component cases exercise the shipped catalog,
+core, session and workspace modules, including review handoff, retained targets,
+hidden preflight, failed acknowledgement, and long metadata at 320/390/768/1440
+pixels. Browser hosts, HTTP responses and unrelated queue collaborators are
+fixtures; these checks do not constitute full-page or live-daemon acceptance.
 
-The Node suites are registered in Linux CI. JavaScript syntax, Python parsing,
-workflow YAML and uploaded-file hashes were checked locally. The Rust change
-only embeds the added scripts/styles; compilation, rustfmt, full existing-suite,
-full-dashboard layout and physical Sonos/Spotify/Tailscale acceptance are separate
-checks and were not run by this implementation session.
+The Node suites are registered in Linux CI. The ordered-selection API and its
+CLI/MCP adapters also have Rust request and simulator regressions; see
+[Queue track selections](QUEUE_TRACK_SELECTIONS.md). Full workspace execution,
+full-dashboard layout and physical Sonos/Spotify/Tailscale acceptance remain
+separate checks.

@@ -969,6 +969,17 @@ sid-only renderer metadata. Artist and show lookups share the bounded worker,
 fresh credentials and retained Spotify cooldown; podcast metadata stays
 outside the music library and DJ selection pool.
 
+Explicit ordered selections now share `POST /queue/tracks`, CLI `queue-tracks`
+and MCP `add_tracks_to_queue`. One request inserts 1–10 concrete Spotify tracks
+or episodes next or at the end, retaining intentional duplicates and current
+playback. The phone and dashboard select exact entries from one cached page,
+review the ordered list and destination, then recheck catalog, group, playback
+and queue before submission. The optional destination revision is separate from
+the library revision. One successful batch has one inserted-range undo record;
+an uncertain partial batch is not replayed and leaves an undo barrier. The
+existing `add_to_queue` policy and bounded insertion engine apply throughout.
+See [`docs/QUEUE_TRACK_SELECTIONS.md`](docs/QUEUE_TRACK_SELECTIONS.md).
+
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
 earliest real playback on both S1 and S2, and the fallback §6 calls for when a
