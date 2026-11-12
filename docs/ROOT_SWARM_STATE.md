@@ -4793,3 +4793,15 @@ this build AAC is routed through the **MP4 container path**, not a naked ADTS
 handler. `audio/x-ms-wma` maps to the `…audio/wma:*` / `.wma` pair and
 `audio/mp4`/`.mp4` similarly, so the chain is a MIME → (protocolInfo, ext)
 resolver used for URL rewriting.
+
+Direct-call technique: **partially proven**. Writing a string into guest memory
+via gdb (`malloc` + byte stores) and `call`ing `0x1034c848` reaches the function
+(`buf=0x10656bb0`) but SIGSEGVs at `0x1034cb00` because that function wants
+**three** arguments — `r3` mime string, `r4` a flag tested with `cmpwi cr4,r4,0`,
+and `r5` (kept in `r27`). Passing only `r3` leaves `r4/r5` as leftovers.
+
+So the pattern works; each target just needs its real argument count filled.
+Also worth noting for search: this binary has only **6 relocations**, so `axt`
+misses most refs and neither `lis/addi` nor raw-pointer scans find them — the
+string-address hunt is unreliable, and time is better spent on functions already
+located by behaviour than on more string xrefs.
