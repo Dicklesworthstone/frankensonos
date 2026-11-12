@@ -4918,3 +4918,14 @@ Net position: every route to running container code needs a *fetch*, and every
 route to a fetch needs the HTTP side that is stalled. The direct-call harness can
 break that circle only if a target needs no live context — which the container
 code does not.
+
+**The dispatcher never selects the listener.** Breaking `select` and dumping the
+read set: `nfds=45`, pointer stable, and the fd_set is
+`word0=0x00000000, word1=0x00001000` — only **bit 12 of word 1 = fd 44** is ever
+set. fd 29 (the 1400 listener) is never in the set, so no amount of gate patching
+can produce an accept.
+
+select itself is called 73 times in 42 s, so the loop is healthy; the listener is
+simply not registered with this selector. Next question is therefore where fds are
+*added* to it — that registration is what is missing, not the gate and not the
+select.
