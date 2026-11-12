@@ -4968,3 +4968,22 @@ help, because the bit is already cleared by then.
 
 Workaround space: bypass select for the listener (patch the readiness test), or
 make qemu's select see it (different fd type / `poll` instead of `select`).
+
+**BREAKTHROUGH: connections are accepted now.**
+
+The key was not the gate byte but the **select return value**: `0x104125c0` does
+`mr r27,r3` (r27 = select's return) and `0x104125f4-0x104125fc` branches away when
+it is `<= 0`. With qemu's select always returning 0, the daemon took the timeout
+path and never reached the fd test at all. NOP-ing `0x104125fc`
+(`ble cr7,0x104126a4`) makes it fall into the fd/bit/accept code regardless.
+
+Result: a thread blocks in `accept` (syscall 288, steady), and `ss` shows real
+accepted connections in **CLOSE-WAIT with Recv-Q 93** — previously nothing was
+ever accepted at all.
+
+Patch set currently in the binary (all `nop`, all reversible):
+`0x104125e4`, `0x104125f0`, `0x104125fc`, `0x10412624`. Backup of the pristine
+build: `/tmp/s23_anacapad_pregate` (pre-gate) and `anacapad.orig` (stock).
+
+Remaining gap is the *response*: accepted sockets sit unread, so the post-accept
+handling that should parse and answer is still not running.
