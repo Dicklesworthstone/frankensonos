@@ -4724,3 +4724,22 @@ dispatcher, not to loop on its own.
 
 That reframes the whole problem: the daemon is not missing a thread, it is
 missing the **dispatch event** that would make it call the acceptor.
+
+The dispatcher's accept path is **gated**, at `0x104125e0-0x10412628`:
+
+- `lbz r29,132(r31)` — if **non-zero**, jump away to `0x104127c4` (no accept);
+- `lbz r0,133(r31)` — if **zero**, go to `0x104126ac` (no accept);
+- `lwz r10,148(r31)` — an fd *index*; `rlwinm`→ bitmap word at `r18`, `sraw` by
+  the low bits, `andi. 1` — if the bit is clear, no accept.
+
+Only when all three line up does it reach the acceptor-call block at `0x10412628`
+(`addi r25,r31,172` … the six out-pointer setup) and `0x10412698`.
+
+So the daemon selects over a bitmap and calls the acceptor per ready fd; nothing
+accepts today because the listening fd's bit never comes up (or the two byte
+gates are wrong for this state). Confirmed empirically: breakpoints on both
+`0x10412698` and `0x10407a2c` never fire in a 45 s run, while the thread
+`0x104124c4` itself *is* started.
+
+This also corrects the earlier label: `0x104124c4` is not "watchdog", it is the
+**server dispatcher** thread.
