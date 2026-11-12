@@ -4805,3 +4805,12 @@ Also worth noting for search: this binary has only **6 relocations**, so `axt`
 misses most refs and neither `lis/addi` nor raw-pointer scans find them — the
 string-address hunt is unreliable, and time is better spent on functions already
 located by behaviour than on more string xrefs.
+
+Direct call of the channel constructor `0x101295a0` with a freshly `malloc`ed,
+`memset`-zeroed 9000-byte object still SIGSEGVs, so that constructor needs more
+than a blank object (it names two channels at +992/+8456, so the object is a
+larger player/channel container that other code must initialise first).
+
+That is the general rule for this pivot: only self-contained functions are
+callable with synthetic state, and the daemon's constructors mostly are not.
+The practical targets are therefore leaf-ish parsers, not object graph builders.
