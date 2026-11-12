@@ -65,7 +65,14 @@ The review checks the catalog and destination again before sending the save.
 Changed room identity, a removed selection or a renamed title requires a fresh
 review. The returned scene must match the reviewed target and playlist; a lost
 or inconsistent receipt is not permission to repeat the save automatically.
-The scene can then be selected as an **Apply scene** routine.
+Open **Scheduled routines** on the phone remote, or **Routines** on the
+dashboard, and choose a new **Apply scene** routine. Select the saved scene,
+choose its days and time, then review and create it. The chooser accepts native
+playlist scenes alongside DJ, stream and captured-queue scenes. Its review
+retains the native household, id, title and playback intent; a changed saved
+binding requires a new review before the routine can be created. Scheduling
+reads local scene definitions and does not start music or require an online
+speaker. Catalog readiness is checked when the routine runs.
 
 ## HTTP and MCP
 

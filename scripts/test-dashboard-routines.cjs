@@ -112,6 +112,54 @@ test('complete queue-backup scenes can be scheduled with one reviewed native wri
   assert.equal(await f.control.apply(pending), false); assert.equal(f.ctl.state.uncertain, false);
 });
 
+test('native playlist scenes can be chosen, edited and scheduled from the dashboard routine form', async () => {
+  for (const playing of [true, false]) {
+    const f = fixture({ dom: true });
+    f.scenes.push({ name: 'Native breakfast', saved: 18, volumes: {}, mutes: {},
+      groups: [{ coordinator: 'Studio@S1', members: [], playing,
+        source: { kind: 'sonos_playlist', name: 'SQ:9',
+          playlist: { household: 'SIM_HOUSEHOLD_S1', id: 'SQ:9', title: 'Breakfast & strings' } } }] });
+    await f.ready();
+    assert.equal(await f.control.beginCreate('apply_scene'), true);
+    const chooser = f.doc.getElementById('routine-scene');
+    assert.match(chooser.textContent, /Queue for later/);
+    assert.match(chooser.textContent, /Native breakfast/);
+    chooser.value = 'Native breakfast'; chooser.fire('change');
+    assert.equal(f.control.reviewCreate(), true);
+    const older = f.control.state.pending;
+    assert.equal(JSON.parse(older.destination.details).groups[0].playing, playing);
+    assert.match(f.doc.getElementById('routines-body').textContent, /Breakfast & strings/);
+    assert.equal(f.control.edit('time', '09:20'), true);
+    assert.equal(await f.control.apply(older), false);
+    assert.equal(f.control.reviewCreate(), true);
+    const reviewed = f.control.state.pending;
+    assert.equal(await f.control.apply(reviewed), true);
+    assert.equal(await f.control.apply(reviewed), false);
+    assert.deepEqual(f.writes(), [{ url: '/schedules', body: {
+      when: 'weekdays 09:20', action: 'apply_scene', scene: 'Native breakfast' } }]);
+    assert.ok(f.calls.every(call => ['/schedules', '/scenes'].includes(call.url)));
+    assert.equal(f.ctl.state.uncertain, false);
+  }
+});
+
+test('the dashboard rereads a native playlist scene binding before creating its routine', async () => {
+  const f = fixture();
+  const scene = { name: 'Native evening', saved: 18, volumes: {}, mutes: {},
+    groups: [{ coordinator: 'Studio@S2', members: [], playing: true,
+      source: { kind: 'sonos_playlist', name: 'SQ:9',
+        playlist: { household: 'SIM_HOUSEHOLD_S2', id: 'SQ:9', title: 'Evening strings' } } }] };
+  f.scenes.push(scene);
+  await f.ready();
+  assert.equal(await f.control.beginCreate('apply_scene'), true);
+  assert.equal(f.control.edit('scene', scene.name), true);
+  assert.equal(f.control.reviewCreate(), true);
+  scene.groups[0].source.playlist.household = 'SIM_OTHER_HOUSEHOLD';
+  assert.equal(await f.control.apply(), false);
+  assert.deepEqual(f.writes(), []);
+  assert.match(f.control.state.message, /scene, group or DJ mood changed/);
+  assert.equal(f.ctl.state.uncertain, false);
+});
+
 test('DJ routines address the reviewed household and preserve filters, mood and relative steering duration', async () => {
   const f = await fixture().ready(); await creation(f, 'dj_start', { cadence: 'delay', delay: '1h30m' });
   f.control.edit('mood', 'calm'); f.control.editDirection('include_artists', 'Synthetic A\nEarth, Wind & Fire');
