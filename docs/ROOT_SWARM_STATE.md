@@ -4864,3 +4864,13 @@ the container code.
 
 Static work is now paying off again; keep using the arity-of-arguments filter
 style instead of hunting strings.
+
+Argument map of the box-walker candidate `0x100b6f4c` (from its prologue): it is
+a **~10-argument** function — `r3→r30`, `r4→r29`, `r5→r21`, `r7→r26`, `r8→r25`,
+`r9→r24`, `r10→r22`, and one stack argument at `156(r1)→r23`, with `cr3` tested
+from r20. So it is not a two-arg `(buf,len)` parser: it takes a context plus
+several out/callback pointers.
+
+Consequence for the harness: calling it blind is not viable; the correct order is
+to find its **caller** (which supplies those arguments) and read what each one is,
+then either synthesise them or invoke the caller instead.
