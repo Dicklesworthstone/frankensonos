@@ -243,7 +243,8 @@ impl Prepared {
         coordinator: &PlayerId,
         uri: &str,
         start: bool,
-    ) -> Result<(), String> {
+        retain_receipt: bool,
+    ) -> Result<Option<control::QueueReplacement>, String> {
         let prepared = self
             .destinations
             .iter()
@@ -290,6 +291,26 @@ impl Prepared {
             .iter()
             .map(|(uri, title)| (uri.as_str(), title.as_str()))
             .collect();
+        if retain_receipt {
+            let replaced = if start {
+                control::play_spotify_tracks_bound_with_receipt(
+                    &*surface.transport,
+                    households,
+                    coordinator,
+                    &tracks,
+                    destination,
+                )
+            } else {
+                control::load_spotify_tracks_bound_with_receipt(
+                    &*surface.transport,
+                    households,
+                    coordinator,
+                    &tracks,
+                    destination,
+                )
+            };
+            return replaced.map(Some).map_err(|error| error.to_string());
+        }
         let loaded = if start {
             control::play_spotify_tracks_bound(
                 &*surface.transport,
@@ -307,6 +328,6 @@ impl Prepared {
                 destination,
             )
         };
-        loaded.map_err(|error| error.to_string())
+        loaded.map(|()| None).map_err(|error| error.to_string())
     }
 }

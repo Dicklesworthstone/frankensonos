@@ -13,8 +13,10 @@ use std::time::Instant;
 
 mod proof;
 mod replacement;
+mod scene;
 use proof::{Fenced, Proof};
 pub use replacement::finish_queue_replacement;
+pub use scene::{PendingSceneQueueUndo, capture_scene_queue_undo, finish_scene_queue_replacement};
 
 fn unavailable(detail: impl std::fmt::Display) -> CoreError {
     CoreError::NotUndoable(format!("queue undo unavailable: {detail}"))
@@ -203,6 +205,8 @@ pub struct QueueUndo {
     snapshot: ZoneSnapshot,
     backup: QueueBackup,
     after: Proof,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scene: Option<scene::SceneLevels>,
 }
 
 impl QueueUndo {
@@ -229,7 +233,7 @@ impl QueueUndo {
     fn validate(&self) -> Result<(), CoreError> {
         self.backup.validate().map_err(unavailable)?;
         let saved = &self.backup.reference;
-        if !matches!(self.version, 1 | 2)
+        if !matches!(self.version, 1 | 2 | 3)
             || self.snapshot.coordinator != saved.coordinator
             || self.snapshot.household != saved.household
             || self.after.binding.coordinator != saved.coordinator
@@ -238,6 +242,8 @@ impl QueueUndo {
             || self.after.revision == saved.update_id
             || (self.version == 1 && self.after.uris.len() > self.backup.entries.len())
             || (self.version == 2 && !replacement::valid_result(&self.after))
+            || (self.version != 3 && self.scene.is_some())
+            || (self.version == 3 && !scene::valid_result(self))
             || self.snapshot.play_mode != saved.play_mode
             || self.snapshot.source
                 != (SnapshotSource::Queue {
@@ -310,6 +316,7 @@ pub fn finish_queue_undo<T: Transport + ?Sized>(
         snapshot: pending.snapshot,
         backup: pending.backup,
         after,
+        scene: None,
     };
     undo.validate()?;
     Ok(undo)
@@ -465,6 +472,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
         return Err(unavailable(
             "queue undo authorization changed the requested operation",
         ));
+    }
+    if saved.scene.is_some() {
+        return scene::restore(t, households, saved, later(at, started), vet);
     }
     let mut proof = saved.after.clone();
     proof.confirm(t, households, later(at, started))?;

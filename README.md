@@ -492,6 +492,12 @@ deny = ["volume"]
   after a daemon restart, restoring duplicate occurrences, the selected track,
   elapsed time, shuffle/repeat mode and quiet playback intent. Queue ownership
   checks still apply with `--force`, and undo preserves policy volume reductions.
+  Completed scenes can retain this recovery for playing and silent replacements
+  on unchanged groups, including native saved playlists. Their undo rebuilds the
+  original queue silently, restores the scene's volume and mute fields under
+  current caps, then resumes only the original playback intent. Regrouping,
+  DJ changes, queue-backup recalls, failed steps and superseded fades remain
+  barriers to queue recovery.
   See [Queue undo](docs/QUEUE_UNDO.md) for the bounds and eligibility rules.
 - Callers the daemon cannot identify get read-only tools; the API and MCP
   listeners refuse wildcard and public binds (unless you pass

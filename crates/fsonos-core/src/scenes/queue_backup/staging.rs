@@ -320,7 +320,7 @@ pub(super) fn restore<T: Transport + ?Sized>(
     start: bool,
     attempted: &mut bool,
     baseline: Option<&super::Baseline<'_>>,
-) -> Result<bool, String> {
+) -> Result<super::RestoredQueue, String> {
     let prepare = (|| -> Result<_, CoreError> {
         let host = control::locate(households, coordinator)?.ip;
         let owner = Owner::read(t, host, coordinator, backup.reference.play_mode.is_some())?;
@@ -411,5 +411,8 @@ pub(super) fn restore<T: Transport + ?Sized>(
         start,
         Some((&owner.playback, owner.mode)),
     )
-    .map(|played| rebuilt || played)
+    .map(|played| super::RestoredQueue {
+        changed: rebuilt || played,
+        reference,
+    })
 }

@@ -43,6 +43,39 @@ impl std::fmt::Debug for QueueReplacement {
     }
 }
 
+/// Undo needs the original playback intent, while the commit must prove the
+/// actual execution state after a silent replacement deliberately pauses it.
+pub(crate) struct ReceiptOwner {
+    original: Owner,
+    execution: Option<Owner>,
+}
+
+impl ReceiptOwner {
+    pub(crate) fn after_pause<T: Transport + ?Sized>(
+        mut self,
+        t: &T,
+        host: std::net::IpAddr,
+        coordinator: &PlayerId,
+    ) -> Option<Self> {
+        self.execution = Some(self.original.after_pause(t, host, coordinator).ok()?);
+        Some(self)
+    }
+
+    fn confirmed<T: Transport + ?Sized>(
+        self,
+        t: &T,
+        host: std::net::IpAddr,
+        coordinator: &PlayerId,
+    ) -> Option<Owner> {
+        self.execution
+            .as_ref()
+            .unwrap_or(&self.original)
+            .confirm(t, host, coordinator)
+            .ok()?;
+        Some(self.original)
+    }
+}
+
 /// Undo eligibility must not turn a successful Play into a playback failure.
 /// Missing or inconsistent playback evidence leaves a receipt unusable for
 /// undo, while the existing replacement semantics continue unchanged.
@@ -50,11 +83,14 @@ pub(crate) fn replacement_owner<T: Transport + ?Sized>(
     t: &T,
     host: std::net::IpAddr,
     coordinator: &PlayerId,
-) -> Option<Owner> {
+) -> Option<ReceiptOwner> {
     let mode_known = fsonos_proto::play_mode::get_play_mode(t, host).is_ok();
     let owner = Owner::read(t, host, coordinator, mode_known).ok()?;
     owner.confirm(t, host, coordinator).ok()?;
-    Some(owner)
+    Some(ReceiptOwner {
+        original: owner,
+        execution: None,
+    })
 }
 
 fn appended(before: &Queue, after: &Queue, added: Enqueued) -> bool {
@@ -130,6 +166,16 @@ pub(crate) fn load<T: Transport + ?Sized>(
     replace(t, households, coordinator, uri, metadata, false, false).map(|_| ())
 }
 
+pub(crate) fn load_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    uri: &str,
+    metadata: &str,
+) -> Result<QueueReplacement, CoreError> {
+    replace(t, households, coordinator, uri, metadata, false, true)
+}
+
 fn replace<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -148,7 +194,7 @@ fn replace<T: Transport + ?Sized>(
     destination
         .confirm(t, host, coordinator)
         .map_err(unconfirmed)?;
-    let owner = receipt
+    let mut owner = receipt
         .then(|| replacement_owner(t, host, coordinator))
         .flatten();
     if !autoplay {
@@ -158,6 +204,7 @@ fn replace<T: Transport + ?Sized>(
         destination
             .confirm(t, host, coordinator)
             .map_err(uncertain)?;
+        owner = owner.and_then(|owner| owner.after_pause(t, host, coordinator));
     }
     let added = match soap::enqueue_uri(t, host, uri, metadata, 0, false) {
         Ok(added) => added,
@@ -190,7 +237,7 @@ pub(crate) struct Staged<'a> {
     pub(crate) destination: &'a Destination,
     pub(crate) before: &'a Queue,
     pub(crate) after: &'a Queue,
-    pub(crate) owner: Option<Owner>,
+    pub(crate) owner: Option<ReceiptOwner>,
 }
 
 /// Commit either a native container expansion or a known, verified track
@@ -223,7 +270,7 @@ pub(crate) fn commit<T: Transport + ?Sized>(
     destination
         .confirm(t, host, coordinator)
         .map_err(uncertain)?;
-    let owner = owner.filter(|owner| owner.confirm(t, host, coordinator).is_ok());
+    let owner = owner.and_then(|owner| owner.confirmed(t, host, coordinator));
     let revision = if before.uris.is_empty() {
         after.revision
     } else {

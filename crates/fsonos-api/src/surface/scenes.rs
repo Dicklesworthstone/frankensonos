@@ -24,7 +24,7 @@ use fsonos_core::scenes::{
     SceneSource,
 };
 use fsonos_core::store::{Store, StoreError};
-use fsonos_core::{CoreError, HouseholdState, Room};
+use fsonos_core::{CoreError, HouseholdState, Room, control};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -42,6 +42,7 @@ use crate::source::{is_catalog_source, normalize_source_uri, validate_play_reque
 mod catalog;
 mod dj_direction;
 mod dj_start;
+mod queue_undo;
 mod sonos_playlist;
 
 /// A saved scene (`GET /scenes`, `list_scenes`, `fsonos scene show`).
@@ -775,6 +776,7 @@ struct SceneDj<'a> {
     /// Who applies the scene: the session's starter.
     client: &'a Client,
     catalog: &'a catalog::Prepared,
+    queues: &'a queue_undo::Recording,
 }
 
 impl<'a> SceneDj<'a> {
@@ -783,17 +785,31 @@ impl<'a> SceneDj<'a> {
         households: &'a [HouseholdState],
         client: &'a Client,
         catalog: &'a catalog::Prepared,
+        queues: &'a queue_undo::Recording,
     ) -> Self {
         Self {
             surface,
             households,
             client,
             catalog,
+            queues,
         }
     }
 }
 
 impl SceneHooks for SceneDj<'_> {
+    fn queue_replacement_started(&self, coordinator: &PlayerId) -> bool {
+        self.queues.started(coordinator)
+    }
+
+    fn queue_replacement_finished(
+        &self,
+        coordinator: &PlayerId,
+        receipt: control::QueueReplacement,
+    ) {
+        self.queues.finished(coordinator, receipt);
+    }
+
     fn load_catalog_source(
         &self,
         households: &[HouseholdState],
@@ -801,8 +817,18 @@ impl SceneHooks for SceneDj<'_> {
         uri: &str,
         start: bool,
     ) -> Result<(), String> {
-        self.catalog
-            .load(self.surface, households, coordinator, uri, start)
+        let receipt = self.catalog.load(
+            self.surface,
+            households,
+            coordinator,
+            uri,
+            start,
+            self.queue_replacement_started(coordinator),
+        )?;
+        if let Some(receipt) = receipt {
+            self.queue_replacement_finished(coordinator, receipt);
+        }
+        Ok(())
     }
 
     fn start_dj(&self, coordinator: &PlayerId, mood: Option<&str>) -> Result<(), String> {
@@ -1267,7 +1293,8 @@ impl Surface {
         } else {
             self.scene_store(|store| Ok(actions::capture_sessions(store, &dj_zones)?))?
         };
-        let hooks = SceneDj::new(self, &households, client, &catalog);
+        let queues = queue_undo::Recording::capture(self, &households, &plan);
+        let hooks = SceneDj::new(self, &households, client, &catalog, &queues);
         let report = self.fader_for(&households, &plan, fade.is_some(), |fader| {
             scenes::apply(
                 &*self.transport,
@@ -1285,27 +1312,13 @@ impl Surface {
             .iter()
             .chain(report.failed.iter().map(|(op, _)| op))
             .any(|op| matches!(op, SceneOp::Leave { .. } | SceneOp::Join { .. }));
-        let catalog_queue = report
-            .done
-            .iter()
-            .chain(report.failed.iter().map(|(op, _)| op))
-            .any(|op| matches!(op, SceneOp::Uri { uri, .. } if is_catalog_source(uri)));
-        let backed_up_queue = catalog_queue
-            || report
-                .done
-                .iter()
-                .chain(report.failed.iter().map(|(op, _)| op))
-                .any(|op| {
-                    matches!(
-                        op,
-                        SceneOp::QueueBackup { .. } | SceneOp::SonosPlaylist { .. }
-                    )
-                });
         if regrouped {
             self.invalidate();
         }
+        let before = self.with_after(actions::before_state_with(&snaps, &sessions), &snaps, &[]);
+        let (before, queue_barrier) = queues.attach(self, &households, &report, before);
         let mut applied = applied(&scene.name, &households, report, notes);
-        if backed_up_queue {
+        if queue_barrier {
             applied
                 .done
                 .push_str(" (action-history undo cannot restore replaced queue contents)");
@@ -1327,13 +1340,6 @@ impl Surface {
                 missed.len()
             );
         }
-        let before = if catalog_queue {
-            Some(actions::before_state_not_undoable(
-                "scene catalog playback replaced queue contents",
-            ))
-        } else {
-            self.with_after(actions::before_state_with(&snaps, &sessions), &snaps, &[])
-        };
         self.record(
             client,
             format!("{tool}: {}", scene.name),

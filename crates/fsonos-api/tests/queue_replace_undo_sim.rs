@@ -27,6 +27,9 @@ const DUPLICATE: &str = "x-file-cifs://example.invalid/repeated.flac";
 const LAST: &str = "x-file-cifs://example.invalid/last.flac";
 const EXTERNAL: &str = "x-file-cifs://example.invalid/another-controller.flac";
 
+#[path = "queue_replace_undo_sim/scenes.rs"]
+mod scenes;
+
 #[derive(Clone, Copy, Default)]
 enum Fault {
     #[default]
@@ -238,12 +241,12 @@ impl Fixture {
             get_play_mode(&self.sim.lan(), self.host).unwrap(),
             PlayMode::RepeatAll
         );
-        assert_eq!(
+        assert!(matches!(
             soap::get_transport_info(&self.sim.lan(), self.host)
                 .unwrap()
                 .state,
-            TransportState::Paused
-        );
+            TransportState::Paused | TransportState::Stopped
+        ));
         let volumes = ["Alpha", "Beta", "Guest"].map(|name| {
             soap::get_volume(&self.sim.lan(), self.sim.player(name).unwrap().ip).unwrap()
         });

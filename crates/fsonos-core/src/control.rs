@@ -36,14 +36,14 @@ mod transport_state;
 pub use crate::queue_source::QueueReplacement;
 pub use crate::queue_source::destination::Destination as SourceDestination;
 pub use loading::{
-    load_queue_from, load_queue_from_in_order, load_spotify_container, load_spotify_track,
-    load_uri, pause_confirmed,
+    load_queue_from, load_queue_from_in_order, load_spotify_container,
+    load_spotify_container_with_receipt, load_spotify_track, load_uri, pause_confirmed,
 };
 pub use spotify_tracks::{
     MAX_SPOTIFY_TRACK_BATCH, TrackBatchDestination, enqueue_spotify_tracks,
     enqueue_spotify_tracks_bound, load_spotify_tracks, load_spotify_tracks_bound,
-    play_spotify_tracks, play_spotify_tracks_bound, play_spotify_tracks_bound_with_receipt,
-    play_spotify_tracks_with_receipt,
+    load_spotify_tracks_bound_with_receipt, play_spotify_tracks, play_spotify_tracks_bound,
+    play_spotify_tracks_bound_with_receipt, play_spotify_tracks_with_receipt,
 };
 
 /// How long a player that left its group may take to show alone (real ones

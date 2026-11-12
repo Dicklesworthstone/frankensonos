@@ -502,7 +502,7 @@ pub(super) fn restore<T: Transport + ?Sized>(
 
 /// A queue rebuild carries its final ownership observation into playback
 /// restoration; a changed source must not become a new accepted baseline.
-pub(super) fn restore_from<T: Transport + ?Sized>(
+pub(crate) fn restore_from<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,

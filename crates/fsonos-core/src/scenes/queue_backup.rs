@@ -342,6 +342,32 @@ impl Owner {
         Ok(())
     }
 
+    /// Retain the same owner across a deliberate pause. A different source,
+    /// occurrence, clock, group or mode cannot become execution ownership just
+    /// because it is also quiet. An already-quiet owner must remain unchanged.
+    pub(crate) fn after_pause<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        host: IpAddr,
+        coordinator: &PlayerId,
+    ) -> Result<Self, ProtoError> {
+        let quiet = Self::read(t, host, coordinator, self.mode.is_some())?;
+        if self.group != quiet.group
+            || self.mode != quiet.mode
+            || !self.playback.same_source(&quiet.playback)
+            || !self.playback.time_agrees(&quiet.playback)
+            || !matches!(
+                quiet.playback.state,
+                TransportState::Paused | TransportState::Stopped
+            )
+            || (self.playback.state != TransportState::Playing
+                && self.playback.state != quiet.playback.state)
+        {
+            return Err(invalid("the original playback owner changed while pausing"));
+        }
+        Ok(quiet)
+    }
+
     fn after_removal<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -429,6 +455,26 @@ pub(crate) fn restore_bound<T: Transport + ?Sized>(
     start: bool,
     baseline: Option<&Baseline<'_>>,
 ) -> Result<bool, String> {
+    restore_bound_with_receipt(t, households, coordinator, backup, start, baseline)
+        .map(|restored| restored.changed)
+}
+
+/// The exact revision and bookmark produced by successful reconstruction.
+/// Scene undo retains this evidence while restoring quiet room levels; a later
+/// read cannot silently replace it with another controller's new revision.
+pub(crate) struct RestoredQueue {
+    pub(crate) changed: bool,
+    pub(crate) reference: QueueReference,
+}
+
+pub(crate) fn restore_bound_with_receipt<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    backup: &QueueBackup,
+    start: bool,
+    baseline: Option<&Baseline<'_>>,
+) -> Result<RestoredQueue, String> {
     backup.validate()?;
     if coordinator != &backup.reference.coordinator {
         return Err(
