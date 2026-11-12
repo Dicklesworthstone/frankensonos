@@ -4905,3 +4905,16 @@ Two harness lessons from these runs, both now known:
 - `call` chains work (`malloc`, `memset`, then the target), but each target must
   have its real preconditions, which for container code means a live reader
   context.
+
+The per-tag wrapper `0x100b752c` is **playback-only**: a 40 s boot hits it 0
+times. So a real container context cannot be captured at boot either — it only
+exists once something is being played.
+
+And the daemon binds **no UDP/1900** in this state (`ss -lun` → 0), so the
+"forge an SSDP NOTIFY to make it fetch over HTTP" idea is closed for now as well;
+SSDP is part of the same stalled init.
+
+Net position: every route to running container code needs a *fetch*, and every
+route to a fetch needs the HTTP side that is stalled. The direct-call harness can
+break that circle only if a target needs no live context — which the container
+code does not.
