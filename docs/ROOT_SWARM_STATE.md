@@ -4784,3 +4784,12 @@ That converts the current deadlock (no accept) from a blocker into a detour:
 - write a crafted file into guest memory from gdb,
 - `call` the parser entry and step/observe, with breakpoints on the interesting
   loads instead of on HTTP plumbing.
+
+Dispatch detail found while locating the AAC entry: the MIME chain at
+`0x1034c7xx` compares `strcasecmp(mime, …)` and each match loads a
+**(protocolInfo, extension)** pair before jumping to a common tail. `audio/aac`
+matches the branch that loads `sonos.com-http:*:audio/mp4:*` and `.mp4` — i.e. in
+this build AAC is routed through the **MP4 container path**, not a naked ADTS
+handler. `audio/x-ms-wma` maps to the `…audio/wma:*` / `.wma` pair and
+`audio/mp4`/`.mp4` similarly, so the chain is a MIME → (protocolInfo, ext)
+resolver used for URL rewriting.
