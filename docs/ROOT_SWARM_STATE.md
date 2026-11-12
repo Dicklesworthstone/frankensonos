@@ -4613,3 +4613,19 @@ class changes here from "provide a file" to "someone must post an event".
 Practical consequence: the remaining environment gaps are exhausted for now, and
 the next work is either finding the noderx signal source, or (now that xrefs
 work with relocs applied) reading what `noderx` waits for.
+
+The noderx chain, now explicit:
+
+- constructor `fcn.101295a0` names a channel — `addi r3,obj+992` with "chsnk-as"
+  and `addi r3,obj+8456` with "noderx" — then starts a thread via
+  `0x10405720(name=0x1044e598, body=0x1013e91c, arg=obj, flags=0)`.
+- body `0x1013e8d0` (entry point recorded as `0x1013e91c`) immediately calls
+  `0x1006131c` with the channel object and **blocks there**, which is the
+  `rt_sigsuspend` seen in `/proc`.
+
+So noderx is waiting for a **message on an internal channel that nothing sends**
+at this point in the boot — not for a file, and not for the network stack. The
+next question is who writes to that channel (the peer side), and whether it is a
+thread that failed to start earlier or a producer gated on a later stage.
+
+Environment work is done for now; this is the first genuinely internal blocker.
