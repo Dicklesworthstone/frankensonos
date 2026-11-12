@@ -4668,3 +4668,18 @@ breakpoint works.
 Enough for this block: the emulator is measurable, its remaining gaps are
 internal events, and the caches of facts (ABI, wrapper, thread-state vocabulary,
 environment list) are all in this file.
+
+Two operational traps, both hit today:
+
+1. **A css reboot clears the chroot mounts.** After the owner rebooted, `/proc`
+   and `/sys` in `/tmp/s23rootfs` were gone again and the boot regressed to
+   `arpchecker: failed to open proc fs`. Both are re-mounted now. Any reboot
+   means: re-mount `proc`/`sys`, re-check the `/dev` nodes and `/proc/driver/audio`,
+   and re-stage payloads. The files on disk survive; the mounts do not.
+2. **gdb needs a colon**: `target remote :PORT`. A templated script that expands
+   to `target remote 12570` makes gdb treat the number as a serial device and
+   fail with "could not open device" — which looks exactly like a dead target.
+
+Negative result: `[obj+0x54]` is **nil on the channel object too**
+(`0x40d7c138`), not only on the listeners. So `0x104108d4` takes a third kind of
+context, and the field is not the discriminator people (I) assumed.
