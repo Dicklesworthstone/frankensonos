@@ -4647,3 +4647,10 @@ transmission and the daemon idles.
 Also: run-to-run spread is still wide (this run produced no `anacapa` lines in
 35 s), so single-sample conclusions remain unreliable and repeats are mandatory
 before claiming anything.
+
+Re-tested `[obj+0x54]` with the environment now fixed (urandom, proc, sys,
+audio nodes, chk record): still **nil** on every listener object. So the null
+field is not a timing artifact — `0x104108d4` genuinely takes a different object
+than the one the listen helper holds, and the listener is not the httpd context.
+
+That retires the "inject later in boot and it will be populated" theory.
