@@ -4929,3 +4929,19 @@ select itself is called 73 times in 42 s, so the loop is healthy; the listener i
 simply not registered with this selector. Next question is therefore where fds are
 *added* to it — that registration is what is missing, not the gate and not the
 select.
+
+Correcting the previous entry: the dispatcher does **not** ignore the listener —
+`0x1041255c-0x10412588` clears the fd_set (32 words), then sets exactly one bit
+from `[r31+148]` and calls `select([r31+148]+1, set, …)`. So `+148` *is* the fd
+it services.
+
+Measured value of that field at the gate was **29**, but the fd_set dump showed
+bit 44. Host-side `/proc` shows the three listeners as host fds **13/14/15**
+(1400/1443/1843), i.e. guest fds are translated by qemu, so guest 29 and guest 44
+are different sockets. Curling 1443 and 1843 also returns 000, so whichever fd the
+dispatcher selects, nothing gets accepted — and there is only **one** dispatcher
+thread for **three** listeners.
+
+So the working theory becomes: one dispatcher object exists and it services one
+fd only; the other two listeners (including 1400) never get a dispatcher, and
+even the serviced one does not accept under curl.
