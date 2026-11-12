@@ -4772,3 +4772,15 @@ Also tried this round: patching the dispatcher gate (`beq` at `0x104125f0` → n
 so it no longer requires `+133`. It keeps the thread alive but still no `accept`,
 confirmed by syscall sampling (0 threads in 288). Backup of the pre-patch binary
 is `/tmp/s23_anacapad_pregate`.
+
+Pivot worth taking: **we do not need HTTP to debug a parser.** The goal of the
+emulator is to watch codec/container code against crafted bytes; that can be done
+by calling the parser entry directly from gdb with a buffer we write into the
+guest, skipping the whole server/accept question.
+
+That converts the current deadlock (no accept) from a blocker into a detour:
+- choose the target parser (AAC/ADTS first — proprietary, unaudited, and it
+  decodes on hardware),
+- write a crafted file into guest memory from gdb,
+- `call` the parser entry and step/observe, with breakpoints on the interesting
+  loads instead of on HTTP plumbing.
