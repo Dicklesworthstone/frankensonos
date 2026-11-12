@@ -4836,3 +4836,18 @@ Two cheaper ways from here:
 - **by behaviour**: the MIME chain returns a protocolInfo and an extension; the
   reader that consumes those is reachable from the same call site family, so
   following the returned pair forward is more reliable than hunting tags.
+
+Tried to get an *outbound* fetch without needing inbound HTTP (the daemon
+restores a saved AVT at boot, so a stored URI would make it pull from css
+itself). Findings: no URI is stored anywhere in `/jffs` (only
+`musicservices.xml` even contains the word "http"), `savedqueues.rsq` is an
+opaque binary, and `/opt/bin/anacapactl` is only `{start,start-demo,stop,restart,
+…}` with no URI control.
+
+So to exercise a decoder end to end without HTTP we would have to forge a
+`savedqueues.rsq`/AVT record, or keep the direct-call harness and find the parser
+dynamically another way.
+
+Given the effort spent, the direct-call harness plus `memcmp`-break is still the
+cheapest route to *watching a parser*, and the blocker there is only that the
+parser needs bytes to chew on — which the harness can supply by hand.
