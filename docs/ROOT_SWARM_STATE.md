@@ -5010,3 +5010,16 @@ Timing caveat that cost two runs: under the debugger the daemon reaches `accept`
 later than 12 s, so a curl sent at 12 s arrives before the thread is listening on
 the breakpoint and nothing fires. Curl must be sent **after** confirming an
 `accept`-blocked thread exists, or later still.
+
+Accept now blocks (syscall 288, arg0 = 29) and `Recv-Q` rises, but the handler is
+never entered and curls to 1400/1443/1843 all time out. `/proc/<pid>/fd/29` is
+`socket:[79561922]`, which appears in neither `ss -ltn` nor `ss -lxn` — while the
+actual listeners show as host fds 34/35/36. So guest fd numbering and host fd
+numbering have diverged, and the blocked `accept(29)` is not obviously on any
+listener we can connect to.
+
+Two candidate readings: qemu's accept is as broken as its select for this socket,
+or fd 29 is not the listener at all and the object we drive is already wrong.
+Either way the next measurement is cheap and decisive: at the accept call, dump
+`getsockname(29)` from gdb and compare it with the three ports, rather than
+correlating host fds by hand.
