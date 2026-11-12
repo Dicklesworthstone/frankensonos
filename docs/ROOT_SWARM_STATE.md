@@ -4603,3 +4603,13 @@ Running tally of environment gaps found and closed today, all of which belong in
 the standard bring-up: `/dev/{urandom,random,null,zero}`, `/proc`, `/sys`,
 `/proc/driver/audio/{dsp,audioctl}`, `/dev/{audioctl,dsp_dev}`, and now a 16-byte
 `/dev/chk`. Each one bought forward progress; none was a code change.
+
+`noderx` is not blocked on I/O: syscall **130 `rt_sigsuspend`**, with an internal
+socketpair on fd 8 and the normal pipes/log fds around it. So the stop after it
+starts is the daemon **waiting for an internal signal/event**, not for a file.
+
+That is the first blocker today that is *not* a missing environment node — the
+class changes here from "provide a file" to "someone must post an event".
+Practical consequence: the remaining environment gaps are exhausted for now, and
+the next work is either finding the noderx signal source, or (now that xrefs
+work with relocs applied) reading what `noderx` waits for.
