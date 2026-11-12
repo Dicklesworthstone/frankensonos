@@ -4709,3 +4709,18 @@ inference from socket state.
 Useful side findings: several bodies are shared (`0x102cc4c0` for both
 `nodetx_*` names, `0x102cfa6c` for both `sntp_*`), and one name pointer
 (`0x1071c7d0`) is a heap string, so names are not all rodata.
+
+The per-port server loop `0x1040e7xx-0x1040e894` **only binds**: it iterates the
+port list (`r29` vs `r28` count, `sth` increment on the port slot), calls the
+setsockopt+listen helper `0x10407284` for each, logs, and returns `1`. It creates
+**no thread**.
+
+So the absence of an acceptor thread is by design: acceptance must be centralised
+— the natural candidate is the event dispatcher (`evt_dispatch`, body
+`0x10286844`) selecting over all fds, which is exactly what the parked
+`rt_sigsuspend`/`select` states suggest. That also explains why the acceptor
+`0x10407970` is a single-shot function: it is meant to be called *from* the
+dispatcher, not to loop on its own.
+
+That reframes the whole problem: the daemon is not missing a thread, it is
+missing the **dispatch event** that would make it call the acceptor.
