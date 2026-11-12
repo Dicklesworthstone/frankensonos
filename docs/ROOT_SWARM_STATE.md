@@ -4893,3 +4893,15 @@ start `netstartd`.
 Smoke test after running it: `Invalid Event Size`, `Can't get fd from sound
 device` and `failed to open proc fs` are all **absent** (0 occurrences each) and
 the boot reaches `zp: Restoring AVT and track queue`.
+
+Tried calling the per-tag wrapper `0x100b752c` with a synthetic zeroed context
+(`r3=ctx, r4=ctx+64, r5=1, r7=ctx+96, r9=ctx+128`): it enters and SIGSEGVs. So the
+wrapper also needs real state inside `r3` (it reads `lbz r0,4(r3)` and branches on
+it) plus valid out-pointer contents, not just addresses.
+
+Two harness lessons from these runs, both now known:
+- a breakpoint that fires *inside* a `call` abandons the call — strip every
+  breakpoint for pure call tests and attach after boot instead of at `-g` entry;
+- `call` chains work (`malloc`, `memset`, then the target), but each target must
+  have its real preconditions, which for container code means a live reader
+  context.
