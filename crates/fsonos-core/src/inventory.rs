@@ -406,13 +406,15 @@ pub fn survey_or_remembered<T: Transport + ?Sized>(
     }
 }
 
-/// [`survey_or_remembered`], asking the players already known (the seeds
-/// and the remembered ones) first, with no discovery window: a household's
-/// topology names every member, so when every known player answers the
-/// survey is done at once, and a command without the daemon answers in a
-/// moment rather than after the SSDP wait. With none known, or one that no
-/// longer answers (it moved, or is off), discovery runs as
-/// [`survey_or_remembered`] does, since only it may find that player.
+/// Ask the players already known (the seeds and the remembered ones) first,
+/// with no discovery window: a household's topology names every member, so
+/// when every known player answers the survey is done at once, and a command
+/// without the daemon answers in a moment rather than after the SSDP wait.
+/// With none known, or one that no longer answers (it moved, or is off),
+/// discovery runs with all known addresses as seeds. Partial multicast must
+/// not hide another reachable household just because one remembered peer is
+/// offline. Addresses remain hints: only fresh descriptions and topology
+/// populate the returned inventory.
 pub fn survey_known_first<T: Transport + ?Sized>(
     t: &T,
     seeds: &[IpAddr],
@@ -432,7 +434,10 @@ pub fn survey_known_first<T: Transport + ?Sized>(
     {
         return Ok(found);
     }
-    survey_or_remembered(t, seeds, || known, wait)
+    // The fast pass may have found a household multicast does not advertise.
+    // Dropping its remembered addresses here would discard that live household
+    // whenever an unrelated known address makes the fast pass incomplete.
+    survey(t, &known, wait)
 }
 
 /// The generation a player's `swGen` (device description) or `SWGen`

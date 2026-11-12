@@ -1329,6 +1329,15 @@ but only if the coordinator actually moved (800 also means a wrong Spotify
 DIDL); a reboot (lost subscription SID)
 triggers resubscription. Each path is tested with sim faults.
 
+Startup and direct commands first probe explicit seeds and remembered player
+addresses. If that fast pass is incomplete, its discovery fallback keeps every
+already-loaded address as a seed. One offline remembered endpoint therefore
+cannot hide a different reachable household when multicast replies cover only
+part of the house. A fully successful known-player pass still avoids the
+discovery wait. Regression cases cover partial multicast, failed multicast and
+a rediscovered address alongside a reachable remembered household; they remain
+unexecuted after the local execution environment became unavailable.
+
 Group-command recovery retains the originally requested room's UUID separately
 from its initial coordinator, so a former leader joining an unrelated group
 does not redirect the retry there. A recovered playback start rechecks caps
