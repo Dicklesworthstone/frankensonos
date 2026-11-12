@@ -4654,3 +4654,17 @@ field is not a timing artifact — `0x104108d4` genuinely takes a different obje
 than the one the listen helper holds, and the listener is not the httpd context.
 
 That retires the "inject later in boot and it will be populated" theory.
+
+The noderx channel constructor `0x101295a0` **is** reached, with its channel
+object on the **stack** (`0x40d7c138` in the observed run) — so these contexts are
+stack temporaries, not persistent singletons, which is why scanning `.bss` for
+them kept failing.
+
+Attempts to read `[obj+0x54]` at that point did not land in the following run
+(variance), so the value is still unmeasured; that is the next single thing to
+get, and the object address is now easy to capture because the constructor
+breakpoint works.
+
+Enough for this block: the emulator is measurable, its remaining gaps are
+internal events, and the caches of facts (ABI, wrapper, thread-state vocabulary,
+environment list) are all in this file.
