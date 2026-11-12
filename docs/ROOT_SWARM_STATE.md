@@ -4824,3 +4824,15 @@ gdb with fully synthetic state.
 That is the harness we wanted, and it side-steps HTTP entirely: any single
 self-contained parser can now be driven with crafted bytes and watched under
 breakpoints, with `RelTime`/`/status` on hardware as the cross-check.
+
+Locating a container parser statically is the current cost centre. Tag-constant
+searching is noisy — `ftyp` alone has 81 hits, `mdat` 607, and most are string
+table entries rather than compares, so each candidate must be disassembled to
+tell them apart.
+
+Two cheaper ways from here:
+- **dynamic**: break `memcmp`/`strncmp` and drive the reader with a buffer, which
+  needs no static search at all;
+- **by behaviour**: the MIME chain returns a protocolInfo and an extension; the
+  reader that consumes those is reachable from the same call site family, so
+  following the returned pair forward is more reliable than hunting tags.
