@@ -4588,3 +4588,18 @@ and they belong in the standard bring-up next to `/proc`, `/sys` and the
 Note the shape of the log now — `Observer … subscribed to event …` lines are the
 same family as the `htsnk` stall, i.e. the daemon is wiring internal events; the
 next blocker will most likely be another missing device or file of this class.
+
+`/dev/chk` is the **button event source**, not a version file: the buttons thread
+reads 16-byte event records from it and logged `Invalid Event Size (0:16)` with
+the 13-byte file that was there. Writing one 16-byte zero record cleared the
+message entirely and the boot moved on to `sntp_chsnk` and `noderx` thread
+starts. Original content backed up at `/tmp/chk.bak`.
+
+New stop: `<noderx> Starting` and no further output — noderx is the node
+receiver thread, so the next thing to look at is what it reads (pipe, socket or
+a file of this same class).
+
+Running tally of environment gaps found and closed today, all of which belong in
+the standard bring-up: `/dev/{urandom,random,null,zero}`, `/proc`, `/sys`,
+`/proc/driver/audio/{dsp,audioctl}`, `/dev/{audioctl,dsp_dev}`, and now a 16-byte
+`/dev/chk`. Each one bought forward progress; none was a code change.
