@@ -4743,3 +4743,16 @@ gates are wrong for this state). Confirmed empirically: breakpoints on both
 
 This also corrects the earlier label: `0x104124c4` is not "watchdog", it is the
 **server dispatcher** thread.
+
+Measured the gate at runtime: `[obj+132]=0` (correct), `[obj+133]=**0**` (must be
+non-zero) and `[obj+148]=29` (the listen fd) — so the dispatcher parks on exactly
+that second byte and never reaches accept.
+
+`+133` is written at only two places in this region, including `0x104121c0`
+(`stb r0,133(r31)` after a `strlen` and a `cmpwi r28,1`), i.e. it is set by a
+string-handling path, not by the listen helper.
+
+Forcing `[obj+133]=1` at the gate produced a SIGSEGV inside libpthread instead of
+an accept, so the byte alone is not sufficient — the rest of that object's state
+must also be wrong. Next: read `fcn` around `0x104121c0` to see what r28==1 means
+and what else it prepares, rather than poking the byte again.
