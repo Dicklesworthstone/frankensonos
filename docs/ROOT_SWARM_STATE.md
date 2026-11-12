@@ -4945,3 +4945,26 @@ thread for **three** listeners.
 So the working theory becomes: one dispatcher object exists and it services one
 fd only; the other two listeners (including 1400) never get a dispatcher, and
 even the serviced one does not accept under curl.
+
+**ROOT CAUSE OF "NO ACCEPT" FOUND: `select` returns 0 under qemu.**
+
+Breaking *after* the select call in the dispatcher, with a connection deliberately
+left queued on 1400:
+
+```
+POST r31=0x1064dd5c ret=0 set0=0 f148=29
+POST r31=0x1064dd5c ret=0 set0=0 f148=29
+```
+
+`ret` is the syscall return: **0 (timeout)**, every single iteration, and the
+kernel has cleared the bit. Pre-call the same set is correctly
+`set0=0x20000000` (bit 29, the listener), so the daemon is doing the right thing
+and qemu's `select` simply never reports the listener readable.
+
+That explains everything above: gates looked "wrong" because the loop never got
+past the readiness test; the dispatcher looks idle because it is spinning on a
+set that always comes back empty; and no amount of patching the gate branches can
+help, because the bit is already cleared by then.
+
+Workaround space: bypass select for the listener (patch the readiness test), or
+make qemu's select see it (different fd type / `poll` instead of `select`).
