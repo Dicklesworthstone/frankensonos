@@ -66,7 +66,14 @@ pub async fn continue_artist_samples<S: Store + ?Sized>(
                 state = progress.report(owner, at);
                 if !state.requires_refresh && !state.limited && state.pending > 0 {
                     sample_cohort(
-                        session, cx, store, owner, &raw, &mut progress, &mut state, &mut read,
+                        session,
+                        cx,
+                        store,
+                        owner,
+                        &raw,
+                        &mut progress,
+                        &mut state,
+                        &mut read,
                     )
                     .await?;
                 }

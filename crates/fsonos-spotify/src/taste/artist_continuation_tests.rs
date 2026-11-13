@@ -36,7 +36,10 @@ fn a_full_read_then_reopened_background_passes_finish_120_artists_and_go_idle() 
         let first = full(&server, &cx, &mut store).await;
         assert_eq!(first.library.candidates, 50);
         let mut state = first.artist_samples;
-        assert_eq!((state.completed, state.pending, state.attempted), (50, 70, 50));
+        assert_eq!(
+            (state.completed, state.pending, state.attempted),
+            (50, 70, 50)
+        );
         let cycle = state.cycle.clone();
         let personal = personal_reads(&server);
         store.close().unwrap();
@@ -59,8 +62,8 @@ fn a_full_read_then_reopened_background_passes_finish_120_artists_and_go_idle() 
             assert_eq!(samples(&server).len() - before, attempts);
             assert_eq!(personal_reads(&server), personal);
             assert!(!result.artist_samples.requires_refresh);
-            state =
-                serde_json::from_str(&serde_json::to_string(&result.artist_samples).unwrap()).unwrap();
+            state = serde_json::from_str(&serde_json::to_string(&result.artist_samples).unwrap())
+                .unwrap();
             store.close().unwrap();
         }
 
@@ -68,13 +71,23 @@ fn a_full_read_then_reopened_background_passes_finish_120_artists_and_go_idle() 
         let calls = server.calls("/v1/").len();
         let accepted = receipt(&store);
         let idle = pending(&server, &cx, &mut store, Some(&state)).await;
-        assert_eq!((idle.artist_samples.completed, idle.artist_samples.pending), (120, 0));
+        assert_eq!(
+            (idle.artist_samples.completed, idle.artist_samples.pending),
+            (120, 0)
+        );
         assert_eq!(idle.artist_samples.attempted, 0);
         assert_eq!(server.calls("/v1/").len(), calls);
         assert_eq!(receipt(&store), accepted);
         let entries = store.library().unwrap();
-        assert_eq!(entries.iter().filter(|entry| entry.is_candidate()).count(), 120);
-        assert!(entries.iter().all(|entry| entry.taste_weight == Some(crate::taste::ARTIST_PM)));
+        assert_eq!(
+            entries.iter().filter(|entry| entry.is_candidate()).count(),
+            120
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.taste_weight == Some(crate::taste::ARTIST_PM))
+        );
         store.close().unwrap();
     });
 }
@@ -88,24 +101,53 @@ fn an_unavailable_artist_yields_until_later_artists_finish_and_remains_retryable
         let mut store = SqliteStore::open(&server.data.join("artist-failures.db")).unwrap();
         let first = full(&server, &cx, &mut store).await;
         let route = format!("/v1/artists/{}/top-tracks", id(50));
-        server.state.lock().unwrap().refused.insert(route.clone(), 503);
+        server
+            .state
+            .lock()
+            .unwrap()
+            .refused
+            .insert(route.clone(), 503);
         let refused = pending(&server, &cx, &mut store, Some(&first.artist_samples)).await;
-        assert_eq!((refused.artist_samples.completed, refused.artist_samples.pending), (50, 70));
+        assert_eq!(
+            (
+                refused.artist_samples.completed,
+                refused.artist_samples.pending
+            ),
+            (50, 70)
+        );
         assert_eq!(refused.artist_samples.attempted, 1);
         assert_eq!(cursor(&store), id(50));
 
         let later = pending(&server, &cx, &mut store, Some(&refused.artist_samples)).await;
-        assert_eq!((later.artist_samples.completed, later.artist_samples.pending), (100, 20));
+        assert_eq!(
+            (later.artist_samples.completed, later.artist_samples.pending),
+            (100, 20)
+        );
         let almost = pending(&server, &cx, &mut store, Some(&later.artist_samples)).await;
-        assert_eq!((almost.artist_samples.completed, almost.artist_samples.pending), (119, 1));
+        assert_eq!(
+            (
+                almost.artist_samples.completed,
+                almost.artist_samples.pending
+            ),
+            (119, 1)
+        );
         let unchanged = store.library().unwrap();
         let stalled = pending(&server, &cx, &mut store, Some(&almost.artist_samples)).await;
-        assert_eq!((stalled.artist_samples.completed, stalled.artist_samples.pending), (119, 1));
+        assert_eq!(
+            (
+                stalled.artist_samples.completed,
+                stalled.artist_samples.pending
+            ),
+            (119, 1)
+        );
         assert_eq!(stalled.artist_samples.cycle, first.artist_samples.cycle);
         assert_eq!(store.library().unwrap(), unchanged);
         server.state.lock().unwrap().refused.remove(&route);
         let done = pending(&server, &cx, &mut store, Some(&stalled.artist_samples)).await;
-        assert_eq!((done.artist_samples.completed, done.artist_samples.pending), (120, 0));
+        assert_eq!(
+            (done.artist_samples.completed, done.artist_samples.pending),
+            (120, 0)
+        );
         store.close().unwrap();
     });
 }
@@ -127,7 +169,10 @@ fn an_empty_artist_sample_keeps_previous_music_and_does_not_starve_its_neighbor(
             json!({ "tracks": [] }),
         );
         let next = pending(&server, &cx, &mut store, Some(&first.artist_samples)).await;
-        assert_eq!((next.artist_samples.completed, next.artist_samples.pending), (51, 1));
+        assert_eq!(
+            (next.artist_samples.completed, next.artist_samples.pending),
+            (51, 1)
+        );
         assert_eq!(next.artist_samples.attempted, 2);
         assert_eq!(
             store
@@ -138,7 +183,10 @@ fn an_empty_artist_sample_keeps_previous_music_and_does_not_starve_its_neighbor(
             Some(&prior),
         );
         let again = pending(&server, &cx, &mut store, Some(&next.artist_samples)).await;
-        assert_eq!((again.artist_samples.completed, again.artist_samples.pending), (51, 1));
+        assert_eq!(
+            (again.artist_samples.completed, again.artist_samples.pending),
+            (51, 1)
+        );
         assert_eq!(again.artist_samples.attempted, 1);
         store.close().unwrap();
     });
@@ -155,21 +203,34 @@ fn a_long_rate_limit_retains_unattempted_and_unpublished_samples_without_extra_r
         let before = receipt(&store);
         let library = store.library().unwrap();
         let route = format!("/v1/artists/{}/top-tracks", id(52));
-        server.state.lock().unwrap().refused.insert(route.clone(), 429);
+        server
+            .state
+            .lock()
+            .unwrap()
+            .refused
+            .insert(route.clone(), 429);
         let mut session = server.session(&cx, SCOPE);
-        let limited = continue_artist_samples(
-            &mut session, &cx, &mut store, Some(&first.artist_samples),
-        ).await.unwrap();
+        let limited =
+            continue_artist_samples(&mut session, &cx, &mut store, Some(&first.artist_samples))
+                .await
+                .unwrap();
         assert_eq!(limited.artist_samples.attempted, 3);
-        assert_eq!((limited.artist_samples.completed, limited.artist_samples.pending), (50, 70));
+        assert_eq!(
+            (
+                limited.artist_samples.completed,
+                limited.artist_samples.pending
+            ),
+            (50, 70)
+        );
         assert!(limited.artist_samples.retry_after_secs > 0);
         assert_eq!(receipt(&store), before);
         assert_eq!(store.library().unwrap(), library);
         let calls = server.calls("/v1/");
         assert_eq!(path(calls.last().unwrap()), route);
-        let waiting = continue_artist_samples(
-            &mut session, &cx, &mut store, Some(&limited.artist_samples),
-        ).await.unwrap();
+        let waiting =
+            continue_artist_samples(&mut session, &cx, &mut store, Some(&limited.artist_samples))
+                .await
+                .unwrap();
         assert_eq!(waiting.artist_samples.attempted, 0);
         assert_eq!(waiting.artist_samples.pending, 70);
         assert!(waiting.artist_samples.retry_after_secs > 0);
@@ -203,7 +264,13 @@ fn an_account_change_during_sampling_cannot_publish_into_a_returning_account() {
             ));
             let result = pending(&server, &cx, &mut store, Some(&first.artist_samples)).await;
             assert!(result.artist_samples.requires_refresh);
-            assert!(store.library().unwrap().iter().all(|entry| !entry.is_candidate()));
+            assert!(
+                store
+                    .library()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| !entry.is_candidate())
+            );
             let owner = store.spotify_library_owner().unwrap().unwrap();
             assert_ne!(Some(owner.generation), first.artist_samples.generation);
             assert_eq!(store.spotify_artist_discovery(&owner).unwrap(), None);
@@ -235,7 +302,10 @@ fn the_closing_identity_read_rejects_a_different_spotify_account_without_store_a
         assert!(result.artist_samples.requires_refresh);
         assert_eq!(receipt(&store), accepted);
         assert_eq!(store.library().unwrap(), library);
-        assert_eq!(store.spotify_library_owner().unwrap().unwrap().owner_id, OWNER);
+        assert_eq!(
+            store.spotify_library_owner().unwrap().unwrap().owner_id,
+            OWNER
+        );
         store.close().unwrap();
     });
 }
@@ -260,14 +330,18 @@ fn a_competing_receipt_keeps_the_backlog_and_candidates_until_a_fresh_pass() {
                 let raw = receipt(&other);
                 let mut body: Value = serde_json::from_str(&raw).unwrap();
                 body["publication"] = json!("newer-artist-reader");
-                assert!(other.publish_spotify_artist_continuation(
-                    &owner,
-                    &SpotifyArtistDiscoveryFence {
-                        expected: Some(raw),
-                        progress: body.to_string(),
-                    },
-                    &[],
-                ).unwrap());
+                assert!(
+                    other
+                        .publish_spotify_artist_continuation(
+                            &owner,
+                            &SpotifyArtistDiscoveryFence {
+                                expected: Some(raw),
+                                progress: body.to_string(),
+                            },
+                            &[],
+                        )
+                        .unwrap()
+                );
                 other.close().unwrap();
             }),
         ));
@@ -276,7 +350,13 @@ fn a_competing_receipt_keeps_the_backlog_and_candidates_until_a_fresh_pass() {
         assert_ne!(receipt(&store), accepted);
         assert_eq!(store.library().unwrap(), library);
         let winner = pending(&server, &cx, &mut store, None).await;
-        assert_eq!((winner.artist_samples.completed, winner.artist_samples.pending), (60, 0));
+        assert_eq!(
+            (
+                winner.artist_samples.completed,
+                winner.artist_samples.pending
+            ),
+            (60, 0)
+        );
         assert_eq!(winner.library.candidates, 60);
         store.close().unwrap();
     });
@@ -292,16 +372,21 @@ fn legacy_cursors_wait_for_a_full_refresh_without_guessing_a_backlog() {
         let first = full(&server, &cx, &mut store).await;
         let owner = store.spotify_library_owner().unwrap().unwrap();
         let before = receipt(&store);
-        assert!(store.publish_spotify_artist_continuation(
-            &owner,
-            &SpotifyArtistDiscoveryFence {
-                expected: Some(before),
-                progress: json!({
-                    "version": 1, "last_artist_id": id(49), "publication": "legacy-cursor",
-                }).to_string(),
-            },
-            &[],
-        ).unwrap());
+        assert!(
+            store
+                .publish_spotify_artist_continuation(
+                    &owner,
+                    &SpotifyArtistDiscoveryFence {
+                        expected: Some(before),
+                        progress: json!({
+                            "version": 1, "last_artist_id": id(49), "publication": "legacy-cursor",
+                        })
+                        .to_string(),
+                    },
+                    &[],
+                )
+                .unwrap()
+        );
         let calls = server.calls("/v1/").len();
         let legacy = pending(&server, &cx, &mut store, Some(&first.artist_samples)).await;
         assert!(legacy.artist_samples.requires_refresh);
@@ -316,7 +401,13 @@ fn legacy_cursors_wait_for_a_full_refresh_without_guessing_a_backlog() {
             (50, 10)
         );
         let finished = pending(&server, &cx, &mut store, Some(&refreshed.artist_samples)).await;
-        assert_eq!((finished.artist_samples.completed, finished.artist_samples.pending), (60, 0));
+        assert_eq!(
+            (
+                finished.artist_samples.completed,
+                finished.artist_samples.pending
+            ),
+            (60, 0)
+        );
         store.close().unwrap();
     });
 }
@@ -369,20 +460,40 @@ fn background_samples_reuse_the_bounded_catalog_fallback_and_keep_three_tracks_p
         for artist in [50, 51] {
             catalog(&server, artist);
         }
-        server.state.lock().unwrap().refused.insert(
-            format!("/v1/artists/{}/top-tracks", id(50)),
-            403,
-        );
+        server
+            .state
+            .lock()
+            .unwrap()
+            .refused
+            .insert(format!("/v1/artists/{}/top-tracks", id(50)), 403);
         let before = server.calls("/v1/artists/").len();
         let personal = personal_reads(&server);
         let result = pending(&server, &cx, &mut store, Some(&first.artist_samples)).await;
-        assert_eq!((result.artist_samples.completed, result.artist_samples.pending), (52, 0));
+        assert_eq!(
+            (
+                result.artist_samples.completed,
+                result.artist_samples.pending
+            ),
+            (52, 0)
+        );
         assert_eq!(result.artist_samples.attempted, 2);
         assert_eq!(result.library.candidates, 56);
         let calls = server.calls("/v1/artists/");
         let calls = &calls[before..];
-        assert_eq!(calls.iter().filter(|call| path(call).ends_with("/top-tracks")).count(), 1);
-        assert_eq!(calls.iter().filter(|call| path(call).ends_with("/albums")).count(), 2);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| path(call).ends_with("/top-tracks"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| path(call).ends_with("/albums"))
+                .count(),
+            2
+        );
         assert_eq!(server.calls("/v1/albums/").len(), 2);
         assert_eq!(personal_reads(&server), personal);
         store.close().unwrap();
@@ -417,8 +528,13 @@ fn captured_top_and_followed_weights_handle_guest_credits_without_rewriting_save
         let mut store =
             SqliteStore::open(&server.data.join("artist-background-weights.db")).unwrap();
         let mut session = server.session(&cx, scope);
-        let first = sync_library_detailed(&mut session, &cx, &mut store).await.unwrap();
-        assert_eq!((first.artist_samples.completed, first.artist_samples.pending), (50, 2));
+        let first = sync_library_detailed(&mut session, &cx, &mut store)
+            .await
+            .unwrap();
+        assert_eq!(
+            (first.artist_samples.completed, first.artist_samples.pending),
+            (50, 2)
+        );
         let mut saved = store.library().unwrap()[0].clone();
         saved.track.source_uri = guest["uri"].as_str().unwrap().to_owned();
         saved.artist_id = Some(id(51));
@@ -428,10 +544,17 @@ fn captured_top_and_followed_weights_handle_guest_credits_without_rewriting_save
         saved.genres = vec!["owner genre".into()];
         saved.taste_weight = Some(crate::taste::MAX_TASTE_PM);
         store.upsert_library(std::slice::from_ref(&saved)).unwrap();
-        let result = continue_artist_samples(
-            &mut session, &cx, &mut store, Some(&first.artist_samples),
-        ).await.unwrap();
-        assert_eq!((result.artist_samples.completed, result.artist_samples.pending), (52, 0));
+        let result =
+            continue_artist_samples(&mut session, &cx, &mut store, Some(&first.artist_samples))
+                .await
+                .unwrap();
+        assert_eq!(
+            (
+                result.artist_samples.completed,
+                result.artist_samples.pending
+            ),
+            (52, 0)
+        );
         assert_eq!(result.artist_samples.attempted, 2);
         let entries = store.library().unwrap();
         assert_eq!(
@@ -452,9 +575,10 @@ fn captured_top_and_followed_weights_handle_guest_credits_without_rewriting_save
         );
         assert_eq!(own.artist_id.as_deref(), Some(id(51).as_str()));
         let calls = server.calls("/v1/").len();
-        let idle = continue_artist_samples(
-            &mut session, &cx, &mut store, Some(&result.artist_samples),
-        ).await.unwrap();
+        let idle =
+            continue_artist_samples(&mut session, &cx, &mut store, Some(&result.artist_samples))
+                .await
+                .unwrap();
         assert_eq!(idle.artist_samples.pending, 0);
         assert_eq!(server.calls("/v1/").len(), calls);
         store.close().unwrap();

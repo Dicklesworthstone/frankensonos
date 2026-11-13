@@ -120,11 +120,15 @@ mod tests {
 
     #[test]
     fn progress_counts_the_cohort_and_preserves_the_completed_full_refresh() {
-        let status = LibrarySyncDto::new(false, Some(full()), None)
-            .with_artist_sampling(Some(pending()));
+        let status =
+            LibrarySyncDto::new(false, Some(full()), None).with_artist_sampling(Some(pending()));
         assert_eq!(status.last, Some(full()));
         assert!(status.done.contains("70 artist sample(s) pending"));
-        assert!(status.done.contains("cohort has completed 50 artist sample(s)"));
+        assert!(
+            status
+                .done
+                .contains("cohort has completed 50 artist sample(s)")
+        );
         assert!(status.done.contains("last pass attempted 50"));
         assert!(status.done.ends_with(&format!(
             "The next artist-sample pass is eligible at {}.",
@@ -157,12 +161,9 @@ mod tests {
         assert!(!status.done.contains("Library refreshed"));
         assert_eq!(status.last, Some(full()));
         assert_eq!(status.genre_enrichment.unwrap().pending, 5);
-        let failed = LibrarySyncDto::new(
-            false,
-            Some(full()),
-            Some("Spotify is unavailable".into()),
-        )
-        .with_artist_sampling(Some(pending()));
+        let failed =
+            LibrarySyncDto::new(false, Some(full()), Some("Spotify is unavailable".into()))
+                .with_artist_sampling(Some(pending()));
         assert!(failed.done.starts_with("The last library update failed"));
         assert!(failed.done.contains("70 artist sample(s) pending"));
         assert_eq!(failed.last, Some(full()));
@@ -181,8 +182,14 @@ mod tests {
         assert!(complete.text().contains("complete for the current cohort"));
         assert!(!complete.text().contains("next artist-sample pass"));
         for status in [
-            ArtistSamplingDto { limited: true, ..pending() },
-            ArtistSamplingDto { requires_refresh: true, ..pending() },
+            ArtistSamplingDto {
+                limited: true,
+                ..pending()
+            },
+            ArtistSamplingDto {
+                requires_refresh: true,
+                ..pending()
+            },
         ] {
             assert!(!status.text().contains("complete for the current cohort"));
             assert!(!status.text().contains("next artist-sample pass"));

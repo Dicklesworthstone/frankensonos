@@ -39,9 +39,8 @@ use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::cache::{
     AlbumContinuation, LibrarySyncDetailed, SavedLibraryProgress, continue_albums,
-    continue_artist_samples,
-    continue_followed_artists, continue_genres, continue_playlists_with_albums,
-    sync_library_attempt_with_albums,
+    continue_artist_samples, continue_followed_artists, continue_genres,
+    continue_playlists_with_albums, sync_library_attempt_with_albums,
 };
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;

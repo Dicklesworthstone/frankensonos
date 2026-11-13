@@ -29,9 +29,11 @@ pub struct QueuedProof {
 fn bounded(queue: &Snapshot) -> bool {
     queue.uris.len() <= MAX_QUEUE_BACKUP_ENTRIES
         && queue.uris.iter().all(|uri| identity(uri))
-        && queue.uris.iter().try_fold(0usize, |bytes, uri| {
-            bytes.checked_add(uri.len())
-        }).is_some_and(|bytes| bytes <= MAX_QUEUE_BACKUP_BYTES)
+        && queue
+            .uris
+            .iter()
+            .try_fold(0usize, |bytes, uri| bytes.checked_add(uri.len()))
+            .is_some_and(|bytes| bytes <= MAX_QUEUE_BACKUP_BYTES)
 }
 
 /// Bound the serialized receipt without allocating another copy of its data.
@@ -39,9 +41,13 @@ fn fits(value: &impl Serialize) -> bool {
     struct Size(usize);
     impl Write for Size {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0 = self.0.checked_add(bytes.len())
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
                 .filter(|size| *size <= MAX_QUEUE_BACKUP_BYTES)
-                .ok_or_else(|| io::Error::other("queued-track undo receipt exceeds its byte bound"))?;
+                .ok_or_else(|| {
+                    io::Error::other("queued-track undo receipt exceeds its byte bound")
+                })?;
             Ok(bytes.len())
         }
 
@@ -75,8 +81,10 @@ impl QueuedProof {
         count: u32,
         insertions: u32,
     ) -> Option<Self> {
-        if !bounded(before) || !bounded(after)
-            || !destination.has_boot_identity() || !destination.is_at(host)
+        if !bounded(before)
+            || !bounded(after)
+            || !destination.has_boot_identity()
+            || !destination.is_at(host)
             || before.revision.checked_add(insertions) != Some(after.revision)
         {
             return None;
@@ -106,9 +114,8 @@ impl QueuedProof {
             && self.after.revision >= self.inserted_revision
             && self.inserted_revision != 0
             && self.insertions > 0
-            && usize::try_from(self.insertions).is_ok_and(|count| {
-                count <= crate::control::MAX_SPOTIFY_TRACK_BATCH
-            })
+            && usize::try_from(self.insertions)
+                .is_ok_and(|count| count <= crate::control::MAX_SPOTIFY_TRACK_BATCH)
             && self.before.revision.checked_add(self.insertions) == Some(self.inserted_revision)
             && self.before.revision != self.after.revision
             && selected.start <= self.before.uris.len()
@@ -141,10 +148,12 @@ impl QueuedProof {
         self.destination
             .confirm(t, host, coordinator)
             .map_err(|_| unavailable("the original group, source or speaker boot changed"))?;
-        let current = read(t, host)
-            .map_err(|_| unavailable("the current queue could not be verified"))?;
+        let current =
+            read(t, host).map_err(|_| unavailable("the current queue could not be verified"))?;
         if current != self.after {
-            return Err(unavailable("the queue changed after the recorded insertion"));
+            return Err(unavailable(
+                "the queue changed after the recorded insertion",
+            ));
         }
         self.destination
             .confirm(t, host, coordinator)
@@ -239,13 +248,18 @@ impl<T: Transport + ?Sized> Transport for QueuedUndoTransport<'_, T> {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        if action.trim_matches('"').ends_with("#RemoveTrackRangeFromQueue") {
+        if action
+            .trim_matches('"')
+            .ends_with("#RemoveTrackRangeFromQueue")
+        {
             if host != self.proof.host {
                 return Err(ProtoError::Malformed(
                     "the queued-track undo target moved".into(),
                 ));
             }
-            self.proof.destination.confirm(self.t, host, &self.proof.coordinator)?;
+            self.proof
+                .destination
+                .confirm(self.t, host, &self.proof.coordinator)?;
         }
         self.t.soap_post(host, path, action, body)
     }
@@ -262,39 +276,82 @@ mod tests {
             "coordinator_host": host,
             "uri": "",
             "metadata": ""
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     #[test]
     fn receipts_require_known_boot_address_nonzero_revision_and_bounded_contents() {
         let host: IpAddr = "127.0.0.1".parse().unwrap();
         let coordinator = PlayerId("RINCON_SYNTHETIC".into());
-        let before = Snapshot { revision: 0, uris: Vec::new() };
-        let after = Snapshot { revision: 1, uris: vec!["test:track".into()] };
+        let before = Snapshot {
+            revision: 0,
+            uris: Vec::new(),
+        };
+        let after = Snapshot {
+            revision: 1,
+            uris: vec!["test:track".into()],
+        };
         let make = |destination: &SourceDestination, after: &Snapshot| {
             QueuedProof::confirmed(host, &coordinator, destination, &before, after, 1, 1, 1)
         };
         assert!(make(&destination(Some(1), Some(host)), &after).is_some());
         // Identical-looking contents at a later counter are not our insertion.
-        assert!(make(&destination(Some(1), Some(host)), &Snapshot {
-            revision: 3, ..after.clone()
-        }).is_none());
+        assert!(
+            make(
+                &destination(Some(1), Some(host)),
+                &Snapshot {
+                    revision: 3,
+                    ..after.clone()
+                }
+            )
+            .is_none()
+        );
         assert!(make(&destination(None, Some(host)), &after).is_none());
         assert!(make(&destination(Some(1), None), &after).is_none());
-        assert!(make(&destination(Some(1), Some("127.0.0.2".parse().unwrap())), &after).is_none());
-        assert!(make(&destination(Some(1), Some(host)), &Snapshot {
-            revision: 0, ..after.clone()
-        }).is_none());
+        assert!(
+            make(
+                &destination(Some(1), Some("127.0.0.2".parse().unwrap())),
+                &after
+            )
+            .is_none()
+        );
+        assert!(
+            make(
+                &destination(Some(1), Some(host)),
+                &Snapshot {
+                    revision: 0,
+                    ..after.clone()
+                }
+            )
+            .is_none()
+        );
         let oversized = Snapshot {
-            revision: 2, uris: vec!["test:track".into(); MAX_QUEUE_BACKUP_ENTRIES + 1]
+            revision: 2,
+            uris: vec!["test:track".into(); MAX_QUEUE_BACKUP_ENTRIES + 1],
         };
         assert!(make(&destination(Some(1), Some(host)), &oversized).is_none());
-        let wrapped_before = Snapshot { revision: u32::MAX, uris: Vec::new() };
-        let wrapped_after = Snapshot { revision: 1, uris: vec!["test:a".into(), "test:b".into()] };
-        assert!(QueuedProof::confirmed(
-            host, &coordinator, &destination(Some(1), Some(host)),
-            &wrapped_before, &wrapped_after, 1, 2, 2,
-        ).is_none());
+        let wrapped_before = Snapshot {
+            revision: u32::MAX,
+            uris: Vec::new(),
+        };
+        let wrapped_after = Snapshot {
+            revision: 1,
+            uris: vec!["test:a".into(), "test:b".into()],
+        };
+        assert!(
+            QueuedProof::confirmed(
+                host,
+                &coordinator,
+                &destination(Some(1), Some(host)),
+                &wrapped_before,
+                &wrapped_after,
+                1,
+                2,
+                2,
+            )
+            .is_none()
+        );
         let mut huge = destination(Some(1), Some(host));
         // Serialized metadata is bounded too, including JSON escaping.
         let mut value = serde_json::to_value(&huge).unwrap();

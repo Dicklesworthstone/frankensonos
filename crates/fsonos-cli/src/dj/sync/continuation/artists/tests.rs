@@ -200,7 +200,10 @@ fn cumulative_success_is_not_new_progress_and_a_new_cohort_resets_failure_backof
         state = load(dir.path()).unwrap();
         assert_eq!(state.artist_stalled, stalled);
         assert_eq!(state.artist_retry_at, at + Checkpoint::wait(stalled));
-        assert!(!sync.take_fresh(), "old cumulative success is not a publication");
+        assert!(
+            !sync.take_fresh(),
+            "old cumulative success is not a publication"
+        );
     }
     let mut next = samples(90, 10);
     next.cycle = Some("sample-cycle-b".into());
@@ -245,12 +248,18 @@ fn every_reader_gets_a_fair_turn_without_replacing_an_unrelated_sample_checkpoin
     let sync = controller(dir.path(), AT);
     let mut state = checkpoint();
     state.pending = 2;
-    state.albums = Some(serde_json::from_value(json!({
-        "owner":"test-owner", "generation":1, "pending":1
-    })).unwrap());
-    state.genres = Some(serde_json::from_value(json!({
-        "owner":"test-owner", "generation":1, "pending":5
-    })).unwrap());
+    state.albums = Some(
+        serde_json::from_value(json!({
+            "owner":"test-owner", "generation":1, "pending":1
+        }))
+        .unwrap(),
+    );
+    state.genres = Some(
+        serde_json::from_value(json!({
+            "owner":"test-owner", "generation":1, "pending":5
+        }))
+        .unwrap(),
+    );
     state.followed = Some(FollowedArtistContinuation {
         owner: Some("test-owner".into()),
         generation: Some(1),
@@ -262,14 +271,23 @@ fn every_reader_gets_a_fair_turn_without_replacing_an_unrelated_sample_checkpoin
     });
     let mut kinds = Vec::new();
     for _ in 0..10 {
-        let at = [state.retry_at, state.album_retry_at, state.genre_retry_at,
-            state.followed_retry_at, state.artist_retry_at].into_iter().max().unwrap();
+        let at = [
+            state.retry_at,
+            state.album_retry_at,
+            state.genre_retry_at,
+            state.followed_retry_at,
+            state.artist_retry_at,
+        ]
+        .into_iter()
+        .max()
+        .unwrap();
         let kind = state.background_pass(at).unwrap().kind();
         kinds.push(kind);
         let old_samples = state.artist_samples.clone();
         let deadline = state.artist_retry_at;
         let read = continuing_report(&state, kind);
-        sync.accepted(Some(full()), &state, &read, kind, at).unwrap();
+        sync.accepted(Some(full()), &state, &read, kind, at)
+            .unwrap();
         state = load(dir.path()).unwrap();
         if kind != PassKind::Artists {
             assert_eq!(state.artist_samples, old_samples);
@@ -278,9 +296,18 @@ fn every_reader_gets_a_fair_turn_without_replacing_an_unrelated_sample_checkpoin
     }
     assert_eq!(
         kinds,
-        [PassKind::Playlists, PassKind::Albums, PassKind::Genres, PassKind::Followed,
-            PassKind::Artists, PassKind::Playlists, PassKind::Albums, PassKind::Genres,
-            PassKind::Followed, PassKind::Artists]
+        [
+            PassKind::Playlists,
+            PassKind::Albums,
+            PassKind::Genres,
+            PassKind::Followed,
+            PassKind::Artists,
+            PassKind::Playlists,
+            PassKind::Albums,
+            PassKind::Genres,
+            PassKind::Followed,
+            PassKind::Artists
+        ]
     );
 }
 
@@ -306,9 +333,14 @@ fn artist_rate_limits_block_all_readers_and_manual_full_refresh_until_the_shared
     );
     let saved = load(dir.path()).unwrap();
     assert_eq!(saved.not_before, at + 3_600);
-    for deadline in [saved.retry_at, saved.album_retry_at, saved.genre_retry_at,
-        saved.followed_retry_at, saved.artist_retry_at, saved.recent.retry_at]
-    {
+    for deadline in [
+        saved.retry_at,
+        saved.album_retry_at,
+        saved.genre_retry_at,
+        saved.followed_retry_at,
+        saved.artist_retry_at,
+        saved.recent.retry_at,
+    ] {
         assert!(deadline >= saved.not_before);
     }
     assert!(saved.background_pass(at + 3_599).is_none());
@@ -333,22 +365,32 @@ fn sample_publication_preserves_retained_album_pages_and_genre_rotation() {
             "tracks":[{"disc_number":1, "track_number":1,
                 "source_uri":"spotify:track:MovementOne", "title":"Suite I",
                 "duration_secs":180}]}
-    })).unwrap();
+    }))
+    .unwrap();
     let genres: GenreContinuation = serde_json::from_value(json!({
         "owner":"test-owner", "generation":1, "pending":5, "cursor":"Artist050"
-    })).unwrap();
+    }))
+    .unwrap();
     state.observed_albums(&partial, AT, false);
     state.observed_genres(&genres, AT, false);
     let mut read = report(samples(20, 100));
     read.albums = serde_json::from_value(json!({
         "owner":"test-owner", "generation":1, "pending":2
-    })).unwrap();
+    }))
+    .unwrap();
     read.genre_continuation = serde_json::from_value(json!({
         "owner":"test-owner", "generation":1, "pending":10
-    })).unwrap();
-    let latest = sync.accepted(
-        Some(full()), &state, &read, PassKind::Artists, state.artist_retry_at,
-    ).unwrap();
+    }))
+    .unwrap();
+    let latest = sync
+        .accepted(
+            Some(full()),
+            &state,
+            &read,
+            PassKind::Artists,
+            state.artist_retry_at,
+        )
+        .unwrap();
     let kept = load(dir.path()).unwrap();
     assert_eq!(kept.album_retry_at, state.album_retry_at);
     assert_eq!(kept.genre_retry_at, state.genre_retry_at);
@@ -372,9 +414,13 @@ fn ownership_conflicts_and_cache_limits_do_not_claim_completion_or_schedule_samp
     let state = checkpoint();
     let sync = controller(dir.path(), state.artist_retry_at);
     sync.accepted(
-        Some(full()), &state, &report(ArtistContinuation::refresh_required()),
-        PassKind::Artists, state.artist_retry_at,
-    ).unwrap();
+        Some(full()),
+        &state,
+        &report(ArtistContinuation::refresh_required()),
+        PassKind::Artists,
+        state.artist_retry_at,
+    )
+    .unwrap();
     let changed = load(dir.path()).unwrap();
     assert!(changed.requires_refresh);
     assert!(changed.background_pass(i64::MAX).is_none());
@@ -383,8 +429,13 @@ fn ownership_conflicts_and_cache_limits_do_not_claim_completion_or_schedule_samp
     let mut limited = samples(70, 50);
     limited.limited = true;
     sync.accepted(
-        Some(full()), &state, &report(limited), PassKind::Artists, state.artist_retry_at,
-    ).unwrap();
+        Some(full()),
+        &state,
+        &report(limited),
+        PassKind::Artists,
+        state.artist_retry_at,
+    )
+    .unwrap();
     let saved = load(dir.path()).unwrap();
     assert!(!saved.artist_due(i64::MAX));
     assert!(saved.background_pass(i64::MAX).is_none());

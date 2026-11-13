@@ -194,11 +194,20 @@ pub(in super::super) fn enqueue_batch<T: Transport + ?Sized>(
         first,
         uris: selected.to_vec(),
         playing_queue,
-        proof: undo_revision_chain.then(|| {
-            crate::control::queue_removal::QueuedProof::confirmed(
-                host, coordinator, destination, &before, &after, first, total, total,
-            )
-        }).flatten(),
+        proof: undo_revision_chain
+            .then(|| {
+                crate::control::queue_removal::QueuedProof::confirmed(
+                    host,
+                    coordinator,
+                    destination,
+                    &before,
+                    &after,
+                    first,
+                    total,
+                    total,
+                )
+            })
+            .flatten(),
     };
     Ok(Batch {
         before,

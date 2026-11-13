@@ -95,8 +95,10 @@ impl Progress {
             return Err(invalid());
         }
         let progress: Self = serde_json::from_str(raw).map_err(|_| invalid())?;
-        if !matches!((progress.version, &progress.cohort), (1, None) | (2, Some(_)))
-            || progress.publication.is_empty()
+        if !matches!(
+            (progress.version, &progress.cohort),
+            (1, None) | (2, Some(_))
+        ) || progress.publication.is_empty()
             || progress.publication.len() > 128
             || progress.publication.chars().any(char::is_control)
             || progress
@@ -160,7 +162,9 @@ impl Progress {
     }
 
     pub(crate) fn accepted(&mut self, successful: &[String], last_attempted: Option<&str>) {
-        let Some(cohort) = &mut self.cohort else { return };
+        let Some(cohort) = &mut self.cohort else {
+            return;
+        };
         let successful: HashSet<_> = successful.iter().map(String::as_str).collect();
         let before = cohort.remaining.len();
         cohort
@@ -239,11 +243,15 @@ impl Cohort {
             || self.signals.len() > ARTIST_DISCOVERY_MAX_ARTISTS
             || self.remaining.len() > self.signals.len()
             || self.completed > ARTIST_DISCOVERY_MAX_ARTISTS
-            || self.signals.iter().any(|(id, weight)| {
-                !valid_id(id) || !(1000..=MAX_TASTE_PM).contains(weight)
-            })
+            || self
+                .signals
+                .iter()
+                .any(|(id, weight)| !valid_id(id) || !(1000..=MAX_TASTE_PM).contains(weight))
             || self.signals.windows(2).any(|pair| pair[0].0 >= pair[1].0)
-            || self.remaining.iter().any(|index| *index >= self.signals.len())
+            || self
+                .remaining
+                .iter()
+                .any(|index| *index >= self.signals.len())
             || self.remaining.windows(2).any(|pair| pair[0] >= pair[1])
             || (!self.limited
                 && (self.omitted != 0
@@ -535,5 +543,4 @@ mod tests {
         assert!(progress.selection().is_empty());
         assert!(fence.progress.len() < 1024);
     }
-
 }

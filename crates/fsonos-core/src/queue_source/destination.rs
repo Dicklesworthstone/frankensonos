@@ -53,9 +53,7 @@ impl Destination {
             .iter()
             .find(|member| member.uuid == *coordinator)
             .ok_or_else(|| {
-                ProtoError::Malformed(
-                    "the replacement coordinator is absent from its group".into(),
-                )
+                ProtoError::Malformed("the replacement coordinator is absent from its group".into())
             })?;
         let media = soap::call(
             t,
