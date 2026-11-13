@@ -5129,3 +5129,13 @@ So "supply a key" concretely means making the *downstream* op find key material,
 `ZZ0028`'s slot is the supply point to aim at. The mode/length logic also tells us
 the key sizes the format expects (28-byte header path, `2*size` body path), which is
 useful when constructing a stub key of the right shape.
+
+Key handling resolved enough to act on: `libsonoscrypto` contains exactly **one**
+`mbedtls_pk_parse_key` call, at `0x6ee8` inside `ZZ0183`, which parses a private key
+from a buffer and returns the resulting pk context. So the device key path is
+"some bytes → mbedtls parse", not a bespoke blob, and `model16-private.pem` is the
+right *shape* of input.
+
+That means the substitution is now straightforward in principle: call `ZZ0183` with
+our PEM at runtime (harness pattern already proven), then place the returned context
+where `ZZ0028` reads — `((*(ctx)+8))->[0x18]` — instead of hand-building a struct.
