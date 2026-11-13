@@ -5139,3 +5139,10 @@ right *shape* of input.
 That means the substitution is now straightforward in principle: call `ZZ0183` with
 our PEM at runtime (harness pattern already proven), then place the returned context
 where `ZZ0028` reads — `((*(ctx)+8))->[0x18]` — instead of hand-building a struct.
+
+`ZZ0183` = `libsonoscrypto.so.1 + 0x6e74`. It `malloc`s a context (`0x1c`-ish), sets
+it up and calls `mbedtls_pk_parse_key(pk, buf, len, pw, pwlen)`, returning the
+context. So it is a self-contained "parse this PEM" helper — exactly what the
+harness needs, and the only thing still ambiguous is which register carries the
+buffer versus the length (prologue shuffles r4/r5/r6 into r27/r29/r28 before the
+call). One probe with a known PEM will settle it.
