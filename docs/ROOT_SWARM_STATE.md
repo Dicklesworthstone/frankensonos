@@ -5111,3 +5111,10 @@ code patch required — or patch the final `lwz` to use a fixed address.
 This also explains the earlier abort work: the same global is what `ZZ0041`
 initialises, so with init patched but no key ever loaded the slot stays NULL and
 every envelope op fails at `ZZ0045`.
+
+Format caveat before the substitution test: `[+0x18]` is almost certainly not raw
+DER — the same context feeds mbedtls-based ops (`ZZ0041` initialises entropy/drbg
+there), so the slot likely holds a parsed `mbedtls_rsa_context` or a Sonos key
+struct. Dropping PEM/DER bytes in and hoping is a coin flip; the cheap read is to
+break `ZZ0028` on a real key-loading path, or to inspect what consumes `[+0x18]`
+before deciding.
