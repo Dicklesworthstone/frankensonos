@@ -5155,3 +5155,16 @@ stack words read `0, 1, 0x2ae50, 0`.
 That narrows it further: with no key the computed `size` is 0, so `len >= 0` would
 pass trivially and mode 2 (the 28-byte path) is what actually trips. Either way the
 fix is the same: get a real pk context into the ZZ0028 slot so `size` is meaningful.
+
+Substitution attempt: `ZZ0028` patched to return `*(0x1064d800)` (`lis/lwz/blr`), the
+PEM staged and `restore`d into a `malloc`'d buffer, with the call made as
+`ZZ0183(0, buf, 1675, 0, 0)` after reading buf/len from the prologue's register
+shuffle (arg2/arg3).
+
+It faults **at the computed entry** (`0x395fae74`), so the base arithmetic is wrong
+even though the GOT-derived value looks plausible (`ZZ0044=0x396000d0`). Two candidate
+bases were tried (`-0xc0f0` and `-0xc0d0`) and both fault, which means the GOT slot is
+not simply `base + symbol_offset` — most likely the lib is loaded at a different base
+than the delta suggests, and the reliable way to settle it is to read
+`/proc/<pid>/maps` for the `libsonoscrypto` line **while the process is running**, not
+to infer from one GOT value.
