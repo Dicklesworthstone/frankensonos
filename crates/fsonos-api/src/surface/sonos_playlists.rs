@@ -12,7 +12,6 @@ use std::fmt::Write as _;
 use super::{Surface, resolve, room_view};
 use crate::OutcomeDto;
 use crate::failure::{ErrorCode, Failure};
-use crate::plan::Command;
 use crate::request::zone_name;
 
 mod contents;
@@ -176,15 +175,13 @@ impl Surface {
         req: &PlaySonosPlaylistRequest,
     ) -> Result<OutcomeDto, Failure> {
         req.validate()?;
-        self.control_io(client, "play_favorite", |transport, rooms| {
-            let target = resolve(rooms, req.zone.trim())?;
-            let listed = playlists::list(transport, rooms.households, &target.coordinator.id)?;
-            let playlist = find(&listed, req.playlist.trim())?;
-            Ok(Command::PlayFavorite {
-                member: target.player.id.clone(),
-                coordinator: target.coordinator.id.clone(),
-                favorite: playlist.clone(),
-            })
+        self.control_set_io(client, "play_favorite", |transport, rooms| {
+            super::source_selection::native_sources(
+                transport,
+                rooms,
+                req.zone.trim(),
+                super::source_selection::NativeSource::Playlist(req.playlist.trim()),
+            )
         })
     }
 

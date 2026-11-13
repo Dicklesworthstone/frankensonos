@@ -904,7 +904,7 @@ async fn list_favorites(
 }
 
 #[tool(
-    description = "Play one of the household's Sonos favorites in the group a room plays in. `favorite` is its title (case, accents and punctuation ignored; a unique prefix or all its words in any order will do), its number from list_favorites, or its FV:2/<n> id. Albums and playlists replace the queue. `zone` is a room name."
+    description = "Play a Sonos favorite in each existing group selected by a room, multi-room alias, all or everywhere; all@S1 / all@S2 selects one household. Groups remain independent. `favorite` is its title (case, accents and punctuation ignored; a unique prefix or all its words in any order will do), its number from list_favorites, or its FV:2/<n> id. Resolve it independently on every selected household; numbers and ids are household-local. Albums and playlists replace each selected queue. All source reads complete before playback changes. One action log and undo cover the set, subject to successful restoration proof; inspect SKIPPED notes for partial speaker failures."
 )]
 async fn play_favorite(
     ctx: &McpContext,
@@ -956,7 +956,7 @@ async fn undo_last(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolRe
 }
 
 #[tool(
-    description = "Play something in the group a room plays in. `source_uri` is a Spotify track, album, playlist, artist, episode or show URI/link, or a radio/HTTP stream or Sonos favorite URI. Albums and playlists replace the queue. An artist requires the owner's Spotify catalog sign-in and resolves to up to ten top tracks or a bounded album sample; it replaces the queue and plays those tracks in order. This is not artist radio or a full discography, and replacement queue contents cannot be recovered with undo_last. A show also requires Spotify sign-in and replaces the queue with up to ten available episodes from its first episode page, in Spotify's returned order. Spotify renders through the household's own linked account. Optional `title` labels the request. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
+    description = "Play a source in every existing group selected by a room, multi-room alias, all or everywhere; Room@S1 / Room@S2 or all@S1 / all@S2 picks a household. Groups remain independent, without regrouping or synchronized starts. `source_uri` is a Spotify track, album, playlist, artist, episode or show URI/link, or a radio/HTTP stream or Sonos favorite URI. Albums and playlists replace each selected queue. An artist requires the owner's Spotify catalog sign-in and resolves once per request to up to ten top tracks or a bounded album sample; a show resolves to up to ten available episodes from its first page. Every group receives the same ordered selection through its own household's Spotify linkage. Source preparation completes before speaker changes; one action log and undo cover the set subject to restoration proof. Inspect SKIPPED notes for partial speaker failures. Optional `title` labels the request."
 )]
 async fn play(
     ctx: &McpContext,

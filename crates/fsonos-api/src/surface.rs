@@ -39,7 +39,7 @@ use crate::events::{EventBus, ResourceChanges};
 use crate::execute::{Executed, OutcomeDto};
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::Guard;
-use crate::plan::{Command, DjAction, Rooms, plan_play_favorite, resolve};
+use crate::plan::{Command, DjAction, Rooms, resolve};
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 use crate::request::{PlayFavoriteRequest, SearchRequest};
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
@@ -960,7 +960,7 @@ impl Surface {
     }
 
     /// Like [`Self::control_io`] but for commands that act on a *set* of
-    /// rooms — `pause`/`resume`/`next`/`previous`, `mute` and `volume` given
+    /// rooms — playback, `pause`/`resume`/`next`/`previous`, `mute` and `volume` given
     /// `all`/`everywhere` or a multi-room alias. The plan resolves to one
     /// command per room or group; they run under one authorization, share one
     /// before-state, and record as a single action, so `undo` restores every
@@ -970,6 +970,18 @@ impl Surface {
         client: &Client,
         tool: &str,
         plan: impl FnOnce(&Rooms<'_>) -> Result<Vec<Command>, Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        self.control_set_io(client, tool, |_, rooms| plan(rooms))
+    }
+
+    /// [`Self::control_set`] with read-only source resolution before any
+    /// command runs. Every target's source is prepared before snapshots,
+    /// volume caps, fade cancellation or playback writes.
+    pub fn control_set_io(
+        &self,
+        client: &Client,
+        tool: &str,
+        plan: impl FnOnce(&dyn Transport, &Rooms<'_>) -> Result<Vec<Command>, Failure>,
     ) -> Result<OutcomeDto, Failure> {
         let guard = self.guard(client);
         if let Err(denied) = guard.authorize(tool, false) {
@@ -985,11 +997,10 @@ impl Surface {
         let households = self.households()?;
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
-        let commands = plan(&rooms).map_err(|f| self.explain(f))?;
-        let commands: Vec<_> = commands
-            .into_iter()
-            .map(|command| self.prepare_source(&households, command))
-            .collect::<Result<_, _>>()?;
+        let commands = plan(&*self.transport, &rooms).map_err(|f| self.explain(f))?;
+        let commands = self
+            .prepare_sources(&households, commands)
+            .inspect_err(|failure| self.notice(failure))?;
         let guard = self.guard(client);
         guard.authorize(tool, false)?;
         // A volume or mute change ends a sleep fade in flight on each affected
@@ -1314,17 +1325,20 @@ impl Surface {
         }))
     }
 
-    /// Play a Sonos favorite of the zone's household (`play_favorite`).
+    /// Play a Sonos favorite in every selected group (`play_favorite`).
+    /// Resolve the query independently in each household's own catalog.
     pub fn play_favorite(
         &self,
         client: &Client,
         req: &PlayFavoriteRequest,
     ) -> Result<OutcomeDto, Failure> {
-        self.control_io(client, "play_favorite", |transport, households| {
-            let target = resolve(households, req.zone()?)?;
-            let household_favorites =
-                favorites::list(transport, households.households, &target.coordinator.id)?;
-            plan_play_favorite(households, req, &household_favorites)
+        self.control_set_io(client, "play_favorite", |transport, rooms| {
+            source_selection::native_sources(
+                transport,
+                rooms,
+                req.zone()?,
+                source_selection::NativeSource::Favorite(req.favorite()?),
+            )
         })
     }
 

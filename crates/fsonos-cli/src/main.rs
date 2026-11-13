@@ -247,12 +247,14 @@ enum Command {
         #[command(subcommand)]
         action: policy_cmd::PolicyAction,
     },
-    /// Play a source URI, favorite, saved Sonos playlist or native line-in
-    /// in a room's group.
+    /// Play a source URI, favorite or saved Sonos playlist in the selected
+    /// groups. Native line-in and search select one room's group.
     // What --next and --queue add: one source URI, favorite or saved playlist.
     #[command(group(clap::ArgGroup::new("item").args(["source_uri", "favorite", "playlist", "line_in"])))]
     Play {
-        /// Room name (`Room@S1` / `Room@S2` picks a household).
+        /// Room, multi-room alias, all or everywhere. `all@S1` / `all@S2`
+        /// selects one household. Existing groups are not regrouped or synchronized.
+        /// Queue, line-in and search modes require one room.
         zone: String,
         /// Source URI, or a Spotify track, album or playlist (an
         /// open.spotify.com link will do); an album or playlist replaces the
@@ -1058,26 +1060,8 @@ fn plan_for<'a>(
 ) -> Result<fsonos_api::Command, Failure> {
     let households = households.into();
     match command {
-        Command::Play {
-            zone,
-            source_uri,
-            title,
-            ..
-        } => {
-            let source_uri = source_uri.clone().ok_or_else(|| {
-                Failure::invalid("nothing to play")
-                    .with_hint("Give a source URI, --favorite <name> or --playlist <name>; see fsonos favorites and fsonos playlists.")
-            })?;
-            plan::plan_play(
-                households,
-                &PlayRequest {
-                    zone: zone.clone(),
-                    source_uri,
-                    title: title.clone(),
-                },
-            )
-        }
-        Command::Pause { .. }
+        Command::Play { .. }
+        | Command::Pause { .. }
         | Command::Resume { .. }
         | Command::Next { .. }
         | Command::Previous { .. }
@@ -1161,7 +1145,8 @@ fn plan_for<'a>(
 fn takes_set(command: &Command) -> bool {
     matches!(
         command,
-        Command::Pause { .. }
+        Command::Play { .. }
+            | Command::Pause { .. }
             | Command::Resume { .. }
             | Command::Next { .. }
             | Command::Previous { .. }
@@ -1172,9 +1157,8 @@ fn takes_set(command: &Command) -> bool {
 }
 
 /// The commands a set-accepting subcommand stands for, planned against
-/// `households`: one per room (volume, mute) or group (transport) its zone
-/// names, so `fsonos pause everywhere` or `fsonos mute downstairs` reach every
-/// room.
+/// `households`: one per room (volume, mute) or group (playback, transport)
+/// its zone names. Existing groups remain independent.
 fn plan_set_for<'a>(
     command: &Command,
     households: impl Into<fsonos_api::plan::Rooms<'a>>,
@@ -1182,6 +1166,25 @@ fn plan_set_for<'a>(
     let households = households.into();
     let zone = |zone: &String| ZoneRequest { zone: zone.clone() };
     match command {
+        Command::Play {
+            zone,
+            source_uri,
+            title,
+            ..
+        } => {
+            let source_uri = source_uri.clone().ok_or_else(|| {
+                Failure::invalid("nothing to play")
+                    .with_hint("Give a source URI, --favorite <name> or --playlist <name>; see fsonos favorites and fsonos playlists.")
+            })?;
+            plan::plan_play_set(
+                households,
+                &PlayRequest {
+                    zone: zone.clone(),
+                    source_uri,
+                    title: title.clone(),
+                },
+            )
+        }
         Command::Pause { zone: z, .. } => {
             plan::plan_transport_set(households, &zone(z), TransportAction::Pause)
         }
@@ -1655,8 +1658,8 @@ mod tests {
             Planned::Nothing { .. }
         ));
         assert!(matches!(
-            plan(&["play", "Den", "x-rincon-mp3radio://stream.example.org/a.mp3", "--title", "Radio"]),
-            Planned::Play { title: Some(t), .. } if t == "Radio"
+            plan_set(&["play", "Den", "x-rincon-mp3radio://stream.example.org/a.mp3", "--title", "Radio"]).as_slice(),
+            [Planned::Play { title: Some(t), .. }] if t == "Radio"
         ));
     }
 

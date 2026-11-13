@@ -14,7 +14,7 @@ impl Backend {
     /// Play through the daemon, or the same planner in standalone mode.
     pub fn play(&self, req: &PlayRequest) -> McpResult<FinalCallToolResult> {
         self.write("/play", req, || {
-            self.control("play", |h| plan::plan_play(h, req))
+            self.control_set("play", |h| plan::plan_play_set(h, req))
         })
     }
 
