@@ -5082,3 +5082,13 @@ So the key is *data* already in memory at `[r1+7292]`, filled from the OTP/MDP3
 path earlier — meaning substitution is a matter of putting our bytes where that
 slot points, not of synthesising a context. That is the next experiment: write the
 PEМ/DER key into the guest and repoint `[r1+7292]` before the call.
+
+Correction: `[r1+7292]` is dereferenced and passed as **ZZ0045's mode**, not as a key
+pointer. ZZ0045's own prologue (`libsonoscrypto.so.1` 0xbdd4) shows
+`r3 = mode` (compared with 1 and 2), `r4 = length` (compared against 28) and
+`r5 = out`, and it calls `ZZ0028` first. So the envelope init is parameterised
+(mode, len, out) and the *key material* arrives via another path — the mode selects
+the keyring entry rather than carrying bytes.
+
+So supplying our own key means either making `ZZ0028` hand back our key for the
+requested mode, or calling ZZ0045 with a mode we control and a prepared buffer.
