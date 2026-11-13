@@ -26,3 +26,9 @@
 .source-online-results strong, .source-online-results span { display: block; white-space: pre-wrap; }
 .source-online-results span { margin-top: .25rem; color: var(--muted); font-size: .9rem; }
 .source-online-results button { margin-top: .6rem; min-height: 2.75rem; }
+.source-target-set { display: grid; gap: .65rem; }
+.source-target-set > button { justify-self: start; }
+.source-target-preview { display: grid; gap: .75rem; margin: 0; padding-left: 1.25rem; }
+.source-target-preview strong, .source-target-preview span { display: block; }
+.source-target-preview span { margin-top: .2rem; overflow-wrap: anywhere; }
+.source-player [role="status"] { white-space: pre-wrap; }

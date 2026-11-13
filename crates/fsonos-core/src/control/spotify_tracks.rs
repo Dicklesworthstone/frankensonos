@@ -18,13 +18,13 @@ use std::net::IpAddr;
 /// At most ten concrete music tracks or episodes are resolved by a catalog read.
 pub const MAX_SPOTIFY_TRACK_BATCH: usize = 10;
 
-/// The source, group, boot and complete queue observed before catalog lookup.
+/// The source, group, boot and complete queue observed before source lookup.
 /// Retain this proof until insertion begins, so a changed queue cannot become
 /// the replacement's new baseline merely because its source URI is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackBatchDestination {
-    pub(super) source: SourceDestination,
-    pub(super) queue: Snapshot,
+    pub(crate) source: SourceDestination,
+    pub(crate) queue: Snapshot,
 }
 
 impl TrackBatchDestination {

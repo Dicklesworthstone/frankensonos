@@ -1,4 +1,5 @@
-//! Insert an explicit ordered selection as one confirmed, undoable queue range.
+//! Queue or play an explicit ordered selection through the existing bound
+//! insertion and replacement engines, with one action and undo boundary.
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
@@ -8,9 +9,11 @@ use fsonos_proto::ProtoError;
 use serde::{Deserialize, Serialize};
 
 use super::{ADD, QueueAddedDto, Surface, snapshot};
+use crate::OutcomeDto;
 use crate::execute::spotify_failure;
 use crate::failure::{ErrorCode, Failure};
 use crate::heal::Observed;
+use crate::plan::Command;
 use crate::request::{PlayRequest, zone_name};
 
 /// The existing core batch bound, shared with all queue-selection surfaces.
@@ -41,6 +44,61 @@ pub struct QueueTracksRequest {
     pub expected_revision: Option<String>,
 }
 
+/// `POST /play/tracks`: replace the selected group's queue with exactly these
+/// ordered occurrences and start at the first in NORMAL mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlayTracksRequest {
+    pub zone: String,
+    pub tracks: Vec<QueueTrackInput>,
+    /// Optional destination queue revision from `get_queue`. The original
+    /// queue is retained through preparation and staged replacement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
+}
+
+fn normalized_selection(
+    zone: &str,
+    tracks: &[QueueTrackInput],
+    expected_revision: Option<&str>,
+) -> Result<(String, Vec<QueueTrackInput>), Failure> {
+    let zone = zone_name("zone", zone)?.to_string();
+    if tracks.is_empty() || tracks.len() > MAX_QUEUE_TRACKS {
+        return Err(Failure::invalid(format!(
+            "select between 1 and {MAX_QUEUE_TRACKS} Spotify tracks or episodes"
+        )));
+    }
+    if expected_revision.is_some_and(|revision| revision.trim().is_empty() || revision.len() > 1024)
+    {
+        return Err(Failure::invalid(
+            "expected_revision must be nonempty and at most 1024 bytes",
+        ));
+    }
+    let tracks = tracks
+        .iter()
+        .map(|track| {
+            let normalized = PlayRequest {
+                zone: zone.clone(),
+                source_uri: track.source_uri.clone(),
+                title: track.title.clone(),
+            }
+            .normalized()?;
+            if !(normalized.source_uri.starts_with("spotify:track:")
+                || normalized.source_uri.starts_with("spotify:episode:"))
+            {
+                return Err(Failure::invalid(
+                    "each selected source must be a Spotify track or episode; albums, playlists, artists and shows are not expanded",
+                ));
+            }
+            Ok(QueueTrackInput {
+                source_uri: normalized.source_uri,
+                title: normalized.title,
+            })
+        })
+        .collect::<Result<Vec<_>, Failure>>()?;
+    Ok((zone, tracks))
+}
+
 impl QueueTracksRequest {
     /// Validate before discovery, catalog reads or any speaker mutation.
     pub fn validate(&self) -> Result<(), Failure> {
@@ -48,44 +106,8 @@ impl QueueTracksRequest {
     }
 
     fn normalized(&self) -> Result<Self, Failure> {
-        let zone = zone_name("zone", &self.zone)?.to_string();
-        if self.tracks.is_empty() || self.tracks.len() > MAX_QUEUE_TRACKS {
-            return Err(Failure::invalid(format!(
-                "select between 1 and {MAX_QUEUE_TRACKS} Spotify tracks or episodes"
-            )));
-        }
-        if self
-            .expected_revision
-            .as_deref()
-            .is_some_and(|revision| revision.trim().is_empty() || revision.len() > 1024)
-        {
-            return Err(Failure::invalid(
-                "expected_revision must be nonempty and at most 1024 bytes",
-            ));
-        }
-        let tracks = self
-            .tracks
-            .iter()
-            .map(|track| {
-                let normalized = PlayRequest {
-                    zone: zone.clone(),
-                    source_uri: track.source_uri.clone(),
-                    title: track.title.clone(),
-                }
-                .normalized()?;
-                if !(normalized.source_uri.starts_with("spotify:track:")
-                    || normalized.source_uri.starts_with("spotify:episode:"))
-                {
-                    return Err(Failure::invalid(
-                        "each selected source must be a Spotify track or episode; albums, playlists, artists and shows are not expanded",
-                    ));
-                }
-                Ok(QueueTrackInput {
-                    source_uri: normalized.source_uri,
-                    title: normalized.title,
-                })
-            })
-            .collect::<Result<Vec<_>, Failure>>()?;
+        let (zone, tracks) =
+            normalized_selection(&self.zone, &self.tracks, self.expected_revision.as_deref())?;
         Ok(Self {
             zone,
             tracks,
@@ -95,7 +117,72 @@ impl QueueTracksRequest {
     }
 }
 
+impl PlayTracksRequest {
+    /// Validate before discovery, renderer learning, action snapshots or caps.
+    pub fn validate(&self) -> Result<(), Failure> {
+        self.normalized().map(|_| ())
+    }
+
+    fn normalized(&self) -> Result<Self, Failure> {
+        let (zone, tracks) =
+            normalized_selection(&self.zone, &self.tracks, self.expected_revision.as_deref())?;
+        Ok(Self {
+            zone,
+            tracks,
+            expected_revision: self.expected_revision.clone(),
+        })
+    }
+}
+
 impl Surface {
+    /// Start exactly the requested occurrences through ordinary playback
+    /// permission, group caps and complete queue-replacement undo. No Spotify
+    /// Web API lookup or sign-in is required for these concrete identities.
+    pub fn play_tracks(
+        &self,
+        client: &Client,
+        req: &PlayTracksRequest,
+    ) -> Result<OutcomeDto, Failure> {
+        let asked = req.normalized()?;
+        self.control_io(client, "play", |transport, rooms| {
+            let target = super::resolve(rooms, &asked.zone)?;
+            let coordinator = &target.coordinator.id;
+            let host = target.coordinator.ip;
+            self.confirm_source_audience(rooms.households, coordinator)?;
+            // Capture before renderer learning or the caller's optional
+            // revision read; no later observation can replace this baseline.
+            let destination = control::TrackBatchDestination::read(transport, host, coordinator)?;
+            if let Some(expected) = &asked.expected_revision {
+                let page = snapshot::page(transport, host, 0, 1)?;
+                if *expected != snapshot::revision(coordinator, &page) {
+                    return Err(Failure::new(
+                        ErrorCode::QueueChanged,
+                        "the destination queue changed after the selection was reviewed",
+                    )
+                    .with_hint("Read the queue and review the selected tracks again."));
+                }
+            }
+            let command = Command::PlaySelection {
+                coordinator: coordinator.clone(),
+                tracks: asked
+                    .tracks
+                    .iter()
+                    .map(|track| {
+                        (
+                            track.source_uri.clone(),
+                            track.title.as_ref().unwrap_or(&track.source_uri).clone(),
+                        )
+                    })
+                    .collect(),
+                destination,
+            };
+            // Unavailable linkage or changed destinations must leave levels,
+            // queue contents and current playback intent untouched.
+            self.confirm_source_selection(rooms.households, &command)?;
+            Ok(command)
+        })
+    }
+
     /// Queue a reviewed ordered selection without starting, pausing or
     /// replacing playback. All successful insertions share one undo receipt.
     pub fn queue_tracks(

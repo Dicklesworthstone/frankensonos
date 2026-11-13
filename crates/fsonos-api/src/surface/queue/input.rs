@@ -275,8 +275,8 @@ impl Surface {
                 )
             })?;
             let mut done = format!(
-                "queued {count} track(s) from {label} {:?} in {zone} at position {}",
-                selected.title, queued.first
+                "queued {count} track(s) from {label} {:?} in {} at position {}",
+                selected.title, player.room_name, queued.first
             );
             if !queued.playing_queue {
                 done.push_str(" (the group is not playing its queue; playback was not changed)");

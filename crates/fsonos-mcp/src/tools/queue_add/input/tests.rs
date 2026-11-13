@@ -172,3 +172,78 @@ fn an_ambiguous_source_choice_is_not_sent_to_the_daemon() {
     }
     assert!(reply.calls.lock().unwrap().is_empty());
 }
+
+fn batch_outcome(complete: bool, any_added: bool) -> Value {
+    let mut added = Vec::new();
+    if any_added {
+        added.push(json!({
+            "household": "S1", "coordinator": "RINCON_TEST_S1",
+            "queue": {"done":"queued in Den@S1", "zone":"Den", "first":2,
+                "count":1, "playing_queue":true},
+        }));
+    }
+    if complete {
+        added.push(json!({
+            "household": "S2", "coordinator": "RINCON_TEST_S2",
+            "queue": {"done":"queued in Den@S2", "zone":"Den", "first":7,
+                "count":1, "playing_queue":false},
+        }));
+    }
+    let failed = if complete {
+        vec![]
+    } else {
+        vec![json!({
+            "household":"S2", "coordinator":"RINCON_TEST_S2", "zone":"Den",
+            "error": {
+                "code":"OUTCOME_UNCERTAIN", "detail":"reply lost after insertion",
+                "hint":"Read this group's queue before another add.",
+                "suggestions":[], "retryable":false,
+            },
+        })]
+    };
+    json!({
+        "done":if complete {"queued on both groups"} else {"queue addition incomplete"},
+        "complete":complete, "added":added, "failed":failed,
+        "logged":true, "undoable":complete,
+    })
+}
+
+#[test]
+fn complete_and_incomplete_queue_receipts_keep_every_group_without_local_replay() {
+    for (complete, any_added) in [(true, true), (false, true), (false, false)] {
+        let receipt = batch_outcome(complete, any_added);
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Ok(receipt.clone())),
+        });
+        let req = QueueRequest {
+            zone: "everywhere".into(),
+            ..request()
+        };
+        let result = backend(&reply).queue_request(&req).unwrap();
+        assert_eq!(result.structured_content, Some(receipt));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/queue", req])]
+        );
+    }
+}
+
+#[test]
+fn a_malformed_batch_receipt_is_terminal_even_if_it_says_incomplete() {
+    let mut receipt = batch_outcome(false, true);
+    receipt["added"][0]["queue"]
+        .as_object_mut()
+        .unwrap()
+        .remove("first");
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: Some(Ok(receipt)),
+    });
+    let req = QueueRequest {
+        zone: "all".into(),
+        ..request()
+    };
+    assert!(backend(&reply).queue_request(&req).is_err());
+    assert_eq!(reply.calls.lock().unwrap().len(), 1);
+}

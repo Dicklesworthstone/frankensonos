@@ -43,6 +43,15 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
             title.as_deref().unwrap_or(source_uri),
             room(coordinator)
         ),
+        Command::PlaySelection {
+            coordinator,
+            tracks,
+            ..
+        } => format!(
+            "play {} selected tracks in {} in the supplied order",
+            tracks.len(),
+            room(coordinator)
+        ),
         Command::PlayLineIn {
             coordinator,
             prepared,

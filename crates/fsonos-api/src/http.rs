@@ -38,6 +38,7 @@
 //! | `POST /undo/checked` | the previewed action's id | [`crate::UndoDto`]: undoes it only while it is still the newest |
 //! | `GET /policy` | | [`crate::surface::house_policy::PolicyDto`]: the house policy, and the caller under it |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
+//! | `POST /play/tracks` | [`crate::surface::queue::PlayTracksRequest`] | [`OutcomeDto`]: replace the queue with 1–10 ordered tracks or episodes and start at the first |
 //! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
 //! | `POST /queue/play`, `/queue/remove`, `/queue/move` | the entries, by position and URI, at the queue's revision | play one, remove a run, or move them without restarting playback; edits report whether a complete undo backup was saved |
 //! | `POST /play-mode` | the zone and its shuffle and repeat | [`crate::OutcomeDto`], undoable |

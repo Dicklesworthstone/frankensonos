@@ -134,9 +134,9 @@
     $('open-preferences').parentElement.append(configuration.node);
   }
   rehearsal = DashboardRehearsal.panel({ call, controller, demo, onedit: draft => direction.importRehearsal(draft) });
-  sourcePlayer = DashboardSource.panel({ call, controller, completed: async ({ target }) => {
-    workspace?.invalidate([target]);
-    if (active && controller.state.selected === target) await session.load();
+  sourcePlayer = DashboardSource.panel({ call, controller, completed: async ({ target, targets = [target] }) => {
+    workspace?.invalidate(targets);
+    if (active && targets.includes(controller.state.selected)) await session.load();
   } });
   workspace = DashboardWorkspace.create({ call, controller, session, el, icon, openSearch,
     native: (...args) => native(...args), immerse });

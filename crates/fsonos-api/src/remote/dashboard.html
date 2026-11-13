@@ -103,10 +103,18 @@
 <dialog id="source-dialog" class="review-dialog source-dialog" aria-labelledby="source-dialog-title" aria-describedby="source-description">
   <header><span class="eyebrow">BRING YOUR NEXT LISTEN</span><button id="close-source" class="icon-button" type="button" aria-label="Close source player"><svg><use href="#i-close"/></svg></button></header>
   <h2 id="source-dialog-title">Find your next source.</h2>
-  <p id="source-description" class="small-note">Search Spotify, choose a saved Sonos playlist or line-in source, paste a link, or use an HTTP audio stream. Review the selected group and what will change before sending it.</p>
+  <p id="source-description" class="small-note">Search Spotify, choose a household favorite or saved playlist, paste a link, or use an HTTP audio stream. Play or queue it in your selected group, a room alias, or whole households.</p>
   <p id="source-context" class="review-target"></p>
   <div class="source-fields">
-    <label class="source-address" for="source-type">Music source<select id="source-type"><option value="link">Link or stream</option><option value="playlist">Saved Sonos playlist</option><option value="catalog">Spotify catalog</option><option value="line_in">Line-in</option></select></label>
+    <label class="source-address" for="source-destination-mode">Destination selection<select id="source-destination-mode"><option value="selected">Selected listening group</option><option value="set">Room, alias or whole household</option></select></label>
+    <section id="source-target-fields" class="source-target-fields" aria-label="Room set destination" hidden>
+      <label for="source-destination-input">Rooms or room set<input id="source-destination-input" type="text" maxlength="128" autocomplete="off" spellcheck="false" placeholder="downstairs, all@S2, everywhere…"></label>
+      <label for="source-target-suggestions">Known targets<select id="source-target-suggestions"><option value="">Choose a suggestion or type a target…</option></select></label>
+      <button id="source-target-refresh" class="text-button" type="button">Read room suggestions</button>
+      <p class="small-note">Review shows every affected group, including members outside the named alias. Existing groups stay independent.</p>
+    </section>
+    <label class="source-address" for="source-type">Music source<select id="source-type"><option value="link">Link or stream</option><option value="favorite">Sonos favorite</option><option value="playlist">Saved Sonos playlist</option><option value="catalog">Spotify catalog</option><option value="line_in">Line-in</option></select></label>
+    <label id="source-native-field" class="source-address" for="source-native-query" hidden><span id="source-native-label">Favorite or playlist title</span><input id="source-native-query" type="text" maxlength="256" autocomplete="off" aria-label="Favorite or playlist title" aria-describedby="source-native-help" placeholder="Exact title saved in each household"><span id="source-native-help" class="small-note">Each household resolves its own entry. Review checks that the title exists and is unambiguous everywhere selected.</span></label>
     <section id="source-online" class="source-online" aria-label="Spotify catalog search" hidden>
       <p class="small-note">Search Spotify online using the owner’s connected account. Your cached library and saved Sonos playlists are separate. Choosing a result prepares a source for review.</p>
       <form id="source-catalog-form" class="source-online-form">
@@ -136,6 +144,7 @@
     <h3 id="source-preview-title"></h3>
     <dl><dt>Source</dt><dd id="source-preview-source"></dd><dt>Destination</dt><dd id="source-preview-target"></dd><dt>Current playback</dt><dd id="source-preview-current"></dd></dl>
     <p id="source-preview-effect"></p><p id="source-preview-queue" class="small-note"></p>
+    <ul id="source-preview-groups" class="source-preview-groups" aria-label="Affected groups and source effects" hidden></ul>
     <p class="small-note">The group and relevant playback or queue state are checked again before sending. Other controllers can still act between that check and the command.</p>
     <footer><button id="source-back" class="text-button" type="button">Go back</button><button id="source-confirm" class="primary-button" type="button" disabled>Play now</button></footer>
   </section>

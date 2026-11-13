@@ -148,7 +148,7 @@ async fn sonos_playlist_contents(
 }
 
 #[tool(
-    description = "Replace each selected group's queue with a playlist saved on its Sonos household and start it. zone accepts a room, multi-room alias, all or everywhere; all@S1 / all@S2 selects one household. Existing groups remain independent. Read list_sonos_playlists first, then pass playlist as its SQ: id, numbered position or unambiguous title. Each household resolves its own catalog before any playback changes; ids and numbers are household-local. No Spotify library sign-in is needed. Uses play_favorite permission, volume caps, staged queue replacement and one action log/undo for the set, subject to restoration proof. Inspect SKIPPED notes for partial speaker failures. Use add_to_queue with one room to insert without starting playback. Never automatically retry an uncertain response."
+    description = "Replace each selected group's queue with a playlist saved on its Sonos household and start it. zone accepts a room, multi-room alias, all or everywhere; all@S1 / all@S2 selects one household. Existing groups remain independent. Read list_sonos_playlists first, then pass playlist as its SQ: id, numbered position or unambiguous title. Each household resolves its own catalog before any playback changes; ids and numbers are household-local. No Spotify library sign-in is needed. Uses play_favorite permission, volume caps, staged queue replacement and one action log/undo for the set, subject to restoration proof. Inspect SKIPPED notes for partial speaker failures. Use add_to_queue to insert without starting playback. Never automatically retry an uncertain response."
 )]
 async fn play_sonos_playlist(
     ctx: &McpContext,

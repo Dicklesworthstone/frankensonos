@@ -150,6 +150,28 @@ fn execute_command<T: Transport + ?Sized>(
             destination,
             receipt,
         ),
+        Command::PlaySelection {
+            coordinator,
+            tracks,
+            destination,
+        } => {
+            let replacement = replace_tracks(
+                transport,
+                households,
+                coordinator,
+                tracks,
+                destination,
+                receipt,
+            )?;
+            let room = &control::locate(households, coordinator)?.room_name;
+            Ok(Executed {
+                outcome: OutcomeDto::sent(format!(
+                    "playing {} selected tracks in {room}'s group in the supplied order (replaced the queue)",
+                    tracks.len()
+                )),
+                replacement,
+            })
+        }
         Command::PlayFavorite {
             coordinator,
             favorite,
@@ -232,7 +254,10 @@ fn execute_other<T: Transport + ?Sized>(
             changed: false,
             ..OutcomeDto::sent(reason.clone())
         },
-        Command::Play { .. } | Command::PlayTracks { .. } | Command::PlayFavorite { .. } => {
+        Command::Play { .. }
+        | Command::PlayTracks { .. }
+        | Command::PlaySelection { .. }
+        | Command::PlayFavorite { .. } => {
             unreachable!("source commands retain their replacement receipt above")
         }
     })
@@ -249,8 +274,36 @@ fn play_tracks<T: Transport + ?Sized>(
 ) -> Result<Executed, Failure> {
     selection.validate_for_source(source_uri)?;
     let room = &control::locate(households, coordinator)?.room_name;
+    let replacement = replace_tracks(
+        transport,
+        households,
+        coordinator,
+        &selection.tracks,
+        destination,
+        receipt,
+    )?;
+    Ok(Executed {
+        outcome: OutcomeDto::sent(format!(
+            "playing {} {} from {source_uri} in {room}'s group ({})",
+            selection.tracks.len(),
+            selection.kind.item_label(),
+            selection.kind.description()
+        )),
+        replacement,
+    })
+}
+
+/// Catalog expansions and explicit selections use the same bound replacement
+/// engine and receipt; only their source validation and descriptions differ.
+fn replace_tracks<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    selection: &[(String, String)],
+    destination: &control::TrackBatchDestination,
+    receipt: bool,
+) -> Result<Option<control::QueueReplacement>, Failure> {
     let tracks: Vec<_> = selection
-        .tracks
         .iter()
         .map(|(uri, title)| (uri.as_str(), title.as_str()))
         .collect();
@@ -276,15 +329,7 @@ fn play_tracks<T: Transport + ?Sized>(
         .map_err(spotify_failure)?;
         None
     };
-    Ok(Executed {
-        outcome: OutcomeDto::sent(format!(
-            "playing {} {} from {source_uri} in {room}'s group ({})",
-            tracks.len(),
-            selection.kind.item_label(),
-            selection.kind.description()
-        )),
-        replacement,
-    })
+    Ok(replacement)
 }
 
 fn play_favorite<T: Transport + ?Sized>(

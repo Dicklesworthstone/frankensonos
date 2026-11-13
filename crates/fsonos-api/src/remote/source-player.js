@@ -1,6 +1,7 @@
 // Play links, saved Sonos playlists and native inputs through the playback API.
 'use strict';
 const SourcePlayerRemote = (() => {
+  const targets = () => typeof SourceTargetsRemote !== 'undefined' ? SourceTargetsRemote : require('./source-targets.js');
   const routes = { sourcePlay: ['POST', '/play'], sourceQueue: ['POST', '/queue'],
     sourceSpotifySearch: ['GET', '/spotify/search'],
     sourceLineInSources: ['GET', '/line-in'], sourceLineInPlay: ['POST', '/line-in/play'],
@@ -419,9 +420,10 @@ const SourcePlayerRemote = (() => {
       ...(choice.mode === 'play' ? {} : { next: choice.mode === 'next' }) };
   }
 
-  function model({ call, changed = () => {}, execute = (_, work) => work() }) {
-    let epoch = 0, disposed = false;
+  function model({ call, changed = () => {}, execute = (_, work) => work(), executeSet = (_, work) => work() }) {
+    let epoch = 0, disposed = false, setReader = null;
     const state = { open: false, groups: [], target: '', sourceType: 'link', input: '', title: '', mode: 'play', pending: null,
+      targetMode: 'group', targetQuery: '', targetSuggestions: [], nativeQuery: '',
       playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [],
       lineInSources: [], lineInUnavailable: [], lineIn: '', lineInTarget: '', lineInStatus: 'idle',
       reading: false, writing: false, message: '', result: null };
@@ -433,9 +435,10 @@ const SourcePlayerRemote = (() => {
     });
     state.catalog = catalog.state;
     const selected = () => state.groups.find((group) => group.target === state.target);
+    const collective = () => state.targetMode === 'set' || state.sourceType === 'favorite';
     const current = (version) => !disposed && state.open && epoch === version;
     const invalidate = () => {
-      ++epoch; state.pending = null; state.reading = false;
+      ++epoch; setReader?.abort(); setReader = null; state.pending = null; state.reading = false;
       catalog.retire();
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
@@ -465,18 +468,31 @@ const SourcePlayerRemote = (() => {
     }
 
     function edit(field, value) {
-      if (disposed || state.writing || !['target', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
+      if (disposed || state.writing || !['target', 'targetMode', 'targetQuery', 'nativeQuery', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
       if (field === 'target' && !state.groups.some((group) => group.target === value)) return false;
+      if (field === 'targetMode' && (!['group', 'set'].includes(value) || value === 'set' && state.sourceType === 'line_in')) return false;
       if (field === 'mode' && (!Object.hasOwn(modes, value) || state.sourceType === 'line_in' && value !== 'play')) return false;
-      if (field === 'sourceType' && !['link', 'playlist', 'catalog', 'line_in'].includes(value)) return false;
+      if (field === 'sourceType' && (!['link', 'playlist', 'favorite', 'catalog', 'line_in'].includes(value) || value === 'line_in' && state.targetMode === 'set')) return false;
       if (field === 'playlist' && (state.playlistTarget !== state.target || !state.playlists.some(item => item.id === value))) return false;
       if (field === 'lineIn' && (state.lineInStatus !== 'ready' || state.lineInTarget !== state.target
           || !state.lineInSources.some(item => item.player === value))) return false;
       invalidate();
-      if (field === 'target' || field === 'sourceType') { clearPlaylists(); clearLineIn(); }
+      if (['target', 'targetMode', 'targetQuery', 'sourceType'].includes(field)) { clearPlaylists(); clearLineIn(); }
       if (field === 'sourceType' && value === 'line_in') state.mode = 'play';
       if (field === 'playlist') clearContents();
       state[field] = value; state.message = ''; publish(); return true;
+    }
+
+    async function loadTargetSuggestions() {
+      if (disposed || !state.open || state.writing || state.reading) return false;
+      invalidate(); const version = epoch, abort = new AbortController(); setReader = abort;
+      state.reading = true; state.message = ''; publish();
+      try {
+        const choices = targets().suggestions(await call('sourceTargetRooms', { signal: abort.signal }));
+        if (!current(version)) return false;
+        state.targetSuggestions = choices; return true;
+      } catch (error) { if (current(version)) state.message = problem(error); return false; }
+      finally { if (current(version)) { setReader = null; state.reading = false; publish(); } }
     }
 
     function chooseCatalog(item, items) {
@@ -490,7 +506,7 @@ const SourcePlayerRemote = (() => {
 
     async function loadPlaylists() {
       const group = selected();
-      if (disposed || !state.open || state.writing || state.sourceType !== 'playlist' || !group) return false;
+      if (disposed || !state.open || state.writing || collective() || state.sourceType !== 'playlist' || !group) return false;
       invalidate(); clearPlaylists(); const version = epoch;
       state.reading = true; state.playlistStatus = 'loading'; state.message = 'Reading saved Sonos playlists…'; publish();
       try {
@@ -522,7 +538,7 @@ const SourcePlayerRemote = (() => {
 
     async function loadContents(direction = 'refresh') {
       const group = selected(), item = state.playlists.find(item => item.id === state.playlist);
-      if (disposed || !state.open || state.writing || state.reading || state.sourceType !== 'playlist'
+      if (disposed || !state.open || state.writing || state.reading || collective() || state.sourceType !== 'playlist'
           || !group || !item || state.playlistStatus !== 'ready' || state.playlistTarget !== group.target) return false;
       const request = contentsRequest(state.contents, state.contentsHistory, direction, item.id);
       if (!request) return false;
@@ -545,12 +561,12 @@ const SourcePlayerRemote = (() => {
       try { incoming = offeredSource(value); }
       catch (error) { state.message = problem(error); publish(); return false; }
       state.open = true;
-      if (state.writing || state.reading || state.pending || state.input.trim() || state.title.trim() || state.playlist || state.lineIn) {
+      if (state.writing || state.reading || state.pending || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
         state.message = 'Finish the current source action, or explicitly clear its draft before importing another source.';
         publish(); return false;
       }
       invalidate(); state.input = incoming.input; state.title = incoming.title;
-      state.target = ''; state.mode = 'play'; state.sourceType = 'link'; clearPlaylists(); clearLineIn();
+      state.target = ''; state.targetMode = 'group'; state.targetQuery = ''; state.nativeQuery = ''; state.mode = 'play'; state.sourceType = 'link'; clearPlaylists(); clearLineIn();
       // Refresh only the selectable destinations. Review and confirmation remain
       // separate user actions, and share the existing write coordination lane.
       return refresh();
@@ -558,7 +574,8 @@ const SourcePlayerRemote = (() => {
 
     function clearDraft() {
       if (disposed || state.writing) return false;
-      invalidate(); clearPlaylists(); clearLineIn(); state.input = ''; state.title = ''; state.target = ''; state.mode = 'play'; state.sourceType = 'link';
+      invalidate(); clearPlaylists(); clearLineIn(); state.input = ''; state.title = ''; state.target = '';
+      state.targetMode = 'group'; state.targetQuery = ''; state.nativeQuery = ''; state.mode = 'play'; state.sourceType = 'link';
       state.message = 'Source draft cleared. No playback command was sent.';
       // A previous uncertain outcome is still useful evidence, not erased here.
       publish(); return true;
@@ -588,6 +605,25 @@ const SourcePlayerRemote = (() => {
       if (disposed || !state.open || state.writing || state.reading || state.sourceType === 'catalog') return false;
       invalidate();
       const version = epoch, group = selected(), mode = choice?.mode || state.mode;
+      if (collective()) {
+        try {
+          if (choice || state.sourceType === 'line_in') throw new Error('Choose one displayed group for line-in or an exact saved playlist occurrence.');
+          const destination = state.targetMode === 'set' ? state.targetQuery : group?.target;
+          const prepared = ['playlist', 'favorite'].includes(state.sourceType)
+            ? targets().prepareNative(state.sourceType, state.nativeQuery, mode) : prepare(state.input, state.title, mode);
+          const abort = new AbortController(); setReader = abort;
+          state.reading = true; state.message = ''; publish();
+          const reviewed = await targets().inspect({ call, player: SourcePlayerRemote, target: destination,
+            item: prepared.item, mode, signal: abort.signal, valid: () => {
+              if (!current(version)) throw new Error('The source draft changed. Review it again.');
+            } });
+          if (!current(version)) return false;
+          const request = targets().request(prepared, reviewed.target, SourcePlayerRemote);
+          state.pending = Object.freeze({ ...prepared, targets: reviewed, body: request.body, route: request.route });
+          return true;
+        } catch (error) { if (current(version)) state.message = problem(error); return false; }
+        finally { if (current(version)) { setReader = null; state.reading = false; publish(); } }
+      }
       let item, title;
       try {
         if (!group) throw new Error('Choose the group that should play this source.');
@@ -613,7 +649,7 @@ const SourcePlayerRemote = (() => {
     }
 
     async function reviewTrack(position, mode, page = state.contents) {
-      if (disposed || !state.open || state.writing || state.reading || state.sourceType !== 'playlist'
+      if (disposed || !state.open || state.writing || state.reading || collective() || state.sourceType !== 'playlist'
           || !page || page !== state.contents || page.playlist.id !== state.playlist) return false;
       let choice;
       try { choice = preparePlaylistTrack(page, position, mode); }
@@ -627,29 +663,40 @@ const SourcePlayerRemote = (() => {
       state.pending = null; state.writing = true; state.message = 'Checking the destination…'; state.result = null; publish();
       let sent = false, accepted = false;
       try {
-        await execute(pending.group, async () => {
-          if (!current(version)) return;
-          const before = await inspect(pending.group, pending.mode, pending.item);
-          if (!current(version)) return;
-          if (before.signature !== pending.before.signature) throw new Error('Playback or the queue changed since your review. Review the current destination again.');
+        const run = pending.targets ? executeSet : execute;
+        await run(pending.targets ? pending.targets.groups : pending.group, async () => {
+          if (sent || !current(version)) return;
+          let before;
+          if (pending.targets) {
+            const abort = new AbortController(); setReader = abort;
+            before = await targets().inspect({ call, player: SourcePlayerRemote, target: pending.targets.target,
+              item: pending.item, mode: pending.mode, signal: abort.signal, valid: () => {
+                if (!current(version)) throw new Error('The source review closed or changed before sending.');
+              } });
+          } else before = await inspect(pending.group, pending.mode, pending.item);
+          if (sent || !current(version)) return;
+          if (before.signature !== (pending.targets || pending.before).signature) throw new Error('Playback, the queue, or the resolved destinations changed since your review. Review the current destinations again.');
+          setReader = null;
           sent = true;
-          const route = pending.item.kind === 'sonos_playlist_track' ? 'sourcePlaylistTrack'
+          const route = pending.route || (pending.item.kind === 'sonos_playlist_track' ? 'sourcePlaylistTrack'
             : pending.item.kind === 'line_in' ? 'sourceLineInPlay'
-            : pending.mode === 'play' ? pending.item.kind === 'sonos_playlist' ? 'sourcePlaylistPlay' : 'sourcePlay' : 'sourceQueue';
+            : pending.mode === 'play' ? pending.item.kind === 'sonos_playlist' ? 'sourcePlaylistPlay' : 'sourcePlay' : 'sourceQueue');
           const response = await call(route, { body: pending.body });
-          const detail = pending.item.kind === 'sonos_playlist_track' ? trackOutcome(response, pending)
+          const detail = pending.targets ? null : pending.item.kind === 'sonos_playlist_track' ? trackOutcome(response, pending)
             : pending.mode === 'play' ? outcome(response) : queued(response, pending.group);
-          accepted = true;
           // A dispatched outcome belongs to this operation, even if its view closed.
-          state.result = Object.freeze({ status: 'accepted', detail });
+          state.result = pending.targets ? targets().result(response, pending.targets, SourcePlayerRemote)
+            : Object.freeze({ status: 'accepted', detail });
+          accepted = true;
         });
         if (!sent && current(version)) state.result = Object.freeze({ status: 'not_sent', detail: 'No command was sent. Review the source again.' });
       } catch (error) {
-        state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent',
+        if (!accepted) state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent',
           detail: `${problem(error)} ${sent
             ? 'Playback or the queue may have changed, or the request may still finish. Check the room before another action; this request was not repeated.'
             : 'No playback command was sent.'}` });
       } finally {
+        setReader = null;
         state.writing = false;
         if (current(version)) state.message = '';
         publish();
@@ -657,12 +704,13 @@ const SourcePlayerRemote = (() => {
       return accepted;
     }
 
-    return { state, catalog, chooseCatalog, refresh, edit, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, clearDraft,
+    return { state, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, clearDraft,
       catalogChanged(change = null) {
-        if (disposed || change?.playlists === false || state.sourceType !== 'playlist'
-            || change?.household && selected()?.household !== change.household) return;
+        if (disposed || !['playlist', 'favorite'].includes(state.sourceType)
+            || state.sourceType === 'playlist' && change?.playlists === false
+            || state.targetMode !== 'set' && change?.household && selected()?.household !== change.household) return;
         invalidate(); clearPlaylists();
-        state.message = 'The saved Sonos playlists changed. Read the current list and choose a source again.';
+        state.message = 'The saved household sources changed. Read the current sources and review again.';
         publish();
       },
       cancel() { if (!state.writing && !disposed) { invalidate(); state.message = ''; publish(); } },
@@ -671,11 +719,29 @@ const SourcePlayerRemote = (() => {
     };
   }
 
-  function panel({ call, el, execute, document: doc = document }) {
+  function panel({ call, el, execute, executeSet, document: doc = document }) {
     const target = el('select', { 'aria-label': 'Destination group for music' });
+    const targetField = el('label', {}, 'Destination group ', target);
+    const targetMode = el('select', { 'aria-label': 'Destination selection' },
+      el('option', { value: 'group', text: 'Choose one displayed group' }),
+      el('option', { value: 'set', text: 'Choose rooms or a room set' }));
+    const targetQuery = el('input', { type: 'text', 'aria-label': 'Rooms or room set', maxlength: '128',
+      autocomplete: 'off', placeholder: 'Room, alias, here, all@S2, or everywhere' });
+    const targetSuggestions = el('select', { 'aria-label': 'Suggested room or room set' });
+    const refreshTargets = el('button', { type: 'button', text: 'Read room and alias suggestions' });
+    const targetSetFields = el('div', { class: 'source-target-set', hidden: true },
+      el('label', {}, 'Rooms or room set ', targetQuery),
+      el('label', {}, 'Suggestions ', targetSuggestions), refreshTargets,
+      el('p', { class: 'source-help', text: 'Review every affected group before sending. Members already grouped together count once; groups stay independent, including across households.' }));
     const sourceType = el('select', { 'aria-label': 'Music source' },
       el('option', { value: 'link', text: 'Link or stream' }), el('option', { value: 'playlist', text: 'Saved Sonos playlist' }),
+      el('option', { value: 'favorite', text: 'Sonos favorite by title' }),
       el('option', { value: 'catalog', text: 'Spotify catalog' }), el('option', { value: 'line_in', text: 'Line-in' }));
+    const nativeQuery = el('input', { type: 'text', 'aria-label': 'Favorite or playlist title', maxlength: '256',
+      autocomplete: 'off', placeholder: 'The complete title saved in each household' });
+    const nativeFields = el('div', { class: 'source-catalog', hidden: true },
+      el('label', {}, 'Complete saved title ', nativeQuery),
+      el('p', { class: 'source-help', text: 'The same complete title must identify one playable source in every selected household. Review shows each household’s own match; native IDs and numbered choices are not reused across households.' }));
     const catalogInput = el('input', { type: 'search', 'aria-label': 'Search the Spotify catalog',
       placeholder: 'Search music and podcasts on Spotify', autocomplete: 'off', maxlength: MAX_QUERY_BYTES });
     const catalogKind = el('select', { 'aria-label': 'Spotify catalog category' });
@@ -721,14 +787,15 @@ const SourcePlayerRemote = (() => {
     const consent = el('div', { class: 'source-review', hidden: true, tabindex: '-1', 'aria-label': 'Review selected playback' });
     const inputField = el('label', {}, 'Link or stream ', input), titleField = el('label', {}, 'Title ', title);
     const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Spotify, links, playlists & line-in' }),
-      el('div', {}, el('p', { text: 'Search Spotify, choose a saved Sonos playlist or line-in source, paste a link, or send a direct audio stream. Review the destination and action before playing or adding music to the queue.' }),
-        el('label', {}, 'Destination ', target), el('label', {}, 'Music source ', sourceType), inputField, titleField, playlistFields, catalogFields, lineInFields,
+      el('div', {}, el('p', { text: 'Search Spotify, choose a saved Sonos playlist, favorite or line-in source, paste a link, or send a direct audio stream. Review the destinations and action before playing or adding music to the queue.' }),
+        targetField, el('label', {}, 'Destination selection ', targetMode), targetSetFields,
+        el('label', {}, 'Music source ', sourceType), inputField, titleField, nativeFields, playlistFields, catalogFields, lineInFields,
         modeField, el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
     const node = el('section', { class: 'scenes', 'aria-label': 'Spotify, links, Sonos playlists and line-in' }, details);
     let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, shownContents = null, shownContentsBusy = null, confirmButton = null;
-    let shownCatalog = null, shownCatalogBusy = null;
+    let shownCatalog = null, shownCatalogBusy = null, shownSuggestions = null;
     let shownLineIn = null, shownLineInStatus = '';
-    const control = model({ call, execute, changed: render });
+    const control = model({ call, execute, executeSet, changed: render });
     function render(state) {
       const busy = state.reading || state.writing;
       if (shownGroups !== state.groups) {
@@ -737,9 +804,22 @@ const SourcePlayerRemote = (() => {
         for (const group of state.groups) target.append(el('option', { value: group.target, text: group.label }));
       }
       target.value = state.target; mode.value = state.mode; sourceType.value = state.sourceType;
+      const set = state.targetMode === 'set', favorite = state.sourceType === 'favorite';
       const saved = state.sourceType === 'playlist', online = state.sourceType === 'catalog', analog = state.sourceType === 'line_in';
-      inputField.hidden = saved || online || analog; titleField.hidden = saved || online || analog;
-      playlistFields.hidden = !saved; catalogFields.hidden = !online; lineInFields.hidden = !analog; modeField.hidden = analog;
+      const nativeTitle = favorite || set && saved;
+      targetMode.value = state.targetMode; targetField.hidden = set; targetSetFields.hidden = !set;
+      if (targetQuery.value !== state.targetQuery) targetQuery.value = state.targetQuery;
+      if (nativeQuery.value !== state.nativeQuery) nativeQuery.value = state.nativeQuery;
+      targetMode.disabled = state.writing || analog; targetQuery.disabled = state.writing;
+      nativeQuery.disabled = state.writing; refreshTargets.disabled = busy; targetSuggestions.disabled = busy;
+      if (shownSuggestions !== state.targetSuggestions) {
+        shownSuggestions = state.targetSuggestions;
+        targetSuggestions.replaceChildren(el('option', { value: '', text: 'Choose a suggestion…' }));
+        for (const option of state.targetSuggestions) targetSuggestions.append(el('option', { value: option.query, text: option.label }));
+      }
+      for (const option of sourceType.children) if (option.value === 'line_in') option.disabled = set;
+      inputField.hidden = saved || favorite || online || analog; titleField.hidden = saved || favorite || online || analog;
+      nativeFields.hidden = !nativeTitle; playlistFields.hidden = !saved || set; catalogFields.hidden = !online; lineInFields.hidden = !analog; modeField.hidden = analog;
       if (catalogInput.value !== state.catalog.query) catalogInput.value = state.catalog.query;
       catalogKind.value = state.catalog.kind;
       catalogInput.disabled = busy; catalogKind.disabled = busy;
@@ -794,7 +874,8 @@ const SourcePlayerRemote = (() => {
       for (const element of [target, sourceType, input, title, mode]) element.disabled = state.writing;
       mode.disabled = state.writing || analog;
       clear.disabled = state.writing;
-      refresh.disabled = busy; review.disabled = busy || online || !state.target || (saved ? !state.playlist || state.playlistStatus !== 'ready'
+      refresh.disabled = busy; review.disabled = busy || online || !(set ? state.targetQuery.trim() : state.target)
+        || (nativeTitle ? !state.nativeQuery.trim() : saved ? !state.playlist || state.playlistStatus !== 'ready'
         : analog ? !state.lineIn || state.lineInStatus !== 'ready' : !state.input.trim());
       message.textContent = state.message || (state.reading ? 'Reading the destination…' : '');
       result.textContent = state.result?.detail || '';
@@ -806,6 +887,27 @@ const SourcePlayerRemote = (() => {
           const cancel = el('button', { type: 'button', text: 'Cancel' });
           confirmButton.addEventListener('click', () => { void control.confirm(pending); });
           cancel.addEventListener('click', () => control.cancel());
+          if (pending.targets) {
+            consent.append(el('p', { text: `${modes[pending.mode]}: ${pending.title || pending.item.uri} · ${pending.targets.groups.length} independent group(s)` }));
+            const affected = el('ul', { class: 'source-target-preview', 'aria-label': 'Reviewed source destinations' });
+            for (const entry of pending.targets.entries) {
+              const q = entry.before.queue;
+              const effect = pending.mode === 'play' ? entry.item.container
+                ? `Replace this group’s ${q.total} queue entries and start the selected source.`
+                : 'Replace the current source and start playback; its queue stays available.'
+                : pending.mode === 'next' && q.playing !== null
+                  ? `Add after queue position ${q.playing}, keeping playback unchanged.`
+                  : `Append after ${q.total} existing queue entries without starting or resuming playback.`;
+              affected.append(el('li', {}, el('strong', { text: entry.group.label }),
+                el('span', { text: 'Source: ' + (entry.sourceLabel || pending.title) }),
+                el('span', { text: 'Current: ' + entry.before.label }), el('span', { text: effect })));
+            }
+            consent.append(affected,
+              ...(pending.item.kind === 'artist' || pending.item.kind === 'show' ? [el('p', { class: 'source-help', text: 'Spotify sign-in is required. One selection of up to 10 tracks or episodes is shared across the groups.' })] : []),
+              el('p', { class: 'source-help', text: 'The whole room set and each source or queue are checked again before one request. A partial result lists each affected group; check failures before another action.' }),
+              el('div', { class: 'row' }, confirmButton, cancel));
+            consent.focus?.({ preventScroll: true }); consent.scrollIntoView?.({ block: 'nearest' });
+          } else {
           const snapshot = pending.before.queue;
           const effect = pending.mode === 'play'
             ? pending.item.kind === 'artist' ? 'This replaces the group’s queue with up to 10 artist tracks and starts them in order.'
@@ -828,6 +930,7 @@ const SourcePlayerRemote = (() => {
             el('div', { class: 'row' }, confirmButton, cancel));
           consent.focus?.({ preventScroll: true });
           consent.scrollIntoView?.({ block: 'nearest' });
+          }
         }
       }
       if (confirmButton) confirmButton.disabled = busy || !state.pending;
@@ -838,6 +941,16 @@ const SourcePlayerRemote = (() => {
     target.addEventListener('change', () => {
       if (control.edit('target', target.value) && control.state.sourceType === 'playlist') void control.loadPlaylists();
     });
+    targetMode.addEventListener('change', () => {
+      if (control.edit('targetMode', targetMode.value) && targetMode.value === 'set' && !control.state.targetSuggestions.length) void control.loadTargetSuggestions();
+    });
+    targetQuery.addEventListener('input', () => control.edit('targetQuery', targetQuery.value));
+    nativeQuery.addEventListener('input', () => control.edit('nativeQuery', nativeQuery.value));
+    targetSuggestions.addEventListener('change', () => {
+      if (targetSuggestions.value) control.edit('targetQuery', targetSuggestions.value);
+      targetSuggestions.value = '';
+    });
+    refreshTargets.addEventListener('click', () => { void control.loadTargetSuggestions(); });
     sourceType.addEventListener('change', () => {
       if (control.edit('sourceType', sourceType.value) && control.state.sourceType === 'playlist') void control.loadPlaylists();
     });
@@ -900,9 +1013,21 @@ const SourcePlayerRemote = (() => {
 if (typeof module !== 'undefined' && module.exports) module.exports = SourcePlayerRemote;
 else if (typeof ROUTES !== 'undefined') {
   Object.assign(ROUTES, SourcePlayerRemote.routes);
+  if (typeof SourceTargetsRemote !== 'undefined') Object.assign(ROUTES, SourceTargetsRemote.routes);
   const host = document.getElementById('households');
   if (host) {
+    const setLevels = typeof RoomSetsRemote !== 'undefined' && typeof volumeFlights !== 'undefined'
+      ? RoomSetsRemote.levelLanes({ cards: () => house.cards.values(), flights: volumeFlights }) : null;
+    if (setLevels) registerCardPanel(parts => {
+      const observe = () => setLevels.observe(parts); observe();
+      return { node: el('span', { hidden: true }), observe, block: observe };
+    });
     const sourcePanel = SourcePlayerRemote.panel({ call, el,
+      async executeSet(groups, work) {
+        if (typeof RoomSetsRemote === 'undefined') throw new Error('Room-set controls are unavailable. Reload the remote.');
+        return RoomSetsRemote.coordinated({ cards: () => house.cards.values(), refresh: loadZones,
+          begin: beginAction, end: endAction, shape: groupShape, levels: setLevels })(groups, work);
+      },
       async execute(group, work) {
         let parts = [...house.cards.values()].find((card) => groupShape(card.zone) === group.signature);
         if (!parts) {

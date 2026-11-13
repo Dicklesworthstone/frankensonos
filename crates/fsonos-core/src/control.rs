@@ -439,7 +439,46 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
     title: &str,
     next: bool,
 ) -> Result<Queued, CoreError> {
+    enqueue_spotify_observed(t, households, coordinator, spotify_uri, title, next, None)
+}
+
+/// Enqueue only while the source, group, boot and queue observed before a
+/// multi-group or catalog request still hold. The original proof survives
+/// renderer learning, internal queue reads and the one explicit-800 retry.
+/// This never adopts a newer destination or repeats an uncertain write.
+pub fn enqueue_spotify_bound<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    spotify_uri: &str,
+    title: &str,
+    next: bool,
+    destination: &TrackBatchDestination,
+) -> Result<Queued, CoreError> {
+    enqueue_spotify_observed(
+        t,
+        households,
+        coordinator,
+        spotify_uri,
+        title,
+        next,
+        Some(destination),
+    )
+}
+
+fn enqueue_spotify_observed<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    spotify_uri: &str,
+    title: &str,
+    next: bool,
+    destination: Option<&TrackBatchDestination>,
+) -> Result<Queued, CoreError> {
     let host = addr(households, coordinator)?;
+    if let Some(destination) = destination {
+        destination.confirm(t, host, coordinator)?;
+    }
     let kind = SpotifyContainer::of(spotify_uri);
     let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
@@ -476,6 +515,7 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
                 metadata,
                 next,
             },
+            destination,
         )
     };
     let initial = source(None)?;

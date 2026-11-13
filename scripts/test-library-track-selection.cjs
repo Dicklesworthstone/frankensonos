@@ -46,6 +46,8 @@ function acknowledgement(body, queue) {
   return { done: 'Queued the ordered selection', zone: 'Room', first: body.next && queue.playing ? queue.playing + 1 : queue.total + 1,
     count: body.tracks.length, playing_queue: queue.playing !== null, notes: [{ detail: 'Current playback was preserved.' }] };
 }
+const playedSelection = () => ({ done: 'Playing the ordered selection', changed: true,
+  notes: [{ code: 'VOLUME_CAPPED', detail: 'The selected room was capped to 30.' }] });
 async function phone({ collection = 'album', callWrapper } = {}) {
   const value = data(), calls = []; let hook;
   const backend = async (name, args = {}) => {
@@ -56,6 +58,7 @@ async function phone({ collection = 'album', callWrapper } = {}) {
     if (name === 'queue') return copy(value.queue);
     if (name === 'libraryBrowse' || name === 'libraryPlaylist') return catalog(args.query);
     if (name === 'libraryTracks') return acknowledgement(args.body, value.queue);
+    if (name === 'libraryPlayTracks') return playedSelection();
     throw new Error(`Unexpected phone call ${name}`);
   };
   const control = R.model({ call: callWrapper ? callWrapper(backend) : backend });
@@ -78,6 +81,7 @@ async function dashboard({ collection = 'album', callWrapper } = {}) {
     if (url.includes('/queue?')) return copy(value.queue);
     if (url.startsWith('/library/')) return catalog(Object.fromEntries(new URL(url, 'http://localhost').searchParams));
     if (url === '/queue/tracks') return acknowledgement(body, value.queue);
+    if (url === '/play/tracks') return playedSelection();
     throw new Error(`Unexpected dashboard call ${url}`);
   };
   const call = callWrapper ? callWrapper(backend) : backend;
@@ -104,7 +108,7 @@ test('shared batch contract preserves order, episodes and duplicates, normalizes
   }
 });
 
-for (const collection of ['album', 'playlist']) for (const action of ['append', 'next']) {
+for (const collection of ['album', 'playlist']) for (const action of ['play', 'append', 'next']) {
   test(`phone: ${collection} ${action} preserves catalog order and duplicate occurrences in one reviewed write`, async () => {
     const f = await phone({ collection }); f.select([2, 0, 1]);
     assert.equal(await f.review(action), true); const pending = f.control.state.pending;
@@ -112,9 +116,9 @@ for (const collection of ['album', 'playlist']) for (const action of ['append', 
     assert.deepEqual(pending.body.tracks.map(track => track.source_uri), [uri(1), uri(2), uri(1)]);
     assert.equal(pending.body.expected_revision, 'queue-a'); assert.equal(pending.body.zone, 'Room@S2');
     assert.equal(await f.control.confirm(pending), true); assert.equal(await f.control.confirm(pending), false);
-    assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].name, 'libraryTracks');
-    assert.equal(f.writes()[0].args.body.next, action === 'next'); assert.deepEqual(f.control.state.selected, []);
-    assert.match(f.control.state.message, /playback was preserved/);
+    assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].name, action === 'play' ? 'libraryPlayTracks' : 'libraryTracks');
+    assert.equal(f.writes()[0].args.body.next, action === 'play' ? undefined : action === 'next'); assert.deepEqual(f.control.state.selected, []);
+    assert.match(f.control.state.message, action === 'play' ? /capped to 30/ : /playback was preserved/);
   });
   test(`dashboard: ${collection} ${action} uses one native batch with visible exact occurrences`, async () => {
     const f = await dashboard({ collection }); f.select([2, 0, 1]); const review = await f.review(action);
@@ -122,9 +126,11 @@ for (const collection of ['album', 'playlist']) for (const action of ['append', 
     assert.match(review.trackSelection[2], collection === 'album' ? /disc 2, track 1/ : /playlist position 5/);
     assert.deepEqual(review.body.tracks.map(track => track.source_uri), [uri(1), uri(2), uri(1)]);
     assert.equal(review.body.expected_revision, 'queue-a');
+    if (action === 'play') { assert.match(review.title, /Play selected now/); assert.match(review.detail, /Replaces.*2 existing queue entries/); }
     assert.equal(await f.session.confirm(review), true); assert.equal(await f.session.confirm(review), false);
-    assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].url, '/queue/tracks');
-    assert.equal(f.writes()[0].body.next, action === 'next'); assert.match(f.controller.state.message, /playback was preserved/);
+    assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].url, action === 'play' ? '/play/tracks' : '/queue/tracks');
+    assert.equal(f.writes()[0].body.next, action === 'play' ? undefined : action === 'next');
+    assert.match(f.controller.state.message, action === 'play' ? /capped to 30/ : /playback was preserved/);
   });
 }
 
@@ -142,9 +148,9 @@ for (const kind of ['phone', 'dashboard']) {
   });
 }
 
-for (const change of ['queue', 'cursor', 'source', 'group', 'catalog', 'occurrence', 'coverage']) {
-  test(`phone: changed ${change} stops a reviewed selection before any write`, async () => {
-    const f = await phone(); f.select([0, 2]); await f.review('next');
+for (const action of ['play', 'next']) for (const change of ['queue', 'cursor', 'source', 'group', 'catalog', 'occurrence', 'coverage']) {
+  test(`phone: changed ${change} stops a reviewed ${action} selection before any write`, async () => {
+    const f = await phone(); f.select([0, 2]); await f.review(action);
     if (change === 'queue') f.value.queue.revision = 'queue-b';
     if (change === 'cursor') f.value.queue.playing = 2;
     if (change === 'source') f.value.playback.track.uri = 'fixture:another-source';
@@ -159,8 +165,8 @@ for (const change of ['queue', 'cursor', 'source', 'group', 'catalog', 'occurren
     assert.equal(await f.control.confirm(), false); assert.equal(f.writes().length, 0);
     assert.match(f.control.state.message, /changed/);
   });
-  test(`dashboard: changed ${change} stops a reviewed selection before any write`, async () => {
-    const f = await dashboard(); f.select([0, 2]); const review = await f.review('next');
+  test(`dashboard: changed ${change} stops a reviewed ${action} selection before any write`, async () => {
+    const f = await dashboard(); f.select([0, 2]); const review = await f.review(action);
     if (change === 'queue') f.value.queue.revision = 'queue-b';
     if (change === 'cursor') f.value.queue.playing = 2;
     if (change === 'source') f.value.playback.track.uri = 'fixture:another-source';
@@ -187,9 +193,9 @@ for (const surface of ['phone', 'dashboard']) test(`${surface}: a next selection
   assert.equal(f.writes().length, 1); assert.equal(f.value.playback.track.uri, 'fixture:radio');
 });
 
-for (const surface of ['phone', 'dashboard']) for (const mode of ['lost', 'partial_receipt']) {
-  test(`${surface}: ${mode} consumes review without retry or single-track fallback`, async () => {
-    const f = await (surface === 'phone' ? phone : dashboard)(); f.select([0, 1, 2]); const review = await f.review('append');
+for (const action of ['play', 'append']) for (const surface of ['phone', 'dashboard']) for (const mode of ['lost', 'partial_receipt']) {
+  test(`${surface}: ${mode} consumes ${action} review without retry or single-track fallback`, async () => {
+    const f = await (surface === 'phone' ? phone : dashboard)(); f.select([0, 1, 2]); const review = await f.review(action);
     f.hook((name, value) => {
       const body = surface === 'phone' ? value.body : value;
       if (!body) return;
@@ -232,7 +238,7 @@ test('dashboard rechecks the playback source after a delayed catalog read, befor
   assert.equal(await run, false); assert.equal(f.writes().length, 0); assert.match(f.controller.state.message, /Playback changed/);
 });
 
-test('one reviewed batch crosses a real HTTP connection; a lost POST response is never replayed', async t => {
+for (const action of ['play', 'next']) test(`one reviewed ${action} batch crosses real HTTP; a lost POST response is never replayed`, async t => {
   let backend, posts = 0;
   const server = http.createServer(async (req, res) => {
     let text = ''; for await (const chunk of req) text += chunk;
@@ -245,10 +251,10 @@ test('one reviewed batch crosses a real HTTP connection; a lost POST response is
   const f = await dashboard({ callWrapper: raw => {
     backend = raw; return C.request({ fetcher: (url, init) => fetch(`http://127.0.0.1:${server.address().port}${url}`, init) });
   } });
-  f.select([2, 0]); const review = await f.review('next');
+  f.select([2, 0]); const review = await f.review(action);
   assert.equal(await f.session.confirm(review), false); assert.equal(posts, 1); assert.equal(f.controller.state.uncertain, true);
   assert.deepEqual(f.writes()[0].body.tracks.map(track => track.source_uri), [uri(1), uri(1)]);
-  await f.controller.refresh(); assert.equal(await f.review('next'), null); assert.equal(posts, 1);
+  await f.controller.refresh(); assert.equal(await f.review(action), null); assert.equal(posts, 1);
 });
 
 test('both served assets include the batch contract before library consumers and use the queue write budget', async () => {
@@ -258,9 +264,11 @@ test('both served assets include the batch contract before library consumers and
   assert.match(phoneAsset, /\{QUEUE_TRACKS_SCRIPT\}\\n\{PLAYLIST_SCRIPT\}\\n\{LIBRARY_SCRIPT\}/);
   assert.match(desktopAsset, /\{QUEUE_TRACKS\}\\n\{PLAYLIST\}\\n\{LIBRARY\}\\n\{SESSION\}/);
   assert.deepEqual(R.routes.libraryTracks, ['POST', '/queue/tracks']);
+  assert.deepEqual(R.routes.libraryPlayTracks, ['POST', '/play/tracks']);
   const budgets = [], call = C.request({ fetcher: async () => new Response('{}'), schedule(fn, ms) { budgets.push(ms); return 1; }, cancel() {} });
   await call('/queue/tracks', { zone: 'Room@S2', tracks: [{ source_uri: uri(1) }] });
-  assert.deepEqual(budgets, [600000]);
+  await call('/play/tracks', { zone: 'Room@S2', tracks: [{ source_uri: uri(1) }] });
+  assert.deepEqual(budgets, [600000, 600000]);
 });
 
 function documentFixture() {
@@ -307,7 +315,7 @@ function documentFixture() {
 const findButton = (node, label) => node.querySelectorAll('button').find(button => button.textContent === label);
 const settled = async condition => { for (let i = 0; i < 30 && !condition(); i++) await tick(); assert.ok(condition(), 'the component reached its expected state'); };
 
-test('phone checkbox controls open an exact ordered review and submit once to the chosen household', async t => {
+for (const action of ['play', 'next']) test(`phone checkbox controls review ${action} and submit once to the chosen household`, async t => {
   const f = await phone(), doc = documentFixture(), previous = global.document; global.document = doc;
   let panel;
   t.after(() => { panel?.dispose(); global.document = previous; });
@@ -323,18 +331,21 @@ test('phone checkbox controls open an exact ordered review and submit once to th
     const checkbox = panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox')[index];
     checkbox.checked = true; checkbox.fire('change');
   }
-  assert.match(panel.node.textContent, /2 selected/); findButton(panel.node, 'Queue selected next').fire('click');
-  await settled(() => !!findButton(panel.node, 'Confirm queue selected next'));
+  const label = action === 'play' ? 'Play selected now' : 'Queue selected next';
+  assert.match(panel.node.textContent, /2 selected/); findButton(panel.node, label).fire('click');
+  await settled(() => !!findButton(panel.node, `Confirm ${label.toLowerCase()}`));
   assert.match(panel.node.textContent, /Destination: Room \+ Study \(S1\)/);
+  if (action === 'play') assert.match(panel.node.textContent, /Replaces.*2 existing queue entries.*starts from the first track/);
   const list = panel.node.querySelector('ol'); assert.equal(list.children.length, 2);
   assert.match(list.children[0].textContent, /Movement 1.*Disc 1, track 1/);
   assert.match(list.children[1].textContent, /Movement 3.*Disc 2, track 1/);
-  const confirm = findButton(panel.node, 'Confirm queue selected next'); confirm.fire('click'); confirm.fire('click');
-  await settled(() => f.writes().length === 1 && panel.node.textContent.includes('Current playback was preserved.'));
+  const confirm = findButton(panel.node, `Confirm ${label.toLowerCase()}`); confirm.fire('click'); confirm.fire('click');
+  await settled(() => f.writes().length === 1 && panel.node.textContent.includes(action === 'play' ? 'capped to 30.' : 'Current playback was preserved.'));
+  assert.equal(f.writes()[0].name, action === 'play' ? 'libraryPlayTracks' : 'libraryTracks');
   assert.equal(f.writes()[0].args.body.zone, 'Room@S1'); assert.deepEqual(f.writes()[0].args.body.tracks.map(track => track.source_uri), [uri(1), uri(1)]);
 });
 
-test('dashboard checkbox controls hand the ordered selection to its shared review and command lane', async t => {
+for (const action of ['play', 'append']) test(`dashboard checkbox controls hand ${action} to the shared review and command lane`, async t => {
   const f = await dashboard(), doc = documentFixture();
   const panel = Panel.create({ call: f.call, controller: f.controller, session: f.session, doc });
   t.after(() => panel.dispose()); panel.node.open = true; panel.node.fire('toggle');
@@ -344,12 +355,15 @@ test('dashboard checkbox controls hand the ordered selection to its shared revie
     const checkbox = panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox')[index];
     checkbox.checked = true; checkbox.fire('change');
   }
-  assert.match(panel.node.textContent, /2 selected/); findButton(panel.node, 'Add selected to end').fire('click');
+  assert.match(panel.node.textContent, /2 selected/); findButton(panel.node, action === 'play' ? 'Play selected now' : 'Add selected to end').fire('click');
   await settled(() => !!f.session.state.pending); const review = f.session.state.pending;
   assert.equal(doc.getElementById('search-dialog').open, false); assert.deepEqual(panel.model.state.selected, []);
   assert.deepEqual(review.body.tracks.map(track => track.source_uri), [uri(1), uri(1)]);
   assert.equal(review.trackSelection.length, 2); assert.match(review.trackSelection[1], /disc 2, track 1/);
-  assert.equal(await f.session.confirm(review), true); assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].body.next, false);
+  if (action === 'play') assert.match(review.detail, /Replaces.*2 existing queue entries/);
+  assert.equal(await f.session.confirm(review), true); assert.equal(f.writes().length, 1);
+  assert.equal(f.writes()[0].url, action === 'play' ? '/play/tracks' : '/queue/tracks');
+  assert.equal(f.writes()[0].body.next, action === 'play' ? undefined : false);
 });
 
 for (const surface of ['phone', 'dashboard']) test(`${surface}: cached tracks can be selected with no discovered speakers, while review requires a destination`, async () => {

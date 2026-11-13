@@ -32,7 +32,7 @@
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
-use fsonos_api::surface::queue::{QueueAddedDto, QueueDto};
+use fsonos_api::surface::queue::{QueueAddOutcome, QueueDto};
 use fsonos_api::surface::schedules::{FadePauseRequest, SleepTimerDto};
 use fsonos_api::surface::sonos_playlists::{self, PlaySonosPlaylistRequest, SonosPlaylistDto};
 use fsonos_api::{
@@ -879,8 +879,8 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         }
         command => {
             if let Some(req) = crate::queue_request(command) {
-                let added: QueueAddedDto = daemon.post("/queue", &req)?;
-                emit(json, &added, QueueAddedDto::text)?;
+                let added: QueueAddOutcome = daemon.post("/queue", &req)?;
+                crate::emit_queue_outcome(json, &added)?;
                 return Ok(true);
             }
             let (path, body) = control_request(&daemon, command)?;

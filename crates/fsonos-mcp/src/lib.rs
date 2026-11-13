@@ -263,6 +263,7 @@ fn configured_server(
             .tool(tools::SearchQueue)
             .tool(tools::AddToQueue)
             .tool(tools::AddTracksToQueue)
+            .tool(tools::PlayTracks)
             .tool(PlayQueue)
             .tool(RemoveFromQueue)
             .tool(MoveInQueue)

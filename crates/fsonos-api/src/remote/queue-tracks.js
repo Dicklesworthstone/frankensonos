@@ -50,6 +50,18 @@ const QueueTracksRemote = (() => {
     if (!text(zone, 128) || typeof next !== 'boolean' || !text(queue?.revision, 1024)) fail('Review the destination queue again.');
     return Object.freeze({ zone, tracks: tracksOf(tracks), next, expected_revision: queue.revision });
   }
+  function playBody(zone, tracks, queue) {
+    if (!text(zone, 128) || !text(queue?.revision, 1024)) fail('Review the destination queue before replacing it.');
+    return Object.freeze({ zone, tracks: tracksOf(tracks), expected_revision: queue.revision });
+  }
+  function playReceipt(result) {
+    if (!result || !text(result.done) || typeof result.changed !== 'boolean'
+        || (result.notes !== undefined && (!Array.isArray(result.notes)
+          || result.notes.some(note => !note || typeof note.detail !== 'string')))) {
+      fail('The selected playback acknowledgement was incomplete; its outcome is uncertain. Read the room and queue before another action.');
+    }
+    return { done: result.done, changed: result.changed, notes: result.notes };
+  }
   function receipt(result, request, before) {
     const room = request.zone.slice(0, request.zone.lastIndexOf('@'));
     if (!result || !text(result.done) || result.zone !== room || !uint(result.first) || result.first < 1
@@ -61,6 +73,6 @@ const QueueTracksRemote = (() => {
     }
     return { done: result.done, changed: true, notes: result.notes };
   }
-  return { MAX_TRACKS, supported, tracksOf, queueOf, verifyQueue, playbackOf, body, receipt };
+  return { MAX_TRACKS, supported, tracksOf, queueOf, verifyQueue, playbackOf, body, playBody, receipt, playReceipt };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = QueueTracksRemote;

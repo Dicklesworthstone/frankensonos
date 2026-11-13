@@ -134,6 +134,22 @@ once sent, the original destination and receipt remain available when reopened.
 Typed sources survive refreshes and closing, but changing groups requires a new
 review. Preview mode accepts drafts and never dispatches commands.
 
+### Play across a room set
+
+In the source dialog, **Destination selection → Room, alias or whole household**
+accepts configured aliases, `here`, `all@S1`, `all@S2`, and `everywhere`.
+**Read room suggestions** offers known names without choosing a destination.
+Review shows the actual resolved groups, all affected members, current music,
+and each queue's insertion effect. Existing grouping stays intact.
+
+Links and Spotify search results can start or queue across the selected groups.
+For a native favorite or playlist, enter its full title; every household must
+resolve its own unambiguous entry, which is shown in the review. Ordinary
+single-group playlist browsing, exact track actions and line-in keep their
+existing controls. Confirmation uses one native API request and the dashboard's
+shared command lane. Partial queue receipts name each success and failure;
+read them before any further action. See [Multi-room playback](MULTI_ROOM_PLAYBACK.md).
+
 ## Advanced direction for the current DJ
 
 **Advanced direction** beside the mood presets reads the selected group's current

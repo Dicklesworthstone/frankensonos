@@ -55,6 +55,7 @@ mod eq_cmd;
 mod events_cmd;
 mod known_players;
 mod play_mode_cmd;
+mod play_tracks_cmd;
 mod playlist_cmd;
 mod policy_cmd;
 mod queue_edit_cmd;
@@ -82,7 +83,7 @@ use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
 use fsonos_api::plan::{self, TransportAction};
-use fsonos_api::surface::queue::{QueueAddedDto, QueueDto, QueueRequest};
+use fsonos_api::surface::queue::{QueueAddOutcome, QueueDto, QueueRequest};
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
@@ -173,6 +174,9 @@ enum Command {
     /// Quietly append 1-10 Spotify tracks or episodes in the supplied order,
     /// or insert them next. Preserves duplicates; undo restores the queue.
     QueueTracks(queue_tracks_cmd::QueueTracksArgs),
+    /// Replace one group's queue with 1-10 selected Spotify tracks or episodes
+    /// and start the first, in the supplied order. Intentional repeats are kept.
+    PlayTracks(play_tracks_cmd::PlayTracksArgs),
     /// Play an existing queue position without adding or removing tracks.
     /// Use `queue <room>` or `queue-search` to find positions first; `undo`
     /// restores playback.
@@ -254,7 +258,7 @@ enum Command {
     Play {
         /// Room, multi-room alias, all or everywhere. `all@S1` / `all@S2`
         /// selects one household. Existing groups are not regrouped or synchronized.
-        /// Queue, line-in and search modes require one room.
+        /// Line-in and search modes require one room.
         zone: String,
         /// Source URI, or a Spotify track, album or playlist (an
         /// open.spotify.com link will do); an album or playlist replaces the
@@ -569,6 +573,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::QueuePlay(args) => queue_play_cmd::run(global, &args),
         Command::QueueSearch(args) => queue_search_cmd::run(global, &args),
         Command::QueueTracks(args) => queue_tracks_cmd::run(global, &args),
+        Command::PlayTracks(args) => play_tracks_cmd::run(global, &args),
         Command::SpotifySearch(args) => spotify_search_cmd::run(global, &args),
         Command::QueueRemove(args) => queue_edit_cmd::remove(global, &args),
         Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
@@ -742,11 +747,7 @@ fn rooms(global: &config::GlobalArgs, alias: Option<RoomsCommand>) -> anyhow::Re
 fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result<()> {
     let direct = Direct::survey(global)?;
     if let Some(req) = queue_request(control) {
-        return emit(
-            global.json,
-            &direct.queue_request(&req)?,
-            QueueAddedDto::text,
-        );
+        return emit_queue_outcome(global.json, &direct.queue_request(&req)?);
     }
     let tool = tool_name(control);
     let outcome = match control {
@@ -1035,6 +1036,21 @@ fn emit<T: Serialize + ?Sized>(
     Ok(())
 }
 
+/// Preserve the complete receipt on stdout even when only some groups queued
+/// the source. Like scene application, an incomplete batch exits nonzero.
+fn emit_queue_outcome(json: bool, outcome: &QueueAddOutcome) -> anyhow::Result<()> {
+    emit(json, outcome, QueueAddOutcome::text)?;
+    if let QueueAddOutcome::Groups(receipt) = outcome
+        && !receipt.complete
+    {
+        anyhow::bail!(
+            "queue addition incomplete for {} group(s); read their queues before another add",
+            receipt.failed.len()
+        );
+    }
+    Ok(())
+}
+
 /// `fsonos party [target]`: a household label names the household;
 /// anything else is the room that leads.
 fn party_request(households: &[fsonos_core::HouseholdState], target: Option<&str>) -> PartyRequest {
@@ -1107,6 +1123,7 @@ fn plan_for<'a>(
         | Command::QueuePlay(_)
         | Command::QueueSearch(_)
         | Command::QueueTracks(_)
+        | Command::PlayTracks(_)
         | Command::QueueRemove(_)
         | Command::QueueMove(_)
         | Command::PlayMode(_)

@@ -1,11 +1,13 @@
-//! One ordered, guarded batch from the library or explicit Spotify sources.
+//! Queue or play one ordered, guarded selection of explicit Spotify sources.
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::queue::{QueueAddedDto, QueueTrackInput, QueueTracksRequest};
+use fsonos_api::surface::queue::{
+    PlayTracksRequest, QueueAddedDto, QueueTrackInput, QueueTracksRequest,
+};
 use fsonos_api::{ErrorCode, Failure};
 
-use super::{Backend, respond, with_backend_off_thread};
+use super::{Backend, respond, said, with_backend_off_thread};
 
 /// MCP's schema generator is distinct from the HTTP OpenAPI generator. Keep
 /// its typed input here, then use the shared request validation and execution.
@@ -18,6 +20,17 @@ struct SelectedTrack {
 }
 
 impl Backend {
+    /// Prefer the selected daemon's playback boundary and action log. The
+    /// shared typed write treats failed or malformed replies as terminal.
+    pub fn play_tracks(&self, request: &PlayTracksRequest) -> McpResult<FinalCallToolResult> {
+        request
+            .validate()
+            .map_err(|error| crate::tool_error(&error))?;
+        self.write("/play/tracks", request, || {
+            respond(|| self.surface.play_tracks(&self.client, request).map(said))
+        })
+    }
+
     pub fn add_tracks_to_queue(
         &self,
         request: &QueueTracksRequest,
@@ -41,6 +54,29 @@ impl Backend {
             Ok((added.done.clone(), added))
         })
     }
+}
+
+#[tool(
+    description = "Replace one room group's queue with an ordered selection of 1-10 Spotify tracks or episodes and start its first occurrence in NORMAL mode (shuffle and repeat off). zone selects one room's current group; Room@S1 or Room@S2 disambiguates households. Each tracks entry has source_uri (a Spotify track/episode URI or share link) and optional title. Preserve the supplied order and intentional duplicates, including mixed tracks and episodes; albums, artists, playlists and shows are not expanded here. No Spotify Web API sign-in is needed for concrete track identities; the household still needs working Spotify playback linkage. Optional expected_revision is the destination queue revision from get_queue, not a cached library revision; a changed queue is refused. Uses the existing play permission and room volume caps. One action is logged; undo_last can restore the previous queue and playback only when complete before-and-after proof was captured. A failed or uncertain response is terminal: inspect playback, the queue and action log before another action; never automatically replay the selection."
+)]
+async fn play_tracks(
+    ctx: &McpContext,
+    zone: String,
+    tracks: Vec<SelectedTrack>,
+    expected_revision: Option<String>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let request = PlayTracksRequest {
+        zone,
+        tracks: tracks
+            .into_iter()
+            .map(|track| QueueTrackInput {
+                source_uri: track.source_uri,
+                title: track.title,
+            })
+            .collect(),
+        expected_revision,
+    };
+    with_backend_off_thread(ctx, move |backend| backend.play_tracks(&request)).await
 }
 
 #[tool(

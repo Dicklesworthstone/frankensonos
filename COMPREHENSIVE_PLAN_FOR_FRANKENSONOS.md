@@ -990,6 +990,17 @@ an uncertain partial batch is not replayed and leaves an undo barrier. The
 existing `add_to_queue` policy and bounded insertion engine apply throughout.
 See [`docs/QUEUE_TRACK_SELECTIONS.md`](docs/QUEUE_TRACK_SELECTIONS.md).
 
+Explicit selections also support **Play selected now** in both cached-library
+selectors, `POST /play/tracks`, CLI `play-tracks` and MCP `play_tracks`. The
+request retains 1–10 concrete track/episode occurrences, including duplicates
+and mixed kinds, without a Web API catalog lookup. It captures the destination
+before renderer reads, honors its optional queue revision and ordinary play
+permission/caps, then reuses staged queue replacement to start the first item
+in NORMAL order. Full replacement undo is available only with the existing
+complete original queue proof; other starts retain the action-history barrier.
+Browser review makes replacement explicit and rechecks the selected cached
+occurrences, playback and destination queue before one command.
+
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
 earliest real playback on both S1 and S2, and the fallback §6 calls for when a
@@ -1411,9 +1422,23 @@ starts. Every household resolves its own native catalog and Spotify renderer
 before playback changes; artist/show requests capture all destinations before
 one shared catalog lookup and revalidate them afterward. The existing set
 executor applies per-group caps, reports partial speaker failures and retains
-one action/undo boundary. Search picks, line-in and queue insertion keep their
-single-group contracts. See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
+one action/undo boundary. Queue source additions also accept room sets, retaining
+every destination before source reads and through the existing insertion
+engines. Single-group responses keep their shape; multi-group receipts report
+each confirmed range and failure, completion, logging and verified undo
+availability. Definite refusals can leave confirmed additions undoable together;
+any uncertain insertion leaves a whole-action barrier. CLI prints the complete
+receipt and exits nonzero on incomplete batches. Search picks, line-in and
+revision-bound ordered track selections keep their single-group contracts.
+See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
 for the interface, restoration limits and validation status.
+
+Both browser source players expose those same room sets. They resolve actual
+player identities, show every affected group and its current source/queue,
+review native titles against each household's own catalog, then recheck before
+one daemon mutation. Queue receipts account for every reviewed coordinator and
+retain partial failures and undo limitations. Existing browser command lanes
+cover the entire selection; no browser loop sends separate playback writes.
 
 ### Milestone placement
 

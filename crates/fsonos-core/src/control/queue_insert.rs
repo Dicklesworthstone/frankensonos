@@ -3,8 +3,8 @@
 //! Full bounded snapshots are deliberate: a matching URI or queue length alone
 //! cannot distinguish an insertion from an old copy or an unrelated edit.
 
-use super::Queued;
 use super::queue_removal::{Snapshot, read};
+use super::{Queued, TrackBatchDestination};
 use crate::CoreError;
 use fsonos_proto::content::{BrowseFlag, MAX_BROWSE_OBJECTS, QUEUE, browse};
 use fsonos_proto::control::{self as soap, Enqueued};
@@ -179,6 +179,7 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
     request: &Request<'_>,
+    destination: Option<&TrackBatchDestination>,
 ) -> Result<Queued, CoreError> {
     let expected = if SpotifyContainer::of(request.source_uri).is_some()
         || SpotifyBare::of(request.source_uri).is_some()
@@ -195,18 +196,37 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
             "enqueue requires a Spotify track, album, playlist, artist, episode or show",
         ));
     };
+    if let Some(destination) = destination {
+        destination.confirm(t, host, coordinator)?;
+    }
     let Plan {
         before,
         source,
         playing_queue,
         as_next,
         first,
-        ..
+        position,
     } = prepare(t, host, coordinator, request.next)?;
 
-    let undo_destination = super::SourceDestination::read(t, host, coordinator)
-        .ok()
-        .filter(|_| still_observed(t, host, &before).unwrap_or(false));
+    let undo_destination = if let Some(destination) = destination {
+        if before != destination.queue || !destination.source.has_source(&source, "") {
+            return Err(invalid(
+                "the queued source destination changed during preparation; nothing was added",
+            ));
+        }
+        destination.confirm(t, host, coordinator)?;
+        if let Some(current) = position {
+            let now = soap::get_position_info(t, host)?;
+            if now.track != current.track || !same_track(&now.uri, &current.uri) {
+                return Err(invalid("the current queue track changed before enqueue"));
+            }
+        }
+        Some(destination.source.clone())
+    } else {
+        super::SourceDestination::read(t, host, coordinator)
+            .ok()
+            .filter(|_| still_observed(t, host, &before).unwrap_or(false))
+    };
     let written = soap::enqueue_uri(
         t,
         host,

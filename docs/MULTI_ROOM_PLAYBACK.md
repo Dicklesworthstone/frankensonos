@@ -1,4 +1,4 @@
-# Play a source across existing groups
+# Play or queue a source across existing groups
 
 `play`, `play_favorite` and `play_sonos_playlist` accept the same room sets as
 transport and volume controls. A room name still selects its current group.
@@ -10,6 +10,8 @@ fsonos rooms alias add downstairs Kitchen "Living Room"
 fsonos play downstairs 'spotify:album:<album-id>'
 fsonos play all@S2 --favorite 'Morning'
 fsonos play everywhere --playlist 'Evening Mix'
+fsonos play downstairs 'spotify:album:<album-id>' --next
+fsonos play all@S2 --playlist 'Evening Mix' --queue
 fsonos undo
 ```
 
@@ -26,16 +28,42 @@ to group one household before playback when that is the intended arrangement.
 | Spotify or stream source | `play <target> <source>` | `POST /play` | `play` |
 | Sonos favorite | `play <target> --favorite <query>` | `POST /play/favorite` | `play_favorite` |
 | Saved Sonos playlist | `play <target> --playlist <query>` | `POST /sonos/playlists/play` | `play_sonos_playlist` |
+| Add a source next or at the end | `play <target> <source> --next` / `--queue` (also `--favorite` / `--playlist`) | `POST /queue` | `add_to_queue` |
 
-The existing request and response shapes are unchanged: the target remains
+Playback request and response shapes are unchanged: the target remains
 `zone`, and the outcome contains `done`, `changed` and `notes`. Direct CLI,
 daemon CLI, standalone MCP and daemon MCP use the shared planner and executor.
-The browser remotes continue to choose one displayed group.
+The phone remote and desktop dashboard also send these same source requests.
 
-Search-and-play picks, line-in playback, queue insertion (`--next`, `--queue`
-and ordered track selections), and the legacy `/sonos` compatibility bridge
+Search-and-play picks, line-in playback, revision-bound ordered track
+selections (`queue-tracks` / `POST /queue/tracks`), and the legacy `/sonos` compatibility bridge
 retain their single-group contracts. They do not silently choose one room
 from a multi-room alias.
+
+## Phone and desktop controls
+
+Open the existing source player and change **Destination selection** to a room
+set. Enter a room, alias, `here`, `all@S1`, `all@S2`, or `everywhere`, or read
+the available room suggestions. Suggestions do not determine membership: the
+daemon resolves the actual player identities and complete affected groups.
+Choose a source link, a Spotify search result, a favorite title or a saved
+playlist title, then **Review playback** or **Review queue addition**.
+
+The review lists every affected group, its current music and relevant queue
+position. Group members outside the named alias are included. Favorites and
+playlists use an unambiguous full title in each household; the review shows
+each household's own entry and ID. The browser does not copy an ID from one
+household into another household's selection. The single-group playlist picker,
+individual saved-track actions and line-in controls remain available.
+
+Confirmation checks the complete target, catalog selection and relevant state
+again, reserves the existing browser command lanes, and sends one daemon
+request. Each queue receipt must account for every reviewed group. Successful
+ranges, failed destinations, partial completion and undo limitations stay
+visible, including an all-failed batch. A missing or malformed reply is
+uncertain and is never automatically repeated. Source panels add no background
+polling. The review cannot lock out another controller after its final read;
+the daemon's execution checks still apply.
 
 ## Preparing the source
 
@@ -62,8 +90,8 @@ This preserves the bounded artist/show behavior described in
 
 The caller's current authorization is checked again after source preparation.
 Existing policy caps apply to every affected group and its actual audience.
-Disjoint groups use the existing bounded concurrent executor, so a slow player
-does not serialize all starts.
+Disjoint playback groups use the existing bounded concurrent executor, so a
+slow player does not serialize all starts.
 
 One speaker-side failure can leave other groups successfully playing. Inspect
 `notes` for `SKIPPED` entries and read the affected groups before taking a new
@@ -77,15 +105,69 @@ evidence for every attempted replacement; missing proof or a partial replacement
 leaves the existing undo barrier. Subsequent manual changes and current policy
 continue to limit restoration. See [Queue undo](QUEUE_UNDO.md).
 
+## Queue additions and per-group receipts
+
+`--next` and `--queue` add the source to each selected group's existing queue.
+They preserve the current source, volume, shuffle/repeat mode and play/pause
+intent. Next means after that group's current queue occurrence; a group playing
+another source, or with an empty queue, receives the addition at the end.
+Artist/show requests share one catalog selection. Native favorites and saved
+playlists retain the metadata from each household's own catalog.
+
+The complete original destination of every group is observed before catalog
+reads. Source, group, boot and queue evidence is checked again before dispatch
+and inside each insertion engine immediately before its write. A change during
+renderer learning or a definite renderer-rejection retry cannot become a new
+baseline for the request.
+
+A request resolving to one group keeps the existing response, including when
+an alias names two members of that group:
+
+```json
+{"done":"queued 2 tracks","zone":"Study","first":4,"count":2,"playing_queue":true}
+```
+
+A request resolving to several groups returns a receipt with these fields:
+
+| Field | Meaning |
+|---|---|
+| `done` | Confirmed group count and a clear incomplete status when any group failed. |
+| `complete` | Every selected group returned a confirmed insertion. |
+| `added` | Each successful group's `household`, `coordinator` and `queue` object containing its own `zone`, `first`, `count`, `playing_queue` and `done`. |
+| `failed` | Each failed group's `household`, `coordinator`, `zone` and structured `error`, including its code and uncertainty. |
+| `logged` | The single aggregate action was recorded successfully. |
+| `undoable` | That recorded action contains verified ownership for all possible effects; later queue changes can still prevent undo. |
+
+There is no shared `first` position or aggregate queue length. Separate groups
+can have different queues and native playlist contents.
+
+Before dispatch, preparation failures return an ordinary error without queue
+writes. After dispatch begins, HTTP returns the complete batch receipt, even
+if every group failed. **Check `complete` and every `failed` entry; an HTTP 200
+does not mean all groups accepted the addition.** The CLI prints the receipt
+(JSON with `--json`) and exits nonzero for an incomplete batch. MCP retains the
+same structured receipt and names each destination's result in its text.
+
+Never repeat the whole request after partial or uncertain delivery. Read the
+failed groups' queues before deciding on a new targeted add. Definite refusals
+can leave confirmed additions in the other groups undoable as one action.
+Any uncertain insertion creates a barrier for the entire batch: undo cannot
+claim to remove only the known ranges while ignoring possible extra tracks.
+No response failure triggers a second local execution after the daemon has
+answered.
+
 ## Validation
 
 Regression coverage exercises both virtual Sonos generations, grouped-room
 deduplication, household-local catalogs, shared artist lookup, failed source
-preparation, partial speaker failure and restoration. Actual CLI and MCP
+preparation, partial speaker failure and restoration. Queue regressions cover
+distinct insertion ranges, quiet next/append, native catalogs, uncertain writes
+and the retained destination during internal preparation. Actual CLI and MCP
 process scenarios are in `crates/fsonos-cli/tests/e2e_source_targets.rs`.
 
 ```bash
 cargo test --locked -p fsonos-api --test source_targets_sim
+cargo test --locked -p fsonos-api --test queue_targets_sim
 cargo test --locked -p fsonos-cli --test e2e_source_targets
 cargo check --locked --workspace --all-targets
 ```
