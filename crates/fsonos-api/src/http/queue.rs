@@ -4,6 +4,7 @@
 //! |---|---|---|
 //! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddOutcome`] |
 //! | `POST /queue/tracks` | [`crate::surface::queue::QueueTracksRequest`] | [`crate::surface::queue::QueueAddedDto`] |
+//! | `POST /play/tracks` | [`crate::surface::queue::PlayTracksRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /queue/remove` | [`crate::surface::queue::QueueRemoveRequest`] | [`crate::surface::queue::QueueRemovedDto`] |
 //! | `POST /queue/play` | [`crate::surface::queue::QueuePlayRequest`] | [`crate::OutcomeDto`] |
 
@@ -12,9 +13,9 @@ use fastapi::core::RouteEntry;
 use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
-    ADD, MOVE, PLAY, QueueAddOutcome, QueueAddedDto, QueueMoveRequest, QueueMovedDto,
-    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, QueueRequest, QueueTracksRequest,
-    REMOVE,
+    ADD, MOVE, PLAY, PlayTracksRequest, QueueAddOutcome, QueueAddedDto, QueueMoveRequest,
+    QueueMovedDto, QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, QueueRequest,
+    QueueTracksRequest, REMOVE,
 };
 
 mod mode;
@@ -45,6 +46,17 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<QueueTracksRequest>(true)
         .response_schema::<QueueAddedDto>(200, "The complete ordered selection was queued"),
+        cx.route(
+            &Op::post(
+                "/play/tracks",
+                "play_tracks",
+                CONTROL,
+                "Play an ordered selection of 1-10 Spotify tracks or episodes, preserving duplicates and replacing the queue under the ordinary play permission and volume caps",
+            ),
+            |s, c, req| answer(body::<PlayTracksRequest>(req).and_then(|r| s.play_tracks(c, &r))),
+        )
+        .request_schema::<PlayTracksRequest>(true)
+        .response_schema::<OutcomeDto>(200, "The ordered selection is playing from its first occurrence"),
         cx.route(
             &Op::post(
                 "/queue/play",

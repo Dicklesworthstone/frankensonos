@@ -40,13 +40,14 @@ const DashboardLibraryPanel = (() => {
     const navigation = el('nav', null, 'dashboard-library-pages'); navigation.setAttribute('aria-label', 'Cached library pages');
     const range = el('span'); navigation.append(previous, range, next);
     const selectedCount = el('span');
+    const selectedPlay = button('Play selected now', () => { void selectTracks('play'); });
     const selectedNext = button('Queue selected next', () => { void selectTracks('next'); });
     const selectedEnd = button('Add selected to end', () => { void selectTracks('append'); });
     const selectedClear = button('Clear selection', () => control.clearSelection());
     const selectedActions = el('div', null, 'dashboard-library-actions');
     selectedActions.setAttribute('role', 'group'); selectedActions.setAttribute('aria-label', 'Selected track actions');
-    selectedActions.append(selectedCount, selectedNext, selectedEnd, selectedClear);
-    const selectionHelp = el('p', `Select up to ${L.MAX_TRACKS} tracks on this page. The queue uses listing order, including repeated occurrences. Changing the page or filter clears the selection.`, 'small-note');
+    selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedClear);
+    const selectionHelp = el('p', `Select up to ${L.MAX_TRACKS} tracks on this page to play now or add to the queue. The shown order and repeated occurrences are preserved. Changing the page or filter clears the selection.`, 'small-note');
     body.append(el('p', 'Browse the daemon’s saved cache. It may be older or incomplete; browsing does not sync Spotify.', 'small-note'),
       scope, form, status, selectionHelp, selectedActions, rows, navigation); node.append(body);
     (doc.getElementById('search-results') || dialog.lastElementChild)?.before(node);
@@ -93,7 +94,7 @@ const DashboardLibraryPanel = (() => {
       const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired;
       selectionHelp.hidden = selectedActions.hidden = state.kind !== 'tracks';
       selectedCount.textContent = `${state.selected.length} selected`;
-      selectedNext.disabled = selectedEnd.disabled = !usable || !state.selected.length || !destination
+      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !usable || !state.selected.length || !destination
         || !controller.canControl() || !!session.state.pending;
       selectedClear.disabled = !usable || !state.selected.length;
       previous.disabled = !usable || !p || p.query.offset === 0;
@@ -121,7 +122,7 @@ const DashboardLibraryPanel = (() => {
           checkbox.setAttribute('aria-label', `Select ${item.position ? `playlist position ${item.position}, ` : ''}${name}`);
           checkbox.disabled = !usable || (!checkbox.checked && state.selected.length >= L.MAX_TRACKS);
           checkbox.addEventListener('change', () => { if (visible()) control.selectTrack(item, checkbox.checked); });
-          const label = el('label', null, 'dashboard-library-select-track'); label.append(checkbox, doc.createTextNode('Select for queue'));
+          const label = el('label', null, 'dashboard-library-select-track'); label.append(checkbox, doc.createTextNode('Select track'));
           info.append(label);
         }
         if (item.kind === 'album' || item.kind === 'playlist') {

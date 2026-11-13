@@ -1475,10 +1475,15 @@ impl Surface {
             }
             Command::PlayTracks {
                 coordinator,
-                selection,
+                selection: crate::source::SourceSelection { tracks, .. },
+                ..
+            }
+            | Command::PlaySelection {
+                coordinator,
+                tracks,
                 ..
             } => {
-                let Some((uri, _)) = selection.tracks.first() else {
+                let Some((uri, _)) = tracks.first() else {
                     return;
                 };
                 // A successful SOAP acknowledgement is not evidence that the
@@ -2143,6 +2148,7 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
     match command {
         Command::Play { coordinator, .. }
         | Command::PlayTracks { coordinator, .. }
+        | Command::PlaySelection { coordinator, .. }
         | Command::PlayLineIn { coordinator, .. }
         | Command::PlayFavorite { coordinator, .. }
         | Command::Transport { coordinator, .. }

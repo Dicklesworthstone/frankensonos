@@ -284,6 +284,11 @@ impl Surface {
             coordinator,
             destination,
             ..
+        }
+        | Command::PlaySelection {
+            coordinator,
+            destination,
+            ..
         } = command
         {
             self.confirm_source_renderer(households, coordinator)?;

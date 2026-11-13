@@ -55,6 +55,7 @@ mod eq_cmd;
 mod events_cmd;
 mod known_players;
 mod play_mode_cmd;
+mod play_tracks_cmd;
 mod playlist_cmd;
 mod policy_cmd;
 mod queue_edit_cmd;
@@ -173,6 +174,9 @@ enum Command {
     /// Quietly append 1-10 Spotify tracks or episodes in the supplied order,
     /// or insert them next. Preserves duplicates; undo restores the queue.
     QueueTracks(queue_tracks_cmd::QueueTracksArgs),
+    /// Replace one group's queue with 1-10 selected Spotify tracks or episodes
+    /// and start the first, in the supplied order. Intentional repeats are kept.
+    PlayTracks(play_tracks_cmd::PlayTracksArgs),
     /// Play an existing queue position without adding or removing tracks.
     /// Use `queue <room>` or `queue-search` to find positions first; `undo`
     /// restores playback.
@@ -569,6 +573,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::QueuePlay(args) => queue_play_cmd::run(global, &args),
         Command::QueueSearch(args) => queue_search_cmd::run(global, &args),
         Command::QueueTracks(args) => queue_tracks_cmd::run(global, &args),
+        Command::PlayTracks(args) => play_tracks_cmd::run(global, &args),
         Command::SpotifySearch(args) => spotify_search_cmd::run(global, &args),
         Command::QueueRemove(args) => queue_edit_cmd::remove(global, &args),
         Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
@@ -1118,6 +1123,7 @@ fn plan_for<'a>(
         | Command::QueuePlay(_)
         | Command::QueueSearch(_)
         | Command::QueueTracks(_)
+        | Command::PlayTracks(_)
         | Command::QueueRemove(_)
         | Command::QueueMove(_)
         | Command::PlayMode(_)

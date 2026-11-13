@@ -115,7 +115,7 @@ test('native exact-title selection rejects missing, ambiguous, shortcut and unqu
     h.api.edit('sourceType', 'favorite'); h.api.edit('nativeQuery', 'Evening & Friends');
     assert.equal(await h.api.review(), false); assert.equal(h.writes().length, 0); assert.match(h.api.state.message, /S2:/);
   }
-  for (const query of ['SQ:7', 'FV:2/7', '02', '---', ' ']) assert.throws(() => T.prepareNative('playlist', query, 'play'));
+  for (const query of ['SQ:7', 'FV:2/7', '02', '+2', '---', ' ']) assert.throws(() => T.prepareNative('playlist', query, 'play'));
   assert.equal(T.nameKey('Dvořák: Prélude in D♭ & F♯'), 'dvorak prelude in d flat f sharp');
 });
 

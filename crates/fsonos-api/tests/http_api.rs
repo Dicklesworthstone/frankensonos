@@ -770,6 +770,25 @@ fn the_openapi_document_describes_every_route() {
     assert!(required.contains(&json!("zone")));
     assert!(required.contains(&json!("tracks")));
 
+    let play = &doc["paths"]["/play/tracks"]["post"];
+    assert_eq!(play["operationId"], "play_tracks");
+    let schema = &play["requestBody"]["content"]["application/json"]["schema"];
+    let selection = schema["$ref"]
+        .as_str()
+        .and_then(|reference| reference.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    for field in ["zone", "tracks", "expected_revision"] {
+        assert!(
+            selection["properties"][field].is_object(),
+            "{field}: {selection}"
+        );
+    }
+    assert!(selection["properties"].get("next").is_none());
+    let required = selection["required"].as_array().unwrap();
+    assert_eq!(required.len(), 2);
+    assert!(required.contains(&json!("zone")));
+    assert!(required.contains(&json!("tracks")));
+
     // Error answers carry the wire codes.
     let not_found = doc["paths"]["/zones/{room}"]["get"]["responses"]["404"]["description"]
         .as_str()

@@ -990,6 +990,17 @@ an uncertain partial batch is not replayed and leaves an undo barrier. The
 existing `add_to_queue` policy and bounded insertion engine apply throughout.
 See [`docs/QUEUE_TRACK_SELECTIONS.md`](docs/QUEUE_TRACK_SELECTIONS.md).
 
+Explicit selections also support **Play selected now** in both cached-library
+selectors, `POST /play/tracks`, CLI `play-tracks` and MCP `play_tracks`. The
+request retains 1–10 concrete track/episode occurrences, including duplicates
+and mixed kinds, without a Web API catalog lookup. It captures the destination
+before renderer reads, honors its optional queue revision and ordinary play
+permission/caps, then reuses staged queue replacement to start the first item
+in NORMAL order. Full replacement undo is available only with the existing
+complete original queue proof; other starts retain the action-history barrier.
+Browser review makes replacement explicit and rechecks the selected cached
+occurrences, playback and destination queue before one command.
+
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
 earliest real playback on both S1 and S2, and the fallback §6 calls for when a

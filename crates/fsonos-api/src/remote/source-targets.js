@@ -26,7 +26,7 @@ const SourceTargetsRemote = (() => {
     if (!['playlist', 'favorite'].includes(kind) || !['play', 'next', 'end'].includes(mode)) fail('Choose a supported source and action.');
     if (!text(raw, 1024) || [...raw.trim()].length > 256 || !nameKey(raw)) fail('Enter the complete saved playlist or favorite title (at most 256 characters).');
     const title = raw.trim();
-    if (/^\d+$/.test(title) || /^(?:SQ:|FV:)/i.test(title)) fail('Use the full title for a room set. Native IDs and numbered positions belong to one household.');
+    if (/^\+?\d+$/.test(title) || /^(?:SQ:|FV:)/i.test(title)) fail('Use the full title for a room set. Native IDs and numbered positions belong to one household.');
     return Object.freeze({ item: Object.freeze({ kind: kind + '_query', query: title, container: true }), title, mode });
   }
   const native = item => ['playlist_query', 'favorite_query'].includes(item.kind);

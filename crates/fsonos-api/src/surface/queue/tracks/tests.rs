@@ -101,3 +101,72 @@ fn wire_defaults_to_append_and_refuses_unknown_fields_or_missing_selection() {
         assert!(serde_json::from_value::<QueueTracksRequest>(body).is_err());
     }
 }
+
+#[test]
+fn play_selection_retains_mixed_kinds_duplicates_and_the_destination_revision() {
+    let req: PlayTracksRequest = serde_json::from_value(json!({
+        "zone": " Studio@S2 ",
+        "tracks": [
+            {"source_uri": TRACK, "title": " First occurrence "},
+            {"source_uri": "https://open.spotify.com/episode/0000000000000000000002?si=fixture"},
+            {"source_uri": TRACK, "title": " Repeat "}
+        ],
+        "expected_revision": "original-queue"
+    }))
+    .unwrap();
+    let normalized = req.normalized().unwrap();
+    assert_eq!(normalized.zone, "Studio@S2");
+    assert_eq!(
+        normalized.expected_revision.as_deref(),
+        Some("original-queue")
+    );
+    assert_eq!(
+        normalized
+            .tracks
+            .iter()
+            .map(|track| track.source_uri.as_str())
+            .collect::<Vec<_>>(),
+        [TRACK, EPISODE, TRACK]
+    );
+    assert_eq!(
+        normalized.tracks[0].title.as_deref(),
+        Some("First occurrence")
+    );
+    assert_eq!(normalized.tracks[2].title.as_deref(), Some("Repeat"));
+}
+
+#[test]
+fn play_wire_requires_a_selection_and_does_not_accept_queue_modes_or_raw_metadata() {
+    for body in [
+        json!({"zone": "Studio", "tracks": [{"source_uri": TRACK}], "next": true}),
+        json!({"zone": "Studio", "tracks": [{"source_uri": TRACK}], "playing": false}),
+        json!({"zone": "Studio", "tracks": [{"source_uri": TRACK, "metadata": "raw DIDL"}]}),
+        json!({"zone": "Studio"}),
+    ] {
+        assert!(serde_json::from_value::<PlayTracksRequest>(body).is_err());
+    }
+    for tracks in [
+        Vec::new(),
+        vec![
+            QueueTrackInput {
+                source_uri: TRACK.into(),
+                title: None
+            };
+            MAX_QUEUE_TRACKS + 1
+        ],
+        vec![QueueTrackInput {
+            source_uri: "spotify:album:0000000000000000000001".into(),
+            title: None,
+        }],
+    ] {
+        assert!(
+            PlayTracksRequest {
+                zone: "Studio".into(),
+                tracks,
+                expected_revision: None,
+            }
+            .validate()
+            .is_err()
+        );
+    }
+}

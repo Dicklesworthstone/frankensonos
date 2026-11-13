@@ -8,7 +8,7 @@ use fsonos_core::policy::{CARRIES, CLASSES, class_of};
 use fsonos_mcp::{Profile, server_with};
 
 /// Mutating tools in no class, and what holds them to the policy instead.
-const HELD_AS_OTHERS: [(&str, &str); 8] = [
+const HELD_AS_OTHERS: [(&str, &str); 9] = [
     (
         "echo",
         "nothing to hold: it answers its text and reaches no speaker",
@@ -36,6 +36,10 @@ const HELD_AS_OTHERS: [(&str, &str); 8] = [
     (
         "add_tracks_to_queue",
         "add_to_queue; the shared batch surface authorizes the ordered selection before speaker reads",
+    ),
+    (
+        "play_tracks",
+        "play; the shared ordered-selection surface checks playback permission before speaker reads",
     ),
     (
         "apply_scene",

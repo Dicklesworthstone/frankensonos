@@ -16,6 +16,7 @@ const LibraryRemote = (() => {
     libraryPlay: ['POST', '/play'],
     libraryAdd: ['POST', '/queue'],
     libraryTracks: ['POST', '/queue/tracks'],
+    libraryPlayTracks: ['POST', '/play/tracks'],
   };
   const text = (value) => typeof value === 'string' && value.trim() !== '';
   const number = (value) => Number.isInteger(value) && value >= 0 && value <= 4294967295;
@@ -364,7 +365,7 @@ const LibraryRemote = (() => {
       const zone = destination(), page = state.page;
       if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded
           || state.view !== 'browse' || state.browseKind !== 'tracks' || !page || !zone
-          || !state.selected.length || !['append', 'next'].includes(action)) return false;
+          || !state.selected.length || !['play', 'append', 'next'].includes(action)) return false;
       const rows = Object.freeze(state.selected.map(index => Object.freeze({ index, hit: state.hits[index] })));
       const query = Object.freeze({ kind: 'tracks', offset: page.offset, limit: LIMIT,
         ...(state.browseAlbum ? { album_uri: state.browseAlbum.uri } : {}),
@@ -384,7 +385,8 @@ const LibraryRemote = (() => {
         if (!current(version)) return false;
         const queue = Q.queueOf(queueValue, zone.target), playback = Q.playbackOf(playbackValue, zone);
         state.pending = Object.freeze({ tracks: catalog, zone, action, version, queue, playback,
-          route: 'libraryTracks', body: Q.body(zone.target, tracks, action === 'next', queue) });
+          route: action === 'play' ? 'libraryPlayTracks' : 'libraryTracks',
+          body: action === 'play' ? Q.playBody(zone.target, tracks, queue) : Q.body(zone.target, tracks, action === 'next', queue) });
         state.message = ''; return true;
       } catch (error) {
         if (current(version)) state.message = message(error);
@@ -482,7 +484,7 @@ const LibraryRemote = (() => {
             call('state', { params: { room: pending.zone.target } }),
           ]);
           if (!current(version)) return false;
-          Q.verifyQueue(pending.queue, Q.queueOf(queueValue, pending.zone.target), pending.action === 'next');
+          Q.verifyQueue(pending.queue, Q.queueOf(queueValue, pending.zone.target), pending.action !== 'append');
           if (Q.playbackOf(playbackValue, pending.zone) !== pending.playback) {
             throw new Error('Playback changed since review. Review the selected tracks again.');
           }
@@ -504,7 +506,10 @@ const LibraryRemote = (() => {
         state.message = 'Sending the reviewed action…';
         publish();
         const result = await call(pending.route, { body: pending.body });
-        if (pending.tracks) Q.receipt(result, pending.body, pending.queue);
+        if (pending.tracks) {
+          if (pending.action === 'play') Q.playReceipt(result);
+          else Q.receipt(result, pending.body, pending.queue);
+        }
         const valid = result && text(result.done) && (pending.action === 'play'
           ? typeof result.changed === 'boolean'
           : number(result.first) && result.first > 0 && number(result.count) && result.count > 0
@@ -614,7 +619,7 @@ const LibraryRemote = (() => {
       status.textContent = state.message || (state.loading ? 'Reading…' : '');
       results.replaceChildren();
       if (state.pending?.tracks) {
-        const pending = state.pending, label = pending.action === 'next' ? 'Queue selected next' : 'Add selected to end';
+        const pending = state.pending, label = { play: 'Play selected now', next: 'Queue selected next', append: 'Add selected to end' }[pending.action];
         const list = el('ol');
         for (const { hit } of pending.tracks.rows) list.append(el('li', { text: [hit.title || 'Untitled track', hit.subtitle,
           hit.position ? `Playlist position ${hit.position}` : hit.disc != null ? `Disc ${hit.disc}, track ${hit.track ?? '?'}` : '',
@@ -623,7 +628,9 @@ const LibraryRemote = (() => {
         results.append(el('div', { class: 'library-review', role: 'group', 'aria-label': 'Review selected tracks' },
           el('strong', { text: `${label}: ${pending.tracks.rows.length} track(s)` }),
           el('p', { text: `Destination: ${pending.zone.label}` }), list,
-          el('p', { text: 'Adds this exact list in the shown order, including repeated occurrences. Playback stays as it is. The whole successful selection has one undo record.' }),
+          el('p', { text: pending.action === 'play'
+            ? `Replaces this group’s ${pending.queue.total} existing queue entries with only the tracks shown, then starts from the first track in this order. Repeated occurrences are preserved. Shuffle and repeat are turned off. This changes current playback.`
+            : 'Adds this exact list in the shown order, including repeated occurrences. Playback stays as it is. The whole successful selection has one undo record.' }),
           pending.action === 'next' && pending.queue.playing === null
             ? el('p', { text: 'This group is not playing its queue. The selection will be added to its end without changing the source.' }) : null,
           el('div', { class: 'row' }, button('Cancel', () => control.cancel()),
@@ -661,9 +668,10 @@ const LibraryRemote = (() => {
         if (Q && state.view === 'browse' && state.browseKind === 'tracks') {
           const choose = action => { reviewFocus = `selected-${action}`; void control.chooseTracks(action); };
           const locked = busy || !state.selected.length || !state.target;
-          results.append(el('p', { text: `Select up to ${Q.MAX_TRACKS} tracks from this page. They are queued in listing order, including repeated occurrences. Changing the page or filter clears the selection.` }),
+          results.append(el('p', { text: `Select up to ${Q.MAX_TRACKS} tracks from this page to play now or add to the queue. The shown order and repeated occurrences are preserved. Changing the page or filter clears the selection.` }),
             el('div', { class: 'row', role: 'group', 'aria-label': 'Selected track actions' },
               el('span', { text: `${state.selected.length} selected` }),
+              button('Play selected now', () => choose('play'), locked, 'selected-play'),
               button('Queue selected next', () => choose('next'), locked, 'selected-next'),
               button('Add selected to end', () => choose('append'), locked, 'selected-append'),
               button('Clear selection', () => control.clearSelection(), busy || !state.selected.length)));
@@ -685,7 +693,7 @@ const LibraryRemote = (() => {
                 disabled: busy || (!checked && state.selected.length >= Q.MAX_TRACKS),
                 'aria-label': `Select ${hit.position ? `playlist position ${hit.position}, ` : ''}${hit.title || 'Untitled track'}`,
                 onchange: event => control.selectTrack(index, event.target.checked, hit) });
-              row.append(el('label', { class: 'library-select-track' }, checkbox, 'Select for queue'));
+              row.append(el('label', { class: 'library-select-track' }, checkbox, 'Select track'));
             }
             if (hit.kind === 'album') {
               row.append(el('p', { class: 'by', text: `${hit.cachedTracks} cached track(s); the album may contain more.` }));

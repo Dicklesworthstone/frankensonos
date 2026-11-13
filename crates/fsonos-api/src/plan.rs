@@ -70,6 +70,13 @@ pub enum Command {
         selection: ArtistSelection,
         destination: fsonos_core::control::TrackBatchDestination,
     },
+    /// An explicit ordered selection of tracks or episodes. Unlike a catalog
+    /// expansion, repeated URIs and mixed kinds are intentional occurrences.
+    PlaySelection {
+        coordinator: PlayerId,
+        tracks: Vec<(String, String)>,
+        destination: fsonos_core::control::TrackBatchDestination,
+    },
     /// A native input bound to its physical player and an observed destination.
     /// Never redirected or automatically replayed onto another coordinator.
     PlayLineIn {
@@ -160,6 +167,7 @@ impl Command {
             Self::DjSteer { start, .. } => !start,
             // A move that ran once has nothing left to move.
             Self::PlayTracks { .. }
+            | Self::PlaySelection { .. }
             | Self::PlayLineIn { .. }
             | Self::Move { .. }
             | Self::Dj { .. }
@@ -173,6 +181,7 @@ impl Command {
         match self {
             Self::Play { coordinator, .. }
             | Self::PlayTracks { coordinator, .. }
+            | Self::PlaySelection { coordinator, .. }
             | Self::PlayLineIn { coordinator, .. }
             | Self::PlayFavorite { coordinator, .. }
             | Self::Transport { coordinator, .. }
