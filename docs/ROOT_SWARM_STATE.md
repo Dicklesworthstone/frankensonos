@@ -5188,3 +5188,11 @@ Most likely culprit is my chosen slot: `0x1064d800` sits inside `.bss` (which en
 surfaces inside libc rather than at the write. Next attempt should place the slot at the
 **end** of `.bss` (`0x1064de00`-ish) or size `.bss` from readelf first and confirm the
 address is beyond the last object.
+
+Moving the slot to `.bss` end (`0x1064dec8`) does not change it — still a libc fault
+during the parse. So the slot is not the problem; the `ZZ0183(0, buf, len, 0, 0)`
+calling convention is still wrong somewhere, most plausibly that `r3` is not unused
+(the prologue saves `r3` into the same callee-saved slot family it later feeds to
+`mbedtls_pk_parse_key` as its first argument, which is the *context* — and we pass 0).
+Next: trace one instruction at a time into `ZZ0183` and inspect what lands in
+`mbedtls_pk_parse_key`'s registers rather than guessing again.
