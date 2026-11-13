@@ -12,7 +12,7 @@ Undo restores the original ordered contents, including duplicate occurrences,
 the original selected slot and position, the saved shuffle/repeat mode, and
 whether playback should start. A paused queue stays silent. The existing
 action log stores this information, so daemon restart does not discard the
-backup. Older action records retain their existing meaning.
+backup. Older removal and replacement records retain their existing meaning.
 
 ## Review and restore
 
@@ -26,6 +26,31 @@ The remote's activity view uses the same review flow as other undoable actions:
 The CLI's `fsonos undo`, MCP `undo_last`, and legacy `POST /undo` use the same
 queue recovery. The normal one-hour undo age limit and caller policy apply.
 Neither a preview nor `undoable: true` reserves the speaker state indefinitely.
+
+## Queue additions
+
+Confirmed additions retain their exact original and resulting queue observations,
+coordinator address, physical group, selected source and known speaker boot.
+This covers single tracks, ordered selections, service containers and native
+favorites or saved playlists. Undo compares the saved revision and complete
+ordered renderer URIs before sending one revision-guarded native removal. An
+external replacement with identical tracks and positions does not authorize
+removing those newer occurrences. `--force` does not bypass this proof.
+
+Receipts require one-step native revision advances for each addition. A verified
+undo can record its own one-step removal and restored revision, allowing earlier
+additions to be undone in succession, including after a daemon restart. Only
+those logged transitions can advance an older receipt; equal-looking contents,
+skipped counters, a reboot or an unconfirmed removal cannot. Transition lookup
+is bounded to the most recent 256 action rows; missing evidence leaves the queue
+intact.
+
+Proofs are bounded to 1,000 entries per queue and 4 MiB of serialized action
+state. A successful addition with unknown boot/address evidence, an oversized
+receipt, a wildcard result revision, a wrapped counter, or other counter behavior remains
+successful but creates an undo barrier. Historical additions without a retained
+receipt remain readable and cannot authorize removal, including under force.
+Use action history and the undo preview to inspect recovery eligibility.
 
 ## Which actions can be recovered
 

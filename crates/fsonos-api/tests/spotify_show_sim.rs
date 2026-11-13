@@ -368,9 +368,8 @@ fn show_next_and_append_are_silent_ordered_and_undo_preserves_later_queue_edits(
             .unwrap();
         let changed = rig.queue();
         let marker = rig.sim.soap_log().len();
-        let refused = surface.undo(&Client::McpStdio, true).unwrap().unwrap();
-        assert!(refused.unqueued.is_empty());
-        assert_eq!(refused.unqueue_failures.len(), 1);
+        let refused = surface.undo(&Client::McpStdio, true).unwrap_err();
+        assert!(refused.detail.contains("queue changed"), "{refused:?}");
         assert!(rig.writes_since(marker).is_empty());
         assert_eq!(rig.queue(), changed);
         assert_eq!(rig.volumes(), [80, 70, 60]);

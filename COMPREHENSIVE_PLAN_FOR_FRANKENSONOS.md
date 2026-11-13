@@ -920,6 +920,16 @@ the house to agents they can bound and reverse. The guardrails live in
   `fsonos log`, `fsonos undo`, MCP `recent_actions` and `undo_last`. Undo says
   what it could not restore (for example, a queue that was replaced since).
 
+Queue-add undo retains bounded before/after queue observations and the original
+coordinator address, physical group, source and known boot identity. Each native
+add must advance the revision by exactly one to issue a receipt. Undo checks the
+complete saved result and sends one revision-guarded removal; matching track URIs
+at the old positions cannot authorize deleting a later replacement. Fully
+verified one-step undo transitions can advance earlier receipts for successive
+undos after restart. Missing proof, counter gaps or wrap, legacy unproved rows,
+and changed ownership remain barriers even under force. See
+[`docs/QUEUE_UNDO.md`](docs/QUEUE_UNDO.md#queue-additions).
+
 New volume, mute, group-volume and volume-fade actions retain the exact room
 players and level fields they changed. Their undo restores those fields while
 preserving the current source, queue occurrence, playback state, grouping and
@@ -1292,6 +1302,19 @@ completed restoration. Exact admitted room identities survive alias edits;
 ordinary callers see their own jobs and the configured owner can inspect all.
 See [Announcement jobs](docs/ANNOUNCEMENT_JOBS.md).
 
+Announcements use a media URL selected for each household's actual temporary
+leader after fresh topology is read. The same generated clip is served through
+the listener on that player's local route; missing routes fail only their own
+household before fade/sleep suspension, level changes or speaker writes. Routed
+URLs remain consistent through DIDL, playback observation and restoration.
+Daemon-backed synchronous, background and scheduled calls share this path;
+direct CLI calls retain one media listener per distinct required local address
+through restoration. Seven new API/simulator and direct-listener regressions
+cover independent household delivery, fresh leader selection, missing routes,
+media fetches and scheduled occurrence handling. They await Rust execution
+behind the same dependency-build SIGKILL; focused browser announcement/event
+regressions pass all 99 tests.
+
 ### 12.13 Live events and a web remote
 
 [`d-events-sse`, `d-web-remote`, `d-http-hardening`] `GET /events` streams zone-state deltas, DJ
@@ -1324,6 +1347,16 @@ Sonos playlists emit a household-scoped `catalog.changed`. Bounded counter
 parsing and per-lease deduplication reuse renewal, sequence-gap and reboot
 recovery. Initial or replaced leases and missed events retire prior observations.
 These are invalidations, never queue revisions that can authorize a write.
+
+The live daemon also serves callbacks on each local address required by its
+routes to the players. Separate speaker networks receive their own callback
+URLs, while players on the same route share a specifically bound listener.
+One listener's failure or route change leaves the other listeners available;
+bounded callback intake gives each network a turn. An unavailable route has no
+substitute URL on another interface, and partial listener failures remain
+visible in health and doctor. See [Callback routing and recovery](docs/CALLBACK_RECOVERY.md).
+The new Rust socket and simulator regressions await execution because the
+existing `asupersync` dependency compilation is still killed in this environment.
 
 The phone and dashboard coalesce affected reads, retire stale reviews and fence
 late catalog replies without issuing playback commands. Closed views stay lazy.

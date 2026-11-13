@@ -113,10 +113,14 @@ and is not automatically removed or replayed. Inspect the current queue before
 deciding what to do next. The action log places an undo barrier after an
 uncertain queue edit so an older action cannot be mistaken for this selection.
 
-A complete confirmed selection has one normal queue-add undo record containing
-every inserted renderer URI in order. Undo removes the checked range together;
-it does not split one selection into independent undo steps. Existing queue
-identity checks still refuse undo if the relevant queue state changed.
+A complete confirmed selection can retain one queue-add undo record containing
+every inserted renderer URI in order, the exact before/after queue revisions,
+and known coordinator boot and group ownership. Undo removes the checked range
+together; it does not split one selection into independent undo steps. A newer
+queue containing identical tracks is still refused. Verified undo transitions
+preserve successive undos across daemon restarts, while missing or changed
+proof creates a barrier. See [Queue undo](QUEUE_UNDO.md#queue-additions) for
+receipt bounds, counter requirements and legacy-action behavior.
 
 ## Regression checks
 

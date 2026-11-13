@@ -110,6 +110,9 @@ pub struct QueuedBefore {
     pub first: u32,
     /// What each added track renders, in queue order.
     pub uris: Vec<String>,
+    /// Absent on legacy rows, which cannot prove ownership of a later queue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<control::queue_removal::QueuedProof>,
 }
 
 /// Everything an action's undo puts back, as parsed from its log row.
@@ -452,7 +455,19 @@ pub fn before_state_tones(tones: &[ToneBefore]) -> Option<String> {
 /// are none.
 #[must_use]
 pub fn before_state_queued(queued: &[QueuedBefore]) -> Option<String> {
-    (!queued.is_empty()).then(|| serde_json::json!({ "queued": queued }).to_string())
+    if queued.is_empty() {
+        return None;
+    }
+    let barrier = || before_state_not_undoable("queue addition without verified undo ownership");
+    if queued.iter().any(|added| added.proof.is_none()) {
+        return Some(barrier());
+    }
+    let json = serde_json::json!({ "queued": queued }).to_string();
+    Some(if json.len() <= crate::scenes::queue_backup::MAX_QUEUE_BACKUP_BYTES {
+        json
+    } else {
+        barrier()
+    })
 }
 
 /// The before-state of a write that changed the speakers in a way undo
@@ -705,7 +720,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> Result<UndoReport, CoreError> {
     let started = Instant::now();
-    let before = BeforeState::parse(target.action.before_state.as_deref().unwrap_or("[]"))
+    let mut before = BeforeState::parse(target.action.before_state.as_deref().unwrap_or("[]"))
         .map_err(|e| {
             CoreError::Store(format!(
                 "action {} has an unreadable before-state: {e}",
@@ -714,6 +729,8 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
         })?;
     // Even --force cannot overwrite a queue that no longer matches the exact
     // confirmed edit. Check every saved queue before any independent restore.
+    rebase_queued(store, target.id, &mut before.queued)?;
+    refuse_queued_if_changed(t, households, &before.queued)?;
     queue::refuse_if_changed(t, households, &before.queue_undo, at)?;
     // A scope is never permission to invent a missing prior level, including
     // on a forced undo. Validate the whole restore before any writes.
@@ -748,7 +765,8 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     let (zones, failures) = restore_zones(t, households, &before, queue::later(at, started), vet);
     let (sessions, session_failures) = put_back_sessions(store, &before.dj_sessions);
     let (tones, tone_failures) = put_back_tones(t, households, &before.tones);
-    let (unqueued, unqueue_failures) = take_off_queued(t, households, &before.queued);
+    let ((unqueued, unqueue_failures), restored_queues) =
+        take_off_queued(t, households, &before.queued);
     let config = house_config::put_back_config(store, &before, at);
     let mut others = outcome_lines(
         "steering for",
@@ -779,14 +797,17 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
             intent: format!("undo #{}: {}", target.id, target.action.intent),
             decision: "allow".into(),
             result: summary.clone(),
-            before_state: level_state.map_or_else(
-                || before_state_with(&now, &now_sessions),
-                |levels| {
-                    Some(
-                        serde_json::json!({ "levels": levels, "dj_sessions": now_sessions })
-                            .to_string(),
-                    )
-                },
+            before_state: with_queued_restorations(
+                level_state.map_or_else(
+                    || before_state_with(&now, &now_sessions),
+                    |levels| {
+                        Some(
+                            serde_json::json!({ "levels": levels, "dj_sessions": now_sessions })
+                                .to_string(),
+                        )
+                    },
+                ),
+                &restored_queues,
             ),
             undo_of: Some(target.id),
         },
@@ -860,25 +881,136 @@ fn put_back_tones<T: Transport + ?Sized>(
     (done, failed)
 }
 
-/// The tracks in `queued` taken off their groups' queues again.
+/// Follow only logged, fully verified native undos, in chronological order.
+/// Equality of today's track URIs alone can never advance a queue revision.
+fn rebase_queued<S: Store + ?Sized>(
+    store: &S,
+    target: i64,
+    queued: &mut [QueuedBefore],
+) -> Result<(), CoreError> {
+    if queued.is_empty() {
+        return Ok(());
+    }
+    if queued.iter().any(|added| added.proof.is_none()) {
+        return Err(CoreError::NotUndoable(
+            "this older queue addition has no retained ownership proof; force cannot authorize deleting later occurrences".into(),
+        ));
+    }
+    #[derive(Deserialize)]
+    struct Transitions {
+        #[serde(default)]
+        queued_restored: Vec<control::queue_removal::QueuedRestoration>,
+    }
+    // A missing old transition is a conservative refusal, never permission to
+    // infer that an equal-looking queue still contains the original occurrences.
+    let mut rows = store
+        .recent_actions(&crate::store::ActionFilter {
+            limit: 256,
+            ..Default::default()
+        })
+        .map_err(|error| store_err(&error))?;
+    rows.sort_by_key(|row| row.id);
+    for row in rows {
+        if row.id <= target || row.action.undo_of.is_none() {
+            continue;
+        }
+        let Some(json) = row.action.before_state.as_deref() else {
+            continue;
+        };
+        if json.len() > crate::scenes::queue_backup::MAX_QUEUE_BACKUP_BYTES {
+            continue;
+        }
+        let Ok(transitions) = serde_json::from_str::<Transitions>(json) else {
+            continue;
+        };
+        if transitions.queued_restored.len() > 256 {
+            continue;
+        }
+        for transition in &transitions.queued_restored {
+            for added in &mut *queued {
+                if let Some(proof) = &mut added.proof {
+                    proof.rebase(transition);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate every queued addition before any independent restore, even forced.
+fn refuse_queued_if_changed<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    queued: &[QueuedBefore],
+) -> Result<(), CoreError> {
+    for added in queued {
+        let proof = added.proof.as_ref().ok_or_else(|| {
+            CoreError::NotUndoable(
+                "queued-track undo has no retained ownership proof; force cannot bypass it".into(),
+            )
+        })?;
+        let host = control::locate(households, &added.coordinator)?.ip;
+        proof.confirm(t, host, &added.coordinator, added.first, &added.uris)?;
+    }
+    Ok(())
+}
+
+/// Persist native undo receipts with the audit row, so stacked undo survives a
+/// daemon restart. These are internal evidence, never supplied by a client.
+fn with_queued_restorations(
+    before: Option<String>,
+    restored: &[control::queue_removal::QueuedRestoration],
+) -> Option<String> {
+    if restored.is_empty() {
+        return before;
+    }
+    let mut value = before
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if value.is_array() {
+        value = serde_json::json!({ "zones": value });
+    }
+    let Some(object) = value.as_object_mut() else {
+        return before;
+    };
+    object.insert("queued_restored".into(), serde_json::json!(restored));
+    let json = value.to_string();
+    if json.len() > crate::scenes::queue_backup::MAX_QUEUE_BACKUP_BYTES {
+        return before;
+    }
+    Some(json)
+}
+
+/// The tracks queued by an action taken off their groups' queues again.
 fn take_off_queued<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     queued: &[QueuedBefore],
-) -> Outcomes {
-    let (mut done, mut failed) = (Vec::new(), Vec::new());
+) -> (Outcomes, Vec<control::queue_removal::QueuedRestoration>) {
+    let (mut done, mut failed, mut restored) = (Vec::new(), Vec::new(), Vec::new());
     for added in queued {
         let coordinator = added.coordinator.clone();
-        match control::unqueue(t, households, &coordinator, added.first, &added.uris) {
-            Ok(true) => done.push(coordinator),
-            Ok(false) => failed.push((
-                coordinator,
-                "the queue changed since: they are no longer where they were added".to_string(),
-            )),
-            Err(e) => failed.push((coordinator, e.to_string())),
+        let outcome = (|| {
+            let proof = added.proof.as_ref().ok_or_else(|| {
+                CoreError::NotUndoable("queued-track undo has no retained ownership proof".into())
+            })?;
+            let host = control::locate(households, &coordinator)?.ip;
+            proof.undo(t, host, &coordinator, added.first, &added.uris)
+        })();
+        match outcome {
+            Ok(transition) => {
+                done.push(coordinator);
+                restored.extend(transition);
+            }
+            Err(error) => failed.push((coordinator, error.to_string())),
         }
     }
-    (done, failed)
+    // A partial multi-group undo cannot grant a revision rebase.
+    if !failed.is_empty() {
+        restored.clear();
+    }
+    ((done, failed), restored)
 }
 
 /// `{what} {names} {done}`, and `{what} {id} not {done}: {why}` per
@@ -1202,14 +1334,17 @@ mod tests {
     }
 
     #[test]
-    fn queued_tracks_alone_are_undoable() {
+    fn legacy_queued_tracks_parse_but_new_additions_without_proof_are_barriers() {
         assert_eq!(before_state_queued(&[]), None);
         let added = QueuedBefore {
             coordinator: PlayerId("RINCON_A".into()),
             first: 3,
             uris: vec!["x-sonos-spotify:spotify%3atrack%3aX".into()],
+            proof: None,
         };
-        let json = before_state_queued(std::slice::from_ref(&added)).unwrap();
+        let barrier = before_state_queued(std::slice::from_ref(&added)).unwrap();
+        assert!(!undoable(Some(&barrier)));
+        let json = serde_json::json!({ "queued": [&added] }).to_string();
         assert_eq!(
             BeforeState::parse(&json).unwrap(),
             BeforeState {

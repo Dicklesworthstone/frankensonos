@@ -417,6 +417,9 @@ pub struct Queued {
     pub uris: Vec<String>,
     /// Whether the group plays from its queue now, so they will play.
     pub playing_queue: bool,
+    /// The exact insertion and original group/boot/source, when verified.
+    /// Missing evidence does not fail an accepted add, but prevents later undo.
+    pub proof: Option<queue_removal::QueuedProof>,
 }
 
 /// Add a Spotify track, album or playlist (`spotify:<kind>:<id>`) to the
@@ -485,9 +488,11 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
     }
 }
 
-/// Take the recorded tracks off the original coordinator's queue again.
+/// Remove the currently matching URI range from the coordinator's queue.
 /// A stale range returns `Ok(false)` without writing. A matching range uses
 /// a nonzero revision and exact read-back; lost replies never repeat removal.
+/// This low-level helper does not prove historical occurrence ownership.
+/// Action-log undo uses its retained `QueuedProof` instead.
 pub fn unqueue<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],

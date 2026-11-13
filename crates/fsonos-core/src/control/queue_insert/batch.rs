@@ -121,6 +121,7 @@ pub(in super::super) fn enqueue_batch<T: Transport + ?Sized>(
     let total = u32::try_from(requests.len()).map_err(|_| invalid("track batch is too large"))?;
     let destination = &destination.source;
     let mut after = before.clone();
+    let mut undo_revision_chain = true;
     for written in 0..requests.len() {
         guard(t, host, coordinator, destination, &after, position.as_ref()).map_err(|error| {
             match written {
@@ -150,6 +151,7 @@ pub(in super::super) fn enqueue_batch<T: Transport + ?Sized>(
             as_next,
         );
         let observed = read(t, host).map_err(|error| uncertain(result.as_ref().err(), error))?;
+        undo_revision_chain &= after.revision.checked_add(1) == Some(observed.revision);
         destination
             .confirm(t, host, coordinator)
             .map_err(|error| uncertain(result.as_ref().err(), error))?;
@@ -192,6 +194,11 @@ pub(in super::super) fn enqueue_batch<T: Transport + ?Sized>(
         first,
         uris: selected.to_vec(),
         playing_queue,
+        proof: undo_revision_chain.then(|| {
+            crate::control::queue_removal::QueuedProof::confirmed(
+                host, coordinator, destination, &before, &after, first, total, total,
+            )
+        }).flatten(),
     };
     Ok(Batch {
         before,

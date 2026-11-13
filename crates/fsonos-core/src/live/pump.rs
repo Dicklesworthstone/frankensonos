@@ -182,11 +182,10 @@ mod tests {
             rec,
             playback: Playback::default(),
             progress: super::super::progress::Watchdog::default(),
-            sink: Some(sink),
+            sink: Some(super::super::routes::Listeners::for_hosts(sink, [host])),
             surveyed_at: Some(started),
             last_error: None,
             route_checked: started,
-            route_moved: None,
         };
         (sim, engine, model, id)
     }

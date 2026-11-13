@@ -185,11 +185,16 @@ pub fn live_surface(
             ),
     ));
     let listener = Arc::downgrade(&live);
-    let mut surface =
-        surface.with_announcements(fsonos_api::surface::announce::Announcements::new(
+    let routes = listener.clone();
+    let mut surface = surface.with_announcements(
+        fsonos_api::surface::announce::Announcements::new(
             media,
             Box::new(move || listener.upgrade()?.snapshot().callback),
-        ));
+        )
+        .with_media_route(Box::new(move |player| {
+            routes.upgrade()?.callback_for(player)
+        })),
+    );
     if let Some(dir) = global.data_dir() {
         surface = crate::spotify_sources::install(surface, &dir, None);
     }

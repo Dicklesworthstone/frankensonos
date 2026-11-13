@@ -6,15 +6,19 @@ use fsonos_proto::content::{MAX_BROWSE_OBJECTS, QUEUE, browse_snapshot};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
+use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::ops::Range;
 
 /// Every URI in one coherent queue revision, in queue order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub revision: u32,
     pub uris: Vec<String>,
 }
+
+mod proof;
+pub use proof::{QueuedProof, QueuedRestoration};
 
 /// The observed result, not a predicted queue length.
 #[derive(Debug, PartialEq, Eq)]

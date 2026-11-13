@@ -259,6 +259,7 @@ fn run(s2: bool, at: CancelAt, owner: Owner, stop_reply: StopReply) -> ResultOf 
             25,
             None,
             &AnnouncementCallbacks {
+                clip_url: None,
                 authorize: &|| Ok(()),
                 cap: &|_| 25,
                 completed: &|_, _| {
@@ -342,6 +343,7 @@ fn cancellation_before_admission_is_read_only_and_never_calls_boundary_hooks() {
                 25,
                 None,
                 &AnnouncementCallbacks {
+                    clip_url: None,
                     authorize: &|| panic!("cancelled queued work never reaches admission"),
                     cap: &|_| panic!("cancelled queued work must not suspend a fade"),
                     completed: &|_, _| panic!("there is no effect to restore"),
@@ -362,6 +364,7 @@ fn cancellation_before_admission_is_read_only_and_never_calls_boundary_hooks() {
                     25,
                     None,
                     &AnnouncementCallbacks {
+                        clip_url: None,
                         authorize: &|| Ok(()),
                         cap: &|_| 25,
                         completed: &|_, _| {}

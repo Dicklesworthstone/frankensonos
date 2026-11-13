@@ -4,14 +4,17 @@ use fsonos_proto::soap::{self, AV_TRANSPORT};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
+use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 /// An observed group, boot epoch and selected source. Retain this proof across
 /// slow source resolution and confirm it again before changing the speakers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Destination {
     members: Vec<String>,
     boot_seq: Option<u32>,
+    #[serde(default)]
+    coordinator_host: Option<IpAddr>,
     uri: String,
     metadata: String,
 }
@@ -45,15 +48,15 @@ impl Destination {
             .collect();
         members.sort();
         members.dedup();
-        if !group
+        let coordinator_member = group
             .members
             .iter()
-            .any(|member| member.uuid == *coordinator)
-        {
-            return Err(ProtoError::Malformed(
-                "the replacement coordinator is absent from its group".into(),
-            ));
-        }
+            .find(|member| member.uuid == *coordinator)
+            .ok_or_else(|| {
+                ProtoError::Malformed(
+                    "the replacement coordinator is absent from its group".into(),
+                )
+            })?;
         let media = soap::call(
             t,
             host,
@@ -70,6 +73,7 @@ impl Destination {
         }
         Ok(Self {
             members,
+            coordinator_host: coordinator_member.ip(),
             boot_seq: topology
                 .boot_seqs()
                 .find_map(|(id, boot)| (id == coordinator).then_some(boot)),
@@ -97,6 +101,11 @@ impl Destination {
         self.boot_seq.is_some()
     }
 
+    /// The retained coordinator's advertised address, not just a responding peer.
+    pub(crate) fn is_at(&self, host: IpAddr) -> bool {
+        self.coordinator_host == Some(host)
+    }
+
     /// A source transition cannot change the intended audience or reboot.
     pub(crate) fn same_group(&self, other: &Self) -> bool {
         self.members == other.members && self.boot_seq == other.boot_seq
@@ -114,6 +123,7 @@ impl Destination {
         Self {
             members: self.members.clone(),
             boot_seq: self.boot_seq,
+            coordinator_host: self.coordinator_host,
             uri: format!("x-rincon-queue:{}#0", coordinator.0),
             metadata: String::new(),
         }

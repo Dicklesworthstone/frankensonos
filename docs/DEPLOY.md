@@ -40,10 +40,13 @@ Six rules hold the design together:
    would put every speaker's unauthenticated port 1400 on the tailnet.
 3. **Never `tailscale funnel`** these ports. Funnel publishes to the public
    internet.
-4. **The GENA callback listener is the only LAN-facing socket.** The speakers
-   must be able to reach the daemon to deliver state-change events. It accepts
-   event deliveries only, not control requests, on `FSONOS_EVENTS_PORT`
-   (default 8097) at the Mac's address facing the speakers.
+4. **The GENA callback listeners are the LAN-facing sockets.** The speakers
+   must be able to reach the daemon to deliver state-change events. Each local
+   address required by a route to the speakers gets its own specifically bound
+   listener on `FSONOS_EVENTS_PORT` (default 8097). These listeners accept event
+   deliveries and serve read-only announcement clips, with no control endpoints.
+   See [callback routing and recovery](CALLBACK_RECOVERY.md) for separate speaker
+   networks and partial listener failures.
 5. **Browsers can't drive it.** A web page open on the Mac or a tailnet
    device could otherwise reach the unauthenticated API. So each listener
    (the API and MCP) admits only its own Host names (loopback, its address, the tailnet's
@@ -66,7 +69,7 @@ variables. The environment form is what launchd uses.
 | MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | unset: `127.0.0.1:8098` | Endpoint path `/mcp`. Loopback unless set: reach it from the tailnet through Serve. |
 | Tailscale detection | `FSONOS_TAILSCALE` | `auto` | `off` (or `--tailscale off`) stops `fsonos` looking for Tailscale: unconfigured listeners bind loopback only, and `fsonos doctor` skips its `tailscale.*` checks. |
 | Tailscale Serve at startup | `FSONOS_TAILSCALE_SERVE` | off | `true` (or `--tailscale-serve`) runs `fsonos tailscale setup` when the daemon starts (§ "Recommended: Tailscale Serve"); a refusal or failure is logged and the daemon serves on. |
-| Events port | `FSONOS_EVENTS_PORT` | `8097` | Where the speakers deliver state-change events (GENA), on the Mac's LAN address. The only LAN-facing socket: allow it inbound (§4). `0` picks any free port. |
+| Events port | `FSONOS_EVENTS_PORT` | `8097` | Where the speakers deliver state-change events (GENA), on each local address used to reach them. Allow it inbound on those interfaces (§4). `0` picks a free port independently for each listener. |
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB (including the players last found) and Spotify token cache. |
 | Direct-seed list | `FSONOS_SEEDS` | `seeds.toml` in the data directory, when present | Optional file of player addresses for flaky-SSDP networks; every IP address in it is tried (e.g. TOML `players = ["192.0.2.10"]`, or one per line). `fsonos setup` writes the default one when multicast fails but the players answer. Every command also takes `--seed <ip>`. Keep the file under `local/` or outside the repo. A successful seed-only survey saves the players even on the first run, so removing the seed file keeps remembered discovery available. When discovery and the seeds find nothing, the players the last survey found (remembered in the store) are tried too. |
 | Routes file | `FSONOS_ROUTES` | unset | Only for `fsonos sim`: maps the virtual players' advertised addresses to the loopback sockets that serve them, plus the simulator's SSDP target. `fsonos sim` writes it; real players need none. While it is set, `fsonos` reaches nothing the file does not name (other addresses and multicast are refused): it asks only a daemon running under the same file, and unless `FSONOS_DATA_DIR` says otherwise it keeps its data in `data` beside the file, never the real house's store. |
@@ -554,7 +557,7 @@ curl -fsS https://<mac>.<tailnet>.ts.net/health                  # from another 
 |---|---|
 | Discovery finds no players under a LaunchAgent; connects fail with "No route to host" | Local Network access denied or never approved. Approve it in System Settings, or switch to the LaunchDaemon. |
 | Every call answers `NOT_READY` ("no rooms discovered yet") | The daemon found no players: SSDP is filtered on this network (set `FSONOS_SEEDS`), or Local Network access is missing (above). It keeps retrying; no restart needed. |
-| Players found, but state never updates after changes made in the Sonos app | Event callbacks are blocked inbound: `GET /doctor` shows `daemon.live` with no event subscriptions. Check the Application Firewall and the events port (§4). |
+| Players found, but state never updates after changes made in the Sonos app | Check `GET /doctor` → `daemon.live` for missing subscriptions, callback addresses and local listener failures. Allow inbound events on every speaker-facing interface (§4). One network can remain live while another is degraded. |
 | Players keep going offline and coming back; `fsonos doctor` warns `daemon.warnings` (renewals failing, the event listener re-opening, players leaving their household's topology) | The network between the Mac and the speakers is dropping, usually their Wi-Fi. A route that moves to another interface (a wired link beside the Wi-Fi) is followed only after it holds for a minute, so a re-association blip costs nothing; a storm that lasts means the link itself needs fixing. `GET /health` lists what is storming under `warnings`. |
 | The log shows bind failures ("Can't assign requested address") right after boot | A tailnet address set in `FSONOS_HTTP_ADDR`, bound before Tailscale was up. It self-heals via `KeepAlive`; prefer Serve, or leave the address unset. |
 | The log shows `store backend error: ... No space left on device`; recent actions are missing from `fsonos log` and cannot be undone | The data directory's volume is full: the daemon keeps serving while every store write fails. `fsonos doctor --only store` (`store.disk`) shows the free space and how much the data directory holds, and `GET /health` carries `disk`. Make room on that volume; fsonos deletes nothing itself. |

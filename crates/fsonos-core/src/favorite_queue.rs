@@ -141,6 +141,9 @@ pub fn enqueue<T: Transport + ?Sized>(
     };
     let index = usize::try_from(first - 1)
         .map_err(|_| ProtoError::Malformed("queue position exceeds usize".into()))?;
+    let undo_destination = control::SourceDestination::read(t, host, coordinator)
+        .ok()
+        .filter(|_| read(t, host).is_ok_and(|current| current == before));
     let sent = soap::enqueue_uri(t, host, uri, &favorite.metadata, at, next && playing_queue);
     let after = read(t, host).map_err(|_| uncertain("the post-add queue could not be read"))?;
     let count = match sent {
@@ -170,10 +173,33 @@ pub fn enqueue<T: Transport + ?Sized>(
     if favorite.kind == FavoriteKind::Track && (uris.len() != 1 || !same_track(uri, &uris[0])) {
         return Err(uncertain("read-back did not identify the requested track"));
     }
+    let proof = undo_destination.and_then(|destination| {
+        use control::queue_removal::{QueuedProof, Snapshot};
+        let proof = QueuedProof::confirmed(
+            host,
+            coordinator,
+            &destination,
+            &Snapshot {
+                revision: before.revision,
+                uris: before.uris.clone(),
+            },
+            &Snapshot {
+                revision: after.revision,
+                uris: after.uris.clone(),
+            },
+            first,
+            u32::try_from(count).ok()?,
+            1,
+        )?;
+        destination.confirm(t, host, coordinator).ok()?;
+        let current = read(t, host).ok()?;
+        (current == after).then_some(proof)
+    });
     Ok(Queued {
         first,
         uris: uris.to_vec(),
         playing_queue,
+        proof,
     })
 }
 
