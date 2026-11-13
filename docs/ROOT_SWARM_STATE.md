@@ -5349,3 +5349,12 @@ build is correct; only its destination is wrong.
 Next: the decrypt itself must be found (the caller of `mbedtls_rsa_pkcs1_decrypt`) and
 whatever it loads as its rsa context traced back, rather than assuming the `+0x18`
 chain.
+
+Found the decrypt's real context source: `ZZ0075` loads it from a **GOT slot** —
+`lwz r4,-32768(r30)` at `0x69a0`, with `r30` the TOC base — then calls
+`mbedtls_rsa_pkcs1_decrypt` at `0x69bc`. So the rsa context is a global reached through
+the GOT, not a field of the crypto struct, which is why writing `ctx+8` changed nothing.
+
+Best install point: rewrite that GOT load to a fixed absolute address (same trick already
+proven for `ZZ0028`), then store our parsed pk there. Two instructions' worth of patch:
+`lwz r4,-32768(r30)` → `lis r4,hi ; lwz r4,lo(r4)` (the slot then holds the pk pointer).
