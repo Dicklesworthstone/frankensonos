@@ -5196,3 +5196,22 @@ calling convention is still wrong somewhere, most plausibly that `r3` is not unu
 `mbedtls_pk_parse_key` as its first argument, which is the *context* — and we pass 0).
 Next: trace one instruction at a time into `ZZ0183` and inspect what lands in
 `mbedtls_pk_parse_key`'s registers rather than guessing again.
+
+Single-step trace into `ZZ0183` (entering at `base+0x6e74`):
+
+```
+1 pc=0xffb0e78 r3=0x1 r4=buf lr=0x1000709c
+5 pc=0xffb0e88 r3=0xc r4=buf
+9 pc=0xffb0e98 r3=0xc r4=buf r26=0x1 r27=buf
+```
+
+So `r3` is **consumed** (`r26` takes its value), and the function sets `r3=1` itself
+before that — it is not a context we must supply. The first instruction region also
+`malloc`s and forms `r31+8` as the pk context, so the parse gets a context built
+internally.
+
+That means my `(0, buf, len, 0, 0)` call was *shaped* about right and the crash lies
+inside the parse itself (libc), not in the arguments — the remaining candidate is the
+PEM content/buffer itself (e.g. a truncated `restore`, since only 512 bytes were
+allocated while the file is 1675 in the earlier attempt but this run restored into a
+**512-byte** buffer).
