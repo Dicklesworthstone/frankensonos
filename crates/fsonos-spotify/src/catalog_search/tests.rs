@@ -271,7 +271,7 @@ fn query_byte_boundary_is_accepted_and_results_never_exceed_ten() {
 fn null_unavailable_local_and_restricted_rows_are_skipped_and_duplicates_keep_order() {
     for kind in ["track", "episode"] {
         let server = Server::new();
-        let rows = [
+        let mut rows = vec![
             item(kind, 2),
             Value::Null,
             json!({ "is_playable": false, "id": null, "uri": "unavailable placeholder" }),
@@ -280,6 +280,12 @@ fn null_unavailable_local_and_restricted_rows_are_skipped_and_duplicates_keep_or
             item(kind, 2),
             item(kind, 1),
         ];
+        if kind == "track" {
+            rows.insert(
+                1,
+                json!({ "album": { "restrictions": { "reason": "product" } } }),
+            );
+        }
         server.set(QUERY, kind, 10, &response(kind, &rows, 30, 10));
         runtime().block_on(async {
             let cx = Cx::current().unwrap();
@@ -294,6 +300,42 @@ fn null_unavailable_local_and_restricted_rows_are_skipped_and_duplicates_keep_or
             assert!(found.more);
         });
         assert_eq!(server.calls().len(), 1);
+    }
+}
+
+#[test]
+fn track_search_rejects_nested_album_restrictions_and_malformed_evidence() {
+    for restriction in [
+        json!({ "reason": "market" }),
+        json!({ "reason": "future-reason" }),
+        json!({}),
+    ] {
+        let mut row = item("track", 1);
+        row["album"] = json!({ "restrictions": restriction });
+        row["uri"] = "unavailable album needs no playable identity".into();
+        let decoded: Item = serde_json::from_value(row).unwrap();
+        assert!(catalog_item(&decoded, "track").unwrap().is_none());
+    }
+    for album in [
+        None,
+        Some(Value::Null),
+        Some(json!({})),
+        Some(json!({ "restrictions": null })),
+    ] {
+        let mut row = item("track", 1);
+        if let Some(album) = album {
+            row["album"] = album;
+        }
+        let decoded: Item = serde_json::from_value(row).unwrap();
+        assert_eq!(
+            catalog_item(&decoded, "track").unwrap().unwrap().source_uri,
+            item_uri("track", 1)
+        );
+    }
+    for malformed in [json!("market"), json!([]), json!(false), json!(0)] {
+        let mut row = item("track", 1);
+        row["album"] = json!({ "restrictions": malformed });
+        assert!(serde_json::from_value::<Item>(row).is_err());
     }
 }
 

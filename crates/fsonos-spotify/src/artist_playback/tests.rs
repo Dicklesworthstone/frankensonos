@@ -246,6 +246,58 @@ fn explicit_artist_playback_skips_restricted_tracks_on_both_catalog_paths() {
 }
 
 #[test]
+fn album_restrictions_skip_top_tracks_and_catalog_reads_before_the_album_budget() {
+    for fallback in [false, true] {
+        let server = Server::new();
+        let mut restricted = track(1);
+        restricted["album"]["restrictions"] = json!({ "reason": "market" });
+        restricted["album"]["uri"] = "unavailable album identity".into();
+        let mut future = track(2);
+        future["album"]["restrictions"] = json!({ "reason": "future-reason" });
+        let top = [restricted, future, track(3)];
+        let mut albums: Vec<_> = (1..=3).map(album).collect();
+        for album in &mut albums {
+            album["restrictions"] = json!({ "reason": "product" });
+        }
+        albums[0]["uri"] = "unavailable album identity".into();
+        if fallback {
+            server.refused_top(403);
+            let mut available = albums.clone();
+            available.push(album(4));
+            server.albums(&available);
+            server.tracks(4, &[track(3)]);
+        } else {
+            server.top(&top);
+        }
+        runtime().block_on(async {
+            let cx = Cx::current().unwrap();
+            let mut session = server.session(&cx, true);
+            let selected = resolve(&mut session, &cx, ARTIST).await.unwrap();
+            assert_eq!(selected.tracks.len(), 1);
+            assert_eq!(selected.tracks[0].track_number, Some(3));
+            assert_eq!(selected.albums_read, usize::from(fallback));
+            if fallback {
+                server.albums(&albums);
+            } else {
+                server.top(&top[..2]);
+            }
+            let error = resolve(&mut session, &cx, ARTIST).await.unwrap_err();
+            assert!(error.to_string().contains("no playable tracks"));
+        });
+        let calls = server.calls();
+        assert_eq!(calls.len(), if fallback { 5 } else { 2 });
+        for number in 1..=3 {
+            assert!(
+                calls
+                    .iter()
+                    .all(|call| !call.contains(&format!("/albums/{}/tracks", album_id(number)))),
+                "declared unavailable albums must not consume catalog requests"
+            );
+        }
+    }
+}
+
+#[test]
 fn only_a_forbidden_or_missing_top_endpoint_uses_the_catalog_fallback() {
     for status in [403, 404] {
         let server = Server::new();

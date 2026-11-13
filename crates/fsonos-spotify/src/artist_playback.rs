@@ -75,6 +75,7 @@ pub async fn resolve(
                 if track.is_local
                     || track.is_playable == Some(false)
                     || track.restrictions.is_some()
+                    || track.album.restrictions.is_some()
                 {
                     continue;
                 }
@@ -170,7 +171,8 @@ async fn catalog(
     let mut seen_albums = HashSet::new();
     let mut albums_read = 0;
     for album in albums.items {
-        if !credited(&album.artists, artist_id)
+        if album.restrictions.is_some()
+            || !credited(&album.artists, artist_id)
             || album
                 .album_type
                 .as_deref()

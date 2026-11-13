@@ -124,6 +124,18 @@ fn catalog_sampling_deduplicates_and_skips_unplayable_local_and_other_artists_tr
     let server = Server::new();
     followed(&server, vec![artist(ARTIST, NAME)]);
     catalog(&server, ARTIST, NAME, ALBUM);
+    let mut albums: Vec<_> = (0..3)
+        .map(|number| {
+            let mut restricted = album(&format!("RestrictedAlbum{number}"), ARTIST, NAME);
+            restricted["restrictions"] = json!({ "reason": "product" });
+            restricted
+        })
+        .collect();
+    albums.push(album(ALBUM, ARTIST, NAME));
+    server.set(
+        &format!("/v1/artists/{ARTIST}/albums"),
+        page(albums, 0, None),
+    );
     let mut unavailable = song(1, ARTIST, NAME);
     unavailable["is_playable"] = false.into();
     let mut local = song(2, ARTIST, NAME);
@@ -220,9 +232,11 @@ fn top_tracks_stay_preferred_when_available_and_fill_three_playable_distinct_slo
     let server = Server::new();
     let mut unavailable = track(0);
     unavailable["is_playable"] = false.into();
+    let mut restricted_album = track(8);
+    restricted_album["album"]["restrictions"] = json!({ "reason": "market" });
     server.set(
         &format!("/v1/artists/{ARTIST}/top-tracks"),
-        json!({ "tracks": [unavailable, track(1), track(1), track(2), track(3), track(4)] }),
+        json!({ "tracks": [unavailable, restricted_album, track(1), track(1), track(2), track(3), track(4)] }),
     );
     runtime().block_on(async {
         let cx = Cx::current().unwrap();

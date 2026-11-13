@@ -9,21 +9,35 @@ fn restricted(number: usize, reason: &str) -> Value {
     value
 }
 
+fn restricted_album_track(number: usize, reason: &str) -> Value {
+    let mut value = track(number);
+    value["album"]["restrictions"] = json!({ "reason": reason });
+    value
+}
+
 #[test]
 fn saved_hydration_and_taste_skip_restrictions_without_losing_later_music() {
     let server = Server::new();
     server.set(
         "/v1/me/albums",
         page(
-            vec![json!({ "album": {
-                "id": "AvailabilityAlbum", "uri": "spotify:album:AvailabilityAlbum",
-                "name": "Test album", "total_tracks": 4,
-                "tracks": {
-                    "items": [track(0), restricted(1, "market")],
-                    "offset": 0, "total": 4,
-                    "next": format!("{API}/albums/AvailabilityAlbum/tracks?offset=2")
-                }
-            }})],
+            vec![
+                json!({ "album": {
+                    "id": "RestrictedAlbum", "uri": "spotify:album:RestrictedAlbum",
+                    "name": "Unavailable album", "total_tracks": 1,
+                    "restrictions": { "reason": "market" },
+                    "tracks": null
+                }}),
+                json!({ "album": {
+                    "id": "AvailabilityAlbum", "uri": "spotify:album:AvailabilityAlbum",
+                    "name": "Test album", "total_tracks": 4,
+                    "tracks": {
+                        "items": [track(0), restricted(1, "market")],
+                        "offset": 0, "total": 4,
+                        "next": format!("{API}/albums/AvailabilityAlbum/tracks?offset=2")
+                    }
+                }}),
+            ],
             0,
             None,
         ),
@@ -41,6 +55,7 @@ fn saved_hydration_and_taste_skip_restrictions_without_losing_later_music() {
             vec![
                 json!({ "track": restricted(4, "explicit") }),
                 json!({ "track": track(5) }),
+                json!({ "track": restricted_album_track(6, "product") }),
             ],
             0,
             None,
@@ -53,13 +68,14 @@ fn saved_hydration_and_taste_skip_restrictions_without_losing_later_music() {
             "items": [
                 { "item": track(7) },
                 { "item": { "restrictions": { "reason": "future-reason" } } },
+                { "item": { "album": { "restrictions": { "reason": "market" } } } },
                 { "item": track(7) }
-            ], "offset": 0, "total": 3, "next": null
+            ], "offset": 0, "total": 4, "next": null
         }),
     );
     server.set(
         "/v1/me/top/tracks",
-        page(vec![restricted(8, "market"), track(9)], 0, None),
+        page(vec![restricted_album_track(8, "market"), track(9)], 0, None),
     );
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
@@ -74,7 +90,7 @@ fn saved_hydration_and_taste_skip_restrictions_without_losing_later_music() {
                     .is_some()
             );
         }
-        for number in [1, 2, 4, 8] {
+        for number in [1, 2, 4, 6, 8] {
             assert!(
                 pool.get(&format!("spotify:track:TestTrack{number}"))
                     .is_none()
@@ -85,17 +101,18 @@ fn saved_hydration_and_taste_skip_restrictions_without_losing_later_music() {
             .unwrap()
             .unwrap();
         assert!(playlist.complete);
-        assert_eq!((playlist.examined, playlist.source_total), (3, Some(3)));
+        assert_eq!((playlist.examined, playlist.source_total), (4, Some(4)));
         assert_eq!(
             playlist
                 .tracks
                 .iter()
                 .map(|track| track.position)
                 .collect::<Vec<_>>(),
-            [1, 3]
+            [1, 4]
         );
     });
     assert_eq!(server.calls("/v1/albums/AvailabilityAlbum/tracks").len(), 1);
+    assert!(server.calls("/v1/albums/RestrictedAlbum/tracks").is_empty());
 }
 
 #[test]
@@ -122,21 +139,27 @@ fn malformed_restriction_metadata_cannot_replace_a_saved_library() {
                 Some(format!("{API}/me/tracks?offset=1")),
             ),
         );
-        for restriction in [json!("market"), json!([]), json!(false)] {
-            let mut broken = track(2);
-            broken["restrictions"] = restriction;
-            server.set(
-                "/v1/me/tracks?offset=1",
-                page(vec![json!({ "track": broken })], 1, None),
-            );
-            let mut store = SqliteStore::open(&file).unwrap();
-            let error = sync_library(&mut session, &cx, &mut store)
-                .await
-                .unwrap_err();
-            assert!(matches!(error, crate::SpotifyError::Decode(_)), "{error}");
-            assert_eq!(store.library().unwrap(), before);
-            assert_eq!(store.spotify_library_owner().unwrap(), owner);
-            store.close().unwrap();
+        for nested_album in [false, true] {
+            for restriction in [json!("market"), json!([]), json!(false)] {
+                let mut broken = track(2);
+                if nested_album {
+                    broken["album"]["restrictions"] = restriction;
+                } else {
+                    broken["restrictions"] = restriction;
+                }
+                server.set(
+                    "/v1/me/tracks?offset=1",
+                    page(vec![json!({ "track": broken })], 1, None),
+                );
+                let mut store = SqliteStore::open(&file).unwrap();
+                let error = sync_library(&mut session, &cx, &mut store)
+                    .await
+                    .unwrap_err();
+                assert!(matches!(error, crate::SpotifyError::Decode(_)), "{error}");
+                assert_eq!(store.library().unwrap(), before);
+                assert_eq!(store.spotify_library_owner().unwrap(), owner);
+                store.close().unwrap();
+            }
         }
         server.set(
             "/v1/me/tracks?offset=1",

@@ -906,6 +906,10 @@ impl PlaylistItem {
             || value
                 .get("restrictions")
                 .is_some_and(serde_json::Value::is_object)
+            || value
+                .get("album")
+                .and_then(|album| album.get("restrictions"))
+                .is_some_and(serde_json::Value::is_object)
         {
             return Ok(None);
         }
@@ -943,6 +947,10 @@ pub struct Album {
     pub total_tracks: u32,
     #[serde(default)]
     pub tracks: Option<Paging<SimplifiedTrack>>,
+    /// Album availability applies to its tracks even without track-level
+    /// restrictions. Omit absent metadata to preserve older page proofs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restrictions: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1038,6 +1046,9 @@ pub struct SimplifiedAlbum {
     pub album_type: Option<String>,
     #[serde(default)]
     pub release_date: Option<String>,
+    /// Retain restrictions on the album nested in a full track response.
+    #[serde(default)]
+    pub restrictions: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl SavedAlbum {
@@ -1074,14 +1085,15 @@ impl Album {
     }
 
     /// One of this album's tracks as a library item; `None` if Sonos can't
-    /// render it (a local file, an unplayable or provider-restricted track).
+    /// render it (a local file, an unplayable track, or a restriction on the
+    /// track or its album).
     #[must_use]
     pub fn library_item(&self, track: &SimplifiedTrack) -> Option<LibraryItem> {
         if !renderable(
             &track.uri,
             track.is_local,
             track.is_playable,
-            track.restrictions.is_some(),
+            track.restrictions.is_some() || self.restrictions.is_some(),
         ) {
             return None;
         }
@@ -1119,14 +1131,15 @@ impl SavedTrack {
 
 impl FullTrack {
     /// This track as a library item of `origin`; `None` if Sonos can't
-    /// render it (a local file, an unplayable or provider-restricted track).
+    /// render it (a local file, an unplayable track, or a restriction on the
+    /// track or its album).
     #[must_use]
     pub fn library_item(&self, origin: Origin, added_at: Option<i64>) -> Option<LibraryItem> {
         if !renderable(
             &self.uri,
             self.is_local,
             self.is_playable,
-            self.restrictions.is_some(),
+            self.restrictions.is_some() || self.album.restrictions.is_some(),
         ) {
             return None;
         }
@@ -2009,6 +2022,8 @@ mod tests {
             json!({ "restrictions": { "reason": "market" } }),
             json!({ "restrictions": { "reason": "future-restriction" } }),
             json!({ "restrictions": {} }),
+            json!({ "album": { "restrictions": { "reason": "market" } } }),
+            json!({ "album": { "restrictions": {} } }),
         ] {
             let entry: PlaylistItem = serde_json::from_value(json!({ "item": item })).unwrap();
             assert!(entry.checked_library_item(Origin::Taste).unwrap().is_none());
@@ -2097,6 +2112,74 @@ mod tests {
     }
 
     #[test]
+    fn album_restrictions_filter_tracks_and_preserve_legacy_serialization() {
+        use serde_json::json;
+
+        let track = json!({
+            "uri": "spotify:track:AvailabilityTrack", "name": "Test song",
+            "explicit": false, "is_playable": true
+        });
+        let album = json!({
+            "id": "AvailabilityAlbum", "uri": "spotify:album:AvailabilityAlbum",
+            "name": "Availability album", "total_tracks": 1,
+            "tracks": { "items": [track.clone()], "offset": 0, "total": 1 }
+        });
+        let simplified: SimplifiedTrack = serde_json::from_value(track.clone()).unwrap();
+        for restriction in [
+            json!({ "reason": "market" }),
+            json!({ "reason": "product" }),
+            json!({ "reason": "explicit" }),
+            json!({ "reason": "future-reason", "future": true }),
+            json!({}),
+        ] {
+            let mut restricted = album.clone();
+            restricted["restrictions"] = restriction;
+            let observed: Album = serde_json::from_value(restricted.clone()).unwrap();
+            let restored: Album =
+                serde_json::from_slice(&serde_json::to_vec(&observed).unwrap()).unwrap();
+            assert_eq!(restored, observed);
+            assert!(restored.library_items().is_empty());
+            assert!(restored.library_item(&simplified).is_none());
+            let mut nested = track.clone();
+            nested["album"] = restricted;
+            let full: FullTrack = serde_json::from_value(nested.clone()).unwrap();
+            for origin in [Origin::LikedTrack, Origin::Taste] {
+                assert!(full.library_item(origin, None).is_none());
+            }
+            let playlist: PlaylistItem = serde_json::from_value(json!({ "item": nested })).unwrap();
+            assert!(
+                playlist
+                    .checked_library_item(Origin::Taste)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for restriction in [None, Some(json!(null))] {
+            let mut legacy = album.clone();
+            if let Some(restriction) = restriction {
+                legacy["restrictions"] = restriction;
+            }
+            let decoded: Album = serde_json::from_value(legacy.clone()).unwrap();
+            assert!(decoded.library_item(&simplified).is_some());
+            assert_eq!(decoded.library_items().len(), 1);
+            assert!(
+                serde_json::to_value(&decoded)
+                    .unwrap()
+                    .get("restrictions")
+                    .is_none(),
+                "absent availability must not change older checkpoint fingerprints"
+            );
+            let mut nested = track.clone();
+            nested["album"] = legacy;
+            let full: FullTrack = serde_json::from_value(nested).unwrap();
+            assert!(full.library_item(Origin::LikedTrack, None).is_some());
+        }
+        // The album-tracks endpoint has no containing album metadata. Its
+        // projection continues to use only the track evidence it returned.
+        assert!(crate::expand::album_track(&simplified).is_some());
+    }
+
+    #[test]
     fn malformed_restrictions_cannot_become_playable_rows_or_playlist_gaps() {
         use serde_json::json;
 
@@ -2108,6 +2191,19 @@ mod tests {
             });
             assert!(serde_json::from_value::<FullTrack>(track.clone()).is_err());
             assert!(serde_json::from_value::<SimplifiedTrack>(track.clone()).is_err());
+            let entry: PlaylistItem = serde_json::from_value(json!({ "item": track })).unwrap();
+            assert!(entry.checked_library_item(Origin::Taste).is_err());
+
+            let album = json!({
+                "id": "AvailabilityAlbum", "uri": "spotify:album:AvailabilityAlbum",
+                "name": "Test album", "restrictions": malformed
+            });
+            assert!(serde_json::from_value::<Album>(album.clone()).is_err());
+            let track = json!({
+                "uri": "spotify:track:AvailabilityTrack", "name": "Test song",
+                "album": album, "explicit": false
+            });
+            assert!(serde_json::from_value::<FullTrack>(track.clone()).is_err());
             let entry: PlaylistItem = serde_json::from_value(json!({ "item": track })).unwrap();
             assert!(entry.checked_library_item(Origin::Taste).is_err());
         }

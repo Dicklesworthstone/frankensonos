@@ -650,10 +650,12 @@ already queued music stays in place. An unchanged catalog reuses the cached
 pool, so listening-history updates do not trigger a full library scan.
 
 New Spotify reads also exclude tracks the provider marks restricted, even
-when its optional playback flag is absent or says playable. This applies to
-saved music, taste reads, artist selections and whole-work expansion. A failed
-or malformed refresh retains the last accepted library; changing your explicit
-content preference does not override a provider restriction.
+when its optional playback flag is absent or says playable. Restrictions on
+returned album metadata apply to that album's tracks too. This applies to saved
+music, taste reads, catalog search, artist selections and whole-work expansion
+wherever the response supplies that restriction. A failed or malformed refresh
+retains the last accepted library; changing your explicit content preference
+does not override a provider restriction.
 
 The sync panel and CLI/HTTP/MCP status distinguish reading, verification, and
 prepared music waiting for publication. Retained page and track counts, retry

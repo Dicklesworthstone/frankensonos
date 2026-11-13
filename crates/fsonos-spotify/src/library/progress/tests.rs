@@ -108,6 +108,9 @@ fn proof_ignores_unused_fields_and_query_spelling_but_not_music_metadata() {
             "{field}"
         );
     }
+    let mut restricted_album = equivalent;
+    restricted_album["items"][0]["track"]["album"]["restrictions"] = json!({ "reason": "product" });
+    assert!(!progress.matches(1, &bytes(&restricted_album)).unwrap());
 }
 
 #[test]
@@ -129,6 +132,54 @@ fn restricted_saved_pages_keep_raw_coverage_and_reverify_after_restart() {
     resumed.ingest(&bytes(&liked(1, 2))).unwrap();
     assert_eq!(resumed.tracks(), 1);
     assert_eq!(resumed.read.items[0].source_uri, "spotify:track:Progress1");
+}
+
+#[test]
+fn restricted_albums_keep_saved_page_offsets_and_invalidate_hydration_proofs() {
+    let available = json!({
+        "items": [{ "album": {
+            "id": "RestrictedAlbum", "uri": "spotify:album:RestrictedAlbum",
+            "name": "Unavailable album", "total_tracks": 2
+        }}], "offset": 0, "total": 2, "next": null
+    });
+    let mut restricted = available.clone();
+    restricted["items"][0]["album"]["restrictions"] = json!({ "reason": "future-reason" });
+    let mut progress = fresh();
+    progress.ingest(&bytes(&restricted)).unwrap();
+    progress.ingest(&bytes(&empty())).unwrap();
+    let mut resumed = restored(&progress);
+    resumed.claim().unwrap();
+    assert_eq!(resumed.tracks(), 0);
+    assert_eq!(
+        resumed.next_url(),
+        Some(Endpoints::default().saved_albums(1).as_str())
+    );
+    assert!(resumed.matches(0, &bytes(&restricted)).unwrap());
+    assert!(!resumed.matches(0, &bytes(&available)).unwrap());
+    resumed
+        .ingest(&bytes(&json!({
+            "items": [{ "album": {
+                "id": "AvailableAlbum", "uri": "spotify:album:AvailableAlbum",
+                "name": "Available album", "total_tracks": 1,
+                "tracks": { "items": [track(1)], "offset": 0, "total": 1, "next": null }
+            }}], "offset": 1, "total": 2, "next": null
+        })))
+        .unwrap();
+    assert!(
+        resumed.next_url().is_none(),
+        "restricted albums create no hydration requests"
+    );
+    assert_eq!(resumed.tracks(), 1);
+    assert_eq!(resumed.read.items[0].source_uri, "spotify:track:Progress1");
+    assert_eq!(restored(&resumed).tracks(), 1);
+
+    // An older unrestricted read must also detect an album becoming restricted.
+    let mut previous = fresh();
+    previous.ingest(&bytes(&available)).unwrap();
+    let encoded = previous.encode().unwrap();
+    assert!(!encoded.contains("\"restrictions\""));
+    let restored_previous = restored(&previous);
+    assert!(!restored_previous.matches(0, &bytes(&restricted)).unwrap());
 }
 
 #[test]
@@ -251,6 +302,17 @@ fn outstanding_fetches_cannot_be_redirected_skipped_or_invented() {
 fn a_rejected_page_cannot_change_the_durable_accepted_prefix() {
     let mut progress = prefix();
     let before = progress.encode().unwrap();
+    for nested_album in [false, true] {
+        let mut malformed = liked(1, 3);
+        let track = &mut malformed["items"][0]["track"];
+        if nested_album {
+            track["album"]["restrictions"] = json!(false);
+        } else {
+            track["restrictions"] = json!(false);
+        }
+        assert!(progress.ingest(&bytes(&malformed)).is_err());
+        assert_eq!(progress.encode().unwrap(), before);
+    }
     let mut missing_flag = liked(1, 3);
     missing_flag["items"][0]["track"]
         .as_object_mut()
