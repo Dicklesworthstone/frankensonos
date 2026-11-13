@@ -5245,3 +5245,8 @@ rather than at its entry:
    `*(0x1064dec8)`, and any code inside `ZZ0183`/mbedtls that expects the *old* ZZ0028
    (a getter with a call) will see a different contract only if it calls it — worth
    checking before blaming the parser.
+
+Timing note: with breakpoints inside `ZZ0183` armed, a 30 s window is not enough —
+the updater under the debugger has not even reached `0x10007120` yet (the log shows
+the breakpoint being set and nothing further). The working pattern from earlier runs
+is 35-45 s before any curl/probe lands; the inner probes need about the same.
