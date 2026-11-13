@@ -208,6 +208,96 @@ fn top_tracks_stop_after_ten_distinct_playable_tracks() {
 }
 
 #[test]
+fn explicit_artist_playback_skips_restricted_tracks_on_both_catalog_paths() {
+    for fallback in [false, true] {
+        let server = Server::new();
+        let mut restricted = track(1);
+        restricted["restrictions"] = json!({ "reason": "product" });
+        // Unavailable rows need no playable identity, just like is_playable=false.
+        restricted["uri"] = "unavailable catalog identity".into();
+        let mut future = track(2);
+        future.as_object_mut().unwrap().remove("is_playable");
+        future["restrictions"] = json!({ "reason": "future-provider-reason" });
+        let selection = [restricted, future, track(3)];
+        if fallback {
+            server.refused_top(403);
+            server.albums(&[album(1)]);
+            server.tracks(1, &selection);
+        } else {
+            server.top(&selection);
+        }
+        runtime().block_on(async {
+            let cx = Cx::current().unwrap();
+            let mut session = server.session(&cx, true);
+            let selected = resolve(&mut session, &cx, ARTIST).await.unwrap();
+            assert_eq!(selected.tracks.len(), 1);
+            assert_eq!(selected.tracks[0].track_number, Some(3));
+            if fallback {
+                server.tracks(1, &selection[..2]);
+            } else {
+                server.top(&selection[..2]);
+            }
+            let error = resolve(&mut session, &cx, ARTIST).await.unwrap_err();
+            assert!(matches!(error, SpotifyError::Decode(_)), "{error}");
+            assert!(error.to_string().contains("no playable tracks"));
+        });
+        assert_eq!(server.calls().len(), if fallback { 6 } else { 2 });
+    }
+}
+
+#[test]
+fn album_restrictions_skip_top_tracks_and_catalog_reads_before_the_album_budget() {
+    for fallback in [false, true] {
+        let server = Server::new();
+        let mut restricted = track(1);
+        restricted["album"]["restrictions"] = json!({ "reason": "market" });
+        restricted["album"]["uri"] = "unavailable album identity".into();
+        let mut future = track(2);
+        future["album"]["restrictions"] = json!({ "reason": "future-reason" });
+        let top = [restricted, future, track(3)];
+        let mut albums: Vec<_> = (1..=3).map(album).collect();
+        for album in &mut albums {
+            album["restrictions"] = json!({ "reason": "product" });
+        }
+        albums[0]["uri"] = "unavailable album identity".into();
+        if fallback {
+            server.refused_top(403);
+            let mut available = albums.clone();
+            available.push(album(4));
+            server.albums(&available);
+            server.tracks(4, &[track(3)]);
+        } else {
+            server.top(&top);
+        }
+        runtime().block_on(async {
+            let cx = Cx::current().unwrap();
+            let mut session = server.session(&cx, true);
+            let selected = resolve(&mut session, &cx, ARTIST).await.unwrap();
+            assert_eq!(selected.tracks.len(), 1);
+            assert_eq!(selected.tracks[0].track_number, Some(3));
+            assert_eq!(selected.albums_read, usize::from(fallback));
+            if fallback {
+                server.albums(&albums);
+            } else {
+                server.top(&top[..2]);
+            }
+            let error = resolve(&mut session, &cx, ARTIST).await.unwrap_err();
+            assert!(error.to_string().contains("no playable tracks"));
+        });
+        let calls = server.calls();
+        assert_eq!(calls.len(), if fallback { 5 } else { 2 });
+        for number in 1..=3 {
+            assert!(
+                calls
+                    .iter()
+                    .all(|call| !call.contains(&format!("/albums/{}/tracks", album_id(number)))),
+                "declared unavailable albums must not consume catalog requests"
+            );
+        }
+    }
+}
+
+#[test]
 fn only_a_forbidden_or_missing_top_endpoint_uses_the_catalog_fallback() {
     for status in [403, 404] {
         let server = Server::new();

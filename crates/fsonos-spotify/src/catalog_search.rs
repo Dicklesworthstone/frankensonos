@@ -59,7 +59,8 @@ struct Item {
     is_playable: Option<bool>,
     #[serde(default)]
     is_local: bool,
-    restrictions: Option<Restrictions>,
+    restrictions: Option<serde_json::Map<String, serde_json::Value>>,
+    album: Option<AlbumAvailability>,
     artists: Option<Vec<Creator>>,
     owner: Option<Owner>,
     publisher: Option<String>,
@@ -67,7 +68,9 @@ struct Item {
 }
 
 #[derive(Debug, Deserialize)]
-struct Restrictions {}
+struct AlbumAvailability {
+    restrictions: Option<serde_json::Map<String, serde_json::Value>>,
+}
 
 #[derive(Debug, Deserialize)]
 struct Creator {
@@ -150,7 +153,15 @@ fn validate_query<'a>(query: &'a str, kind: &str, limit: u32) -> Result<&'a str,
 }
 
 fn catalog_item(item: &Item, kind: &str) -> Result<Option<CatalogItem>, SpotifyError> {
-    if item.is_local || item.is_playable == Some(false) || item.restrictions.is_some() {
+    if item.is_local
+        || item.is_playable == Some(false)
+        || item.restrictions.is_some()
+        || (kind == "track"
+            && item
+                .album
+                .as_ref()
+                .is_some_and(|album| album.restrictions.is_some()))
+    {
         return Ok(None);
     }
     // Spotify documents an empty album name as a catalog takedown.

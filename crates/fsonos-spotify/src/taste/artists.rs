@@ -214,7 +214,8 @@ impl Reader<'_> {
 }
 
 fn catalog_album(album: &Album, artist_id: &str) -> bool {
-    !album.id.is_empty()
+    album.restrictions.is_none()
+        && !album.id.is_empty()
         && album.id.len() <= 128
         && album.id.bytes().all(|byte| byte.is_ascii_alphanumeric())
         && album.uri == format!("spotify:album:{}", album.id)

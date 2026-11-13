@@ -463,11 +463,13 @@ pub fn before_state_queued(queued: &[QueuedBefore]) -> Option<String> {
         return Some(barrier());
     }
     let json = serde_json::json!({ "queued": queued }).to_string();
-    Some(if json.len() <= crate::scenes::queue_backup::MAX_QUEUE_BACKUP_BYTES {
-        json
-    } else {
-        barrier()
-    })
+    Some(
+        if json.len() <= crate::scenes::queue_backup::MAX_QUEUE_BACKUP_BYTES {
+            json
+        } else {
+            barrier()
+        },
+    )
 }
 
 /// The before-state of a write that changed the speakers in a way undo

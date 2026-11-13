@@ -99,7 +99,14 @@ fn verification_keeps_its_cursor_across_another_restart() {
 #[test]
 fn same_total_root_or_middle_metadata_changes_are_not_accepted() {
     for index in [0, 2] {
-        for field in ["explicit", "name", "uri", "duration_ms", "track_number"] {
+        for field in [
+            "explicit",
+            "name",
+            "uri",
+            "duration_ms",
+            "track_number",
+            "restrictions",
+        ] {
             let mut part = reopened(&read(4, 4), NOW + 1);
             let mut body: Value = serde_json::from_slice(&page(index, 4)).unwrap();
             body["items"][0][field] = match field {
@@ -107,6 +114,7 @@ fn same_total_root_or_middle_metadata_changes_are_not_accepted() {
                 "name" => json!("Another movement"),
                 "uri" => json!("spotify:track:Replacement"),
                 "duration_ms" => json!(300_000),
+                "restrictions" => json!({ "reason": "market" }),
                 _ => json!(99),
             };
             let before = part.clone();

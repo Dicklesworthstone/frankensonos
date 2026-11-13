@@ -379,6 +379,11 @@ or retry backoff.
   history and undo ownership. Multiple MCP listeners share the same live
   house. Native MCP never accepts the HTTP API's local CLI token as an
   uncapped CLI or stdio identity.
+- The daemon follows its host's owner login after startup too. A late Tailscale
+  login gains owner rights without a restart; logout, account changes and
+  tagged nodes retire the old owner. This works with explicit loopback binds
+  behind Serve and with IPv6-only hosts. Brief lookup failures retain the last
+  verified identity for at most four checks, while policy edits remain in force.
 - Point an agent at it from any tailnet machine:
 
 ```bash
@@ -643,6 +648,14 @@ its stale selection pool, including when a refresh fails after changing the
 store. A failed or inconsistent rebuild cannot select from that old pool;
 already queued music stays in place. An unchanged catalog reuses the cached
 pool, so listening-history updates do not trigger a full library scan.
+
+New Spotify reads also exclude tracks the provider marks restricted, even
+when its optional playback flag is absent or says playable. Restrictions on
+returned album metadata apply to that album's tracks too. This applies to saved
+music, taste reads, catalog search, artist selections and whole-work expansion
+wherever the response supplies that restriction. A failed or malformed refresh
+retains the last accepted library; changing your explicit content preference
+does not override a provider restriction.
 
 The sync panel and CLI/HTTP/MCP status distinguish reading, verification, and
 prepared music waiting for publication. Retained page and track counts, retry

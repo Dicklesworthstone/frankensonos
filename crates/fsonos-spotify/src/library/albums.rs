@@ -8,6 +8,12 @@ use crate::client::SavedAlbum;
 
 impl LibraryRead {
     pub(super) fn saved_album(&mut self, saved: SavedAlbum) -> Result<(), SpotifyError> {
+        // The containing page still counts this save as a raw source entry.
+        // Known-unavailable albums must neither contribute embedded tracks
+        // nor trigger hydration that could lose the album's restriction.
+        if saved.album.restrictions.is_some() {
+            return Ok(());
+        }
         let added_at = saved.added_unix();
         let mut coverage = Coverage {
             offset: Some(0),
@@ -225,6 +231,23 @@ mod tests {
         liked(&mut read);
         assert_eq!(read.pages_read(), 2);
         assert_recovered(read);
+    }
+
+    #[test]
+    fn declared_album_restrictions_skip_embedded_tracks_and_hydration() {
+        for embedded in [None, Some(page(&[1, 2, 3], 0, None))] {
+            let mut body = saved(embedded);
+            body["items"][0]["album"]["restrictions"] = json!({ "reason": "market" });
+            let mut read = LibraryRead::default();
+            ingest(&mut read, &body);
+            liked(&mut read);
+            assert!(
+                read.next_url().is_none(),
+                "restricted saves need no track fetch"
+            );
+            assert_eq!(read.pages_read(), 2);
+            assert!(read.into_items().is_empty());
+        }
     }
 
     #[test]

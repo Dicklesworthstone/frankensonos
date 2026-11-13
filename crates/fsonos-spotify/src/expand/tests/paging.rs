@@ -45,14 +45,17 @@ fn missing_album_links_recover_raw_positions_before_filtering_unavailable_tracks
         let mut session = Session::open(config(), cache, Client::default_for_runtime(&cx))
             .unwrap()
             .with_endpoints(spotify.endpoints());
-        for unavailable in [false, true] {
+        for (unavailable, restricted) in [(false, false), (true, false), (false, true)] {
             let mut first = first_page();
             first["items"][1]["is_playable"] = (!unavailable).into();
+            if restricted {
+                first["items"][1]["restrictions"] = json!({ "reason": "explicit" });
+            }
             serve(&spotify, 0, &first);
             let tracks = fetch_album_tracks(&mut session, &cx, ALBUM).await.unwrap();
             let expected: Vec<_> = fixture_album()
                 .into_iter()
-                .filter(|track| !unavailable || track.track_number != 2)
+                .filter(|track| !(unavailable || restricted) || track.track_number != 2)
                 .map(|track| track.source_uri)
                 .collect();
             let actual: Vec<_> = tracks
@@ -64,13 +67,13 @@ fn missing_album_links_recover_raw_positions_before_filtering_unavailable_tracks
     });
     let last = target(&spotify, 3);
     let fake = spotify.stop();
-    assert_eq!(fake.log.len(), 4, "two pages per complete album read");
+    assert_eq!(fake.log.len(), 6, "two pages per complete album read");
     assert_eq!(
         fake.log
             .iter()
             .filter(|line| line.ends_with(last.as_str()))
             .count(),
-        2
+        3
     );
 }
 

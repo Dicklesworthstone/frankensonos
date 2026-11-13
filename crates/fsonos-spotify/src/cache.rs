@@ -335,7 +335,15 @@ async fn sync_library_observed<S: Store + ?Sized>(
         }
     }
     finish_full_publication(
-        session, cx, store, &receipt, previous_albums, report, read, genres, now,
+        session,
+        cx,
+        store,
+        &receipt,
+        previous_albums,
+        report,
+        read,
+        genres,
+        now,
     )
     .await
 }
@@ -357,8 +365,7 @@ async fn finish_full_publication<S: Store + ?Sized>(
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
     let mut notes = sync_notes(&read, &genres, &Expansion::default());
     let completion =
-        albums::complete_verified(session, cx, store, receipt, previous_albums, &mut notes)
-            .await?;
+        albums::complete_verified(session, cx, store, receipt, previous_albums, &mut notes).await?;
     let mut genre_continuation = genre_completion::status(store, receipt, now)?;
     if !genre_continuation.requires_refresh {
         genre_continuation.completed = genres.fetched;

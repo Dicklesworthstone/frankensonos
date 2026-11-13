@@ -44,7 +44,7 @@ use fsonos_core::clock::SystemClock;
 use fsonos_core::live::{Live, LiveConfig};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::SqliteStore;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak, mpsc};
@@ -309,11 +309,7 @@ fn unshared_data_dir(global: &GlobalArgs) -> anyhow::Result<(PathBuf, std::fs::F
 /// for a tagged node (which has no owning login), or when Tailscale cannot
 /// say.
 fn owner_login(tailnet: &fsonos_tailscale::TailnetStatus) -> Option<String> {
-    let login = tailnet
-        .running()
-        .and_then(|t| t.ipv4.first().copied())
-        .and_then(|ip| fsonos_tailscale::WhoIs::default().resolve(IpAddr::V4(ip)))
-        .and_then(|identity| identity.login);
+    let login = tailnet::owner_login(tailnet);
     match &login {
         Some(login) => eprintln!(
             "fsonos serve: a Spotify sign-in may be started by the CLI and by {login}, \
@@ -420,25 +416,29 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     }
     announce_tailnet(&tailnet, &http_plan, &http, &mcp, args.tailscale_serve);
     follow_serve(args, &tailnet, &serve, &stop);
-    // Only automatic HTTP binds follow Tailscale while the daemon runs.
-    // Loopback stays owned here; an explicit bind and every MCP listener
-    // retain exactly the configured startup behavior.
-    let (mut http, tailnet_watch) = if tailnet::enabled(args) {
+    // Ownership follows Tailscale even with fixed HTTP or Serve binds.
+    // Only automatic HTTP listeners move with it; loopback, configured
+    // HTTP and every MCP listener retain their startup lifecycle.
+    let (mut http, automatic) = if tailnet::automatic_http(args) {
         let (local, automatic) = http
             .into_iter()
             .partition(|(_, addr)| addr.ip().is_loopback());
-        let watching = tailnet::watch(
+        (local, Some(automatic))
+    } else {
+        (http, None)
+    };
+    let tailnet_watch = if tailnet::enabled(args) {
+        tailnet::watch(
             automatic,
-            names,
+            tailnet,
             Arc::clone(&surface),
             cli_token,
             args.tailscale_serve,
             serve,
             Arc::clone(&stop),
-        );
-        (local, watching)
+        )
     } else {
-        (http, None)
+        None
     };
     announce_live(&live);
 
@@ -462,7 +462,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     if let Some(watching) = tailnet_watch
         && watching.join().is_err()
     {
-        tracing::warn!("the automatic tailnet listeners stopped with a panic");
+        tracing::warn!("the Tailscale ownership/listener watcher stopped with a panic");
     }
     stop_mcp(mcp);
     // Announcements in flight put the music back before the process ends.
