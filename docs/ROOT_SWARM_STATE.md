@@ -5260,3 +5260,22 @@ buffer belonged, which is exactly why every attempt crashed inside libc.
 With the correct order the call **returns cleanly**, and with the **DER** form of the
 key it returns a real context (`pk=0x10032238`). The PEM form returns null — this
 build's mbedtls rejects PKCS#1 PEM — so DER is the format to use from here.
+
+**MILESTONE: the key gate is cleared and the updater reaches decryption.**
+With the DER key parsed, stashed in the *updater's* own `.bss` slot (`0x100307c0`) and
+returned by the patched `ZZ0028`, the run now passes "Upgrade supports all my legacy
+hw features" and enters the envelope:
+
+```
+error getting decrypted data length of 1 175696
+Upgrade failed: (1) upgrade file format unknown
+```
+
+So `ZZ0045`'s mode-1 length check is being reached with real numbers (mode 1, 175696)
+— the key path works end to end. The new failure is that the decrypted length comes
+back wrong, i.e. the RSA/exchange did not produce the expected envelope plaintext.
+
+Next: the earlier `(0)`-vs-`(nil)` results show the parse now succeeds, so the question
+is whether the right slot is *consumed* by the decrypt, or whether the envelope needs the
+key in a different representation than an `mbedtls_pk_context` (e.g. the raw modulus at
+a different field).
