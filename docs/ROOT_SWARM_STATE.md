@@ -5374,3 +5374,12 @@ start being reached.
 with a `lis/addi` pair — so static hunting does not find the return site. Method change:
 breakpoint the log call and walk one frame up to see which function returns 49, instead
 of grepping for immediates.
+
+Probe run stalled: breakpoints resolved (`bp2 0x1000716c`, `bp3 base+0x69a0`) after the
+key was installed, but neither fired and the log stopped at the compat line where the
+previous script had already produced (49). Same binary, same slot value — so the
+difference is in the script, most likely the extra in-library breakpoint or the missing
+`printf` altering gdb's step behaviour, not device state.
+
+Next: re-run with the probe file *without* the in-library breakpoint to confirm the
+site is reached, then add that breakpoint back.
