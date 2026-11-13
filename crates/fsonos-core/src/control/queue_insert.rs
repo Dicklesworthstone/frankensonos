@@ -204,6 +204,9 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
         ..
     } = prepare(t, host, coordinator, request.next)?;
 
+    let undo_destination = super::SourceDestination::read(t, host, coordinator)
+        .ok()
+        .filter(|_| still_observed(t, host, &before).unwrap_or(false));
     let written = soap::enqueue_uri(
         t,
         host,
@@ -274,10 +277,26 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
     if let Some(cause) = lost {
         tracing::warn!(cause = %cause, "enqueue confirmed by read-back; add not replayed");
     }
+    let proof = undo_destination
+        .filter(|destination| destination.confirm(t, host, coordinator).is_ok())
+        .filter(|_| still_observed(t, host, &after).unwrap_or(false))
+        .and_then(|destination| {
+            super::queue_removal::QueuedProof::confirmed(
+                host,
+                coordinator,
+                &destination,
+                &before,
+                &after,
+                added.first,
+                added.count,
+                1,
+            )
+        });
     Ok(Queued {
         first: added.first,
         uris: selected.to_vec(),
         playing_queue,
+        proof,
     })
 }
 

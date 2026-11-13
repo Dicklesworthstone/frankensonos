@@ -920,6 +920,16 @@ the house to agents they can bound and reverse. The guardrails live in
   `fsonos log`, `fsonos undo`, MCP `recent_actions` and `undo_last`. Undo says
   what it could not restore (for example, a queue that was replaced since).
 
+Queue-add undo retains bounded before/after queue observations and the original
+coordinator address, physical group, source and known boot identity. Each native
+add must advance the revision by exactly one to issue a receipt. Undo checks the
+complete saved result and sends one revision-guarded removal; matching track URIs
+at the old positions cannot authorize deleting a later replacement. Fully
+verified one-step undo transitions can advance earlier receipts for successive
+undos after restart. Missing proof, counter gaps or wrap, legacy unproved rows,
+and changed ownership remain barriers even under force. See
+[`docs/QUEUE_UNDO.md`](docs/QUEUE_UNDO.md#queue-additions).
+
 New volume, mute, group-volume and volume-fade actions retain the exact room
 players and level fields they changed. Their undo restores those fields while
 preserving the current source, queue occurrence, playback state, grouping and

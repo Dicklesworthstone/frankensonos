@@ -284,6 +284,7 @@ impl Surface {
                 coordinator,
                 first: queued.first,
                 uris: queued.uris,
+                proof: queued.proof,
             }]),
         );
         Ok(QueueAddedDto {

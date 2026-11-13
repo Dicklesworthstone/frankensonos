@@ -298,12 +298,8 @@ fn an_undo_leaves_a_queue_that_changed_alone() {
     let host = resolve_room(&h, ROOM).unwrap().coordinator.ip;
     remove_all_tracks_from_queue(&lan, host).unwrap();
 
-    let undone = s.undo(&Client::Cli, true).unwrap().unwrap();
-    assert!(undone.unqueued.is_empty(), "{undone:?}");
-    assert!(
-        undone.unqueue_failures[0].1.contains("the queue changed"),
-        "{undone:?}"
-    );
+    let refused = s.undo(&Client::Cli, true).unwrap_err();
+    assert!(refused.detail.contains("the queue changed"), "{refused:?}");
 
     for (uri, why) in [
         ("x-rincon-mp3radio://example.invalid/a.mp3", "a stream"),
