@@ -5092,3 +5092,22 @@ the keyring entry rather than carrying bytes.
 
 So supplying our own key means either making `ZZ0028` hand back our key for the
 requested mode, or calling ZZ0045 with a mode we control and a prepared buffer.
+
+`ZZ0028` is a **pure getter** into the global crypto context:
+
+```
+bl ZZ0146            ; ctx = global
+beq -> return 0
+lwz r9,8(r3)         ; ctx->[8]
+lwz r0,24(r9)        ; ->[0x18]  <- the model key pointer
+mr r3,r0
+```
+
+So the envelope key lives at `((*(ctx)+8))->[0x18]` and is set by whatever key-load
+path runs on a real device (OTP/MDP3). That makes substitution trivial in the
+emulator: write our key bytes into guest memory and point that slot at them, no
+code patch required — or patch the final `lwz` to use a fixed address.
+
+This also explains the earlier abort work: the same global is what `ZZ0041`
+initialises, so with init patched but no key ever loaded the slot stays NULL and
+every envelope op fails at `ZZ0045`.
