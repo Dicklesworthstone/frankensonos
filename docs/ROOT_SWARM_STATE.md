@@ -5368,3 +5368,9 @@ separate decrypt entry).
 So the field question about the GOT slot is still open but *not* currently the blocker.
 The blocker is upstream: find what returns 49 and why, then the decrypt call site will
 start being reached.
+
+(49) is not a literal anywhere in `upgrade` or the crypto lib, and the message string
+("error decrypting upgrade", file off `0x19d90`) is GOT-referenced rather than loaded
+with a `lis/addi` pair — so static hunting does not find the return site. Method change:
+breakpoint the log call and walk one frame up to see which function returns 49, instead
+of grepping for immediates.
