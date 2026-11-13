@@ -126,6 +126,14 @@ the DJ does not replay it or clear the queue. Renderer failures do not teach
 the DJ that the listener disliked the music. The action log distinguishes an
 observed successful recovery from a continuation that has only been requested.
 
+Before sending a recovery command, the daemon durably saves the attempt with
+the feed's initiating callers and group identity. A failed save defers recovery
+without touching the speaker. Playback, queue, group and shuffle/repeat mode
+are checked again after that save. A saved attempt without a saved completion
+is left unmanaged on the next startup, preserving the speaker's queue and
+playback. Inspect the room and explicitly start the DJ again to resume
+automatic management.
+
 An ordinary exhausted queue also retains its pending continuation across daemon
 restarts. If refilling succeeded but the speaker explicitly refused playback,
 the DJ can retry from the first movement after the old end without adding the

@@ -1202,6 +1202,16 @@ an accepted continuation whose playback is still unconfirmed. Speaker errors
 interrupt implicit taste feedback, so they cannot become dislikes or completed
 listens, and cannot enter ordinary dry-queue restart logic.
 
+The daemon now checkpoints each admitted renderer recovery before its first
+mutation. The reserved budget and an in-flight marker share the saved revision
+with the feed's initiating clients and group evidence. Failed persistence
+defers recovery without consuming an in-memory attempt. Queue ownership,
+selected occurrence, group and exact play mode are rechecked after the disk
+write. An interrupted marker restores an inactive feed, so a process exit or
+failed completion save cannot replay a possibly completed command; the queue
+and playback remain untouched until an explicit DJ start. Older saved budgets
+remain readable without a marker.
+
 Ordinary exhaustion retains the original queue end in saved feeds until the DJ
 has refilled and confirmed playback of its successor. A daemon restart can
 therefore finish a refill whose final Play was explicitly refused, after fresh
@@ -1335,8 +1345,9 @@ already-loaded address as a seed. One offline remembered endpoint therefore
 cannot hide a different reachable household when multicast replies cover only
 part of the house. A fully successful known-player pass still avoids the
 discovery wait. Regression cases cover partial multicast, failed multicast and
-a rediscovered address alongside a reachable remembered household; they remain
-unexecuted after the local execution environment became unavailable.
+a rediscovered address alongside a reachable remembered household. The changed
+files pass pinned rustfmt; Rust execution remains blocked because the
+asupersync dependency compiler was killed before project code was checked.
 
 Group-command recovery retains the originally requested room's UUID separately
 from its initial coordinator, so a former leader joining an unrelated group

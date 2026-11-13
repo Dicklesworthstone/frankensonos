@@ -12,7 +12,7 @@ use fsonos_types::{PlayMode, PlayerId, TransportState};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
-use super::{FeedError, QueueFeed, QueuedWork, Speakers, host_of};
+use super::{FeedError, FeedSnapshot, QueueFeed, QueuedWork, Speakers, host_of};
 
 const MAX_ATTEMPTS: u8 = 3;
 const WINDOW_SECS: i64 = 300;
@@ -22,9 +22,17 @@ const WINDOW_SECS: i64 = 300;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryBudget {
     attempts: Vec<i64>,
+    /// Persisted before the first mutation, cleared only after its outcome.
+    /// A restored marker relinquishes feeding instead of replaying a command.
+    #[serde(default)]
+    in_flight: bool,
 }
 
 impl RecoveryBudget {
+    pub(super) fn in_flight(&self) -> bool {
+        self.in_flight
+    }
+
     fn reserve(&mut self, now: i64) -> Option<u8> {
         self.attempts.retain(|&at| {
             now.checked_sub(at)
@@ -361,6 +369,7 @@ pub(super) fn recover<T: Transport + ?Sized>(
     at: &Speakers<'_, T>,
     event: &PlayerPlayback,
     now: i64,
+    checkpoint: &mut dyn FnMut(&FeedSnapshot) -> Result<(), String>,
 ) -> Result<(), FeedError> {
     if feed.coordinator() != *at.coordinator {
         return Ok(());
@@ -404,7 +413,7 @@ pub(super) fn recover<T: Transport + ?Sized>(
         target: &target,
         length,
     };
-    let normal = get_play_mode(at.transport, host)? == PlayMode::Normal;
+    let mode = get_play_mode(at.transport, host)?;
     if !proof.unchanged(at)?
         || !occurrence(at, host, position, uri, length)?
             .as_ref()
@@ -412,8 +421,9 @@ pub(super) fn recover<T: Transport + ?Sized>(
     {
         return Ok(());
     }
-    // Reserve before any mutation. Exhaustion of the budget does not stop,
-    // clear, seek or repeatedly retry the player's queue.
+    // Reserve durably before any mutation. Exhaustion of the budget does not
+    // stop, clear, seek or repeatedly retry the player's queue.
+    let previous = feed.recovery.clone();
     let Some(attempt) = feed.recovery.reserve(now) else {
         return Err(halt(
             feed,
@@ -421,9 +431,33 @@ pub(super) fn recover<T: Transport + ?Sized>(
              inspect the speaker and start the DJ again",
         ));
     };
+    feed.recovery.in_flight = true;
+    let snapshot = feed.snapshot().expect("recovery belongs to an active feed");
+    if let Err(detail) = checkpoint(&snapshot) {
+        // A failed fsync may have published the marker, but no speaker write
+        // happened. Retry can safely replace it; a restart stays conservative.
+        feed.recovery = previous;
+        return Err(FeedError::RecoveryCheckpoint(detail));
+    }
+    // Persistence may wait on disk. Recheck the owner, selected occurrence
+    // and exact play mode after it, before changing anything audible.
+    let ready = (|| {
+        Ok::<_, FeedError>(
+            proof.unchanged(at)?
+                && get_play_mode(at.transport, host)? == mode
+                && occurrence(at, host, position, uri, length)?
+                    .as_ref()
+                    .is_some_and(stopped_error),
+        )
+    })();
+    if !matches!(ready, Ok(true)) {
+        feed.recovery = previous;
+        return ready.map(|_| ());
+    }
     feed.dry_end = None;
-    let after =
-        start_next(at, &proof, normal, position, uri).map_err(|detail| halt(feed, detail))?;
+    let after = start_next(at, &proof, mode == PlayMode::Normal, position, uri)
+        .map_err(|detail| halt(feed, detail))?;
+    feed.recovery.in_flight = false;
     feed.playing = Some(target.next);
     feed.jumped = true;
     feed.recovery_notice = Some(RecoveryNotice {

@@ -258,6 +258,10 @@ pub enum FeedError {
     /// without stopping, clearing or undoing the speaker's current state.
     #[error("automatic DJ playback recovery stopped: {0}")]
     RecoveryStopped(String),
+    /// Durable admission failed before any recovery mutation. The feed keeps
+    /// its ownership and unused attempt budget so the caller can retry later.
+    #[error("automatic DJ playback recovery could not be saved: {0}")]
+    RecoveryCheckpoint(String),
     #[error(transparent)]
     Core(#[from] CoreError),
     #[error(transparent)]
@@ -440,16 +444,19 @@ impl QueueFeed {
 
     /// A running feed again, from `snapshot`. It doesn't know the queue's
     /// length, so its first playback event re-reads the queue: works still
-    /// there are fed on, and with none left it lets go.
+    /// there are fed on, and with none left it lets go. An in-flight renderer
+    /// recovery is never resumed: its command may have reached the speaker
+    /// before the process stopped, so that restored feed remains inactive.
     #[must_use]
     pub fn restore(snapshot: FeedSnapshot, config: DjConfig, seed: u64) -> Self {
+        let active = !snapshot.recovery.in_flight();
         Self {
             zone: snapshot.zone,
             earlier: snapshot.earlier,
             config,
             rng: Rng::new(seed),
             lookahead: snapshot.lookahead,
-            active: true,
+            active,
             queued: snapshot.queued,
             played: snapshot.played,
             playing: snapshot.playing,
@@ -602,17 +609,48 @@ impl QueueFeed {
         store: &mut S,
         playback: &PlayerPlayback,
     ) -> Result<usize, FeedError> {
+        self.on_playback_with_recovery_checkpoint(at, plan, store, playback, &mut |_| Ok(()))
+    }
+
+    /// Handle playback with durable admission for automatic renderer recovery.
+    /// The checkpoint receives the reserved attempt and an in-flight marker
+    /// after live validation, before any SetPlayMode, Seek or Play. It must
+    /// durably replace the saved feed (and its caller/group provenance) before
+    /// returning success. Failure sends no recovery writes and consumes no
+    /// in-memory attempt; the caller may retry with its normal backoff.
+    ///
+    /// After a confirmed recovery, save the resulting snapshot to clear the
+    /// marker. A restart from an in-flight snapshot stays inactive, even when
+    /// the command succeeded but its final save failed. The ordinary
+    /// `on_playback` entry point keeps this admission in memory only; a daemon
+    /// that saves feeds must use this method.
+    pub fn on_playback_with_recovery_checkpoint<T: Transport + ?Sized, S: Store + ?Sized>(
+        &mut self,
+        at: &Speakers<'_, T>,
+        plan: Planning<'_>,
+        store: &mut S,
+        playback: &PlayerPlayback,
+        checkpoint: &mut dyn FnMut(&FeedSnapshot) -> Result<(), String>,
+    ) -> Result<usize, FeedError> {
         self.accepted_playback = false;
         if !self.active || !playback.is_queue_of(at.coordinator) {
             // Temporary announcements, radio and Connect retain the DJ set,
             // but cannot move its cursor, record listens, trim or refill it.
             return Ok(0);
         }
+        if self.recovery.in_flight() {
+            // Unwinding may leave a live engine in the same uncertain state
+            // as a restarted snapshot. It must not resume automatic writes.
+            self.release();
+            return Err(FeedError::RecoveryStopped(
+                "an interrupted recovery may have reached the speaker; start the DJ again".into(),
+            ));
+        }
         if playback.transport_status.as_deref() == Some("ERROR_OCCURRED") {
             self.dry_end = None;
             // Errors are neither listens nor ordinary queue exhaustion.
             // A stale error also exits after its read-only confirmation.
-            return recovery::recover(self, at, playback, plan.now).map(|()| 0);
+            return recovery::recover(self, at, playback, plan.now, checkpoint).map(|()| 0);
         }
         if !mode::maintain(self, at, playback)? {
             return Ok(0);

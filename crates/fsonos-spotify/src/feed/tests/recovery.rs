@@ -355,13 +355,52 @@ fn a_failure_without_a_waiting_whole_work_stops_management_without_queue_mutatio
     assert_eq!(plays(&store), heard);
 }
 
+fn assert_interrupted_recovery_cannot_replay(
+    rig: &Rig,
+    pool: &WorkPool,
+    store: &mut MemStore,
+    observed: &Observed<'_>,
+    admitted: FeedSnapshot,
+) {
+    let before = observed.writes();
+    let encoded = serde_json::to_string(&admitted).unwrap();
+    let mut restarted = QueueFeed::restore(
+        serde_json::from_str(&encoded).unwrap(),
+        DjConfig::default(),
+        7,
+    );
+    assert!(!restarted.is_active());
+    assert_eq!(
+        deliver(
+            rig,
+            &mut restarted,
+            pool,
+            store,
+            observed,
+            &sample(rig),
+            MIDNIGHT + 5,
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(observed.writes(), before, "no replay after restart");
+}
+
 #[test]
-fn refused_and_lost_seek_or_play_replies_are_never_automatically_replayed() {
-    for action in ["Seek", "Play"] {
+fn refused_and_lost_recovery_replies_are_never_automatically_replayed() {
+    for action in ["SetPlayMode", "Seek", "Play"] {
         for failure in [Failure::Rejected, Failure::LostReply] {
             let (rig, pool, mut store, mut feed) = started(true, 1);
             let first = feed.queued()[0].first().unwrap();
             let next = feed.queued()[1].first().unwrap();
+            if action == "SetPlayMode" {
+                fsonos_proto::play_mode::set_play_mode(
+                    &rig.lan,
+                    rig.host(),
+                    fsonos_types::PlayMode::from_wire("SHUFFLE").unwrap(),
+                )
+                .unwrap();
+            }
             rig.sim.playback_error(ROOM).unwrap();
             let event = sample(&rig);
             let queue = rig.queue();
@@ -370,14 +409,18 @@ fn refused_and_lost_seek_or_play_replies_are_never_automatically_replayed() {
                 failure: Some((action, failure)),
                 ..Observed::new(&rig.lan)
             };
-            let result = deliver(
-                &rig,
-                &mut feed,
-                &pool,
+            let mut admitted = None;
+            let result = feed.on_playback_with_recovery_checkpoint(
+                &rig.speakers(&observed),
+                plan(&pool, MIDNIGHT + 1),
                 &mut store,
-                &observed,
                 &event,
-                MIDNIGHT + 1,
+                &mut |snapshot| {
+                    assert!(observed.writes().is_empty());
+                    assert!(snapshot.recovery.in_flight());
+                    admitted = Some(snapshot.clone());
+                    Ok(())
+                },
             );
             assert!(
                 matches!(result, Err(FeedError::RecoveryStopped(_))),
@@ -386,13 +429,15 @@ fn refused_and_lost_seek_or_play_replies_are_never_automatically_replayed() {
             assert!(observed.injected.get(), "{action} {failure:?}");
             assert!(!feed.is_active());
             assert!(feed.snapshot().is_none());
-            let expected = if action == "Seek" {
-                vec!["Seek"]
-            } else {
-                vec!["Seek", "Play"]
+            let expected = match action {
+                "SetPlayMode" => vec!["SetPlayMode"],
+                "Seek" => vec!["Seek"],
+                _ => vec!["Seek", "Play"],
             };
             assert_eq!(observed.writes(), expected);
-            let selected = if action == "Seek" && matches!(failure, Failure::Rejected) {
+            let selected = if action == "SetPlayMode"
+                || (action == "Seek" && matches!(failure, Failure::Rejected))
+            {
                 first
             } else {
                 next
@@ -420,6 +465,15 @@ fn refused_and_lost_seek_or_play_replies_are_never_automatically_replayed() {
                 );
             }
             assert_eq!(observed.writes(), expected, "no automatic replay");
+            // If saving the stopped feed fails (or the process exits), the
+            // pre-write snapshot cannot authorize a new attempt after restart.
+            assert_interrupted_recovery_cannot_replay(
+                &rig,
+                &pool,
+                &mut store,
+                &observed,
+                admitted.unwrap(),
+            );
             assert_eq!(rig.queue(), queue);
             assert_eq!(plays(&store), heard);
         }
@@ -616,5 +670,122 @@ fn a_cached_healthy_queue_end_cannot_restart_a_fresh_renderer_error() {
         assert_eq!(rig.queue(), queue);
         assert_eq!(rig.position(), 1);
         assert_eq!(plays(&store), heard);
+    }
+}
+
+#[test]
+fn failed_recovery_checkpoint_sends_no_writes_and_consumes_no_attempt() {
+    for s2 in [false, true] {
+        let (rig, pool, mut store, mut feed) = started(s2, 1);
+        rig.sim.playback_error(ROOM).unwrap();
+        let event = sample(&rig);
+        let before = feed.snapshot();
+        let queue = rig.queue();
+        let position = rig.position();
+        let observed = Observed::new(&rig.lan);
+        let mut checkpoints = 0;
+        let result = feed.on_playback_with_recovery_checkpoint(
+            &rig.speakers(&observed),
+            plan(&pool, MIDNIGHT + 1),
+            &mut store,
+            &event,
+            &mut |snapshot| {
+                checkpoints += 1;
+                assert!(snapshot.recovery.in_flight());
+                assert!(observed.writes().is_empty());
+                Err("synthetic durable checkpoint failure".into())
+            },
+        );
+        assert!(matches!(result, Err(FeedError::RecoveryCheckpoint(_))));
+        assert_eq!(checkpoints, 1, "live evidence reached durable admission");
+        assert_eq!(feed.snapshot(), before);
+        assert!(observed.writes().is_empty());
+        assert_eq!(rig.queue(), queue);
+        assert_eq!(rig.position(), position);
+        assert_eq!(sample(&rig).transport_status, event.transport_status);
+
+        feed.on_playback_with_recovery_checkpoint(
+            &rig.speakers(&observed),
+            plan(&pool, MIDNIGHT + 2),
+            &mut store,
+            &event,
+            &mut |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(feed.take_recovery_notice().unwrap().attempt, 1);
+        assert!(!feed.snapshot().unwrap().recovery.in_flight());
+        assert_eq!(observed.writes(), ["Seek", "Play"]);
+    }
+}
+
+#[test]
+fn stale_renderer_error_never_attempts_a_checkpoint() {
+    let (rig, pool, mut store, mut feed) = started(true, 1);
+    rig.sim.playback_error(ROOM).unwrap();
+    let event = sample(&rig);
+    transport::play(&rig.lan, rig.host()).unwrap();
+    let observed = Observed::new(&rig.lan);
+    let before = feed.snapshot();
+    assert_eq!(
+        feed.on_playback_with_recovery_checkpoint(
+            &rig.speakers(&observed),
+            plan(&pool, MIDNIGHT + 1),
+            &mut store,
+            &event,
+            &mut |_| panic!("a stale error has no recovery to admit"),
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(feed.snapshot(), before);
+    assert!(observed.writes().is_empty());
+}
+
+#[test]
+fn owner_changes_during_the_checkpoint_revoke_recovery_before_its_first_write() {
+    for change_mode in [false, true] {
+        let (rig, pool, mut store, mut feed) = started(true, 1);
+        rig.sim.playback_error(ROOM).unwrap();
+        let event = sample(&rig);
+        let before = feed.snapshot();
+        let observed = Observed::new(&rig.lan);
+        let mut admitted = None;
+        assert_eq!(
+            feed.on_playback_with_recovery_checkpoint(
+                &rig.speakers(&observed),
+                plan(&pool, MIDNIGHT + 1),
+                &mut store,
+                &event,
+                &mut |snapshot| {
+                    admitted = Some(snapshot.clone());
+                    if change_mode {
+                        fsonos_proto::play_mode::set_play_mode(
+                            &rig.lan,
+                            rig.host(),
+                            fsonos_types::PlayMode::from_wire("SHUFFLE").unwrap(),
+                        )
+                        .unwrap();
+                    } else {
+                        transport::play(&rig.lan, rig.host()).unwrap();
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap(),
+            0
+        );
+        assert!(admitted.unwrap().recovery.in_flight());
+        assert!(observed.writes().is_empty());
+        assert_eq!(feed.snapshot(), before, "no mutation consumed an attempt");
+        let playback = sample(&rig);
+        if change_mode {
+            assert_eq!(playback.transport, Some(TransportState::Stopped));
+            assert_eq!(
+                fsonos_proto::play_mode::get_play_mode(&rig.lan, rig.host()).unwrap(),
+                fsonos_types::PlayMode::from_wire("SHUFFLE").unwrap()
+            );
+        } else {
+            assert_eq!(playback.transport, Some(TransportState::Playing));
+        }
     }
 }

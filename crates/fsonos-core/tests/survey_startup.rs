@@ -183,13 +183,8 @@ fn a_newly_discovered_address_replaces_a_stale_hint_without_losing_the_other_hou
         ..StartupLan::new()
     };
     let wait = Duration::from_secs(2);
-    let found = survey_known_first(
-        &lan,
-        &[],
-        || vec![ip("192.0.2.11"), ip("192.0.2.21")],
-        wait,
-    )
-    .unwrap();
+    let found =
+        survey_known_first(&lan, &[], || vec![ip("192.0.2.11"), ip("192.0.2.21")], wait).unwrap();
 
     both_households(&found);
     let player = found.households[0]
