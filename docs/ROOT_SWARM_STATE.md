@@ -5358,3 +5358,13 @@ the GOT, not a field of the crypto struct, which is why writing `ctx+8` changed 
 Best install point: rewrite that GOT load to a fixed absolute address (same trick already
 proven for `ZZ0028`), then store our parsed pk there. Two instructions' worth of patch:
 `lwz r4,-32768(r30)` → `lis r4,hi ; lwz r4,lo(r4)` (the slot then holds the pk pointer).
+
+Important negative: with a breakpoint on the decrypt call site (`0x69a0`) the breakpoint
+**never fires** — the run already fails with (49) before ever reaching
+`mbedtls_rsa_pkcs1_decrypt`. So `ZZ0075` is not the function producing (49); the failure
+is in a wrapper before it (most likely `ZZ0045`'s caller doing its own pre-checks, or a
+separate decrypt entry).
+
+So the field question about the GOT slot is still open but *not* currently the blocker.
+The blocker is upstream: find what returns 49 and why, then the decrypt call site will
+start being reached.
