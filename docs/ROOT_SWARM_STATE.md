@@ -5279,3 +5279,16 @@ Next: the earlier `(0)`-vs-`(nil)` results show the parse now succeeds, so the q
 is whether the right slot is *consumed* by the decrypt, or whether the envelope needs the
 key in a different representation than an `mbedtls_pk_context` (e.g. the raw modulus at
 a different field).
+
+Discriminator result: `ZZ0028` is called **exactly once** per run, so the patched slot
+*is* consumed by the decrypt path — the plumbing is complete and the remaining problem
+is the decryption result itself (`decrypted data length of 1 175696`, then "(1) upgrade
+file format unknown").
+
+So the harness now does: parse our DER key → store in the slot → the envelope code
+fetches it → RSA op runs → length wrong. That is precisely the position needed to start
+learning about the signature/verify code, because the key is no longer a blocker.
+
+Two candidate causes for the wrong length, both testable: the pk context's expected
+cipher (mbedtls needs the rsa context set up for PKCS#1 v1.5/OAEP as the envelope uses),
+or the key not being the one this package was wrapped for.
