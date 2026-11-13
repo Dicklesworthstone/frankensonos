@@ -5292,3 +5292,12 @@ learning about the signature/verify code, because the key is no longer a blocker
 Two candidate causes for the wrong length, both testable: the pk context's expected
 cipher (mbedtls needs the rsa context set up for PKCS#1 v1.5/OAEP as the envelope uses),
 or the key not being the one this package was wrapped for.
+
+Padding: the library imports only `mbedtls_rsa_pkcs1_decrypt`, which selects PKCS#1 v1.5
+or OAEP from the context's padding field. Our envelope tooling emits **OAEP**, so the
+device code must call `mbedtls_rsa_set_padding` before decrypting — meaning the padding
+is configured internally and our parsed pk is not the issue there.
+
+That shifts suspicion for the `175696` "length" onto interpretation: it may not be the
+decrypted length at all but a differently-typed argument in that message, so the next
+useful read is the exact call shape around `0x10007120` rather than the value itself.
