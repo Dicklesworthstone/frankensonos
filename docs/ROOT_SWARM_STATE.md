@@ -5118,3 +5118,14 @@ there), so the slot likely holds a parsed `mbedtls_rsa_context` or a Sonos key
 struct. Dropping PEM/DER bytes in and hoping is a coin flip; the cheap read is to
 break `ZZ0028` on a real key-loading path, or to inspect what consumes `[+0x18]`
 before deciding.
+
+Refinement: `ZZ0045` is **not** the RSA operation. Its body only validates lengths
+for a mode (`mode==1` requires `len >= 2*size`, `mode==2` requires `len >= 28`) and
+writes zero/3 into the out slot — i.e. it is a parameter/size helper whose return
+is a status the caller logs when wrong. The real envelope work happens after it via
+other libsonoscrypto entries.
+
+So "supply a key" concretely means making the *downstream* op find key material, and
+`ZZ0028`'s slot is the supply point to aim at. The mode/length logic also tells us
+the key sizes the format expects (28-byte header path, `2*size` body path), which is
+useful when constructing a stub key of the right shape.
