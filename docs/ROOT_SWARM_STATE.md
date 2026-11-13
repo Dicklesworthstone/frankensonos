@@ -5039,3 +5039,23 @@ That reframes the S2 fault: the daemon does not reject unknown codecs, it dies o
 them. A useful follow-up is which of these ids are reachable from container
 metadata we control, and whether any branch sizes a buffer from data rather than
 from a literal — those are the ones worth crafting against.
+
+**Watching the updater in the emulator works** — the "old game cracker" trick pays off
+immediately and reveals the real order of checks on the 57.23 updater:
+
+1. genuine package → *compatibility* gate fails (emulated HwFeatures 0 vs required 30);
+2. NOP the compat branch (`0x10008430`, `beq` → fail block `0x10008654`; backup at
+   `/tmp/upgrade.orig`) → passes compat;
+3. same package → **downgrade blocked (9)** because it is 57.22 < 57.23;
+4. serve the genuine **57.23** package instead → reaches the next gate and returns
+   **(48) no encrypted upgrade key available** — the content key is not obtainable in
+   the chroot (it comes from libflash/OTP; the tool takes no `--key` and there is no
+   `.pem` string).
+
+So the offline updater's chain is: compat → version floor → key → digest/signature.
+Two of the four are now bypassable in the emulator; the key is the third and we
+already hold the matching private key as a file, so the question is how to hand it
+to the process (stub the OTP read, or patch the fetch).
+
+The signature-failure breakpoint (`0x100085b4`, in `fcn.10007fa0`) is wired and
+ready for when the key step is satisfied.
