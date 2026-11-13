@@ -5059,3 +5059,16 @@ to the process (stub the OTP read, or patch the fetch).
 
 The signature-failure breakpoint (`0x100085b4`, in `fcn.10007fa0`) is wired and
 ready for when the key step is satisfied.
+
+Key step detail: with the missing-key exit removed (`0x10006ebc` → nop) the run moves
+on and fails instead at `enveloped data decrypt init failed` → **(49)**. NOP-ing that
+branch too (`0x100070a0`) does not help — there is at least one further failure on the
+same path, so decrypt is genuinely required before anything else proceeds.
+
+Conclusion for this route: the updater cannot be walked to the signature check by
+flag-flipping alone; it needs the content key to be present. Useful consequence —
+`ZZ0044`/`ZZ0045` (libsonoscrypto) are the envelope entry points, so supplying a
+key means satisfying those, and we do hold `model16-private.pem`.
+
+Patches now applied to `/tmp/s23rootfs/bin/upgrade` (backup `/tmp/upgrade.orig`):
+`0x10008430` (compat) and `0x10006ebc` (key). `0x100070a0` also nop'd.
