@@ -5146,3 +5146,12 @@ context. So it is a self-contained "parse this PEM" helper — exactly what the
 harness needs, and the only thing still ambiguous is which register carries the
 buffer versus the length (prologue shuffles r4/r5/r6 into r27/r29/r28 before the
 call). One probe with a known PEM will settle it.
+
+Measured at the call: the mode slot holds **1**, so the failing check is the
+`mode==1` branch that requires `len >= 2*size` — i.e. the envelope is being
+rejected on a *length* test, not on missing key bytes at that point. Neighbouring
+stack words read `0, 1, 0x2ae50, 0`.
+
+That narrows it further: with no key the computed `size` is 0, so `len >= 0` would
+pass trivially and mode 2 (the 28-byte path) is what actually trips. Either way the
+fix is the same: get a real pk context into the ZZ0028 slot so `size` is meaningful.
