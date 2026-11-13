@@ -5336,3 +5336,16 @@ That is the last structural task on this route, and it is now well-bounded: find
 the decrypt loads its context (it is the same global `ZZ0146` family that `ZZ0028`
 walks: `ctx -> +8 -> +0x18`), and store our parsed context there instead of only sizing
 it.
+
+Installing the parsed context at `ctx+8` succeeds mechanically (`ctx=0xfeec100`,
+`pk=0x10032238` written) but the decrypt still returns **(49)** — so `ctx+8` is not the
+field the decrypt uses for the key.
+
+Also worth noting for the next read: `ZZ0183` is `mbedtls_pk_init(r31)` then
+`mbedtls_pk_parse_key(r31, …)`, i.e. the returned pointer **is** the pk context (the
+`r31+8` seen earlier belongs to a refcount helper, not the context). So the context we
+build is correct; only its destination is wrong.
+
+Next: the decrypt itself must be found (the caller of `mbedtls_rsa_pkcs1_decrypt`) and
+whatever it loads as its rsa context traced back, rather than assuming the `+0x18`
+chain.
