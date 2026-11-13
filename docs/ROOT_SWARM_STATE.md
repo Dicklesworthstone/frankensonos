@@ -5179,3 +5179,12 @@ Next suspects, in order: `mbedtls_pk_parse_key` needs the drbg/entropy context t
 `ZZ0041` builds, which in this binary we only force-initialise lazily, so the crash is
 most likely a null entropy/drbg inside the parser rather than bad arguments (the
 arguments match the prologue: `r4 = buffer`, `r5 = length`).
+
+Calling `ZZ0041` first (`init=0`) does not change the outcome: the parse still faults
+inside libc (`0x0fdde634`, previously `…69c`). So it is not the drbg.
+
+Most likely culprit is my chosen slot: `0x1064d800` sits inside `.bss` (which ends at
+`0x1064decc`), so writing a pointer there can clobber a live global and the crash then
+surfaces inside libc rather than at the write. Next attempt should place the slot at the
+**end** of `.bss` (`0x1064de00`-ish) or size `.bss` from readelf first and confirm the
+address is beyond the last object.
