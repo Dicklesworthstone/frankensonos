@@ -644,6 +644,12 @@ store. A failed or inconsistent rebuild cannot select from that old pool;
 already queued music stays in place. An unchanged catalog reuses the cached
 pool, so listening-history updates do not trigger a full library scan.
 
+New Spotify reads also exclude tracks the provider marks restricted, even
+when its optional playback flag is absent or says playable. This applies to
+saved music, taste reads, artist selections and whole-work expansion. A failed
+or malformed refresh retains the last accepted library; changing your explicit
+content preference does not override a provider restriction.
+
 The sync panel and CLI/HTTP/MCP status distinguish reading, verification, and
 prepared music waiting for publication. Retained page and track counts, retry
 deadlines, and actual failures survive daemon restart, including before the

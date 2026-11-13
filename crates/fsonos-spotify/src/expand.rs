@@ -332,7 +332,7 @@ pub async fn fetch_album_tracks(
 
 /// One album-page track as an album-track cache row.
 pub(crate) fn album_track(t: &SimplifiedTrack) -> Option<AlbumTrack> {
-    renderable(&t.uri, t.is_local, t.is_playable).then(|| AlbumTrack {
+    renderable(&t.uri, t.is_local, t.is_playable, t.restrictions.is_some()).then(|| AlbumTrack {
         disc_number: t.disc_number.max(1),
         track_number: t.track_number,
         source_uri: t.uri.clone(),

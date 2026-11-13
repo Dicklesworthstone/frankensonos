@@ -903,6 +903,9 @@ impl PlaylistItem {
                 .get("is_playable")
                 .and_then(serde_json::Value::as_bool)
                 == Some(false)
+            || value
+                .get("restrictions")
+                .is_some_and(serde_json::Value::is_object)
         {
             return Ok(None);
         }
@@ -972,6 +975,10 @@ pub struct SimplifiedTrack {
     pub is_local: bool,
     #[serde(default)]
     pub is_playable: Option<bool>,
+    /// Any restriction makes the track unavailable, independently of the
+    /// optional relinking flag. Keep unknown reasons and fields as evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restrictions: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// `GET /me/tracks` item. `track` is tolerated as null so one unavailable
@@ -1013,6 +1020,9 @@ pub struct FullTrack {
     pub is_local: bool,
     #[serde(default)]
     pub is_playable: Option<bool>,
+    /// Content restrictions also apply when relinking supplied no flag.
+    #[serde(default)]
+    pub restrictions: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1064,10 +1074,15 @@ impl Album {
     }
 
     /// One of this album's tracks as a library item; `None` if Sonos can't
-    /// render it (a local file, or unplayable in the owner's market).
+    /// render it (a local file, an unplayable or provider-restricted track).
     #[must_use]
     pub fn library_item(&self, track: &SimplifiedTrack) -> Option<LibraryItem> {
-        if !renderable(&track.uri, track.is_local, track.is_playable) {
+        if !renderable(
+            &track.uri,
+            track.is_local,
+            track.is_playable,
+            track.restrictions.is_some(),
+        ) {
             return None;
         }
         Some(LibraryItem {
@@ -1104,10 +1119,15 @@ impl SavedTrack {
 
 impl FullTrack {
     /// This track as a library item of `origin`; `None` if Sonos can't
-    /// render it (a local file, or unplayable in the owner's market).
+    /// render it (a local file, an unplayable or provider-restricted track).
     #[must_use]
     pub fn library_item(&self, origin: Origin, added_at: Option<i64>) -> Option<LibraryItem> {
-        if !renderable(&self.uri, self.is_local, self.is_playable) {
+        if !renderable(
+            &self.uri,
+            self.is_local,
+            self.is_playable,
+            self.restrictions.is_some(),
+        ) {
             return None;
         }
         Some(LibraryItem {
@@ -1146,9 +1166,15 @@ fn lead_id(artists: &[SimplifiedArtist]) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
-/// Sonos renders only real Spotify tracks the owner's market can play.
-pub(crate) fn renderable(uri: &str, is_local: bool, is_playable: Option<bool>) -> bool {
-    uri.starts_with("spotify:track:") && !is_local && is_playable != Some(false)
+/// Sonos renders real Spotify tracks without a provider-declared restriction.
+/// Missing relinking metadata alone does not mean a track is unavailable.
+pub(crate) fn renderable(
+    uri: &str,
+    is_local: bool,
+    is_playable: Option<bool>,
+    restricted: bool,
+) -> bool {
+    uri.starts_with("spotify:track:") && !is_local && is_playable != Some(false) && !restricted
 }
 
 /// An RFC 3339 timestamp (Spotify's `added_at`, `played_at`) as Unix seconds.
@@ -1980,6 +2006,9 @@ mod tests {
             json!({ "type": "episode" }),
             json!({ "is_local": true }),
             json!({ "is_playable": false }),
+            json!({ "restrictions": { "reason": "market" } }),
+            json!({ "restrictions": { "reason": "future-restriction" } }),
+            json!({ "restrictions": {} }),
         ] {
             let entry: PlaylistItem = serde_json::from_value(json!({ "item": item })).unwrap();
             assert!(entry.checked_library_item(Origin::Taste).unwrap().is_none());
@@ -2002,6 +2031,85 @@ mod tests {
                 let item = entry.checked_library_item(Origin::Taste).unwrap().unwrap();
                 assert_eq!(item.explicit, explicit);
             }
+        }
+    }
+
+    #[test]
+    fn content_restrictions_override_missing_or_positive_relinking_metadata() {
+        use serde_json::json;
+
+        let album: Album = serde_json::from_value(json!({
+            "id": "AvailabilityAlbum", "uri": "spotify:album:AvailabilityAlbum",
+            "name": "Availability album"
+        }))
+        .unwrap();
+        let track = json!({
+            "uri": "spotify:track:AvailabilityTrack", "name": "Test song",
+            "album": { "name": "Availability album" }, "explicit": true
+        });
+        for restriction in [
+            json!({ "reason": "market" }),
+            json!({ "reason": "product" }),
+            json!({ "reason": "explicit" }),
+            json!({ "reason": "future-reason", "future": true }),
+            json!({}),
+        ] {
+            for playable in [
+                None,
+                Some(json!(null)),
+                Some(json!(true)),
+                Some(json!(false)),
+            ] {
+                let mut value = track.clone();
+                value["restrictions"] = restriction.clone();
+                if let Some(playable) = playable {
+                    value["is_playable"] = playable;
+                }
+                let full: FullTrack = serde_json::from_value(value.clone()).unwrap();
+                for origin in [Origin::LikedTrack, Origin::Taste] {
+                    assert!(full.library_item(origin, None).is_none());
+                }
+                let simplified: SimplifiedTrack = serde_json::from_value(value).unwrap();
+                let retained = serde_json::to_vec(&simplified).unwrap();
+                let restored: SimplifiedTrack = serde_json::from_slice(&retained).unwrap();
+                assert_eq!(restored.restrictions, simplified.restrictions);
+                assert!(album.library_item(&restored).is_none());
+                assert!(crate::expand::album_track(&restored).is_none());
+            }
+        }
+        // Legacy and unlinked entries remain playable. Explicit content is a
+        // separate user preference, not a provider restriction by itself.
+        for restriction in [None, Some(json!(null))] {
+            let mut value = track.clone();
+            if let Some(restriction) = restriction {
+                value["restrictions"] = restriction;
+            }
+            let full: FullTrack = serde_json::from_value(value.clone()).unwrap();
+            assert!(
+                full.library_item(Origin::LikedTrack, None)
+                    .unwrap()
+                    .explicit
+            );
+            let simplified: SimplifiedTrack = serde_json::from_value(value).unwrap();
+            assert!(album.library_item(&simplified).is_some());
+            assert!(crate::expand::album_track(&simplified).is_some());
+        }
+    }
+
+    #[test]
+    fn malformed_restrictions_cannot_become_playable_rows_or_playlist_gaps() {
+        use serde_json::json;
+
+        for malformed in [json!("market"), json!(false), json!(0), json!([])] {
+            let track = json!({
+                "uri": "spotify:track:AvailabilityTrack", "name": "Test song",
+                "album": { "name": "Test album" }, "explicit": false,
+                "restrictions": malformed
+            });
+            assert!(serde_json::from_value::<FullTrack>(track.clone()).is_err());
+            assert!(serde_json::from_value::<SimplifiedTrack>(track.clone()).is_err());
+            let entry: PlaylistItem = serde_json::from_value(json!({ "item": track })).unwrap();
+            assert!(entry.checked_library_item(Origin::Taste).is_err());
         }
     }
 

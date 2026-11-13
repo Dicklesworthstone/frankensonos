@@ -99,6 +99,7 @@ fn proof_ignores_unused_fields_and_query_spelling_but_not_music_metadata() {
         ("name", json!("Replacement song")),
         ("explicit", json!(true)),
         ("duration_ms", json!(210_000)),
+        ("restrictions", json!({ "reason": "market" })),
     ] {
         let mut replacement = equivalent.clone();
         replacement["items"][0]["track"][field] = changed;
@@ -107,6 +108,27 @@ fn proof_ignores_unused_fields_and_query_spelling_but_not_music_metadata() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn restricted_saved_pages_keep_raw_coverage_and_reverify_after_restart() {
+    let mut progress = fresh();
+    progress.ingest(&bytes(&empty())).unwrap();
+    let mut restricted = liked(0, 2);
+    restricted["items"][0]["track"]["restrictions"] = json!({ "reason": "product" });
+    progress.ingest(&bytes(&restricted)).unwrap();
+    let mut resumed = restored(&progress);
+    resumed.claim().unwrap();
+    assert_eq!((resumed.pages(), resumed.tracks()), (2, 0));
+    assert!(resumed.matches(1, &bytes(&restricted)).unwrap());
+    assert!(!resumed.matches(1, &bytes(&liked(0, 2))).unwrap());
+    assert_eq!(
+        resumed.next_url(),
+        Some(Endpoints::default().saved_tracks(1).as_str())
+    );
+    resumed.ingest(&bytes(&liked(1, 2))).unwrap();
+    assert_eq!(resumed.tracks(), 1);
+    assert_eq!(resumed.read.items[0].source_uri, "spotify:track:Progress1");
 }
 
 #[test]

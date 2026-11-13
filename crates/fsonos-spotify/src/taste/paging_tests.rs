@@ -289,6 +289,9 @@ mod artist_rotation;
 #[path = "explicit_metadata_tests.rs"]
 mod explicit_metadata;
 
+#[path = "availability_tests.rs"]
+mod availability;
+
 #[path = "genre_continuation_tests.rs"]
 mod genre_continuation;
 

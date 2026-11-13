@@ -72,7 +72,10 @@ pub async fn resolve(
             let mut tracks = Vec::new();
             let mut seen = HashSet::new();
             for track in top.tracks {
-                if track.is_local || track.is_playable == Some(false) {
+                if track.is_local
+                    || track.is_playable == Some(false)
+                    || track.restrictions.is_some()
+                {
                     continue;
                 }
                 check_identity(track.id.as_deref(), &track.uri, "track")?;
@@ -185,7 +188,7 @@ async fn catalog(
         check_page(&page, PAGE_LIMIT)?;
         albums_read += 1;
         for track in page.items {
-            if track.is_local || track.is_playable == Some(false) {
+            if track.is_local || track.is_playable == Some(false) || track.restrictions.is_some() {
                 continue;
             }
             check_identity(track.id.as_deref(), &track.uri, "track")?;

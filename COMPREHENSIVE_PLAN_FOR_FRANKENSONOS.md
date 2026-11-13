@@ -643,6 +643,12 @@ their standing preferences on every surface and in the daemon. What is on
 - Explicit tracks stay out by default (`preferences.toml` `explicit = false`);
   the owner changes that with the `dj prefs` verbs, and `explicit = true` now
   admits explicit tracks.
+- Spotify's track-level content restrictions are independent of that local
+  preference and of its optional relinking `is_playable` flag. Saved-library,
+  taste, artist-playback and whole-work reads exclude restricted tracks,
+  including unknown restriction reasons. Raw playlist positions and page
+  coverage remain intact; resumed reads detect availability changes, and a
+  malformed restriction response cannot replace the last accepted library.
 - The library cache records, per track, whether it is a DJ candidate, its
   genres, release year, explicit flag and taste weight (migration 7), and
   caches each artist's genres (migration 8). `is_classical` again means "judged
