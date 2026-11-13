@@ -5250,3 +5250,13 @@ Timing note: with breakpoints inside `ZZ0183` armed, a 30 s window is not enough
 the updater under the debugger has not even reached `0x10007120` yet (the log shows
 the breakpoint being set and nothing further). The working pattern from earlier runs
 is 35-45 s before any curl/probe lands; the inner probes need about the same.
+
+**Key harness bug found and fixed: argument order.** `ZZ0183` maps its parameters
+straight through to `mbedtls_pk_parse_key` as `(ctx=r31, key=r26, keylen=r27,
+pwd=r29, pwdlen=r28)` — so the caller's registers are `r3 = key buffer`,
+`r4 = keylen`, `r5 = pwd`, `r6 = pwdlen`. My earlier calls passed `0` where the
+buffer belonged, which is exactly why every attempt crashed inside libc.
+
+With the correct order the call **returns cleanly**, and with the **DER** form of the
+key it returns a real context (`pk=0x10032238`). The PEM form returns null — this
+build's mbedtls rejects PKCS#1 PEM — so DER is the format to use from here.
