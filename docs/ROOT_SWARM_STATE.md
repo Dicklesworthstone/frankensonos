@@ -5168,3 +5168,14 @@ not simply `base + symbol_offset` — most likely the lib is loaded at a differe
 than the delta suggests, and the reliable way to settle it is to read
 `/proc/<pid>/maps` for the `libsonoscrypto` line **while the process is running**, not
 to infer from one GOT value.
+
+Base settled properly from `/proc/<pid>/maps` at the breakpoint: `libsonoscrypto`
+is r-xp at **0x0ffaa000**, so `ZZ0183 = 0x0ffb0e74` (the earlier GOT delta was
+misleading). With that base the call is no longer a bad jump — it now **enters the
+library** and faults inside **libc** (`0x0fdde69c`), i.e. the harness reaches the
+parse path.
+
+Next suspects, in order: `mbedtls_pk_parse_key` needs the drbg/entropy context that
+`ZZ0041` builds, which in this binary we only force-initialise lazily, so the crash is
+most likely a null entropy/drbg inside the parser rather than bad arguments (the
+arguments match the prologue: `r4 = buffer`, `r5 = length`).
