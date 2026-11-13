@@ -5322,3 +5322,17 @@ against small literals. A type mismatch there yields exactly this.
 
 Next: read what `ZZ0045` actually compares (the `r31` source at its top) — one read
 settles whether the expected value is a pk type or a Sonos-specific mode field.
+
+**Confirmed: `ZZ0028` returns a SIZE, not a pointer.** With the slot set to 256 the
+mode-1 check returns **0** (pass) instead of 3, and the run proceeds to the real crypto
+failure `(49) error decrypting upgrade`.
+
+So two gates are now cleared in sequence (mode/length), and the remaining need is
+precise: the actual RSA context used by the decrypt must be *our* key, because the size
+alone doesn't do the operation. In other words the parsed pk must be installed into the
+crypto context that the decrypt reads, not merely summarised as a number.
+
+That is the last structural task on this route, and it is now well-bounded: find where
+the decrypt loads its context (it is the same global `ZZ0146` family that `ZZ0028`
+walks: `ctx -> +8 -> +0x18`), and store our parsed context there instead of only sizing
+it.
