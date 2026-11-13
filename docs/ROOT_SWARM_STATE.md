@@ -5023,3 +5023,19 @@ or fd 29 is not the listener at all and the object we drive is already wrong.
 Either way the next measurement is cheap and decisive: at the accept call, dump
 `getsockname(29)` from gdb and compare it with the three ports, rather than
 correlating host fds by hand.
+
+**S2 codec-dispatch switch enumerated** (`/tmp/s86/bin/anacapad.orig`, MIPS16, needs
+`mips-linux-gnu-objdump -m mips:16`). The chain loads the codec id from
+`4144(sp)` and compares against, in order:
+
+`9, 13, 14, 21, 22, 23, 24, 25, 32, 1001, 36, 145 …`
+
+Each matching branch fills a **descriptor** (e.g. `sw v0,236(s0)`, `sh v0,240(s0)`,
+`sw v0,248/252(s0)` with literals 11, 512, 255, 1024, 1024…), and the fall-through
+default was the `jal abort` at `0x596416` that kills the daemon on every URI.
+
+So this is a codec→descriptor table, and the abort is simply "id not in table".
+That reframes the S2 fault: the daemon does not reject unknown codecs, it dies on
+them. A useful follow-up is which of these ids are reachable from container
+metadata we control, and whether any branch sizes a buffer from data rather than
+from a literal — those are the ones worth crafting against.
