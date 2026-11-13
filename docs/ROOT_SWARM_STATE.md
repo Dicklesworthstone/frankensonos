@@ -5072,3 +5072,13 @@ key means satisfying those, and we do hold `model16-private.pem`.
 
 Patches now applied to `/tmp/s23rootfs/bin/upgrade` (backup `/tmp/upgrade.orig`):
 `0x10008430` (compat) and `0x10006ebc` (key). `0x100070a0` also nop'd.
+
+Where a substituted key would plug in: the envelope **decrypt init is `ZZ0045`**
+(libsonoscrypto), called at `0x10007120` as
+`ZZ0045(*[r1+7292], r4, r1+15652)` and tested for zero; the failure block above it
+logs "enveloped data decrypt init failed". The matching cleanup is `ZZ0044`.
+
+So the key is *data* already in memory at `[r1+7292]`, filled from the OTP/MDP3
+path earlier — meaning substitution is a matter of putting our bytes where that
+slot points, not of synthesising a context. That is the next experiment: write the
+PEМ/DER key into the guest and repoint `[r1+7292]` before the call.
