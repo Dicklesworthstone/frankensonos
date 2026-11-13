@@ -3,11 +3,15 @@ use crate::surface::testing::Canned;
 use fsonos_core::clock::FakeClock;
 use fsonos_core::policy::Policy;
 use fsonos_core::schedule::{ScheduleAction, ScheduleSpec};
-use fsonos_core::store::{MemStore, StoredSchedule};
+use fsonos_core::store::{MemStore, SqliteStore, Store, StoredSchedule};
 use std::sync::mpsc;
 use std::time::Duration;
 
 fn fixture() -> (Arc<Surface>, Schedule, DateTime<Utc>) {
+    fixture_with_store(Box::new(MemStore::default()))
+}
+
+fn fixture_with_store(store: Box<dyn Store + Send>) -> (Arc<Surface>, Schedule, DateTime<Utc>) {
     let created = DateTime::parse_from_rfc3339("2026-10-01T10:00:00Z").unwrap();
     let at = created.to_utc() + chrono::TimeDelta::minutes(1);
     let households = crate::zones::fixtures::households();
@@ -21,7 +25,7 @@ fn fixture() -> (Arc<Surface>, Schedule, DateTime<Utc>) {
             Policy::default(),
             Box::new(FakeClock::new(created)),
         )
-        .with_action_log(Box::new(MemStore::default()), "schedule-admission-test"),
+        .with_action_log(store, "schedule-admission-test"),
     );
     surface
         .with_store(|store| {
@@ -250,6 +254,67 @@ fn concurrent_durable_claims_have_only_one_winner() {
         .count();
     assert_eq!(winners, 1);
     assert_eq!(recorded(&surface), Some(at));
+}
+
+#[test]
+fn another_connection_can_retire_a_run_after_the_local_definition_check() {
+    for admission in [Admission::Run, Admission::Skip] {
+        for change in 0..7 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("schedule.db");
+            let store = SqliteStore::open(&path).unwrap();
+            let (surface, schedule, at) = fixture_with_store(Box::new(store));
+            let mut other = SqliteStore::open(&path).unwrap();
+            let original = other.schedules().unwrap().remove(0);
+            let mut replacement = original.clone();
+            let result = claim_current(&surface, &schedule, at, || {
+                // Admission runs after claim_current's read, while its local
+                // mutex is still held. A different process's connection does
+                // not share that mutex and can win before the claim writes.
+                match change {
+                    0 => {
+                        other.set_schedule_enabled(schedule.id, false).unwrap();
+                    }
+                    1 => {
+                        other.delete_schedule(schedule.id).unwrap();
+                    }
+                    _ => {
+                        match change {
+                            2 => replacement.spec = "daily 12:00".into(),
+                            3 => {
+                                replacement.action =
+                                    serde_json::to_string(&ScheduleAction::Volume {
+                                        room: "Other room".into(),
+                                        level: 10,
+                                    })
+                                    .unwrap();
+                            }
+                            4 => replacement.creator = "unknown".into(),
+                            5 => replacement.created += 1,
+                            _ => replacement.last_fired = Some(at.timestamp() - 1),
+                        }
+                        other.delete_schedule(schedule.id).unwrap();
+                        assert!(other.put_schedule(&replacement).unwrap());
+                    }
+                }
+                admission
+            })
+            .unwrap();
+            assert_eq!(result, Admission::Hold, "{admission:?}, change {change}");
+            let rows = other.schedules().unwrap();
+            if change == 1 {
+                assert!(rows.is_empty());
+            } else {
+                let expected_receipt = if change == 6 {
+                    Some(at.timestamp() - 1)
+                } else {
+                    None
+                };
+                assert_eq!(rows[0].last_fired, expected_receipt);
+            }
+            other.close().unwrap();
+        }
+    }
 }
 
 #[test]

@@ -81,7 +81,10 @@ the scheduler's ten-minute grace period. Paused schedules stay quiet; an
 occurrence missed beyond that grace period is recorded as skipped.
 
 The daemon durably records an admitted occurrence before attempting delivery,
-so another tick or restart does not repeat it. A delivery error after that
-point is not automatically replayed because some rooms may already have heard
-the announcement. Schedule responses describe stored definitions and recorded
+so another tick or restart does not repeat it. The database claim also compares
+the saved definition, enabled state, and prior occurrence in that same write.
+A pause, removal, replacement, or competing claim committed by another process
+before that boundary prevents the stale reminder from running. Later edits do
+not cancel an already claimed run. A delivery error after that point is not
+automatically replayed because some rooms may already have heard the announcement. Schedule responses describe stored definitions and recorded
 occurrences; inspect the action log and daemon diagnostics for execution results.

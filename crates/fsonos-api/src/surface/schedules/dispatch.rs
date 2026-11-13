@@ -155,8 +155,9 @@ pub(super) fn run_schedules<Tz: TimeZone>(
     ran
 }
 
-/// Definition check, deadline check and durable claim share the store lock.
-/// A paused/removed/resumed/edited schedule cannot run from a stale snapshot.
+/// Recheck the prepared action under the local store lock, then atomically
+/// compare the observed row while claiming it. Another process can change the
+/// database despite that local lock; its pause, edit or receipt must win too.
 fn claim_current(
     surface: &Surface,
     expected: &Schedule,
@@ -166,10 +167,10 @@ fn claim_current(
     Ok(surface
         .with_store(|store| {
             let stored = store.schedules()?;
-            let current = stored
-                .iter()
-                .find(|stored| stored.id == expected.id)
-                .and_then(|stored| Schedule::from_stored(stored).ok());
+            let Some(stored) = stored.iter().find(|stored| stored.id == expected.id) else {
+                return Ok(Admission::Hold);
+            };
+            let current = Schedule::from_stored(stored).ok();
             if !current.as_ref().is_some_and(|current| {
                 current == expected
                     && current.enabled
@@ -179,7 +180,7 @@ fn claim_current(
             }
             let admission = admit();
             if admission == Admission::Hold
-                || !store.mark_schedule_fired(expected.id, at.timestamp())?
+                || !store.claim_schedule_fired(stored, at.timestamp())?
             {
                 return Ok(Admission::Hold);
             }

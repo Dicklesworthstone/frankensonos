@@ -2694,6 +2694,35 @@ impl Store for SqliteStore {
         Ok(claimed > 0)
     }
 
+    fn claim_schedule_fired(
+        &mut self,
+        expected: &StoredSchedule,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        if !expected.enabled || expected.last_fired.is_some_and(|last| last >= at) {
+            return Ok(false);
+        }
+        let claimed = self.in_transaction(|c| {
+            c.execute_with_params_sync(
+                "UPDATE schedules SET last_fired = ?2 \
+                 WHERE id = ?1 AND enabled = 1 \
+                 AND spec = ?3 AND action = ?4 AND creator = ?5 AND created = ?6 \
+                 AND (last_fired = ?7 OR (last_fired IS NULL AND ?7 IS NULL)) \
+                 AND (last_fired IS NULL OR last_fired < ?2)",
+                &[
+                    expected.id.into(),
+                    at.into(),
+                    expected.spec.as_str().into(),
+                    expected.action.as_str().into(),
+                    expected.creator.as_str().into(),
+                    expected.created.into(),
+                    opt_value(expected.last_fired),
+                ],
+            )
+        })?;
+        Ok(claimed > 0)
+    }
+
     fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError> {
         let gone = self.in_transaction(|c| {
             c.execute_with_params_sync("DELETE FROM schedules WHERE id = ?1", &[id.into()])

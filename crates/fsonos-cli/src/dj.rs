@@ -71,6 +71,8 @@ pub(crate) mod prefs;
 #[cfg(test)]
 mod problem_tests;
 mod readiness;
+#[cfg(test)]
+mod recovery_tests;
 mod rehearsal;
 mod retry;
 pub(crate) mod saved;
@@ -676,6 +678,10 @@ fn failure(err: FeedError) -> Failure {
         FeedError::RecoveryStopped(_) => Failure::new(ErrorCode::NoDjSession, detail).with_hint(
             "Inspect the speaker's playback and queue, then start the DJ again when ready.",
         ),
+        FeedError::RecoveryCheckpoint(_) => Failure::new(ErrorCode::Internal, detail).with_hint(
+            "Restore write access to the data directory; automatic recovery sends no \
+             speaker commands until its checkpoint is saved.",
+        ),
         FeedError::Core(e) => Failure::from(e),
         FeedError::Proto(e) => Failure::from(CoreError::from(e)),
         FeedError::Store(e) => Failure::new(ErrorCode::Internal, e.to_string()),
@@ -1236,6 +1242,13 @@ impl DjEngine for SpotifyDj {
         if !continuation::prepare(self, &mut state, at.coordinator, playback) {
             return;
         }
+        // Only renderer-error recovery needs a full saved revision here.
+        // Its hook runs after live validation and before the first mutation.
+        let mut checkpoint = self.feeds_file.as_deref().and_then(|path| {
+            (playback.transport_status.as_deref() == Some("ERROR_OCCURRED")).then(|| {
+                saved::RecoveryCheckpoint::new(path, &state.feeds, &state.handover, &state.starters)
+            })
+        });
         let State {
             feeds,
             refill_retries,
@@ -1244,17 +1257,24 @@ impl DjEngine for SpotifyDj {
             listening,
             problems,
             logged,
+            saved,
             ..
         } = &mut *state;
         let elsewhere = queued_elsewhere(feeds, at.coordinator, cx.now);
         let Some(feed) = feeds.get_mut(at.coordinator) else {
             return;
         };
-        let result = feed.on_playback(
+        let result = feed.on_playback_with_recovery_checkpoint(
             &speakers(at),
             plan(pool, feedback.as_ref(), &cx, &elsewhere),
             store,
             playback,
+            &mut |feed| {
+                if let Some(checkpoint) = &mut checkpoint {
+                    *saved = checkpoint.write(feed).map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            },
         );
         record_top_up(logged, store, at, feed, &result, cx.now);
         let trim_error = feed.take_trim_error();

@@ -89,9 +89,16 @@ pub(super) fn load(path: &Path, seed: u64) -> Loaded {
                 .zip(std::iter::successors(Some(seed), |s| {
                     Some(s.wrapping_add(1))
                 }))
-                .map(|(snapshot, seed)| {
+                .filter_map(|(snapshot, seed)| {
                     let feed = QueueFeed::restore(snapshot, DjConfig::default(), seed);
-                    (feed.coordinator(), feed)
+                    if !feed.is_active() {
+                        tracing::warn!(
+                            "the DJ leaves an interrupted playback recovery unmanaged; \
+                             inspect the speaker before starting the DJ again"
+                        );
+                        return None;
+                    }
+                    Some((feed.coordinator(), feed))
                 })
                 .collect();
             let tracker = Tracker::restore(saved.groups, &feeds);
@@ -161,6 +168,43 @@ pub(super) fn encode_before_continuation(
     feed.dry_end = None;
     feed.playing = None;
     Some(encode_saved(&saved))
+}
+
+/// A complete saved revision prepared only for a renderer-error event. The
+/// feed fills in its reserved attempt after verifying live ownership, while
+/// the daemon keeps the other feeds and caller/group provenance unchanged.
+pub(super) struct RecoveryCheckpoint<'a> {
+    path: &'a Path,
+    saved: Saved,
+}
+
+impl<'a> RecoveryCheckpoint<'a> {
+    pub(super) fn new(
+        path: &'a Path,
+        feeds: &HashMap<PlayerId, QueueFeed>,
+        tracker: &Tracker,
+        starters: &HashMap<PlayerId, Vec<Client>>,
+    ) -> Self {
+        Self {
+            path,
+            saved: snapshot(feeds, tracker, starters),
+        }
+    }
+
+    /// Return the exact durable revision so a failed later save cannot be
+    /// mistaken for an already-saved successful completion.
+    pub(super) fn write(&mut self, feed: &FeedSnapshot) -> std::io::Result<String> {
+        let retained = self
+            .saved
+            .feeds
+            .iter_mut()
+            .find(|saved| saved.zone == feed.zone)
+            .ok_or_else(|| std::io::Error::other("the recovery's saved feed is missing"))?;
+        *retained = feed.clone();
+        let text = serde_json::to_string_pretty(&self.saved).map_err(std::io::Error::other)?;
+        write(self.path, &text)?;
+        Ok(text)
+    }
 }
 
 fn encode_saved(saved: &Saved) -> String {
