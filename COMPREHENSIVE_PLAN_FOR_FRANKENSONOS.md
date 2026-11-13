@@ -917,6 +917,13 @@ the house to agents they can bound and reverse. The guardrails live in
   and `README.md` document). An unresolved identity never fails a
   request. Caps apply to every identity except `cli`; `unknown` gets read-only
   tools. Policy keys are logins, tags, or node names.
+- The host's owner identity follows live Tailscale status even with fixed
+  listener binds. A late login gains owner rights without a daemon restart;
+  logout, an account change or a tagged node retires the prior owner. Positive
+  WhoIs evidence is confirmed against fresh local status, including on IPv6-only
+  hosts. Failed observations expire after four checks, and a stopped watcher
+  revokes its proof. Owner updates and policy-file reloads preserve each other's
+  latest values under one write lock.
 - Fades with a duration use stepped `SetVolume`. RenderingControl
   `RampToVolume` takes no duration and only its SLEEP_TIMER type fades from the
   current volume, so it serves only "fade at device speed".

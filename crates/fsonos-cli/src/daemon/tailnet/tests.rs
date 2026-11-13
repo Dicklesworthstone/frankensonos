@@ -309,7 +309,7 @@ fn automatic_addresses_never_include_loopback_lan_wildcard_or_public_ips() {
 }
 
 #[test]
-fn configured_http_and_tailscale_off_do_not_start_the_worker() {
+fn fixed_http_keeps_owner_watching_without_managing_its_listeners() {
     let mut args = ServeArgs {
         http: None,
         mcp_http: None,
@@ -322,17 +322,26 @@ fn configured_http_and_tailscale_off_do_not_start_the_worker() {
         bridge_compat: None,
     };
     assert!(enabled(&args));
+    assert!(automatic_http(&args));
     args.tailscale = TailscaleMode::Off;
     assert!(!enabled(&args));
+    assert!(!automatic_http(&args));
     args.tailscale = TailscaleMode::Auto;
     for configured in ["127.0.0.1:8099", V4, "0.0.0.0:8099"] {
         args.http = Some(address(configured));
-        assert!(!enabled(&args), "an explicit bind stays as configured");
+        assert!(enabled(&args), "fixed binds still follow host ownership");
+        assert!(
+            !automatic_http(&args),
+            "an explicit bind stays as configured"
+        );
     }
+    args.tailscale_serve = true;
+    assert!(enabled(&args), "Serve's callers need current owner rights");
+    assert!(!automatic_http(&args));
     args.http = None;
     args.mcp_http = Some(address("100.64.0.10:8098"));
     assert!(
-        enabled(&args),
+        automatic_http(&args),
         "MCP configuration does not change HTTP policy"
     );
 }
@@ -353,4 +362,68 @@ fn retirement_releases_owned_sockets_and_leaves_external_loopback_available() {
     assert_eq!(rebound.local_addr().unwrap(), auto_addr);
     let connected = std::net::TcpStream::connect(local.local_addr().unwrap()).unwrap();
     assert_eq!(connected.peer_addr().unwrap(), local.local_addr().unwrap());
+}
+
+fn owned_surface() -> Arc<Surface> {
+    struct NoLan;
+    impl fsonos_proto::Transport for NoLan {
+        fn soap_post(
+            &self,
+            _: std::net::IpAddr,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<String, fsonos_proto::ProtoError> {
+            panic!("owner lifecycle must not touch speakers");
+        }
+    }
+    Arc::new(Surface::new(
+        Box::new(NoLan),
+        Box::new(|_| Ok(Vec::new())),
+        fsonos_core::policy::Policy::default().with_owner(Some("owner@example.com".into())),
+        Box::new(fsonos_core::clock::SystemClock),
+    ))
+}
+
+#[test]
+fn failed_or_panicked_owner_workers_cannot_leave_permanent_authority() {
+    let surface = owned_surface();
+    let lease = OwnerLease(Arc::clone(&surface));
+    let unstarted = move || {
+        let _lease = lease;
+    };
+    // A failed thread spawn drops its closure, including its captured guard.
+    drop(unstarted);
+    assert_eq!(surface.policy().owner(), None);
+
+    surface.set_tailnet_owner(Some("owner@example.com".into()));
+    let lease = OwnerLease(Arc::clone(&surface));
+    let worker = thread::spawn(move || {
+        let _lease = lease;
+        panic!("synthetic watcher failure");
+    });
+    assert!(worker.join().is_err());
+    assert_eq!(surface.policy().owner(), None);
+}
+
+#[test]
+fn an_owner_only_watch_stops_without_retiring_configured_sockets() {
+    let surface = owned_surface();
+    let fixed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let stop = Arc::new(AtomicBool::new(true));
+    let watcher = watch(
+        None,
+        up(),
+        Arc::clone(&surface),
+        "synthetic-token".into(),
+        true,
+        ServeOrigin::default(),
+        stop,
+    )
+    .unwrap();
+    watcher.join().unwrap();
+    assert_eq!(surface.policy().owner(), None);
+    let address = fixed.local_addr().unwrap();
+    let connected = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(1)).unwrap();
+    assert_eq!(connected.peer_addr().unwrap(), address);
 }

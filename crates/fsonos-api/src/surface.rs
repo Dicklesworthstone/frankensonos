@@ -184,13 +184,11 @@ impl PolicyFile {
         match Policy::load(&self.dir) {
             Ok(fresh) => {
                 // The owner's login comes from the tailnet, not the file.
-                let owner = policy
-                    .read()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .owner()
-                    .map(str::to_owned);
-                *policy.write().unwrap_or_else(PoisonError::into_inner) =
-                    Arc::new(fresh.with_owner(owner));
+                // Read it under the same write lock used to publish: a live
+                // tailnet update must not be lost between these operations.
+                let mut current = policy.write().unwrap_or_else(PoisonError::into_inner);
+                let owner = current.owner().map(str::to_owned);
+                *current = Arc::new(fresh.with_owner(owner));
                 tracing::info!(
                     "house policy reloaded from {}",
                     fsonos_core::policy::FILE_NAME
@@ -361,6 +359,21 @@ impl Surface {
             file.refresh(&self.policy);
         }
         Arc::clone(&self.policy.read().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Update the owner established by this daemon host's local Tailscale
+    /// identity. Only the trusted host watcher supplies this value; callers
+    /// and policy files cannot name an owner. Current limits and client rules
+    /// survive the update, including a concurrent policy-file reload.
+    /// Returns whether ownership changed.
+    pub fn set_tailnet_owner(&self, login: Option<String>) -> bool {
+        let mut current = self.policy.write().unwrap_or_else(PoisonError::into_inner);
+        let fresh = current.as_ref().clone().with_owner(login);
+        if fresh.owner() == current.owner() {
+            return false;
+        }
+        *current = Arc::new(fresh);
+        true
     }
 
     /// The owner's aliases as the file says now. A malformed file is logged
@@ -2544,6 +2557,102 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         assert_eq!(*s.policy(), Policy::default());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn live_tailnet_ownership_grants_and_revokes_privileges_without_changing_limits() {
+        use fsonos_core::policy::Decision;
+
+        let (s, sent) = surface("", Vec::new());
+        let first = Client::Tailnet("first@example.com".into());
+        let second = Client::Tailnet("second@example.com".into());
+        let original = s.policy();
+        assert!(s.guard(&first).authorize("spotify_sign_in", false).is_err());
+        assert!(s.set_tailnet_owner(Some(first.key().into())));
+        assert!(!s.set_tailnet_owner(Some(first.key().into())));
+        assert!(s.guard(&first).authorize("spotify_sign_in", false).is_ok());
+        assert_eq!(s.policy().may_change(&first, None), Decision::Allow);
+        assert_eq!(s.policy().defaults, original.defaults);
+        assert_eq!(
+            original.owner(),
+            None,
+            "in-flight policy snapshots stay immutable"
+        );
+
+        assert!(s.set_tailnet_owner(Some(second.key().into())));
+        assert!(s.guard(&first).authorize("spotify_sign_in", false).is_err());
+        assert!(matches!(
+            s.policy().may_change(&first, None),
+            Decision::Deny { .. }
+        ));
+        assert!(s.guard(&second).authorize("spotify_sign_in", false).is_ok());
+        assert_eq!(s.policy().may_change(&second, None), Decision::Allow);
+        assert!(s.set_tailnet_owner(None));
+        assert!(
+            s.guard(&second)
+                .authorize("spotify_sign_in", false)
+                .is_err()
+        );
+        assert!(
+            s.guard(&Client::Cli)
+                .authorize("spotify_sign_in", false)
+                .is_ok()
+        );
+        assert_eq!(s.policy().defaults, original.defaults);
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "ownership changes no speaker state"
+        );
+    }
+
+    #[test]
+    fn policy_reload_and_live_owner_updates_preserve_each_others_current_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(fsonos_core::policy::FILE_NAME);
+        let (s, _) = surface("", Vec::new());
+        let s = Arc::new(s.with_policy_file(dir.path().to_path_buf()));
+        let client = Client::Tailnet("owner@example.com".into());
+        assert!(s.set_tailnet_owner(Some(client.key().into())));
+        std::fs::write(
+            &file,
+            "[defaults]\nmax_volume = 22\n[clients.'owner@example.com']\ndeny = ['volume']\n",
+        )
+        .unwrap();
+        assert_eq!(s.policy().defaults.max_volume, 22);
+        assert_eq!(s.policy().owner(), Some(client.key()));
+        assert!(s.guard(&client).authorize("set_volume", false).is_err());
+        assert!(s.guard(&client).authorize("spotify_sign_in", false).is_ok());
+
+        // A bad edit cannot reset caps, resurrect a revoked owner, or keep a
+        // later proved owner from being adopted under the last good rules.
+        std::fs::write(&file, "[defaults]\nmax_volume = 'bad'\n").unwrap();
+        assert!(s.set_tailnet_owner(None));
+        assert_eq!(s.policy().owner(), None);
+        assert_eq!(s.policy().defaults.max_volume, 22);
+        assert!(s.set_tailnet_owner(Some(client.key().into())));
+        assert!(s.guard(&client).authorize("set_volume", false).is_err());
+
+        // Both publishers can run together: the final snapshot must contain
+        // the file's new limits and the live observation's revocation.
+        std::fs::write(&file, "[defaults]\nmax_volume = 18\n").unwrap();
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let reloading = {
+            let (s, start) = (Arc::clone(&s), Arc::clone(&start));
+            std::thread::spawn(move || {
+                start.wait();
+                let _ = s.policy();
+            })
+        };
+        start.wait();
+        s.set_tailnet_owner(None);
+        reloading.join().unwrap();
+        assert_eq!(s.policy().defaults.max_volume, 18);
+        assert_eq!(s.policy().owner(), None);
+        assert!(
+            s.guard(&client)
+                .authorize("spotify_sign_in", false)
+                .is_err()
+        );
     }
 
     #[test]

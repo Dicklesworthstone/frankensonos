@@ -297,6 +297,15 @@ Port 443 is the **web remote**, so the Serve root (`/`) opens the house's
 browser remote, not a directory listing: open `https://<mac>.<tailnet>.ts.net/`
 on any tailnet device. `/mcp` on 8443 is the agent endpoint.
 
+The daemon rechecks its host's Tailscale ownership every 30 seconds, including
+when HTTP uses an explicit loopback bind behind Serve. If Tailscale logs in
+after the daemon starts, the host's verified login gains its owner permissions
+without restarting FrankenSonos. Fresh local status and WhoIs establish the
+owner; IPv6-only hosts work too. Logout, a changed host identity, or a tagged
+node retires the previous owner. Brief lookup failures retain the last proof;
+four consecutive unanswered checks expire it. Policy-file limits and explicit
+grants still apply, and the local CLI remains the owner while Tailscale is down.
+
 `setup` refuses while **Funnel** is on for either port (Funnel would publish
 the unauthenticated API to the public internet; FrankenSonos never uses it),
 and never replaces Serve config it did not make. `--dry-run` shows the

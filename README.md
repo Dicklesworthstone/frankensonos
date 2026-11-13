@@ -379,6 +379,11 @@ or retry backoff.
   history and undo ownership. Multiple MCP listeners share the same live
   house. Native MCP never accepts the HTTP API's local CLI token as an
   uncapped CLI or stdio identity.
+- The daemon follows its host's owner login after startup too. A late Tailscale
+  login gains owner rights without a restart; logout, account changes and
+  tagged nodes retire the old owner. This works with explicit loopback binds
+  behind Serve and with IPv6-only hosts. Brief lookup failures retain the last
+  verified identity for at most four checks, while policy edits remain in force.
 - Point an agent at it from any tailnet machine:
 
 ```bash

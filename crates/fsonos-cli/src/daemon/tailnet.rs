@@ -1,11 +1,11 @@
-//! Keep automatic HTTP listeners in step with Tailscale after startup.
+//! Keep host ownership and automatic HTTP listeners in step with Tailscale.
 //!
 //! Loopback belongs to the daemon for its whole lifetime. This worker owns
 //! only the automatic tailnet listeners: a late login or reconnect adds
 //! them, a reported disconnect retires them, and failed binds are retried.
 //! A changed name or address set also rebuilds their Host, browser-origin,
 //! and own-address identity rules. Configured HTTP and all MCP binds stay
-//! outside this worker.
+//! outside this worker; their shared policy still follows the host's owner.
 
 use fsonos_api::Surface;
 use fsonos_api::web::ServeOrigin;
@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 
 use crate::config::{self, ServeArgs, TailscaleMode};
 
+mod owner;
+
 const INTERVAL: Duration = Duration::from_secs(30);
 /// A failed CLI probe can fall back to interface addresses, without the
 /// MagicDNS name. Keep a working listener through brief misses, but drop
@@ -25,7 +27,26 @@ const INTERVAL: Duration = Duration::from_secs(30);
 const UNANSWERED_LIMIT: u32 = 4;
 
 pub(super) fn enabled(args: &ServeArgs) -> bool {
-    args.http.is_none() && args.tailscale == TailscaleMode::Auto
+    args.tailscale == TailscaleMode::Auto
+}
+
+pub(super) fn automatic_http(args: &ServeArgs) -> bool {
+    enabled(args) && args.http.is_none()
+}
+
+pub(super) fn owner_login(status: &TailnetStatus) -> Option<String> {
+    owner::initial(status)
+}
+
+/// Owner authority is valid only while its watcher can refresh or expire it.
+/// Create this before spawning so a spawn failure also revokes the startup
+/// owner; a panic must not leave fixed/Serve listeners with permanent proof.
+struct OwnerLease(Arc<Surface>);
+
+impl Drop for OwnerLease {
+    fn drop(&mut self) {
+        self.0.set_tailnet_owner(None);
+    }
 }
 
 /// A live listener owns its shutdown, including when the worker cannot be
@@ -123,12 +144,12 @@ fn accept(status: &TailnetStatus, listening: bool, unanswered: &mut u32) -> bool
     }
 }
 
-/// Follow only the automatic tailnet HTTP listeners until the daemon stops.
+/// Follow this host's ownership and, when supplied, its automatic listeners.
 /// The default probe bounds each CLI attempt; waiting between probes also
 /// checks shutdown so a late-starting Tailscale cannot delay daemon exit.
 pub(super) fn watch(
-    initial: Vec<(super::HttpStop, SocketAddr)>,
-    names: Vec<String>,
+    initial: Option<Vec<(super::HttpStop, SocketAddr)>>,
+    status: TailnetStatus,
     surface: Arc<Surface>,
     cli_token: String,
     behind_serve: bool,
@@ -136,16 +157,21 @@ pub(super) fn watch(
     stop: Arc<AtomicBool>,
 ) -> Option<thread::JoinHandle<()>> {
     // Wrap before spawning: a spawn error must stop these listeners too.
-    let mut listeners = Listeners::new(
-        initial
-            .into_iter()
-            .map(|listener| (listener.1, Http(listener)))
-            .collect(),
-        names,
-    );
+    let mut listeners = initial.map(|initial| {
+        Listeners::new(
+            initial
+                .into_iter()
+                .map(|listener| (listener.1, Http(listener)))
+                .collect(),
+            super::tailnet_names(&status),
+        )
+    });
+    let mut owner = owner::Owner::new(&status, surface.policy().owner().map(str::to_owned));
+    let lease = OwnerLease(Arc::clone(&surface));
     let spawned = thread::Builder::new()
-        .name("fsonos-tailnet-http".into())
+        .name("fsonos-tailnet".into())
         .spawn(move || {
+            let _lease = lease;
             let probe = Probe::default();
             let mut unanswered = 0;
             while !stop.load(Ordering::Acquire) {
@@ -153,47 +179,57 @@ pub(super) fn watch(
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
-                listeners.held.retain_mut(|(addr, listener)| {
-                    if let Some(error) = super::supervision::listener_failure(
-                        &mut listener.0.0.thread,
-                        &format!("automatic tailnet HTTP API on {addr}"),
-                    ) {
-                        tracing::warn!("{error:#}; will retry");
-                        false
-                    } else {
-                        true
+                owner.probe(&status, &probe, |login| {
+                    if surface.set_tailnet_owner(login.clone()) {
+                        tracing::info!(owner = ?login, "Tailscale host ownership updated");
                     }
                 });
-                if accept(&status, !listeners.held.is_empty(), &mut unanswered) {
-                    let desired = addresses(&status);
-                    let ours = config::own_tailnet_addrs(&status);
-                    listeners.reconcile(
-                        &desired,
-                        super::tailnet_names(&status),
-                        || stop.load(Ordering::Acquire),
-                        |addr, names| {
-                            if let Some(warning) =
-                                config::check_control_bind("HTTP API", addr, false, &ours)?
-                            {
-                                tracing::warn!("{warning}");
-                            }
-                            let listener = super::start_http(
-                                &surface,
-                                addr,
-                                names,
-                                behind_serve,
-                                &cli_token,
-                                &serve,
-                            )?;
-                            eprintln!(
-                                "fsonos serve: HTTP API now listening on http://{} (Tailscale)",
-                                listener.1
-                            );
-                            Ok(Http(listener))
-                        },
-                    );
-                } else {
-                    tracing::debug!(unanswered, "Tailscale did not answer; HTTP listeners kept");
+                if let Some(listeners) = &mut listeners {
+                    listeners.held.retain_mut(|(addr, listener)| {
+                        if let Some(error) = super::supervision::listener_failure(
+                            &mut listener.0.0.thread,
+                            &format!("automatic tailnet HTTP API on {addr}"),
+                        ) {
+                            tracing::warn!("{error:#}; will retry");
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    if accept(&status, !listeners.held.is_empty(), &mut unanswered) {
+                        let desired = addresses(&status);
+                        let ours = config::own_tailnet_addrs(&status);
+                        listeners.reconcile(
+                            &desired,
+                            super::tailnet_names(&status),
+                            || stop.load(Ordering::Acquire),
+                            |addr, names| {
+                                if let Some(warning) =
+                                    config::check_control_bind("HTTP API", addr, false, &ours)?
+                                {
+                                    tracing::warn!("{warning}");
+                                }
+                                let listener = super::start_http(
+                                    &surface,
+                                    addr,
+                                    names,
+                                    behind_serve,
+                                    &cli_token,
+                                    &serve,
+                                )?;
+                                eprintln!(
+                                    "fsonos serve: HTTP API now listening on http://{} (Tailscale)",
+                                    listener.1
+                                );
+                                Ok(Http(listener))
+                            },
+                        );
+                    } else {
+                        tracing::debug!(
+                            unanswered,
+                            "Tailscale did not answer; HTTP listeners kept"
+                        );
+                    }
                 }
                 let until = Instant::now() + INTERVAL;
                 while Instant::now() < until && !stop.load(Ordering::Acquire) {
@@ -205,7 +241,7 @@ pub(super) fn watch(
     match spawned {
         Ok(watching) => Some(watching),
         Err(error) => {
-            tracing::warn!("not watching automatic tailnet HTTP listeners: {error}");
+            tracing::warn!("not watching Tailscale ownership or automatic HTTP listeners: {error}");
             None
         }
     }
