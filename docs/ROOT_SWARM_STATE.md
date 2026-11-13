@@ -5301,3 +5301,12 @@ is configured internally and our parsed pk is not the issue there.
 That shifts suspicion for the `175696` "length" onto interpretation: it may not be the
 decrypted length at all but a differently-typed argument in that message, so the next
 useful read is the exact call shape around `0x10007120` rather than the value itself.
+
+Message decoded: `error getting decrypted data length of %d %u` is `(mode, length)` and
+the value was `(1, 175696)`. Under mode 1 the check is `len >= 2*size` (512 for a
+2048-bit key), so 175696 passes with room to spare — the length is *fine*.
+
+Therefore the error is the **status returned by `ZZ0045`**, not the number: `ZZ0045`
+returns 0/3 depending on branch, and the caller treats non-zero as failure. Next probe
+is to step over that call and read `r3` plus which branch was taken, instead of
+reasoning about the log text.
