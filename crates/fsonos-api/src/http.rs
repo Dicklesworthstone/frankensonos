@@ -108,7 +108,7 @@ use crate::failure::{ErrorCode, Failure};
 use crate::identity::Identity;
 use crate::log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 use crate::plan::{
-    self, Command, DjAction, Rooms, TransportAction, plan_group, plan_mute_set, plan_play,
+    self, Command, DjAction, Rooms, TransportAction, plan_group, plan_mute_set, plan_play_set,
     plan_ungroup_set, plan_volume_set,
 };
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, ZoneStateDto};
@@ -564,14 +564,14 @@ fn house(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// The speaker controls and the DJ.
 fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = vec![
-        cx.control(
+        cx.control_set(
             Op::post(
                 "/play",
                 "play",
                 CONTROL,
-                "Play a Spotify item, link or stream on a zone",
+                "Play a Spotify item, link or stream in every selected group",
             ),
-            |h, r: &PlayRequest| plan_play(h, r),
+            |h, r: &PlayRequest| plan_play_set(h, r),
         ),
         cx.control_set(
             Op::post(

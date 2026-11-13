@@ -315,6 +315,33 @@ pub fn plan_play<'a>(rooms: impl Into<Rooms<'a>>, req: &PlayRequest) -> Result<C
     })
 }
 
+/// Play one source in every distinct group selected by a room, alias or
+/// `all`/`everywhere`. Groups stay independent; this does not regroup rooms.
+pub fn plan_play_set<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &PlayRequest,
+) -> Result<Vec<Command>, Failure> {
+    let req = req.normalized()?;
+    validate_play_request_source(&req.source_uri)?;
+    let rooms = rooms.into();
+    let mut commands = Vec::new();
+    for target in resolve_set(&rooms, &req.zone)? {
+        if commands
+            .iter()
+            .any(|command: &Command| command.group_coordinator() == Some(&target.coordinator.id))
+        {
+            continue;
+        }
+        commands.push(Command::Play {
+            member: target.player.id.clone(),
+            coordinator: target.coordinator.id.clone(),
+            source_uri: req.source_uri.clone(),
+            title: req.title.clone(),
+        });
+    }
+    Ok(commands)
+}
+
 /// `POST /play/favorite` / the `play_favorite` tool, given the favorites of
 /// the zone's household (`fsonos_core::favorites::list`).
 pub fn plan_play_favorite<'a>(

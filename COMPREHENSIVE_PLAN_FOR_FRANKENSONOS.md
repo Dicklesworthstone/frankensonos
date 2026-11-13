@@ -1404,6 +1404,17 @@ operations are not restarted. See [`docs/COMMAND_RECOVERY.md`](docs/COMMAND_RECO
 only suggests, so a typo never acts on a room), reserved
 `all`/`everywhere` per household, and a per-client default room.
 
+Source playback also accepts these room sets through CLI, HTTP and MCP.
+Explicit source links, Sonos favorites and saved playlists produce one command
+per distinct existing coordinator, without regrouping or promising synchronized
+starts. Every household resolves its own native catalog and Spotify renderer
+before playback changes; artist/show requests capture all destinations before
+one shared catalog lookup and revalidate them afterward. The existing set
+executor applies per-group caps, reports partial speaker failures and retains
+one action/undo boundary. Search picks, line-in and queue insertion keep their
+single-group contracts. See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
+for the interface, restoration limits and validation status.
+
 ### Milestone placement
 
 - **M2:** 12.3 reads and now-playing state, 12.4 sim and e2e harness, 12.6
