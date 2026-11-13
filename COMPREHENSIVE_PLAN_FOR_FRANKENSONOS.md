@@ -1422,6 +1422,13 @@ revision-bound ordered track selections keep their single-group contracts.
 See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
 for the interface, restoration limits and validation status.
 
+Both browser source players expose those same room sets. They resolve actual
+player identities, show every affected group and its current source/queue,
+review native titles against each household's own catalog, then recheck before
+one daemon mutation. Queue receipts account for every reviewed coordinator and
+retain partial failures and undo limitations. Existing browser command lanes
+cover the entire selection; no browser loop sends separate playback writes.
+
 ### Milestone placement
 
 - **M2:** 12.3 reads and now-playing state, 12.4 sim and e2e harness, 12.6

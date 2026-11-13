@@ -52,6 +52,8 @@ const DJ_SESSION: &str = include_str!("../../remote/dj-session.js");
 const REHEARSAL: &str = include_str!("../../remote/dashboard-rehearsal.js");
 const REHEARSAL_STYLE: &str = include_str!("../../remote/dashboard-rehearsal.css");
 const SOURCE_PLAYER: &str = include_str!("../../remote/source-player.js");
+const ROOM_SETS: &str = include_str!("../../remote/room-sets.js");
+const SOURCE_TARGETS: &str = include_str!("../../remote/source-targets.js");
 const SOURCE: &str = include_str!("../../remote/dashboard-source.js");
 const SOURCE_STYLE: &str = include_str!("../../remote/dashboard-source.css");
 const PLAYLIST_SAVE: &str = include_str!("../../remote/dashboard-playlist-save.js");
@@ -110,7 +112,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{DJ_CONFIGURATION}\n{DJ_CONFIGURATION_PANEL}\n{QUEUE_TRACKS}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{SOURCE_PLAYER}\n{SOURCE}\n{PLAYLIST_SAVE}\n{PLAYLIST_SAVE_PANEL}\n{SPOTIFY_CONNECT}\n{LIBRARY_SYNC}\n{MUSIC}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{SEEK}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{DJ_DIRECTION}\n{DJ_CONFIGURATION}\n{DJ_CONFIGURATION_PANEL}\n{QUEUE_TRACKS}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{PLAY_MODE}\n{GROUPS}\n{TIMERS}\n{SLEEP}\n{VOLUME}\n{SCENES}\n{SCHEDULES}\n{ROUTINES}\n{ANNOUNCEMENTS}\n{ANNOUNCEMENTS_PANEL}\n{STEERING}\n{DIRECTION}\n{DJ_PREFERENCES}\n{PREFERENCES}\n{DJ_SESSION}\n{REHEARSAL}\n{ROOM_SETS}\n{SOURCE_TARGETS}\n{SOURCE_PLAYER}\n{SOURCE}\n{PLAYLIST_SAVE}\n{PLAYLIST_SAVE_PANEL}\n{SPOTIFY_CONNECT}\n{LIBRARY_SYNC}\n{MUSIC}\n{SCRIPT}"
                     ),
                 )
             },

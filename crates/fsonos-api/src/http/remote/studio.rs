@@ -8,7 +8,6 @@ const SCRIPT: &str = include_str!("../../remote/studio.js");
 const INSIGHTS_SCRIPT: &str = include_str!("../../remote/studio-insights.js");
 const INSIGHTS_STYLE: &str = include_str!("../../remote/studio-insights.css");
 const DIAGNOSTICS_SCRIPT: &str = include_str!("../../remote/studio-diagnostics.js");
-const ROOM_SETS_SCRIPT: &str = include_str!("../../remote/room-sets.js");
 const ROOM_SETS_PANEL: &str = include_str!("../../remote/room-sets-panel.js");
 const ROOM_SETS_STYLE: &str = include_str!("../../remote/room-sets.css");
 const STYLE: &str = include_str!("../../remote/studio.css");
@@ -26,7 +25,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{DIAGNOSTICS_SCRIPT}\n{ROOM_SETS_SCRIPT}\n{ROOM_SETS_PANEL}\n{SCRIPT}\n{INSIGHTS_SCRIPT}"
+                        "{DIAGNOSTICS_SCRIPT}\n{ROOM_SETS_PANEL}\n{SCRIPT}\n{INSIGHTS_SCRIPT}"
                     ),
                 )
             },
@@ -62,7 +61,6 @@ mod tests {
             INSIGHTS_SCRIPT,
             INSIGHTS_STYLE,
             DIAGNOSTICS_SCRIPT,
-            ROOM_SETS_SCRIPT,
             ROOM_SETS_PANEL,
             ROOM_SETS_STYLE,
         ] {

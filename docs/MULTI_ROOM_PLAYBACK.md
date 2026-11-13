@@ -33,12 +33,37 @@ to group one household before playback when that is the intended arrangement.
 Playback request and response shapes are unchanged: the target remains
 `zone`, and the outcome contains `done`, `changed` and `notes`. Direct CLI,
 daemon CLI, standalone MCP and daemon MCP use the shared planner and executor.
-The browser remotes continue to choose one displayed group.
+The phone remote and desktop dashboard also send these same source requests.
 
 Search-and-play picks, line-in playback, revision-bound ordered track
 selections (`queue-tracks` / `POST /queue/tracks`), and the legacy `/sonos` compatibility bridge
 retain their single-group contracts. They do not silently choose one room
 from a multi-room alias.
+
+## Phone and desktop controls
+
+Open the existing source player and change **Destination selection** to a room
+set. Enter a room, alias, `here`, `all@S1`, `all@S2`, or `everywhere`, or read
+the available room suggestions. Suggestions do not determine membership: the
+daemon resolves the actual player identities and complete affected groups.
+Choose a source link, a Spotify search result, a favorite title or a saved
+playlist title, then **Review playback** or **Review queue addition**.
+
+The review lists every affected group, its current music and relevant queue
+position. Group members outside the named alias are included. Favorites and
+playlists use an unambiguous full title in each household; the review shows
+each household's own entry and ID. The browser does not copy an ID from one
+household into another household's selection. The single-group playlist picker,
+individual saved-track actions and line-in controls remain available.
+
+Confirmation checks the complete target, catalog selection and relevant state
+again, reserves the existing browser command lanes, and sends one daemon
+request. Each queue receipt must account for every reviewed group. Successful
+ranges, failed destinations, partial completion and undo limitations stay
+visible, including an all-failed batch. A missing or malformed reply is
+uncertain and is never automatically repeated. Source panels add no background
+polling. The review cannot lock out another controller after its final read;
+the daemon's execution checks still apply.
 
 ## Preparing the source
 
