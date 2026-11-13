@@ -26,6 +26,9 @@ use crate::request::PlayRequest;
 mod input;
 pub use input::QueueRequest;
 
+mod targets;
+pub use targets::{QueueAddOutcome, QueueAddedSetDto, QueueAddedTargetDto, QueueTargetFailureDto};
+
 mod mode;
 pub use mode::{MODE_READ, MODE_WRITE, PlayModeDto, PlayModeRequest, PlayModeSetDto};
 

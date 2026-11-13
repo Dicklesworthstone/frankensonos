@@ -3,7 +3,7 @@
 
 use fastmcp::FinalCallToolResult;
 use fastmcp::prelude::*;
-use fsonos_api::surface::queue::{QueueAddedDto, QueueRequest};
+use fsonos_api::surface::queue::{QueueAddOutcome, QueueRequest};
 use fsonos_api::{ErrorCode, Failure};
 
 use super::super::{Backend, respond};
@@ -18,13 +18,13 @@ impl Backend {
             crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
         })?;
         if let Some(answer) =
-            self.on_daemon::<QueueAddedDto>("POST", "/queue", Some(&body), |d| d.done.clone())
+            self.on_daemon::<QueueAddOutcome>("POST", "/queue", Some(&body), QueueAddOutcome::text)
         {
             return answer;
         }
         respond(|| {
-            let added = self.surface.queue_request(&self.client, req)?;
-            Ok((added.done.clone(), added))
+            let added = self.surface.queue_request_targets(&self.client, req)?;
+            Ok((added.text(), added))
         })
     }
 }

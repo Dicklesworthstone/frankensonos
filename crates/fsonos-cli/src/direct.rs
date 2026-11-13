@@ -5,7 +5,7 @@
 use fsonos_api::surface::dj_rehearse::{DjRehearsalDto, DjRehearseRequest};
 use fsonos_api::surface::eq::{EqDto, EqRequest, EqSetDto};
 use fsonos_api::surface::players::{PlayerDto, player_views};
-use fsonos_api::surface::queue::{QueueAddedDto, QueueDto, QueueRequest};
+use fsonos_api::surface::queue::{QueueAddOutcome, QueueDto, QueueRequest};
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::surface::sonos_playlists::{PlaySonosPlaylistRequest, SonosPlaylistDto};
 use fsonos_api::{
@@ -225,11 +225,11 @@ impl Direct {
         self.surface.queue(&Client::Cli, zone, offset, limit)
     }
 
-    /// Add a Spotify item or a native favorite to a group's queue
+    /// Add a Spotify item or a native favorite to the selected groups' queues
     /// (`add_to_queue`), logged for `fsonos undo`.
-    pub fn queue_request(&self, req: &QueueRequest) -> Result<QueueAddedDto, Failure> {
+    pub fn queue_request(&self, req: &QueueRequest) -> Result<QueueAddOutcome, Failure> {
         self.households()?;
-        self.surface.queue_request(&Client::Cli, req)
+        self.surface.queue_request_targets(&Client::Cli, req)
     }
 
     /// The tone of the room `zone` (`get_eq`).

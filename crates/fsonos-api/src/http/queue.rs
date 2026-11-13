@@ -2,7 +2,7 @@
 //!
 //! | Route | Body | Answer |
 //! |---|---|---|
-//! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
+//! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddOutcome`] |
 //! | `POST /queue/tracks` | [`crate::surface::queue::QueueTracksRequest`] | [`crate::surface::queue::QueueAddedDto`] |
 //! | `POST /queue/remove` | [`crate::surface::queue::QueueRemoveRequest`] | [`crate::surface::queue::QueueRemovedDto`] |
 //! | `POST /queue/play` | [`crate::surface::queue::QueuePlayRequest`] | [`crate::OutcomeDto`] |
@@ -12,8 +12,9 @@ use fastapi::core::RouteEntry;
 use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
-    ADD, MOVE, PLAY, QueueAddedDto, QueueMoveRequest, QueueMovedDto, QueuePlayRequest,
-    QueueRemoveRequest, QueueRemovedDto, QueueRequest, QueueTracksRequest, REMOVE,
+    ADD, MOVE, PLAY, QueueAddOutcome, QueueAddedDto, QueueMoveRequest, QueueMovedDto,
+    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, QueueRequest, QueueTracksRequest,
+    REMOVE,
 };
 
 mod mode;
@@ -27,12 +28,12 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/queue",
                 ADD,
                 CONTROL,
-                "Queue a Spotify source, native favorite or saved Sonos playlist at the end or next, without starting playback (undoable)",
+                "Queue a Spotify source, favorite or saved Sonos playlist in each selected group without starting playback; set receipts report every confirmed range and failure",
             ),
-            |s, c, req| answer(body::<QueueRequest>(req).and_then(|r| s.queue_request(c, &r))),
+            |s, c, req| answer(body::<QueueRequest>(req).and_then(|r| s.queue_request_targets(c, &r))),
         )
         .request_schema::<QueueRequest>(true)
-        .response_schema::<QueueAddedDto>(200, "Where the tracks went"),
+        .response_schema::<QueueAddOutcome>(200, "Single-group insertion or complete/partial set receipt; never replay the whole batch"),
         cx.route(
             &Op::post(
                 "/queue/tracks",

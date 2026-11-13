@@ -1411,8 +1411,15 @@ starts. Every household resolves its own native catalog and Spotify renderer
 before playback changes; artist/show requests capture all destinations before
 one shared catalog lookup and revalidate them afterward. The existing set
 executor applies per-group caps, reports partial speaker failures and retains
-one action/undo boundary. Search picks, line-in and queue insertion keep their
-single-group contracts. See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
+one action/undo boundary. Queue source additions also accept room sets, retaining
+every destination before source reads and through the existing insertion
+engines. Single-group responses keep their shape; multi-group receipts report
+each confirmed range and failure, completion, logging and verified undo
+availability. Definite refusals can leave confirmed additions undoable together;
+any uncertain insertion leaves a whole-action barrier. CLI prints the complete
+receipt and exits nonzero on incomplete batches. Search picks, line-in and
+revision-bound ordered track selections keep their single-group contracts.
+See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
 for the interface, restoration limits and validation status.
 
 ### Milestone placement

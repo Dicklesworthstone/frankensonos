@@ -1,6 +1,6 @@
 //! Queue a household's native favorite without replacing or starting playback.
 
-use crate::control::{self, Queued};
+use crate::control::{self, Queued, TrackBatchDestination};
 use crate::favorites::{Favorite, FavoriteKind};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::content::{QUEUE, browse_snapshot};
@@ -98,6 +98,38 @@ pub fn enqueue<T: Transport + ?Sized>(
     favorite: &Favorite,
     next: bool,
 ) -> Result<Queued, CoreError> {
+    enqueue_observed(t, households, coordinator, favorite, next, None)
+}
+
+/// Queue a native source while retaining the destination observed before
+/// source selection or preparation of other groups. Recheck the original
+/// group, boot, source and queue immediately before the one insertion.
+pub fn enqueue_bound<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    favorite: &Favorite,
+    next: bool,
+    destination: &TrackBatchDestination,
+) -> Result<Queued, CoreError> {
+    enqueue_observed(
+        t,
+        households,
+        coordinator,
+        favorite,
+        next,
+        Some(destination),
+    )
+}
+
+fn enqueue_observed<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    favorite: &Favorite,
+    next: bool,
+    destination: Option<&TrackBatchDestination>,
+) -> Result<Queued, CoreError> {
     if !matches!(favorite.kind, FavoriteKind::Track | FavoriteKind::Container) {
         return Err(ProtoError::Malformed(
             "only track, album and playlist favorites can be queued; play a station directly"
@@ -111,17 +143,20 @@ pub fn enqueue<T: Transport + ?Sized>(
         .filter(|uri| !uri.trim().is_empty())
         .ok_or_else(|| ProtoError::Malformed("favorite has no playable URI".into()))?;
     let host = control::locate(households, coordinator)?.ip;
-    let playing_queue =
-        soap::get_media_info(t, host)?.uri == format!("x-rincon-queue:{}#0", coordinator.0);
-    let track = if next && playing_queue {
-        Some(soap::get_position_info(t, host)?.track)
+    if let Some(destination) = destination {
+        destination.confirm(t, host, coordinator)?;
+    }
+    let media = soap::get_media_info(t, host)?;
+    let playing_queue = media.uri == format!("x-rincon-queue:{}#0", coordinator.0);
+    let position = if next && playing_queue {
+        Some(soap::get_position_info(t, host)?)
     } else {
         None
     };
     let before = read(t, host)?;
     let length = u32::try_from(before.uris.len())
         .map_err(|_| ProtoError::Malformed("queue length exceeds u32".into()))?;
-    let at = match track {
+    let at = match position.as_ref().map(|position| position.track) {
         Some(track) if track > length => {
             return Err(
                 ProtoError::Malformed("playing queue track changed; read it again".into()).into(),
@@ -141,9 +176,52 @@ pub fn enqueue<T: Transport + ?Sized>(
     };
     let index = usize::try_from(first - 1)
         .map_err(|_| ProtoError::Malformed("queue position exceeds usize".into()))?;
-    let undo_destination = control::SourceDestination::read(t, host, coordinator)
-        .ok()
-        .filter(|_| read(t, host).is_ok_and(|current| current == before));
+    let undo_destination = if let Some(destination) = destination {
+        if before.revision != destination.queue.revision
+            || before.uris != destination.queue.uris
+            || !destination
+                .source
+                .has_source(&media.uri, &media.uri_metadata)
+        {
+            return Err(ProtoError::Malformed(
+                "the queued favorite destination changed during preparation; nothing was added"
+                    .into(),
+            )
+            .into());
+        }
+        if let Some(position) = &position
+            && !before.uris.is_empty()
+        {
+            let index = position
+                .track
+                .checked_sub(1)
+                .and_then(|index| usize::try_from(index).ok());
+            if index
+                .and_then(|index| before.uris.get(index))
+                .is_none_or(|uri| !same_track(uri, &position.uri))
+            {
+                return Err(ProtoError::Malformed(
+                    "the playing queue occurrence could not be verified".into(),
+                )
+                .into());
+            }
+        }
+        destination.confirm(t, host, coordinator)?;
+        if let Some(position) = &position {
+            let current = soap::get_position_info(t, host)?;
+            if current.track != position.track || !same_track(&current.uri, &position.uri) {
+                return Err(ProtoError::Malformed(
+                    "the current queue track changed before enqueue".into(),
+                )
+                .into());
+            }
+        }
+        Some(destination.source.clone())
+    } else {
+        control::SourceDestination::read(t, host, coordinator)
+            .ok()
+            .filter(|_| read(t, host).is_ok_and(|current| current == before))
+    };
     let sent = soap::enqueue_uri(t, host, uri, &favorite.metadata, at, next && playing_queue);
     let after = read(t, host).map_err(|_| uncertain("the post-add queue could not be read"))?;
     let count = match sent {
