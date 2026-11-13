@@ -5234,3 +5234,14 @@ Remaining candidates: the library's mbedtls may lack PKCS#1 private-key parsing
 expects the buffer to be a *Sonos* key blob rather than PEM despite the parse call.
 Cheap discriminator: convert the PEM to DER and retry — if DER parses, the format was
 the problem and the whole substitution works.
+
+DER fails exactly like PEM, so the key format is not the problem — the fault happens
+before any parse decision. Two things to separate next, by breaking *inside* `ZZ0183`
+rather than at its entry:
+
+1. whether the `malloc` of the context succeeds (if it returns 0 the function jumps to
+   6f0c and returns 0 — no crash, so a crash means malloc worked),
+2. whether my `ZZ0028` patch is implicated: it is now `lis/lwz/blr` returning
+   `*(0x1064dec8)`, and any code inside `ZZ0183`/mbedtls that expects the *old* ZZ0028
+   (a getter with a call) will see a different contract only if it calls it — worth
+   checking before blaming the parser.
