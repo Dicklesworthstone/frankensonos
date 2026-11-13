@@ -1302,6 +1302,19 @@ completed restoration. Exact admitted room identities survive alias edits;
 ordinary callers see their own jobs and the configured owner can inspect all.
 See [Announcement jobs](docs/ANNOUNCEMENT_JOBS.md).
 
+Announcements use a media URL selected for each household's actual temporary
+leader after fresh topology is read. The same generated clip is served through
+the listener on that player's local route; missing routes fail only their own
+household before fade/sleep suspension, level changes or speaker writes. Routed
+URLs remain consistent through DIDL, playback observation and restoration.
+Daemon-backed synchronous, background and scheduled calls share this path;
+direct CLI calls retain one media listener per distinct required local address
+through restoration. Seven new API/simulator and direct-listener regressions
+cover independent household delivery, fresh leader selection, missing routes,
+media fetches and scheduled occurrence handling. They await Rust execution
+behind the same dependency-build SIGKILL; focused browser announcement/event
+regressions pass all 99 tests.
+
 ### 12.13 Live events and a web remote
 
 [`d-events-sse`, `d-web-remote`, `d-http-hardening`] `GET /events` streams zone-state deltas, DJ

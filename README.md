@@ -310,6 +310,14 @@ must be 16-bit PCM, at most 16 MiB and five minutes; all clips use the same
 validated media listener, volume caps and restoration. Announcement playback
 over MCP requires `fsonos serve`; standalone `fsonos mcp` has no media listener.
 
+Announcements across separate speaker networks use the media address reachable
+from each household's actual announcement leader. The daemon shares its routed
+event listeners; direct CLI announcements open and retain their own listeners
+on the required interfaces. If one household has no media route, its music and
+levels remain untouched while other households can complete. Synchronous,
+background and scheduled announcements share this behavior. See
+[Callback and media routing](docs/CALLBACK_RECOVERY.md).
+
 Add `--background` to return a daemon job ID immediately after admission:
 `fsonos say "Dinner is ready" --rooms Kitchen --background`. Use
 `fsonos announcements`, `fsonos announcements status <job-id>`, and

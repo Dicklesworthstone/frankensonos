@@ -1,23 +1,23 @@
 //! `fsonos say`, `chime`, and `announce --file`: an announcement from the command line.
 //!
 //! In direct mode the CLI serves the clip itself, for as long as the
-//! announcement takes, from a listener on the address it uses to reach the
-//! speakers (the address `fsonos serve` would give them for events).
+//! announcement takes, from listeners on the addresses it uses to reach the
+//! speakers (the addresses `fsonos serve` would give them for events).
 //! `fsonos serve` serves clips from its event listener instead.
 
 use fsonos_api::surface::announce::{
     AnnounceDto, AnnounceRequest, AnnouncementJobDto, Announcements,
 };
 use fsonos_api::{ErrorCode, Failure};
-use fsonos_core::CoreError;
 use fsonos_core::announce::clip::{MediaStore, read_wav};
-use fsonos_proto::net::{EventSink, MediaFiles};
-use std::net::SocketAddr;
+use fsonos_proto::net::MediaFiles;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::GlobalArgs;
 use crate::direct::Direct;
+
+mod listeners;
 
 /// `fsonos say` options.
 #[derive(Debug, Clone, clap::Args)]
@@ -221,25 +221,13 @@ pub fn run(global: &GlobalArgs, req: &AnnounceRequest) -> Result<AnnounceDto, Fa
     req.source()?;
     req.volume()?;
     let direct = Direct::survey(global)?;
-    let toward = direct
-        .households()?
-        .iter()
-        .flat_map(|h| &h.players)
-        .map(|p| p.ip)
-        .next()
-        .ok_or_else(|| Failure::new(ErrorCode::NotReady, "no player to serve the clip toward"))?;
     let network = global.network()?;
-    let local = network
-        .lan
-        .local_address_toward(toward)
-        .map_err(|e| Failure::from(CoreError::from(e)))?;
     let (store, files) = media(global.data_dir().as_deref());
-    let sink = EventSink::start_serving(SocketAddr::new(local, 0), Some(files))
-        .map_err(|e| Failure::from(CoreError::from(e)))?;
-    let base = sink.callback_url("").trim_end_matches('/').to_string();
-    let announcements = Announcements::new(store, Box::new(move || Some(base.clone())));
-    let announced = direct.announce(announcements, req);
-    drop(sink);
+    let listeners = listeners::Listeners::start(direct.households()?, &files, |toward| {
+        network.lan.local_address_toward(toward)
+    })?;
+    let announced = direct.announce(listeners.announcements(store), req);
+    drop(listeners);
     announced
 }
 

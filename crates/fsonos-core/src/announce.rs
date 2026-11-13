@@ -209,6 +209,10 @@ impl HouseholdAnnouncement {
 /// Boundary work that belongs to one household's announcement turn.
 /// Callbacks run while that turn is held; households remain independent.
 pub struct AnnouncementCallbacks<'a> {
+    /// Resolve the clip URL for the actual fresh household lead, before
+    /// admission/cap callbacks or speaker writes. A missing route fails only
+    /// this household. `None` retains the caller's original clip URL.
+    pub clip_url: Option<&'a (dyn Fn(&PlayerId) -> Result<String, String> + Sync)>,
     /// Recheck admission after waiting for this household, before cap callbacks
     /// can suspend its fades, and after snapshots before the first write.
     /// Core is policy-neutral; a refusal becomes this household's outcome.
@@ -357,6 +361,7 @@ impl Announcer {
             volume,
             live,
             &AnnouncementCallbacks {
+                clip_url: None,
                 authorize: &|| Ok(()),
                 cap,
                 completed: &|_, _| {},
@@ -521,6 +526,26 @@ impl Announcer {
         if let Some(observer) = playback.observer {
             observer.target(&report);
         }
+        // Routing belongs to the lead selected from fresh topology, not the
+        // first requested room or a callback address from another household.
+        // Resolve before cap callbacks, which may suspend fades or sleep jobs.
+        let mut clip = playback.clip.clone();
+        if let Some(resolve) = callbacks.clip_url {
+            match resolve(&plan.lead) {
+                Ok(url) => clip.url = url,
+                Err(error) => {
+                    report.outcome = Err(format!(
+                        "could not serve the announcement to this household; nothing was played: {error}"
+                    ));
+                    return report;
+                }
+            }
+        }
+        let playback = &Playback {
+            clip: &clip,
+            live: playback.live,
+            observer: playback.observer,
+        };
         let origins = match plan
             .zones
             .iter()

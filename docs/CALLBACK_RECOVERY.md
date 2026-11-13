@@ -25,6 +25,27 @@ an admitted clip can finish using its original media URL. The daemon retains
 at most 16 listeners, including retired ones; reaching that bound reports an
 unavailable route and retries after capacity becomes available.
 
+## Announcements across separate networks
+
+Speech, chimes and uploaded WAVs are generated or stored once. Each household
+fetches that clip from the listener reachable by its actual announcement lead,
+chosen after refreshing the target rooms' grouping. A queued announcement does
+not keep using the first requested room or another household's address after
+the lead has changed.
+
+The route is resolved before the announcement suspends fades or sleep jobs,
+changes levels, regroups rooms, or starts playback. A missing route fails that
+household without those effects; other households in the same request can
+complete. The routed URL is also the one used in playback metadata, completion
+observations and ownership checks during restoration.
+
+The daemon's synchronous, background and scheduled announcements share this
+delivery path, including requests from the CLI, HTTP, MCP and browser remotes.
+Direct CLI announcements open one temporary listener per distinct local route
+and retain them until delivery and restoration finish. A failed lookup or bind
+does not discard the other usable listeners. Existing announcement commands
+and permissions remain the same.
+
 ## Operating while a callback listener is unavailable
 
 The daemon normally receives speaker state through GENA notifications. Failure
@@ -65,3 +86,10 @@ failed binds, independent media serving and subscription retirement. Their Rust
 compilation and execution remain unverified in this environment: the locked
 workspace check was killed while compiling the existing `asupersync` dependency,
 before checking project code.
+
+Announcement regressions in `fsonos-api/src/surface/announce/routing_tests.rs`
+exercise the shared synchronous, background and scheduled paths with real media
+fetches and both simulator households. Direct listener cases are in
+`fsonos-cli/src/announce_cmd/listeners/tests.rs`. The new Rust tests share that
+unverified status. The focused browser announcement and event-recovery suite
+passed 99 tests; it does not replace Rust or physical-network acceptance.

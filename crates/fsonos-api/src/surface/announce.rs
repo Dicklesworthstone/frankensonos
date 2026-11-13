@@ -121,6 +121,11 @@ impl Drop for Turn {
 /// (`http://<address>:<port>`), once it is up.
 pub type MediaBase = Box<dyn Fn() -> Option<String> + Send + Sync>;
 
+/// The listener reachable by the actual announcement lead. A missing route
+/// refuses that household before speaker changes; another listener is not a
+/// substitute for the address its players can reach.
+pub type MediaRoute = Box<dyn Fn(&PlayerId) -> Option<String> + Send + Sync>;
+
 /// What a surface needs to announce: the clips and where the players fetch
 /// them, and the announcer that takes one announcement per household at a
 /// time.
@@ -128,6 +133,7 @@ pub struct Announcements {
     announcer: Announcer,
     media: MediaStore,
     base: MediaBase,
+    route: Option<MediaRoute>,
     turns: Arc<Turns>,
     jobs: jobs::Jobs,
 }
@@ -139,9 +145,19 @@ impl Announcements {
             announcer: Announcer::new(),
             media,
             base,
+            route: None,
             turns: Arc::new(Turns::default()),
             jobs: jobs::Jobs::default(),
         }
+    }
+
+    /// Resolve the clip's media address after each household selects its
+    /// current announcement lead. `base` still reports overall readiness;
+    /// when a route is configured it never serves as a fallback for a player.
+    #[must_use]
+    pub fn with_media_route(mut self, route: MediaRoute) -> Self {
+        self.route = Some(route);
+        self
     }
 }
 
@@ -489,6 +505,17 @@ impl Surface {
             title: title(&source),
             duration: stored.duration,
         };
+        let clip_url = |player: &PlayerId| {
+            with.route.as_ref().map_or_else(
+                || Ok(clip.url.clone()),
+                |route| {
+                    route(player).map(|base| stored.url(&base)).ok_or_else(|| {
+                        "the announcement lead has no reachable media listener; nothing was played"
+                            .to_owned()
+                    })
+                },
+            )
+        };
         // The announcer asks each room's cap once its household's turn has
         // come, just before it sets the levels: the moment to end the fades
         // there. A sleep timer that was fading sleeps again once the music is
@@ -540,6 +567,7 @@ impl Surface {
                     authorize: &authorize,
                     cap: &cap,
                     completed: &completed,
+                    clip_url: Some(&clip_url),
                 },
                 control,
             )
@@ -802,6 +830,9 @@ impl AnnounceDto {
 
 #[cfg(test)]
 mod policy_tests;
+
+#[cfg(test)]
+mod routing_tests;
 
 #[cfg(test)]
 mod tests {
