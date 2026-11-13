@@ -5215,3 +5215,12 @@ inside the parse itself (libc), not in the arguments — the remaining candidate
 PEM content/buffer itself (e.g. a truncated `restore`, since only 512 bytes were
 allocated while the file is 1675 in the earlier attempt but this run restored into a
 **512-byte** buffer).
+
+**The PEM parses.** With a 4096-byte buffer and the trace-confirmed shape the call
+returns a non-null context (`r3=0x40887008`) — i.e. `ZZ0183` succeeds on our
+`model16-private.pem`.
+
+The crash is now *after* the call, in my return path: I set `lr = 0x10007120` and let
+it resume mid-function, which conflicts with the frame the function built. Correct
+approach is to `call` it (gdb restores the frame) rather than hand-managing `lr`, or
+to run it before the breakpoint is reached.
