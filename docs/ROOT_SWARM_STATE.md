@@ -5224,3 +5224,13 @@ The crash is now *after* the call, in my return path: I set `lr = 0x10007120` an
 it resume mid-function, which conflicts with the frame the function built. Correct
 approach is to `call` it (gdb restores the frame) rather than hand-managing `lr`, or
 to run it before the breakpoint is reached.
+
+The PEM is **not** encrypted (PKCS#1 `RSA PRIVATE KEY`, no DEK-Info), so a passphrase
+is not the issue. The fault occurs inside `ZZ0183` itself regardless of whether it is
+entered via `call` or via a hand-set `lr`, so it is genuine, not my return path.
+
+Remaining candidates: the library's mbedtls may lack PKCS#1 private-key parsing
+(only DER/`mbedtls_pk_parse_keyfile`-style supported in this build), or `ZZ0183`
+expects the buffer to be a *Sonos* key blob rather than PEM despite the parse call.
+Cheap discriminator: convert the PEM to DER and retry — if DER parses, the format was
+the problem and the whole substitution works.
