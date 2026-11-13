@@ -5383,3 +5383,9 @@ difference is in the script, most likely the extra in-library breakpoint or the 
 
 Next: re-run with the probe file *without* the in-library breakpoint to confirm the
 site is reached, then add that breakpoint back.
+
+Bisect result: the file is correct (bp `0x1000716c`, slot write, `continue`) and the stall
+reproduces **without** the in-library breakpoint, so `0x69a0` is not the difference.
+The one remaining difference from the scripts that did emit (49) is that they carried a
+`ZZ0028` breakpoint. Recreate the probe by adding it back to the working base rather
+than subtracting from the failing one.
