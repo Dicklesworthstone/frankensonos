@@ -1335,6 +1335,16 @@ parsing and per-lease deduplication reuse renewal, sequence-gap and reboot
 recovery. Initial or replaced leases and missed events retire prior observations.
 These are invalidations, never queue revisions that can authorize a write.
 
+The live daemon also serves callbacks on each local address required by its
+routes to the players. Separate speaker networks receive their own callback
+URLs, while players on the same route share a specifically bound listener.
+One listener's failure or route change leaves the other listeners available;
+bounded callback intake gives each network a turn. An unavailable route has no
+substitute URL on another interface, and partial listener failures remain
+visible in health and doctor. See [Callback routing and recovery](docs/CALLBACK_RECOVERY.md).
+The new Rust socket and simulator regressions await execution because the
+existing `asupersync` dependency compilation is still killed in this environment.
+
 The phone and dashboard coalesce affected reads, retire stale reviews and fence
 late catalog replies without issuing playback commands. Closed views stay lazy.
 The DJ invalidates its queue evidence before its next applicable reconciliation,

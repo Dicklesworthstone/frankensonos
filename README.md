@@ -110,6 +110,12 @@ retry backoff. HTTP, CLI and MCP event consumers receive `queue_changed`
 in `zone.state` and household-scoped `catalog.changed` notifications.
 See [Event delivery](docs/EVENT_DELIVERY.md) for the contract.
 
+Hosts connected to multiple speaker networks serve events on each required
+local address. Each player receives a callback URL on its own route, and a
+listener failure on one network leaves the others running. Health and doctor
+report partial failures while the daemon retries the unavailable listener.
+See [Callback routing and recovery](docs/CALLBACK_RECOVERY.md).
+
 ### Playback errors and DJ recovery
 
 `fsonos status ROOM`, API state, MCP and live events expose the speaker's

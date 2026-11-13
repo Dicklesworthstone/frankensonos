@@ -43,6 +43,7 @@ mod inventory;
 mod observation;
 mod progress;
 mod pump;
+mod routes;
 
 #[cfg(test)]
 mod eventless_tests;
@@ -124,6 +125,10 @@ pub struct Snapshot {
     /// Where players send events, once listening (`http://host:port`);
     /// also the base of clip URLs when [`LiveConfig::media`] is set.
     pub callback: Option<String>,
+    /// Each known player's own route to a specifically bound callback/media
+    /// listener. Missing entries have no usable listener; `callback` must not
+    /// be used as a fallback on a different interface.
+    pub callbacks: HashMap<PlayerId, String>,
     /// Players the households list as vanished (powered off), with their
     /// room names.
     pub vanished: Vec<VanishedDevice>,
@@ -265,6 +270,18 @@ impl Live {
             .unwrap_or_else(PoisonError::into_inner)
             .playback
             .of(player)
+            .cloned()
+    }
+
+    /// Callback/media base reachable on this player's current local route.
+    /// Never substitutes another interface when the required listener is down.
+    #[must_use]
+    pub fn callback_for(&self, player: &PlayerId) -> Option<String> {
+        self.snapshot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .callbacks
+            .get(player)
             .cloned()
     }
 
@@ -445,20 +462,18 @@ struct Model {
     rec: Reconciler,
     playback: Playback,
     progress: progress::Watchdog,
-    sink: Option<EventSink>,
+    sink: Option<routes::Listeners>,
     surveyed_at: Option<Instant>,
     last_error: Option<String>,
     /// When [`Engine::follow_route`] last looked.
     route_checked: Instant,
-    /// A new address toward the players, seen at the last look and not yet
-    /// followed ([`route_settled`]).
-    route_moved: Option<(IpAddr, Instant)>,
 }
 
 /// Surveys and reads through one transport, GENA through the LAN.
 struct Via<'a> {
     transport: &'a (dyn Transport + Send + Sync),
     lan: &'a Lan,
+    callbacks: Option<HashMap<IpAddr, String>>,
 }
 
 impl Transport for Via<'_> {
@@ -496,7 +511,19 @@ impl Transport for Via<'_> {
 
 impl Subscriber for Via<'_> {
     fn subscribe(&self, want: &Want, callback_url: &str) -> Result<Subscription, ProtoError> {
-        Subscriber::subscribe(self.lan, want, callback_url)
+        let callback = match &self.callbacks {
+            Some(callbacks) => {
+                let base = callbacks
+                    .get(&want.host)
+                    .ok_or_else(|| ProtoError::Network {
+                        target: format!("callback route toward {}", want.host),
+                        detail: "no listener is available on this player's local route".into(),
+                    })?;
+                format!("{base}/{}", want.service.tag())
+            }
+            None => callback_url.to_string(),
+        };
+        Subscriber::subscribe(self.lan, want, &callback)
     }
 
     fn renew(&self, want: &Want, sid: &str) -> Result<Subscription, ProtoError> {
@@ -513,6 +540,15 @@ impl Engine {
         Via {
             transport: &*self.transport,
             lan: &self.lan,
+            callbacks: None,
+        }
+    }
+
+    fn via_routes(&self, sinks: Option<&routes::Listeners>) -> Via<'_> {
+        Via {
+            transport: &*self.transport,
+            lan: &self.lan,
+            callbacks: Some(sinks.map_or_else(HashMap::new, routes::Listeners::bases)),
         }
     }
 
@@ -531,7 +567,6 @@ impl Engine {
             surveyed_at: None,
             last_error: None,
             route_checked: Instant::now(),
-            route_moved: None,
         };
         m.rec.subscriptions.defer_network();
         let mut surveys = inventory::Surveys::default();
@@ -612,48 +647,122 @@ impl Engine {
             .release_background(provider, self.stop.load(Ordering::Acquire));
     }
 
-    /// Drop the event listener and every subscription that points at it, so
-    /// the next survey listens afresh and subscribes again.
-    fn relisten(&self, m: &mut Model, why: &str) {
-        tracing::warn!(reason = why, "re-opening the event listener");
-        self.release(m);
-        m.sink = None;
-        m.last_error = Some(why.to_string());
-        m.rec.schedule.due_now(Instant::now());
+    fn listener_failed(&self, m: &mut Model, closed: routes::Closed) {
+        let now = Instant::now();
+        let Some(sinks) = &mut m.sink else { return };
+        let changed = sinks.closed(&closed, now);
+        let empty = sinks.is_empty();
+        m.last_error = Some(closed.error.to_string());
+        self.sync_routes(m, &changed, now);
+        if empty {
+            m.sink = None;
+        }
+        // Callback loss does not mean the speakers stopped answering SOAP.
+        // Their state remains visible through the existing fallback sweep.
+        m.rec.schedule.retry_within(now, EVENTLESS_RETRY);
+        self.publish(m, Vec::new());
     }
 
-    /// This host's address toward the players can change (a new DHCP lease,
-    /// a VPN, Wi-Fi dropping out and the route moving to another interface
-    /// and back). Renewals would keep succeeding while every NOTIFY went to
-    /// the old address, so listen again where they can reach us, and survey
-    /// at once ([`Self::relisten`]): checked every [`ROUTE_CHECK`], not only
-    /// at surveys, which back off while the players do not answer. Followed
-    /// once the move has held for [`ROUTE_SETTLE`] ([`route_settled`]).
+    /// Follow each player's local route independently. A moving interface
+    /// settles before its leases change; other routes and their media sockets
+    /// keep running throughout. Local lookup does not contact the speakers.
     fn follow_route(&self, m: &mut Model, now: Instant) {
-        let Some(s) = &m.sink else {
-            m.route_moved = None;
-            return;
-        };
-        let current = s.local_addr().ip();
-        let Some(toward) = m
+        let _ = self.reconcile_routes(m, now, false);
+    }
+
+    fn reconcile_routes(&self, m: &mut Model, now: Instant, force: bool) -> Option<String> {
+        let hosts = self.callback_candidates(m);
+        let sinks = m.sink.as_mut()?;
+        let previous = sinks.diagnostic();
+        let changed = sinks.reconcile(
+            &hosts,
+            now,
+            force,
+            |host| self.local_toward(host),
+            |local| self.listen_at(local),
+        );
+        let diagnostic = sinks.diagnostic();
+        let empty = sinks.is_empty();
+        if diagnostic != previous {
+            let remaining = m.last_error.take().and_then(|current| match &previous {
+                Some(old) if &current == old => None,
+                Some(old) => Some(
+                    current
+                        .strip_prefix(&format!("{old}; "))
+                        .unwrap_or(&current)
+                        .to_string(),
+                ),
+                None => Some(current),
+            });
+            m.last_error = match (diagnostic.clone(), remaining) {
+                (Some(error), Some(other)) if error != other => Some(format!("{error}; {other}")),
+                (Some(error), _) => Some(error),
+                (None, other) => other,
+            };
+        }
+        self.sync_routes(m, &changed, now);
+        if empty {
+            m.sink = None;
+        }
+        if Self::callbacks_incomplete(m) {
+            m.rec.schedule.retry_within(now, EVENTLESS_RETRY);
+        }
+        if empty || !changed.is_empty() || diagnostic != previous {
+            self.publish(m, Vec::new());
+        }
+        diagnostic
+    }
+
+    fn callback_candidates(&self, m: &Model) -> Vec<IpAddr> {
+        let mut hosts: Vec<_> = m
             .rec
             .households
             .iter()
-            .flat_map(|h| &h.players)
-            .map(|p| p.ip)
-            .next()
-        else {
-            return;
-        };
-        let Ok(local) = self.lan.local_address_toward(toward) else {
-            return;
-        };
-        if route_settled(current, local, &mut m.route_moved, now) {
-            let why = format!("this host now reaches the players from {local}, not {current}");
-            self.relisten(m, &why);
-        } else if m.route_moved.is_some() {
-            tracing::debug!(%local, %current, "the route toward the players moved; looking again before following it");
+            .flat_map(|house| house.players.iter().map(|player| player.ip))
+            .collect();
+        hosts.extend(bootstrap::seeds(&self.config.seeds, &m.remembered));
+        hosts.sort_unstable();
+        hosts.dedup();
+        hosts
+    }
+
+    fn callbacks_incomplete(m: &Model) -> bool {
+        crate::events::wanted(&m.rec.households).iter().any(|want| {
+            m.sink
+                .as_ref()
+                .and_then(|sinks| sinks.base_for(want.host))
+                .is_none()
+        })
+    }
+
+    /// Route changes remove only their old leases before re-adding the wanted
+    /// roles. That cancellation boundary also fences already-running workers.
+    /// A locally unavailable callback never counts as a failed speaker call.
+    fn sync_routes(&self, m: &mut Model, changed: &[IpAddr], now: Instant) {
+        let via = self.via_routes(m.sink.as_ref());
+        let available: Vec<_> = crate::events::wanted(&m.rec.households)
+            .into_iter()
+            .filter(|want| {
+                via.callbacks
+                    .as_ref()
+                    .is_some_and(|bases| bases.contains_key(&want.host))
+            })
+            .collect();
+        if !changed.is_empty() {
+            let unchanged: Vec<_> = available
+                .iter()
+                .filter(|want| !changed.contains(&want.host))
+                .cloned()
+                .collect();
+            m.rec
+                .subscriptions
+                .sync(&via, &unchanged, |_| String::new(), now);
         }
+        let report = m
+            .rec
+            .subscriptions
+            .sync(&via, &available, |_| String::new(), now);
+        m.rec.health.record(&report, now);
     }
 
     /// Synchronous fixture setup. The live loop uses the inventory and
@@ -686,16 +795,11 @@ impl Engine {
         // explicit seeds and as-yet-unresolved startup hints are unconditional.
         bootstrap::observed(&mut m.remembered, &m.rec.households);
         let seeds = bootstrap::seeds(&self.config.seeds, &m.remembered);
-        let surveyed = match &m.sink {
-            Some(s) => {
-                let callback = |service: Service| s.callback_url(service.tag());
-                m.rec.refresh(&self.via(), &seeds, callback, now)
-            }
-            None => m.rec.refresh_inventory(&self.via(), &seeds, now),
-        };
+        let surveyed = m.rec.refresh_inventory(&self.via(), &seeds, now);
         match surveyed {
             Ok(report) => {
                 bootstrap::observed(&mut m.remembered, &m.rec.households);
+                let _ = self.reconcile_routes(m, now, true);
                 for gone in &report.missing {
                     m.playback.remove(gone);
                 }
@@ -704,8 +808,9 @@ impl Engine {
                 }
                 let events = observation::survey(self, m);
                 m.surveyed_at = Some(now);
-                m.last_error = listener_error;
-                if m.sink.is_none() {
+                m.last_error = listener_error
+                    .or_else(|| m.sink.as_ref().and_then(routes::Listeners::diagnostic));
+                if m.sink.is_none() || Self::callbacks_incomplete(m) {
                     // Count the cooldown from completion: a slow read must
                     // not make the fallback loop immediately overdue again.
                     let completed = Instant::now();
@@ -728,7 +833,10 @@ impl Engine {
     fn renew(&self, m: &mut Model, now: Instant) {
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
-        let provider: Arc<dyn Subscriber + Send + Sync> = self.lan.clone();
+        let provider: Arc<dyn Subscriber + Send + Sync> = Arc::new(routes::Routed {
+            lan: Arc::clone(&self.lan),
+            bases: s.bases(),
+        });
         m.rec
             .subscriptions
             .start_renewals(&provider, callback, &self.stop, now);
@@ -780,8 +888,8 @@ impl Engine {
                     return Some(self.callback_loss(m));
                 }
                 Ok(None) => None,
-                Err(error) => {
-                    self.relisten(m, &format!("the event listener stopped: {error}"));
+                Err(closed) => {
+                    self.listener_failed(m, closed);
                     return Some(Vec::new());
                 }
             };
@@ -802,8 +910,8 @@ impl Engine {
                             return Some(self.callback_loss(m));
                         }
                         Ok(None) => return None,
-                        Err(error) => {
-                            self.relisten(m, &format!("the event listener stopped: {error}"));
+                        Err(closed) => {
+                            self.listener_failed(m, closed);
                             return Some(Vec::new());
                         }
                     }
@@ -821,13 +929,20 @@ impl Engine {
             .route(&n)
             .map(|(player, service)| (player.clone(), service));
         let mut pushed = Vec::new();
+        let via = self.via_routes(Some(s));
         match m
             .rec
-            .on_notify(&self.via(), &mut m.playback, &n, callback, Instant::now())
+            .on_notify(&via, &mut m.playback, &n, callback, Instant::now())
         {
             Ok(Some(report)) => {
                 progress::invalidate_rebooted(m, &report.rebooted);
                 bootstrap::observed(&mut m.remembered, &m.rec.households);
+                if from
+                    .as_ref()
+                    .is_some_and(|(_, service)| *service == Service::ZoneGroupTopology)
+                {
+                    let _ = self.reconcile_routes(m, Instant::now(), false);
+                }
                 for gone in &report.gone {
                     m.playback.remove(gone);
                 }
@@ -859,26 +974,35 @@ impl Engine {
 
     /// Listen toward a live player, an explicit seed, or a cached address.
     /// Cached-only startup must not depend on multicast before it can survey.
-    fn open_sink(&self, households: &[HouseholdState]) -> Result<EventSink, String> {
+    fn open_sink(&self, households: &[HouseholdState]) -> Result<routes::Listeners, String> {
         let mut candidates = bootstrap::listener_candidates(households, &self.config);
         if candidates.is_empty() {
             candidates.push(answering(&self.transport.discover(1, DISCOVERY_WAIT))?);
         }
-        let mut error = "no usable local route to the players".to_string();
-        for toward in candidates {
-            match self.listen_toward(toward) {
-                Ok(sink) => return Ok(sink),
-                Err(why) => error = why,
-            }
+        let mut sinks = routes::Listeners::default();
+        sinks.reconcile(
+            &candidates,
+            Instant::now(),
+            true,
+            |host| self.local_toward(host),
+            |local| self.listen_at(local),
+        );
+        if sinks.is_empty() {
+            Err(sinks
+                .diagnostic()
+                .unwrap_or_else(|| "no usable local route to the players".into()))
+        } else {
+            Ok(sinks)
         }
-        Err(error)
     }
 
-    fn listen_toward(&self, toward: IpAddr) -> Result<EventSink, String> {
-        let local = self
-            .lan
+    fn local_toward(&self, toward: IpAddr) -> Result<IpAddr, String> {
+        self.lan
             .local_address_toward(toward)
-            .map_err(|e| format!("no local route to {toward}: {e}"))?;
+            .map_err(|e| format!("no local route to {toward}: {e}"))
+    }
+
+    fn listen_at(&self, local: IpAddr) -> Result<EventSink, String> {
         EventSink::start_serving(
             SocketAddr::new(local, self.config.callback_port),
             self.config.media.clone(),
@@ -909,6 +1033,18 @@ impl Engine {
                 .sink
                 .as_ref()
                 .map(|s| s.callback_url("").trim_end_matches('/').to_string()),
+            callbacks: m
+                .rec
+                .households
+                .iter()
+                .flat_map(|house| &house.players)
+                .filter_map(|player| {
+                    m.sink
+                        .as_ref()?
+                        .base_for(player.ip)
+                        .map(|base| (player.id.clone(), base))
+                })
+                .collect(),
             vanished: m.rec.vanished.clone(),
         };
         let mut current = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1049,6 +1185,7 @@ mod tests {
         let via = Via {
             transport: &AtOnce,
             lan: &lan,
+            callbacks: None,
         };
         let found = via.discover(1, Duration::ZERO);
         assert!(matches!(found.ssdp, Err(ProtoError::NotWired("at once"))));
@@ -1061,6 +1198,7 @@ mod tests {
         let via = Via {
             transport: &MdnsOnly,
             lan: &lan,
+            callbacks: None,
         };
         // The survey's second discovery channel (see `inventory`).
         let seen = via

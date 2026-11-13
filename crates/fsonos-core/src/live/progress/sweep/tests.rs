@@ -141,11 +141,13 @@ impl Fixture {
             rec,
             playback: Playback::default(),
             progress: super::super::Watchdog::default(),
-            sink: Some(sink),
+            sink: Some(crate::live::routes::Listeners::for_hosts(
+                sink,
+                players.iter().map(|(_, host)| *host),
+            )),
             surveyed_at: Some(now),
             last_error: None,
             route_checked: now,
-            route_moved: None,
         };
         Self {
             _release: Release(gate),

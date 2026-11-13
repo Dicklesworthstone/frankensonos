@@ -32,7 +32,10 @@ fn listen(fixture: &mut Fixture, services: &[(usize, Service)], now: Instant) {
     );
     assert_eq!(report.subscribed, wants.len());
     assert!(report.failed.is_empty());
-    fixture.model.sink = Some(sink);
+    fixture.model.sink = Some(crate::live::routes::Listeners::for_hosts(
+        sink,
+        fixture.players.iter().map(|(_, host)| *host),
+    ));
     wait_for(|| {
         fixture
             .sim

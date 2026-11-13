@@ -101,7 +101,8 @@ pub fn track(playback: &PlayerPlayback, now: Instant) -> Option<TrackDto> {
 /// means no player has been found, which is how a daemon the operating
 /// system keeps off the LAN (macOS Local Network privacy) or one on the
 /// wrong network looks; starting, its first survey has not ended yet;
-/// degraded, players offline or no event subscriptions.
+/// degraded, players offline, missing event subscriptions, or an unresolved
+/// survey/listener failure even while another network remains healthy.
 #[must_use]
 pub fn health(s: &Snapshot) -> crate::LiveHealth {
     let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
@@ -115,7 +116,7 @@ pub fn health(s: &Snapshot) -> crate::LiveHealth {
         "starting"
     } else if players == 0 {
         "blind"
-    } else if offline > 0 || s.subscriptions == 0 {
+    } else if offline > 0 || s.subscriptions == 0 || s.last_error.is_some() {
         "degraded"
     } else {
         "ok"
@@ -159,6 +160,7 @@ impl Check for LiveCheck {
             "players": players,
             "subscriptions": s.subscriptions,
             "callback": s.callback,
+            "callbacks": s.callbacks,
             "surveyed_secs_ago": s.surveyed_at.map(|at| at.elapsed().as_secs()),
             "offline": offline,
             "last_error": s.last_error,
@@ -184,11 +186,29 @@ impl Check for LiveCheck {
                 ),
                 "Power and network for those players; the daemon resubscribes when they return.",
             )
+        } else if let Some(error) = &s.last_error {
+            CheckResult::warn(
+                "live updates are degraded while another listener or survey recovers",
+                "Check the reported network or local events-port failure; healthy listeners keep running.",
+            )
+            .with_detail(error.clone())
         } else {
+            let callbacks = s
+                .callbacks
+                .values()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>();
+            let addresses = if callbacks.is_empty() {
+                s.callback
+                    .as_deref()
+                    .unwrap_or("(not listening)")
+                    .to_owned()
+            } else {
+                callbacks.into_iter().collect::<Vec<_>>().join(", ")
+            };
             CheckResult::pass(format!(
-                "{players} players, {} event subscriptions, events at {}",
-                s.subscriptions,
-                s.callback.as_deref().unwrap_or("(not listening)")
+                "{players} players, {} event subscriptions, events at {addresses}",
+                s.subscriptions
             ))
         };
         result.with_evidence(evidence)
@@ -265,6 +285,62 @@ mod tests {
             ..Snapshot::default()
         });
         assert_eq!(found_nothing.status, Status::Pass);
+    }
+
+    #[test]
+    fn healthy_subscriptions_do_not_hide_a_second_network_failure() {
+        let mut house = HouseholdState::default();
+        house.players.push(fsonos_types::Player {
+            id: fsonos_types::PlayerId("RINCON_KIT".into()),
+            room_name: "Kitchen".into(),
+            ip: "192.0.2.10".parse().unwrap(),
+            model: String::new(),
+            generation: fsonos_types::Generation::S2,
+        });
+        let failure = "cannot listen for events at 198.51.100.1:8097: address in use";
+        let mut snapshot = Snapshot {
+            households: vec![house],
+            subscriptions: 5,
+            surveyed_at: Some(Instant::now()),
+            callback: Some("http://192.0.2.1:8097".into()),
+            last_error: Some(failure.into()),
+            ..Snapshot::default()
+        };
+        let state = health(&snapshot);
+        assert_eq!(state.verdict, "degraded");
+        assert_eq!((state.offline, state.subscriptions), (0, 5));
+        let check = run(snapshot.clone());
+        assert_eq!(check.status, Status::Warn);
+        assert_eq!(check.detail.as_deref(), Some(failure));
+        // The public health counts do not expose private route diagnostics.
+        let public = serde_json::to_string(&state).unwrap();
+        assert!(!public.contains("198.51.100.1"));
+        snapshot.last_error = None;
+        assert_eq!(health(&snapshot).verdict, "ok");
+        assert_eq!(run(snapshot).status, Status::Pass);
+    }
+
+    #[test]
+    fn the_check_names_every_callback_address_once() {
+        let first = "http://192.0.2.1:8097";
+        let second = "http://198.51.100.1:8097";
+        let check = run(Snapshot {
+            surveyed_at: Some(Instant::now()),
+            subscriptions: 10,
+            callback: Some(first.into()),
+            callbacks: [
+                (fsonos_types::PlayerId("RINCON_A".into()), first.into()),
+                (fsonos_types::PlayerId("RINCON_B".into()), first.into()),
+                (fsonos_types::PlayerId("RINCON_C".into()), second.into()),
+            ]
+            .into_iter()
+            .collect(),
+            ..Snapshot::default()
+        });
+        assert_eq!(check.status, Status::Pass);
+        assert_eq!(check.summary.matches(first).count(), 1);
+        assert_eq!(check.summary.matches(second).count(), 1);
+        assert_eq!(check.evidence["callbacks"]["RINCON_C"], second);
     }
 
     #[test]

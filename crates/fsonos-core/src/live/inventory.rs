@@ -3,7 +3,6 @@
 
 use super::{Engine, Model, bootstrap, progress};
 use crate::CoreError;
-use crate::events::{Service, wanted};
 use crate::inventory::Survey;
 use crate::reconcile::InventoryPlan;
 use fsonos_proto::{Discovered, ProtoError, Transport};
@@ -137,6 +136,7 @@ impl Surveys {
                     bootstrap::observed(&mut model.remembered, &model.rec.households);
                     // Fresh discovery may supply a newly usable local route.
                     self.listener_after = None;
+                    let _ = engine.reconcile_routes(model, Instant::now(), true);
                     self.maintain_listener(engine, model);
                     sync_known(engine, model);
                     if let Some(surveyed) = &engine.config.surveyed {
@@ -150,7 +150,7 @@ impl Surveys {
                     model.surveyed_at = Some(pending.started);
                     model.last_error = self.listener_error.clone();
                     model.rec.schedule.succeeded(completed);
-                    if model.sink.is_none() {
+                    if model.sink.is_none() || Engine::callbacks_incomplete(model) {
                         model
                             .rec
                             .schedule
@@ -183,7 +183,13 @@ impl Surveys {
         {
             return;
         }
-        if model.sink.is_some() && !model.rec.subscriptions.is_empty() {
+        if model
+            .sink
+            .as_ref()
+            .is_some_and(|sinks| sinks.diagnostic().is_none())
+            && !model.rec.subscriptions.is_empty()
+        {
+            self.clear_listener_error(model);
             self.listener_after = None;
             return;
         }
@@ -192,7 +198,12 @@ impl Surveys {
             return;
         }
         let opening = model.sink.is_none();
-        if let Some(error) = open_known_listener(engine, model) {
+        let before = model.rec.subscriptions.len();
+        let error = open_known_listener(engine, model);
+        // A second interface can be unavailable while the first remains
+        // perfectly usable. Admit its subscriptions before retaining the error.
+        sync_known(engine, model);
+        if let Some(error) = error {
             if self.listener_error.as_ref() != Some(&error) || model.last_error.is_none() {
                 model.last_error = Some(error.clone());
             }
@@ -202,8 +213,6 @@ impl Surveys {
             return;
         }
         self.clear_listener_error(model);
-        let before = model.rec.subscriptions.len();
-        sync_known(engine, model);
         self.listener_after = Some(Instant::now() + super::EVENTLESS_RETRY);
         if opening || model.rec.subscriptions.len() > before {
             // Initial topology notifications can invalidate the old survey;
@@ -239,16 +248,7 @@ fn sync_known(engine: &Engine, model: &mut Model) {
     if engine.stop.load(Ordering::Acquire) {
         return;
     }
-    if let Some(sink) = &model.sink {
-        let callback = |service: Service| sink.callback_url(service.tag());
-        let report = model.rec.subscriptions.sync(
-            &engine.via(),
-            &wanted(&model.rec.households),
-            callback,
-            Instant::now(),
-        );
-        model.rec.health.record(&report, Instant::now());
-    }
+    engine.sync_routes(model, &[], Instant::now());
 }
 
 impl Drop for Surveys {
@@ -262,8 +262,11 @@ impl Drop for Surveys {
 }
 
 fn open_known_listener(engine: &Engine, model: &mut Model) -> Option<String> {
-    if model.sink.is_some() || engine.stop.load(Ordering::Acquire) {
+    if engine.stop.load(Ordering::Acquire) {
         return None;
+    }
+    if model.sink.is_some() {
+        return engine.reconcile_routes(model, Instant::now(), false);
     }
     // Unlike bootstrap, a running model must not perform multicast discovery
     // just to choose a callback address. A completed survey supplies new hints.
@@ -272,15 +275,16 @@ fn open_known_listener(engine: &Engine, model: &mut Model) -> Option<String> {
     }
     match engine.open_sink(&model.rec.households) {
         Ok(sink) => {
+            let error = sink.diagnostic();
             model.sink = Some(sink);
-            None
+            error
         }
         Err(error) => Some(error),
     }
 }
 
 fn failed(model: &mut Model, listener_error: Option<String>, error: &CoreError) {
-    model.last_error = Some(match listener_error.filter(|_| model.sink.is_none()) {
+    model.last_error = Some(match listener_error {
         Some(listener) => format!("{listener}; survey failed: {error}"),
         None => error.to_string(),
     });
