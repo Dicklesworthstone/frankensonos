@@ -5310,3 +5310,15 @@ Therefore the error is the **status returned by `ZZ0045`**, not the number: `ZZ0
 returns 0/3 depending on branch, and the caller treats non-zero as failure. Next probe
 is to step over that call and read `r3` plus which branch was taken, instead of
 reasoning about the log text.
+
+Status measured: `ZZ0045` returns **3**, which is its *unknown-mode* branch (`be98`:
+zeroes the out slot, returns 3). So the envelope is being rejected because the **mode
+argument is neither 1 nor 2**, not because of the length.
+
+That means the mode comes from the pk context we injected: `ZZ0045` derives it from
+`ZZ0028`'s result — and a context parsed by `mbedtls_pk_parse_key` carries
+`MBEDTLS_PK_RSA` as its type (2 in older enums, 1 in newer), while the code compares
+against small literals. A type mismatch there yields exactly this.
+
+Next: read what `ZZ0045` actually compares (the `r31` source at its top) — one read
+settles whether the expected value is a pk type or a Sonos-specific mode field.
