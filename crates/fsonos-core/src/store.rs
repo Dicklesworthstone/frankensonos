@@ -1068,6 +1068,22 @@ pub trait Store {
     /// it, which keeps a run from firing twice.
     fn mark_schedule_fired(&mut self, id: i64, at: i64) -> Result<bool, StoreError>;
 
+    /// Claim a run only while the complete observed schedule still matches,
+    /// is enabled, and has not recorded this or a later occurrence. The
+    /// comparison and receipt write must be atomic across every connection.
+    /// Unlike `mark_schedule_fired` (also used to skip paused runs on resume),
+    /// this is the admission boundary before executing a prepared action.
+    /// Custom stores must implement that boundary before running schedules.
+    fn claim_schedule_fired(
+        &mut self,
+        _expected: &StoredSchedule,
+        _at: i64,
+    ) -> Result<bool, StoreError> {
+        Err(StoreError::Backend(
+            "this store does not support atomic schedule claims".into(),
+        ))
+    }
+
     /// Forget schedule `id`; whether there was one.
     fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError>;
 }
@@ -2313,6 +2329,24 @@ impl Store for MemStore {
         match self.schedules.get_mut(&id) {
             Some(s) if s.last_fired.is_none_or(|last| last < at) => {
                 s.last_fired = Some(at);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn claim_schedule_fired(
+        &mut self,
+        expected: &StoredSchedule,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        match self.schedules.get_mut(&expected.id) {
+            Some(current)
+                if *current == *expected
+                    && current.enabled
+                    && current.last_fired.is_none_or(|last| last < at) =>
+            {
+                current.last_fired = Some(at);
                 Ok(true)
             }
             _ => Ok(false),

@@ -1235,6 +1235,12 @@ environment becoming unavailable.
 Device alarms can't start the DJ or a scene and differ between S1 and S2, so the
 daemon owns scheduling. A run missed by more than 10 minutes is skipped.
 
+Run and skip admission atomically compare the stored schedule definition,
+enabled state and prior occurrence while recording the new occurrence. A pause,
+removal, replacement or competing claim committed by another process before
+this boundary prevents the stale prepared action from running. Later edits do
+not cancel an already claimed run, and delivery errors never replay it.
+
 Scheduled DJ starts and scenes now check the exact prospective steering,
 selectable music and required Spotify renderer before claiming an occurrence.
 For a player that already leads its group, admission also checks current owner,

@@ -535,6 +535,14 @@ impl Store for SharedStore<'_> {
         self.lock().mark_schedule_fired(id, at)
     }
 
+    fn claim_schedule_fired(
+        &mut self,
+        expected: &StoredSchedule,
+        at: i64,
+    ) -> Result<bool, StoreError> {
+        self.lock().claim_schedule_fired(expected, at)
+    }
+
     fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError> {
         self.lock().delete_schedule(id)
     }
