@@ -5497,3 +5497,10 @@ i.e. AES-128-CBC with a 16-byte key and 16-byte IV — key and IV are the two po
 header supplies. That is everything needed for a hard patch once the header-derived key/IV
 are read out, and it also says the loop's stack context must be the *same object* as the
 one this site initialises.
+
+The init lives in a routine entered at **`0x10004c88`** (prologue found by backward scan;
+it is referenced only once, i.e. called indirectly). Its first act is to build a local
+structure (`r27 = r1+32`, `r29 = r3`) and it derives the key/IV into stack buffers at
+`r1+11408` / `r1+11424` before calling `ZZ0033`. So this routine — not the loop — owns the
+whole cipher setup, and hooking/entering *it* is the way forward: it needs the header
+structure pointer as r3 and does everything else itself.
