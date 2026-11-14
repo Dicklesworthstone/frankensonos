@@ -176,7 +176,10 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line-str
 .routine-times{display:grid;grid-template-columns:auto 1fr;gap:7px 12px;font-size:11px;line-height:1.7;color:var(--muted)}
 .routine-times dt{color:var(--text)}.routine-times dd{margin:0;overflow-wrap:anywhere}
 .routine-field{display:grid;gap:8px;font-size:12px;margin:16px 0}
-.routine-field input,.routine-field select,.routines-dialog .dj-direction-grid input:not([type=checkbox]),.routines-dialog .dj-direction-grid select,.routines-dialog .dj-direction-grid textarea{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--panel);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;font:inherit}
+.routine-field input,.routine-field select,.routine-field textarea,.routines-dialog .dj-direction-grid input:not([type=checkbox]),.routines-dialog .dj-direction-grid select,.routines-dialog .dj-direction-grid textarea{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--panel);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;font:inherit}
+.routine-form p{font-size:12px;line-height:1.7;color:var(--muted)}
+.routines-dialog .schedule-days{border:0;padding:0;margin:12px 0 20px;display:flex;flex-wrap:wrap;gap:7px 14px;font-size:12px}
+.routines-dialog .schedule-days legend{padding:0 0 8px}.routines-dialog .schedule-days label,.routines-dialog .schedule-all-rooms{display:flex;align-items:center;gap:7px;min-height:44px;font-size:12px}
 .routine-days{border:0;padding:0;margin:12px 0 20px;display:flex;flex-wrap:wrap;gap:7px 14px;font-size:12px}
 .routine-days legend{padding:0 0 8px}.routine-days label{display:flex;align-items:center;gap:7px;min-height:44px;text-transform:capitalize}
 .routine-days input,.routines-dialog input[type=checkbox]{width:18px;height:18px;accent-color:var(--accent)}

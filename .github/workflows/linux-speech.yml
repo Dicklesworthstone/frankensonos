@@ -53,6 +53,7 @@ on:
       - "scripts/test-remote-dj-rehearsal.cjs"
       - "scripts/test-remote-dj-handoff.cjs"
       - "scripts/test-remote-schedules.cjs"
+      - "scripts/test-schedule-editing.cjs"
       - "scripts/test-favorite-routines.cjs"
       - "scripts/test-favorite-routines-panel.cjs"
       - "scripts/test-music-routines.cjs"
@@ -177,7 +178,7 @@ jobs:
         run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs scripts/test-remote-dj-rehearsal.cjs scripts/test-remote-dj-handoff.cjs
       - name: Web scheduled routine regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-schedules.cjs
+        run: node --test scripts/test-remote-schedules.cjs scripts/test-schedule-editing.cjs
       - name: Web sleep timer regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-timers.cjs

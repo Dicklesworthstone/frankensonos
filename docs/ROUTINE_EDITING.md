@@ -6,6 +6,34 @@ edit changes future occurrences without running an action on the speakers.
 This supports all existing actions: DJ starts and directions, pauses and fades,
 room volumes, saved scenes, speech and chimes.
 
+## Phone and dashboard
+
+Open schedules in the phone remote or **Routines** in the dashboard, refresh the
+stored list, and choose **Edit routine** or **Edit** on the routine to change.
+The editor fills in its current time and complete action. Both views support
+all five action types and let you change the type while retaining the same
+routine id. The dashboard's **New routine** form also supports all five types.
+
+Changing only the time retains the saved action's details, including DJ
+direction lifetimes in seconds, announcement voice and room scope, policy
+default announcement volume, and existing room aliases. The review shows the
+previous definition and proposed definition, the creator and paused state that
+will be retained, and the effect on future runs. Choose **Save routine changes**
+to send the reviewed revision once. Nothing plays immediately.
+
+The editor refreshes the stored routine and its targets before sending. A
+concurrent edit, toggle or occurrence invalidates the review. A draft remains
+available after closing the panel, an unsuccessful read, or an uncertain
+response. After an uncertain response, use **Refresh schedules** on the phone
+or **Refresh routines** on the dashboard to inspect that same routine id. This
+is a current observation, not proof of how the earlier request completed;
+open a new edit and review it before submitting another change. The dashboard
+uses its shared command lane to prevent overlapping writes and retains the
+stored-routine recovery target even if the selected playback room changes.
+
+Lists from older daemons remain readable. Their edit buttons are disabled when
+the daemon has not supplied the required revision.
+
 ## CLI
 
 Read the routine and its current revision first:
@@ -119,6 +147,11 @@ writes. CLI and MCP tests cover required revisions, complete action forwarding
 and no local replay. The CLI daemon scenario edits a paused one-shot, refuses a
 stale edit, reopens the durable store, resumes it and observes its new scheduled
 occurrence.
+
+`scripts/test-schedule-editing.cjs` exercises both browser views, shared forms,
+exact action preservation, all five updates through a loopback HTTP fixture,
+conflicting observations, response validation and recovery without replay.
+The Linux workflow runs this alongside the existing schedule regressions.
 
 Runtime results are reported separately from source and formatting checks;
 adding a regression does not establish that it has executed successfully.

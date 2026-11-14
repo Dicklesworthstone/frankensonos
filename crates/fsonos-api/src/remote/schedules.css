@@ -12,7 +12,9 @@
 
 .schedule-form { border: 1px solid var(--line); border-radius: .65rem; padding: .9rem; min-width: 0; }
 .schedule-form label { display: grid; gap: .3rem; margin: .75rem 0; }
-.schedule-form input, .schedule-form select { display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 44px; font: inherit; padding: .5rem; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: .5rem; }
+.schedule-form input, .schedule-form select, .schedule-form textarea { display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 44px; font: inherit; padding: .5rem; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: .5rem; }
+.schedule-form .schedule-all-rooms { display: flex; align-items: center; gap: .5rem; }
+.schedule-form .schedule-all-rooms input { width: 1.2rem; }
 .schedule-days { display: flex; flex-wrap: wrap; gap: .75rem; margin: .75rem 0; min-width: 0; border: 1px solid var(--line); }
 .schedule-days label { display: flex; align-items: center; gap: .4rem; margin: 0; }
 .schedule-days input { width: 1.2rem; }

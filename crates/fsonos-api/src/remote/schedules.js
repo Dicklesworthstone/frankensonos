@@ -10,6 +10,7 @@ const SchedulesRemote = (() => {
     scheduleResume: ['POST', '/schedules/resume'],
     scheduleRemove: ['POST', '/schedules/remove'],
     scheduleAdd: ['POST', '/schedules'],
+    scheduleUpdate: ['POST', '/schedules/update'],
     scheduleZones: ['GET', '/zones'],
     scheduleScenes: ['GET', '/scenes'],
     scheduleMoods: ['GET', '/dj/moods'],
@@ -20,11 +21,13 @@ const SchedulesRemote = (() => {
     && Number.isFinite(Date.parse(v));
   const errorText = (e) => text(e?.message) ? `${e.message}${text(e.hint) ? ` ${e.hint}` : ''}` : 'The request failed.';
   const displayTime = (v) => v ? `${new Date(v).toLocaleString()} (your browser time; house reports ${v})` : 'None reported';
+  const revisionOf = (v) => text(v, 4096) && !/[\u0000-\u001f\u007f-\u009f]/u.test(v);
 
   function scheduleOf(value) {
     if (!value || !integer(value.id, 1, Number.MAX_SAFE_INTEGER) || !text(value.when, 256)
         || !text(value.summary, 128000) || !text(value.creator, 512) || typeof value.enabled !== 'boolean'
-        || (value.next != null && !instant(value.next)) || (value.last_fired != null && !instant(value.last_fired))) {
+        || (value.next != null && !instant(value.next)) || (value.last_fired != null && !instant(value.last_fired))
+        || (value.revision != null && !revisionOf(value.revision))) {
       throw new Error('The schedule response is unreadable. Refresh before changing it.');
     }
     const fields = {
@@ -49,6 +52,7 @@ const SchedulesRemote = (() => {
       ...(value.action === 'announce' ? { announcement: announcementOf(value.announcement) } : {}),
       volume: value.volume ?? null, fade_secs: value.fade_secs ?? null,
       summary: value.summary, creator: value.creator, enabled: value.enabled,
+      revision: value.revision ?? null,
       next: value.next ?? null, last_fired: value.last_fired ?? null });
   }
 
@@ -78,7 +82,56 @@ const SchedulesRemote = (() => {
     delay: '45m', at: '', zone: '', scene: '', mood: '', volume: '20', fade_secs: '0',
     ...(action === 'dj_start' ? { direction: directionApi().draft() } : {}),
     ...(action === 'announce' ? { announcement_source: 'text', announcement_text: '',
-      announcement_chime: 'bell', announcement_voice: '', announcement_rooms: [], announcement_volume: '35' } : {}) });
+      announcement_chime: 'bell', announcement_voice: '', announcement_rooms: [], announcement_all: false, announcement_volume: '35' } : {}) });
+
+  function draftFromSchedule(value) {
+    const row = scheduleOf(value), draft = draftOf(row.action);
+    if (!revisionOf(row.revision)) throw new Error('This daemon did not provide an editing revision. Refresh schedules from an updated daemon before editing.');
+    if (row.when.startsWith('once ') && instant(row.when.slice(5))) {
+      draft.cadence = 'once'; draft.at = row.when.slice(5);
+    } else {
+      const match = /^(daily|weekdays|weekends|(?:mon|tue|wed|thu|fri|sat|sun)(?:,(?:mon|tue|wed|thu|fri|sat|sun))*) ((?:[01]\d|2[0-3]):[0-5]\d)$/.exec(row.when);
+      if (!match) throw new Error('The saved time cannot be edited by this remote. Its routine was not changed.');
+      draft.cadence = ['daily', 'weekdays', 'weekends'].includes(match[1]) ? match[1] : 'custom';
+      draft.time = match[2]; draft.days = draft.cadence === 'custom' ? match[1].split(',') : [];
+    }
+    Object.assign(draft, { zone: row.zone || '', scene: row.scene || '', mood: row.mood || '',
+      volume: String(row.volume ?? 20), fade_secs: String(row.fade_secs ?? 0) });
+    if (row.action === 'dj_start') {
+      const direction = { ...directionApi().draft() };
+      for (const [key, value] of Object.entries(row.direction?.constraints || {})) {
+        direction[key] = Array.isArray(value) ? value.join('\n') : typeof value === 'boolean' ? value : String(value);
+      }
+      if (row.direction?.for_secs != null && row.direction.for_secs % 60 === 0) direction.minutes = String(row.direction.for_secs / 60);
+      draft.direction = Object.freeze(direction);
+      draft.original_direction = row.direction ?? null;
+      draft.direction_edited = false; draft.direction_duration_edited = false;
+    }
+    if (row.action === 'announce') Object.assign(draft, {
+      announcement_source: row.announcement.text != null ? 'text' : 'chime',
+      announcement_text: row.announcement.text || '', announcement_chime: row.announcement.chime || 'bell',
+      announcement_voice: row.announcement.voice || '', announcement_rooms: [...row.announcement.rooms],
+      announcement_all: !row.announcement.rooms.length,
+      announcement_volume: row.announcement.volume == null ? '' : String(row.announcement.volume),
+    });
+    return draft;
+  }
+
+  function actionDraft(prior, action) {
+    if (!Object.hasOwn(ACTIONS, action)) throw new Error('Choose a supported routine action.');
+    return { ...draftOf(action), ...Object.fromEntries(['cadence', 'time', 'days', 'delay', 'at'].map(key => [key, prior[key]])) };
+  }
+
+  function retainedChoices(options, row, action) {
+    if (!row || row.action !== action) return options;
+    const targets = action === 'announce' ? row.announcement.rooms : row.zone ? [row.zone] : [];
+    const rooms = [...options.rooms];
+    for (const target of targets) if (!rooms.some(room => room.target === target)) {
+      const label = `Saved target “${target}” (resolved by the house)`;
+      rooms.push(Object.freeze({ target, lead: true, signature: stamp(['retained-target', target]), label, roomLabel: label }));
+    }
+    return { ...options, rooms };
+  }
 
   function stamp(value) {
     const canonical = (v, depth) => {
@@ -137,7 +190,8 @@ const SchedulesRemote = (() => {
     return `${source}; ${recipe.rooms.length ? recipe.rooms.join(', ') : 'every room'}; volume ${recipe.volume ?? 35} (house limits apply)`;
   }
 
-  function announcementDestination(options, targets) {
+  function announcementDestination(options, targets, all = false) {
+    if (all) return Object.freeze({ signature: stamp(['all-rooms', options.rooms.map(room => [room.target, room.signature])]), label: 'Every room' });
     if (!Array.isArray(targets) || !targets.length || new Set(targets).size !== targets.length) {
       throw new Error('Choose at least one room for the announcement.');
     }
@@ -149,13 +203,14 @@ const SchedulesRemote = (() => {
 
   function announcementDraft(draft) {
     if (!['text', 'chime'].includes(draft.announcement_source)
-        || typeof draft.announcement_volume !== 'string' || !/^\d+$/.test(draft.announcement_volume)) {
+        || typeof draft.announcement_volume !== 'string' || draft.announcement_volume !== '' && !/^\d+$/.test(draft.announcement_volume)) {
       throw new Error('Choose speech or a chime and an announcement volume from 0 to 100.');
     }
     return announcementOf({
       ...(draft.announcement_source === 'text' ? { text: draft.announcement_text,
         ...(draft.announcement_voice ? { voice: draft.announcement_voice } : {}) } : { chime: draft.announcement_chime }),
-      rooms: draft.announcement_rooms, volume: Number(draft.announcement_volume),
+      rooms: draft.announcement_all ? [] : draft.announcement_rooms,
+      ...(draft.announcement_volume === '' ? {} : { volume: Number(draft.announcement_volume) }),
     });
   }
 
@@ -231,11 +286,11 @@ const SchedulesRemote = (() => {
     });
   }
 
-  async function choices(call, action) {
+  async function choices(call, action, retained = null) {
     if (action === 'apply_scene') return { scenes: scenesOf(await call('scheduleScenes')), rooms: [], moods: [] };
     const rooms = roomsOf(await call('scheduleZones'));
     const moods = action === 'dj_start' ? moodsOf(await call('scheduleMoods')) : [];
-    return { rooms: ['volume', 'announce'].includes(action) ? rooms : rooms.filter((r) => r.lead), moods, scenes: [] };
+    return retainedChoices({ rooms: ['volume', 'announce'].includes(action) ? rooms : rooms.filter((r) => r.lead), moods, scenes: [] }, retained, action);
   }
 
   function timeOf(draft) {
@@ -278,7 +333,7 @@ const SchedulesRemote = (() => {
     const timing = timeOf(draft);
     const body = { when: timing.when, action: draft.action };
     const destination = draft.action === 'apply_scene' ? options.scenes.find((s) => s.name === draft.scene)
-      : draft.action === 'announce' ? announcementDestination(options, draft.announcement_rooms)
+      : draft.action === 'announce' ? announcementDestination(options, draft.announcement_rooms, draft.announcement_all)
         : options.rooms.find((r) => r.target === draft.zone);
     if (!destination) throw new Error('Choose an explicit destination from the current list.');
     let mood = null;
@@ -290,7 +345,17 @@ const SchedulesRemote = (() => {
       if (!mood) throw new Error('Choose a current DJ mood or the automatic program.');
       body.mood = mood.name.trim().toLowerCase();
     }
-    if (draft.action === 'dj_start') body.direction = directionApi().fromDraft(draft.direction, body.mood);
+    if (draft.action === 'dj_start') {
+      if (Object.hasOwn(draft, 'original_direction') && !draft.direction_edited) {
+        if (draft.original_direction != null) body.direction = directionApi().read(draft.original_direction, body.mood);
+      } else {
+        body.direction = directionApi().fromDraft(draft.direction, body.mood);
+        if (!draft.direction_duration_edited && draft.original_direction?.for_secs != null
+            && draft.original_direction.for_secs % 60 !== 0) {
+          body.direction = directionApi().read({ ...body.direction, for_secs: draft.original_direction.for_secs }, body.mood);
+        }
+      }
+    }
     for (const [action, field, max] of [['volume', 'volume', 100], ['pause', 'fade_secs', 600]]) {
       if (draft.action !== action) continue;
       if (typeof draft[field] !== 'string' || !/^\d+$/.test(draft[field]) || !integer(Number(draft[field]), 0, max)) {
@@ -301,7 +366,9 @@ const SchedulesRemote = (() => {
     const label = draft.action === 'apply_scene' ? `scene “${destination.name}”`
       : draft.action === 'announce' ? announcementDescription(body.announcement)
       : draft.action === 'volume' ? `${destination.roomLabel} to ${body.volume}`
-        : draft.action === 'dj_start' ? `${destination.label}; ${directionApi().describe(body.direction, body.mood)}`
+        : draft.action === 'dj_start' ? `${destination.label}; ${body.direction == null
+          ? `DJ · ${body.mood || 'automatic time-of-day program'} (legacy start behavior retained)`
+          : directionApi().describe(body.direction, body.mood)}`
           : `${destination.label}, fade ${body.fade_secs}s`;
     return Object.freeze({ action: 'create', body: Object.freeze(body), timing, destination, mood,
       summary: `${ACTIONS[draft.action]}: ${label}` });
@@ -349,19 +416,65 @@ const SchedulesRemote = (() => {
     return result;
   }
 
+  function editUnchanged(row, expected) {
+    if (!row || !revisionOf(row.revision) || row.revision !== expected.revision
+        || definition(row) !== definition(expected) || row.enabled !== expected.enabled) {
+      throw new Error('The routine changed, ran or was removed. Refresh schedules and open a new edit; the saved draft was not applied.');
+    }
+  }
+
+  function updatePlan(row, draft, options, rows) {
+    if (!revisionOf(row?.revision)) throw new Error('Refresh schedules from an updated daemon before editing.');
+    editUnchanged(rows.find(item => item.id === row.id), row);
+    const planned = creation(draft, options);
+    noDuplicate(rows.filter(item => item.id !== row.id), planned);
+    return Object.freeze({ ...planned, action: 'update', row,
+      request: Object.freeze({ id: row.id, expected_revision: row.revision, schedule: planned.body }) });
+  }
+
+  function targetsUnchanged(planned, options, message = 'The target group, scene or mood changed. Refresh and review it again.') {
+    const destination = planned.body.action === 'apply_scene' ? options.scenes.find(scene => scene.name === planned.body.scene)
+      : planned.body.action === 'announce' ? announcementDestination(options, planned.body.announcement.rooms, !planned.body.announcement.rooms.length)
+        : options.rooms.find(room => room.target === planned.body.zone);
+    const mood = planned.mood && options.moods.find(item => item.name === planned.mood.name);
+    if (!destination || destination.signature !== planned.destination.signature || planned.mood && mood?.signature !== planned.mood.signature) {
+      throw new Error(message);
+    }
+  }
+
+  function updatedOf(value, planned) {
+    const result = scheduleOf(value), old = planned.row;
+    const changed = definition(result) !== definition(old);
+    if (!revisionOf(result.revision) || result.id !== old.id || result.creator !== old.creator || result.enabled !== old.enabled
+        || !sameAction(result, planned.body) || !sameWhen(result, planned)
+        || !result.enabled && result.next !== null
+        || changed && (result.revision === old.revision || result.enabled && !result.next)
+        || result.next && result.when.startsWith('once ') && Date.parse(result.next) !== Date.parse(result.when.slice(5))) {
+      throw new Error('The reply did not confirm the exact reviewed routine edit.');
+    }
+    return result;
+  }
+
+  const updateEffect = row => `Only future occurrences change. Routine #${row.id} keeps its creator (${row.creator}) and stays ${row.enabled ? 'enabled' : 'paused'}. A run already claimed is not stopped or replayed. No music starts now. This edit cannot be undone through action history.`;
+  const updateObservation = (rows, id) => {
+    const row = rows.find(item => item.id === id);
+    return `Current observation for routine #${id}: ${row ? `${row.when}: ${row.summary}; ${row.enabled ? 'enabled' : 'paused'}.` : 'absent.'} This does not prove how the earlier request finished. Open a new edit before submitting again.`;
+  };
+
   function model({ call, changed = () => {} }) {
     let epoch = 0;
     let disposed = false;
     const state = { open: false, rows: [], loaded: false, loading: false,
-      writing: false, pending: null, message: '', draft: null, options: null };
+      writing: false, pending: null, message: '', draft: null, options: null, editing: null, result: null, recovery: null };
     const publish = () => {
       // A view failure must never turn an acknowledged write into a retry.
       if (!disposed) { try { changed(state); } catch (_) { /* The data model remains authoritative. */ } }
     };
     const current = (version) => !disposed && state.open && epoch === version;
-    const invalidate = () => { ++epoch; state.pending = null; state.loaded = false; state.loading = false; state.draft = null; state.options = null; };
+    const invalidate = () => { ++epoch; state.pending = null; state.loaded = false; state.loading = false;
+      if (!state.editing) state.draft = null; state.options = null; };
 
-    async function refresh() {
+    async function refresh(explicit = true) {
       if (disposed || state.writing) return false;
       state.open = true;
       invalidate();
@@ -374,6 +487,10 @@ const SchedulesRemote = (() => {
         if (!current(version)) return false;
         state.rows = rows;
         state.loaded = true;
+        if (explicit && state.recovery) {
+          state.result = Object.freeze({ ...state.recovery, status: 'observed', detail: updateObservation(rows, state.recovery.id) });
+          state.recovery = null;
+        }
         return true;
       } catch (e) {
         if (current(version)) { state.rows = []; state.message = errorText(e); }
@@ -384,9 +501,10 @@ const SchedulesRemote = (() => {
     }
 
     async function beginCreate(action = 'dj_start') {
-      if (disposed || !state.open || !state.loaded || state.loading || state.writing || !Object.hasOwn(ACTIONS, action)) return false;
+      if (disposed || !state.open || !state.loaded || state.loading || state.writing || state.recovery || !Object.hasOwn(ACTIONS, action)) return false;
       const version = ++epoch;
       state.pending = null;
+      state.editing = null;
       state.draft = draftOf(action);
       state.options = null;
       state.loading = true;
@@ -405,11 +523,37 @@ const SchedulesRemote = (() => {
       }
     }
 
+    async function loadDraft(draft, row) {
+      if (disposed || !state.open || !state.loaded || state.loading || state.writing || state.recovery) return false;
+      const version = ++epoch;
+      state.pending = null; state.editing = row; state.draft = draft; state.options = null;
+      state.loading = true; state.message = ''; publish();
+      try {
+        const options = await choices(call, draft.action, row);
+        if (!current(version)) return false;
+        state.options = options; return true;
+      } catch (error) { if (current(version)) state.message = errorText(error); return false; }
+      finally { if (current(version)) { state.loading = false; publish(); } }
+    }
+    function beginEdit(id) {
+      if (disposed || !state.open || !state.loaded || state.loading || state.writing || state.recovery) return Promise.resolve(false);
+      const row = state.rows.find(item => item.id === id);
+      try { return loadDraft(draftFromSchedule(row), row); }
+      catch (error) { state.message = errorText(error); publish(); return Promise.resolve(false); }
+    }
+    function changeAction(action) {
+      if (!state.editing) return beginCreate(action);
+      try { return loadDraft(actionDraft(state.draft, action), state.editing); }
+      catch (error) { state.message = errorText(error); publish(); return Promise.resolve(false); }
+    }
+    function reloadDraft() { return state.draft ? loadDraft(state.draft, state.editing) : Promise.resolve(false); }
+
     function edit(field, value) {
-      if (disposed || !state.open || !state.loaded || state.loading || state.writing || !state.draft
-          || field === 'action' || field === 'direction' || !Object.hasOwn(state.draft, field)
+      if (disposed || !state.open || !state.loaded || state.loading || state.writing || state.recovery || !state.draft
+          || ['action', 'direction', 'original_direction', 'direction_edited', 'direction_duration_edited'].includes(field) || !Object.hasOwn(state.draft, field)
           || (field === 'days' ? !Array.isArray(value) || !value.every((v) => DAYS.includes(v))
             : field === 'announcement_rooms' ? !Array.isArray(value) || !value.every((v) => typeof v === 'string' && [...v].length <= 128)
+              : field === 'announcement_all' ? typeof value !== 'boolean'
               : typeof value !== 'string' || value.length > (field === 'announcement_text' ? 2000 : field === 'announcement_voice' ? 4096 : 512))) return false;
       state.draft = { ...state.draft, [field]: Array.isArray(value) ? [...value] : value };
       state.pending = null;
@@ -419,12 +563,13 @@ const SchedulesRemote = (() => {
     }
 
     function editDirection(field, value) {
-      if (disposed || !state.open || !state.loaded || state.loading || state.writing
+      if (disposed || !state.open || !state.loaded || state.loading || state.writing || state.recovery
           || state.draft?.action !== 'dj_start') return false;
       state.pending = null;
       try {
         const direction = directionApi().editDraft(state.draft.direction, field, value);
-        state.draft = { ...state.draft, direction };
+        state.draft = { ...state.draft, direction, direction_edited: true,
+          direction_duration_edited: state.draft.direction_duration_edited || field === 'minutes' };
         state.message = '';
         publish();
         return true;
@@ -436,10 +581,10 @@ const SchedulesRemote = (() => {
     }
 
     function reviewCreate() {
-      if (disposed || !state.open || !state.loaded || state.loading || state.writing) return false;
+      if (disposed || !state.open || !state.loaded || state.loading || state.writing || state.recovery) return false;
       try {
-        const planned = creation(state.draft, state.options);
-        noDuplicate(state.rows, planned);
+        const planned = state.editing ? updatePlan(state.editing, state.draft, state.options, state.rows) : creation(state.draft, state.options);
+        if (!state.editing) noDuplicate(state.rows, planned);
         state.pending = planned;
         state.message = '';
         publish();
@@ -456,6 +601,7 @@ const SchedulesRemote = (() => {
       if (disposed || state.writing) return;
       ++epoch;
       state.draft = null;
+      state.editing = null;
       state.options = null;
       state.pending = null;
       state.loading = false;
@@ -465,9 +611,10 @@ const SchedulesRemote = (() => {
     function review(action, id) {
       if (disposed || !state.open || !state.loaded || state.loading || state.writing) return false;
       const row = state.rows.find((r) => r.id === id);
-      if (!row || !['pause', 'resume', 'remove'].includes(action)
+      if (state.recovery || !row || !['pause', 'resume', 'remove'].includes(action)
           || (action === 'pause' && !row.enabled) || (action === 'resume' && row.enabled)) return false;
       state.draft = null;
+      state.editing = null;
       state.options = null;
       state.pending = Object.freeze({ action, row });
       publish();
@@ -493,24 +640,23 @@ const SchedulesRemote = (() => {
       try {
         const rows = schedulesOf(await call('schedules'));
         if (!current(version)) return false;
-        if (reviewed.action === 'create') {
-          noDuplicate(rows, reviewed);
-          const options = await choices(call, reviewed.body.action);
+        if (reviewed.action === 'create' || reviewed.action === 'update') {
+          const updating = reviewed.action === 'update';
+          if (updating) editUnchanged(rows.find(row => row.id === reviewed.row.id), reviewed.row);
+          noDuplicate(rows.filter(row => !updating || row.id !== reviewed.row.id), reviewed);
+          const options = await choices(call, reviewed.body.action, updating ? reviewed.row : null);
           if (!current(version)) return false;
-          const destination = reviewed.body.action === 'apply_scene'
-            ? options.scenes.find((s) => s.name === reviewed.body.scene)
-            : reviewed.body.action === 'announce' ? announcementDestination(options, reviewed.body.announcement.rooms)
-              : options.rooms.find((r) => r.target === reviewed.body.zone);
-          const mood = reviewed.mood && options.moods.find((m) => m.name === reviewed.mood.name);
-          if (!destination || destination.signature !== reviewed.destination.signature
-              || (reviewed.mood && mood?.signature !== reviewed.mood.signature)) {
-            throw new Error('The target group, scene or mood changed. Refresh and review it again.');
-          }
+          targetsUnchanged(reviewed, options);
           sent = true;
-          const result = addedOf(await call('scheduleAdd', { body: reviewed.body }), rows, reviewed);
+          const result = updating ? updatedOf(await call('scheduleUpdate', { body: reviewed.request }), reviewed)
+            : addedOf(await call('scheduleAdd', { body: reviewed.body }), rows, reviewed);
+          if (updating) {
+            state.result = Object.freeze({ status: 'accepted', id: result.id, row: result, detail: `Saved routine #${result.id}: ${result.when}. ${result.enabled ? 'Enabled' : 'Paused'}.` });
+            state.editing = null; state.draft = null;
+          }
           if (current(version)) {
-            state.rows = [...rows, result];
-            state.message = `Created schedule #${result.id}: ${result.when}. Next: ${displayTime(result.next)}. Refresh before another change.`;
+            state.rows = updating ? rows.map(row => row.id === result.id ? result : row) : [...rows, result];
+            state.message = `${updating ? 'Saved' : 'Created'} schedule #${result.id}: ${result.when}. Next: ${displayTime(result.next)}. Refresh before another change.`;
           }
           return true;
         }
@@ -526,20 +672,104 @@ const SchedulesRemote = (() => {
         }
         return true;
       } catch (e) {
+        if (reviewed.action === 'update') {
+          state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent', id: reviewed.row.id, row: reviewed.row,
+            detail: `${errorText(e)} ${sent ? 'The edit may have been saved. Use Refresh schedules to inspect routine #' + reviewed.row.id + '; this request was not repeated.' : 'No routine edit was sent. Your draft is retained.'}` });
+          if (sent) state.recovery = state.result;
+        }
         if (current(version)) state.message = `${errorText(e)}${sent ? ' The outcome may be uncertain; the request was not repeated.' : ''}${sent && reviewed.action === 'create' ? ' It may already be saved. Inspect the schedule list before creating another routine.' : ''} Refresh before another change.`;
         return false;
       } finally {
         state.writing = false;
         state.loaded = false;
-        state.draft = null;
+        if (!state.editing) state.draft = null;
         state.options = null;
         publish();
       }
     }
 
-    return { state, refresh, review, cancel, confirm, beginCreate, edit, editDirection, reviewCreate, dismissCreate,
+    return { state, refresh, review, cancel, confirm, beginCreate, beginEdit, changeAction, reloadDraft, edit, editDirection, reviewCreate, dismissCreate,
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; ++epoch; } };
+  }
+
+  function routineForm({ state: s, control, el, button, focusAttribute = 'data-schedule-focus', idPrefix = 'schedule', className = 'schedule-form', disabled = false, directionOpen = false, toggleDirection = () => {} }) {
+    const d = s.draft;
+    const busy = disabled || !s.loaded || s.loading || s.writing || !!s.recovery;
+    const form = el('section', { class: className, 'aria-label': s.editing ? 'Edit routine' : 'New routine' },
+      el('h3', { text: s.editing ? `Edit routine #${s.editing.id}` : 'Create a routine' }));
+    const field = (label, key, attrs = {}) => el('label', { class: 'routine-field' }, label,
+      el('input', { id: `${idPrefix}-${key}`, type: 'text', value: d[key], 'aria-label': label, [focusAttribute]: key,
+        disabled: busy, oninput: (e) => control.edit(key, e.target.value), ...attrs }));
+    const select = (label, key, items, change = (v) => control.edit(key, v)) => {
+      const input = el('select', { id: `${idPrefix}-${key}`, 'aria-label': label, [focusAttribute]: key, disabled: busy,
+        onchange: (e) => change(e.target.value) });
+      for (const [value, name] of items) input.append(el('option', { value, text: name }));
+      input.value = d[key];
+      return el('label', { class: 'routine-field' }, label, input);
+    };
+    form.append(select('Routine action', 'action', Object.entries(ACTIONS), (v) => control.changeAction(v)),
+      select('When', 'cadence', [['daily', 'Every day'], ['weekdays', 'Weekdays'], ['weekends', 'Weekends'],
+        ['custom', 'Choose weekdays'], ['delay', 'Once after a delay'], ['once', 'Once at an exact time']]));
+    if (d.cadence === 'custom') {
+      const days = el('fieldset', { class: 'schedule-days', disabled: busy }, el('legend', { text: 'Days in the house’s time zone' }));
+      for (const day of DAYS) days.append(el('label', {}, el('input', { type: 'checkbox', checked: d.days.includes(day),
+        'aria-label': day, [focusAttribute]: `day-${day}`, onchange: (e) => control.edit('days',
+          e.target.checked ? [...d.days, day] : d.days.filter((v) => v !== day)) }), day));
+      form.append(days);
+    }
+    if (d.cadence === 'delay') form.append(field('Delay from daemon acceptance (maximum 365 days)', 'delay', { maxlength: 64 }),
+      el('p', { text: 'Use units: 45m, 1h30m, 90s or 2d. The daemon computes the deadline when it accepts the request, not when this review opens.' }));
+    else if (d.cadence === 'once') form.append(field('Exact time with seconds and offset', 'at', { maxlength: 64,
+      placeholder: 'YYYY-MM-DDTHH:MM:SS-05:00' }), el('p', { text: 'Include Z for UTC or an explicit offset. The daemon rejects times already past; no browser time-zone conversion is applied.' }));
+    else form.append(field('House time', 'time', { type: 'time', step: 60 }),
+      el('p', { text: 'Uses the daemon host’s local timezone. The daemon handles daylight-saving transitions and reports the next run after saving.' }));
+    const options = s.options;
+    if (d.action === 'apply_scene') form.append(select('Scene', 'scene', [['', 'Choose a saved scene…'],
+      ...(options?.scenes || []).map((v) => [v.name, v.name])]),
+      el('p', { text: 'This schedules the scene by name, not a frozen copy. Later edits to that scene change what future runs do.' }));
+    else if (d.action === 'announce') {
+      form.append(select('Announcement sound', 'announcement_source', [['text', 'Speak a message'], ['chime', 'Play a chime']]));
+      if (d.announcement_source === 'text') form.append(
+        el('label', { class: 'routine-field' }, 'Message (maximum 1000 characters)', el('textarea', { id: `${idPrefix}-announcement_text`, value: d.announcement_text, maxlength: 2000,
+          rows: 3, 'aria-label': 'Announcement message', [focusAttribute]: 'announcement_text', disabled: busy,
+          oninput: (e) => control.edit('announcement_text', e.target.value) })),
+        field('Voice (optional; uses the configured voice when blank)', 'announcement_voice', { maxlength: 4096 }));
+      else form.append(select('Chime', 'announcement_chime', [['bell', 'Bell'], ['beep', 'Beep'], ['rise', 'Rise']]));
+      form.append(el('label', { class: 'schedule-all-rooms' }, el('input', { type: 'checkbox', checked: d.announcement_all, disabled: busy,
+        [focusAttribute]: 'announcement-all', onchange: event => control.edit('announcement_all', event.target.checked) }),
+        'Every room (including rooms added before a future run)'));
+      const targets = el('fieldset', { class: 'schedule-days', disabled: busy || d.announcement_all }, el('legend', { text: 'Announcement rooms' }));
+      for (const room of options?.rooms || []) targets.append(el('label', {},
+        el('input', { type: 'checkbox', checked: d.announcement_rooms.includes(room.target), disabled: busy || d.announcement_all,
+          'aria-label': room.roomLabel, [focusAttribute]: `announcement-room-${room.target}`,
+          onchange: (e) => control.edit('announcement_rooms', e.target.checked
+            ? [...d.announcement_rooms, room.target] : d.announcement_rooms.filter((target) => target !== room.target)) }), room.roomLabel));
+      form.append(targets, field('Announcement volume (0–100; blank keeps the default)', 'announcement_volume', { type: 'number', min: 0, max: 100, step: 1 }),
+        el('p', { text: 'Each run announces in the selected rooms and restores their music. House volume limits apply when it runs. Speech uses the daemon host’s configured local speech engine.' }));
+    }
+    else form.append(select(d.action === 'volume' ? 'Room' : 'Group', 'zone', [['', 'Choose a destination…'],
+      ...(options?.rooms || []).map((v) => [v.target, d.action === 'volume' ? v.roomLabel : v.label])]),
+      el('p', { text: d.action === 'volume' ? 'Changes the selected room or saved room set’s volume, subject to house limits.'
+        : 'The house resolves the selected target at run time. Regrouping or changing a saved room set can change which rooms hear it.' }));
+    if (d.action === 'dj_start') form.append(select('DJ mood', 'mood', [['', 'Automatic time-of-day program'],
+      ...(options?.moods || []).map((v) => [v.name, v.name])]),
+      directionApi().editor({ draft: d.direction, change: (field, value) => control.editDirection(field, value),
+        disabled: busy, el, idPrefix: `${idPrefix}-direction`, focusAttribute,
+        open: directionOpen, toggle: toggleDirection }),
+      el('p', { text: Object.hasOwn(d, 'original_direction') && d.original_direction == null && !d.direction_edited
+        ? 'The saved DJ start behavior is retained. Editing the direction explicitly replaces temporary steering on future runs.'
+        : 'Each run replaces the group’s DJ steering before selecting new music. Already queued works remain.' }));
+    if (d.action === 'dj_start' && d.original_direction?.for_secs % 60 && !d.direction_duration_edited) {
+      form.append(el('p', { text: `Its exact ${d.original_direction.for_secs}-second direction duration is retained until you edit the duration field.` }));
+    }
+    if (d.action === 'volume') form.append(field('Volume (0–100)', 'volume', { type: 'number', min: 0, max: 100, step: 1 }));
+    if (d.action === 'pause') form.append(field('Fade seconds (0–600; 0 pauses immediately)', 'fade_secs', { type: 'number', min: 0, max: 600, step: 1 }));
+    form.append(el('div', { class: 'row routine-actions' },
+      button(s.editing ? 'Cancel edit' : 'Cancel new routine', 'dismiss-create', () => control.dismissCreate(), s.writing),
+      button('Reload form', 'reload-create', () => control.reloadDraft(), busy),
+      button(s.editing ? 'Review routine edit' : 'Review new routine', 'review-create', () => control.reviewCreate(), busy || !options)));
+    return form;
   }
 
   function panel({ call, el }) {
@@ -550,78 +780,6 @@ const SchedulesRemote = (() => {
       'data-schedule-focus': key, disabled, onclick: work });
     let reviewFocus = null;
     let directionOpen = false;
-    function creationForm(s) {
-      const d = s.draft;
-      const busy = s.loading || s.writing;
-      const form = el('section', { class: 'schedule-form', 'aria-label': 'New routine' },
-        el('h3', { text: 'Create a routine' }));
-      const field = (label, key, attrs = {}) => el('label', {}, label,
-        el('input', { type: 'text', value: d[key], 'aria-label': label, 'data-schedule-focus': key,
-          disabled: busy, oninput: (e) => control.edit(key, e.target.value), ...attrs }));
-      const select = (label, key, items, change = (v) => control.edit(key, v)) => {
-        const input = el('select', { 'aria-label': label, 'data-schedule-focus': key, disabled: busy,
-          onchange: (e) => change(e.target.value) });
-        for (const [value, name] of items) input.append(el('option', { value, text: name }));
-        input.value = d[key];
-        return el('label', {}, label, input);
-      };
-      form.append(select('Routine action', 'action', Object.entries(ACTIONS), (v) => control.beginCreate(v)),
-        select('When', 'cadence', [['daily', 'Every day'], ['weekdays', 'Weekdays'], ['weekends', 'Weekends'],
-          ['custom', 'Choose weekdays'], ['delay', 'Once after a delay'], ['once', 'Once at an exact time']]));
-      if (d.cadence === 'custom') {
-        const days = el('fieldset', { class: 'schedule-days', disabled: busy }, el('legend', { text: 'Days in the house’s time zone' }));
-        for (const day of DAYS) days.append(el('label', {}, el('input', { type: 'checkbox', checked: d.days.includes(day),
-          'aria-label': day, 'data-schedule-focus': `day-${day}`, onchange: (e) => control.edit('days',
-            e.target.checked ? [...d.days, day] : d.days.filter((v) => v !== day)) }), day));
-        form.append(days);
-      }
-      if (d.cadence === 'delay') form.append(field('Delay from daemon acceptance (maximum 365 days)', 'delay', { maxlength: 64 }),
-        el('p', { text: 'Use units: 45m, 1h30m, 90s or 2d. The daemon computes the deadline when it accepts the request, not when this review opens.' }));
-      else if (d.cadence === 'once') form.append(field('Exact time with seconds and offset', 'at', { maxlength: 64,
-        placeholder: 'YYYY-MM-DDTHH:MM:SS-05:00' }), el('p', { text: 'Include Z for UTC or an explicit offset. The daemon rejects times already past; no browser time-zone conversion is applied.' }));
-      else form.append(field('House time', 'time', { type: 'time', step: 60 }),
-        el('p', { text: 'Uses the daemon host’s local time zone. The daemon handles daylight-saving transitions and reports the next run after saving.' }));
-      const options = s.options;
-      if (d.action === 'apply_scene') form.append(select('Scene', 'scene', [['', 'Choose a saved scene…'],
-        ...(options?.scenes || []).map((v) => [v.name, v.name])]),
-        el('p', { text: 'This schedules the scene by name, not a frozen copy. Later edits to that scene change what future runs do.' }));
-      else if (d.action === 'announce') {
-        form.append(select('Announcement sound', 'announcement_source', [['text', 'Speak a message'], ['chime', 'Play a chime']]));
-        if (d.announcement_source === 'text') form.append(
-          el('label', {}, 'Message (maximum 1000 characters)', el('textarea', { value: d.announcement_text, maxlength: 2000,
-            rows: 3, 'aria-label': 'Announcement message', 'data-schedule-focus': 'announcement_text', disabled: busy,
-            oninput: (e) => control.edit('announcement_text', e.target.value) })),
-          field('Voice (optional; uses the configured voice when blank)', 'announcement_voice', { maxlength: 4096 }));
-        else form.append(select('Chime', 'announcement_chime', [['bell', 'Bell'], ['beep', 'Beep'], ['rise', 'Rise']]));
-        const targets = el('fieldset', { class: 'schedule-days', disabled: busy }, el('legend', { text: 'Announcement rooms' }));
-        for (const room of options?.rooms || []) targets.append(el('label', {},
-          el('input', { type: 'checkbox', checked: d.announcement_rooms.includes(room.target), disabled: busy,
-            'aria-label': room.roomLabel, 'data-schedule-focus': `announcement-room-${room.target}`,
-            onchange: (e) => control.edit('announcement_rooms', e.target.checked
-              ? [...d.announcement_rooms, room.target] : d.announcement_rooms.filter((target) => target !== room.target)) }), room.roomLabel));
-        form.append(targets, field('Announcement volume (0–100)', 'announcement_volume', { type: 'number', min: 0, max: 100, step: 1 }),
-          el('p', { text: 'Each run announces in the selected rooms and restores their music. House volume limits apply when it runs. Speech uses the daemon host’s configured local speech engine.' }));
-      }
-      else form.append(select(d.action === 'volume' ? 'Room' : 'Group', 'zone', [['', 'Choose a destination…'],
-        ...(options?.rooms || []).map((v) => [v.target, d.action === 'volume' ? v.roomLabel : v.label])]),
-        el('p', { text: d.action === 'volume' ? 'Changes only the selected room’s volume, subject to house limits.'
-          : 'Acts on the selected room’s group at run time. Regrouping later can change which rooms hear it.' }));
-      if (d.action === 'dj_start') form.append(select('DJ mood', 'mood', [['', 'Automatic time-of-day program'],
-        ...(options?.moods || []).map((v) => [v.name, v.name])]),
-        directionApi().editor({ draft: d.direction, change: (field, value) => control.editDirection(field, value),
-          disabled: busy, el, idPrefix: 'schedule-direction', focusAttribute: 'data-schedule-focus',
-          open: directionOpen, toggle: (open) => { directionOpen = open; } }),
-        el('p', { text: 'Each run replaces the group’s DJ steering before selecting new music. Already queued works remain.' }));
-      if (d.action === 'volume') form.append(field('Volume (0–100)', 'volume', { type: 'number', min: 0, max: 100, step: 1 }));
-      if (d.action === 'pause') form.append(field('Fade seconds (0–600; 0 pauses immediately)', 'fade_secs', { type: 'number', min: 0, max: 600, step: 1 }));
-      form.append(el('div', { class: 'row' },
-        button('Cancel new routine', 'dismiss-create', () => control.dismissCreate(), s.writing),
-        button('Reload form', 'reload-create', () => control.beginCreate(d.action), busy),
-        button('Review new routine', 'review-create', () => control.reviewCreate(), busy || !options)));
-      return form;
-    }
-
-
     function render(s) {
       const active = document.activeElement;
       const focus = content.contains(active) ? active.getAttribute('data-schedule-focus') : null;
@@ -632,21 +790,23 @@ const SchedulesRemote = (() => {
       content.append(el('p', { text: 'Routines are stored by the daemon and run with their creator’s rights. Daily and weekly times use the house’s time zone, not this browser’s.' }),
         el('div', { class: 'row' }, button('Refresh schedules', 'refresh', () => control.refresh(), s.loading || s.writing),
           button('New routine', 'new-create', () => control.beginCreate(), !s.loaded || s.loading || s.writing || !!s.draft || !!s.pending)));
-      if (s.draft) content.append(creationForm(s));
+      if (s.draft) content.append(routineForm({ state: s, control, el, button, directionOpen, toggleDirection: value => { directionOpen = value; } }));
       if (s.message) content.append(el('p', { role: 'status', text: s.message }));
+      if (s.result) content.append(el('p', { role: 'status', text: s.result.detail }));
       if (s.loading) content.append(el('p', { role: 'status', text: 'Reading schedules…' }));
       if (s.writing) content.append(el('p', { role: 'status', text: 'Checking and saving the reviewed change. Do not repeat it from another tab.' }));
-      if (s.pending?.action === 'create') {
+      if (s.pending?.action === 'create' || s.pending?.action === 'update') {
         const p = s.pending;
-        const review = el('section', { class: 'schedule-review', 'aria-label': 'Review new routine' },
-          el('h3', { text: 'Create this enabled routine?' }),
+        const review = el('section', { class: 'schedule-review', 'aria-label': p.action === 'update' ? 'Review routine edit' : 'Review new routine' },
+          el('h3', { text: p.action === 'update' ? `Save changes to routine #${p.row.id}?` : 'Create this enabled routine?' }),
+          ...(p.action === 'update' ? [el('p', { text: `Previously: ${p.row.when}: ${p.row.summary}` })] : []),
           el('p', { text: p.body.when }), el('p', { text: p.summary }),
-          el('p', { text: 'It runs on the daemon, even after you close this page, with your caller’s permissions and house safety limits. Runs missed by more than ten minutes are skipped.' }),
+          el('p', { text: p.action === 'update' ? updateEffect(p.row) : 'It runs on the daemon, even after you close this page, with your caller’s permissions and house safety limits. Runs missed by more than ten minutes are skipped.' }),
           el('p', { text: 'The target, mood or scene will be checked again before sending. That check is not an atomic lock; future regrouping or edits may change the routine’s effects.' }));
         if (p.destination.details) review.append(el('details', {}, el('summary', { text: 'Reviewed scene definition' }),
           el('pre', { text: p.destination.details })));
         review.append(el('div', { class: 'row' }, button('Cancel', 'cancel', () => control.cancel(), false),
-          button('Create routine', 'confirm', () => control.confirm(p), s.writing)));
+          button(p.action === 'update' ? 'Save routine changes' : 'Create routine', 'confirm', () => control.confirm(p), s.writing)));
         content.append(review);
       } else if (s.pending) {
         const p = s.pending;
@@ -662,6 +822,7 @@ const SchedulesRemote = (() => {
             button('Confirm schedule change', 'confirm', () => control.confirm(p), s.writing))));
       }
       if (s.loaded && !s.rows.length) content.append(el('p', { text: 'No saved schedules.' }));
+      if (s.loaded && s.rows.some(row => !row.revision)) content.append(el('p', { text: 'Editing needs a refreshed list from an updated daemon that provides routine revisions.' }));
       for (const row of s.rows) {
         const busy = !s.loaded || s.loading || s.writing || !!s.pending;
         content.append(el('article', { class: 'schedule-card' },
@@ -670,8 +831,9 @@ const SchedulesRemote = (() => {
           ...(row.announcement ? [el('p', { text: announcementDescription(row.announcement) })] : []),
           el('p', { text: `Creator: ${row.creator}` }),
           el('p', { text: `Next: ${displayTime(row.next)}` }),
-          el('p', { text: `Last run or skipped occurrence: ${displayTime(row.last_fired)}` }),
+          el('p', { text: `Last consumed occurrence or future-run cutoff: ${displayTime(row.last_fired)}` }),
           el('div', { class: 'row' },
+            button('Edit routine', `edit-${row.id}`, () => control.beginEdit(row.id), busy || !!s.recovery || !row.revision),
             button(row.enabled ? 'Pause routine' : 'Resume routine', `toggle-${row.id}`,
               () => control.review(row.enabled ? 'pause' : 'resume', row.id), busy),
             button('Remove routine', `remove-${row.id}`, () => control.review('remove', row.id), busy))));
@@ -683,13 +845,13 @@ const SchedulesRemote = (() => {
         if ((next.type === 'text' || next.tagName === 'TEXTAREA') && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
       }
     }
-    node.addEventListener('toggle', () => { if (node.open) control.refresh(); else control.close(); });
+    node.addEventListener('toggle', () => { if (node.open) control.refresh(false); else control.close(); });
     render(control.state);
     return { node, dispose: control.dispose };
   }
 
   return { routes, scheduleOf, schedulesOf, definition, announcementOf, roomsOf, scenesOf, moodsOf,
-    timeOf, creation, draftOf, choices, noDuplicate, addedOf, changedOf, displayTime, DAYS: Object.freeze(DAYS), model, panel };
+    timeOf, creation, draftOf, draftFromSchedule, actionDraft, choices, noDuplicate, addedOf, changedOf, editUnchanged, updatePlan, targetsUnchanged, updatedOf, updateEffect, updateObservation, routineForm, displayTime, DAYS: Object.freeze(DAYS), model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SchedulesRemote;

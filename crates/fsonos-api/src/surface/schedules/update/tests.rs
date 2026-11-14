@@ -394,6 +394,7 @@ fn a_scheduler_claim_between_observation_and_commit_refuses_the_edit() {
         .add_schedule(&Client::Cli, &pause("daily 10:00"))
         .unwrap();
     let observed = row(&surface, added.id);
+    surface.invalidate();
     armed.store(true, Ordering::SeqCst);
     std::thread::scope(|scope| {
         let worker = scope

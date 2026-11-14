@@ -1368,6 +1368,15 @@ store boundary. Edits send no immediate speaker commands and are explicitly
 non-undoable configuration changes with an action-history barrier. See
 [`docs/ROUTINE_EDITING.md`](docs/ROUTINE_EDITING.md).
 
+The phone and dashboard expose the same all-action routine editor. They retain
+the complete original action when changing its time, review the old and new
+definition, and send the observed id and revision only once. Saved aliases,
+exact DJ lifetimes and announcement defaults survive editing. Pending drafts
+and results remain tied to the original routine across closing, stale reads
+and lost replies; explicit schedule refresh observes recovery before a new
+review. The dashboard also creates all five routine types through this shared
+form and uses its existing stored-command coordination for updates.
+
 Scheduled DJ starts and scenes now check the exact prospective steering,
 selectable music and required Spotify renderer before claiming an occurrence.
 For a player that already leads its group, admission also checks current owner,
