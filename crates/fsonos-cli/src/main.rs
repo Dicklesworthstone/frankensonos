@@ -13,6 +13,7 @@
 //!   line-in    native audio inputs available on a room's household
 //!   playlist-contents inspect a saved playlist without changing playback
 //!   playlist-track play or queue one observed saved playlist occurrence
+//!   playlist-tracks play or queue an ordered selection of saved playlist occurrences
 //!   playlist-save save the current group queue as a new Sonos playlist
 //!   log / undo the action log, and undoing the newest action
 //!   policy     the house policy in effect (show), and whether policy.toml
@@ -146,6 +147,9 @@ enum Command {
     PlaylistContents(playlist_cmd::PlaylistContentsArgs),
     /// Play or queue an exact track occurrence read from a saved Sonos playlist.
     PlaylistTrack(playlist_cmd::PlaylistTrackArgs),
+    /// Play or queue 1-10 saved-playlist occurrences in caller order, retaining repeats.
+    /// Play replaces the current queue; next and append leave playback unchanged.
+    PlaylistTracks(playlist_cmd::PlaylistTracksArgs),
     /// Save the current group queue as a new Sonos playlist. Playback continues;
     /// existing playlists are never overwritten. No Spotify sign-in is needed.
     PlaylistSave(playlist_cmd::PlaylistSaveArgs),
@@ -602,6 +606,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::PlaylistRemove(args) => playlist_cmd::remove(global, &args),
         Command::PlaylistContents(args) => playlist_cmd::contents(global, &args),
         Command::PlaylistTrack(args) => playlist_cmd::track(global, &args),
+        Command::PlaylistTracks(args) => playlist_cmd::tracks(global, &args),
         Command::Announcements(args) => announce_cmd::jobs(global, &args),
         Command::Events(args) => events_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
@@ -1062,6 +1067,7 @@ fn plan_for<'a>(
         | Command::PlaylistRemove(_)
         | Command::PlaylistContents(_)
         | Command::PlaylistTrack(_)
+        | Command::PlaylistTracks(_)
         | Command::Queue { .. }
         | Command::QueuePlay(_)
         | Command::QueueSearch(_)

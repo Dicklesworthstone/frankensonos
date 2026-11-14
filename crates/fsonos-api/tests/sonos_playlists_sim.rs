@@ -21,6 +21,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+#[path = "sonos_playlists_sim/selections.rs"]
+mod selections;
+
 fn sim() -> SimHandle {
     SimHousehold::builder()
         .s1([

@@ -62,7 +62,7 @@ pub use queue_search::SearchQueue;
 mod sonos_playlists;
 pub use sonos_playlists::{
     ListSonosPlaylists, PlaySonosPlaylist, RemoveSonosPlaylist, RenameSonosPlaylist,
-    SaveSonosPlaylist, SonosPlaylistContents, SonosPlaylistTrack,
+    SaveSonosPlaylist, SonosPlaylistContents, SonosPlaylistTrack, SonosPlaylistTracks,
 };
 
 mod spotify_search;

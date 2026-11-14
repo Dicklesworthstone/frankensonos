@@ -23,6 +23,7 @@
 //! | `GET /sonos/playlists/contents?zone=<room>&playlist=<id>` | | ordered native saved contents with revision-bound continuation; changes no playback |
 //! | `POST /sonos/playlists/play` | [`crate::surface::sonos_playlists::PlaySonosPlaylistRequest`] | [`crate::OutcomeDto`]: replaces the queue and plays the saved playlist |
 //! | `POST /sonos/playlists/track` | [`crate::surface::sonos_playlists::SonosPlaylistTrackRequest`] | [`crate::surface::sonos_playlists::SonosPlaylistTrackDto`]: plays or queues one observed native track |
+//! | `POST /sonos/playlists/tracks` | [`crate::surface::sonos_playlists::SonosPlaylistTracksRequest`] | [`crate::surface::sonos_playlists::SonosPlaylistTracksDto`]: plays or queues an ordered native occurrence selection |
 //! | `POST /sonos/playlists/save` | [`crate::surface::sonos_playlists::SaveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::SavedSonosPlaylistDto`]: saves the current queue as a new native playlist |
 //! | `POST /sonos/playlists/rename` | [`crate::surface::sonos_playlists::RenameSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::ManagedSonosPlaylistDto`]: renames an exact native playlist at its observed revision |
 //! | `POST /sonos/playlists/remove` | [`crate::surface::sonos_playlists::RemoveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::ManagedSonosPlaylistDto`]: permanently removes an exact native playlist, leaving playback unchanged |

@@ -4,10 +4,10 @@
 mod e2e;
 
 use e2e::{Run, Scenario};
-use fsonos_api::surface::queue::QueueAddedDto;
+use fsonos_api::surface::queue::{QueueAddedDto, QueueDto};
 use fsonos_api::surface::sonos_playlists::{
     ManagedSonosPlaylistDto, SavedSonosPlaylistDto, SonosPlaylistContentsDto, SonosPlaylistDto,
-    SonosPlaylistOperation, SonosPlaylistTrackDto, SonosPlaylistTrackMode,
+    SonosPlaylistOperation, SonosPlaylistTrackDto, SonosPlaylistTrackMode, SonosPlaylistTracksDto,
 };
 use fsonos_proto::content::{QUEUE, browse_all};
 use fsonos_proto::control as soap;
@@ -115,9 +115,187 @@ fn exercise(s: &mut Scenario, route: &str) {
         );
 
         save_and_recall(s, route, room, generation, &selected);
+        select_native_tracks(s, route, room);
         select_native_track(s, route, room);
         manage_saved_playlist(s, route, room);
     }
+}
+
+fn select_native_tracks(s: &mut Scenario, route: &str, room: &str) {
+    let read = call(
+        s,
+        route,
+        "native-batch-read",
+        &["playlist-contents", room, "SQ:7"],
+    );
+    assert!(read.ok(), "{read:?}");
+    let page: SonosPlaylistContentsDto = serde_json::from_str(&read.stdout).unwrap();
+    let selected: Vec<_> = [3, 2, 3]
+        .into_iter()
+        .map(|position| {
+            page.items[position - 1]
+                .uri
+                .clone()
+                .expect("playable saved occurrence")
+        })
+        .collect();
+    queue_native_selection(s, route, room, &page, &selected);
+    play_native_selection(s, route, room, &page, &selected);
+}
+
+fn queue_native_selection(
+    s: &mut Scenario,
+    route: &str,
+    room: &str,
+    page: &SonosPlaylistContentsDto,
+    selected: &[String],
+) {
+    let host = s.ip(room);
+    soap::pause(&s.lan(), host).unwrap();
+    let original = browse_all(&s.lan(), host, QUEUE).unwrap();
+    let before = soap::get_position_info(&s.lan(), host).unwrap();
+    let transport = soap::get_transport_info(&s.lan(), host).unwrap();
+    for mode in ["next", "append"] {
+        let queue = call(s, route, "native-batch-destination", &["queue", room]);
+        assert!(queue.ok(), "{queue:?}");
+        let queue: QueueDto = serde_json::from_str(&queue.stdout).unwrap();
+        let added = call(
+            s,
+            route,
+            "native-batch-queue",
+            &[
+                "playlist-tracks",
+                room,
+                &page.playlist.id,
+                "3",
+                "2",
+                "3",
+                "--revision",
+                &page.revision,
+                "--queue-revision",
+                queue.revision.as_ref().unwrap(),
+                "--mode",
+                mode,
+            ],
+        );
+        assert!(added.ok(), "{added:?}");
+        let result: SonosPlaylistTracksDto = serde_json::from_str(&added.stdout).unwrap();
+        let current = browse_all(&s.lan(), host, QUEUE).unwrap();
+        let first = if mode == "next" {
+            2
+        } else {
+            original.len() + 1
+        };
+        let inserted: Vec<_> = current[first - 1..first + 2]
+            .iter()
+            .map(|item| item.res.as_ref().unwrap().uri.clone())
+            .collect();
+        s.check("native-batch-queue", "cli", "one native batch retains caller order and duplicate occurrences without changing playback",
+            result.positions == [3, 2, 3] && result.count == Some(3)
+                && result.first == Some(u32::try_from(first).unwrap()) && result.playing_queue == Some(true)
+                && inserted.as_slice() == selected && current.len() == original.len() + 3
+                && soap::get_position_info(&s.lan(), host).unwrap() == before
+                && soap::get_transport_info(&s.lan(), host).unwrap() == transport,
+            &added.stdout);
+        let undone = call(s, route, "native-batch-undo", &["undo"]);
+        assert!(undone.ok(), "{undone:?}");
+        assert_eq!(
+            browse_all(&s.lan(), host, QUEUE).unwrap(),
+            original,
+            "one undo removes the complete batch together"
+        );
+        let stale = call(
+            s,
+            route,
+            "native-batch-stale-destination",
+            &[
+                "playlist-tracks",
+                room,
+                &page.playlist.id,
+                "3",
+                "2",
+                "3",
+                "--revision",
+                &page.revision,
+                "--queue-revision",
+                queue.revision.as_ref().unwrap(),
+                "--mode",
+                mode,
+            ],
+        );
+        assert!(!stale.ok(), "{stale:?}");
+        assert_eq!(browse_all(&s.lan(), host, QUEUE).unwrap(), original);
+    }
+}
+
+fn play_native_selection(
+    s: &mut Scenario,
+    route: &str,
+    room: &str,
+    page: &SonosPlaylistContentsDto,
+    selected: &[String],
+) {
+    let host = s.ip(room);
+    let original = browse_all(&s.lan(), host, QUEUE).unwrap();
+    let before = soap::get_position_info(&s.lan(), host).unwrap();
+    let stale = call(
+        s,
+        route,
+        "native-batch-stale-playlist",
+        &[
+            "playlist-tracks",
+            room,
+            &page.playlist.id,
+            "3",
+            "2",
+            "3",
+            "--revision",
+            "obsolete",
+            "--mode",
+            "play",
+        ],
+    );
+    assert!(!stale.ok(), "{stale:?}");
+    assert_eq!(browse_all(&s.lan(), host, QUEUE).unwrap(), original);
+    assert_eq!(soap::get_position_info(&s.lan(), host).unwrap(), before);
+    let played = call(
+        s,
+        route,
+        "native-batch-play",
+        &[
+            "playlist-tracks",
+            room,
+            &page.playlist.id,
+            "3",
+            "2",
+            "3",
+            "--revision",
+            &page.revision,
+            "--mode",
+            "play",
+        ],
+    );
+    assert!(played.ok(), "{played:?}");
+    let result: SonosPlaylistTracksDto = serde_json::from_str(&played.stdout).unwrap();
+    let current: Vec<_> = browse_all(&s.lan(), host, QUEUE)
+        .unwrap()
+        .into_iter()
+        .map(|item| item.res.unwrap().uri)
+        .collect();
+    s.check(
+        "native-batch-play",
+        "cli",
+        "playing a native selection replaces the queue with the exact ordered occurrences",
+        result.mode == SonosPlaylistTrackMode::Play
+            && result.positions == [3, 2, 3]
+            && result.titles.len() == 3
+            && current.as_slice() == selected
+            && soap::get_position_info(&s.lan(), host).unwrap().track == 1
+            && soap::get_transport_info(&s.lan(), host).unwrap().state == TransportState::Playing
+            && fsonos_proto::play_mode::get_play_mode(&s.lan(), host).unwrap()
+                == fsonos_types::PlayMode::Normal,
+        &played.stdout,
+    );
 }
 
 fn manage_saved_playlist(s: &mut Scenario, route: &str, room: &str) {

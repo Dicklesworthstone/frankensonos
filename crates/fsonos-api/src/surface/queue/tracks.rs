@@ -8,7 +8,7 @@ use fsonos_core::{CoreError, control};
 use fsonos_proto::ProtoError;
 use serde::{Deserialize, Serialize};
 
-use super::{ADD, QueueAddedDto, Surface, snapshot};
+use super::{ADD, QueueAddedDto, Surface, confirm_destination_revision};
 use crate::OutcomeDto;
 use crate::execute::spotify_failure;
 use crate::failure::{ErrorCode, Failure};
@@ -152,16 +152,12 @@ impl Surface {
             // Capture before renderer learning or the caller's optional
             // revision read; no later observation can replace this baseline.
             let destination = control::TrackBatchDestination::read(transport, host, coordinator)?;
-            if let Some(expected) = &asked.expected_revision {
-                let page = snapshot::page(transport, host, 0, 1)?;
-                if *expected != snapshot::revision(coordinator, &page) {
-                    return Err(Failure::new(
-                        ErrorCode::QueueChanged,
-                        "the destination queue changed after the selection was reviewed",
-                    )
-                    .with_hint("Read the queue and review the selected tracks again."));
-                }
-            }
+            confirm_destination_revision(
+                transport,
+                host,
+                coordinator,
+                asked.expected_revision.as_deref(),
+            )?;
             let command = Command::PlaySelection {
                 coordinator: coordinator.clone(),
                 tracks: asked
@@ -208,16 +204,12 @@ impl Surface {
                     .map_err(CoreError::from)?;
             // Read the caller's token after retaining the core destination.
             // Core then keeps that same queue/source/group through every add.
-            if let Some(expected) = &asked.expected_revision {
-                let page = snapshot::page(&*self.transport, player.ip, 0, 1)?;
-                if *expected != snapshot::revision(&coordinator, &page) {
-                    return Err(Failure::new(
-                        ErrorCode::QueueChanged,
-                        "the destination queue changed after the selection was reviewed",
-                    )
-                    .with_hint("Read the queue and review the selected tracks again."));
-                }
-            }
+            confirm_destination_revision(
+                &*self.transport,
+                player.ip,
+                &coordinator,
+                asked.expected_revision.as_deref(),
+            )?;
             self.guard(client).authorize(ADD, false)?;
             self.queue_group_unchanged(player.ip, &group)?;
             let tracks: Vec<_> = asked

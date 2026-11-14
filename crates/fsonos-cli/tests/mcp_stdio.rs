@@ -303,6 +303,21 @@ fn assert_music_tool_schemas(tools: &[Value]) {
     );
     assert_ne!(selected["annotations"]["readOnlyHint"], true);
     assert_ne!(selected["annotations"]["idempotentHint"], true);
+    let selection = tool("sonos_playlist_tracks");
+    assert_tool_arguments(
+        selection,
+        &[
+            "zone",
+            "playlist",
+            "positions",
+            "expected_revision",
+            "mode",
+            "expected_queue_revision",
+        ],
+        &["zone", "playlist", "positions", "expected_revision", "mode"],
+    );
+    assert_ne!(selection["annotations"]["readOnlyHint"], true);
+    assert_ne!(selection["annotations"]["idempotentHint"], true);
 }
 
 fn assert_tool_descriptions(tools: &[Value]) {
@@ -334,6 +349,7 @@ fn assert_tool_descriptions(tools: &[Value]) {
         "play_line_in",
         "sonos_playlist_contents",
         "sonos_playlist_track",
+        "sonos_playlist_tracks",
         "play_sonos_playlist",
         "save_sonos_playlist",
         "rename_sonos_playlist",

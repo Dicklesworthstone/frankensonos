@@ -1168,6 +1168,19 @@ and rechecks both the selected track and destination, consumes each submission
 once, and retains uncertain outcomes. Browser regressions execute under Node;
 the added Rust/simulator cases still await a successful dependency build.
 
+Native saved-playlist selections also support 1–10 ordered occurrences through
+`fsonos playlist-tracks`, `POST /sonos/playlists/tracks`, MCP
+`sonos_playlist_tracks`, and the phone/dashboard track selectors. Repeated
+positions and native service/local-file metadata survive unchanged. Batch play
+stages the complete selection before removing the original queue, starts in
+NORMAL order, and retains bounded replacement undo; next/append stay silent
+and record one exact-range undo. Native contents and optional destination queue
+revisions are separate, with the original source/group/boot/queue retained
+through preparation. Each browser reviews and rechecks both observations before
+one submission, retaining uncertain outcomes without replay. The focused browser
+regressions pass (422 tests); added Rust simulation coverage remains unexecuted
+after dependency-build failures. See `docs/SONOS_PLAYLISTS.md`.
+
 Explicit online Spotify catalog search now complements cached library search.
 The CLI `spotify-search`, HTTP `GET /spotify/search`, and MCP
 `search_spotify` read one page for an explicit track, album, artist, playlist,

@@ -905,6 +905,26 @@ fn the_openapi_document_describes_every_route() {
 
 fn assert_native_playlist_openapi(doc: &Value) {
     assert_eq!(
+        doc["paths"]["/sonos/playlists/tracks"]["post"]["operationId"],
+        "sonos_playlist_tracks"
+    );
+    let schema = &doc["paths"]["/sonos/playlists/tracks"]["post"]["requestBody"]["content"]["application/json"]
+        ["schema"];
+    let selection = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    assert_eq!(
+        selection["required"],
+        json!(["zone", "playlist", "positions", "expected_revision", "mode"])
+    );
+    assert_eq!(selection["properties"].as_object().unwrap().len(), 6);
+    assert!(
+        selection["properties"]
+            .get("expected_queue_revision")
+            .is_some()
+    );
+    assert_eq!(
         doc["paths"]["/sonos/playlists/track"]["post"]["operationId"],
         "sonos_playlist_track"
     );
@@ -1033,6 +1053,40 @@ fn selected_saved_tracks_reject_missing_proofs_and_raw_metadata_before_speaker_i
     let (status, error) = blocked.post("/sonos/playlists/track", &valid);
     assert_eq!(status, 403, "{error}");
     assert_eq!(error["code"], "POLICY_DENIED");
+    assert!(blocked.actions().is_empty());
+}
+
+#[test]
+fn native_batch_http_rejects_invalid_selections_and_checks_mode_permission_before_io() {
+    let api = Api::start("", &Client::Cli);
+    let valid = json!({"zone":"Kitchen", "playlist":"SQ:7", "positions":[3,1,3], "expected_revision":"observed", "mode":"next"});
+    for (field, value) in [
+        ("positions", json!([])),
+        ("positions", json!([0])),
+        ("positions", json!(vec![1; 11])),
+        ("positions", json!([1, 100001])),
+        ("playlist", json!("Evening")),
+        ("expected_revision", json!(" ")),
+        ("expected_queue_revision", json!("")),
+        ("mode", json!("replace")),
+        ("metadata", json!("<untrusted/>")),
+        ("source_uri", json!("http://example.invalid/track")),
+    ] {
+        let mut body = valid.clone();
+        body[field] = value;
+        let (status, error) = api.post("/sonos/playlists/tracks", &body);
+        assert_eq!(status, 422, "{body}: {error}");
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+    }
+    assert!(api.actions().is_empty());
+    let blocked = Api::start("", &Client::Unknown);
+    for mode in ["play", "next", "append"] {
+        let mut body = valid.clone();
+        body["mode"] = json!(mode);
+        let (status, error) = blocked.post("/sonos/playlists/tracks", &body);
+        assert_eq!(status, 403, "{body}: {error}");
+        assert_eq!(error["code"], "POLICY_DENIED");
+    }
     assert!(blocked.actions().is_empty());
 }
 

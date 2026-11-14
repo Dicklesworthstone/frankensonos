@@ -1519,6 +1519,29 @@ impl Surface {
                 favorite,
                 ..
             } => (coordinator, favorite.uri.as_deref()),
+            Command::PlayNativeSelection {
+                coordinator,
+                selection,
+                ..
+            } => {
+                let Some(uri) = selection
+                    .tracks
+                    .first()
+                    .and_then(|track| track.uri.as_deref())
+                else {
+                    return;
+                };
+                let Ok(now) = control::playback(&*self.transport, households, coordinator) else {
+                    return;
+                };
+                if now.transport.state != TransportState::Playing
+                    || now.position.track != 1
+                    || played_uri(&now.position.uri) != played_uri(uri)
+                {
+                    return;
+                }
+                (coordinator, Some(uri))
+            }
             _ => return,
         };
         let Some(uri) = uri.map(played_uri) else {
@@ -2189,6 +2212,7 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
         Command::Play { coordinator, .. }
         | Command::PlayTracks { coordinator, .. }
         | Command::PlaySelection { coordinator, .. }
+        | Command::PlayNativeSelection { coordinator, .. }
         | Command::PlayLineIn { coordinator, .. }
         | Command::PlayFavorite { coordinator, .. }
         | Command::Transport { coordinator, .. }

@@ -8,6 +8,7 @@ use fsonos_api::Failure;
 use fsonos_api::surface::sonos_playlists::{
     SaveSonosPlaylistRequest, SavedSonosPlaylistDto, SonosPlaylistContentsDto,
     SonosPlaylistContentsRequest, SonosPlaylistTrackDto, SonosPlaylistTrackRequest,
+    SonosPlaylistTracksDto, SonosPlaylistTracksRequest,
 };
 use fsonos_core::playlists;
 use fsonos_core::policy::Client;
@@ -107,6 +108,64 @@ pub fn track(global: &GlobalArgs, args: &PlaylistTrackArgs) -> anyhow::Result<()
 }
 
 #[derive(Debug, Args)]
+pub struct PlaylistTracksArgs {
+    /// A room on the playlist's Sonos household (Room@S1 / Room@S2 disambiguates names).
+    pub zone: String,
+    /// Exact native SQ: id from playlist-contents, not a title or catalog number.
+    pub playlist: String,
+    /// One to ten original one-based occurrences, in the order to play or queue.
+    /// Repeated positions deliberately add the same occurrence again.
+    #[arg(required = true, num_args = 1..=10, value_parser = clap::value_parser!(u32).range(1..))]
+    pub positions: Vec<u32>,
+    /// Opaque saved-playlist revision from playlist-contents.
+    #[arg(
+        long = "revision",
+        visible_alias = "expected-revision",
+        value_name = "REVISION"
+    )]
+    pub expected_revision: String,
+    /// Play replaces the queue and starts the selection; next and append stay silent.
+    #[arg(long, value_parser = ["play", "next", "append"])]
+    pub mode: String,
+    /// Optional destination queue revision, separate from the saved-playlist revision.
+    #[arg(
+        long = "queue-revision",
+        visible_alias = "expected-queue-revision",
+        value_name = "REVISION"
+    )]
+    pub expected_queue_revision: Option<String>,
+}
+
+impl PlaylistTracksArgs {
+    fn request(&self) -> Result<SonosPlaylistTracksRequest, Failure> {
+        let request = SonosPlaylistTracksRequest {
+            zone: self.zone.clone(),
+            playlist: self.playlist.clone(),
+            positions: self.positions.clone(),
+            expected_revision: self.expected_revision.clone(),
+            mode: self.mode.parse()?,
+            expected_queue_revision: self.expected_queue_revision.clone(),
+        };
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+pub fn tracks(global: &GlobalArgs, args: &PlaylistTracksArgs) -> anyhow::Result<()> {
+    let request = args.request()?;
+    let selected: SonosPlaylistTracksDto =
+        if let Some(remote) = Daemon::find(global, global.daemon)? {
+            remote.post("/sonos/playlists/tracks", &request)?
+        } else {
+            let dir = daemon::data_dir(global)?;
+            let surface = daemon::surface(global, daemon::policy(&dir)?)?;
+            let surface = daemon::with_action_log(surface, &dir, "cli");
+            surface.sonos_playlist_tracks(&Client::Cli, &request)?
+        };
+    emit(global.json, &selected, SonosPlaylistTracksDto::text)
+}
+
+#[derive(Debug, Args)]
 pub struct PlaylistSaveArgs {
     /// A room, Room@S1 / Room@S2, here, or a single-room alias.
     pub zone: String,
@@ -151,6 +210,144 @@ mod tests {
     use super::*;
     use crate::{Cli, Command};
     use clap::Parser;
+
+    #[test]
+    fn selected_tracks_preserve_order_repeats_and_both_revisions() {
+        for mode in ["play", "next", "append"] {
+            let cli = Cli::try_parse_from([
+                "fsonos",
+                "playlist-tracks",
+                "Living Room@S2",
+                "SQ:7",
+                "3",
+                "1",
+                "3",
+                "--revision",
+                "native:observed",
+                "--queue-revision",
+                "queue:observed",
+                "--mode",
+                mode,
+                "--daemon-url",
+                "http://127.0.0.1:9999",
+                "--json",
+            ])
+            .unwrap();
+            assert!(cli.global.json);
+            assert_eq!(
+                cli.global.daemon_url.as_deref(),
+                Some("http://127.0.0.1:9999")
+            );
+            let Command::PlaylistTracks(args) = cli.command else {
+                panic!("expected selected native tracks")
+            };
+            let request = args.request().unwrap();
+            assert_eq!(request.zone, "Living Room@S2");
+            assert_eq!(request.playlist, "SQ:7");
+            assert_eq!(request.positions, [3, 1, 3]);
+            assert_eq!(request.expected_revision, "native:observed");
+            assert_eq!(
+                request.expected_queue_revision.as_deref(),
+                Some("queue:observed")
+            );
+            assert_eq!(request.mode, mode.parse().unwrap());
+        }
+        let cli = Cli::try_parse_from([
+            "fsonos",
+            "playlist-tracks",
+            "Den@S1",
+            "SQ:1",
+            "1",
+            "--expected-revision",
+            "native:observed",
+            "--mode",
+            "append",
+            "--direct",
+        ])
+        .unwrap();
+        assert!(cli.global.direct);
+        let Command::PlaylistTracks(args) = cli.command else {
+            panic!("expected selected native tracks")
+        };
+        assert_eq!(args.request().unwrap().expected_queue_revision, None);
+    }
+
+    #[test]
+    fn selected_tracks_require_bounded_positions_an_explicit_mode_and_native_proof() {
+        let prefix = ["fsonos", "playlist-tracks", "Den", "SQ:7"];
+        for tail in [
+            vec!["--revision", "r", "--mode", "play"],
+            vec!["1", "--revision", "r"],
+            vec!["1", "--mode", "play"],
+            vec!["0", "--revision", "r", "--mode", "play"],
+            vec!["-1", "--revision", "r", "--mode", "play"],
+            vec!["4294967296", "--revision", "r", "--mode", "play"],
+            vec!["1", "--revision", "r", "--mode", "replace"],
+            vec![
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9",
+                "10",
+                "11",
+                "--revision",
+                "r",
+                "--mode",
+                "append",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(prefix.into_iter().chain(tail)).is_err());
+        }
+        for (zone, playlist, revision, position, queue_revision) in [
+            (" ", "SQ:7", "r", "1", "q"),
+            ("Den", "Evening", "r", "1", "q"),
+            ("Den", "SQ:7", " ", "1", "q"),
+            ("Den", "SQ:7", "r", "100001", "q"),
+            ("Den", "SQ:7", "r", "1", " "),
+        ] {
+            let cli = Cli::try_parse_from([
+                "fsonos",
+                "playlist-tracks",
+                zone,
+                playlist,
+                position,
+                "--revision",
+                revision,
+                "--queue-revision",
+                queue_revision,
+                "--mode",
+                "play",
+            ])
+            .unwrap();
+            let Command::PlaylistTracks(args) = cli.command else {
+                panic!("expected selected native tracks")
+            };
+            assert!(args.request().is_err());
+        }
+        for option in ["--uri", "--metadata", "--source-uri", "--title"] {
+            assert!(
+                Cli::try_parse_from([
+                    "fsonos",
+                    "playlist-tracks",
+                    "Den",
+                    "SQ:7",
+                    "1",
+                    "--revision",
+                    "r",
+                    "--mode",
+                    "play",
+                    option,
+                    "untrusted",
+                ])
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn selected_track_command_retains_exact_occurrence_mode_and_revision() {

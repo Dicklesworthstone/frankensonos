@@ -50,6 +50,42 @@ pub enum VolumeScope {
     Group,
 }
 
+/// Native playlist occurrences resolved together under one observed revision.
+/// The speaker supplies their resource and DIDL; clients only name positions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePlaylistSelection {
+    pub playlist: String,
+    pub positions: Vec<u32>,
+    pub expected_revision: String,
+    pub tracks: Vec<Favorite>,
+}
+
+impl NativePlaylistSelection {
+    pub(crate) fn confirm<T: fsonos_proto::Transport + ?Sized>(
+        &self,
+        transport: &T,
+        households: &[HouseholdState],
+        coordinator: &PlayerId,
+    ) -> Result<(), Failure> {
+        let current = fsonos_core::playlists::select_tracks(
+            transport,
+            households,
+            coordinator,
+            &self.playlist,
+            &self.positions,
+            &self.expected_revision,
+        )?;
+        if current != self.tracks {
+            return Err(Failure::new(
+                ErrorCode::QueueChanged,
+                "the selected saved playlist occurrences changed during preparation",
+            )
+            .with_hint("Read the saved playlist again and review its current occurrences."));
+        }
+        Ok(())
+    }
+}
+
 /// What a request asks the daemon to do, addressed to concrete players.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -75,6 +111,13 @@ pub enum Command {
     PlaySelection {
         coordinator: PlayerId,
         tracks: Vec<(String, String)>,
+        destination: fsonos_core::control::TrackBatchDestination,
+    },
+    /// Replace with selected native occurrences, retaining their own metadata.
+    /// This revision-bound command cannot follow a coordinator change or replay.
+    PlayNativeSelection {
+        coordinator: PlayerId,
+        selection: NativePlaylistSelection,
         destination: fsonos_core::control::TrackBatchDestination,
     },
     /// A native input bound to its physical player and an observed destination.
@@ -168,6 +211,7 @@ impl Command {
             // A move that ran once has nothing left to move.
             Self::PlayTracks { .. }
             | Self::PlaySelection { .. }
+            | Self::PlayNativeSelection { .. }
             | Self::PlayLineIn { .. }
             | Self::Move { .. }
             | Self::Dj { .. }
@@ -182,6 +226,7 @@ impl Command {
             Self::Play { coordinator, .. }
             | Self::PlayTracks { coordinator, .. }
             | Self::PlaySelection { coordinator, .. }
+            | Self::PlayNativeSelection { coordinator, .. }
             | Self::PlayLineIn { coordinator, .. }
             | Self::PlayFavorite { coordinator, .. }
             | Self::Transport { coordinator, .. }

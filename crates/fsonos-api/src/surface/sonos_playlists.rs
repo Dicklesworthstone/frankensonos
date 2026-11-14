@@ -20,6 +20,9 @@ pub use contents::{SonosPlaylistContentsDto, SonosPlaylistContentsRequest, Sonos
 mod track;
 pub use track::{SonosPlaylistTrackDto, SonosPlaylistTrackMode, SonosPlaylistTrackRequest};
 
+mod tracks;
+pub use tracks::{SonosPlaylistTracksDto, SonosPlaylistTracksRequest};
+
 mod manage;
 pub use manage::{
     ManagedSonosPlaylistDto, RemoveSonosPlaylistRequest, RenameSonosPlaylistRequest,
