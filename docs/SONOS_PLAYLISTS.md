@@ -218,6 +218,24 @@ saved occurrence and revision, and rechecks the destination and selected track
 before sending. An obsolete selection requires another explicit read. Playing
 one row retains the queue; whole-playlist controls keep their existing behavior.
 
+For a single group's saved playlist selection, **Manage saved playlist** offers
+**Review rename** and **Review deletion**. Enter a **New playlist title** for a
+rename. Review reads the selected native playlist and shows its household,
+exact id and track count; it does not read or alter playback. Confirmation
+rechecks the group and contents revision inside the existing command lane.
+Deletion requires a separate **Delete saved playlist** confirmation that
+explains permanence and the effect on saved scenes and routines. A successful
+rename or removal clears the stale selection and keeps a receipt for its
+original household.
+
+Closing the editor or choosing another household does not discard a submitted
+catalog result. A lost or malformed reply requires **Read original household
+catalog** before another rename or removal. The recovery result names the
+original `SQ:` id and its current title or absence; it does not claim to prove
+how the earlier request finished. Catalog changes in that household retire an
+in-flight recovery read. An unrelated household event cannot acknowledge or
+cancel that recovery. Both views share the same management and review logic.
+
 The review shows the destination and the effect on its current queue. Before
 sending, the controller reads the catalog and destination again; a renamed or
 removed selection, regrouped destination, or changed queue requires a fresh
@@ -333,6 +351,11 @@ and the device-specific title handling documented in
 commas and backslashes remain literal inside XML-escaped title fragments.
 Physical-speaker rename/removal acceptance remains unverified; an unsupported
 native action is surfaced without an alternate destructive operation.
+
+`scripts/test-sonos-playlist-management.cjs` covers both shipped browser models,
+the explicit destructive review, unchanged-title receipts, revision and group
+changes, command coordination, closed editors, late replies, logging failures,
+and original-household catalog recovery. The same suite runs in Linux CI.
 
 Contents-specific simulator coverage lives in
 `fsonos-sim/tests/saved_playlist_contents.rs` and

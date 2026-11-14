@@ -1096,6 +1096,18 @@ must be re-saved, and removing a referenced playlist causes those scene sources
 to refuse playback. Simulator coverage is separate from physical-device
 acceptance. Saved track-order editing remains outside these operations.
 
+The phone and Listening room source editors expose these catalog edits through
+a shared **Manage saved playlist** review. Both read the exact saved contents
+before review and again inside their existing command lane before dispatch.
+Deletion names the original household/id and requires a separate permanent
+removal confirmation. The review explains captured scene-title consequences.
+Receipts survive closing the editor or switching households. Lost or malformed
+replies require an explicit read of the original household's catalog before
+another managed edit; catalog events retire stale recovery evidence, and the
+read reports current presence without inventing the earlier request's outcome.
+Browser regressions cover both models, no-op receipts, stale consent, late
+replies and scoped catalog recovery.
+
 Both browser views capture a bounded queue observation and recheck the selected
 group, revision and entry count before their single save request. Their shared
 command lanes associate uncertain saves with the original qualified room.

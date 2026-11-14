@@ -59,7 +59,7 @@ const DashboardSource = (() => {
     const target = () => controller.state.selected || '';
     const scope = () => controller.selected() ? C.shape(controller.selected().zone) : '';
     const matching = () => state.target === target() && state.scope === scope();
-    const editable = () => !!(live() && !state.writing && !controller.state.busy);
+    const editable = () => !!(live() && !state.writing && !manager.busy() && !controller.state.busy);
     const targetSet = () => state.destinationMode === 'set';
     const nativeQuery = () => state.sourceType === 'favorite' || targetSet() && state.sourceType === 'playlist';
     const expanded = () => targetSet() || state.sourceType === 'favorite';
@@ -78,8 +78,9 @@ const DashboardSource = (() => {
     state.catalog = catalog.state;
     const ready = () => !!(editable() && !state.loading && state.group && matching()
       && controller.state.topologyFresh && controller.canControl());
-    function retire(message) {
+    function retire(message, manage = true) {
       ++version; reading?.abort(); reading = null; state.loading = false; state.pending = null;
+      if (manage) manager.invalidate();
       catalog.retire();
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
@@ -88,6 +89,26 @@ const DashboardSource = (() => {
     const clearContents = () => { state.contents = null; state.contentsHistory = []; };
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
+    const manager = P.playlistManager({ call: targetCall, live,
+      selection: () => {
+        const item = state.playlists.find(item => item.id === state.playlist);
+        return matching() && state.group && !targetSet() && state.sourceType === 'playlist'
+          && state.playlistStatus === 'ready' && state.playlistTarget === state.target && item ? { group: state.group, item } : null;
+      },
+      available: () => !state.loading && !state.writing && !state.pending
+        && controller.state.topologyFresh && controller.canControl(),
+      changed: publish,
+      completed: () => { clearPlaylists(); publish(); },
+      async commit(reviewed, work) {
+        const ok = await controller.mutate(async ({ check, send }) => {
+          const receipt = await work({ check, send: (route, body) => send(P.routes[route][1], body) });
+          return { done: receipt.detail, changed: receipt.changed };
+        }, { stored: 'playlists', storeTarget: reviewed.group.target });
+        if (!ok) throw new Error(controller.state.message || 'The catalog command was not sent. Review it again.');
+      },
+      readCatalog: (storeTarget, decode) => controller.refreshStored('playlists', decode, { explicit: true, storeTarget }),
+    });
+    state.managing = manager.state;
     function destination() {
       if (!matching()) { clearPlaylists(); clearLineIn(); }
       state.target = target(); state.scope = scope();
@@ -354,16 +375,17 @@ const DashboardSource = (() => {
       }
       publish(); return true;
     }
-    return { state, catalog, chooseCatalog, observe, editable, edit, loadTargets, loadPlaylists, loadLineInSources, loadContents, canReview, review, reviewTrack, canApply, apply, open,
+    return { state, manager, catalog, chooseCatalog, observe, editable, edit, loadTargets, loadPlaylists, loadLineInSources, loadContents, canReview, review, reviewTrack, canApply, apply, open,
       catalogChanged(change = null) {
+        manager.catalogChanged(change);
         const favorite = state.sourceType === 'favorite';
         if (disposed || (!favorite && state.sourceType !== 'playlist')
             || (favorite ? change?.favorites === false : change?.playlists === false)
             || !targetSet() && change?.household && state.group?.household !== change.household) return;
-        retire('The household catalog changed. Review its current source again.');
+        retire('The household catalog changed. Review its current source again.', false);
         clearPlaylists(); publish();
       },
-      cancelReview() { if (state.writing) return false; retire(); state.message = ''; publish(); return true; },
+      cancelReview() { if (state.writing || manager.state.writing) return false; retire(); state.message = ''; publish(); return true; },
       clearDraft() {
         if (!editable()) return false;
         retire(); clearPlaylists(); clearLineIn(); state.sourceType = 'link'; state.input = ''; state.title = ''; state.mode = 'play';
@@ -371,7 +393,7 @@ const DashboardSource = (() => {
         state.message = 'Source draft cleared. No playback command was sent.'; publish(); return true;
       },
       offer(value) {
-        if (disposed || !active || state.writing || controller.state.busy) return false;
+        if (disposed || !active || state.writing || manager.busy() || controller.state.busy) return false;
         let offered;
         try { offered = P.offeredSource(value); }
         catch (error) { state.message = C.problem(error); publish(); return false; }
@@ -394,6 +416,8 @@ const DashboardSource = (() => {
     let shownLineIn = null, shownLineInStatus = '';
     let shownSuggestions = null;
     const control = model({ call, controller, completed, now, changed: render });
+    const managerPanel = P.playlistManagerPanel(control.manager, doc);
+    $('source-playlist-manage').append(managerPanel.node);
     function render(s) {
       trigger.disabled = !controller.state.active || (controller.state.busy && !s.writing);
       trigger.setAttribute('aria-expanded', String(s.open));
@@ -406,6 +430,7 @@ const DashboardSource = (() => {
       $('source-type').value = s.sourceType; $('source-type').disabled = !control.editable();
       const saved = s.sourceType === 'playlist', online = s.sourceType === 'catalog', analog = s.sourceType === 'line_in';
       const set = s.destinationMode === 'set', native = s.sourceType === 'favorite' || set && saved;
+      managerPanel.render(saved && !native && !!s.playlist && s.playlistStatus === 'ready');
       $('source-destination-mode').value = s.destinationMode;
       $('source-destination-mode').disabled = !control.editable() || analog;
       $('source-target-fields').hidden = !set;
