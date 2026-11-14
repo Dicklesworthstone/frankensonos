@@ -267,6 +267,14 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 - **Reconciliation loop.** Periodic + event-driven refresh of inventory/topology
   with backoff; health of each player.
 
+Topology events now admit a coherent candidate before replacing a known
+household. Missing senders, conflicting identities or addresses, and incoherent
+groups preserve the last live inventory and trigger bounded subscription and
+discovery recovery. Valid regrouping, bonded speakers, IP changes and real peer
+departures still apply. Eight admission cases and two S1/S2 event-stream
+regressions have been added; Rust execution and formatting remain pending after
+executor failures. See [Callback recovery](docs/CALLBACK_RECOVERY.md).
+
 ### LANE C — `fsonos-spotify` (library + DJ)
 
 - **Spotify Web API client**, read-only on the owner's **own** account:
