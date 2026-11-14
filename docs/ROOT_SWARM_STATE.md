@@ -5589,3 +5589,19 @@ Scanning the loop's pointer registers for that word found none: `r28 -> 0x3`,
 `r30 -> 0x886499ca`, `r31 -> 0`, `r16 -> 0`. So the object is not in the loop frame; it
 belongs to the caller and is not passed down. (Also: `r20 = 0x1` is an int, not a pointer —
 worth remembering for future deref probes.)
+
+**Layout resolved from our own builder (`scripts/build_upd_rootfs.py`, `envelope()`)** —
+the record is:
+
+```
+ENV | hdrlen | 0x0001 0000 | 00000000 | 01 | len(recipient) | 03 | recipient
+    | <I 1> <I 0x100> | 256-byte RSA-OAEP(wrapped AES key)
+    | <I 1> <I 16+len(ct)> | 16-byte IV | ciphertext
+```
+
+So: the **AES key is the output of the RSA unwrap** (mode 1 — which is why the 8192-byte
+buffer at `r31` holds key material and why its first bytes are random), and the **IV is the
+16 bytes at offset 12 of the streamed ciphertext record**, not in the key buffer.
+
+That corrects the last init attempts, which used header+0 and header+16 as key/IV: the key
+is right there (offset 0) but the IV is not (offset 12 of the *record*).
