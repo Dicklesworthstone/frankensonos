@@ -68,6 +68,35 @@ public actor CommandReviewSession {
     }
 }
 
+// Native catalog changes share the exact same one-use review and write gate.
+extension CommandReviewSession {
+    public func prepare(_ command: SonosPlaylistMutation) async throws -> SonosPlaylistMutationReview {
+        guard !busy else { throw ContractError.invalid("An action is still being checked or sent.") }
+        busy = true
+        defer { busy = false }
+        generation &+= 1; pending = nil
+        let token = generation
+        let observed = try await SonosPlaylistMutationObservation.read(command, client: client)
+        try check(token)
+        let review = SonosPlaylistMutationReview(command: command, observation: observed)
+        pending = review.id
+        return review
+    }
+
+    public func execute(_ review: SonosPlaylistMutationReview) async throws -> SonosPlaylistMutationReceipt {
+        guard !busy, pending == review.id else {
+            throw ContractError.invalid("This review is no longer current. Review the saved playlist change again.")
+        }
+        pending = nil; busy = true
+        defer { busy = false }
+        let token = generation
+        let current = try await SonosPlaylistMutationObservation.read(review.command, client: client)
+        try review.observation.validate(current, command: review.command)
+        try check(token)
+        return try await client.perform(review)
+    }
+}
+
 // Scene store changes share this actor's single pending review and write gate.
 // They are house-scoped and never fabricate a selected playback destination.
 extension CommandReviewSession {

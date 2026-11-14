@@ -89,6 +89,9 @@ private enum MusicLibraryMode: String, CaseIterable {
         QueueSearchPanel(bridge: bridge).disabled(selectingQueueBlock)
         QueueBlocksPanel(bridge: bridge, selecting: $selectingQueueBlock, refreshID: queueSelectionRefreshID)
         if let page = model.queue {
+            Button("Save queue as playlist", systemImage: "text.badge.plus") { model.openPlaylistSave() }
+                .buttonStyle(.bordered).disabled(!ready || page.total == 0 || selectingQueueBlock)
+                .accessibilityHint("Review saving this group's retained queue without interrupting playback.")
             if !selectingQueueBlock {
                 if page.items.isEmpty {
                     EmptyMusicState(title: page.total == 0 ? "Make room for a little music" : "This page is empty",
@@ -306,7 +309,7 @@ private enum MusicLibraryMode: String, CaseIterable {
             }
         } else if model.sonosPlaylists.isEmpty && !model.panelLoading && model.panelProblem == nil {
             EmptyMusicState(title: "No saved Sonos playlists", systemImage: "music.note.list",
-                detail: "Save a queue as a Sonos playlist using the dashboard or CLI, then refresh this household’s catalog.")
+                detail: "Add music to Up next, then choose Save queue as playlist to keep it on this household.")
         } else if let zone = model.selectedZone {
             LazyVStack(spacing: 12) {
                 ForEach(model.sonosPlaylists) { playlist in
@@ -332,11 +335,18 @@ private enum MusicLibraryMode: String, CaseIterable {
             ForEach(SonosPlaylistAction.allCases, id: \.self) { action in
                 Button(action.title) { model.prepareSonosPlaylist(playlist, in: zone, action: action) }
             }
+            Divider()
+            Button("Rename saved playlist", systemImage: "pencil") {
+                model.openPlaylistManagement(playlist, in: zone, removing: false)
+            }
+            Button("Delete saved playlist", systemImage: "trash", role: .destructive) {
+                model.openPlaylistManagement(playlist, in: zone, removing: true)
+            }
         } label: {
-            Image(systemName: "play.circle").font(.title2).frame(width: 44, height: 44)
+            Image(systemName: "ellipsis.circle").font(.title2).frame(width: 44, height: 44)
         }.buttonStyle(.bordered).disabled(!ready || model.panelProblem != nil)
-            .accessibilityLabel("Playback options for \(playlist.title)")
-            .accessibilityHint("Review playing or queuing this saved Sonos playlist.")
+            .accessibilityLabel("Options for \(playlist.title)")
+            .accessibilityHint("Review playback, rename or deletion of this exact saved Sonos playlist.")
     }
 
     @ViewBuilder private var djPanel: some View {
