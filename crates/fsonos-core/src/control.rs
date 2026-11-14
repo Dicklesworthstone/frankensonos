@@ -274,12 +274,11 @@ pub fn play_spotify_track<T: Transport + ?Sized>(
 /// from its first track: the speaker expands the container into its tracks
 /// as it is enqueued. Rendered with the household's own Spotify account and
 /// container prefix (learned together from an album or playlist favorite;
-/// no track favorite is required for that kind), self-healing one round of
-/// parameter drift as [`play_spotify_track`] does, whether the renderer
-/// refuses the enqueue or the play that follows it (docs/PROTOCOL.md: 800
-/// "at/after SetAVTransportURI"). The old queue remains intact until the
-/// replacement has been accepted and verified; an uncertain append never
-/// triggers another render attempt.
+/// no track favorite is required for that kind), with one fresh parameter
+/// learning attempt if the renderer explicitly refuses the initial enqueue.
+/// The old queue remains intact until the replacement has been accepted and
+/// verified. An uncertain append or any failed start after queue commit never
+/// replays the replacement; read the queue before trying again.
 pub fn play_spotify_container<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],

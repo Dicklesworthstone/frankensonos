@@ -1037,6 +1037,15 @@ Spotify track won't enqueue. Library search is token-scored fuzzy matching over
 the cached library and favorites (title, composer, performer, album). The
 surfaces are in 12.3.
 
+Staged container replacement also treats every post-commit start failure as
+an uncertain overall operation. A late URI/Seek/Play refusal, including SOAP
+800, cannot replay the append and prefix removal through renderer-account
+recovery. The initial enqueue can still use bounded account refresh after a
+definite rejection. Once committed, a failed start leaves the observed queue
+and any intervening source change for explicit inspection; it does not claim
+rollback or a completed replacement receipt. See
+[`docs/NATIVE_PLAYBACK_RECOVERY.md`](docs/NATIVE_PLAYBACK_RECOVERY.md).
+
 Native saved Sonos playlists are also readable and playable directly from the
 household's `SQ:` catalog, independent of favorites or Spotify's cached library.
 `fsonos playlists <room>` lists them; `play <room> --playlist <name-or-id>`

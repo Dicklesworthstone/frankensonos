@@ -10,12 +10,13 @@ use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
 const OLD: &str = "x-file-cifs://example.invalid/keep-playing.flac";
 const ALBUM: &str = "spotify:album:0SimReplacementAlbum01";
 const PLAYLIST: &str = "spotify:playlist:0SimReplacementList001";
+const EXTERNAL: &str = "x-file-cifs://example.invalid/another-controller.flac";
 
 #[derive(Debug, Clone, Copy)]
 enum Fault {
@@ -120,8 +121,8 @@ fn queue(sim: &SimHandle, host: IpAddr) -> Vec<String> {
         .collect()
 }
 
-fn replace(
-    replies: &Replies,
+fn replace<T: Transport + ?Sized>(
+    replies: &T,
     houses: &[HouseholdState],
     id: &PlayerId,
     uri: &str,
@@ -229,5 +230,166 @@ fn post_commit_start_uncertainty_does_not_request_address_healing_or_reenqueue()
             ]
         );
         assert!(queue(&sim, host).iter().all(|item| item != OLD));
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Change {
+    None,
+    Queue,
+    Source,
+}
+
+struct RefusalOnce {
+    inner: SimLan,
+    stage: &'static str,
+    change: Change,
+    refused: Cell<bool>,
+    writes: RefCell<Vec<String>>,
+}
+
+impl Transport for RefusalOnce {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        if name != "Browse" && !name.starts_with("Get") {
+            self.writes.borrow_mut().push(name.into());
+        }
+        if name == self.stage && !self.refused.replace(true) {
+            // A different controller acts after our queue commit and before
+            // we receive the refusal. Its writes bypass our attempt log.
+            match self.change {
+                Change::None => {}
+                Change::Queue => {
+                    soap::add_uri_to_queue(&self.inner, host, EXTERNAL, "", false)?;
+                }
+                Change::Source => {
+                    soap::set_av_transport_uri(&self.inner, host, EXTERNAL, "")?;
+                    soap::play(&self.inner, host)?;
+                }
+            }
+            return Err(ProtoError::SoapFault {
+                code: 800,
+                reason: "injected renderer refusal".into(),
+            });
+        }
+        self.inner.soap_post(host, path, action, body)
+    }
+}
+
+fn replace_receipt<T: Transport + ?Sized>(
+    replies: &T,
+    houses: &[HouseholdState],
+    id: &PlayerId,
+    receipt: bool,
+) -> Result<(), CoreError> {
+    if receipt {
+        control::play_spotify_container_with_receipt(
+            replies,
+            houses,
+            id,
+            SpotifyContainer::of(ALBUM).unwrap(),
+            ALBUM,
+            "Replacement",
+        )
+        .map(|_| ())
+    } else {
+        replace(replies, houses, id, ALBUM)
+    }
+}
+
+#[test]
+fn post_commit_start_refusal_never_replays_or_overwrites_another_controller() {
+    for generation in [1, 2] {
+        for stage in ["SetAVTransportURI", "Seek", "Play"] {
+            for change in [Change::None, Change::Queue, Change::Source] {
+                for receipt in [false, true] {
+                    let (sim, houses, id, host) = fixture(generation);
+                    let replies = RefusalOnce {
+                        inner: sim.lan(),
+                        stage,
+                        change,
+                        refused: Cell::new(false),
+                        writes: RefCell::default(),
+                    };
+                    let error = replace_receipt(&replies, &houses, &id, receipt).unwrap_err();
+                    assert!(replies.refused.get(), "the start refusal must be exercised");
+                    let CoreError::Uncertain(detail) = error else {
+                        panic!("a committed replacement must not be retried: {error:?}");
+                    };
+                    assert!(detail.contains("soap fault 800: injected renderer refusal"));
+                    let mut expected = vec!["AddURIToQueue", "RemoveTrackRangeFromQueue"];
+                    for attempted in ["SetAVTransportURI", "Seek", "Play"] {
+                        expected.push(attempted);
+                        if attempted == stage {
+                            break;
+                        }
+                    }
+                    assert_eq!(
+                        *replies.writes.borrow(),
+                        expected,
+                        "{generation} {stage} {change:?} receipt={receipt}"
+                    );
+                    let current = queue(&sim, host);
+                    assert!(current.len() > 1, "the replacement was committed");
+                    assert!(current.iter().all(|uri| uri != OLD));
+                    match change {
+                        Change::None => {}
+                        Change::Queue => {
+                            assert_eq!(current.last().map(String::as_str), Some(EXTERNAL));
+                        }
+                        Change::Source => {
+                            assert_eq!(
+                                soap::get_media_info(&sim.lan(), host).unwrap().uri,
+                                EXTERNAL
+                            );
+                            assert_eq!(
+                                soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                                TransportState::Playing
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn an_initial_enqueue_refusal_still_relearns_and_retries_once() {
+    for generation in [1, 2] {
+        for receipt in [false, true] {
+            let (sim, houses, id, host) = fixture(generation);
+            let replies = RefusalOnce {
+                inner: sim.lan(),
+                stage: "AddURIToQueue",
+                change: Change::None,
+                refused: Cell::new(false),
+                writes: RefCell::default(),
+            };
+            replace_receipt(&replies, &houses, &id, receipt).unwrap();
+            assert!(replies.refused.get());
+            assert_eq!(
+                *replies.writes.borrow(),
+                [
+                    "AddURIToQueue",
+                    "AddURIToQueue",
+                    "RemoveTrackRangeFromQueue",
+                    "SetAVTransportURI",
+                    "Seek",
+                    "Play",
+                ]
+            );
+            assert!(queue(&sim, host).iter().all(|uri| uri != OLD));
+            assert_eq!(
+                soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                TransportState::Playing
+            );
+        }
     }
 }

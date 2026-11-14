@@ -131,8 +131,9 @@ fn uncertain(detail: impl std::fmt::Display) -> CoreError {
 ///
 /// This is not an atomic device transaction: a failed append can leave new
 /// entries at the end, and a failed start after removal cannot restore the
-/// original queue. Errors do not imply that nothing changed. Definite enqueue
-/// and playback refusals retain their SOAP codes for bounded source recovery.
+/// original queue. Errors do not imply that nothing changed. Only an initial
+/// enqueue refusal retains its SOAP code for bounded source recovery; once
+/// committed, a failed start must not replay the replacement.
 pub(crate) fn play<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -319,13 +320,11 @@ pub(crate) fn commit<T: Transport + ?Sized>(
     } else {
         control::play_queue_from(t, households, coordinator, 1)
     };
-    match started {
-        Ok(()) => Ok(receipt),
-        Err(error @ CoreError::Proto(ProtoError::SoapFault { .. })) => Err(error),
-        // The queue has already changed. A lost start reply may be recovered
-        // inside queue_start, but must not replay this entire replacement.
-        Err(error) => Err(uncertain(error)),
-    }
+    // The queue has already changed. Even a definite playback refusal must
+    // not replay the replacement through render-parameter recovery: a retry
+    // could delete a newer queue and lose the original replacement receipt.
+    // Lost replies may still be reconciled inside queue_start.
+    started.map(|()| receipt).map_err(uncertain)
 }
 
 #[cfg(test)]
