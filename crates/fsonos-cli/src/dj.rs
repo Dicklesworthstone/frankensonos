@@ -175,6 +175,33 @@ impl SpotifyDj {
         }
     }
 
+    /// Retire the saved feed before Stop can reach the speaker. Keep its
+    /// in-memory state until the outcome is known: a failed prerequisite read
+    /// or definite refusal remains retryable and the final save can rearm it.
+    /// A successful or ambiguous Stop is already safe if its final save fails.
+    fn checkpoint_stop(&self, state: &mut State, coordinator: &PlayerId) -> Result<(), Failure> {
+        if !state
+            .feeds
+            .get(coordinator)
+            .is_some_and(QueueFeed::is_active)
+        {
+            return Ok(());
+        }
+        let feed = state
+            .feeds
+            .remove(coordinator)
+            .expect("the active feed was checked while holding its state lock");
+        let starters = state.starters.remove(coordinator);
+        let checkpoint = self.save_checked(state);
+        state.feeds.insert(coordinator.clone(), feed);
+        if let Some(starters) = starters {
+            state.starters.insert(coordinator.clone(), starters);
+        }
+        checkpoint.map_err(|failure| {
+            failure.with_hint("No Stop was sent; make the DJ feed store writable and retry.")
+        })
+    }
+
     /// Starts must durably retain every applicable caller before they can
     /// change an already saved queue. A later best-effort save may leave this
     /// stricter revision behind, but cannot restore an earlier exemption.
@@ -855,11 +882,15 @@ impl SpotifyDj {
                     .get_mut(at.coordinator)
                     .filter(|feed| feed.is_active())
                     .ok_or_else(|| no_session(&room))?;
-                // A failed stop must remain controllable and recoverable,
-                // including in the saved feeds after a daemon restart.
-                feed.stop(&speakers).map_err(failure)?;
-                state.feeds.remove(at.coordinator);
-                state.listening.remove(at.coordinator);
+                let stopped = feed.stop(&speakers).map_err(failure);
+                // Definite refusals retain a retryable session. An ambiguous
+                // Stop releases it even on error; the pre-Stop checkpoint
+                // already retired its durable state, so clear its bookkeeping.
+                if !feed.is_active() {
+                    state.feeds.remove(at.coordinator);
+                    state.listening.remove(at.coordinator);
+                }
+                stopped?;
                 Ok(sent(format!("the DJ stopped in {room}'s group")))
             }
         }
@@ -920,6 +951,8 @@ impl DjEngine for SpotifyDj {
             // save must not leave an older uncapped feed on disk while a new
             // caller starts music. Failure here sends no speaker writes.
             self.save_checked(&mut state)?;
+        } else if action == DjAction::Stop {
+            self.checkpoint_stop(&mut state, at.coordinator)?;
         }
         // Explicit commands are never held behind automatic retry backoff.
         state.refill_retries.remove(at.coordinator);

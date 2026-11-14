@@ -591,7 +591,13 @@ from a genre the DJ was built around.
   recording (same album, same `work_key`), in disc and track order. `Track`
   gains `disc_number`, `track_number`, and `album_uri`; `LibraryItem` gains the
   two numbers, which the Web API client already parses. Other music is picked
-  track by track.
+  track by track. With album positions present, saved-library grouping and
+  liked-track completion share the same recording boundaries: a repeated full
+  movement label or decreasing movement number starts another performance.
+  Unnumbered alternate takes and repeated single-movement pieces stay separate;
+  distinct sections with the same numeral and works spanning discs stay whole.
+  Version notes and composer prefixes cannot hide a repeated whole-piece
+  performance. Standalone act and scene labels still distinguish parts of a work.
 - A liked single movement is completed into its whole work by reading the
   album's track list (`GET /v1/albums/{id}/tracks`, read-only) and caching it.
   Unfinished album reads have their own bounded background continuation:
@@ -946,6 +952,13 @@ undos after restart. Missing proof, counter gaps or wrap, legacy unproved rows,
 and changed ownership remain barriers even under force. See
 [`docs/QUEUE_UNDO.md`](docs/QUEUE_UNDO.md#queue-additions).
 
+Manual volume writes, native ramp starts and stepped fades serialize through
+the same per-room intent lock. A device-speed ramp that receives a definite
+unsupported-action response keeps its original intent through fallback reads;
+a newer listener volume supersedes it before any old fallback writes. An
+ambiguous native reply never authorizes a second ramp. This also keeps a slow
+older manual SetVolume from landing after a newer manual or native-ramp start.
+
 New volume, mute, group-volume and volume-fade actions retain the exact room
 players and level fields they changed. Their undo restores those fields while
 preserving the current source, queue occurrence, playback state, grouping and
@@ -1212,6 +1225,18 @@ account signals (§12.1). Today the `feedback` rows carry `work_key`,
 of `c-dj-taste`. Time-of-day programs set the
 default mood when none is given.
 
+`dj stop` now checks the current source, selected queue occurrence, retained
+work contents and group incarnation before sending Stop. A source handed to
+radio, Connect, an announcement or a replaced queue releases the DJ without
+interrupting the listener's new playback. Failed prerequisite reads and definite
+speaker refusals remain explicit errors; an attempted Stop with an uncertain
+outcome retires automatic feeding, including any saved exhausted-queue retry.
+The daemon checkpoints retirement before any Stop can reach the speaker; an
+unwritable checkpoint returns an error before speaker I/O. A successful or
+uncertain Stop stays retired across restart even if storage fails immediately
+afterward. These are bounded observations, not an atomic lock on another
+controller's changes.
+
 The DJ feed records anti-repeat play history only after observing `Playing`
 for its exact owned queue occurrence. Selecting a track while stopped, paused
 or buffering does not count as listening, including a refused initial `Play`.
@@ -1423,6 +1448,17 @@ room or physical-player membership changed, its obsolete before-state becomes
 an undo boundary; a coordinator-only handover remains undoable. Coordinator
 and address recovery still share one retry budget, and partially completed
 operations are not restarted. See [`docs/COMMAND_RECOVERY.md`](docs/COMMAND_RECOVERY.md).
+
+The daemon supervises its live inventory/event worker, DJ queue follower,
+listening-history follower and configured Spotify refresh watcher alongside
+required HTTP/MCP listeners and the scheduler. An unexpected worker return or
+panic triggers the normal shutdown drain and a nonzero exit for the installed
+service manager to recover. Worker-creation errors fail startup. Shutdown stops
+event consumers promptly and bounds waits for outstanding network work; it does
+not replay a failed playback command. Ordinary player outages and Spotify read
+failures retain their existing retry/backoff behavior. A dead live model
+withdraws readiness and callback URLs, disconnects subscribers and retains its
+last observations with an explicit diagnostic.
 
 ### 12.15 Room aliases and smart targets
 

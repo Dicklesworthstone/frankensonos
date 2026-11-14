@@ -40,6 +40,7 @@ mod bootstrap;
 mod callback;
 mod delivery;
 mod inventory;
+mod lifecycle;
 mod observation;
 mod progress;
 mod pump;
@@ -231,7 +232,10 @@ impl Live {
         };
         let thread = std::thread::Builder::new()
             .name("fsonos-live".into())
-            .spawn(move || engine.run(&startup))
+            .spawn(move || {
+                let _exiting = lifecycle::Exit::new(&engine, &startup);
+                engine.run(&startup);
+            })
             .expect("spawn the live-model thread");
         Self {
             snapshot,
@@ -285,6 +289,15 @@ impl Live {
             .cloned()
     }
 
+    /// Whether the live worker exited, including a panic. A retained snapshot
+    /// is only its last observation, not evidence that events are still being
+    /// processed. Supervisors must treat an unrequested exit as a failure.
+    /// A stopped handle stays finished after bounded shutdown consumes it.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
     /// Wait up to `timeout` for the first successful inventory and its initial
     /// playback read attempts to finish. A failed service may remain unknown;
     /// households and accepted events are available while other reads wait.
@@ -292,11 +305,11 @@ impl Live {
     pub fn wait_ready(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
+            if self.stop.load(Ordering::Acquire) || self.is_finished() {
+                return false;
+            }
             if self.ready.load(Ordering::Acquire) {
                 return true;
-            }
-            if self.stop.load(Ordering::Acquire) {
-                return false;
             }
             if Instant::now() >= deadline {
                 return false;
@@ -316,10 +329,15 @@ impl Live {
     #[must_use]
     pub fn subscribe(&self) -> Receiver<LiveEvent> {
         let (tx, rx) = sync_channel(SUBSCRIBER_BACKLOG);
-        self.subscribers
+        let mut subscribers = self
+            .subscribers
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(delivery::Pending::new(tx));
+            .unwrap_or_else(PoisonError::into_inner);
+        // Exit clears the same collection after setting stop. Checking under
+        // this lock prevents a late subscriber from retaining a dead sender.
+        if !self.stop.load(Ordering::Acquire) {
+            subscribers.push(delivery::Pending::new(tx));
+        }
         rx
     }
 
@@ -536,6 +554,7 @@ impl Subscriber for Via<'_> {
 }
 
 impl Engine {
+    #[cfg(test)]
     fn via(&self) -> Via<'_> {
         Via {
             transport: &*self.transport,

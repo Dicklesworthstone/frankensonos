@@ -89,7 +89,7 @@ impl House {
                 .zip(&sinks)
                 .map(|(name, sink)| {
                     (
-                        PlayerId(sim.player(name).unwrap().uuid),
+                        PlayerId(sim.player(name).unwrap().uuid.clone()),
                         format!("http://{}", sink.local_addr()),
                     )
                 })
@@ -201,7 +201,7 @@ impl House {
         assert_eq!(fetched.len(), leads.len(), "{fetched:?}");
         let routes = self.routes.lock().unwrap();
         for name in leads {
-            let id = PlayerId(self.sim.player(name).unwrap().uuid);
+            let id = PlayerId(self.sim.player(name).unwrap().uuid.clone());
             let fetch = fetched.iter().find(|fetch| fetch.player == id.0).unwrap();
             let base = routes.get(&id).unwrap();
             assert!(
@@ -251,7 +251,7 @@ fn synchronous_clips_use_each_refreshed_leads_media_route_and_restore_both_house
     let lookups = house.lookups.lock().unwrap();
     assert_eq!(lookups.len(), 2);
     for lead in LEADS {
-        assert!(lookups.contains(&PlayerId(house.sim.player(lead).unwrap().uuid)));
+        assert!(lookups.contains(&PlayerId(house.sim.player(lead).unwrap().uuid.clone())));
     }
     let fetched = house.sim.fetch_log();
     assert_eq!(
@@ -264,7 +264,7 @@ fn synchronous_clips_use_each_refreshed_leads_media_route_and_restore_both_house
 #[test]
 fn a_missing_route_fails_only_that_background_household_before_levels_or_speaker_writes() {
     let house = House::new();
-    let missing = PlayerId(house.sim.player(LEADS[0]).unwrap().uuid);
+    let missing = PlayerId(house.sim.player(LEADS[0]).unwrap().uuid.clone());
     house.routes.lock().unwrap().remove(&missing);
     let before = house.sim.soap_log().len();
     let job = house.run(|| {

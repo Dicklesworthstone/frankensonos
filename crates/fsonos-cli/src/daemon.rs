@@ -366,17 +366,26 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // The owner's Spotify sign-in comes back to this daemon's own port.
     let surface = spotify_auth::install(surface, args, &data_dir);
     let surface = Arc::new(with_action_log(surface, &data_dir, "serve").with_doctor_checks(checks));
-    // The live model's playback keeps each DJ queue topped up.
-    fsonos_api::surface::follow(&surface);
-
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         signal_hook::flag::register(signal, Arc::clone(&stop))
             .context("install the SIGINT/SIGTERM handler")?;
     }
-    let mut ticking = start_scheduler(&surface, &stop)?;
+    let mut background = supervision::BackgroundWorkers::new(Arc::clone(&stop));
+    // Retain both live followers so a lost DJ/history worker cannot leave a
+    // healthy-looking daemon that silently stops maintaining playback.
+    for worker in fsonos_api::surface::follow_supervised(&surface, &stop)
+        .context("start the live playback followers")?
+    {
+        background.push(worker);
+    }
     // The DJ's library: refreshed when due at start, then daily.
-    crate::dj::sync::watch(library, Arc::clone(&stop));
+    if let Some(worker) = crate::dj::sync::watch(library, Arc::clone(&stop))
+        .context("start the Spotify library watcher")?
+    {
+        background.push(worker);
+    }
+    let mut ticking = start_scheduler(&surface, &stop)?;
     let counting = warning_file::keep(&data_dir, Arc::clone(&stop));
 
     // The local CLI's proof that it is the CLI (see crate::remote).
@@ -443,13 +452,27 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     announce_live(&live);
 
     let mut outcome = supervision::wait(&stop, || {
-        worker_failure(&mut http, &mut bridge, &mut mcp, &mut ticking)
+        worker_failure(
+            &mut http,
+            &mut bridge,
+            &mut mcp,
+            &mut ticking,
+            &mut background,
+            Some(live.as_ref()),
+        )
     });
     if let Err(error) = &outcome {
         tracing::error!("stopping the daemon after a worker failure: {error:#}");
     }
     eprintln!("fsonos serve: stopping");
     crate::remote::remove_daemon_file(&data_dir, std::process::id());
+    // Stop new queue maintenance before restoring fades and announcements.
+    // In-flight I/O is never replayed and cannot hold shutdown indefinitely.
+    if let Err(error) = background.shutdown()
+        && outcome.is_ok()
+    {
+        outcome = Err(error);
+    }
     // Fades in flight put their volumes back; runs in flight finish.
     if let Err(error) = ticking.shutdown() {
         tracing::warn!("{error:#}");
@@ -473,14 +496,22 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     outcome
 }
 
-/// Only required listeners belong here: automatic tailnet HTTP listeners
-/// are owned and retried by their watcher instead of stopping the daemon.
+/// Required listeners and the essential state workers stop the daemon on
+/// failure. Automatic tailnet HTTP listeners are owned and retried by their
+/// watcher instead.
 fn worker_failure(
     http: &mut [(HttpStop, SocketAddr)],
     bridge: &mut [(HttpStop, SocketAddr)],
     mcp: &mut [(McpStop, SocketAddr)],
     scheduler: &mut supervision::SchedulerWorker,
+    background: &mut supervision::BackgroundWorkers,
+    live: Option<&Live>,
 ) -> Option<anyhow::Error> {
+    if live.is_some_and(Live::is_finished) {
+        return Some(anyhow::anyhow!(
+            "live reconciliation worker stopped unexpectedly"
+        ));
+    }
     for (role, listeners) in [("HTTP API", http), ("bridge-compatible API", bridge)] {
         for (listener, addr) in listeners {
             if let Some(error) =
@@ -497,7 +528,7 @@ fn worker_failure(
             return Some(error);
         }
     }
-    scheduler.failure()
+    scheduler.failure().or_else(|| background.failure())
 }
 
 /// Keep up with Tailscale Serve: watch the origin it proxies (unless

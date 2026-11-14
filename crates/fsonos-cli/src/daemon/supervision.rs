@@ -1,8 +1,9 @@
 //! An essential worker must not leave a live but unusable daemon behind.
 //!
-//! A listener's result stays in its join handle after the startup channel
-//! closes. On unexpected completion, stop the daemon through its usual
-//! drain and return an error so the service manager can restart it.
+//! Listener and background-worker results stay in owned join handles.
+//! On unexpected completion, stop the daemon through its usual drain and
+//! return an error so the service manager can restart it. A failed worker
+//! never resumes an interrupted operation inside the same process.
 
 use anyhow::Context as _;
 use fsonos_api::Surface;
@@ -11,7 +12,7 @@ use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(super) type Serving = Option<JoinHandle<anyhow::Result<()>>>;
 
@@ -44,6 +45,74 @@ fn unexpected(label: &str, result: thread::Result<anyhow::Result<()>>) -> anyhow
 
 pub(super) fn listener_failure(worker: &mut Serving, label: &str) -> Option<anyhow::Error> {
     finished(worker).map(|result| unexpected(label, result))
+}
+
+/// Retain the workers that keep playback and library state current. These
+/// cannot be restarted in place: a panic may have interrupted speaker I/O.
+/// Let the daemon's ordinary shutdown and service-manager restart recover.
+pub(super) struct BackgroundWorkers {
+    stop: Arc<AtomicBool>,
+    threads: Vec<(String, Option<JoinHandle<()>>)>,
+}
+
+impl BackgroundWorkers {
+    pub(super) fn new(stop: Arc<AtomicBool>) -> Self {
+        Self {
+            stop,
+            threads: Vec::new(),
+        }
+    }
+
+    pub(super) fn push(&mut self, thread: JoinHandle<()>) {
+        let name = thread
+            .thread()
+            .name()
+            .unwrap_or("background worker")
+            .to_owned();
+        self.threads.push((name, Some(thread)));
+    }
+
+    pub(super) fn failure(&mut self) -> Option<anyhow::Error> {
+        self.threads.iter_mut().find_map(|(name, thread)| {
+            finished(thread).map(|result| unexpected(name, result.map(Ok)))
+        })
+    }
+
+    pub(super) fn shutdown(self) -> anyhow::Result<()> {
+        self.shutdown_with(Duration::from_secs(5))
+    }
+
+    fn shutdown_with(mut self, wait: Duration) -> anyhow::Result<()> {
+        self.stop.store(true, Ordering::Release);
+        let deadline = Instant::now() + wait;
+        let mut failure = None;
+        for (name, worker) in &mut self.threads {
+            while worker.as_ref().is_some_and(|worker| !worker.is_finished())
+                && Instant::now() < deadline
+            {
+                thread::sleep(Duration::from_millis(20));
+            }
+            let error = if let Some(Err(payload)) = finished(worker) {
+                Some(panic_error(&*payload).context(format!("{name} shutdown failed")))
+            } else if worker.is_some() {
+                Some(anyhow::anyhow!("{name} did not stop within {wait:?}"))
+            } else {
+                None
+            };
+            if let Some(error) = error {
+                tracing::warn!("{error:#}");
+                failure.get_or_insert(error);
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+}
+
+impl Drop for BackgroundWorkers {
+    fn drop(&mut self) {
+        // A later listener/startup failure must stop already-started workers.
+        self.stop.store(true, Ordering::Release);
+    }
 }
 
 /// A signal is an ordinary shutdown. A worker exit before it is a failure,

@@ -1865,8 +1865,34 @@ fn played_uri(uri: &str) -> String {
 /// new event. Ends with the live model or surface. The DJ's follower needs
 /// a DJ; the history needs only a live model.
 pub fn follow(surface: &Arc<Surface>) {
-    dj_follow::follow(surface);
-    heard::follow(surface);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Err(error) = follow_supervised(surface, &stop) {
+        tracing::error!(%error, "could not start the live followers");
+    }
+}
+
+/// Start the DJ and listening-history followers with an owned lifecycle.
+/// Retain their handles to detect an unexpected exit or panic. Setting `stop`
+/// stops new event/maintenance work without waiting for a quiet stream;
+/// in-flight operations finish without being replayed. Missing optional
+/// capabilities start no worker. A startup error stops any follower already
+/// started and must prevent the daemon from announcing readiness.
+pub fn follow_supervised(
+    surface: &Arc<Surface>,
+    stop: &Arc<std::sync::atomic::AtomicBool>,
+) -> std::io::Result<Vec<std::thread::JoinHandle<()>>> {
+    let mut workers = Vec::new();
+    for start in [dj_follow::follow, heard::follow] {
+        match start(surface, Arc::clone(stop)) {
+            Ok(Some(worker)) => workers.push(worker),
+            Ok(None) => {}
+            Err(error) => {
+                stop.store(true, std::sync::atomic::Ordering::Release);
+                return Err(error);
+            }
+        }
+    }
+    Ok(workers)
 }
 
 /// Carry a DJ command out with `dj`: a steer, and then with `start` a start.

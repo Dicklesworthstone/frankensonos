@@ -212,7 +212,7 @@ fn intact(work: &QueuedWork) -> Option<u32> {
         .then_some(first)
 }
 
-fn same_track(left: &str, right: &str) -> bool {
+pub(super) fn same_track(left: &str, right: &str) -> bool {
     match (track(left), track(right)) {
         (Some(left), Some(right)) => left == right,
         _ => false,

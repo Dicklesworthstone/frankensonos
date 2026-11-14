@@ -10,8 +10,10 @@ use fsonos_core::reconcile::Health;
 use fsonos_core::store::{PlayName, PlayRecord};
 use fsonos_types::{PlayerId, TransportState};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, PoisonError, Weak};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const MOVED_WITHIN: Duration = Duration::from_secs(120);
@@ -72,44 +74,64 @@ impl Heard {
     }
 }
 
-pub(super) fn follow(surface: &Arc<Surface>) {
+pub(super) fn follow(
+    surface: &Arc<Surface>,
+    stop: Arc<AtomicBool>,
+) -> std::io::Result<Option<JoinHandle<()>>> {
     let (Some(live), true) = (surface.live(), surface.log.is_some()) else {
-        return;
+        return Ok(None);
     };
     // Subscribe before the startup snapshot so a transition during startup
     // cannot fall between the initial read and event registration.
     let changes = live.subscribe();
     let surface = Arc::downgrade(surface);
-    if let Err(error) = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("fsonos-heard".into())
-        .spawn(move || drive(&changes, RETRY, |event| handle(&surface, event.as_ref())))
-    {
-        tracing::error!(%error, "could not start the history follower");
-    }
+        .spawn(move || {
+            drive_until(&changes, RETRY, &stop, |event| {
+                handle(&surface, event.as_ref())
+            });
+        })
+        .map(Some)
 }
 
-fn drive<T>(events: &Receiver<T>, interval: Duration, mut handle: impl FnMut(Option<T>) -> bool) {
-    if !handle(None) {
+fn drive_until<T>(
+    events: &Receiver<T>,
+    interval: Duration,
+    stop: &AtomicBool,
+    mut handle: impl FnMut(Option<T>) -> bool,
+) {
+    if stop.load(Ordering::Acquire) || !handle(None) {
         return;
     }
     let mut due = Instant::now() + interval;
-    loop {
-        match events.recv_timeout(due.saturating_duration_since(Instant::now())) {
+    while !stop.load(Ordering::Acquire) {
+        // A quiet stream must not hold shutdown until its next maintenance pass.
+        let wait = due
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(100));
+        match events.recv_timeout(wait) {
             Ok(event) => {
-                if !handle(Some(event)) {
+                if stop.load(Ordering::Acquire) || !handle(Some(event)) {
                     return;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        if Instant::now() >= due {
+        if !stop.load(Ordering::Acquire) && Instant::now() >= due {
             if !handle(None) {
                 return;
             }
+            // Do not replay missed ticks after a slow operation or host sleep.
             due = Instant::now() + interval;
         }
     }
+}
+
+#[cfg(test)]
+fn drive<T>(events: &Receiver<T>, interval: Duration, handle: impl FnMut(Option<T>) -> bool) {
+    drive_until(events, interval, &AtomicBool::new(false), handle);
 }
 
 fn handle(surface: &Weak<Surface>, event: Option<&LiveEvent>) -> bool {

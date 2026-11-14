@@ -413,3 +413,206 @@ fn a_complete_all_liked_recording_is_confirmed_through_the_real_album_reader() {
     spotify.stop();
     std::fs::remove_dir_all(data_dir).unwrap();
 }
+
+#[test]
+fn saved_and_liked_alternate_takes_share_boundaries_without_a_numeral_decrease() {
+    for movements in [vec!["Introitus", "Kyrie", "Sanctus"], vec!["I. Allegro"]] {
+        let mut album = Vec::new();
+        for disc in 1..=2 {
+            for (index, movement) in movements.iter().enumerate() {
+                let track_number = u32::try_from(index + 1).unwrap();
+                let suffix = if disc == 2 { " - Remastered 2020" } else { "" };
+                album.push(AlbumTrack {
+                    disc_number: disc,
+                    track_number,
+                    source_uri: format!("spotify:track:Alternate{disc}{track_number}"),
+                    title: format!("Requiem in D Minor, K. 626: {movement}{suffix}"),
+                    duration_secs: Some(120),
+                    explicit: Some(false),
+                });
+            }
+        }
+        let mut shuffled = album.clone();
+        shuffled.reverse();
+        let saved: Vec<LibraryItem> = shuffled
+            .iter()
+            .map(|track| LibraryItem {
+                origin: Origin::SavedAlbum,
+                ..item(track)
+            })
+            .collect();
+        let liked: Vec<LibraryItem> = shuffled.iter().map(item).collect();
+        let grouped = works_of(&saved);
+        let partial = works_of(&liked);
+        assert_eq!(grouped.len(), 2, "alternate recordings are separate works");
+        assert_eq!(partial.len(), 2, "liked and saved boundaries agree");
+        assert_eq!(grouped[0].work_key, grouped[1].work_key);
+        let mut store = MemStore::default();
+        store.save_album_tracks(ALBUM, &shuffled, NOW).unwrap();
+        let completed = complete_from_cache(&store, partial).unwrap();
+        assert_eq!(completed.len(), 2);
+        for (index, (saved, expanded)) in grouped.iter().zip(&completed).enumerate() {
+            let disc = u32::try_from(index + 1).unwrap();
+            let expected: Vec<&str> = album
+                .iter()
+                .filter(|track| track.disc_number == disc)
+                .map(|track| track.source_uri.as_str())
+                .collect();
+            assert_eq!(uris(saved), expected);
+            assert_eq!(uris(expanded), expected);
+            assert_eq!(saved.completeness, Completeness::Complete);
+            assert_eq!(expanded.completeness, Completeness::Complete);
+            assert_eq!(
+                saved.total_secs,
+                120 * u32::try_from(movements.len()).unwrap()
+            );
+            for held in album.iter().filter(|track| track.disc_number == disc) {
+                let full = expand_work(&one(held), &shuffled).unwrap();
+                assert_eq!(uris(&full), expected, "{}", held.title);
+            }
+        }
+    }
+}
+
+#[test]
+fn separate_performances_of_one_movement_pieces_do_not_become_one_long_work() {
+    let album: Vec<AlbumTrack> = [
+        "Gymnopédie No. 1",
+        "Erik Satie: Gymnopédie No. 1 - Remastered 2020",
+        "Gymnopédie No. 1 (Live)",
+    ]
+    .into_iter()
+    .zip(1u32..)
+    .map(|(title, track_number)| AlbumTrack {
+        disc_number: 1,
+        track_number,
+        source_uri: format!("spotify:track:GymnopedieTake{track_number}"),
+        title: title.into(),
+        duration_secs: Some(180 + track_number),
+        explicit: Some(false),
+    })
+    .collect();
+    for origin in [Origin::SavedAlbum, Origin::LikedTrack] {
+        let tracks: Vec<LibraryItem> = album
+            .iter()
+            .map(|track| LibraryItem {
+                artists: vec!["Erik Satie".into(), "Test Pianist".into()],
+                album_artists: vec!["Erik Satie".into()],
+                album: Some("Satie: Two Performances".into()),
+                origin,
+                ..item(track)
+            })
+            .collect();
+        let works = works_of(&tracks);
+        assert_eq!(works.len(), album.len());
+        for (work, track) in works.iter().zip(&album) {
+            assert!(work.is_classical());
+            assert_eq!(work.work_key, works[0].work_key);
+            assert_eq!(uris(work), [track.source_uri.as_str()]);
+            assert_eq!(work.movements[0].movement, None);
+            assert_eq!(work.movements[0].track.title, track.title);
+            assert_eq!(work.movements[0].origin, origin);
+            assert_eq!(work.completeness, Completeness::Complete);
+            assert_eq!(Some(work.total_secs), track.duration_secs);
+            assert!(
+                expand_work(work, &album).is_none(),
+                "version notes cannot authorize appending a different performance"
+            );
+        }
+        let mut store = MemStore::default();
+        store.save_album_tracks(ALBUM, &album, NOW).unwrap();
+        assert_eq!(
+            complete_from_cache(&store, works.clone()).unwrap(),
+            works,
+            "cache reconstruction preserves each performance and its metadata"
+        );
+    }
+}
+
+#[test]
+fn standalone_acts_remain_distinct_parts_of_one_work_after_title_cleanup() {
+    let album: Vec<AlbumTrack> = [
+        "La traviata, Act I",
+        "Giuseppe Verdi: La traviata, Act II - Remastered 2020",
+    ]
+    .into_iter()
+    .zip(1u32..)
+    .map(|(title, track_number)| AlbumTrack {
+        disc_number: 1,
+        track_number,
+        source_uri: format!("spotify:track:StandaloneAct{track_number}"),
+        title: title.into(),
+        duration_secs: Some(120),
+        explicit: Some(false),
+    })
+    .collect();
+    let expected: Vec<&str> = album
+        .iter()
+        .map(|track| track.source_uri.as_str())
+        .collect();
+    for origin in [Origin::SavedAlbum, Origin::LikedTrack] {
+        let tracks: Vec<LibraryItem> = album
+            .iter()
+            .map(|track| LibraryItem {
+                artists: vec!["Giuseppe Verdi".into(), "Test Ensemble".into()],
+                album_artists: vec!["Giuseppe Verdi".into()],
+                album: Some("Verdi: La traviata".into()),
+                origin,
+                ..item(track)
+            })
+            .collect();
+        let works = works_of(&tracks);
+        assert_eq!(works.len(), 1, "an act label is not a version note");
+        assert_eq!(works[0].title, "La traviata");
+        assert_eq!(uris(&works[0]), expected);
+        assert!(
+            works[0]
+                .movements
+                .iter()
+                .all(|track| track.movement.is_none())
+        );
+        let full = expand_work(&works[0], &album).unwrap_or_else(|| works[0].clone());
+        assert_eq!(full.movements, works[0].movements);
+        assert_eq!(uris(&full), expected);
+        assert_eq!(full.completeness, Completeness::Complete);
+        let mut store = MemStore::default();
+        store.save_album_tracks(ALBUM, &album, NOW).unwrap();
+        assert_eq!(complete_from_cache(&store, works).unwrap(), [full]);
+    }
+}
+
+#[test]
+fn repeated_tempos_and_a_disc_boundary_keep_distinct_numbered_movements_together() {
+    let album: Vec<AlbumTrack> = ["I. Allegro", "II. Allegro", "III. Allegro", "IV. Allegro"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, movement)| AlbumTrack {
+            disc_number: u32::try_from(index / 2 + 1).unwrap(),
+            track_number: u32::try_from(index % 2 + 1).unwrap(),
+            source_uri: format!("spotify:track:DiscContinuation{index}"),
+            title: format!("Requiem in D Minor, K. 626: {movement}"),
+            duration_secs: Some(120),
+            explicit: Some(false),
+        })
+        .collect();
+    let items: Vec<LibraryItem> = album
+        .iter()
+        .rev()
+        .map(|track| LibraryItem {
+            origin: Origin::SavedAlbum,
+            ..item(track)
+        })
+        .collect();
+    let works = works_of(&items);
+    let expected: Vec<&str> = album
+        .iter()
+        .map(|track| track.source_uri.as_str())
+        .collect();
+    assert_eq!(works.len(), 1);
+    assert_eq!(uris(&works[0]), expected);
+    assert_eq!(works[0].completeness, Completeness::Complete);
+    for held in &album {
+        let expanded = expand_work(&one(held), &album).unwrap();
+        assert_eq!(uris(&expanded), expected);
+    }
+}

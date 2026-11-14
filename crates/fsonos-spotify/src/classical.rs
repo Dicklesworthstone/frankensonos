@@ -340,13 +340,7 @@ pub struct TitleParts<'a> {
 /// every recording of it — shares one work string.
 #[must_use]
 pub fn split_title(title: &str) -> TitleParts<'_> {
-    let mut rest = strip_version_suffix(title);
-    if let Some((head, tail)) = split_colon(rest)
-        && !tail.is_empty()
-        && composer_from_head(head).is_some()
-    {
-        rest = tail;
-    }
+    let rest = bare_title(title);
     let (work, movement) = match split_colon(rest) {
         Some((work, movement)) if !work.is_empty() && !movement.is_empty() => {
             (work, Some(movement))
@@ -361,6 +355,21 @@ pub fn split_title(title: &str) -> TitleParts<'_> {
     TitleParts {
         work: trim_act(work),
         movement,
+    }
+}
+
+/// Remove version notes and a recognized composer prefix without erasing
+/// act or scene labels. Those labels can distinguish separate parts of a work
+/// even when neither track title includes a movement after a colon.
+pub(crate) fn bare_title(title: &str) -> &str {
+    let rest = strip_version_suffix(title);
+    if let Some((head, tail)) = split_colon(rest)
+        && !tail.is_empty()
+        && composer_from_head(head).is_some()
+    {
+        tail
+    } else {
+        rest
     }
 }
 

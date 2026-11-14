@@ -371,13 +371,17 @@ impl LibrarySync {
 /// The daemon's schedule: refresh when due and signed in, checking again
 /// [`CHECK`] after each check ends, timed on `sync`'s clock (looked at every
 /// half second; a wall-clock step does not move it), on a thread of its own
-/// until `stop`. Nothing without `sync`.
-pub fn watch(sync: Option<Arc<LibrarySync>>, stop: Arc<AtomicBool>) {
+/// until `stop`. Nothing without `sync`. The daemon owns the returned handle
+/// so a terminal worker failure cannot silently disable future refreshes.
+pub fn watch(
+    sync: Option<Arc<LibrarySync>>,
+    stop: Arc<AtomicBool>,
+) -> std::io::Result<Option<thread::JoinHandle<()>>> {
     let Some(sync) = sync else {
-        return;
+        return Ok(None);
     };
     let every = i64::try_from(CHECK.as_secs()).unwrap_or(i64::MAX);
-    let spawned = thread::Builder::new()
+    thread::Builder::new()
         .name("fsonos-library-watch".into())
         .stack_size(STACK)
         .spawn(move || {
@@ -398,10 +402,8 @@ pub fn watch(sync: Option<Arc<LibrarySync>>, stop: Arc<AtomicBool>) {
                 }
                 thread::sleep(Duration::from_millis(500));
             }
-        });
-    if let Err(e) = spawned {
-        tracing::warn!("not refreshing the library: {e}");
-    }
+        })
+        .map(Some)
 }
 
 /// How many refreshes in a row, `now` included, left at least as many artist

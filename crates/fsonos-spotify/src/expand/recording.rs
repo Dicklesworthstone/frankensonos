@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use fsonos_core::store::AlbumTrack;
 
 use crate::classical::{ClassicalTrack, normalize, split_title};
-use crate::works::{Completeness, Work, build, movement_number};
+use crate::works::{Completeness, RecordingOrder, Work, build};
 
 /// Rebuild from the album's positions rather than appending the missing
 /// tracks to held movements whose coordinates may be absent or stale.
@@ -67,26 +67,17 @@ fn select<'a>(work: &Work, album: &'a [AlbumTrack]) -> Option<Vec<&'a AlbumTrack
     let mut ordered: Vec<&AlbumTrack> = album.iter().collect();
     ordered.sort_by_key(|t| (t.disc_number, t.track_number));
     let mut runs: Vec<Vec<&AlbumTrack>> = Vec::new();
-    let mut seen = HashSet::new();
-    let mut last = None;
+    let mut order = RecordingOrder::default();
     for track in ordered {
         let parts = split_title(&track.title);
         if normalize(parts.work) != title {
             continue;
         }
-        let movement = normalize(parts.movement.unwrap_or(&track.title));
-        let number = parts.movement.and_then(movement_number);
-        // Requiem III.1, III.2, III.3 are sections, not three recordings.
-        // A strict decrease, or a repeated full movement, starts a new take.
-        let restarts = matches!((last, number), (Some(prev), Some(n)) if n < prev);
-        if runs.is_empty() || restarts || seen.contains(&movement) {
+        let restarts = order.push(parts.movement, &track.title);
+        if runs.is_empty() || restarts {
             runs.push(Vec::new());
-            seen.clear();
-            last = None;
         }
         runs.last_mut()?.push(track);
-        seen.insert(movement);
-        last = number.or(last);
     }
     let tracks: Vec<&AlbumTrack> = runs.iter().flatten().copied().collect();
     let mut selected = None;

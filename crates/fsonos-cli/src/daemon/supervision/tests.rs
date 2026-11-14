@@ -4,6 +4,7 @@ use crate::daemon::{
 };
 use fsonos_api::web::ServeOrigin;
 use fsonos_core::clock::{Clock, FakeClock, SystemClock};
+use fsonos_core::live::Live;
 use fsonos_core::policy::{Client, Policy};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
@@ -48,6 +49,7 @@ fn observe(stop: &AtomicBool, mut failure: impl FnMut() -> Option<anyhow::Error>
 struct Running {
     stop: Arc<AtomicBool>,
     scheduler: Option<SchedulerWorker>,
+    background: Option<BackgroundWorkers>,
     http: Vec<(HttpStop, SocketAddr)>,
     bridge: Vec<(HttpStop, SocketAddr)>,
     mcp: Vec<(McpStop, SocketAddr)>,
@@ -58,6 +60,7 @@ impl Running {
         let stop = Arc::new(AtomicBool::new(false));
         Self {
             scheduler: Some(SchedulerWorker::start(surface, Arc::clone(&stop)).unwrap()),
+            background: Some(BackgroundWorkers::new(Arc::clone(&stop))),
             stop,
             http: Vec::new(),
             bridge: Vec::new(),
@@ -66,6 +69,10 @@ impl Running {
     }
 
     fn failure(&mut self) -> anyhow::Error {
+        self.failure_with_live(None)
+    }
+
+    fn failure_with_live(&mut self, live: Option<&Live>) -> anyhow::Error {
         let stop = Arc::clone(&self.stop);
         observe(&stop, || {
             worker_failure(
@@ -73,12 +80,18 @@ impl Running {
                 &mut self.bridge,
                 &mut self.mcp,
                 self.scheduler.as_mut().unwrap(),
+                self.background.as_mut().unwrap(),
+                live,
             )
         })
     }
 
     fn shutdown(&mut self) -> anyhow::Result<()> {
         self.stop.store(true, Ordering::Release);
+        let background = self
+            .background
+            .take()
+            .map_or(Ok(()), BackgroundWorkers::shutdown);
         let result = self
             .scheduler
             .take()
@@ -86,7 +99,7 @@ impl Running {
         stop_http(&self.http);
         stop_http(&self.bridge);
         stop_mcp(std::mem::take(&mut self.mcp));
-        result
+        background.and(result)
     }
 }
 
@@ -225,6 +238,240 @@ fn shutdown_signals_do_not_turn_expected_worker_exits_into_failures() {
     running
         .shutdown()
         .expect("the real scheduler stops normally");
+}
+
+#[test]
+fn a_real_live_worker_panic_stops_the_daemon_before_it_serves_stale_state() {
+    use fsonos_core::live::LiveConfig;
+    use fsonos_proto::net::Lan;
+    use fsonos_sim::{SimHousehold, SimModel, SimPlayerSpec};
+
+    let sim = SimHousehold::builder()
+        .s2([SimPlayerSpec::new("Room", SimModel::One)])
+        .spawn()
+        .unwrap();
+    let lan = Arc::new(
+        Lan::start()
+            .unwrap()
+            .with_routes(sim.players().iter().map(|p| (p.ip, p.addr)).collect()),
+    );
+    let fail = Arc::new(AtomicBool::new(false));
+    let panic_now = Arc::clone(&fail);
+    let mut config = LiveConfig::new(sim.players().iter().map(|p| p.ip).collect());
+    config.surveyed = Some(Arc::new(move |_| {
+        assert!(
+            !panic_now.load(Ordering::Acquire),
+            "injected live worker failure"
+        );
+    }));
+    let live = Live::start_with(Arc::new(sim.lan()), lan, config);
+    assert!(live.wait_ready(Duration::from_secs(10)));
+    assert!(!live.is_finished());
+    let surface = surface();
+    let mut running = Running::new(&surface);
+
+    fail.store(true, Ordering::Release);
+    live.refresh_soon();
+    let error = format!("{:#}", running.failure_with_live(Some(&live)));
+    assert!(
+        error.contains("live reconciliation worker stopped unexpectedly"),
+        "{error}"
+    );
+    assert!(running.stop.load(Ordering::Acquire));
+    assert!(live.is_finished());
+    assert!(!live.wait_ready(Duration::ZERO));
+    running.shutdown().unwrap();
+    live.stop();
+    sim.shutdown();
+}
+
+#[test]
+fn losing_a_playback_follower_stops_the_daemon_and_names_the_worker() {
+    for panics in [false, true] {
+        let surface = surface();
+        let mut running = Running::new(&surface);
+        let name = if panics { "fsonos-dj" } else { "fsonos-heard" };
+        let worker = thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                assert!(!panics, "injected follower failure");
+            })
+            .unwrap();
+        running.background.as_mut().unwrap().push(worker);
+        let error = format!("{:#}", running.failure());
+        assert!(
+            error.contains(&format!("{name} stopped unexpectedly")),
+            "{error}"
+        );
+        if panics {
+            assert!(error.contains("injected follower failure"), "{error}");
+        }
+        assert!(running.stop.load(Ordering::Acquire));
+        running
+            .shutdown()
+            .expect("the failed handle was already joined");
+    }
+}
+
+#[test]
+fn background_shutdown_has_one_deadline_for_all_workers() {
+    use std::sync::mpsc;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut workers = BackgroundWorkers::new(Arc::clone(&stop));
+    let mut releases = Vec::new();
+    let mut completions = Vec::new();
+    for name in ["first blocked worker", "second blocked worker"] {
+        let (release, held) = mpsc::channel();
+        let (completed, done) = mpsc::channel();
+        workers.push(
+            thread::Builder::new()
+                .name(name.into())
+                .spawn(move || {
+                    held.recv_timeout(Duration::from_secs(5)).unwrap();
+                    completed.send(()).unwrap();
+                })
+                .unwrap(),
+        );
+        releases.push(release);
+        completions.push(done);
+    }
+    let began = Instant::now();
+    let result = workers.shutdown_with(Duration::from_millis(50));
+    let elapsed = began.elapsed();
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    for done in completions {
+        done.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+    assert!(stop.load(Ordering::Acquire));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("first blocked worker")
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "shutdown waited {elapsed:?}"
+    );
+}
+
+#[test]
+fn abandoning_startup_stops_already_started_background_workers() {
+    use std::sync::mpsc;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopped = Arc::clone(&stop);
+    let (finished, done) = mpsc::channel();
+    let mut workers = BackgroundWorkers::new(Arc::clone(&stop));
+    workers.push(thread::spawn(move || {
+        while !stopped.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        finished.send(()).unwrap();
+    }));
+    drop(workers);
+    done.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(stop.load(Ordering::Acquire));
+}
+
+struct LibraryWatchClock {
+    visited: Arc<AtomicBool>,
+    panics: bool,
+}
+
+impl Clock for LibraryWatchClock {
+    fn now(&self) -> chrono::DateTime<chrono::FixedOffset> {
+        SystemClock.now()
+    }
+
+    fn elapsed_secs(&self) -> i64 {
+        self.visited.store(true, Ordering::Release);
+        assert!(!self.panics, "injected library watcher failure");
+        0
+    }
+}
+
+fn library_watch(
+    directory: &std::path::Path,
+    visited: Arc<AtomicBool>,
+    panics: bool,
+    stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    use crate::dj::sync::{LibrarySync, watch};
+    use fsonos_spotify::client::SpotifyConfig;
+
+    let sync = LibrarySync::new(
+        SpotifyConfig {
+            client_id: "0123456789abcdef0123456789abcdef".into(),
+            redirect_uri: "http://127.0.0.1:8099/auth/spotify/callback".into(),
+        },
+        directory.to_path_buf(),
+    )
+    .unwrap()
+    .with_clock(Box::new(LibraryWatchClock { visited, panics }));
+    watch(Some(Arc::new(sync)), stop).unwrap().unwrap()
+}
+
+#[test]
+fn a_real_library_watcher_panic_reaches_daemon_supervision() {
+    let directory = tempfile::tempdir().unwrap();
+    let visited = Arc::new(AtomicBool::new(false));
+    let surface = surface();
+    let mut running = Running::new(&surface);
+    let worker = library_watch(
+        directory.path(),
+        Arc::clone(&visited),
+        true,
+        Arc::clone(&running.stop),
+    );
+    running.background.as_mut().unwrap().push(worker);
+    let error = format!("{:#}", running.failure());
+    assert!(visited.load(Ordering::Acquire));
+    assert!(
+        error.contains("fsonos-library-watch stopped unexpectedly"),
+        "{error}"
+    );
+    assert!(
+        error.contains("injected library watcher failure"),
+        "{error}"
+    );
+    running.shutdown().unwrap();
+}
+
+#[test]
+fn an_unconfigured_library_starts_no_worker_and_a_signed_out_watch_stops_cleanly() {
+    let stop = Arc::new(AtomicBool::new(false));
+    assert!(
+        crate::dj::sync::watch(None, Arc::clone(&stop))
+            .unwrap()
+            .is_none()
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let visited = Arc::new(AtomicBool::new(false));
+    let mut workers = BackgroundWorkers::new(Arc::clone(&stop));
+    workers.push(library_watch(
+        directory.path(),
+        Arc::clone(&visited),
+        false,
+        Arc::clone(&stop),
+    ));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !visited.load(Ordering::Acquire) {
+        assert!(
+            Instant::now() < deadline,
+            "the library watcher never started"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        workers.failure().is_none(),
+        "being signed out is not a worker failure"
+    );
+    workers.shutdown().unwrap();
+    assert!(stop.load(Ordering::Acquire));
 }
 
 /// Fail only a scheduler tick, leaving its existing state available for
