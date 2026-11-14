@@ -26,10 +26,10 @@ const saved = () => ({ done: 'Steering saved.', changed: true, notes: [] });
 const draft = () => ({ mood: 'calm', minutes: '90', constraints: { exclude_artists: ['Earth, Wind & Fire'], energy_bias: -1 } });
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
-function fixture() {
+function fixture(options = {}) {
   const calls = [], replies = { djSteeringZones: [], djSteeringMoods: [], djSteeringStatus: [], djSteeringWrite: [], djSteeringStart: [] };
   const defaults = { djSteeringZones: groups, djSteeringMoods: moods, djSteeringStatus: status, djSteeringWrite: saved, djSteeringStart: saved };
-  const editor = dj.model({ call: async (name, args) => {
+  const editor = dj.model({ ...options, call: async (name, args) => {
     calls.push([name, args]); assert.ok(Object.hasOwn(replies, name), `Unexpected route: ${name}`);
     if (!replies[name].length) return defaults[name]();
     const reply = replies[name].shift(); if (reply instanceof Error) throw reply; return reply;
@@ -43,6 +43,25 @@ test('routes reuse the public steering and combined start APIs', () => {
   assert.deepEqual(dj.routes, { djSteeringZones: ['GET', '/zones'], djSteeringMoods: ['GET', '/dj/moods'],
     djSteeringStatus: ['GET', '/zones/{room}/dj'], djSteeringWrite: ['POST', '/dj/steer'],
     djSteeringStart: ['POST', '/dj/start'] });
+});
+
+test('single-group direction cannot bypass a room held by a collective DJ command', async () => {
+  let target;
+  const f = fixture({ execute: async (group) => { target = group; throw new Error('A collective action owns this group.'); } });
+  await f.open(); const pending = f.editor.review(draft()), reads = f.calls.length;
+  assert.equal(await f.editor.confirm(pending), false);
+  assert.equal(target.target, 'Kitchen@S1'); assert.equal(target.signature, pending.zone.signature);
+  assert.equal(f.calls.length, reads); assert.equal(f.writes().length, 0);
+  assert.match(f.editor.state.message, /collective action/); assert.doesNotMatch(f.editor.state.message, /Outcome uncertain/);
+});
+
+test('single-group direction retains the shared lane until its one write and readback settle', async () => {
+  let held = false;
+  const f = fixture({ execute: async (_, work) => { held = true; try { return await work(); } finally { held = false; } } });
+  await f.open(); const pending = f.editor.review(draft()), reply = deferred(); f.replies.djSteeringWrite.push(reply.promise);
+  const action = f.editor.confirm(pending); await tick();
+  assert.equal(held, true); assert.equal(f.writes().length, 1); assert.equal(await f.editor.confirm(pending), false);
+  reply.resolve(saved()); assert.equal(await action, true); assert.equal(held, false); assert.equal(f.writes().length, 1);
 });
 
 test('all seventeen constraints round-trip canonically without splitting artist names at commas', () => {

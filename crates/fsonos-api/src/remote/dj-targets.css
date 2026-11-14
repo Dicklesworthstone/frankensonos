@@ -1,0 +1,25 @@
+.dj-targets-dialog{width:min(860px,94vw);max-height:90dvh;overflow:auto}
+.dj-targets-panel{display:grid;gap:1rem;min-width:0;text-align:left}
+.dj-targets-form{display:grid;gap:.85rem}
+.dj-targets-form>label,.dj-targets-direction>label{display:grid;gap:.35rem;font-weight:600}
+.dj-targets-panel input:not([type=checkbox]),.dj-targets-panel select,.dj-targets-panel textarea{box-sizing:border-box;width:100%;max-width:100%;font:inherit}
+.dj-targets-panel input,.dj-targets-panel select,.dj-targets-panel textarea{color:inherit;background:transparent;border:1px solid #8886;border-radius:.45rem;padding:.65rem}
+.dj-targets-panel option{color:CanvasText;background:Canvas}
+.dj-targets-panel button{min-height:44px;font:inherit}
+.dj-targets-panel .row{display:flex;flex-wrap:wrap;gap:.65rem}
+.dj-targets-panel .dj-direction-editor{margin-top:.8rem;border:1px solid #8886;border-radius:.6rem;padding:.8rem}
+.dj-targets-panel .dj-direction-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem}
+.dj-targets-panel .dj-direction-grid label{display:grid;gap:.3rem}
+.dj-targets-panel .dj-direction-check{display:flex!important;align-items:center;gap:.5rem}
+.dj-targets-panel .dj-direction-note{grid-column:1/-1}
+.dj-targets-group{padding:.85rem 1rem;margin:.75rem 0;border:1px solid #8886;border-radius:.65rem;overflow-wrap:anywhere}
+.dj-targets-group h4{margin:0 0 .5rem}
+.dj-targets-group p{margin:.4rem 0}
+.dj-targets-help,.dj-targets-panel .dj-direction-note{font-size:.9em;line-height:1.5;opacity:.85}
+.dj-targets-review,.dj-targets-result,.dj-targets-observation{padding:1rem;border:1px solid #8887;border-radius:.75rem;overflow-wrap:anywhere}
+.dj-targets-review:focus{outline:2px solid currentColor;outline-offset:3px}
+.dj-targets-effect{font-weight:600;line-height:1.5}
+.dj-targets-receipt{white-space:pre-wrap;line-height:1.6}
+.dj-targets-warning{border-left:3px solid #c69130;padding-left:.65rem;line-height:1.5}
+.dj-targets-panel [hidden]{display:none!important}
+@media(max-width:600px){.dj-targets-panel .dj-direction-grid{grid-template-columns:1fr}.dj-targets-panel .row>*{flex:1 1 100%}.dj-targets-dialog{max-height:94dvh}.dj-targets-review,.dj-targets-result,.dj-targets-observation{padding:.75rem}}

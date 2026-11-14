@@ -110,7 +110,7 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   let active = !document.hidden, disposed = false, immersive = false, lastFocus = null, motionPaused = reduced.matches;
   let artKey = '', visualKey = '', roomKey = '', mapKey = '', sessionKey = '', sceneKey = '', reviewed = null, selectedKey = '';
-  let workspace, controller, session, live, seek, playMode, roomGroups, sleepTimer, roomVolume, sceneCapture, routines, announcements, direction, preferences, configuration, roomConfiguration, rehearsal, music, sourcePlayer, playlistSave, clockTimer = null;
+  let workspace, controller, session, live, seek, playMode, roomGroups, sleepTimer, roomVolume, sceneCapture, routines, announcements, direction, djTargets, preferences, configuration, roomConfiguration, rehearsal, music, sourcePlayer, playlistSave, clockTimer = null;
   let reviewReading = false, searchTimer = null, historyVersion = 0, historyRunning = false, catalogsDirty = true;
   const renderer = DashboardVisualizer.create($('visualizer'), { reduced: reduced.matches });
   const audio = DashboardAudio.create({ changed(s) {
@@ -131,6 +131,11 @@
   routines = DashboardRoutines.panel({ call, controller });
   announcements = DashboardAnnouncements.panel({ call, controller });
   direction = DashboardDirection.panel({ call, controller, updated: () => session.load() });
+  djTargets = DjTargetsPanel.dashboard({ call, controller, demo, completed: async groups => {
+    const targets = groups.map(group => group.target);
+    workspace?.invalidate(targets);
+    if (active && targets.includes(controller.state.selected)) await session.load();
+  } });
   preferences = DashboardPreferences.panel({ call, controller });
   if (typeof DjConfigurationPanel !== 'undefined') {
     configuration = DjConfigurationPanel.panel({ call, canEdit: () => !demo,
@@ -212,8 +217,8 @@
     $('stage').classList.toggle('immersive', value); document.body.classList.toggle('is-immersive', value); $('exit-immerse').hidden = !value;
     for (const n of document.querySelectorAll('.sidebar,.topbar,.greeting,.demo-banner,#summary,#error,#room-section,.intelligence-column,.lower-grid,.recent-section,.page-footer,.player-dock,.outcome,.mobile-nav')) n.inert = value;
     workspace?.immerse(value); renderer.immersive(value); resize();
-    if (value) { seek?.suspend(); playMode?.suspend(); roomGroups?.suspend(); sleepTimer?.suspend(); roomVolume?.suspend(); sceneCapture?.suspend(); routines?.suspend(); announcements?.suspend(); direction?.suspend(); preferences?.suspend(); configuration?.suspend(); roomConfiguration?.suspend(); rehearsal?.suspend(); music?.suspend(); sourcePlayer?.suspend(); playlistSave?.suspend(); }
-    else if (active) { seek?.resume(); playMode?.resume(); roomGroups?.resume(); sleepTimer?.resume(); roomVolume?.resume(); sceneCapture?.resume(); routines?.resume(); announcements?.resume(); direction?.resume(); preferences?.resume(); configuration?.resume(); roomConfiguration?.resume(); rehearsal?.resume(); music?.resume(); sourcePlayer?.resume(); playlistSave?.resume(); }
+    if (value) { seek?.suspend(); playMode?.suspend(); roomGroups?.suspend(); sleepTimer?.suspend(); roomVolume?.suspend(); sceneCapture?.suspend(); routines?.suspend(); announcements?.suspend(); direction?.suspend(); djTargets?.suspend(); preferences?.suspend(); configuration?.suspend(); roomConfiguration?.suspend(); rehearsal?.suspend(); music?.suspend(); sourcePlayer?.suspend(); playlistSave?.suspend(); }
+    else if (active) { seek?.resume(); playMode?.resume(); roomGroups?.resume(); sleepTimer?.resume(); roomVolume?.resume(); sceneCapture?.resume(); routines?.resume(); announcements?.resume(); direction?.resume(); djTargets?.resume(); preferences?.resume(); configuration?.resume(); roomConfiguration?.resume(); rehearsal?.resume(); music?.resume(); sourcePlayer?.resume(); playlistSave?.resume(); }
     if (value) {
       $('exit-immerse').focus();
       try { Promise.resolve($('stage').requestFullscreen?.()).catch(() => {}); } catch (_) { /* Full-window view remains. */ }
@@ -256,7 +261,7 @@
     $('dj-start-stop').disabled = !sessionReady; $('dj-clear').disabled = !sessionReady || !d.dj.running;
     for (const b of document.querySelectorAll('.mood-chip')) b.disabled = !sessionReady;
     for (const b of document.querySelectorAll('.scene-card')) b.disabled = reviewReading || !active || (!demo && !can);
-    seek?.observe(); playMode?.observe(); roomGroups?.observe(); sleepTimer?.observe(); roomVolume?.observe(); sceneCapture?.observe(); routines?.observe(); announcements?.observe(); direction?.observe(); preferences?.observe(); roomConfiguration?.observe(); rehearsal?.observe(); sourcePlayer?.observe(); playlistSave?.observe();
+    seek?.observe(); playMode?.observe(); roomGroups?.observe(); sleepTimer?.observe(); roomVolume?.observe(); sceneCapture?.observe(); routines?.observe(); announcements?.observe(); direction?.observe(); djTargets?.observe(); preferences?.observe(); roomConfiguration?.observe(); rehearsal?.observe(); sourcePlayer?.observe(); playlistSave?.observe();
   }
   function render(state) {
     if (disposed) return;
@@ -542,13 +547,13 @@
     clearTimeout(clockTimer); clockTimer = null; clearTimeout(searchTimer); searchTimer = null;
     live.suspend(); request.cancelReads();
     audio.stop('Microphone stopped while hidden. Enable it again explicitly to resume.');
-    seek?.suspend(); playMode?.suspend(); roomGroups?.suspend(); sleepTimer?.suspend(); roomVolume?.suspend(); sceneCapture?.suspend(); routines?.suspend(); announcements?.suspend(); direction?.suspend(); preferences?.suspend(); configuration?.suspend(); roomConfiguration?.suspend(); rehearsal?.suspend(); music?.suspend(); sourcePlayer?.suspend(); playlistSave?.suspend(); workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
+    seek?.suspend(); playMode?.suspend(); roomGroups?.suspend(); sleepTimer?.suspend(); roomVolume?.suspend(); sceneCapture?.suspend(); routines?.suspend(); announcements?.suspend(); direction?.suspend(); djTargets?.suspend(); preferences?.suspend(); configuration?.suspend(); roomConfiguration?.suspend(); rehearsal?.suspend(); music?.suspend(); sourcePlayer?.suspend(); playlistSave?.suspend(); workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
   }
   function clockLoop() { if (!active || disposed) return; timing(); controls(); clockTimer = setTimeout(clockLoop, 1000); }
   function resume() {
     if (document.hidden || disposed) return;
     active = true; catalogsDirty = true; workspace?.resume(); controller.resume(); session.resume();
-    if (!immersive) { seek?.resume(); playMode?.resume(); roomGroups?.resume(); sleepTimer?.resume(); roomVolume?.resume(); sceneCapture?.resume(); routines?.resume(); announcements?.resume(); direction?.resume(); preferences?.resume(); configuration?.resume(); roomConfiguration?.resume(); rehearsal?.resume(); music?.resume(); sourcePlayer?.resume(); playlistSave?.resume(); }
+    if (!immersive) { seek?.resume(); playMode?.resume(); roomGroups?.resume(); sleepTimer?.resume(); roomVolume?.resume(); sceneCapture?.resume(); routines?.resume(); announcements?.resume(); direction?.resume(); djTargets?.resume(); preferences?.resume(); configuration?.resume(); roomConfiguration?.resume(); rehearsal?.resume(); music?.resume(); sourcePlayer?.resume(); playlistSave?.resume(); }
     renderer.visible(true); live.resume();
     if (clockTimer === null) clockLoop();
   }

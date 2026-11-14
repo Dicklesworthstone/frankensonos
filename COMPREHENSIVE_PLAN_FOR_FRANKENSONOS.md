@@ -827,6 +827,15 @@ run; partial completion is logged once and never replayed after a restart.
 `POST /dj/control` also binds a reviewed request to the revision returned by
 `GET /rooms/resolve`, including physical members and addresses, before any
 readiness or mutation. Scene DJ entries retain their existing group contracts.
+The phone and dashboard now expose **DJ across rooms** through one shared
+review controller: complete groups, current sources, running feeds and exact
+steering sessions are shown before one revision-bound request. Start can keep
+individual directions or apply one full direction to all groups; steer, clear,
+whole-work skip and stop share the same controls. Existing command/volume lanes
+cover the whole selection. Partial and lost replies retain every receipt and
+require explicit observation of the original players, including after regrouping,
+before another reviewed action. Focused browser controller, DOM and bundle
+regressions pass.
 Simulator and cross-surface regression cases are included. The changed Rust
 paths have passed the pinned formatter; compilation and execution remain
 pending under shared build-host resource pressure.

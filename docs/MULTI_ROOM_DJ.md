@@ -31,6 +31,34 @@ These commands normally use the selected daemon, which keeps every feed
 running. Direct mode retains its existing limitation: a start can play its
 initial selections, but continuous queue maintenance requires the daemon.
 
+## Phone and dashboard
+
+Open **DJ across rooms** in the phone's DJ tools or the dashboard's DJ panel.
+Choose a saved alias, a household or the whole house, or enter a qualified
+room name. Review lists every affected group separately, including members
+affected through grouping even when the alias does not name them.
+
+Each group shows its current source, running or idle DJ, current whole work,
+queued works and exact steering session. Start can preserve each group's
+existing direction or apply one new mood, full filter set and duration to
+all selected groups. The same panel saves direction, returns groups to their
+automatic programs, skips whole works and stops the DJ. Existing single-group
+direction and rehearsal tools remain available.
+
+Confirming re-reads every affected group while holding the same command lanes
+as other playback controls. A changed source, queue, session, mood definition
+or audience retires the review. The browser sends one revision-bound daemon
+request and never repeats it automatically. The phone also reserves affected
+volume controls while a DJ start may apply caps; the dashboard shares its
+existing house-wide command lane.
+
+The result keeps every successful group and every `SKIPPED` note. An incomplete
+or unacknowledged request offers **Read affected rooms**. This follows the
+original player identities through their current grouping, reports missing
+or unreadable rooms, and retains the original receipt. Closing and reopening
+the panel preserves the recovery requirement. Observation does not prove which
+earlier mutations completed; any new action requires a new review.
+
 ## HTTP and MCP
 
 The existing routes accept the same expanded `zone` target; there is no
@@ -183,6 +211,15 @@ all-group readiness, topology changes before and after the claim, alias and
 discovery growth, creator caps and revocation, create/edit validation, and
 partial completion without replay after a tick or restart.
 
+The focused Node controller, DOM, shared-lane and served-bundle suites pass
+250 tests, including 35 new cases. They exercise exact direction fields,
+same-named S1/S2 groups, physical
+and alias changes, lane waits, source/session changes, partial receipts,
+lost replies, close/reopen, and observation after regrouping.
+The full Chromium smoke script is included, but Chromium could not start in
+this environment because its process socket was denied (`EPERM`); no browser
+execution or visual result is claimed.
+
 The changed Rust paths have been parsed and formatted with the pinned nightly
 formatter. Execution of the Rust regressions remains pending while the shared
 build host is under resource pressure; committed tests alone are not a passing result.
@@ -196,4 +233,5 @@ cargo test -p fsonos-api --lib surface::schedules::dispatch
 cargo test -p fsonos-cli --bin fsonos dj::readiness
 cargo test -p fsonos-cli --test e2e_dj_house
 cargo test -p fsonos-mcp --lib partial_dj_results
+node --test scripts/test-dj-targets.cjs scripts/test-dj-targets-panel.cjs
 ```
