@@ -688,3 +688,6 @@ fn unknown_queue_modes_remain_supported_but_known_mode_read_failures_block_relea
         }
     }
 }
+
+#[path = "moving_direct_sim/renderer_status.rs"]
+mod renderer_status;

@@ -124,6 +124,13 @@ reported transport status. `ERROR_OCCURRED` is distinct from an ordinary
 stop; an absent status means unknown. Phone and dashboard views display the
 same playback-error state.
 
+A copied move also checks the destination’s renderer status before stopping
+the source. If the destination reports `ERROR_OCCURRED`, the original music
+keeps playing even if the destination still reports `PLAYING` or `TRANSITIONING`.
+Later confirmation reads keep the same check. Paused moves stay silent, and
+an already failed destination can still be replaced with a healthy source.
+See [Moving playback](docs/MOVE_QUEUES.md) for the transfer and failure contract.
+
 An active DJ can move past a confirmed failed work to the first movement of
 the next intact DJ work already waiting on its queue. Recovery keeps the
 listener's inserted tracks intact, obeys current volume caps and quiet hours,

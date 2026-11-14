@@ -25,6 +25,8 @@ struct Playback {
     queue: Option<Queue>,
     position: PositionInfo,
     state: TransportState,
+    renderer_failed: bool,
+    playback_required: bool,
     observed: Instant,
     positioned: bool,
 }
@@ -58,7 +60,7 @@ impl Playback {
         let observed = Instant::now();
         let destination = Destination::read(t, host, target)?;
         let position = soap::get_position_info(t, host)?;
-        let state = soap::get_transport_info(t, host)?.state;
+        let transport = soap::get_transport_info(t, host)?;
         let queue = if destination.is_queue(target) {
             let page = content::browse(t, host, QUEUE, BrowseFlag::DirectChildren, 0, 1)?;
             Some(Queue {
@@ -75,7 +77,9 @@ impl Playback {
             destination,
             queue,
             position,
-            state,
+            state: transport.state,
+            renderer_failed: transport.status == "ERROR_OCCURRED",
+            playback_required: false,
             observed,
             positioned,
         })
@@ -130,6 +134,9 @@ impl Playback {
         target: &PlayerId,
     ) -> Result<(), MoveError> {
         let now = Self::read(t, host, target, self.known_mode())?;
+        if self.playback_required && now.renderer_failed {
+            return Err(verify::renderer_error().into());
+        }
         if !stable(self.state)
             || !self.same_source(&now)
             || self.state != now.state
@@ -189,10 +196,17 @@ impl Playback {
     ) -> Result<Self, MoveError> {
         loop {
             let mut now = Self::read(t, host, target, self.known_mode())?;
+            if matches!(step, Step::Play) && now.renderer_failed {
+                return Err(verify::renderer_error().into());
+            }
             if !self.accepts(&now, step) {
                 return Err(changed());
             }
             if !matches!(step, Step::Play) || now.state == TransportState::Playing {
+                // Only this transfer's Play requires healthy playback. An old
+                // failed source may still be stopped and replaced, or loaded
+                // silently when the incoming source is paused.
+                now.playback_required = self.playback_required || matches!(step, Step::Play);
                 now.positioned |= match step {
                     Step::Load(_, positioned) => positioned,
                     _ => self.positioned,

@@ -1324,6 +1324,15 @@ position carry over and the DJ session follows.
 `party` groups every room in a household. S1 and S2 players cannot be grouped
 together, and the command says so instead of failing quietly.
 
+Copied playback and the fallback for unsupported native handoff retain the
+source until destination playback is confirmed without an explicit renderer
+error. `ERROR_OCCURRED` defeats a `PLAYING` or `TRANSITIONING` observation,
+including later confirmation reads, so a failed destination cannot stop the
+working source. Missing or other transport-status values preserve their prior
+behavior. An error on the old destination source does not block replacing it,
+and paused transfers remain silent. Commands are never repeated to clear a
+renderer error; inspect the destination before requesting another move.
+
 ### 12.12 Announcements
 
 [`b-announce`, `d-announce-surface`] Snapshot, set a policy-capped announcement

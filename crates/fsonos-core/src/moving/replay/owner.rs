@@ -13,6 +13,8 @@ pub(super) struct Owner {
     destination: Destination,
     position: PositionInfo,
     state: TransportState,
+    renderer_failed: bool,
+    playback_required: bool,
     mode: Option<PlayMode>,
     observed: Instant,
 }
@@ -53,9 +55,9 @@ impl Owner {
         let destination = Destination::read(t, host, target)?;
         let observed = Instant::now();
         let position = soap::get_position_info(t, host)?;
-        let state = soap::get_transport_info(t, host)?.state;
+        let transport = soap::get_transport_info(t, host)?;
         if !matches!(
-            state,
+            transport.state,
             TransportState::Playing | TransportState::Paused | TransportState::Stopped
         ) {
             return Err(changed());
@@ -65,7 +67,9 @@ impl Owner {
         Ok(Self {
             destination,
             position,
-            state,
+            state: transport.state,
+            renderer_failed: transport.status == "ERROR_OCCURRED",
+            playback_required: false,
             mode,
             observed,
         })
@@ -100,6 +104,9 @@ impl Owner {
         target: &PlayerId,
     ) -> Result<(), ProtoError> {
         let now = Self::read(t, host, target, self.mode.is_some())?;
+        if self.playback_required && now.renderer_failed {
+            return Err(verify::renderer_error());
+        }
         if self.destination != now.destination
             || self.mode != now.mode
             || self.state != now.state
@@ -122,7 +129,10 @@ impl Owner {
         action: Option<Action<'_>>,
         started: Instant,
     ) -> Result<Self, ProtoError> {
-        let now = Self::read(t, host, target, self.mode.is_some())?;
+        let mut now = Self::read(t, host, target, self.mode.is_some())?;
+        if matches!(action, Some(Action::Play)) && now.renderer_failed {
+            return Err(verify::renderer_error());
+        }
         let source_matches = if matches!(action, Some(Action::Load(_))) {
             now.destination == self.destination.for_queue(target)
         } else {
@@ -176,6 +186,9 @@ impl Owner {
         if now.mode != mode || !playback {
             return Err(changed());
         }
+        // Keep the successful Play's status requirement through final checks,
+        // without treating an old failed destination as impossible to replace.
+        now.playback_required = self.playback_required || matches!(action, Some(Action::Play));
         Ok(now)
     }
 
