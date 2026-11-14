@@ -460,12 +460,23 @@ pub(crate) fn restore_bound<T: Transport + ?Sized>(
         .map(|restored| restored.changed)
 }
 
-/// The exact revision and bookmark produced by successful reconstruction.
-/// Scene undo retains this evidence while restoring quiet room levels; a later
-/// read cannot silently replace it with another controller's new revision.
-pub(crate) struct RestoredQueue {
+/// Opaque proof of one successfully completed durable queue recall.
+///
+/// Only the reconstruction path can issue this receipt. It retains the original
+/// owner and complete ordered queue, the committed native revision and bookmark,
+/// and the selection's observation boundary. Surfaces pass it to
+/// [`crate::actions::finish_scene_queue_restoration`] after every scene step
+/// completes; a later arbitrary read cannot substitute for this evidence.
+pub struct QueueRestoration {
     pub(crate) changed: bool,
+    pub(crate) rebuilt: bool,
     pub(crate) reference: QueueReference,
+    pub(crate) before_owner: Owner,
+    pub(crate) before_revision: u32,
+    pub(crate) before_uris: Vec<String>,
+    pub(crate) uris: Vec<String>,
+    pub(crate) start: bool,
+    pub(crate) selected_at: Instant,
 }
 
 pub(crate) fn restore_bound_with_receipt<T: Transport + ?Sized>(
@@ -475,7 +486,7 @@ pub(crate) fn restore_bound_with_receipt<T: Transport + ?Sized>(
     backup: &QueueBackup,
     start: bool,
     baseline: Option<&Baseline<'_>>,
-) -> Result<RestoredQueue, String> {
+) -> Result<QueueRestoration, String> {
     backup.validate()?;
     if coordinator != &backup.reference.coordinator {
         return Err(

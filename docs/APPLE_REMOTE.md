@@ -141,12 +141,29 @@ shared command review, rechecking the exact catalog ID/title, destination group
 and queue before a single submission. A cancelled preflight sends nothing; lost
 or unreadable acknowledgements remain uncertain and are not replayed. Whole
 playlist actions load its current full contents: a track preview does not lock
-the saved playlist against edits by another controller. Ordinary undo cannot
-recover the queue replaced by **Play now**.
+the saved playlist against edits by another controller. **Play now** offers
+bounded queue undo when the daemon can retain and verify the complete original
+queue; inspect the result and action history.
+
+The track preview also builds a selection of **one to ten saved occurrences**.
+Add entries across pages, move them earlier or later, remove them, or repeat an
+entry deliberately. Original playlist positions distinguish equal tracks.
+**Review selected tracks** offers Play now, Queue next and Add to end of queue;
+selecting one entry uses the same flow. Play now replaces the queue in the chosen
+order with shuffle and repeat off. Queue additions leave playback unchanged.
+
+Selection reviews reread every selected native page and the destination queue.
+Confirmation checks them again, then sends one request containing the original
+playlist positions, saved-contents revision and reviewed destination revision.
+A changed catalog, selected occurrence, queue or group needs a new review.
+Same-revision paging preserves the selection; refresh, a household change,
+catalog failure or suspension clears it. A consumed confirmation clears the
+selection before dispatch, and a lost acknowledgement is never replayed.
 
 Native regression sources cover both households, all three actions, changed
-catalogs and queues, bounded paging, cancellation, uncertain acknowledgements,
-and delayed reads after changing rooms or closing the preview. Local execution
+catalogs and queues, bounded paging, cross-page ordered selections and repeats,
+cancellation, uncertain acknowledgements, and delayed reads after changing
+rooms or closing the preview. Local execution
 of these additions was unavailable because this environment has no Swift
 toolchain; the Native Apple remotes workflow builds and tests them on Apple SDKs.
 

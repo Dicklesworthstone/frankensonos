@@ -151,7 +151,7 @@ impl RoomConfigurationChange {
 // Construct the exact `kind` alternatives so HTTP and MCP publish the wire form.
 impl fastapi_openapi::JsonSchema for RoomConfigurationChange {
     fn schema() -> fastapi_openapi::Schema {
-        use fastapi_openapi::{JsonSchema as _, Schema};
+        use fastapi_openapi::Schema;
         Schema::one_of(vec![
             change_schema(
                 "set_alias",

@@ -17,6 +17,12 @@ use fsonos_types::PlayerId;
 use fsonos_types::text::normalize;
 use std::fmt;
 
+mod management;
+pub use management::{
+    FavoriteChange, ObservedFavorite, current, inspect, native_id, remove, rename, save_current,
+    validate_title,
+};
+
 /// How a favorite plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FavoriteKind {

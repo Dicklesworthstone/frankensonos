@@ -217,14 +217,17 @@ fn steering_readiness_validates_without_saving_and_clearing_needs_no_library() {
     };
     store.save_dj_session(&saved).unwrap();
     let before = house.sim.soap_log().len();
-    dj.steer_ready(house.at(&lan), &store, &DjSteer::Clear, &clock).unwrap();
+    dj.steer_ready(house.at(&lan), &store, &DjSteer::Clear, &clock)
+        .unwrap();
     let invalid = DjSteer::Set {
         mood: Some("unknown-batch-mood".into()),
         constraints: SteerConstraints::default(),
         for_secs: Some(600),
     };
     assert_eq!(
-        dj.steer_ready(house.at(&lan), &store, &invalid, &clock).unwrap_err().code,
+        dj.steer_ready(house.at(&lan), &store, &invalid, &clock)
+            .unwrap_err()
+            .code,
         ErrorCode::UnknownMood
     );
     assert_eq!(store.dj_session(&house.coordinator.0).unwrap(), Some(saved));
@@ -248,17 +251,35 @@ fn checked_mutations_run_the_gate_under_the_engine_lock_before_state_or_store_ch
     };
     store.save_dj_session(&saved).unwrap();
     let before = || {
-        assert!(dj.state.try_lock().is_err(), "validation must follow the engine lock");
-        Err(Failure::new(ErrorCode::NotCoordinator, "the selected audience changed"))
+        assert!(
+            dj.state.try_lock().is_err(),
+            "validation must follow the engine lock"
+        );
+        Err(Failure::new(
+            ErrorCode::NotCoordinator,
+            "the selected audience changed",
+        ))
     };
     let direction = DjSteer::Set {
-        mood: Some("calm".into()), constraints: SteerConstraints::default(), for_secs: Some(600),
+        mood: Some("calm".into()),
+        constraints: SteerConstraints::default(),
+        for_secs: Some(600),
     };
     let at = house.at(&lan);
-    let error = dj.steer_checked(at, &mut store, &direction, &clock, &before).unwrap_err();
+    let error = dj
+        .steer_checked(at, &mut store, &direction, &clock, &before)
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotCoordinator);
-    let error = dj.act_as_checked(at, &mut store, DjAction::Start, &clock,
-        &fsonos_core::policy::Client::Cli, &before).unwrap_err();
+    let error = dj
+        .act_as_checked(
+            at,
+            &mut store,
+            DjAction::Start,
+            &clock,
+            &fsonos_core::policy::Client::Cli,
+            &before,
+        )
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotCoordinator);
     assert_eq!(store.dj_session(&house.coordinator.0).unwrap(), Some(saved));
     let state = dj.state();
@@ -305,7 +326,8 @@ fn a_new_feed_refused_after_enqueue_cannot_continue_on_events_or_after_restart()
 
     let sim = SimHousehold::builder()
         .s2(["Den", "Guest"].map(|name| SimPlayerSpec::new(name, SimModel::One)))
-        .spawn().unwrap();
+        .spawn()
+        .unwrap();
     let lan = sim.lan();
     let host = sim.player("Den").unwrap().ip;
     let coordinator = PlayerId(sim.player("Den").unwrap().uuid.clone());
@@ -314,7 +336,14 @@ fn a_new_feed_refused_after_enqueue_cannot_continue_on_events_or_after_restart()
     let households = vec![household];
     // An owner queue is already active; a failed DJ start must not acquire
     // a background claim merely because it appended some complete works.
-    soap::add_uri_to_queue(&lan, host, "x-file-cifs://example.invalid/owner.flac", "", false).unwrap();
+    soap::add_uri_to_queue(
+        &lan,
+        host,
+        "x-file-cifs://example.invalid/owner.flac",
+        "",
+        false,
+    )
+    .unwrap();
     soap::play_from_queue(&lan, host, &coordinator).unwrap();
     soap::play(&lan, host).unwrap();
 
@@ -332,20 +361,42 @@ fn a_new_feed_refused_after_enqueue_cannot_continue_on_events_or_after_restart()
     };
     let before = || {
         if fence.refused.get() {
-            Err(Failure::new(ErrorCode::NotCoordinator, "the selected audience expanded"))
+            Err(Failure::new(
+                ErrorCode::NotCoordinator,
+                "the selected audience expanded",
+            ))
         } else {
             Ok(())
         }
     };
-    let error = dj.act_as_checked(
-        DjSpeakers { transport: &fence, households: &households, coordinator: &coordinator },
-        &mut store, DjAction::Start, &clock, &fsonos_core::policy::Client::Cli, &before,
-    ).unwrap_err();
+    let error = dj
+        .act_as_checked(
+            DjSpeakers {
+                transport: &fence,
+                households: &households,
+                coordinator: &coordinator,
+            },
+            &mut store,
+            DjAction::Start,
+            &clock,
+            &fsonos_core::policy::Client::Cli,
+            &before,
+        )
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotCoordinator);
-    assert!(fence.refused.get(), "the start reached activation after enqueuing");
+    assert!(
+        fence.refused.get(),
+        "the start reached activation after enqueuing"
+    );
     let queue = browse_all(&lan, host, QUEUE).unwrap();
-    assert!(queue.len() > 1, "accepted DJ work remains beside the owner's queue");
-    assert!(!dj.feeds(&coordinator), "the partial start has no continuation authority");
+    assert!(
+        queue.len() > 1,
+        "accepted DJ work remains beside the owner's queue"
+    );
+    assert!(
+        !dj.feeds(&coordinator),
+        "the partial start has no continuation authority"
+    );
     assert!(dj.state().starters.get(&coordinator).is_none());
 
     // A later real playback observation must not finish the refused start.
@@ -357,13 +408,28 @@ fn a_new_feed_refused_after_enqueue_cannot_continue_on_events_or_after_restart()
     let mut playback = Playback::default();
     playback.apply_observation(&coordinator, &observation, Instant::now());
     let event = playback.of(&coordinator).unwrap().clone();
-    let at = DjSpeakers { transport: &lan, households: &households, coordinator: &coordinator };
+    let at = DjSpeakers {
+        transport: &lan,
+        households: &households,
+        coordinator: &coordinator,
+    };
     let start = sim.soap_log().len();
     dj.on_playback(at, &mut store, &event, &clock);
     let restarted = SpotifyDj::new(None).with_saved_feeds(Some(path));
-    assert!(!restarted.feeds(&coordinator), "restart cannot revive the refused new feed");
+    assert!(
+        !restarted.feeds(&coordinator),
+        "restart cannot revive the refused new feed"
+    );
     restarted.on_playback(at, &mut store, &event, &clock);
-    assert!(sim.soap_log().iter().skip(start).all(|call|
-        call.action == "Browse" || call.action.starts_with("Get")));
-    assert_eq!(browse_all(&lan, host, QUEUE).unwrap(), queue, "no compensating queue cleanup");
+    assert!(
+        sim.soap_log()
+            .iter()
+            .skip(start)
+            .all(|call| call.action == "Browse" || call.action.starts_with("Get"))
+    );
+    assert_eq!(
+        browse_all(&lan, host, QUEUE).unwrap(),
+        queue,
+        "no compensating queue cleanup"
+    );
 }

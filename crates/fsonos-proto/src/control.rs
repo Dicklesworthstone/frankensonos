@@ -656,21 +656,41 @@ pub fn get_position_info<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
 ) -> Result<PositionInfo, ProtoError> {
+    get_position_info_with_metadata(t, host).map(|(position, _)| position)
+}
+
+/// Read the position and its original native TrackMetaData in one response.
+/// Catalog authoring must retain service extensions outside the parsed model;
+/// ordinary playback observers can keep using [`get_position_info`]. Empty or
+/// unsupported metadata is returned as an empty string.
+pub fn get_position_info_with_metadata<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+) -> Result<(PositionInfo, String), ProtoError> {
     let r = call(t, host, &AV_TRANSPORT, "GetPositionInfo", &[INSTANCE])?;
-    let metadata = match r.get("TrackMetaData").map(str::trim) {
-        None | Some("" | "NOT_IMPLEMENTED") => None,
-        Some(doc) => parse_didl(doc)?.into_iter().next(),
+    let raw_metadata = r
+        .get("TrackMetaData")
+        .map(str::trim)
+        .filter(|value| !matches!(*value, "" | "NOT_IMPLEMENTED"))
+        .unwrap_or("");
+    let metadata = if raw_metadata.is_empty() {
+        None
+    } else {
+        parse_didl(raw_metadata)?.into_iter().next()
     };
-    Ok(PositionInfo {
-        track: r
-            .get("Track")
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(0),
-        duration_secs: r.get("TrackDuration").and_then(parse_hms),
-        position_secs: r.get("RelTime").and_then(parse_hms),
-        uri: r.get("TrackURI").unwrap_or("").to_string(),
-        metadata,
-    })
+    Ok((
+        PositionInfo {
+            track: r
+                .get("Track")
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0),
+            duration_secs: r.get("TrackDuration").and_then(parse_hms),
+            position_secs: r.get("RelTime").and_then(parse_hms),
+            uri: r.get("TrackURI").unwrap_or("").to_string(),
+            metadata,
+        },
+        raw_metadata.to_owned(),
+    ))
 }
 
 /// `GetMediaInfo`: the source the renderer is set to (a queue, a stream, a

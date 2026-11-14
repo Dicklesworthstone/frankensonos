@@ -14,6 +14,13 @@ The editor fills in its current time and complete action. Both views support
 all five action types and let you change the type while retaining the same
 routine id. The dashboard's **New routine** form also supports all five types.
 
+DJ routines can select a saved room alias, `here`, the whole house or one
+household. Review lists all currently resolved groups and members before saving
+one authored target expression. When editing `here`, the displayed room set is
+explicitly the current browser caller's preview; execution uses the original
+creator's default, which may already differ. See [recurring DJ routines across
+rooms](MULTI_ROOM_DJ_ROUTINES.md).
+
 Changing only the time retains the saved action's details, including DJ
 direction lifetimes in seconds, announcement voice and room scope, policy
 default announcement volume, and existing room aliases. The review shows the

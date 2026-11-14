@@ -24,7 +24,8 @@ const DashboardRoutines = (() => {
     const canRead = () => live() && !state.loading && !state.writing && !controller.state.busy;
     const editable = () => live() && state.loaded && !state.loading && !state.writing && !state.recovery
       && now() - readAt < MAX_AGE && controller.canManage();
-    const route = (name, options) => call(S.routes[name][1], undefined, options);
+    const route = (name, { query, ...options } = {}) => call(S.routes[name][1]
+      + (query ? '?' + new URLSearchParams(query) : ''), undefined, options);
     function retire(discard = false) {
       ++version; reading?.abort(); reading = null; state.loading = false; state.pending = null;
       if (discard) {
@@ -77,7 +78,7 @@ const DashboardRoutines = (() => {
       const v = version, abort = new AbortController(), started = now();
       reading = abort; state.loading = true; state.message = 'Reading available routine targets…'; publish();
       try {
-        const options = await S.choices(name => route(name, { signal: abort.signal }), draft.action, row);
+        const options = await S.choices((name, args) => route(name, { ...args, signal: abort.signal }), draft.action, row);
         if (!live() || v !== version || !controller.canManage() || now() - readAt >= MAX_AGE
             || now() - started >= MAX_AGE) return false;
         state.options = options; state.draft = Object.freeze(draft); choicesAt = started;
@@ -134,6 +135,17 @@ const DashboardRoutines = (() => {
       try {
         const planned = state.editing ? S.updatePlan(state.editing, state.draft, state.options, state.rows) : S.creation(state.draft, state.options);
         if (!state.editing) S.noDuplicate(state.rows, planned);
+        if (planned.body.action === 'dj_start') {
+          const v = ++version, abort = new AbortController();
+          reading = abort; state.pending = null; state.loading = true;
+          state.message = 'Reading every group in the scheduled DJ target…'; publish();
+          return S.reviewTargets((name, args) => route(name, { ...args, signal: abort.signal }), planned).then(reviewed => {
+            if (!live() || v !== version || !controller.canManage() || now() - readAt >= MAX_AGE
+                || now() - choicesAt >= MAX_AGE) return false;
+            state.pending = Object.freeze({ ...reviewed, version }); state.message = ''; return true;
+          }).catch(error => { if (live() && v === version) state.message = C.problem(error); return false; })
+            .finally(() => { if (reading === abort) { reading = null; state.loading = false; publish(); } });
+        }
         state.pending = Object.freeze({ ...planned, version }); state.message = ''; publish(); return true;
       } catch (error) { state.pending = null; state.message = C.problem(error); publish(); return false; }
     }
@@ -177,7 +189,8 @@ const DashboardRoutines = (() => {
           if (reviewed.action === 'create' || updating) {
             if (updating) S.editUnchanged(rows.find(row => row.id === reviewed.row.id), reviewed.row);
             S.noDuplicate(rows.filter(row => !updating || row.id !== reviewed.row.id), reviewed);
-            const options = await S.choices(name => route(name, { signal: abort.signal }), reviewed.body.action, updating ? reviewed.row : null); valid();
+            const options = await S.choices((name, args) => route(name, { ...args, signal: abort.signal }), reviewed.body.action,
+              updating ? reviewed.row : null, reviewed.body.action === 'dj_start' ? reviewed.body.zone : null); valid();
             S.targetsUnchanged(reviewed, options, 'The saved scene, group or DJ mood changed. Refresh and review it again.');
             valid(); sent = true;
             result = updating ? S.updatedOf(await send('/schedules/update', reviewed.request), reviewed)
@@ -260,6 +273,7 @@ const DashboardRoutines = (() => {
               : 'The explicit offset determines the instant. Its reply reports the next run in the house timezone.' }));
         if (pending.destination.details) box.append(el('details', {}, el('summary', { text: 'Scene contents reviewed now' }),
           el('pre', { text: pending.destination.details })));
+        const targets = S.routineTargets(pending, el); if (targets) box.append(targets);
         box.append(el('p', { class: 'small-note', text: pending.action === 'update' ? S.updateEffect(pending.row) : 'The routine persists on the daemon and runs with its creator’s rights. Closing this page does not cancel it. No music starts during creation.' }));
       } else box.append(el('p', { text: pending.row.summary }), el('p', { text: pending.row.when }),
         el('p', { text: effect(pending.action) }));

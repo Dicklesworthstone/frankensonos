@@ -32,6 +32,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var sonosPlaylists: [SonosPlaylist] = [] { willSet { onChange?() } }
     public private(set) var sonosPlaylistContents: SonosPlaylistContents? { willSet { onChange?() } }
     public private(set) var sonosPlaylistRequest: SonosPlaylistContentsRequest? { willSet { onChange?() } }
+    public private(set) var sonosPlaylistTracks = SonosPlaylistTracksDraft() { willSet { onChange?() } }
     public private(set) var lineInCatalog: LineInCatalog? { willSet { onChange?() } }
     public private(set) var dj: DJStatus? { willSet { onChange?() } }
     public private(set) var moods: [MoodCatalog.Mood] = [] { willSet { onChange?() } }
@@ -77,6 +78,7 @@ public struct RemoteResult: Identifiable, Sendable {
     private var undoAction = false
 
     public let preferences: DJPreferencesWorkflow
+    public let playlistManagement: SonosPlaylistManagementWorkflow
 
     private let client: DaemonClient
     private let live: LiveHouse
@@ -119,7 +121,7 @@ public struct RemoteResult: Identifiable, Sendable {
         return client.artworkURL(in: zone, track: selectedState?.track)
     }
     public var canPrepare: Bool { canSchedule && selectedZone != nil }
-    public var canSchedule: Bool { active && !stopped && !preferences.isEngaged && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil && sceneMutationReview == nil }
+    public var canSchedule: Bool { active && !stopped && !preferences.isEngaged && !playlistManagement.isEngaged && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil && sceneMutationReview == nil }
     public var canManageSchedules: Bool { canSchedule && panel == .schedules && schedulesObservedAt != nil && !panelLoading }
     public var canManageScenes: Bool { canSchedule && panel == .scenes && scenesObservedAt != nil && !panelLoading }
     public var undoInProgress: Bool { undoAction }
@@ -129,17 +131,32 @@ public struct RemoteResult: Identifiable, Sendable {
         live = LiveHouse(client: client)
         commands = CommandReviewSession(client: client)
         preferences = DJPreferencesWorkflow(client: client, commands: commands)
+        playlistManagement = SonosPlaylistManagementWorkflow(client: client, commands: commands)
         preferences.canBegin = { [weak self] in self?.canSchedule == true }
         preferences.awaitBarrier = { [weak self] in
             let barrier = self?.cancellation
             await barrier?.value
         }
         preferences.onChange = { [weak self] in self?.onChange?() }
+        playlistManagement.canBegin = { [weak self] in self?.canSchedule == true }
+        playlistManagement.awaitBarrier = { [weak self] in
+            let barrier = self?.cancellation
+            await barrier?.value
+        }
+        playlistManagement.onChange = { [weak self] in self?.onChange?() }
+        playlistManagement.didChangeCatalog = { [weak self] in
+            guard let self else { return }
+            if self.panel == .sonosPlaylists {
+                // A rename/removal invalidates an open contents title/revision.
+                self.invalidatePanel(); self.refreshPanel()
+            }
+        }
     }
 
     public func resume() {
         guard !active && !stopped else { return }
         active = true
+        playlistManagement.resume()
         if observer == nil {
             let stream = live.updates
             observer = Task { [weak self] in
@@ -159,6 +176,7 @@ public struct RemoteResult: Identifiable, Sendable {
         if timelineFrozenAt == nil { timelineFrozenAt = Date() }
         active = false
         preferences.suspend()
+        playlistManagement.suspend()
         cancelReview()
         invalidatePanel()
         invalidateSceneChoices()
@@ -170,6 +188,7 @@ public struct RemoteResult: Identifiable, Sendable {
         guard !stopped else { return }
         suspend(); stopped = true
         preferences.stop()
+        playlistManagement.stop()
         observer?.cancel(); observer = nil
         let previous = lifecycle, live = live
         lifecycle = Task { await previous?.value; await live.stop() }
@@ -178,6 +197,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public func select(_ room: RoomID) {
         guard house?.snapshot?.zones.contains(where: { $0.rooms.contains(room) }) == true else { return }
         guard selectedRoom != room else { return }
+        playlistManagement.close()
         cancelReview()
         selectedRoom = room; choseInitialRoom = true
         timelineFrozenAt = selectedPlaybackIsFresh ? nil : Date()
@@ -187,6 +207,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func show(_ panel: Panel) {
         guard self.panel != panel else { return }
+        playlistManagement.close()
         if self.panel == .schedules || self.panel == .scenes { cancelReview() }
         if self.panel == .scenes { invalidateSceneChoices() }
         if self.panel == .dj { preferences.suspend() }
@@ -235,7 +256,7 @@ public struct RemoteResult: Identifiable, Sendable {
         do {
             let request = try SonosPlaylistContentsRequest(playlist: page.playlist, in: zone,
                 offset: offset, expectedRevision: page.revision)
-            invalidatePanel(); sonosPlaylistRequest = request; refreshPanel()
+            invalidatePanel(preservingSonosTracks: true); sonosPlaylistRequest = request; refreshPanel()
         } catch { panelProblem = error.localizedDescription }
     }
 
@@ -257,6 +278,54 @@ public struct RemoteResult: Identifiable, Sendable {
                 || sonosPlaylistContents?.playlist.sameSelection(as: playlist) == true else { return }
         do { prepare(.sonosPlaylist(try SonosPlaylistSelection(playlist, in: zone, action: action)), in: zone) }
         catch { panelProblem = error.localizedDescription }
+    }
+
+    public func addSonosPlaylistTrack(_ item: SonosPlaylistItem, from page: SonosPlaylistContents,
+                                     request: SonosPlaylistContentsRequest, in expectedZone: Zone) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone),
+              sonosPlaylistRequest == request, sonosPlaylistContents == page else { return }
+        do { try sonosPlaylistTracks.append(item, from: page, request: request) }
+        catch { panelProblem = error.localizedDescription }
+    }
+
+    public func changeSonosPlaylistTrack(_ choice: UUID, selection: UUID, move: Int? = nil, repeatEntry: Bool = false) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              sonosPlaylistTracks.id == selection else { return }
+        do {
+            if let move { try sonosPlaylistTracks.move(choice, by: move) }
+            else if repeatEntry { try sonosPlaylistTracks.repeatChoice(choice) }
+            else { try sonosPlaylistTracks.remove(choice) }
+        } catch { panelProblem = error.localizedDescription }
+    }
+
+    public func clearSonosPlaylistTracks(_ selection: UUID) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading,
+              sonosPlaylistTracks.id == selection else { return }
+        sonosPlaylistTracks.clear()
+    }
+
+    public func prepareSonosPlaylistTracks(_ action: SonosPlaylistAction, selection: UUID, in expectedZone: Zone) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone),
+              let request = sonosPlaylistRequest, let page = sonosPlaylistContents,
+              sonosPlaylistTracks.isCurrent(selection, page: page, request: request) else { return }
+        do { prepare(.sonosPlaylistTracks(try SonosPlaylistTracksSelection(sonosPlaylistTracks, action: action)), in: zone) }
+        catch { panelProblem = error.localizedDescription }
+    }
+
+    public func openPlaylistSave() {
+        guard canPrepare && panel == .queue && !panelLoading, let zone = selectedZone else { return }
+        playlistManagement.openSave(in: zone)
+    }
+
+    public func openPlaylistManagement(_ playlist: SonosPlaylist, in expectedZone: Zone, removing: Bool) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, Announcement.sameGroup(expectedZone, zone),
+              sonosPlaylists.contains(where: { $0.sameSelection(as: playlist) })
+                || sonosPlaylistContents?.playlist.sameSelection(as: playlist) == true else { return }
+        if removing { playlistManagement.openRemove(playlist, in: zone) }
+        else { playlistManagement.openRename(playlist, in: zone) }
     }
 
     public func prepareLineIn(_ source: LineInSource, in expectedZone: Zone) {
@@ -293,6 +362,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public func confirm(_ id: UUID) {
         guard active, actionPhase == .idle, let reviewed = review, reviewed.id == id else { return }
         review = nil; actionPhase = .confirming
+        if case .sonosPlaylistTracks = reviewed.command { sonosPlaylistTracks.clear() }
         let target = RoomID(household: reviewed.zone.household, room: reviewed.command.room ?? reviewed.zone.coordinatorRoom)
         let commands = commands
         actionTask = Task { [weak self] in
@@ -316,6 +386,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func cancelReview() {
         preferences.cancel()
+        playlistManagement.cancel()
         epoch &+= 1; review = nil; scheduleReview = nil; undoReview = nil; sceneMutationReview = nil
         actionTask?.cancel()
         let previous = cancellation, commands = commands
@@ -343,7 +414,8 @@ public struct RemoteResult: Identifiable, Sendable {
             // A grouping command can emit its topology event before its HTTP
             // acknowledgement. Do not cancel that very write on its own event.
             // Explicit selection changes and suspension still cancel requests.
-            if !preferences.isEngaged && actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
+            if playlistManagement.phase != .confirming { playlistManagement.cancel() }
+            if !preferences.isEngaged && !playlistManagement.isEngaged && actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
             queueOffset = 0
             invalidatePanel(); refreshPanel()
         } else if active && value.panelRevision != (previous?.panelRevision ?? 0) {
@@ -356,7 +428,8 @@ public struct RemoteResult: Identifiable, Sendable {
         }
     }
 
-    private func invalidatePanel() {
+    private func invalidatePanel(preservingSonosTracks: Bool = false) {
+        if !preservingSonosTracks { sonosPlaylistTracks.clear() }
         panelEpoch &+= 1
         panelTask?.cancel(); panelPending = false
         queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; scenesObservedAt = nil; sleepTimer = nil; sleepObservedAt = nil
@@ -430,7 +503,10 @@ public struct RemoteResult: Identifiable, Sendable {
                     case .queue(let value): self.queue = value
                     case .favorites(let value): self.favorites = value
                     case .sonosPlaylists(let value): self.sonosPlaylists = value
-                    case .sonosContents(let value): self.sonosPlaylistContents = value
+                    case .sonosContents(let value):
+                        guard let sonosRequest else { throw ContractError.invalid("The saved playlist read has no source observation.") }
+                        try self.sonosPlaylistTracks.observe(value, request: sonosRequest)
+                        self.sonosPlaylistContents = value
                     case .lineIn(let value): self.lineInCatalog = value
                     case .scenes(let value): self.scenes = value; self.scenesObservedAt = Date()
                     case .sleep(let value): self.sleepTimer = value; self.sleepObservedAt = Date()
@@ -441,7 +517,7 @@ public struct RemoteResult: Identifiable, Sendable {
             } catch {
                 if let self, self.active && self.panelEpoch == token && !Task.isCancelled {
                     self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []; self.scenesObservedAt = nil; self.sleepTimer = nil; self.sleepObservedAt = nil
-                    self.sonosPlaylists = []; self.sonosPlaylistContents = nil
+                    self.sonosPlaylists = []; self.sonosPlaylistContents = nil; self.sonosPlaylistTracks.clear()
                     self.lineInCatalog = nil
                     self.schedules = []; self.schedulesObservedAt = nil
                     self.scheduleScenes = []; self.scheduleScenesProblem = nil
@@ -455,7 +531,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     /// Edits only the unsent form. Selection and refresh never rewrite it.
     public func updateScheduleForm(_ value: ScheduleForm) {
-        guard active && !stopped && !preferences.isEngaged && actionPhase == .idle && review == nil && undoReview == nil && sceneMutationReview == nil else { return }
+        guard active && !stopped && !preferences.isEngaged && !playlistManagement.isEngaged && actionPhase == .idle && review == nil && undoReview == nil && sceneMutationReview == nil else { return }
         if scheduleReview != nil { cancelReview() }
         scheduleForm = value; scheduleFormProblem = nil
     }

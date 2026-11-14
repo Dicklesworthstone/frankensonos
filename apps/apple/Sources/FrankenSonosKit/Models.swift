@@ -286,7 +286,7 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
 
         public var recallNote: String {
             if total != nil {
-                return "Recall replaces the original player’s current queue. Action-history undo cannot restore the replaced queue contents."
+                return "Recall replaces the original player’s current queue. Bounded queue undo is available only after a complete verified scene on unchanged groups; inspect the result and undo preview."
             }
             return "Queue contents are not saved. Recall requires the original unchanged queue; a known speaker restart also invalidates this position."
         }

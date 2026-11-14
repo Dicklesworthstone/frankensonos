@@ -18,6 +18,12 @@ struct Probe {
     fail_after_start: Arc<AtomicBool>,
     previews: Arc<Mutex<Vec<Option<DjSteer>>>>,
     steers: Arc<Mutex<Vec<DjSteer>>>,
+    checked_groups: Arc<Mutex<Vec<PlayerId>>>,
+    started_groups: Arc<Mutex<Vec<PlayerId>>>,
+    refuse_group: Arc<Mutex<Option<PlayerId>>>,
+    fail_group: Arc<Mutex<Option<PlayerId>>>,
+    play: Arc<AtomicBool>,
+    regroup_on_ready: Arc<Mutex<Option<(SimLan, IpAddr, PlayerId)>>>,
 }
 
 fn done() -> OutcomeDto {
@@ -32,14 +38,24 @@ fn done() -> OutcomeDto {
 impl DjEngine for Probe {
     fn start_ready(
         &self,
-        _: DjSpeakers<'_>,
+        at: DjSpeakers<'_>,
         _: &dyn Store,
         steer: Option<&DjSteer>,
         _: &dyn Clock,
     ) -> Result<(), Failure> {
         self.checks.fetch_add(1, Ordering::SeqCst);
+        self.checked_groups
+            .lock()
+            .unwrap()
+            .push(at.coordinator.clone());
         self.previews.lock().unwrap().push(steer.cloned());
-        if self.ready.load(Ordering::SeqCst) {
+        if let Some((transport, member, coordinator)) = self.regroup_on_ready.lock().unwrap().take()
+        {
+            soap::join_group(&transport, member, &coordinator).unwrap();
+        }
+        if self.ready.load(Ordering::SeqCst)
+            && self.refuse_group.lock().unwrap().as_ref() != Some(at.coordinator)
+        {
             Ok(())
         } else {
             Err(Failure::new(
@@ -51,14 +67,35 @@ impl DjEngine for Probe {
 
     fn act(
         &self,
-        _: DjSpeakers<'_>,
+        at: DjSpeakers<'_>,
         _: &mut dyn Store,
         action: DjAction,
         _: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
         assert_eq!(action, DjAction::Start);
         self.starts.fetch_add(1, Ordering::SeqCst);
-        if self.fail_after_start.load(Ordering::SeqCst) {
+        self.started_groups
+            .lock()
+            .unwrap()
+            .push(at.coordinator.clone());
+        if self.play.load(Ordering::SeqCst) {
+            let player = at
+                .households
+                .iter()
+                .find_map(|h| h.player(at.coordinator))
+                .unwrap();
+            soap::set_av_transport_uri(
+                at.transport,
+                player.ip,
+                "x-rincon-mp3radio://stream.example.invalid/scheduled-dj.mp3",
+                "",
+            )
+            .map_err(fsonos_core::CoreError::from)?;
+            soap::play(at.transport, player.ip).map_err(fsonos_core::CoreError::from)?;
+        }
+        if self.fail_after_start.load(Ordering::SeqCst)
+            || self.fail_group.lock().unwrap().as_ref() == Some(at.coordinator)
+        {
             Err(Failure::new(
                 ErrorCode::OutcomeUncertain,
                 "synthetic start lost its acknowledgement",
@@ -152,7 +189,11 @@ fn a_scheduled_dj_waits_without_claiming_and_bounds_readiness_probes() {
         assert_eq!(probe.checks.load(Ordering::SeqCst), 1);
         assert_eq!(probe.starts.load(Ordering::SeqCst), 0);
         assert_eq!(house.recorded(), None);
-        assert_eq!(house.sim.soap_log().len(), before);
+        assert!(
+            house.sim.soap_log()[before..]
+                .iter()
+                .all(|call| call.action.starts_with("Get"))
+        );
         house.tick(&scheduler, house.at + chrono::TimeDelta::minutes(1));
         assert_eq!(probe.checks.load(Ordering::SeqCst), 2);
         assert_eq!(house.recorded(), None);
@@ -169,6 +210,8 @@ fn a_scheduled_dj_waits_without_claiming_and_bounds_readiness_probes() {
         assert_eq!(probe.starts.load(Ordering::SeqCst), 1);
     }
 }
+
+mod targets;
 
 #[test]
 fn preflight_receives_the_exact_legacy_direction_and_automatic_requests() {

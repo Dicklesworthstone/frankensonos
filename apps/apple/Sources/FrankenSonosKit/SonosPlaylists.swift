@@ -42,7 +42,7 @@ public struct SonosPlaylistSelection: Equatable, Sendable {
     public var explanation: String {
         let source = "Uses “\(playlist.title)” from the saved Sonos playlists in \(zone.household). "
         if action == .play {
-            return source + "Replaces this group’s queue with the playlist’s current contents and starts playback. The previous queue cannot be recovered through ordinary undo. Playback volume caps apply."
+            return source + "Replaces this group’s queue with the playlist’s current contents and starts playback. Undo depends on the daemon retaining and verifying a complete bounded queue backup; inspect the result and action history. Playback volume caps apply."
         }
         return source + (action == .next
             ? "Inserts after the current queue track, or appends when a queue track is not selected. "

@@ -59,7 +59,11 @@ pub use queue_tracks::{AddTracksToQueue, PlayTracks};
 mod queue_search;
 pub use queue_search::SearchQueue;
 
+mod favorite_management;
 mod sonos_playlists;
+pub use favorite_management::{
+    CurrentFavorite, InspectFavorite, RemoveFavorite, RenameFavorite, SaveFavorite,
+};
 pub use sonos_playlists::{
     ListSonosPlaylists, PlaySonosPlaylist, RemoveSonosPlaylist, RenameSonosPlaylist,
     SaveSonosPlaylist, SonosPlaylistContents, SonosPlaylistTrack, SonosPlaylistTracks,
@@ -699,7 +703,9 @@ fn said(outcome: OutcomeDto) -> (String, OutcomeDto) {
 /// Keep a partial batch's complete receipt while making its incomplete
 /// outcome visible to tool consumers. Never turn it into a replay request.
 fn dj_outcome(mut result: FinalCallToolResult) -> FinalCallToolResult {
-    if result.structured_content.as_ref()
+    if result
+        .structured_content
+        .as_ref()
         .and_then(|value| value.get("notes"))
         .and_then(serde_json::Value::as_array)
         .is_some_and(|notes| notes.iter().any(|note| note["code"] == "SKIPPED"))
@@ -1278,7 +1284,9 @@ async fn dj_skip(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<Fin
     dj(ctx, zone, "dj_skip", DjAction::Skip).await
 }
 
-#[tool(description = "Stop the DJ in every selected group. `zone` accepts a room, multi-room alias, all/everywhere, or all@S1 / all@S2. Each distinct group acts once and keeps its membership; DJs remain independent. An idle group's failure does not prevent another selected group from stopping. Inspect SKIPPED notes for incomplete groups; partial results mark the tool result as an error and retain every group outcome. Do not replay a partial batch.")]
+#[tool(
+    description = "Stop the DJ in every selected group. `zone` accepts a room, multi-room alias, all/everywhere, or all@S1 / all@S2. Each distinct group acts once and keeps its membership; DJs remain independent. An idle group's failure does not prevent another selected group from stopping. Inspect SKIPPED notes for incomplete groups; partial results mark the tool result as an error and retain every group outcome. Do not replay a partial batch."
+)]
 async fn dj_stop(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
     dj(ctx, zone, "dj_stop", DjAction::Stop).await
 }
@@ -1454,12 +1462,20 @@ mod tests {
         }
         let calls = daemon.calls.lock().unwrap();
         assert_eq!(calls.len(), 4, "one request per batch, with no replay");
-        assert_eq!(calls[0].2.as_ref().unwrap(), &serde_json::to_value(&start).unwrap());
-        assert_eq!(calls[1].2.as_ref().unwrap(), &serde_json::to_value(&steer).unwrap());
+        assert_eq!(
+            calls[0].2.as_ref().unwrap(),
+            &serde_json::to_value(&start).unwrap()
+        );
+        assert_eq!(
+            calls[1].2.as_ref().unwrap(),
+            &serde_json::to_value(&steer).unwrap()
+        );
         assert_eq!(calls[2].2.as_ref().unwrap()["zone"], "everywhere");
         assert_eq!(calls[3].2.as_ref().unwrap()["zone"], "all@S2");
-        assert_eq!(calls.iter().map(|call| call.1.as_str()).collect::<Vec<_>>(),
-            ["/dj/start", "/dj/steer", "/dj/skip", "/dj/stop"]);
+        assert_eq!(
+            calls.iter().map(|call| call.1.as_str()).collect::<Vec<_>>(),
+            ["/dj/start", "/dj/steer", "/dj/skip", "/dj/stop"]
+        );
         assert!(sent.lock().unwrap().is_empty());
         assert_eq!(surveys.load(Ordering::SeqCst), 0);
     }

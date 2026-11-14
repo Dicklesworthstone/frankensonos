@@ -1,0 +1,16 @@
+.favorites-dialog{width:min(44rem,calc(100vw - 2rem));max-height:88vh;overflow:auto;box-sizing:border-box;padding:1.5rem;border:1px solid var(--line,#777);border-radius:1.25rem;background:var(--panel,var(--card,#fff));color:var(--text,#222)}
+.favorites-dialog::backdrop{background:rgba(12,18,24,.58)}
+.favorites-dialog header,.favorites-actions{display:flex;gap:.75rem;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.favorites-dialog h2{margin:0;font-size:1.6rem}.favorites-dialog header{margin-bottom:1rem}
+.favorites-dialog label{display:grid;gap:.4rem;margin:.8rem 0}.favorites-dialog input,.favorites-dialog select{box-sizing:border-box;width:100%;padding:.65rem;border:1px solid var(--line,#aaa);border-radius:.5rem;background:var(--panel,var(--card,#fff));color:inherit;font:inherit}
+.favorites-dialog button{cursor:pointer;min-height:2.5rem}.favorites-dialog button:disabled{cursor:default;opacity:.5}
+.favorites-dialog .small-note{font-size:.9rem;line-height:1.5}.favorites-scope,.favorites-source{font-weight:600;overflow-wrap:anywhere}
+.favorites-editor,.favorites-review,.favorites-result{margin:1rem 0;padding:1rem;border:1px solid var(--line,#aaa);border-radius:.75rem}
+.favorites-notice,.favorites-message{line-height:1.5;overflow-wrap:anywhere}.favorites-result code{overflow-wrap:anywhere}
+.favorites-list{padding:0;list-style:none;display:grid;gap:.5rem}.favorites-list li{display:flex;justify-content:space-between;align-items:center;gap:.75rem;padding:.8rem 0;border-bottom:1px solid var(--line,#ddd)}
+.favorites-list li>div:first-child{min-width:0;overflow-wrap:anywhere}.favorites-list p{margin:.25rem 0}.favorites-list .favorites-actions{flex-shrink:0}
+.favorites-entry{margin-block:1rem}.favorites-recovery-catalog{border-top:1px solid var(--line,#aaa);margin-top:1rem;padding-top:.5rem;overflow-wrap:anywhere}
+.favorites-dialog [hidden]{display:none!important}.favorites-dialog :focus-visible{outline:3px solid var(--accent,#246b87);outline-offset:3px}
+@media(max-width:540px){.favorites-dialog{padding:1rem}.favorites-list li{align-items:flex-start;flex-direction:column}.favorites-actions{justify-content:flex-start}.favorites-dialog header{align-items:flex-start}}
+
+.favorites-dialog>p,.favorites-dialog section>p{margin-block:.65rem}.favorites-dialog .favorites-list .small-note{color:var(--muted,#666)}

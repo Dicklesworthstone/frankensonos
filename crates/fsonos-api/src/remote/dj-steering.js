@@ -143,7 +143,7 @@ const DjSteeringRemote = (() => {
   const signatureOf = (s) => JSON.stringify([s.source, s.mood, s.session_mood_known, s.session_mood,
     s.constraints, s.added, s.expires_at]);
 
-  function model({ call, changed = () => {} }) {
+  function model({ call, changed = () => {}, execute = (_, work) => work() }) {
     let epoch = 0, disposed = false;
     const state = { open: false, loading: false, busy: false, ready: false, zones: [], moods: [],
       target: '', status: null, pending: null, imported: null, edited: false, message: '' };
@@ -234,39 +234,41 @@ const DjSteeringRemote = (() => {
       state.message = 'Rechecking the group and its steering…'; publish();
       let sent = false, acknowledged = false, receipt = '';
       try {
-        const zones = zonesOf(await call('djSteeringZones'));
-        if (!current(v)) return false;
-        if (!zones.some((z) => z.signature === expected.zone.signature)) fail('The group changed; nothing was saved. Refresh DJ rooms.');
-        const before = statusOf(await call('djSteeringStatus', { params: { room: expected.zone.target } }), expected.zone);
-        if (!current(v)) return false;
-        if (signatureOf(before.steering) !== expected.signature) fail('The steering changed or expired; nothing was saved. Refresh and review again.');
-        if (expected.start && before.running) fail('The DJ started since this review. Refresh and review its current session.');
-        state.message = expected.start ? 'Starting the DJ with these settings…' : 'Saving steering…'; publish();
-        if (!current(v)) return false;
-        let body = expected.body;
-        if (expected.keep_expiry) {
-          // The phone's clock may be wrong. Use the freshly reported daemon
-          // countdown rather than restarting the duration seen during review.
-          const remaining = before.steering.expires_in_secs;
-          if (!integer(remaining, 60, 604800)) fail('The deadline is too close to preserve. Refresh and choose a duration.');
-          body = Object.freeze({ ...body, for_secs: remaining });
-        }
-        sent = true;
-        const answer = await call(expected.start ? 'djSteeringStart' : 'djSteeringWrite', { body });
-        if (!answer || !text(answer.done) || typeof answer.changed !== 'boolean'
-            || !Array.isArray(answer.notes ?? []) || !(answer.notes ?? []).every((n) => n && typeof n.code === 'string' && typeof n.detail === 'string')) {
-          fail('The steering save response is unreadable.');
-        }
-        acknowledged = true;
-        if (disposed) return true;
-        state.imported = null; state.edited = false;
-        receipt = [answer.done, ...(answer.notes ?? []).map((n) => n.detail)].join(' ');
-        state.message = receipt;
-        if (current(v)) {
-          const after = statusOf(await call('djSteeringStatus', { params: { room: expected.zone.target } }), expected.zone);
-          if (current(v)) { state.status = after; state.ready = true; }
-        }
-        return true;
+        return await execute(expected.zone, async () => {
+          const zones = zonesOf(await call('djSteeringZones'));
+          if (!current(v)) return false;
+          if (!zones.some((z) => z.signature === expected.zone.signature)) fail('The group changed; nothing was saved. Refresh DJ rooms.');
+          const before = statusOf(await call('djSteeringStatus', { params: { room: expected.zone.target } }), expected.zone);
+          if (!current(v)) return false;
+          if (signatureOf(before.steering) !== expected.signature) fail('The steering changed or expired; nothing was saved. Refresh and review again.');
+          if (expected.start && before.running) fail('The DJ started since this review. Refresh and review its current session.');
+          state.message = expected.start ? 'Starting the DJ with these settings…' : 'Saving steering…'; publish();
+          if (!current(v)) return false;
+          let body = expected.body;
+          if (expected.keep_expiry) {
+            // The phone's clock may be wrong. Use the freshly reported daemon
+            // countdown rather than restarting the duration seen during review.
+            const remaining = before.steering.expires_in_secs;
+            if (!integer(remaining, 60, 604800)) fail('The deadline is too close to preserve. Refresh and choose a duration.');
+            body = Object.freeze({ ...body, for_secs: remaining });
+          }
+          sent = true;
+          const answer = await call(expected.start ? 'djSteeringStart' : 'djSteeringWrite', { body });
+          if (!answer || !text(answer.done) || typeof answer.changed !== 'boolean'
+              || !Array.isArray(answer.notes ?? []) || !(answer.notes ?? []).every((n) => n && typeof n.code === 'string' && typeof n.detail === 'string')) {
+            fail('The steering save response is unreadable.');
+          }
+          acknowledged = true;
+          if (disposed) return true;
+          state.imported = null; state.edited = false;
+          receipt = [answer.done, ...(answer.notes ?? []).map((n) => n.detail)].join(' ');
+          state.message = receipt;
+          if (current(v)) {
+            const after = statusOf(await call('djSteeringStatus', { params: { room: expected.zone.target } }), expected.zone);
+            if (current(v)) { state.status = after; state.ready = true; }
+          }
+          return true;
+        });
       } catch (error) {
         if (!disposed) state.message = acknowledged
           ? `${receipt} The fresh DJ status could not be read. ${message(error)} Refresh; do not resend.`
@@ -290,7 +292,7 @@ const DjSteeringRemote = (() => {
   }
 
   let nextId = 0;
-  function panel({ call, el }) {
+  function panel({ call, el, execute }) {
     const id = `dj-steer-${++nextId}`;
     const button = (text, onclick) => el('button', { type: 'button', text, onclick });
     const toggle = button('DJ direction & why', () => { if (editor.state.open) editor.close(); else void editor.load(); });
@@ -345,7 +347,7 @@ const DjSteeringRemote = (() => {
     const clear = button('Review return to program', () => editor.review({ clear: true }));
     controls.push(review, start, clear);
     let observed = null, displayedZones = null, displayedMoods = null, reviewed = null, imported = null;
-    const editor = model({ call, changed: render });
+    const editor = model({ call, changed: render, execute });
 
     function describe(c) {
       return Object.entries(c).map(([key, value]) => key === 'strict' && value
@@ -473,7 +475,13 @@ if (typeof document !== 'undefined' && typeof ROUTES !== 'undefined') {
   const directionMain = document.getElementById('households');
   if (directionMain) {
     const directionRoot = el('section', { class: 'scenes', 'aria-label': 'DJ direction and explanations' });
-    const directionPanel = DjSteeringRemote.panel({ el, call: async (name, args) => {
+    const directionPanel = DjSteeringRemote.panel({ el,
+      async execute(group, work) {
+        let parts = [...house.cards.values()].find(card => groupShape(card.zone) === group.signature);
+        if (!parts) { await loadZones(); parts = [...house.cards.values()].find(card => groupShape(card.zone) === group.signature); }
+        if (!parts || !beginAction(parts)) throw new Error('This group has changed or already has a playback action in progress. Refresh and review again.');
+        try { return await work(); } finally { endAction(parts); }
+      }, call: async (name, args) => {
       try { return await call(name, args); }
       finally {
         // A lost write answer is also a reason to re-observe, never to retry.

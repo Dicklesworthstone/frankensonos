@@ -46,7 +46,7 @@ pub use levels::{LevelAfter, LevelScope, capture_level_after, with_level_after, 
 pub use queue::{
     PendingQueueUndo, PendingSceneQueueUndo, QueueUndo, capture_queue_undo,
     capture_scene_queue_undo, finish_queue_replacement, finish_queue_undo,
-    finish_scene_queue_replacement, with_queue_undo,
+    finish_scene_queue_replacement, finish_scene_queue_restoration, with_queue_undo,
 };
 
 /// Retention: the newest this many actions are kept…

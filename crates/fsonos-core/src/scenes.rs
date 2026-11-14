@@ -54,6 +54,7 @@ mod targets;
 pub use queue::QueueReference;
 pub use queue_backup::{
     MAX_QUEUE_BACKUP_BYTES, MAX_QUEUE_BACKUP_ENTRIES, QueueBackup, QueueBackupEntry,
+    QueueRestoration,
 };
 pub use sonos_playlist::{SonosPlaylistReference, check_playlist_sources};
 pub use sources::check_sources;
@@ -293,14 +294,18 @@ pub trait SceneHooks {
     }
 
     /// A successfully completed container or catalog replacement. Failed or
-    /// uncertain operations never supply this receipt. Queue-backup recall is
-    /// reported as an attempt but is not supported by scene action-history undo.
+    /// uncertain operations never supply this receipt.
     fn queue_replacement_finished(
         &self,
         _coordinator: &PlayerId,
         _receipt: control::QueueReplacement,
     ) {
     }
+
+    /// A successfully completed durable queue recall. Failed or partial
+    /// reconstructions never supply this receipt. A content-identical recall
+    /// still reports completion, but cannot publish queue-content undo.
+    fn queue_backup_finished(&self, _coordinator: &PlayerId, _receipt: QueueRestoration) {}
 
     /// Load a previously resolved Spotify artist or show selection through
     /// the final group's own account. Catalog reads belong in the surface's
@@ -1089,7 +1094,19 @@ fn run<T: Transport + ?Sized>(
             backup,
             start,
         } => {
-            options.hooks.queue_replacement_started(coordinator);
+            if options.hooks.queue_replacement_started(coordinator) {
+                let receipt = queue_backup::restore_bound_with_receipt(
+                    t,
+                    households,
+                    coordinator,
+                    backup,
+                    *start,
+                    None,
+                )?;
+                let changed = receipt.changed;
+                options.hooks.queue_backup_finished(coordinator, receipt);
+                return Ok(changed);
+            }
             return queue_backup::restore(t, households, coordinator, backup, *start);
         }
         SceneOp::Dj {

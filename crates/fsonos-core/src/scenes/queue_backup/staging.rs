@@ -12,6 +12,7 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::cell::Cell;
 use std::net::IpAddr;
+use std::time::Instant;
 
 /// Fence the actual mutation, after helpers have performed their own reads.
 /// Reads deliberately use the underlying transport to avoid recursion.
@@ -320,7 +321,7 @@ pub(super) fn restore<T: Transport + ?Sized>(
     start: bool,
     attempted: &mut bool,
     baseline: Option<&super::Baseline<'_>>,
-) -> Result<super::RestoredQueue, String> {
+) -> Result<super::QueueRestoration, String> {
     let prepare = (|| -> Result<_, CoreError> {
         let host = control::locate(households, coordinator)?.ip;
         let owner = Owner::read(t, host, coordinator, backup.reference.play_mode.is_some())?;
@@ -356,6 +357,12 @@ pub(super) fn restore<T: Transport + ?Sized>(
             )
             .into());
         }
+        let before_uris = before
+            .objects
+            .iter()
+            .filter_map(|item| item.res.as_ref().map(|res| res.uri.clone()))
+            .collect::<Vec<_>>();
+        let before_owner = owner.clone();
         let saved = backup
             .entries
             .iter()
@@ -367,6 +374,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
                 false,
                 fresh_reference(backup, before.update_id, &owner),
                 owner,
+                before_owner,
+                before.update_id,
+                before_uris,
             ));
         }
         let limit = usize::try_from(content::MAX_BROWSE_OBJECTS).unwrap_or(usize::MAX);
@@ -399,10 +409,14 @@ pub(super) fn restore<T: Transport + ?Sized>(
             true,
             fresh_reference(backup, final_revision, &committed),
             committed,
+            before_owner,
+            before.update_id,
+            before_uris,
         ))
     })()
     .map_err(|error| error.to_string())?;
-    let (rebuilt, reference, owner) = prepare;
+    let (rebuilt, reference, owner, before_owner, before_revision, before_uris) = prepare;
+    let selected_at = Instant::now();
     queue::restore_from(
         t,
         households,
@@ -411,8 +425,19 @@ pub(super) fn restore<T: Transport + ?Sized>(
         start,
         Some((&owner.playback, owner.mode)),
     )
-    .map(|played| super::RestoredQueue {
+    .map(|played| super::QueueRestoration {
         changed: rebuilt || played,
+        rebuilt,
         reference,
+        before_owner,
+        before_revision,
+        before_uris,
+        uris: backup
+            .entries
+            .iter()
+            .map(|entry| entry.uri.clone())
+            .collect(),
+        start,
+        selected_at,
     })
 }

@@ -5,6 +5,7 @@ const http = require('node:http');
 const S = require('../crates/fsonos-api/src/remote/schedules.js');
 const R = require('../crates/fsonos-api/src/remote/dashboard-routines.js');
 const C = require('../crates/fsonos-api/src/remote/dashboard-core.js');
+const targets = require('./schedule-targets-fixture.cjs');
 const copy = value => structuredClone(value);
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 async function settled(predicate) {
@@ -55,6 +56,8 @@ function fixture(surface, { rows = [row()], dom = false, network } = {}) {
   const read = url => {
     if (url === '/schedules') return copy(schedules);
     if (url === '/zones') return copy(zones);
+    if (url === '/rooms') return targets.rooms(zones);
+    if (url.startsWith('/rooms/resolve?')) return targets.resolve(zones, new URL(url, 'http://fixture').searchParams.get('target'));
     if (url === '/scenes') return copy(scenes);
     if (url === '/dj/moods') return copy(moods);
     if (url.endsWith('/state')) return { zone: copy(zones[0]), transport_state: 'paused', volume: 20,
@@ -88,7 +91,8 @@ function fixture(surface, { rows = [row()], dom = false, network } = {}) {
       : writer ? writer(url, body, write) : write(url, body);
   };
   const call = network ? network(raw) : raw;
-  const phoneCall = (name, options = {}) => call(S.routes[name][1], options.body, options);
+  const phoneCall = (name, options = {}) => call(S.routes[name][1]
+    + (options.query ? '?' + new URLSearchParams(options.query) : ''), options.body, options);
   const controller = surface === 'dashboard' ? C.model({ call, now: () => time, changed: () => control?.observe() }) : null;
   const document = dom ? documentFixture() : null;
   if (dom) control = R.panel({ call, controller, document, now: () => time }).control;
@@ -104,7 +108,7 @@ function fixture(surface, { rows = [row()], dom = false, network } = {}) {
 async function edit(f, id = 21, time = '08:45') {
   assert.equal(await f.control.beginEdit(id), true);
   if (time !== null) assert.equal(f.control.edit('time', time), true);
-  assert.equal(f.control.reviewCreate(), true, f.control.state.message);
+  assert.equal(await f.control.reviewCreate(), true, f.control.state.message);
   return f.control.state.pending;
 }
 
@@ -121,7 +125,8 @@ for (const surface of ['phone', 'dashboard']) {
     assert.equal(f.control.state.result.row.id, 21); assert.equal(f.control.state.result.row.creator, original.creator);
     assert.equal(f.control.state.result.row.enabled, false); assert.equal(f.control.state.result.row.next, null);
     assert.equal(f.control.state.result.status, 'accepted');
-    assert.ok(f.calls.every(({ url }) => ['/schedules', '/schedules/update', '/zones', '/scenes', '/dj/moods'].includes(url)));
+    assert.ok(f.calls.every(({ url }) => ['/schedules', '/schedules/update', '/zones', '/rooms', '/scenes', '/dj/moods'].includes(url)
+      || url.startsWith('/rooms/resolve?')));
     assert.match(S.updateEffect(pending.row), /future occurrences/); assert.match(S.updateEffect(pending.row), /cannot be undone/);
     if (action === 'announce') assert.deepEqual(pending.body.announcement, { text: 'Synthetic reminder', voice: 'fixture_voice', rooms: [] });
     else if (action !== 'apply_scene') assert.equal(pending.body.zone, original.zone);
@@ -145,7 +150,7 @@ for (const surface of ['phone', 'dashboard']) {
     assert.equal(f.control.state.draft.time, '08:45');
     f.control.edit('announcement_source', 'chime'); f.control.edit('announcement_chime', 'rise');
     f.control.edit('announcement_rooms', ['Hall@SIM_S2']); f.control.edit('announcement_volume', '0');
-    assert.equal(f.control.reviewCreate(), true); const reviewed = f.control.state.pending;
+    assert.equal(await f.control.reviewCreate(), true); const reviewed = f.control.state.pending;
     assert.deepEqual(reviewed.body, { when: 'weekdays 08:45', action: 'announce', announcement: { chime: 'rise', rooms: ['Hall@SIM_S2'], volume: 0 } });
     assert.equal(await f.apply(reviewed), true); assert.equal(f.writes().length, 1); assert.equal(f.rows()[0].id, 21);
   });
@@ -153,7 +158,7 @@ for (const surface of ['phone', 'dashboard']) {
   test(`${surface}: editing the new time consumes the older review without silently changing its target`, async () => {
     const f = await fixture(surface).ready(), prior = await edit(f);
     f.control.edit('time', '09:30'); assert.equal(await f.apply(prior), false);
-    assert.equal(f.control.reviewCreate(), true); assert.equal(f.control.state.pending.request.id, 21);
+    assert.equal(await f.control.reviewCreate(), true); assert.equal(f.control.state.pending.request.id, 21);
     assert.equal(prior.body.when, 'weekdays 08:45'); assert.equal(f.control.state.pending.body.when, 'weekdays 09:30');
     assert.equal(await f.apply(), true); assert.equal(f.writes().length, 1);
   });
@@ -178,7 +183,7 @@ for (const surface of ['phone', 'dashboard']) {
     assert.equal(f.control.state.result.status, 'not_sent'); assert.equal(f.control.state.draft.time, '08:45');
     assert.match(f.control.state.result.detail, /changed, ran or was removed/);
     await f.refresh(); assert.equal(await f.control.reloadDraft(), true);
-    assert.equal(f.control.reviewCreate(), false, 'a refreshed list must not silently rebase the saved revision');
+    assert.equal(await f.control.reviewCreate(), false, 'a refreshed list must not silently rebase the saved revision');
   });
 
   test(`${surface}: changed current room topology invalidates an edit and saved aliases cannot be invented`, async () => {
@@ -187,7 +192,7 @@ for (const surface of ['phone', 'dashboard']) {
     assert.equal(await f.apply(), false); assert.equal(f.writes().length, 0);
     const alias = await fixture(surface, { rows: [row('volume')] }).ready();
     await edit(alias); assert.ok(alias.control.state.options.rooms.some(room => room.target === 'upstairs'));
-    alias.control.edit('zone', 'invented-alias'); assert.equal(alias.control.reviewCreate(), false);
+    alias.control.edit('zone', 'invented-alias'); assert.equal(await alias.control.reviewCreate(), false);
     assert.equal(alias.writes().length, 0);
   });
 
@@ -228,7 +233,7 @@ for (const surface of ['phone', 'dashboard']) {
     await f.refresh(true); assert.equal(f.control.state.result.status, 'observed'); assert.equal(f.control.state.recovery, null);
     assert.match(f.control.state.result.detail, /does not prove/); assert.match(f.control.state.result.detail, /#21/);
     assert.equal(f.control.state.draft.time, '08:45'); assert.equal(await f.control.reloadDraft(), true);
-    assert.equal(f.control.reviewCreate(), false, 'old expected revision cannot target the new record');
+    assert.equal(await f.control.reviewCreate(), false, 'old expected revision cannot target the new record');
     assert.equal(f.writes().length, 1);
   });
 
@@ -273,11 +278,11 @@ test('hydration round-trips exact once offsets, custom days, legacy DJ steering,
 test('editing a DJ filter keeps a saved non-minute duration until the owner edits that duration', async () => {
   for (const surface of ['phone', 'dashboard']) {
     const f = await fixture(surface, { rows: [row('dj_start')] }).ready(); await edit(f);
-    f.control.editDirection('include_genres', 'Synthetic genre'); assert.equal(f.control.reviewCreate(), true);
+    f.control.editDirection('include_genres', 'Synthetic genre'); assert.equal(await f.control.reviewCreate(), true);
     assert.equal(f.control.state.pending.body.direction.for_secs, 17);
-    f.control.editDirection('minutes', '2'); assert.equal(f.control.reviewCreate(), true);
+    f.control.editDirection('minutes', '2'); assert.equal(await f.control.reviewCreate(), true);
     assert.equal(f.control.state.pending.body.direction.for_secs, 120);
-    f.control.editDirection('minutes', ''); assert.equal(f.control.reviewCreate(), true);
+    f.control.editDirection('minutes', ''); assert.equal(await f.control.reviewCreate(), true);
     assert.equal(f.control.state.pending.body.direction.for_secs, undefined);
   }
 });
@@ -300,7 +305,7 @@ test('canonical paused receipts omit zero fade and next, preserve state across a
     assert.equal(unchanged.body.fade_secs, 0);
     assert.equal(S.updatedOf(original, unchanged).revision, original.revision);
     assert.equal(await f.control.changeAction('volume'), true); f.control.edit('zone', 'Hall@SIM_S2'); f.control.edit('volume', '0');
-    assert.equal(f.control.reviewCreate(), true); const reviewed = f.control.state.pending;
+    assert.equal(await f.control.reviewCreate(), true); const reviewed = f.control.state.pending;
     f.write((url, request) => {
       assert.deepEqual(request, reviewed.request);
       return { id: 21, revision: 'opaque-version-B', when: 'weekdays 07:30', action: 'volume', zone: 'Hall@SIM_S2', volume: 0,
@@ -317,7 +322,7 @@ test('one-shot receipts accept canonical offsets and completed no-ops but reject
   const f = await fixture('phone', { rows: [original] }).ready();
   const unchanged = await edit(f, 21, null);
   assert.equal(S.updatedOf(original, unchanged).next, null);
-  f.control.edit('at', '2030-07-02T23:30:00Z'); assert.equal(f.control.reviewCreate(), true);
+  f.control.edit('at', '2030-07-02T23:30:00Z'); assert.equal(await f.control.reviewCreate(), true);
   const reviewed = f.control.state.pending;
   const good = { ...original, revision: 'opaque-version-B', when: 'once 2030-07-02T23:30:00+00:00', next: '2030-07-02T19:30:00-04:00' };
   assert.equal(S.updatedOf(good, reviewed).id, 21);
@@ -337,6 +342,7 @@ test('dashboard DOM opens every saved action in the shared form and shows retain
     if (action === 'announce') assert.equal(f.document.getElementById('routine-announcement_text').value, 'Synthetic reminder');
     const input = f.document.getElementById('routine-time'); input.value = '08:45'; input.fire('input');
     click('review-create');
+    await settled(() => f.control.state.pending && !f.control.state.loading);
     const review = f.document.getElementById('routines-body').textContent;
     assert.match(review, /routine #21/); assert.match(review, /Previously: weekdays 07:30/);
     assert.match(review, /weekdays 08:45/); assert.match(review, /cannot be undone/); assert.match(review, /No music starts now/);

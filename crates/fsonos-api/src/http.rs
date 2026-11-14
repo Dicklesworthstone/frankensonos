@@ -16,6 +16,11 @@
 //! | `GET /zones/{room}/eq` | | [`crate::surface::eq::EqDto`]: the room's bass, treble and loudness |
 //! | `GET /zones/{room}/play-mode` | | the group's shuffle and repeat, and whether the DJ owns its queue |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
+//! | `GET /favorites/current?zone=<room>` | | observed current track/station and a revision for saving |
+//! | `GET /favorites/inspect?zone=<room>&favorite=<id>` | | exact native favorite and a revision for editing |
+//! | `POST /favorites/save` | [`crate::surface::favorite_management::SaveFavoriteRequest`] | confirmed native favorite, without playback changes |
+//! | `POST /favorites/rename` | [`crate::surface::favorite_management::RenameFavoriteRequest`] | renamed native favorite at its observed revision |
+//! | `POST /favorites/remove` | [`crate::surface::favorite_management::RemoveFavoriteRequest`] | exact favorite confirmed absent from its household |
 //! | `GET /line-in?zone=<room>` | | [`crate::LineInSourcesDto`]: native inputs in the destination household |
 //! | `POST /line-in/play` | [`crate::PlayLineInRequest`] | [`crate::OutcomeDto`]: play a native input while retaining the queue |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
@@ -142,6 +147,7 @@ mod dj_prefs;
 mod dj_sync;
 mod schedules;
 
+mod favorite_management;
 mod sonos_playlists;
 mod spotify_auth;
 mod spotify_search;
@@ -238,6 +244,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(spotify_auth::routes(cx));
     routes.extend(spotify_search::routes(cx));
     routes.extend(sonos_playlists::routes(cx));
+    routes.extend(favorite_management::routes(cx));
     routes.extend(remote::routes(cx));
     routes
 }
@@ -245,6 +252,20 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// The DJ: start, skip, stop, steer; its status and moods.
 fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = vec![
+        cx.route(
+            &Op::post(
+                "/dj/control",
+                "dj_control",
+                DJ,
+                "Apply one DJ action to the exact room set reviewed with /rooms/resolve",
+            ),
+            |s, c, req| {
+                answer(body::<crate::surface::dj_control::ReviewedDjRequest>(req)
+                    .and_then(|request| s.control_reviewed_dj(c, &request)))
+            },
+        )
+        .request_schema::<crate::surface::dj_control::ReviewedDjRequest>(true)
+        .response_schema::<OutcomeDto>(200, "Per-group results for the reviewed audience"),
         cx.control_set(
             Op::post(
                 "/dj/start",
@@ -303,7 +324,12 @@ fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             "Skip the DJ's current pick in each selected group",
             DjAction::Skip,
         ),
-        ("/dj/stop", "dj_stop", "Stop the DJ in each selected group", DjAction::Stop),
+        (
+            "/dj/stop",
+            "dj_stop",
+            "Stop the DJ in each selected group",
+            DjAction::Stop,
+        ),
     ] {
         routes.push(cx.control_set(
             Op::post(path, id, DJ, summary),

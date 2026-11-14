@@ -565,6 +565,12 @@ impl From<CoreError> for Failure {
             CoreError::PlaylistChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
                 "Read the saved Sonos playlist again from offset 0 without expected_revision; do not combine old and new pages.",
             ),
+            CoreError::FavoriteChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
+                "Read the original household's favorite or current source again and review its new revision before another edit.",
+            ),
+            CoreError::FavoriteUnavailable(_) => Self::new(ErrorCode::NotReady, detail).with_hint(
+                "Select a native track or station in this room, then preview the current favorite again. Live inputs and group or queue URLs cannot be saved as music favorites.",
+            ),
             // No field to fix: the newest action is past undo's reach, is one
             // undo can't put back, or someone changed its speakers since.
             CoreError::NotUndoable(_) => Self::new(ErrorCode::InvalidArgument, detail).with_hint(

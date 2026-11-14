@@ -19,6 +19,8 @@ on:
       - "scripts/test-sonos-playlist-contents.cjs"
       - "scripts/test-sonos-playlist-track-actions.cjs"
       - "scripts/test-sonos-playlist-management.cjs"
+      - "scripts/test-favorites-management.cjs"
+      - "scripts/test-favorites-panel.cjs"
       - "scripts/test-playlist-save-remote.cjs"
       - "scripts/test-dashboard-playlist-save.cjs"
       - "scripts/test-dashboard-playlist-save-panel.cjs"
@@ -54,12 +56,17 @@ on:
       - "scripts/test-remote-dj-rehearsal.cjs"
       - "scripts/test-remote-dj-handoff.cjs"
       - "scripts/test-remote-schedules.cjs"
+      - "scripts/test-scheduled-dj-targets.cjs"
+      - "scripts/schedule-targets-fixture.cjs"
       - "scripts/test-schedule-editing.cjs"
       - "scripts/test-favorite-routines.cjs"
       - "scripts/test-favorite-routines-panel.cjs"
       - "scripts/test-music-routines.cjs"
       - "scripts/test-remote-scenes.cjs"
       - "scripts/test-remote-dj-steering.cjs"
+      - "scripts/test-dj-targets.cjs"
+      - "scripts/test-dj-targets-panel.cjs"
+      - "scripts/dj-targets-fixture.cjs"
       - "scripts/test-remote-history.cjs"
       - "scripts/test-remote-listening-history.cjs"
       - "scripts/test-remote-diagnostics.cjs"
@@ -144,9 +151,9 @@ jobs:
       - name: Web direct source playback regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs scripts/test-sonos-playlist-contents.cjs scripts/test-sonos-playlist-track-actions.cjs scripts/test-line-in-source.cjs
-      - name: Native playlist management, saving and recovery regressions
+      - name: Native playlist and favorites management, saving and recovery regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-sonos-playlist-management.cjs scripts/test-playlist-save-remote.cjs scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-playlist-save-panel.cjs scripts/test-dashboard-playlist-store.cjs
+        run: node --test scripts/test-sonos-playlist-management.cjs scripts/test-playlist-save-remote.cjs scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-playlist-save-panel.cjs scripts/test-dashboard-playlist-store.cjs scripts/test-favorites-management.cjs scripts/test-favorites-panel.cjs
       - name: Web speaker sound regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-equalizer.cjs scripts/test-remote-fades.cjs scripts/test-remote-sound-copy.cjs
@@ -176,10 +183,10 @@ jobs:
         run: node --test scripts/test-remote-announcements.cjs
       - name: Web DJ taste regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs scripts/test-remote-dj-rehearsal.cjs scripts/test-remote-dj-handoff.cjs
+        run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs scripts/test-remote-dj-rehearsal.cjs scripts/test-remote-dj-handoff.cjs scripts/test-dj-targets.cjs scripts/test-dj-targets-panel.cjs
       - name: Web scheduled routine regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-schedules.cjs scripts/test-schedule-editing.cjs
+        run: node --test scripts/test-remote-schedules.cjs scripts/test-schedule-editing.cjs scripts/test-scheduled-dj-targets.cjs
       - name: Saved room aliases and default target regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-room-configuration.cjs

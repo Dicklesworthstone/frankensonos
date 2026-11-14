@@ -7,6 +7,7 @@ use fsonos_api::dj::{
     DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer, DjSteeringDto, SteerConstraints,
 };
 use fsonos_api::plan::{DjAction, plan_dj_set, plan_dj_start_set, plan_dj_steer_set};
+use fsonos_api::surface::dj_control::{ReviewedDjAction, ReviewedDjRequest};
 use fsonos_api::{
     DjStartRequest, DjSteerRequest, ErrorCode, Failure, NoteCode, OutcomeDto, Surface, ZoneRequest,
 };
@@ -22,9 +23,9 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const GROUPS: [&str; 4] = ["Lead@S1", "Guest@S1", "Lead@S2", "Guest@S2"];
@@ -62,27 +63,46 @@ fn done(action: &str) -> OutcomeDto {
 impl Probe {
     fn change_selected(&self, at: DjSpeakers<'_>, pending: &Mutex<Option<(PlayerId, PlayerId)>>) {
         let mut pending = pending.lock().unwrap();
-        if pending.as_ref().is_none_or(|(_, leader)| leader != at.coordinator) {
+        if pending
+            .as_ref()
+            .is_none_or(|(_, leader)| leader != at.coordinator)
+        {
             return;
         }
         let (member, leader) = pending.take().unwrap();
-        let player = at.households.iter().find_map(|h| h.player(&member)).unwrap();
+        let player = at
+            .households
+            .iter()
+            .find_map(|h| h.player(&member))
+            .unwrap();
         // Another controller uses the underlying simulator, bypassing the
         // operation-scoped transport belonging to this DJ command.
-        soap::join_group(self.external.lock().unwrap().as_ref().unwrap(), player.ip, &leader).unwrap();
+        soap::join_group(
+            self.external.lock().unwrap().as_ref().unwrap(),
+            player.ip,
+            &leader,
+        )
+        .unwrap();
     }
 
     fn ready(&self, at: DjSpeakers<'_>, steer: Option<&DjSteer>) -> Result<(), Failure> {
-        self.events.lock().unwrap().push(Event::Ready(
-            at.coordinator.0.clone(),
-            steer.cloned(),
-        ));
+        self.events
+            .lock()
+            .unwrap()
+            .push(Event::Ready(at.coordinator.0.clone(), steer.cloned()));
         if let Some((member, leader)) = self.regroup.lock().unwrap().take() {
-            let player = at.households.iter().find_map(|h| h.player(&member)).unwrap();
+            let player = at
+                .households
+                .iter()
+                .find_map(|h| h.player(&member))
+                .unwrap();
             soap::join_group(at.transport, player.ip, &leader).unwrap();
         }
         if self.refuse_ready.lock().unwrap().as_ref() == Some(at.coordinator) {
-            return Err(Failure::new(ErrorCode::NotReady, "the library is still loading"));
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "the library is still loading",
+            ));
         }
         Ok(())
     }
@@ -121,7 +141,11 @@ impl DjEngine for Probe {
             action,
             store.dj_session(&at.coordinator.0).unwrap(),
         ));
-        let player = at.households.iter().find_map(|h| h.player(at.coordinator)).unwrap();
+        let player = at
+            .households
+            .iter()
+            .find_map(|h| h.player(at.coordinator))
+            .unwrap();
         self.change_selected(at, &self.before_write);
         let mut running = self.running.lock().unwrap();
         if action != DjAction::Start && !running.contains(&at.coordinator.0) {
@@ -130,8 +154,12 @@ impl DjEngine for Probe {
         match action {
             DjAction::Start => {
                 soap::set_av_transport_uri(
-                    at.transport, player.ip, "x-rincon-mp3radio://example.invalid/dj.mp3", "",
-                ).map_err(CoreError::from)?;
+                    at.transport,
+                    player.ip,
+                    "x-rincon-mp3radio://example.invalid/dj.mp3",
+                    "",
+                )
+                .map_err(CoreError::from)?;
                 soap::play(at.transport, player.ip).map_err(CoreError::from)?;
                 running.insert(at.coordinator.0.clone());
             }
@@ -178,15 +206,27 @@ impl DjEngine for Probe {
         steer: &DjSteer,
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
-        self.events.lock().unwrap().push(Event::Steer(at.coordinator.0.clone(), steer.clone()));
+        self.events
+            .lock()
+            .unwrap()
+            .push(Event::Steer(at.coordinator.0.clone(), steer.clone()));
         match steer {
             DjSteer::Clear => store.delete_dj_session(&at.coordinator.0).unwrap(),
-            DjSteer::Set { mood, constraints, for_secs } => store.save_dj_session(&DjSession {
-                coordinator: at.coordinator.0.clone(),
-                mood: mood.clone(),
-                constraints: (!constraints.is_empty()).then(|| serde_json::to_string(constraints).unwrap()),
-                expires: for_secs.map_or(i64::MAX, |secs| clock.now().timestamp() + i64::try_from(secs).unwrap()),
-            }).unwrap(),
+            DjSteer::Set {
+                mood,
+                constraints,
+                for_secs,
+            } => store
+                .save_dj_session(&DjSession {
+                    coordinator: at.coordinator.0.clone(),
+                    mood: mood.clone(),
+                    constraints: (!constraints.is_empty())
+                        .then(|| serde_json::to_string(constraints).unwrap()),
+                    expires: for_secs.map_or(i64::MAX, |secs| {
+                        clock.now().timestamp() + i64::try_from(secs).unwrap()
+                    }),
+                })
+                .unwrap(),
         }
         Ok(done("DJ direction saved"))
     }
@@ -199,15 +239,24 @@ impl DjEngine for Probe {
         _: &dyn Clock,
     ) -> Result<DjStatusDto, Failure> {
         let session = store.dj_session(&at.coordinator.0).unwrap();
-        let added = session.as_ref().and_then(|row| row.constraints.as_deref())
-            .map_or_else(SteerConstraints::default, |text| serde_json::from_str(text).unwrap());
+        let added = session
+            .as_ref()
+            .and_then(|row| row.constraints.as_deref())
+            .map_or_else(SteerConstraints::default, |text| {
+                serde_json::from_str(text).unwrap()
+            });
         Ok(DjStatusDto {
             zone: at.coordinator.0.clone(),
             running: self.feeds(at.coordinator),
             now: None,
             next: Vec::new(),
             steering: DjSteeringDto {
-                source: if session.is_some() { "session" } else { "program" }.into(),
+                source: if session.is_some() {
+                    "session"
+                } else {
+                    "program"
+                }
+                .into(),
                 mood: session.as_ref().and_then(|row| row.mood.clone()),
                 session_mood: session.as_ref().and_then(|row| row.mood.clone()),
                 constraints: added.clone(),
@@ -225,14 +274,18 @@ impl DjEngine for Probe {
         _: &dyn Store,
         _: &dyn Clock,
     ) -> Result<DjMoodsDto, Failure> {
-        Err(Failure::new(ErrorCode::NotImplemented, "not used in this fixture"))
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "not used in this fixture",
+        ))
     }
 
     fn feeds(&self, coordinator: &PlayerId) -> bool {
         self.running.lock().unwrap().contains(&coordinator.0)
     }
 
-    fn on_playback(&self, _: DjSpeakers<'_>, _: &mut dyn Store, _: &PlayerPlayback, _: &dyn Clock) {}
+    fn on_playback(&self, _: DjSpeakers<'_>, _: &mut dyn Store, _: &PlayerPlayback, _: &dyn Clock) {
+    }
 }
 
 struct House {
@@ -245,26 +298,45 @@ struct House {
 impl House {
     fn new() -> Self {
         let sim = SimHousehold::builder()
-            .s1(["Lead", "Member", "Guest"].map(|name| SimPlayerSpec::new(name, SimModel::Play5Gen1)))
+            .s1(["Lead", "Member", "Guest"]
+                .map(|name| SimPlayerSpec::new(name, SimModel::Play5Gen1)))
             .s2(["Lead", "Member", "Guest"].map(|name| SimPlayerSpec::new(name, SimModel::One)))
-            .spawn().unwrap();
+            .spawn()
+            .unwrap();
         for generation in [1, 2] {
-            let player = |name| sim.players().iter()
-                .find(|p| p.generation == generation && p.room == name).unwrap();
-            soap::join_group(&sim.lan(), player("Member").ip, &PlayerId(player("Lead").uuid.clone())).unwrap();
+            let player = |name| {
+                sim.players()
+                    .iter()
+                    .find(|p| p.generation == generation && p.room == name)
+                    .unwrap()
+            };
+            soap::join_group(
+                &sim.lan(),
+                player("Member").ip,
+                &PlayerId(player("Lead").uuid.clone()),
+            )
+            .unwrap();
         }
-        let households = inventory::survey(&sim.lan(), &[], Duration::from_millis(500)).unwrap().households;
+        let households = inventory::survey(&sim.lan(), &[], Duration::from_millis(500))
+            .unwrap()
+            .households;
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
             directory.path().join("aliases.toml"),
             "[aliases]\nselected = [\"Member@S1\", \"Lead@S1\", \"Member@S2\", \"Lead@S2\"]\n",
-        ).unwrap();
+        )
+        .unwrap();
         for player in sim.players() {
             soap::set_volume(&sim.lan(), player.ip, 80).unwrap();
         }
         let probe = Probe::default();
         *probe.external.lock().unwrap() = Some(sim.lan());
-        Self { sim, households, directory, probe }
+        Self {
+            sim,
+            households,
+            directory,
+            probe,
+        }
     }
 
     fn target(&self, zone: &str) -> ControlTarget<'_> {
@@ -281,16 +353,22 @@ impl House {
         policy.defaults.max_volume = CAP;
         let mut store = MemStore::default();
         for zone in GROUPS {
-            store.save_dj_session(&DjSession {
-                coordinator: self.target(zone).coordinator.id.0.clone(),
-                mood: Some("bright".into()),
-                constraints: None,
-                expires: i64::MAX,
-            }).unwrap();
+            store
+                .save_dj_session(&DjSession {
+                    coordinator: self.target(zone).coordinator.id.0.clone(),
+                    mood: Some("bright".into()),
+                    constraints: None,
+                    expires: i64::MAX,
+                })
+                .unwrap();
         }
         Surface::new(
-            transport, Box::new(move |_| Ok(known.clone())), policy,
-            Box::new(FakeClock::new(DateTime::parse_from_rfc3339("2026-10-12T07:30:00Z").unwrap())),
+            transport,
+            Box::new(move |_| Ok(known.clone())),
+            policy,
+            Box::new(FakeClock::new(
+                DateTime::parse_from_rfc3339("2026-10-12T07:30:00Z").unwrap(),
+            )),
         )
         .with_aliases_file(self.directory.path().join("aliases.toml"))
         .with_action_log(Box::new(store), "test")
@@ -302,8 +380,12 @@ impl House {
     }
 
     fn writes_since(&self, start: usize) -> usize {
-        self.sim.soap_log().iter().skip(start)
-            .filter(|call| call.action != "Browse" && !call.action.starts_with("Get")).count()
+        self.sim
+            .soap_log()
+            .iter()
+            .skip(start)
+            .filter(|call| call.action != "Browse" && !call.action.starts_with("Get"))
+            .count()
     }
 }
 
@@ -318,45 +400,190 @@ fn direction() -> SteerConstraints {
 
 fn request(zone: &str) -> DjStartRequest {
     DjStartRequest {
-        zone: zone.into(), mood: Some("calm".into()),
-        constraints: direction(), for_secs: Some(900),
+        zone: zone.into(),
+        mood: Some("calm".into()),
+        constraints: direction(),
+        for_secs: Some(900),
     }
 }
 
 fn one_action(surface: &Surface) -> LoggedAction {
-    let mut actions = surface.recent_actions(&Client::Cli, &ActionFilter::default()).unwrap();
+    let mut actions = surface
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
     assert_eq!(actions.len(), 1, "a DJ set has one action boundary");
     actions.pop().unwrap()
+}
+
+fn reviewed(surface: &Surface, zone: &str, action: ReviewedDjAction) -> ReviewedDjRequest {
+    ReviewedDjRequest {
+        zone: zone.into(),
+        expected_revision: surface.resolve_rooms(&Client::Cli, zone).unwrap().revision,
+        action,
+        mood: None,
+        constraints: SteerConstraints::default(),
+        for_secs: None,
+        clear: false,
+    }
+}
+
+#[test]
+fn a_reviewed_dj_start_uses_one_admitted_command_per_group() {
+    let house = House::new();
+    let surface = house.surface();
+    let mut request = reviewed(&surface, "selected", ReviewedDjAction::Start);
+    request.mood = Some("calm".into());
+    request.constraints = direction();
+    request.for_secs = Some(900);
+    let outcome = surface.control_reviewed_dj(&Client::Cli, &request).unwrap();
+    assert!(outcome.changed);
+    assert!(
+        !outcome
+            .notes
+            .iter()
+            .any(|note| note.code == NoteCode::Skipped)
+    );
+    let events = house.events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Ready(..)))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Act(_, DjAction::Start, _)))
+            .count(),
+        2
+    );
+    for zone in SELECTED {
+        let status = surface.dj_status(&Client::Cli, zone).unwrap();
+        assert!(status.running);
+        assert_eq!(status.steering.session_mood.as_deref(), Some("calm"));
+        assert_eq!(status.steering.added, direction());
+    }
+    assert!(one_action(&surface).action.intent.starts_with("dj_start:"));
+}
+
+#[test]
+fn editing_an_alias_after_browser_review_changes_no_session_or_speaker() {
+    let house = House::new();
+    let surface = house.surface();
+    let request = reviewed(&surface, "selected", ReviewedDjAction::Start);
+    std::fs::write(
+        house.directory.path().join("aliases.toml"),
+        "[aliases]\nselected = ['Lead@S1', 'Member@S1', 'Lead@S2', 'Member@S2', 'Guest@S2']\n",
+    )
+    .unwrap();
+    let start = house.sim.soap_log().len();
+    let error = surface
+        .control_reviewed_dj(&Client::Cli, &request)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotCoordinator);
+    assert!(house.events().is_empty());
+    assert_eq!(house.writes_since(start), 0);
+    for zone in GROUPS {
+        assert_eq!(
+            surface
+                .dj_status(&Client::Cli, zone)
+                .unwrap()
+                .steering
+                .session_mood
+                .as_deref(),
+            Some("bright")
+        );
+    }
+}
+
+#[test]
+fn even_a_single_reviewed_group_rechecks_before_engine_session_mutation() {
+    let house = House::new();
+    let surface = house.surface();
+    let mut request = reviewed(&surface, "Lead@S1", ReviewedDjAction::Steer);
+    request.mood = Some("calm".into());
+    *house.probe.before_gate.lock().unwrap() = Some((
+        house.target("Guest@S1").player.id.clone(),
+        house.target("Lead@S1").coordinator.id.clone(),
+    ));
+    let error = surface
+        .control_reviewed_dj(&Client::Cli, &request)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotCoordinator);
+    assert!(
+        !house
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::Steer(..) | Event::Act(..)))
+    );
+    assert_eq!(
+        surface
+            .dj_status(&Client::Cli, "Lead@S1")
+            .unwrap()
+            .steering
+            .session_mood
+            .as_deref(),
+        Some("bright")
+    );
 }
 
 #[test]
 fn a_directed_alias_deduplicates_members_and_caps_only_the_selected_groups() {
     let house = House::new();
     let surface = house.surface();
-    let result = surface.control_set(&Client::McpStdio, "dj_start", |rooms| {
-        plan_dj_start_set(rooms, &request("selected"))
-    }).unwrap();
+    let result = surface
+        .control_set(&Client::McpStdio, "dj_start", |rooms| {
+            plan_dj_start_set(rooms, &request("selected"))
+        })
+        .unwrap();
     let events = house.events();
-    assert_eq!(events.iter().filter(|e| matches!(e, Event::Ready(..))).count(), 2);
-    assert!(events[..2].iter().all(|e| matches!(e, Event::Ready(_, Some(_)))), "{events:?}");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::Ready(..)))
+            .count(),
+        2
+    );
+    assert!(
+        events[..2]
+            .iter()
+            .all(|e| matches!(e, Event::Ready(_, Some(_)))),
+        "{events:?}"
+    );
     for zone in SELECTED {
         let coordinator = &house.target(zone).coordinator.id.0;
-        let starts: Vec<_> = events.iter().filter_map(|event| match event {
-            Event::Act(id, DjAction::Start, session) if id == coordinator => Some(session),
-            _ => None,
-        }).collect();
+        let starts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Act(id, DjAction::Start, session) if id == coordinator => Some(session),
+                _ => None,
+            })
+            .collect();
         assert_eq!(starts.len(), 1, "{zone} is started once");
         let session = starts[0].as_ref().unwrap();
         assert_eq!(session.mood.as_deref(), Some("calm"));
-        assert_eq!(serde_json::from_str::<SteerConstraints>(session.constraints.as_deref().unwrap()).unwrap(), direction());
-        assert_eq!(session.expires, DateTime::parse_from_rfc3339("2026-10-12T07:45:00Z").unwrap().timestamp());
+        assert_eq!(
+            serde_json::from_str::<SteerConstraints>(session.constraints.as_deref().unwrap())
+                .unwrap(),
+            direction()
+        );
+        assert_eq!(
+            session.expires,
+            DateTime::parse_from_rfc3339("2026-10-12T07:45:00Z")
+                .unwrap()
+                .timestamp()
+        );
         assert!(result.done.contains(zone), "{result:?}");
     }
     for generation in [1, 2] {
         for name in ["Lead", "Member", "Guest"] {
             let zone = format!("{name}@S{generation}");
-            assert_eq!(soap::get_volume(&house.sim.lan(), house.target(&zone).player.ip).unwrap(),
-                if name == "Guest" { 80 } else { CAP }, "{zone}");
+            assert_eq!(
+                soap::get_volume(&house.sim.lan(), house.target(&zone).player.ip).unwrap(),
+                if name == "Guest" { 80 } else { CAP },
+                "{zone}"
+            );
         }
     }
     let action = one_action(&surface);
@@ -368,21 +595,46 @@ fn a_directed_alias_deduplicates_members_and_caps_only_the_selected_groups() {
 #[test]
 fn one_unready_group_reports_every_preflight_and_leaves_all_groups_untouched() {
     let house = House::new();
-    *house.probe.refuse_ready.lock().unwrap() = Some(house.target("Lead@S1").coordinator.id.clone());
+    *house.probe.refuse_ready.lock().unwrap() =
+        Some(house.target("Lead@S1").coordinator.id.clone());
     let surface = house.surface();
     let start = house.sim.soap_log().len();
-    let refused = surface.control_set(&Client::McpStdio, "dj_start", |rooms| {
-        plan_dj_start_set(rooms, &request("everywhere"))
-    }).unwrap_err();
+    let refused = surface
+        .control_set(&Client::McpStdio, "dj_start", |rooms| {
+            plan_dj_start_set(rooms, &request("everywhere"))
+        })
+        .unwrap_err();
     assert_eq!(refused.code, ErrorCode::NotReady);
     assert_eq!(house.events().len(), GROUPS.len());
-    assert!(house.events().iter().all(|event| matches!(event, Event::Ready(..))));
-    assert_eq!(house.writes_since(start), 0, "no caps, sessions or playback before readiness");
+    assert!(
+        house
+            .events()
+            .iter()
+            .all(|event| matches!(event, Event::Ready(..)))
+    );
+    assert_eq!(
+        house.writes_since(start),
+        0,
+        "no caps, sessions or playback before readiness"
+    );
     for zone in GROUPS {
         assert!(refused.detail.contains(zone), "{refused:?}");
-        assert_eq!(surface.dj_status(&Client::Cli, zone).unwrap().steering.session_mood.as_deref(), Some("bright"));
+        assert_eq!(
+            surface
+                .dj_status(&Client::Cli, zone)
+                .unwrap()
+                .steering
+                .session_mood
+                .as_deref(),
+            Some("bright")
+        );
     }
-    assert!(surface.recent_actions(&Client::Cli, &ActionFilter::default()).unwrap().is_empty());
+    assert!(
+        surface
+            .recent_actions(&Client::Cli, &ActionFilter::default())
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -390,26 +642,67 @@ fn steer_and_clear_all_groups_share_one_undo_boundary() {
     let house = House::new();
     let surface = house.surface();
     let request = DjSteerRequest {
-        zone: "everywhere".into(), mood: Some("calm".into()), constraints: direction(),
-        for_secs: Some(900), ..DjSteerRequest::default()
+        zone: "everywhere".into(),
+        mood: Some("calm".into()),
+        constraints: direction(),
+        for_secs: Some(900),
+        ..DjSteerRequest::default()
     };
-    surface.control_set(&Client::Cli, "dj_steer", |rooms| plan_dj_steer_set(rooms, &request)).unwrap();
+    surface
+        .control_set(&Client::Cli, "dj_steer", |rooms| {
+            plan_dj_steer_set(rooms, &request)
+        })
+        .unwrap();
     let action = one_action(&surface);
     let before = BeforeState::parse(action.action.before_state.as_deref().unwrap()).unwrap();
-    assert!(before.zones.is_empty(), "steering changes sessions, not queued music");
+    assert!(
+        before.zones.is_empty(),
+        "steering changes sessions, not queued music"
+    );
     assert_eq!(before.dj_sessions.len(), GROUPS.len());
     let undone = surface.undo_checked(&Client::Cli, action.id).unwrap();
     assert_eq!(undone.undone, Some(action.id));
     assert!(undone.failures.is_empty(), "{undone:?}");
     for zone in GROUPS {
-        assert_eq!(surface.dj_status(&Client::Cli, zone).unwrap().steering.session_mood.as_deref(), Some("bright"));
+        assert_eq!(
+            surface
+                .dj_status(&Client::Cli, zone)
+                .unwrap()
+                .steering
+                .session_mood
+                .as_deref(),
+            Some("bright")
+        );
     }
-    let clear = DjSteerRequest { zone: "all@S2".into(), clear: true, ..DjSteerRequest::default() };
-    surface.control_set(&Client::Cli, "dj_steer", |rooms| plan_dj_steer_set(rooms, &clear)).unwrap();
+    let clear = DjSteerRequest {
+        zone: "all@S2".into(),
+        clear: true,
+        ..DjSteerRequest::default()
+    };
+    surface
+        .control_set(&Client::Cli, "dj_steer", |rooms| {
+            plan_dj_steer_set(rooms, &clear)
+        })
+        .unwrap();
     for zone in ["Lead@S2", "Guest@S2"] {
-        assert!(surface.dj_status(&Client::Cli, zone).unwrap().steering.session_mood.is_none());
+        assert!(
+            surface
+                .dj_status(&Client::Cli, zone)
+                .unwrap()
+                .steering
+                .session_mood
+                .is_none()
+        );
     }
-    assert_eq!(surface.dj_status(&Client::Cli, "Lead@S1").unwrap().steering.session_mood.as_deref(), Some("bright"));
+    assert_eq!(
+        surface
+            .dj_status(&Client::Cli, "Lead@S1")
+            .unwrap()
+            .steering
+            .session_mood
+            .as_deref(),
+        Some("bright")
+    );
 }
 
 #[test]
@@ -419,24 +712,57 @@ fn idle_groups_do_not_hide_other_skip_results_and_the_log_keeps_every_outcome() 
         let surface = house.surface();
         let running = house.target("Lead@S2").coordinator;
         soap::set_av_transport_uri(
-            &house.sim.lan(), running.ip, "x-rincon-mp3radio://example.invalid/running.mp3", "",
-        ).unwrap();
+            &house.sim.lan(),
+            running.ip,
+            "x-rincon-mp3radio://example.invalid/running.mp3",
+            "",
+        )
+        .unwrap();
         soap::play(&house.sim.lan(), running.ip).unwrap();
-        house.probe.running.lock().unwrap().insert(running.id.0.clone());
+        house
+            .probe
+            .running
+            .lock()
+            .unwrap()
+            .insert(running.id.0.clone());
         *house.probe.refuse_ready.lock().unwrap() = Some(running.id.clone());
-        let result = surface.control_set(&Client::Cli, if action == DjAction::Skip { "dj_skip" } else { "dj_stop" }, |rooms| {
-            plan_dj_set(rooms, &ZoneRequest { zone: "all".into() }, action)
-        }).unwrap();
+        let result = surface
+            .control_set(
+                &Client::Cli,
+                if action == DjAction::Skip {
+                    "dj_skip"
+                } else {
+                    "dj_stop"
+                },
+                |rooms| plan_dj_set(rooms, &ZoneRequest { zone: "all".into() }, action),
+            )
+            .unwrap();
         assert_eq!(house.events().len(), GROUPS.len());
-        assert!(house.events().iter().all(|event| matches!(event, Event::Act(..))), "skip and stop do not require a library");
+        assert!(
+            house
+                .events()
+                .iter()
+                .all(|event| matches!(event, Event::Act(..))),
+            "skip and stop do not require a library"
+        );
         assert!(result.done.contains("Lead@S2"));
-        assert_eq!(result.notes.iter().filter(|note| note.code == NoteCode::Skipped).count(), 3);
+        assert_eq!(
+            result
+                .notes
+                .iter()
+                .filter(|note| note.code == NoteCode::Skipped)
+                .count(),
+            3
+        );
         let logged = one_action(&surface);
         for zone in GROUPS {
             assert!(logged.action.result.contains(zone), "{logged:?}");
         }
         let before = BeforeState::parse(logged.action.before_state.as_deref().unwrap()).unwrap();
-        assert_eq!(before.not_undoable.as_deref(), Some("incomplete multi-group DJ command"));
+        assert_eq!(
+            before.not_undoable.as_deref(),
+            Some("incomplete multi-group DJ command")
+        );
     }
 }
 
@@ -444,9 +770,17 @@ fn idle_groups_do_not_hide_other_skip_results_and_the_log_keeps_every_outcome() 
 fn an_all_failed_execution_retains_every_group_and_cannot_be_replayed_as_a_read_failure() {
     let house = House::new();
     let surface = house.surface();
-    let failure = surface.control_set(&Client::Cli, "dj_skip", |rooms| {
-        plan_dj_set(rooms, &ZoneRequest { zone: "everywhere".into() }, DjAction::Skip)
-    }).unwrap_err();
+    let failure = surface
+        .control_set(&Client::Cli, "dj_skip", |rooms| {
+            plan_dj_set(
+                rooms,
+                &ZoneRequest {
+                    zone: "everywhere".into(),
+                },
+                DjAction::Skip,
+            )
+        })
+        .unwrap_err();
     assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
     assert_eq!(house.events().len(), GROUPS.len());
     for zone in GROUPS {
@@ -459,18 +793,34 @@ fn an_all_failed_execution_retains_every_group_and_cannot_be_replayed_as_a_read_
 fn a_group_changed_during_readiness_is_not_started_or_redirected() {
     let house = House::new();
     *house.probe.regroup.lock().unwrap() = Some((
-        house.target("Guest@S1").player.id.clone(), house.target("Lead@S1").coordinator.id.clone(),
+        house.target("Guest@S1").player.id.clone(),
+        house.target("Lead@S1").coordinator.id.clone(),
     ));
     let surface = house.surface();
-    let result = surface.control_set(&Client::McpStdio, "dj_start", |rooms| {
-        plan_dj_start_set(rooms, &request("selected"))
-    }).unwrap();
+    let result = surface
+        .control_set(&Client::McpStdio, "dj_start", |rooms| {
+            plan_dj_start_set(rooms, &request("selected"))
+        })
+        .unwrap();
     assert!(result.done.contains("Lead@S2"));
-    assert!(result.notes.iter().any(|note| note.code == NoteCode::Skipped && note.detail.contains("Lead@S1")));
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|note| note.code == NoteCode::Skipped && note.detail.contains("Lead@S1"))
+    );
     let first = &house.target("Lead@S1").coordinator.id.0;
-    assert!(!house.events().iter().any(|event| matches!(event, Event::Act(id, _, _) if id == first)));
+    assert!(
+        !house
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::Act(id, _, _) if id == first))
+    );
     for zone in ["Lead@S1", "Member@S1", "Guest@S1"] {
-        assert_eq!(soap::get_volume(&house.sim.lan(), house.target(zone).player.ip).unwrap(), 80);
+        assert_eq!(
+            soap::get_volume(&house.sim.lan(), house.target(zone).player.ip).unwrap(),
+            80
+        );
     }
 }
 
@@ -479,9 +829,11 @@ fn policy_denial_precedes_every_readiness_check_and_write() {
     let house = House::new();
     let surface = house.surface();
     let start = house.sim.soap_log().len();
-    let failure = surface.control_set(&Client::Unknown, "dj_start", |rooms| {
-        plan_dj_start_set(rooms, &request("all"))
-    }).unwrap_err();
+    let failure = surface
+        .control_set(&Client::Unknown, "dj_start", |rooms| {
+            plan_dj_start_set(rooms, &request("all"))
+        })
+        .unwrap_err();
     assert_eq!(failure.code, ErrorCode::PolicyDenied);
     assert!(house.events().is_empty());
     assert_eq!(house.writes_since(start), 0);
@@ -490,37 +842,72 @@ fn policy_denial_precedes_every_readiness_check_and_write() {
 #[test]
 fn an_unreadable_capped_room_blocks_the_entire_start_before_any_reduction() {
     let house = House::new();
-    house.sim.upnp_fault(&house.target("Guest@S2").player.id.0, "GetVolume", 501).unwrap();
+    house
+        .sim
+        .upnp_fault(&house.target("Guest@S2").player.id.0, "GetVolume", 501)
+        .unwrap();
     let surface = house.surface();
     let start = house.sim.soap_log().len();
-    let failure = surface.control_set(&Client::McpStdio, "dj_start", |rooms| {
-        plan_dj_start_set(rooms, &request("all"))
-    }).unwrap_err();
+    let failure = surface
+        .control_set(&Client::McpStdio, "dj_start", |rooms| {
+            plan_dj_start_set(rooms, &request("all"))
+        })
+        .unwrap_err();
     assert_eq!(failure.code, ErrorCode::PlayerUnreachable);
     assert!(failure.detail.contains("volume") && failure.detail.contains("cap of 25"));
     for zone in GROUPS {
         assert!(failure.detail.contains(zone), "{failure:?}");
     }
-    assert_eq!(house.writes_since(start), 0, "all caps are preflighted before reductions");
-    assert!(house.events().iter().all(|event| matches!(event, Event::Ready(..))));
+    assert_eq!(
+        house.writes_since(start),
+        0,
+        "all caps are preflighted before reductions"
+    );
+    assert!(
+        house
+            .events()
+            .iter()
+            .all(|event| matches!(event, Event::Ready(..)))
+    );
 }
 
 #[test]
 fn a_group_expanding_after_engine_admission_is_blocked_at_the_actual_speaker_write() {
     let house = House::new();
     *house.probe.before_write.lock().unwrap() = Some((
-        house.target("Guest@S1").player.id.clone(), house.target("Lead@S1").coordinator.id.clone(),
+        house.target("Guest@S1").player.id.clone(),
+        house.target("Lead@S1").coordinator.id.clone(),
     ));
     let surface = house.surface();
     let start = house.sim.soap_log().len();
-    let result = surface.control_set(&Client::Cli, "dj_start", |rooms| {
-        plan_dj_start_set(rooms, &DjStartRequest { zone: "selected".into(), ..DjStartRequest::default() })
-    }).unwrap();
+    let result = surface
+        .control_set(&Client::Cli, "dj_start", |rooms| {
+            plan_dj_start_set(
+                rooms,
+                &DjStartRequest {
+                    zone: "selected".into(),
+                    ..DjStartRequest::default()
+                },
+            )
+        })
+        .unwrap();
     assert!(result.done.contains("Lead@S2"));
-    assert!(result.notes.iter().any(|note| note.code == NoteCode::Skipped && note.detail.contains("Lead@S1")));
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|note| note.code == NoteCode::Skipped && note.detail.contains("Lead@S1"))
+    );
     let leader = &house.target("Lead@S1").coordinator.id.0;
-    assert!(!house.sim.soap_log().iter().skip(start).any(|call|
-        call.player == *leader && matches!(call.action.as_str(), "SetAVTransportURI" | "Play")));
+    assert!(
+        !house
+            .sim
+            .soap_log()
+            .iter()
+            .skip(start)
+            .any(|call| call.player == *leader
+                && matches!(call.action.as_str(), "SetAVTransportURI" | "Play"))
+    );
     assert!(!house.probe.feeds(&house.target("Lead@S1").coordinator.id));
     assert!(house.probe.feeds(&house.target("Lead@S2").coordinator.id));
 }
@@ -530,7 +917,8 @@ fn a_checked_engine_rejects_late_regrouping_before_store_only_steering_or_start(
     for start in [false, true] {
         let house = House::new();
         *house.probe.before_gate.lock().unwrap() = Some((
-            house.target("Guest@S1").player.id.clone(), house.target("Lead@S1").coordinator.id.clone(),
+            house.target("Guest@S1").player.id.clone(),
+            house.target("Lead@S1").coordinator.id.clone(),
         ));
         let surface = house.surface();
         let result = if start {
@@ -539,14 +927,33 @@ fn a_checked_engine_rejects_late_regrouping_before_store_only_steering_or_start(
             })
         } else {
             surface.control_set(&Client::Cli, "dj_steer", |rooms| {
-                plan_dj_steer_set(rooms, &DjSteerRequest {
-                    zone: "selected".into(), mood: Some("calm".into()), ..DjSteerRequest::default()
-                })
+                plan_dj_steer_set(
+                    rooms,
+                    &DjSteerRequest {
+                        zone: "selected".into(),
+                        mood: Some("calm".into()),
+                        ..DjSteerRequest::default()
+                    },
+                )
             })
-        }.unwrap();
+        }
+        .unwrap();
         assert!(result.done.contains("Lead@S2"));
-        assert!(result.notes.iter().any(|note| note.code == NoteCode::Skipped && note.detail.contains("Lead@S1")));
-        assert_eq!(surface.dj_status(&Client::Cli, "Lead@S1").unwrap().steering.session_mood.as_deref(), Some("bright"));
+        assert!(
+            result
+                .notes
+                .iter()
+                .any(|note| note.code == NoteCode::Skipped && note.detail.contains("Lead@S1"))
+        );
+        assert_eq!(
+            surface
+                .dj_status(&Client::Cli, "Lead@S1")
+                .unwrap()
+                .steering
+                .session_mood
+                .as_deref(),
+            Some("bright")
+        );
         let coordinator = &house.target("Lead@S1").coordinator.id.0;
         assert!(!house.events().iter().any(|event| matches!(event,
             Event::Steer(id, _) | Event::Act(id, _, _) if id == coordinator)));
@@ -562,7 +969,13 @@ struct ChangeDuringCaps {
 }
 
 impl Transport for ChangeDuringCaps {
-    fn soap_post(&self, host: IpAddr, path: &str, action: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         let result = self.lan.soap_post(host, path, action, body);
         if host == self.host && action.trim_matches('"').ends_with("#GetVolume")
             // Readiness, the before-snapshot, then the execution's cap read.
@@ -586,18 +999,31 @@ fn a_group_expanding_during_cap_reads_gets_no_volume_or_playback_write() {
         reads: AtomicUsize::new(0),
     }));
     let start = house.sim.soap_log().len();
-    let result = surface.control_set(&Client::McpStdio, "dj_start", |rooms| {
-        plan_dj_start_set(rooms, &request("selected"))
-    }).unwrap();
+    let result = surface
+        .control_set(&Client::McpStdio, "dj_start", |rooms| {
+            plan_dj_start_set(rooms, &request("selected"))
+        })
+        .unwrap();
     assert!(result.done.contains("Lead@S2"));
-    assert!(result.notes.iter().any(|note| note.code == NoteCode::Skipped && note.detail.contains("Lead@S1")));
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|note| note.code == NoteCode::Skipped && note.detail.contains("Lead@S1"))
+    );
     for zone in ["Lead@S1", "Member@S1", "Guest@S1"] {
         let player = house.target(zone).player;
         assert_eq!(soap::get_volume(&house.sim.lan(), player.ip).unwrap(), 80);
-        assert!(!house.sim.soap_log().iter().skip(start).any(|call|
-            call.player == player.id.0
-                && (matches!(call.action.as_str(), "SetVolume" | "Play")
-                    || (zone != "Guest@S1" && call.action == "SetAVTransportURI"))),
-            "only the simulated external controller may join Guest via SetAVTransportURI");
+        assert!(
+            !house
+                .sim
+                .soap_log()
+                .iter()
+                .skip(start)
+                .any(|call| call.player == player.id.0
+                    && (matches!(call.action.as_str(), "SetVolume" | "Play")
+                        || (zone != "Guest@S1" && call.action == "SetAVTransportURI"))),
+            "only the simulated external controller may join Guest via SetAVTransportURI"
+        );
     }
 }

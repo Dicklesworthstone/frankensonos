@@ -51,6 +51,7 @@ pub mod dj_prefs;
 pub mod dj_rehearse;
 pub mod dj_sync;
 pub mod eq;
+pub mod favorite_management;
 mod heard;
 pub mod house_policy;
 pub mod line_in;
@@ -69,6 +70,7 @@ pub mod spotify_search;
 pub mod announce;
 mod bridge;
 mod dj_caps;
+pub mod dj_control;
 mod dj_targets;
 mod intents;
 mod level_undo;
@@ -799,7 +801,9 @@ impl Surface {
                 households,
                 coordinator,
             };
-            return self.carry_out_dj(at, guard, command, &|| Ok(())).map(Executed::from);
+            return self
+                .carry_out_dj(at, guard, command, &|| Ok(()))
+                .map(Executed::from);
         }
         let destination = std::cell::RefCell::new(None);
         let result = crate::heal::execute_healing_with(
@@ -843,7 +847,8 @@ impl Surface {
             if done.is_ok() || (!was_feeding && dj.feeds(coordinator)) {
                 self.dj_starters.carried_out(command, guard.client);
             }
-            let queue_position = self.live()
+            let queue_position = self
+                .live()
                 .and_then(|live| live.player(coordinator)?.queue_position);
             self.publish_dj(dj, at, store, queue_position);
             Ok(done)
@@ -1028,15 +1033,36 @@ impl Surface {
             .prepare_sources(&households, commands)
             .inspect_err(|failure| self.notice(failure))?;
         self.prepare_dj_set(&households, &guard, &commands)?;
+        self.control_prepared_set(client, tool, &households, commands, false)
+    }
+
+    /// Execute already resolved commands. A scheduled or reviewed DJ request
+    /// keeps its admission snapshot and fences even a single selected group.
+    fn control_prepared_set(
+        &self,
+        client: &Client,
+        tool: &str,
+        households: &[HouseholdState],
+        commands: Vec<Command>,
+        pinned_dj: bool,
+    ) -> Result<OutcomeDto, Failure> {
         let guard = self.guard(client);
-        guard.authorize(tool, false)?;
+        guard.authorize(tool, false).inspect_err(|denied| {
+            self.record(
+                client,
+                tool.to_string(),
+                format!("deny: {}", denied.detail),
+                denied.detail.clone(),
+                None,
+            );
+        })?;
         // A volume or mute change ends a sleep fade in flight on each affected
         // group, so the fade does not override the new level.
         if let Some(sleep) = &self.sleep {
             for command in &commands {
                 if matches!(command, Command::Volume { .. } | Command::Mute { .. }) {
-                    for coordinator in affected(&households, command) {
-                        sleep.volume_changed(&households, &coordinator);
+                    for coordinator in affected(households, command) {
+                        sleep.volume_changed(households, &coordinator);
                     }
                 }
             }
@@ -1058,7 +1084,7 @@ impl Surface {
         let regroups = commands.iter().any(regroups);
         // No action log: the per-command path is enough.
         if self.log.is_none() {
-            let outcome = self.execute_set(&households, &guard, &commands);
+            let outcome = self.execute_set(households, &guard, &commands, pinned_dj);
             if regroups {
                 self.invalidate();
             }
@@ -1067,16 +1093,16 @@ impl Surface {
             }
             return outcome;
         }
-        let intent = intents::of(tool, &households, &commands);
+        let intent = intents::of(tool, households, &commands);
         let sessions: Vec<_> = commands
             .iter()
             .flat_map(|command| self.sessions_before(command))
             .collect();
         // One before-state across every affected zone, so one undo restores
         // the whole set.
-        let run = self.run_set(&households, &guard, &commands, true);
-        let incomplete_dj = dj_targets::is_set(&commands)
-            && run.outcomes.iter().any(Result::is_err);
+        let run = self.run_set(households, &guard, &commands, true, pinned_dj);
+        let incomplete_dj =
+            (pinned_dj || dj_targets::is_set(&commands)) && run.outcomes.iter().any(Result::is_err);
         let unsafe_undo = run.unsafe_undo;
         let (snaps, missed) = (run.snaps, run.missed);
         let attempted: Vec<_> = commands
@@ -1090,25 +1116,35 @@ impl Surface {
             &commands[..run.outcomes.len()],
             &run.queue_undo,
         );
-        let result = set_runs::merged(&households, &commands, run.outcomes);
+        let result = set_runs::merged(households, &commands, run.outcomes);
         if regroups {
             self.invalidate();
         }
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = level_undo::scope(before, &households, &guard, &attempted, &snaps);
+        let before = level_undo::scope(before, households, &guard, &attempted, &snaps);
         let (decision, mut text, before) = log_entry(&result, before, missed.len());
         if incomplete_dj && let Ok(outcome) = &result {
             // Keep the complete DJ receipt in the one batch action, including
             // groups whose engine could not complete its command.
-            for skipped in outcome.notes.iter().filter(|note| note.code == NoteCode::Skipped) {
+            for skipped in outcome
+                .notes
+                .iter()
+                .filter(|note| note.code == NoteCode::Skipped)
+            {
                 let _ = write!(text, " (skipped: {})", skipped.detail);
             }
         }
         let before = recovery::protect(before, unsafe_undo);
         let before = if incomplete_dj {
-            Some(actions::before_state_not_undoable("incomplete multi-group DJ command"))
+            Some(actions::before_state_not_undoable(
+                if dj_targets::is_set(&commands) {
+                    "incomplete multi-group DJ command"
+                } else {
+                    "incomplete DJ command"
+                },
+            ))
         } else {
             before
         };
@@ -1173,8 +1209,9 @@ impl Surface {
         households: &[HouseholdState],
         guard: &Guard<'_>,
         commands: &[Command],
+        pinned_dj: bool,
     ) -> Result<OutcomeDto, Failure> {
-        let run = self.run_set(households, guard, commands, false);
+        let run = self.run_set(households, guard, commands, false, pinned_dj);
         set_runs::merged(households, commands, run.outcomes)
     }
 

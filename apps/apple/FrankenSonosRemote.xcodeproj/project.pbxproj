@@ -5,6 +5,16 @@
 	};
 	objectVersion = 56;
 	objects = {
+		B10000000000000000000007 = {
+			isa = PBXBuildFile;
+			fileRef = B20000000000000000000007;
+		};
+		B20000000000000000000007 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = SonosPlaylistManagementPanel.swift;
+			sourceTree = "<group>";
+		};
 		B10000000000000000000006 = {
 			isa = PBXBuildFile;
 			fileRef = B20000000000000000000006;
@@ -253,6 +263,7 @@
 				B10000000000000000000004,
 				B10000000000000000000005,
 				B10000000000000000000006,
+				B10000000000000000000007,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -295,6 +306,7 @@
 				B20000000000000000000004,
 				B20000000000000000000005,
 				B20000000000000000000006,
+				B20000000000000000000007,
 			);
 			name = "Shared application";
 			path = Sources/FrankenSonosRemote;

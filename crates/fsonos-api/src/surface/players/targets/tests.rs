@@ -122,6 +122,11 @@ fn repeated_alias_rooms_and_inventory_order_do_not_duplicate_or_reorder_the_view
     h.reverse();
     for house in &mut h {
         house.rooms.reverse();
+        house.players.reverse();
+        house.groups.reverse();
+        for group in &mut house.groups {
+            group.members.reverse();
+        }
     }
     assert_eq!(
         resolved(&h, Some(&aliases), &Client::Unknown, "rooms").unwrap(),
@@ -131,6 +136,49 @@ fn repeated_alias_rooms_and_inventory_order_do_not_duplicate_or_reorder_the_view
     assert!(
         !json.contains("192.0.2.10"),
         "a target preview needs identities, not addresses"
+    );
+}
+
+#[test]
+fn a_review_revision_binds_physical_members_and_addresses_without_disclosing_them() {
+    let mut h = households();
+    let before = resolved(&h, None, &Client::Unknown, "Den").unwrap();
+    assert_eq!(before.revision.len(), 64);
+    assert!(before.revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+    // A bonded/satellite player need not add a logical room to the preview.
+    let mut partner = h[0].players[0].clone();
+    partner.id = fsonos_types::PlayerId("RINCON_PARTNER".into());
+    partner.ip = "192.0.2.31".parse().unwrap();
+    h[0].groups[0].members.push(partner.id.clone());
+    h[0].players.push(partner.clone());
+    let bonded = resolved(&h, None, &Client::Unknown, "Den").unwrap();
+    assert_eq!(before.groups, bonded.groups);
+    assert_ne!(before.revision, bonded.revision);
+
+    h[0].players.last_mut().unwrap().ip = "192.0.2.32".parse().unwrap();
+    let moved = resolved(&h, None, &Client::Unknown, "Den").unwrap();
+    assert_ne!(bonded.revision, moved.revision);
+    h[0].players.pop();
+    let unreachable = resolved(&h, None, &Client::Unknown, "Den").unwrap();
+    assert_ne!(moved.revision, unreachable.revision);
+    let json = serde_json::to_string(&moved).unwrap();
+    assert!(!json.contains("192.0.2."));
+    assert!(!json.contains("RINCON_PARTNER"));
+}
+
+#[test]
+fn only_the_selected_audience_changes_its_revision() {
+    let mut h = households();
+    let before = resolved(&h, None, &Client::Unknown, "Den").unwrap();
+    h[1].players[0].ip = "192.0.2.80".parse().unwrap();
+    assert_eq!(before, resolved(&h, None, &Client::Unknown, "Den").unwrap());
+    h[0].id = Some(fsonos_types::HouseholdId("HH_REPLACED".into()));
+    assert_ne!(
+        before.revision,
+        resolved(&h, None, &Client::Unknown, "Den")
+            .unwrap()
+            .revision
     );
 }
 

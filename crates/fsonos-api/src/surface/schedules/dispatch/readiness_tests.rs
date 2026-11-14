@@ -9,7 +9,6 @@ use fsonos_core::scenes::Scene;
 use fsonos_core::schedule::ScheduleSpec;
 use fsonos_core::store::{MemStore, StoredSchedule};
 use fsonos_proto::control as soap;
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::TransportState;
@@ -72,11 +71,23 @@ impl House {
         }
         .spawn()
         .unwrap();
+        Self::from_sim(sim, action)
+    }
+
+    fn mixed(action: &ScheduleAction) -> Self {
+        let sim = SimHousehold::builder()
+            .s1(["Room0", "Room1"].map(|name| SimPlayerSpec::new(name, SimModel::Play5Gen1)))
+            .s2(["Room0", "Room1"].map(|name| SimPlayerSpec::new(name, SimModel::One)))
+            .spawn()
+            .unwrap();
+        Self::from_sim(sim, action)
+    }
+
+    fn from_sim(sim: SimHandle, action: &ScheduleAction) -> Self {
         let lan = sim.lan();
-        let mut household = HouseholdState::default();
-        household
-            .apply_topology(&get_zone_group_state(&lan, sim.player("Room0").unwrap().ip).unwrap());
-        let houses = vec![household];
+        let houses = fsonos_core::inventory::survey(&lan, &[], Duration::from_millis(500))
+            .unwrap()
+            .households;
         let inventory = Arc::new(Mutex::new(Ok(houses.clone())));
         let known = Arc::clone(&inventory);
         let survey: Survey = Box::new(move |_| known.lock().unwrap().clone());

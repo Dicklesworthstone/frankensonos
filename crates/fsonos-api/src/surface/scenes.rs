@@ -163,7 +163,7 @@ impl SceneQueueDto {
             .map_or_else(String::new, |mode| format!(", {mode}"));
         if let Some(total) = self.total {
             return format!(
-                "saved queue backup, {total} entries, track {} at {}:{:02}{mode} (replaces the original player's current queue on recall; action-history undo cannot restore those contents)",
+                "saved queue backup, {total} entries, track {} at {}:{:02}{mode} (replaces the original player's current queue on recall; bounded queue undo requires a complete verified scene on unchanged groups)",
                 self.track,
                 self.position_secs / 60,
                 self.position_secs % 60,
@@ -808,6 +808,10 @@ impl SceneHooks for SceneDj<'_> {
         receipt: control::QueueReplacement,
     ) {
         self.queues.finished(coordinator, receipt);
+    }
+
+    fn queue_backup_finished(&self, coordinator: &PlayerId, receipt: scenes::QueueRestoration) {
+        self.queues.restored(coordinator, receipt);
     }
 
     fn load_catalog_source(

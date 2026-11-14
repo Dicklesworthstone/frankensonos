@@ -41,7 +41,8 @@ public actor CommandReviewSession {
         _ = try command.payload(in: zone)
         let observed = try await CommandObservation.read(client, command: command, zone: zone)
         try check(token)
-        let review = CommandReview(id: UUID(), command: command, zone: zone,
+        let bound = try observed.bindQueueRevision(command)
+        let review = CommandReview(id: UUID(), command: bound, zone: zone,
                                    state: try observed.state(for: command, in: zone),
                                    dj: observed.dj, favorite: observed.favorite, sleepTimer: observed.sleepTimer,
                                    observedAt: Date(), observation: observed)
@@ -65,6 +66,35 @@ public actor CommandReviewSession {
     private func check(_ token: UInt64) throws {
         try Task.checkCancellation()
         guard generation == token else { throw CancellationError() }
+    }
+}
+
+// Native catalog changes share the exact same one-use review and write gate.
+extension CommandReviewSession {
+    public func prepare(_ command: SonosPlaylistMutation) async throws -> SonosPlaylistMutationReview {
+        guard !busy else { throw ContractError.invalid("An action is still being checked or sent.") }
+        busy = true
+        defer { busy = false }
+        generation &+= 1; pending = nil
+        let token = generation
+        let observed = try await SonosPlaylistMutationObservation.read(command, client: client)
+        try check(token)
+        let review = SonosPlaylistMutationReview(command: command, observation: observed)
+        pending = review.id
+        return review
+    }
+
+    public func execute(_ review: SonosPlaylistMutationReview) async throws -> SonosPlaylistMutationReceipt {
+        guard !busy, pending == review.id else {
+            throw ContractError.invalid("This review is no longer current. Review the saved playlist change again.")
+        }
+        pending = nil; busy = true
+        defer { busy = false }
+        let token = generation
+        let current = try await SonosPlaylistMutationObservation.read(review.command, client: client)
+        try review.observation.validate(current, command: review.command)
+        try check(token)
+        return try await client.perform(review)
     }
 }
 
@@ -105,6 +135,14 @@ fileprivate struct CommandObservation: Sendable {
     let scene: Scene?
     let sleepTimer: SleepTimer?
     let sourceQueue: SourceQueueReview?
+
+    func bindQueueRevision(_ command: NativeCommand) throws -> NativeCommand {
+        guard case .sonosPlaylistTracks(let selection) = command else { return command }
+        guard let sourceQueue else {
+            throw ContractError.invalid("Read the destination queue before reviewing selected saved tracks.")
+        }
+        return .sonosPlaylistTracks(try selection.bound(toQueueRevision: sourceQueue.revision))
+    }
 
     func state(for command: NativeCommand, in zone: Zone) throws -> ZoneState {
         let id = RoomID(household: zone.household, room: command.room ?? zone.coordinatorRoom)
@@ -191,6 +229,8 @@ fileprivate struct CommandObservation: Sendable {
             try selection.validate(await client.playlistContents(selection.request))
         case .sonosPlaylist(let selection):
             try selection.validate(await client.sonosPlaylists(zone), in: zone)
+        case .sonosPlaylistTracks(let selection):
+            try await selection.validate { try await client.sonosPlaylistContents($0) }
         case .listeningSettings(let change):
             try await change.preflight(client, in: zone)
         default: break

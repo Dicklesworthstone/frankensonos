@@ -60,7 +60,7 @@ function setup(groups = null) {
   queue=Q.model({call:request});
   const workspace=vm.runInNewContext(`({${workspaceInvalidation}})`,{queue,controller,activity:null});
   const context=vm.createContext({controller,session,request,active:true,catalogsDirty:true,historyVersion:0,demo:false,
-    sourcePlayer:null,playlistSave:null,
+    sourcePlayer:null,playlistSave:null,favorites:null,
     workspace:{invalidate(targets){invalidations++;workspace.invalidate(targets);}},history:async()=>{histories++;},
     RemoteEventFeed:{open:(url)=>F.open(url,{fetcher,schedule:t.schedule,cancel:t.cancel,now:t.now,random:()=>0,gate})},
     DashboardLive:{create:options=>L.create({...options,schedule:t.schedule,cancel:t.cancel,now:t.now})},
@@ -159,7 +159,7 @@ test('the served asset order installs heartbeat delivery and recovery before pag
   assert.match(rust,/const SLEEP: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-sleep\.js"\);/);
   assert.match(rust,/const VOLUME: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-volume\.js"\);/);
   assert.match(rust,/const SCENES: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-scenes\.js"\);/);
-  assert.ok(rust.includes('{WORKSPACE}\\n{PLAY_MODE}\\n{GROUPS}\\n{TIMERS}\\n{SLEEP}\\n{VOLUME}\\n{SCENES}\\n{SCHEDULES}\\n{ROUTINES}\\n{ANNOUNCEMENTS}\\n{ANNOUNCEMENTS_PANEL}\\n{STEERING}\\n{DIRECTION}\\n{DJ_PREFERENCES}\\n{PREFERENCES}\\n{DJ_SESSION}\\n{REHEARSAL}\\n{ROOM_SETS}\\n{SOURCE_TARGETS}\\n{SOURCE_PLAYER}\\n{SOURCE}\\n{PLAYLIST_SAVE}\\n{PLAYLIST_SAVE_PANEL}\\n{SPOTIFY_CONNECT}\\n{LIBRARY_SYNC}\\n{MUSIC}\\n{SCRIPT}'));
+  assert.ok(rust.includes('{WORKSPACE}\\n{PLAY_MODE}\\n{GROUPS}\\n{TIMERS}\\n{SLEEP}\\n{VOLUME}\\n{SCENES}\\n{SCHEDULES}\\n{ROUTINES}\\n{ANNOUNCEMENTS}\\n{ANNOUNCEMENTS_PANEL}\\n{STEERING}\\n{DIRECTION}\\n{DJ_PREFERENCES}\\n{PREFERENCES}\\n{DJ_SESSION}\\n{REHEARSAL}\\n{ROOM_SETS}\\n{ROOM_CONFIGURATION}\\n{ROOM_CONFIGURATION_PANEL}\\n{SOURCE_TARGETS}\\n{SOURCE_PLAYER}\\n{DJ_TARGETS}\\n{DJ_TARGETS_PANEL}\\n{SOURCE}\\n{PLAYLIST_SAVE}\\n{PLAYLIST_SAVE_PANEL}\\n{SPOTIFY_CONNECT}\\n{LIBRARY_SYNC}\\n{MUSIC}\\n{SCRIPT}'));
   assert.match(script,/live\.suspend\(\); request\.cancelReads\(\);/);
   assert.match(script,/live\.resume\(\)/);
   assert.doesNotMatch(script,/schedule\(changedDuringRead \? 500 : wait\)/);

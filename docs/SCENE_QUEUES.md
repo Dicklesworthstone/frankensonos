@@ -65,9 +65,22 @@ the current queue; inspect the result before retrying. A failed queue source
 blocks subsequent playback for that scene group. Independent groups and room
 settings can still apply.
 
-**Recall replaces the original player's current queue contents.** Existing
-action-history undo can attempt to restore speaker state, but it cannot
-reconstruct the queue that was replaced. Both the caller and scene saver need
+**Recall replaces the original player's current queue contents.** A complete
+scene on unchanged physical groups can retain a bounded backup of each original
+selected queue and the exact restoration receipt. The existing reviewed undo
+then restores those original contents, duplicate occurrences, selected track,
+elapsed position, known mode, and the volume/mute fields changed by the scene.
+Reconstruction and level restoration happen in silence; playback resumes only
+when the original queue was playing. Current volume caps still apply.
+
+Every attempted replacement must have complete proof. Partial recalls,
+regrouping, DJ changes, unreadable or oversized original queues, and uncertain
+results leave the whole action as an undo barrier. Later listener changes
+invalidate the saved proof. A recall with unchanged queue contents also remains
+a conservative barrier. Inspect the apply result and undo preview for actual
+eligibility; see [queue undo](QUEUE_UNDO.md).
+
+Both the caller and scene saver need
 `play_queue`, `add_to_queue`, `remove_from_queue`, `pause`, and `seek`, plus
 `set_play_mode` for a known saved mode and `play` if the scene starts playback.
 

@@ -94,7 +94,10 @@ Deleting every entry from a previously selected eligible queue can be undone.
 
 A scene can retain the same complete queue recovery for Spotify albums and
 playlists, resolved artist tracks and show episodes, native Sonos playlists,
-and container favorites. Both playing and silent scene loads are eligible.
+container favorites, and durable saved queue backups. Both playing and silent
+scene loads are eligible. A saved backup can recall any selected occurrence,
+elapsed position and known play mode; its restoration receipt retains that exact
+result for the later undo check.
 Every affected group must keep its original physical membership, and every
 scene step must complete. Each replaced queue must have its own complete
 backup and confirmed replacement receipt; otherwise the entire action remains
@@ -109,8 +112,10 @@ queue was playing. A paused or stopped original queue stays silent.
 
 Completed volume fades can retain recovery. A manual fade takeover, failed
 step, missing receipt, or changed final state prevents it, even if the eventual
-levels happen to match the requested scene. Scenes that regroup rooms, start
-the DJ, or recall a durable queue backup remain outside this recovery scope.
+levels happen to match the requested scene. Scenes that regroup rooms or start
+the DJ remain outside this recovery scope. A durable backup recall that leaves
+queue contents unchanged conservatively remains a barrier instead of claiming
+a queue replacement occurred.
 Initially empty, inactive, unreadable or oversized original queues still cannot
 be recovered. The apply response reports when replaced contents cannot be
 restored; use the action history and undo preview to inspect eligibility.

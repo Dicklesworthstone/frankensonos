@@ -819,9 +819,32 @@ speaker-write checks. Per-group caps, starter identity and cross-group repeat
 avoidance remain in force. Partial outcomes keep every group result in one
 receipt and action log, block whole-batch undo, exit nonzero on the CLI and
 set MCP's `isError`. Successful steering retains each prior session for undo.
-Scene, schedule and browser DJ targets keep their existing contracts.
-Simulator and cross-surface regression cases are included, with compilation,
-execution and formatting pending after the executor became unavailable.
+Scheduled DJ starts now accept the same aliases and whole-house targets. They
+validate every selected group before the durable occurrence claim and retain
+the original command list and physical audience through execution, including
+single-group runs. Later alias edits or discovery growth cannot enlarge the
+run; partial completion is logged once and never replayed after a restart.
+`POST /dj/control` also binds a reviewed request to the revision returned by
+`GET /rooms/resolve`, including physical members and addresses, before any
+readiness or mutation. Scene DJ entries retain their existing group contracts.
+The phone and dashboard now expose **DJ across rooms** through one shared
+review controller: complete groups, current sources, running feeds and exact
+steering sessions are shown before one revision-bound request. Start can keep
+individual directions or apply one full direction to all groups; steer, clear,
+whole-work skip and stop share the same controls. Existing command/volume lanes
+cover the whole selection. Partial and lost replies retain every receipt and
+require explicit observation of the original players, including after regrouping,
+before another reviewed action. Focused browser controller, DOM and bundle
+regressions pass.
+Both browser routine editors also author and edit scheduled DJ aliases and
+whole-house targets. They resolve only the selected target during review,
+display each complete affected group and compare its physical revision before
+saving, while preserving routine revision checks and uncertain-save recovery.
+The form explains that the saved selector is resolved afresh on each future
+run, and retains offline saved targets explicitly.
+Simulator and cross-surface regression cases are included. The changed Rust
+paths have passed the pinned formatter; compilation and execution remain
+pending under shared build-host resource pressure.
 See [Multi-room DJ](docs/MULTI_ROOM_DJ.md).
 
 ### 12.2 `fsonos doctor` and `fsonos setup`
@@ -1059,6 +1082,21 @@ Spotify track won't enqueue. Library search is token-scored fuzzy matching over
 the cached library and favorites (title, composer, performer, album). The
 surfaces are in 12.3.
 
+My Sonos favorites also support native authoring through CLI, HTTP, MCP and
+both web remotes. The phone and dashboard review the exact source or saved
+entry, retain pending and uncertain results through navigation, and recover
+against the original household even if its room has joined another group.
+Confirmed local changes invalidate the existing favorite pickers immediately.
+An observed-current-source preview selects the actual queue occurrence or the
+direct track/station; saving retains the speaker's resource and service
+metadata. Rename and removal require an exact household-local `FV:2/<n>` ID
+and its observed revision. Source, queue, catalog, household, group and boot
+checks precede one native mutation and catalog confirmation. Playback, queue,
+levels and DJ ownership continue. All writes use `house-config` permission;
+an uncertain acknowledgement is not replayed. See
+[Favorite management](docs/FAVORITES_MANAGEMENT.md) for interfaces and the
+current Rust execution limitation.
+
 Staged container replacement also treats every post-commit start failure as
 an uncertain overall operation. A late URI/Seek/Play refusal, including SOAP
 800, cannot replay the append and prefix removal through renderer-account
@@ -1087,6 +1125,23 @@ automatically replayed. Native saved-playlist favorites also expand as
 containers, including file-backed resources. See
 [`docs/SONOS_PLAYLISTS.md`](docs/SONOS_PLAYLISTS.md) for the interface and failure
 contract; simulator coverage is separate from physical-speaker acceptance.
+
+The native iPhone, iPad and Mac remote also selects one to ten saved playlist
+occurrences in **Music → Sonos → Read tracks**. Ordered selections can span
+same-revision pages and include deliberate repeats, with move/remove controls.
+Play replaces the destination queue in normal order; Next and Append insert
+silently. The existing one-use command review rereads every selected source page
+and the destination queue at preparation and confirmation, then submits both
+revisions with one native batch request. Catalog, group or lifecycle changes
+retire stale selections. Lost or contradictory receipts remain uncertain and
+are never replayed; native save/rename/removal continues through the same writer.
+
+The native Apple remote also provides reviewed queue saving and exact saved-
+playlist rename/deletion. It shares the existing command lane, retains the
+original household and revision, and keeps uncertain results across navigation
+and suspension until an explicit original-household catalog read. No Swift
+toolchain was available for local execution; see
+[Native playlist management](docs/NATIVE_SONOS_PLAYLIST_MANAGEMENT.md).
 
 Native queue creation is available through `fsonos playlist-save <room> <title>`,
 `POST /sonos/playlists/save`, MCP `save_sonos_playlist`, the phone's
@@ -1253,9 +1308,13 @@ MCP and web capture) retains complete ordered contents with a 1,000-entry and
 before removing the old prefix with the speaker's revision guard, then
 restores occurrence, time, mode and playback intent on the original player.
 It tolerates prior queue edits and reboots, but fences concurrent changes and
-never replays uncertain writes. Paused recall stays silent. Replacement queue
-contents are outside action-history undo. Existing `keep` scenes retain their
-original behavior.
+never replays uncertain writes. Paused recall stays silent. A complete backup
+recall on unchanged groups now retains its actual reconstruction receipt and a
+bounded backup of each replaced original queue. Reviewed undo restores the
+original duplicate occurrences, selected track, elapsed position, known mode
+and scene-scoped levels in silence before restoring the original play intent.
+Partial scenes, missing proof, changed groups and unproved content no-ops remain
+whole-action barriers. Existing `keep` scenes retain their original behavior.
 See `docs/SCENE_QUEUES.md` for the capture and apply contract.
 
 Authored scenes also accept native saved Sonos playlists through

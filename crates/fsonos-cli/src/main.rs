@@ -54,6 +54,7 @@ mod dj_view;
 mod doctor;
 mod eq_cmd;
 mod events_cmd;
+mod favorite_cmd;
 mod known_players;
 mod play_mode_cmd;
 mod play_tracks_cmd;
@@ -137,6 +138,16 @@ enum Command {
     Status { zone: String },
     /// List the Sonos favorites of a room's household, numbered.
     Favorites { zone: String },
+    /// Preview the current native track or station before saving it to My Sonos.
+    FavoriteCurrent { zone: String },
+    /// Inspect an exact My Sonos favorite and obtain its revision for editing.
+    FavoriteInspect(favorite_cmd::FavoriteInspectArgs),
+    /// Save a reviewed current track or station without changing playback.
+    FavoriteSave(favorite_cmd::FavoriteSaveArgs),
+    /// Rename one reviewed My Sonos favorite in its original household.
+    FavoriteRename(favorite_cmd::FavoriteRenameArgs),
+    /// Remove an exact reviewed favorite. Does not remove music or stop playback.
+    FavoriteRemove(favorite_cmd::FavoriteRemoveArgs),
     /// List playlists saved on a room's Sonos household, with native SQ: ids.
     Playlists { zone: String },
     /// List native line-in sources on a room's household. A source's presence
@@ -602,6 +613,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
         Command::PlayMode(args) => play_mode_cmd::run(global, &args),
         Command::PlaylistSave(args) => playlist_cmd::run(global, &args),
+        Command::FavoriteCurrent { zone } => favorite_cmd::current(global, &zone),
+        Command::FavoriteInspect(args) => favorite_cmd::inspect(global, &args),
+        Command::FavoriteSave(args) => favorite_cmd::save(global, &args),
+        Command::FavoriteRename(args) => favorite_cmd::rename(global, &args),
+        Command::FavoriteRemove(args) => favorite_cmd::remove(global, &args),
         Command::PlaylistRename(args) => playlist_cmd::rename(global, &args),
         Command::PlaylistRemove(args) => playlist_cmd::remove(global, &args),
         Command::PlaylistContents(args) => playlist_cmd::contents(global, &args),
@@ -1005,7 +1021,9 @@ fn emit_queue_outcome(json: bool, outcome: &QueueAddOutcome) -> anyhow::Result<(
 /// nonzero. Successful or uncertain members must never be replayed together.
 fn emit_dj_outcome(json: bool, outcome: &OutcomeDto) -> anyhow::Result<()> {
     emit(json, outcome, outcome_text)?;
-    let failed = outcome.notes.iter()
+    let failed = outcome
+        .notes
+        .iter()
         .filter(|note| note.code == fsonos_api::NoteCode::Skipped)
         .count();
     if failed > 0 {
@@ -1079,6 +1097,11 @@ fn plan_for<'a>(
         | Command::Doctor(_)
         | Command::Status { .. }
         | Command::Favorites { .. }
+        | Command::FavoriteCurrent { .. }
+        | Command::FavoriteInspect(_)
+        | Command::FavoriteSave(_)
+        | Command::FavoriteRename(_)
+        | Command::FavoriteRemove(_)
         | Command::Playlists { .. }
         | Command::LineIn { .. }
         | Command::PlaylistSave(_)
@@ -1529,16 +1552,20 @@ mod tests {
         let directed = plan_set_for(
             &parse(&["dj", "start", "all", "--mood", "calm", "--for", "15m"]),
             &houses,
-        ).unwrap();
+        )
+        .unwrap();
         let Planned::DjSteer { start, steer, .. } = &directed[0] else {
             panic!("a directed start must apply its steering before playback");
         };
         assert!(*start);
-        assert_eq!(**steer, fsonos_api::dj::DjSteer::Set {
-            mood: Some("calm".into()),
-            constraints: fsonos_api::dj::SteerConstraints::default(),
-            for_secs: Some(900),
-        });
+        assert_eq!(
+            **steer,
+            fsonos_api::dj::DjSteer::Set {
+                mood: Some("calm".into()),
+                constraints: fsonos_api::dj::SteerConstraints::default(),
+                for_secs: Some(900),
+            }
+        );
     }
 
     #[test]
@@ -1555,7 +1582,10 @@ mod tests {
             detail: "Kitchen@S1 failed: no DJ is running".into(),
         });
         let error = emit_dj_outcome(true, &outcome).unwrap_err().to_string();
-        assert!(error.contains("1 group(s)") && error.contains("do not replay"), "{error}");
+        assert!(
+            error.contains("1 group(s)") && error.contains("do not replay"),
+            "{error}"
+        );
     }
 
     #[test]
