@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::classical::{ClassicalTrack, EnergyBasis, Period, normalize};
+use crate::classical::{ClassicalTrack, EnergyBasis, Period, bare_title, normalize};
 use crate::library::Origin;
 
 /// Whether a work holds every one of its movements.
@@ -201,7 +201,7 @@ impl RecordingOrder {
     /// Distinct sections with the same numeral stay together; an exact repeated
     /// movement or a strict numeral decrease starts another recording.
     pub(crate) fn push(&mut self, movement: Option<&str>, title: &str) -> bool {
-        let label = normalize(movement.unwrap_or(title));
+        let label = normalize(movement.unwrap_or_else(|| bare_title(title)));
         let number = movement.and_then(movement_number);
         let restarts = matches!((self.last, number), (Some(prev), Some(now)) if now < prev)
             || self.seen.contains(&label);

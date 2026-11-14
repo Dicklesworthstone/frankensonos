@@ -304,7 +304,10 @@ fn stop_does_not_write_after_queue_source_selection_or_boot_changes_during_proof
                 ..Observed::new(&rig.lan)
             };
             feed.stop(&rig.speakers(&observed)).unwrap();
-            assert!(observed.edited.get(), "the concurrent owner change happened");
+            assert!(
+                observed.edited.get(),
+                "the concurrent owner change happened"
+            );
             assert!(observed.writes().is_empty());
             assert!(!feed.is_active());
             assert_eq!(

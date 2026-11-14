@@ -596,6 +596,8 @@ from a genre the DJ was built around.
   movement label or decreasing movement number starts another performance.
   Unnumbered alternate takes and repeated single-movement pieces stay separate;
   distinct sections with the same numeral and works spanning discs stay whole.
+  Version notes and composer prefixes cannot hide a repeated whole-piece
+  performance. Standalone act and scene labels still distinguish parts of a work.
 - A liked single movement is completed into its whole work by reading the
   album's track list (`GET /v1/albums/{id}/tracks`, read-only) and caching it.
   Unfinished album reads have their own bounded background continuation:
