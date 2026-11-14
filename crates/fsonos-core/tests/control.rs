@@ -582,26 +582,16 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
     .unwrap();
 
     let sent = t.sent.borrow();
-    let actions: Vec<&str> = sent.iter().map(|(_, a, _)| a.as_str()).collect();
+    let actions: Vec<&str> = sent
+        .iter()
+        .map(|(_, action, _)| action.as_str())
+        .filter(|action| !action.starts_with("Get") && *action != "Browse")
+        .collect();
     assert_eq!(
         actions,
         [
-            "Browse",
-            "GetZoneGroupState",
-            "GetMediaInfo",
-            "Browse",
-            "GetZoneGroupState",
-            "GetMediaInfo",
             "AddURIToQueue",
-            "Browse",
-            "GetZoneGroupState",
-            "GetMediaInfo",
-            "GetZoneGroupState",
             "RemoveTrackRangeFromQueue",
-            "Browse",
-            "GetZoneGroupState",
-            "GetZoneGroupState",
-            "GetMediaInfo",
             "SetAVTransportURI",
             "Seek",
             "Play"
@@ -612,7 +602,7 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         "all on the coordinator"
     );
     // The household's own album prefix and account, as an album.
-    let add = &sent[6].2;
+    let add = &sent.iter().find(|(_, action, _)| action == "AddURIToQueue").unwrap().2;
     assert!(
         add.contains(
             "<EnqueuedURI>x-rincon-cpcontainer:1004206cspotify%3aalbum%3a0FixtureSpotify0000201\
@@ -626,7 +616,7 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         "{add}"
     );
     assert!(
-        sent[17]
+        sent.iter().find(|(_, action, _)| action == "Seek").unwrap()
             .2
             .contains("<Unit>TRACK_NR</Unit><Target>1</Target>")
     );
@@ -643,14 +633,13 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
     )
     .unwrap();
     let sent = t.sent.borrow();
+    let add = &sent.iter().find(|(_, action, _)| action == "AddURIToQueue").unwrap().2;
     assert!(
-        sent[6]
-            .2
-            .contains("x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a0FixtureSpotify0000202"),
+        add.contains("x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a0FixtureSpotify0000202"),
         "{}",
-        sent[6].2
+        add
     );
-    assert!(sent[6].2.contains("object.container.playlistContainer"));
+    assert!(add.contains("object.container.playlistContainer"));
 }
 
 #[test]
@@ -710,6 +699,8 @@ struct ContainerDrift {
     actions: RefCell<Vec<String>>,
     adds: RefCell<Vec<String>>,
     queue: QueueFixture,
+    selected: std::cell::Cell<bool>,
+    playing: std::cell::Cell<bool>,
 }
 
 impl ContainerDrift {
@@ -721,6 +712,8 @@ impl ContainerDrift {
             actions: RefCell::default(),
             adds: RefCell::default(),
             queue: QueueFixture::new(0),
+            selected: std::cell::Cell::new(false),
+            playing: std::cell::Cell::new(false),
         }
     }
 
@@ -756,7 +749,31 @@ impl Transport for ContainerDrift {
         let out = match name.as_str() {
             "GetZoneGroupState" => return Ok(ZGS_S1.to_string()),
             "GetMediaInfo" => {
-                "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into()
+                let uri = if self.selected.get() {
+                    format!("x-rincon-queue:{}#0", pid(2).0)
+                } else {
+                    String::new()
+                };
+                soap::args_xml(&[("CurrentURI", &uri), ("CurrentURIMetaData", "")])
+            }
+            "GetTransportSettings" => "<PlayMode>NORMAL</PlayMode>".into(),
+            "GetTransportInfo" => soap::args_xml(&[
+                ("CurrentTransportState", if self.playing.get() { "PLAYING" } else { "STOPPED" }),
+                ("CurrentTransportStatus", "OK"),
+            ]),
+            "GetPositionInfo" => {
+                let uri = self.selected.get().then(|| self.queue.first()).flatten();
+                soap::args_xml(&[
+                    ("Track", if uri.is_some() { "1" } else { "0" }),
+                    ("TrackURI", uri.as_deref().unwrap_or("")),
+                    ("TrackDuration", "0:04:00"),
+                    ("RelTime", "0:00:00"),
+                ])
+            }
+            "SetAVTransportURI" => {
+                self.selected.set(true);
+                self.playing.set(false);
+                String::new()
             }
             "Browse" => {
                 if body.contains("<ObjectID>Q:0</ObjectID>") {
@@ -793,6 +810,10 @@ impl Transport for ContainerDrift {
                     code: 800,
                     reason: "refused".to_string(),
                 });
+            }
+            "Play" => {
+                self.playing.set(true);
+                String::new()
             }
             _ => String::new(),
         };
@@ -859,32 +880,28 @@ fn the_coordinator_now_comes_from_the_players_own_topology() {
 }
 
 #[test]
-fn a_container_refused_at_play_relearns_once_too() {
+fn a_container_refused_at_play_never_replays_the_committed_replacement() {
     let h = house();
-    let play = |t: &ContainerDrift| {
-        control::play_spotify_container(
-            t,
+    for persistent in [false, true] {
+        let t = ContainerDrift::refusing_at_play(persistent);
+        let error = control::play_spotify_container(
+            &t,
             &h,
             &pid(2),
             SpotifyContainer::Album,
             "spotify:album:0FixtureSpotify0000201",
             "Symphonies",
         )
-    };
-    let plays = |t: &ContainerDrift| t.actions.borrow().iter().filter(|a| *a == "Play").count();
-
-    // The enqueue goes through; the Play after it is refused (800 can come
-    // "at/after SetAVTransportURI"): relearn once, enqueue and play again.
-    let t = ContainerDrift::refusing_at_play(false);
-    play(&t).unwrap();
-    assert_eq!(t.browses.get(), 2, "one relearn");
-    assert!(t.adds.borrow()[1].contains("sn=7<"));
-    assert_eq!(plays(&t), 2, "the refused Play, then the one that plays");
-
-    let t = ContainerDrift::refusing_at_play(true);
-    let err = play(&t).unwrap_err();
-    assert!(matches!(err, CoreError::RenderParamsStale), "{err}");
-    assert_eq!(t.adds.borrow().len(), 2, "the retry never loops");
+        .unwrap_err();
+        assert!(matches!(error, CoreError::Uncertain(_)), "{error}");
+        assert_eq!(t.browses.get(), 1, "a committed source is not relearned");
+        assert_eq!(t.adds.borrow().len(), 1, "the replacement is never repeated");
+        assert_eq!(
+            t.actions.borrow().iter().filter(|a| *a == "Play").count(),
+            1,
+            "the refused Play is not replayed"
+        );
+    }
 }
 
 const ZGS_S1_STUDY_LEFT: &str = include_str!("fixtures/zgs_s1_study_left.xml");

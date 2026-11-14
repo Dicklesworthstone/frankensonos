@@ -393,3 +393,234 @@ fn an_initial_enqueue_refusal_still_relearns_and_retries_once() {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+enum DuringRelearning {
+    Unchanged,
+    Source,
+    Queue,
+    SameContents,
+    Selection,
+    Pause,
+    Stop,
+    Mode,
+    Unreadable,
+    SeekDuringRetry,
+}
+
+/// Refuse the initial enqueue, then let an independent controller act during
+/// favorites relearning or the retry append through real simulator sockets.
+struct Relearning {
+    inner: SimLan,
+    edit: DuringRelearning,
+    refused: Cell<bool>,
+    relearned: Cell<bool>,
+    writes: RefCell<Vec<String>>,
+}
+
+impl Relearning {
+    fn new(sim: &SimHandle, edit: DuringRelearning) -> Self {
+        Self {
+            inner: sim.lan(),
+            edit,
+            refused: Cell::new(false),
+            relearned: Cell::new(false),
+            writes: RefCell::default(),
+        }
+    }
+
+    fn count(&self, action: &str) -> usize {
+        self.writes
+            .borrow()
+            .iter()
+            .filter(|name| name.as_str() == action)
+            .count()
+    }
+
+    fn owner_change(&self, host: IpAddr) -> Result<(), ProtoError> {
+        match self.edit {
+            DuringRelearning::Source => {
+                soap::set_av_transport_uri(&self.inner, host, OWNER_SOURCE, "")?;
+                soap::play(&self.inner, host)?;
+            }
+            DuringRelearning::Queue => {
+                soap::add_uri_to_queue(&self.inner, host, OWNER_SOURCE, "", false)?;
+            }
+            DuringRelearning::SameContents => {
+                let source = soap::get_media_info(&self.inner, host)?.uri;
+                let items = browse_all(&self.inner, host, QUEUE)?;
+                soap::remove_all_tracks_from_queue(&self.inner, host)?;
+                for item in items {
+                    soap::add_uri_to_queue(&self.inner, host, &item.res.unwrap().uri, "", false)?;
+                }
+                // Restore the same source, selection and playback. The new
+                // queue revision alone must still invalidate the old proof.
+                soap::set_av_transport_uri(&self.inner, host, &source, "")?;
+                soap::seek_track(&self.inner, host, 1)?;
+                soap::seek_position(&self.inner, host, 0)?;
+                soap::play(&self.inner, host)?;
+            }
+            DuringRelearning::Selection => soap::seek_position(&self.inner, host, 23)?,
+            DuringRelearning::Pause => soap::pause(&self.inner, host)?,
+            DuringRelearning::Stop => soap::stop(&self.inner, host)?,
+            DuringRelearning::Mode => {
+                fsonos_proto::play_mode::set_play_mode(
+                    &self.inner,
+                    host,
+                    fsonos_types::PlayMode::ShuffleNoRepeat,
+                )?;
+            }
+            DuringRelearning::Unchanged
+            | DuringRelearning::Unreadable
+            | DuringRelearning::SeekDuringRetry => {}
+        }
+        Ok(())
+    }
+}
+
+const OWNER_SOURCE: &str = "x-file-cifs://example.invalid/listener-choice.flac";
+
+impl Transport for Relearning {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        if !name.starts_with("Get") && name != "Browse" {
+            self.writes.borrow_mut().push(name.into());
+        }
+        if name == "AddURIToQueue" && !self.refused.replace(true) {
+            return Err(ProtoError::SoapFault {
+                code: 800,
+                reason: "injected stale renderer parameters".into(),
+            });
+        }
+        if name == "Browse"
+            && body.contains("<ObjectID>FV:2</ObjectID>")
+            && self.refused.get()
+            && !self.relearned.replace(true)
+        {
+            self.owner_change(host)?;
+        }
+        if name == "GetMediaInfo"
+            && self.relearned.get()
+            && matches!(self.edit, DuringRelearning::Unreadable)
+        {
+            return Err(ProtoError::Network {
+                target: "simulated renderer".into(),
+                detail: "read unavailable after relearning".into(),
+            });
+        }
+        if name == "AddURIToQueue"
+            && self.relearned.get()
+            && matches!(self.edit, DuringRelearning::SeekDuringRetry)
+        {
+            soap::seek_position(&self.inner, host, 23)?;
+        }
+        self.inner.soap_post(host, path, action, body)
+    }
+}
+
+#[test]
+fn renderer_relearning_never_adopts_another_controllers_source_or_queue() {
+    for generation in [1, 2] {
+        for edit in [
+            DuringRelearning::Source,
+            DuringRelearning::Queue,
+            DuringRelearning::SameContents,
+            DuringRelearning::Selection,
+            DuringRelearning::Pause,
+            DuringRelearning::Stop,
+            DuringRelearning::Mode,
+            DuringRelearning::Unreadable,
+        ] {
+            for receipt in [false, true] {
+                let (sim, houses, id, host) = fixture(generation);
+                let replies = Relearning::new(&sim, edit);
+                let error = replace_receipt(&replies, &houses, &id, receipt).unwrap_err();
+                assert!(
+                    matches!(error, CoreError::Uncertain(_)),
+                    "{generation} {edit:?} receipt={receipt}: {error:?}"
+                );
+                assert!(replies.relearned.get(), "the rejected source was reread");
+                assert_eq!(replies.count("AddURIToQueue"), 1, "{edit:?}");
+                assert_eq!(replies.count("RemoveTrackRangeFromQueue"), 0, "{edit:?}");
+                if matches!(edit, DuringRelearning::Source) {
+                    assert_eq!(
+                        soap::get_media_info(&sim.lan(), host).unwrap().uri,
+                        OWNER_SOURCE
+                    );
+                    assert_eq!(
+                        soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                        TransportState::Playing
+                    );
+                }
+                if matches!(edit, DuringRelearning::Queue) {
+                    assert_eq!(queue(&sim, host).last().unwrap(), OWNER_SOURCE);
+                }
+                if matches!(edit, DuringRelearning::SameContents) {
+                    assert_eq!(queue(&sim, host), [OLD]);
+                    assert_eq!(
+                        soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                        TransportState::Playing
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn retry_staging_keeps_the_original_playback_owner_before_prefix_removal() {
+    for generation in [1, 2] {
+        let (sim, houses, id, host) = fixture(generation);
+        let replies = Relearning::new(&sim, DuringRelearning::SeekDuringRetry);
+        let error = replace_receipt(&replies, &houses, &id, true).unwrap_err();
+        assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
+        assert_eq!(replies.count("AddURIToQueue"), 2, "the second append was staged");
+        assert_eq!(replies.count("RemoveTrackRangeFromQueue"), 0);
+        assert_eq!(replies.count("Play"), 0);
+        let contents = queue(&sim, host);
+        assert_eq!(contents[0], OLD, "the old prefix remains intact");
+        assert!(contents.len() > 1, "staging may leave a suffix, never replay it");
+        assert_eq!(
+            soap::get_position_info(&sim.lan(), host).unwrap().position_secs,
+            Some(23)
+        );
+    }
+}
+
+#[test]
+fn an_unchanged_rejected_renderer_recovers_once_without_duplicate_contents() {
+    for generation in [1, 2] {
+        for source in [ALBUM, PLAYLIST] {
+            let (sim, houses, id, host) = fixture(generation);
+            let replies = Relearning::new(&sim, DuringRelearning::Unchanged);
+            control::play_spotify_container(
+                &replies,
+                &houses,
+                &id,
+                SpotifyContainer::of(source).unwrap(),
+                source,
+                "Replacement",
+            )
+            .unwrap();
+            assert!(replies.relearned.get());
+            assert_eq!(replies.count("AddURIToQueue"), 2);
+            let contents = queue(&sim, host);
+            assert!(contents.iter().all(|uri| uri != OLD));
+            let unique: std::collections::HashSet<_> = contents.iter().collect();
+            assert_eq!(contents.len(), unique.len(), "no duplicate expansion");
+            let current = soap::get_position_info(&sim.lan(), host).unwrap();
+            assert_eq!(current.track, 1);
+            assert_eq!(current.uri, contents[0]);
+            assert_eq!(
+                soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                TransportState::Playing
+            );
+        }
+    }
+}

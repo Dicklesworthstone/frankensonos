@@ -57,7 +57,7 @@ fn invalid(detail: &str) -> ProtoError {
     ProtoError::Malformed(format!("saved queue recall refused: {detail}"))
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Group {
     pub(crate) members: Vec<PlayerId>,
     pub(crate) boot_seq: Option<u32>,
@@ -216,6 +216,7 @@ pub(super) fn capture<T: Transport + ?Sized>(
     Ok(Some(queue))
 }
 
+#[derive(Clone)]
 pub(crate) struct Playback {
     pub(crate) media: MediaInfo,
     pub(crate) position: PositionInfo,

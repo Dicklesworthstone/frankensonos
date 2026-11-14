@@ -291,6 +291,71 @@ fn replacement_backup_and_exact_result_survive_sqlite_close_and_reopen() {
     }
 }
 
+struct RefuseRendererOnce<'a> {
+    inner: &'a SimLan,
+    refused: Cell<bool>,
+    adds: Cell<usize>,
+}
+
+impl Transport for RefuseRendererOnce<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        if name == "AddURIToQueue" {
+            self.adds.set(self.adds.get() + 1);
+            if !self.refused.replace(true) {
+                return Err(ProtoError::SoapFault {
+                    code: 800,
+                    reason: "injected stale renderer parameters".into(),
+                });
+            }
+        }
+        self.inner.soap_post(host, path, action, body)
+    }
+}
+
+#[test]
+fn enqueue_recovery_keeps_the_original_playback_intent_for_undo() {
+    for generation in [1, 2] {
+        for playing in [false, true] {
+            for autoplay in [false, true] {
+                let f = Fixture::new(generation, playing);
+                let pending = f.capture();
+                let replies = RefuseRendererOnce {
+                    inner: &f.lan,
+                    refused: Cell::new(false),
+                    adds: Cell::new(0),
+                };
+                let replace = if autoplay {
+                    control::play_spotify_container_with_receipt
+                } else {
+                    control::load_spotify_container_with_receipt
+                };
+                let receipt = replace(
+                    &replies,
+                    &f.houses,
+                    &f.coordinator,
+                    SpotifyContainer::Album,
+                    "spotify:album:0000000000000000000001",
+                    "Replacement",
+                )
+                .unwrap();
+                assert_eq!(replies.adds.get(), 2, "one retry after the refused enqueue");
+                let saved = f.finish(pending, &receipt);
+                let mut store = MemStore::default();
+                record(&mut store, saved);
+                f.undo(&mut store, false).unwrap();
+                f.restored(playing);
+            }
+        }
+    }
+}
+
 #[test]
 fn exact_policy_reductions_are_retained_and_unattributed_changes_refuse_completion() {
     for declared in [false, true] {

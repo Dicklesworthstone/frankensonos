@@ -623,23 +623,13 @@ fn a_stop_remains_retired_after_store_loss_and_daemon_restart() {
             let stopped = rig.playback();
             assert_eq!(stopped.transport, Some(TransportState::Stopped));
             assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
-            dj.on_playback(
-                rig.at(&NoIo),
-                &mut MemStore::default(),
-                &stopped,
-                &clock(),
-            );
+            dj.on_playback(rig.at(&NoIo), &mut MemStore::default(), &stopped, &clock());
             drop(dj);
 
             let reopened = SpotifyDj::new(None).with_saved_feeds(Some(retained));
             assert!(!reopened.feeds(&rig.coordinator));
             assert_eq!(reopened.starter(&rig.coordinator), DjStarter::Missing);
-            reopened.on_playback(
-                rig.at(&NoIo),
-                &mut MemStore::default(),
-                &stopped,
-                &clock(),
-            );
+            reopened.on_playback(rig.at(&NoIo), &mut MemStore::default(), &stopped, &clock());
             assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
             rig.sim.shutdown();
         }

@@ -64,7 +64,9 @@ fn device_fallback_never_reclaims_a_newer_manual_volume() {
                 sim.upnp_fault("Room", "RampToVolume", fault).unwrap();
                 if cached {
                     assert_eq!(
-                        fader.ramp_at_device_speed(&lan, &houses, &player, 40).unwrap(),
+                        fader
+                            .ramp_at_device_speed(&lan, &houses, &player, 40)
+                            .unwrap(),
                         RampOutcome::Stepped(FadeOutcome::Reached)
                     );
                 }
@@ -112,7 +114,9 @@ fn device_fallback_never_reclaims_a_newer_manual_volume() {
                 // A genuinely later request can still use the remembered
                 // fallback and reach its target.
                 assert_eq!(
-                    fader.ramp_at_device_speed(&lan, &houses, &player, 30).unwrap(),
+                    fader
+                        .ramp_at_device_speed(&lan, &houses, &player, 30)
+                        .unwrap(),
                     RampOutcome::Stepped(FadeOutcome::Reached)
                 );
                 assert_eq!(soap::get_volume(&lan, host).unwrap(), 30);
@@ -186,7 +190,9 @@ fn an_uncertain_native_ramp_is_never_replayed_as_a_fallback() {
             // A later explicit request still uses the native action. Losing
             // an acknowledgement is not a capability refusal to cache.
             assert!(matches!(
-                fader.ramp_at_device_speed(&lan, &houses, &player, 25).unwrap(),
+                fader
+                    .ramp_at_device_speed(&lan, &houses, &player, 25)
+                    .unwrap(),
                 RampOutcome::Device { .. }
             ));
             assert_eq!(soap::get_volume(&lan, host).unwrap(), 25);

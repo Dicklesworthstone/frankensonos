@@ -70,6 +70,15 @@ prefix removal, and exact final revision and contents. The recorded result must
 also fit within 1,000 entries and 4 MiB of renderer URI text. This
 allows a short old queue to be recovered after playing a longer album.
 
+A Spotify renderer-parameter retry is limited to an explicit refusal of the
+initial enqueue. It retains the original destination, queue contents and
+revision, playback position, mode and transport intent across relearning.
+Missing evidence or an intervening listener change stops the retry. Playback
+ownership is checked again after staging, before removing the original prefix.
+A successful retry retains the original undo bookmark, including the play intent
+from before a deliberately silent load paused it. Once the replacement has
+committed, a failed source selection, seek or Play never replays it.
+
 Caps applied before playback are retained as exact acknowledged reductions.
 Undo does not restore a higher pre-cap volume. A multi-group command requires a
 complete replacement proof for every attempted replacement; partial results

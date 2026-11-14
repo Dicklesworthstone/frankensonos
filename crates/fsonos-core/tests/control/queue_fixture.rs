@@ -26,6 +26,10 @@ impl QueueFixture {
         }
     }
 
+    pub(super) fn first(&self) -> Option<String> {
+        self.rows.borrow().first().cloned()
+    }
+
     pub(super) fn browse(&self) -> String {
         let rows = self.rows.borrow();
         let mut items = String::new();

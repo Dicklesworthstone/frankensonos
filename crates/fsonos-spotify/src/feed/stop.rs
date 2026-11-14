@@ -24,7 +24,13 @@ fn occurrence<T: Transport + ?Sized>(
     at: &Speakers<'_, T>,
     host: IpAddr,
 ) -> Result<(u32, String), FeedError> {
-    let response = soap::call(at.transport, host, &AV_TRANSPORT, "GetPositionInfo", INSTANCE)?;
+    let response = soap::call(
+        at.transport,
+        host,
+        &AV_TRANSPORT,
+        "GetPositionInfo",
+        INSTANCE,
+    )?;
     Ok((
         response.require_u32("Track")?,
         response.require("TrackURI")?.to_owned(),
