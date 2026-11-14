@@ -5513,3 +5513,12 @@ the dispatcher picks a different entry.
 
 Next concrete probe: break on reads of the table base and print the index, to learn which
 handler *is* selected and what the index should have been.
+
+Calling the handler `0x10004c88` from the loop with `r3 = 0x407f9950` faults inside
+**libc** at `0x0fe16e28` — i.e. a string/memory op on a null field of that object. So
+`r30` at the loop is a pointer, but not the structure the handler wants; the handler needs
+the envelope/header struct (the one the download routine passed into `0x10006a20`), whose
+fields are populated.
+
+Also note: `set unwindonsignal off` is required to see any of this — with it on, gdb
+restores the context and the fault location is lost.
