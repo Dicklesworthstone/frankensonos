@@ -115,7 +115,7 @@ impl QueuedProof {
             && self.inserted_revision != 0
             && self.insertions > 0
             && usize::try_from(self.insertions)
-                .is_ok_and(|count| count <= crate::control::MAX_SPOTIFY_TRACK_BATCH)
+                .is_ok_and(|count| count <= crate::control::MAX_TRACK_BATCH)
             && self.before.revision.checked_add(self.insertions) == Some(self.inserted_revision)
             && self.before.revision != self.after.revision
             && selected.start <= self.before.uris.len()
