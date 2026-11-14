@@ -5439,3 +5439,14 @@ A breakpoint on it does **not** fire, and neither does one on `ZZ0052` (`0x10007
 although both are lexically inside the routine that reaches the decrypt loop at
 `0x10007190` — so the init blocks are being bypassed by the control flow taken.
 `ZZ0052`'s result check is the very instruction that was `nop`ed earlier (`0x100070a0`).
+
+Loop head is `0x10007148` and does fire. First hit carries `r30=0x407f9950` (a stack
+pointer, almost certainly the key/header material), `r21=0`, `r16=0x407fb5d0` (the stream
+context). Calling `ZZ0052` there with the call site's own argument shape
+`(ctx, r30, 0x1003bf84, r21, 0)` **signals** — gdb abandons the call — so the argument
+shape is right in count but at least one value is wrong for this point in the flow
+(most likely the algo constant or the length register, or the mbedtls ctx must exist
+before it).
+
+Signature for future work (courtesy of `0x1000705c`-`0x10007098`): `ZZ0052(ctx=r3,
+buf=r4, algo=r5, len=r6, ?=r7)`; call site passes `(r1+7312, r30, 0x1003bf84, r21, 0)`.
