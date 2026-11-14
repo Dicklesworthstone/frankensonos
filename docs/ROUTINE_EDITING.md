@@ -34,6 +34,27 @@ stored-routine recovery target even if the selected playback room changes.
 Lists from older daemons remain readable. Their edit buttons are disabled when
 the daemon has not supplied the required revision.
 
+### DJ routines across rooms
+
+For **Start the DJ**, both forms offer qualified rooms, saved aliases, the
+whole house and household targets such as `all@S2`. Review shows every current
+affected group and its complete room membership. A single alias can select
+independent groups in both S1 and S2; each distinct coordinator starts once.
+All existing direction filters and exact durations remain available.
+
+The editor resolves the selected target only when reviewing it, then resolves
+it again before the one create/update request. A changed alias, physical
+audience or speaker address invalidates that review. Editing still requires
+the current stored-routine revision and keeps its id, creator and paused state.
+Saved offline targets remain explicit choices; the review reports when they
+cannot currently resolve, and the daemon retains its final validation.
+
+The routine saves the target expression. Future runs resolve it against the
+house then, so alias edits or regrouping before a later occurrence may change
+its audience. Each occurrence checks all selected groups before its durable
+claim and retains that admitted audience through dispatch. See
+[DJ across rooms](MULTI_ROOM_DJ.md#scheduled-dj-across-rooms).
+
 ## CLI
 
 Read the routine and its current revision first:
@@ -152,6 +173,12 @@ occurrence.
 exact action preservation, all five updates through a loopback HTTP fixture,
 conflicting observations, response validation and recovery without replay.
 The Linux workflow runs this alongside the existing schedule regressions.
+
+`scripts/test-scheduled-dj-targets.cjs` adds 20 cases for room-set authoring in
+both views, physical revision changes, full affected-group display, retained
+offline targets and once-only create/update behavior. The four focused routine
+suites pass 153 tests; the combined DJ/source/routine integration selection
+passes 403 tests on the final browser changes.
 
 Runtime results are reported separately from source and formatting checks;
 adding a regression does not establish that it has executed successfully.

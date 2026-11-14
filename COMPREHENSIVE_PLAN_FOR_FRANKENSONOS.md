@@ -836,6 +836,12 @@ cover the whole selection. Partial and lost replies retain every receipt and
 require explicit observation of the original players, including after regrouping,
 before another reviewed action. Focused browser controller, DOM and bundle
 regressions pass.
+Both browser routine editors also author and edit scheduled DJ aliases and
+whole-house targets. They resolve only the selected target during review,
+display each complete affected group and compare its physical revision before
+saving, while preserving routine revision checks and uncertain-save recovery.
+The form explains that the saved selector is resolved afresh on each future
+run, and retains offline saved targets explicitly.
 Simulator and cross-surface regression cases are included. The changed Rust
 paths have passed the pinned formatter; compilation and execution remain
 pending under shared build-host resource pressure.

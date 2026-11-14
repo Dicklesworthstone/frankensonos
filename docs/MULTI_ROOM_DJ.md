@@ -130,6 +130,19 @@ fsonos schedule add "daily 18:30" dj start downstairs --genre jazz --for 2h
 fsonos schedule add "daily 21:00" dj start all@S2 --automatic
 ```
 
+The phone's schedule editor and the dashboard's **Routines** form expose the
+same targets for **Start the DJ**. Review resolves the chosen target and shows
+every affected group, including rooms reached through grouping. Saving checks
+the target's physical revision again, alongside the existing routine revision
+when editing. A changed audience requires another review. This edits the
+routine only; it sends no playback command.
+
+The saved target remains a selector for future runs. Editing an alias or
+changing the groups before the next occurrence can change that occurrence's
+audience; the review explains this distinction. Existing offline targets remain
+visible as saved choices, with resolution failures shown explicitly and no
+substitute selected. The daemon still validates any proposed routine change.
+
 Creating or editing a routine validates every named alias member. At each
 occurrence, the daemon resolves and deduplicates the current target, checks
 every group's exact prospective direction, renderer, library and creator's
@@ -211,11 +224,15 @@ all-group readiness, topology changes before and after the claim, alias and
 discovery growth, creator caps and revocation, create/edit validation, and
 partial completion without replay after a tick or restart.
 
-The focused Node controller, DOM, shared-lane and served-bundle suites pass
-250 tests, including 35 new cases. They exercise exact direction fields,
-same-named S1/S2 groups, physical
+The combined focused Node controller, DOM, shared-lane, routine-editor and
+served-bundle suites pass 403 tests, including 55 new cases. They exercise exact
+direction fields, same-named S1/S2 groups, physical
 and alias changes, lane waits, source/session changes, partial receipts,
 lost replies, close/reopen, and observation after regrouping.
+Routine cases also cover exact create/update bodies, dynamic-target disclosure,
+changed physical revisions, offline saved aliases and absent households,
+asynchronous review cancellation, retained creator/paused state and uncertain
+saves without replay.
 The full Chromium smoke script is included, but Chromium could not start in
 this environment because its process socket was denied (`EPERM`); no browser
 execution or visual result is claimed.
@@ -234,4 +251,5 @@ cargo test -p fsonos-cli --bin fsonos dj::readiness
 cargo test -p fsonos-cli --test e2e_dj_house
 cargo test -p fsonos-mcp --lib partial_dj_results
 node --test scripts/test-dj-targets.cjs scripts/test-dj-targets-panel.cjs
+node --test scripts/test-scheduled-dj-targets.cjs
 ```

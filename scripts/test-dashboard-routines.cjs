@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const C = require('../crates/fsonos-api/src/remote/dashboard-core.js');
 const R = require('../crates/fsonos-api/src/remote/dashboard-routines.js');
 const S = require('../crates/fsonos-api/src/remote/schedules.js');
+const targets = require('./schedule-targets-fixture.cjs');
 const copy = value => structuredClone(value);
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 const settled = async predicate => {
@@ -50,6 +51,8 @@ function fixture({ rows = [row()], demo = false, dom = false, network } = {}) {
     if (url === '/schedules') return copy(schedules);
     if (url === '/scenes') return copy(scenes);
     if (url === '/zones') return copy(zones);
+    if (url === '/rooms') return targets.rooms(zones);
+    if (url.startsWith('/rooms/resolve?')) return targets.resolve(zones, new URL(url, 'http://fixture').searchParams.get('target'));
     if (url === '/dj/moods') return copy(moods);
     if (url.endsWith('/state')) {
       const zone = zones.find(item => url.includes(encodeURIComponent(C.key(item))));
@@ -91,7 +94,7 @@ async function creation(f, action = 'apply_scene', timing = {}) {
   assert.equal(await f.control.beginCreate(action), true);
   assert.equal(f.control.edit(action === 'apply_scene' ? 'scene' : 'zone', action === 'apply_scene' ? 'Queue for later' : 'Studio@S1'), true);
   for (const [key, value] of Object.entries(timing)) assert.equal(f.control.edit(key, value), true);
-  assert.equal(f.control.reviewCreate(), true); return f.control.state.pending;
+  assert.equal(await f.control.reviewCreate(), true); return f.control.state.pending;
 }
 
 test('routines read lazily without a selected or online speaker and retain authoritative run timestamps', async () => {
@@ -125,13 +128,13 @@ test('native playlist scenes can be chosen, edited and scheduled from the dashbo
     assert.match(chooser.textContent, /Queue for later/);
     assert.match(chooser.textContent, /Native breakfast/);
     chooser.value = 'Native breakfast'; chooser.fire('change');
-    assert.equal(f.control.reviewCreate(), true);
+    assert.equal(await f.control.reviewCreate(), true);
     const older = f.control.state.pending;
     assert.equal(JSON.parse(older.destination.details).groups[0].playing, playing);
     assert.match(f.doc.getElementById('routines-body').textContent, /Breakfast & strings/);
     assert.equal(f.control.edit('time', '09:20'), true);
     assert.equal(await f.control.apply(older), false);
-    assert.equal(f.control.reviewCreate(), true);
+    assert.equal(await f.control.reviewCreate(), true);
     const reviewed = f.control.state.pending;
     assert.equal(await f.control.apply(reviewed), true);
     assert.equal(await f.control.apply(reviewed), false);
@@ -152,7 +155,7 @@ test('the dashboard rereads a native playlist scene binding before creating its 
   await f.ready();
   assert.equal(await f.control.beginCreate('apply_scene'), true);
   assert.equal(f.control.edit('scene', scene.name), true);
-  assert.equal(f.control.reviewCreate(), true);
+  assert.equal(await f.control.reviewCreate(), true);
   scene.groups[0].source.playlist.household = 'SIM_OTHER_HOUSEHOLD';
   assert.equal(await f.control.apply(), false);
   assert.deepEqual(f.writes(), []);
@@ -163,7 +166,7 @@ test('the dashboard rereads a native playlist scene binding before creating its 
 test('DJ routines address the reviewed household and preserve filters, mood and relative steering duration', async () => {
   const f = await fixture().ready(); await creation(f, 'dj_start', { cadence: 'delay', delay: '1h30m' });
   f.control.edit('mood', 'calm'); f.control.editDirection('include_artists', 'Synthetic A\nEarth, Wind & Fire');
-  f.control.editDirection('minutes', '90'); f.control.reviewCreate();
+  f.control.editDirection('minutes', '90'); await f.control.reviewCreate();
   assert.equal(await f.control.apply(), true);
   const body = f.writes()[0].body;
   assert.equal(body.zone, 'Studio@S1'); assert.equal(body.when, 'in 1h30m'); assert.equal(body.mood, 'calm');
@@ -178,7 +181,7 @@ test('automatic DJ routines explicitly clear previous steering; custom days and 
     assert.equal(f.writes()[0].body.when, when); assert.deepEqual(f.writes()[0].body.direction, { constraints: {} });
   }
   const f = await fixture().ready(); await creation(f); f.control.edit('cadence', 'once'); f.control.edit('at', '2030-02-30T12:00:00Z');
-  assert.equal(f.control.reviewCreate(), false); assert.equal(f.writes().length, 0);
+  assert.equal(await f.control.reviewCreate(), false); assert.equal(f.writes().length, 0);
 });
 
 test('pause, resume and remove manage exact IDs independently of speaker state', async () => {
@@ -216,14 +219,14 @@ test('changed scene content, target membership or mood constraints discard creat
     const f = await fixture().ready(); await creation(f, change === 'scene' ? 'apply_scene' : 'dj_start');
     if (change === 'scene') f.scenes[0].volumes['Studio@S2'] = 80;
     else if (change === 'group') f.zones[1].members.push('New member');
-    else { f.control.edit('mood', 'calm'); f.control.reviewCreate(); f.moods.moods[0].constraints.energy_bias = 2; }
+    else { f.control.edit('mood', 'calm'); await f.control.reviewCreate(); f.moods.moods[0].constraints.energy_bias = 2; }
     assert.equal(await f.control.apply(), false); assert.equal(f.writes().length, 0);
   }
 });
 
 test('edits retire immutable previews and a retained older confirmation cannot submit a newer draft', async () => {
   const f = await fixture().ready(), pending = await creation(f);
-  f.control.edit('time', '10:00'); f.control.reviewCreate();
+  f.control.edit('time', '10:00'); await f.control.reviewCreate();
   assert.equal(await f.control.apply(pending), false); assert.equal(f.writes().length, 0);
   assert.equal(await f.control.apply(), true); assert.equal(f.writes()[0].body.when, 'weekdays 10:00');
 });
@@ -313,7 +316,7 @@ test('preview mode and malformed catalogs cannot authorize a stored write', asyn
   const demo = await fixture({ demo: true }).ready(); assert.equal(await demo.control.beginCreate('dj_start'), false);
   assert.equal(demo.control.review('pause', 7), false); assert.equal(demo.ctl.canManage(), false);
   const f = await fixture().ready(); f.read((url, options, normal) => url === '/scenes' ? [{}] : normal(url));
-  assert.equal(await f.control.beginCreate('apply_scene'), false); assert.equal(f.control.reviewCreate(), false); assert.equal(f.writes().length, 0);
+  assert.equal(await f.control.beginCreate('apply_scene'), false); assert.equal(await f.control.reviewCreate(), false); assert.equal(f.writes().length, 0);
 });
 
 test('actual dialog handlers schedule a scene, show reported timing and pause its exact ID after refresh', async () => {
@@ -341,9 +344,9 @@ test('the production DJ direction editor preserves typed fields and consumes an 
   get('routine-zone').value = 'Studio@S2'; get('routine-zone').fire('change');
   let artist = get('routine-direction-include_artists'); artist.value = 'Earth, Wind & Fire'; artist.selectionStart = 6; artist.focus(); artist.fire('input');
   artist = get('routine-direction-include_artists'); assert.equal(f.doc.activeElement, artist); assert.equal(artist.selectionStart, 6);
-  assert.equal(artist.value, 'Earth, Wind & Fire'); assert.equal(f.control.reviewCreate(), true);
+  assert.equal(artist.value, 'Earth, Wind & Fire'); assert.equal(await f.control.reviewCreate(), true);
   const pending = f.control.state.pending; f.control.editDirection('minutes', '60'); assert.equal(await f.control.apply(pending), false);
-  assert.equal(f.control.reviewCreate(), true); assert.equal(await f.control.apply(), true);
+  assert.equal(await f.control.reviewCreate(), true); assert.equal(await f.control.apply(), true);
   assert.equal(f.writes()[0].body.direction.for_secs, 3600);
 });
 

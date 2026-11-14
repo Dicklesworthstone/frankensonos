@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const Schedules = require('../crates/fsonos-api/src/remote/schedules.js');
+const targets = require('./schedule-targets-fixture.cjs');
 
 const row = (extra = {}) => ({ id: 7, when: 'weekdays 07:30', action: 'dj_start',
   zone: 'Studio@S2', mood: 'bright', summary: 'start DJ in Studio@S2', creator: 'test-client',
@@ -318,6 +319,8 @@ function builderFixture() {
   const call = async (name, options) => {
     calls.push({ name, ...options });
     if (fail === name) throw new Error(`${name} unavailable`);
+    if (name === 'scheduleRooms') return targets.rooms(data.groups);
+    if (name === 'scheduleResolve') return targets.resolve(data.groups, options.query.target);
     const value = { schedules: data.rows, scheduleZones: data.groups,
       scheduleScenes: data.scenes, scheduleMoods: data.moods };
     if (Object.hasOwn(value, name)) return structuredClone(value[name]);
@@ -356,14 +359,14 @@ test('native playlist routine creation supports selection, draft edits, review a
     f.data.scenes.push(scene);
     await draft(f, 'apply_scene');
     assert.equal(f.control.edit('scene', scene.name), true);
-    assert.equal(f.control.reviewCreate(), true);
+    assert.equal(await f.control.reviewCreate(), true);
     const older = f.control.state.pending;
     assert.deepEqual(JSON.parse(older.destination.details).groups[0].source.playlist,
       scene.groups[0].source.playlist);
     assert.equal(f.control.edit('time', '08:15'), true);
     assert.equal(await f.control.confirm(older), false);
     assert.deepEqual(f.writes, []);
-    assert.equal(f.control.reviewCreate(), true);
+    assert.equal(await f.control.reviewCreate(), true);
     const reviewed = f.control.state.pending;
     assert.equal(await f.control.confirm(reviewed), true);
     assert.equal(await f.control.confirm(reviewed), false);
@@ -383,7 +386,7 @@ test('a native playlist binding changed after routine review requires a new revi
     f.data.scenes.push(scene);
     await draft(f, 'apply_scene');
     f.control.edit('scene', scene.name);
-    assert.equal(f.control.reviewCreate(), true);
+    assert.equal(await f.control.reviewCreate(), true);
     const reviewed = f.control.state.pending;
     change(scene.groups[0].source);
     assert.equal(await f.control.confirm(reviewed), false);
@@ -450,7 +453,7 @@ test('new automatic DJ routines explicitly clear earlier steering and remain dis
   f.data.rows = [row({ mood: null })];
   await draft(f);
   assert.equal(Object.isFrozen(f.control.state.draft.direction), true);
-  assert.equal(f.control.reviewCreate(), true);
+  assert.equal(await f.control.reviewCreate(), true);
   const pending = f.control.state.pending;
   assert.deepEqual(pending.body.direction, { constraints: {} });
   assert.match(pending.summary, /automatic program \(clears current steering\)/);
@@ -462,7 +465,7 @@ test('new automatic DJ routines explicitly clear earlier steering and remain dis
 
 test('all seventeen DJ filters and the relative duration are reviewed and sent together once', async () => {
   const f = builderFixture(); await draft(f); fillDirection(f.control);
-  assert.equal(f.control.reviewCreate(), true);
+  assert.equal(await f.control.reviewCreate(), true);
   const pending = f.control.state.pending;
   assert.deepEqual(pending.body.direction, fullDirection());
   assert.equal(Object.isFrozen(pending.body.direction), true);
@@ -478,7 +481,7 @@ test('all seventeen DJ filters and the relative duration are reviewed and sent t
 test('every direction field consumes a previous review and cannot be edited during a sent create', async () => {
   for (const field of Object.keys(directionDraft)) {
     const f = builderFixture(); await draft(f); fillDirection(f.control);
-    f.control.reviewCreate(); const old = f.control.state.pending;
+    await f.control.reviewCreate(); const old = f.control.state.pending;
     const changed = ['allow_long_works', 'strict'].includes(field) ? false : field === 'energy_bias' ? '2'
       : ['min_work_minutes', 'max_work_minutes', 'minutes'].includes(field) ? '3'
         : field.includes('decades') ? '1990' : field.includes('periods') ? 'baroque' : 'Another entry';
@@ -488,7 +491,7 @@ test('every direction field consumes a previous review and cannot be edited duri
     assert.deepEqual(f.writes, [], field);
   }
   const f = builderFixture(); await draft(f); fillDirection(f.control);
-  f.control.reviewCreate(); const wait = deferred();
+  await f.control.reviewCreate(); const wait = deferred();
   f.reply((body) => wait.promise.then(() => ({ id: 99, ...body, summary: 'Saved direction', creator: 'test-client',
     enabled: true, next: '2030-01-15T07:30:00Z' })));
   const work = f.control.confirm(f.control.state.pending); await new Promise(setImmediate);
@@ -504,13 +507,13 @@ test('invalid direction drafts and timed automatic clearing cannot reach a write
     ['min_work_minutes', '601']]) {
     const f = builderFixture(); await draft(f); f.control.edit('mood', 'bright');
     assert.equal(f.control.editDirection(field, value), true);
-    assert.equal(f.control.reviewCreate(), false, field);
+    assert.equal(await f.control.reviewCreate(), false, field);
     assert.equal(await f.control.confirm(f.control.state.pending), false);
     assert.deepEqual(f.writes, []);
   }
   const f = builderFixture(); await draft(f);
-  f.control.editDirection('minutes', '60'); assert.equal(f.control.reviewCreate(), false);
-  f.control.editDirection('minutes', ''); assert.equal(f.control.reviewCreate(), true);
+  f.control.editDirection('minutes', '60'); assert.equal(await f.control.reviewCreate(), false);
+  f.control.editDirection('minutes', ''); assert.equal(await f.control.reviewCreate(), true);
   const pending = f.control.state.pending;
   assert.equal(f.control.editDirection('allow_long_works', 'true'), false);
   assert.equal(await f.control.confirm(pending), false);
@@ -522,19 +525,19 @@ test('invalid direction drafts and timed automatic clearing cannot reach a write
 test('duplicate routines compare every filter and duration while preserving legacy absence', async () => {
   const f = builderFixture(); f.data.rows = [row({ mood: null, direction: fullDirection() })];
   await draft(f); fillDirection(f.control);
-  assert.equal(f.control.reviewCreate(), false);
+  assert.equal(await f.control.reviewCreate(), false);
   assert.match(f.control.state.message, /equivalent schedule #7/);
   for (const [field, direction] of changedDirections()) {
     f.data.rows = [row({ mood: null, direction })];
     await draft(f); fillDirection(f.control);
-    assert.equal(f.control.reviewCreate(), true, field);
+    assert.equal(await f.control.reviewCreate(), true, field);
   }
   assert.deepEqual(f.writes, []);
 });
 
 test('create acknowledgements must retain every reviewed filter and relative duration', async () => {
   for (const [field, direction] of changedDirections()) {
-    const f = builderFixture(); await draft(f); fillDirection(f.control); f.control.reviewCreate();
+    const f = builderFixture(); await draft(f); fillDirection(f.control); await f.control.reviewCreate();
     f.reply((body) => ({ id: 99, ...body, direction, summary: 'Saved direction', creator: 'test-client',
       enabled: true, next: '2030-01-15T07:30:00Z' }));
     const pending = f.control.state.pending;
@@ -548,7 +551,7 @@ test('create acknowledgements must retain every reviewed filter and relative dur
 test('valid long filter summaries remain readable after an acknowledged create', async () => {
   const f = builderFixture(); await draft(f);
   f.control.editDirection('include_artists', Array(20).fill(`Artist ${'x'.repeat(120)}`).join('\n'));
-  assert.equal(f.control.reviewCreate(), true);
+  assert.equal(await f.control.reviewCreate(), true);
   f.reply((body) => ({ id: 99, ...body, summary: body.direction.constraints.include_artists.join('; '),
     creator: 'test-client', enabled: true, next: '2030-01-15T07:30:00Z' }));
   assert.equal(await f.control.confirm(f.control.state.pending), true);
@@ -585,10 +588,11 @@ test('new drafts do not choose a destination or write without review', async () 
   await f.control.refresh();
   await f.control.beginCreate();
   assert.equal(f.control.state.draft.zone, '');
-  assert.equal(f.control.reviewCreate(), false);
+  assert.equal(await f.control.reviewCreate(), false);
   assert.equal(await f.control.confirm(null), false);
   assert.deepEqual(f.writes, []);
-  assert.deepEqual(f.control.state.options.rooms.map((r) => r.target), ['Studio@S2', 'Studio@S1']);
+  assert.deepEqual(f.control.state.options.rooms.map((r) => r.target),
+    ['all', 'here', 'all@S2', 'Studio@S2', 'Den@S2', 'all@S1', 'Studio@S1']);
 });
 
 test('four actions emit only their fields through the native creation route', async () => {
@@ -602,7 +606,7 @@ test('four actions emit only their fields through the native creation route', as
     const f = builderFixture();
     await draft(f, action);
     for (const [key, value] of Object.entries(edits)) assert.equal(f.control.edit(key, value), true);
-    assert.equal(f.control.reviewCreate(), true);
+    assert.equal(await f.control.reviewCreate(), true);
     const p = f.control.state.pending;
     assert.equal(Object.isFrozen(p.body), true);
     const first = f.control.confirm(p);
@@ -621,7 +625,7 @@ test('volume targets physical member rooms while playback targets only group lea
   assert.deepEqual(f.control.state.options.rooms.map((r) => r.target), ['Studio@S2', 'Den@S2', 'Studio@S1']);
   await f.control.beginCreate('pause');
   f.control.edit('zone', 'Den@S2');
-  assert.equal(f.control.reviewCreate(), false);
+  assert.equal(await f.control.reviewCreate(), false);
 });
 
 test('out-of-range, fractional, blank volume/fade and missing mood do not review', async () => {
@@ -629,7 +633,7 @@ test('out-of-range, fractional, blank volume/fade and missing mood do not review
     ['pause', 'fade_secs', ['601', '-1', '0.5']], ['dj_start', 'mood', ['nonexistent']]]) {
     const f = builderFixture();
     await draft(f, action);
-    for (const value of values) { f.control.edit(field, value); assert.equal(f.control.reviewCreate(), false); }
+    for (const value of values) { f.control.edit(field, value); assert.equal(await f.control.reviewCreate(), false); }
     assert.deepEqual(f.writes, []);
   }
 });
@@ -640,7 +644,7 @@ test('absolute instants match equivalent returned offsets; delays use the daemon
     await draft(f, 'pause');
     f.control.edit('cadence', cadence);
     f.control.edit(field, value);
-    f.control.reviewCreate();
+    await f.control.reviewCreate();
     f.reply((body) => ({ id: 99, ...body, when: 'once 2030-01-15T14:15:00+00:00', summary: 'Saved routine',
       creator: 'test-client', enabled: true, next: '2030-01-15T14:15:00+00:00' }));
     assert.equal(await f.control.confirm(f.control.state.pending), true);
@@ -653,7 +657,7 @@ test('edits consume old reviews, and switching actions clears stale action-speci
   await draft(f);
   f.control.edit('mood', 'bright');
   f.control.editDirection('include_genres', 'jazz');
-  f.control.reviewCreate();
+  await f.control.reviewCreate();
   const old = f.control.state.pending;
   f.control.edit('time', '08:00');
   assert.equal(await f.control.confirm(old), false);
@@ -673,7 +677,7 @@ test('changed topology, scene content or mood constraints block creation before 
     const f = builderFixture();
     await draft(f, action);
     if (action === 'dj_start') f.control.edit('mood', 'bright');
-    f.control.reviewCreate();
+    await f.control.reviewCreate();
     if (action === 'apply_scene') f.data.scenes[0].volumes.Studio = 30;
     else if (action === 'dj_start') f.data.moods.moods[0].constraints.energy_bias = 90;
     else f.data.groups[0].members.pop();
@@ -687,7 +691,7 @@ test('duplicate explicit routines, including paused ones, are detected again bef
   for (const enabled of [true, false]) {
     const f = builderFixture();
     await draft(f);
-    f.control.reviewCreate();
+    await f.control.reviewCreate();
     f.data.rows = [row({ mood: null, direction: {}, enabled })];
     assert.equal(await f.control.confirm(f.control.state.pending), false);
     assert.deepEqual(f.writes, []);
@@ -695,7 +699,7 @@ test('duplicate explicit routines, including paused ones, are detected again bef
     await f.control.refresh();
     await f.control.beginCreate();
     f.control.edit('zone', 'Studio@S2');
-    assert.equal(f.control.reviewCreate(), false);
+    assert.equal(await f.control.reviewCreate(), false);
   }
 });
 
@@ -708,7 +712,7 @@ test('failed creation choices do not disable management or unrelated routine typ
   assert.equal(f.control.state.loaded, true);
   assert.equal(await f.control.beginCreate('pause'), true);
   f.control.edit('zone', 'Studio@S2');
-  assert.equal(f.control.reviewCreate(), true);
+  assert.equal(await f.control.reviewCreate(), true);
   assert.equal(await f.control.confirm(f.control.state.pending), true);
 });
 
@@ -740,7 +744,7 @@ test('a close during creation preflight cancels only an unsent request', async (
   let zones = 0;
   const control = Schedules.model({ call: (name, args) => name === 'scheduleZones' && ++zones === 2 ? wait.promise : f.call(name, args) });
   await control.refresh(); await control.beginCreate('pause');
-  control.edit('zone', 'Studio@S2'); control.reviewCreate();
+  control.edit('zone', 'Studio@S2'); await control.reviewCreate();
   const work = control.confirm(control.state.pending);
   await new Promise(setImmediate);
   control.close(); wait.resolve(groups());
@@ -750,7 +754,7 @@ test('a close during creation preflight cancels only an unsent request', async (
 
 test('a lost create reply cannot be retried from the consumed form', async () => {
   const f = builderFixture();
-  await draft(f, 'volume'); f.control.reviewCreate();
+  await draft(f, 'volume'); await f.control.reviewCreate();
   const pending = f.control.state.pending;
   f.reply(() => { throw new Error('Reply lost after saving'); });
   assert.equal(await f.control.confirm(pending), false);
@@ -765,7 +769,7 @@ test('contradictory add replies never claim a verified routine', async () => {
   for (const extra of [{ zone: 'Elsewhere@S1' }, { action: 'dj_start', fade_secs: null },
     { enabled: false }, { when: 'daily 09:00' }, { next: null }]) {
     const f = builderFixture();
-    await draft(f, 'pause'); f.control.reviewCreate();
+    await draft(f, 'pause'); await f.control.reviewCreate();
     f.reply((body) => ({ id: 99, ...body, summary: 'Saved routine', creator: 'test-client',
       enabled: true, next: '2030-01-15T07:30:00Z', ...extra }));
     assert.equal(await f.control.confirm(f.control.state.pending), false);
@@ -776,7 +780,7 @@ test('contradictory add replies never claim a verified routine', async () => {
 
 test('creation and management share the same in-flight write exclusion', async () => {
   const wait = deferred(); const f = builderFixture();
-  f.data.rows = [row()]; await draft(f, 'volume'); f.control.reviewCreate();
+  f.data.rows = [row()]; await draft(f, 'volume'); await f.control.reviewCreate();
   f.reply((body) => wait.promise.then(() => ({ id: 99, ...body, summary: 'Saved routine', creator: 'test-client',
     enabled: true, next: '2030-01-15T07:30:00Z' })));
   const work = f.control.confirm(f.control.state.pending);
@@ -796,18 +800,19 @@ test('real localhost creation dispatch preserves the exact reviewed fields for e
   const server = http.createServer(async (req, res) => {
     let text = ''; for await (const chunk of req) text += chunk;
     requests.push([req.method, req.url, text, req.headers['content-type']]);
-    const data = { '/schedules': [], '/zones': groups(), '/scenes': scenes(), '/dj/moods': moods() };
+    const data = { '/schedules': [], '/zones': groups(), '/rooms': targets.rooms(groups()), '/scenes': scenes(), '/dj/moods': moods() };
     const body = text ? JSON.parse(text) : null;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify(body ? { id: id++, ...body, summary: 'Saved routine', creator: 'test-client',
-      enabled: true, next: '2030-01-15T07:30:00-05:00' } : data[req.url]));
+      enabled: true, next: '2030-01-15T07:30:00-05:00' } : req.url.startsWith('/rooms/resolve?')
+        ? targets.resolve(groups(), new URL(req.url, 'http://fixture').searchParams.get('target')) : data[req.url]));
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(() => new Promise((r) => server.close(r)));
   for (const action of ['dj_start', 'pause', 'volume', 'apply_scene', 'announce']) {
-    const control = Schedules.model({ call: async (name, { body } = {}) => {
+    const control = Schedules.model({ call: async (name, { body, query } = {}) => {
       const [method, path] = Schedules.routes[name];
-      const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, { method,
+      const response = await fetch(`http://127.0.0.1:${server.address().port}${path}${query ? '?' + new URLSearchParams(query) : ''}`, { method,
         ...(body ? { body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } } : {}) });
       return response.json();
     } });
@@ -817,7 +822,7 @@ test('real localhost creation dispatch preserves the exact reviewed fields for e
       control.edit('announcement_source', 'chime'); control.edit('announcement_chime', 'bell');
       control.edit('announcement_rooms', ['Studio@S2', 'Studio@S1']); control.edit('announcement_volume', '25');
     }
-    control.reviewCreate(); const pending = control.state.pending;
+    await control.reviewCreate(); const pending = control.state.pending;
     assert.equal(await control.confirm(pending), true);
     assert.deepEqual(requests.at(-1), ['POST', '/schedules', JSON.stringify(pending.body), 'application/json']);
   }
@@ -951,7 +956,7 @@ test('speech and chime routines review and create only their complete nested rec
   for (const source of ['text', 'chime']) {
     const f = builderFixture();
     await announcementDraft(f, source);
-    assert.equal(f.control.reviewCreate(), true);
+    assert.equal(await f.control.reviewCreate(), true);
     const pending = f.control.state.pending;
     assert.deepEqual(pending.body, { when: 'weekdays 07:30', action: 'announce', announcement: {
       ...(source === 'text' ? { text: 'Time to leave — bring your coat', voice: 'Voice Name' } : { chime: 'bell' }),
@@ -968,17 +973,17 @@ test('speech and chime routines review and create only their complete nested rec
 
 test('announcement creation requires selected rooms and valid speech before review', async () => {
   const f = builderFixture(); await draft(f, 'announce');
-  assert.equal(f.control.reviewCreate(), false);
+  assert.equal(await f.control.reviewCreate(), false);
   assert.match(f.control.state.message, /at least one room/);
   f.control.edit('announcement_rooms', ['Den@S2']);
-  assert.equal(f.control.reviewCreate(), false);
+  assert.equal(await f.control.reviewCreate(), false);
   f.control.edit('announcement_text', '🎶'.repeat(1000));
-  assert.equal(f.control.reviewCreate(), true);
+  assert.equal(await f.control.reviewCreate(), true);
   for (const [field, value] of [['announcement_volume', '101'], ['announcement_volume', '1.5'],
     ['announcement_rooms', ['Missing@S2']], ['announcement_voice', '-bad']]) {
     const invalid = builderFixture(); await announcementDraft(invalid);
     invalid.control.edit(field, value);
-    assert.equal(invalid.control.reviewCreate(), false, field);
+    assert.equal(await invalid.control.reviewCreate(), false, field);
     assert.deepEqual(invalid.writes, []);
   }
 });
@@ -987,7 +992,7 @@ test('every announcement edit consumes its old review and all selected rooms are
   for (const [field, value] of [['announcement_text', 'Different words'], ['announcement_voice', 'Other Voice'],
     ['announcement_volume', '0'], ['announcement_rooms', ['Studio@S2']], ['announcement_source', 'chime']]) {
     const f = builderFixture(); await announcementDraft(f);
-    assert.equal(f.control.reviewCreate(), true);
+    assert.equal(await f.control.reviewCreate(), true);
     const old = f.control.state.pending;
     assert.equal(f.control.edit(field, value), true);
     assert.equal(f.control.state.pending, null);
@@ -995,7 +1000,7 @@ test('every announcement edit consumes its old review and all selected rooms are
     assert.deepEqual(f.writes, []);
   }
   const f = builderFixture(); await announcementDraft(f);
-  f.control.reviewCreate(); const pending = f.control.state.pending;
+  await f.control.reviewCreate(); const pending = f.control.state.pending;
   f.data.groups[1].members.push('Other Room');
   assert.equal(await f.control.confirm(pending), false);
   assert.match(f.control.state.message, /target group/);
@@ -1004,7 +1009,7 @@ test('every announcement edit consumes its old review and all selected rooms are
 
 test('announcement recipes participate in duplicate detection and management definition checks', async () => {
   const f = builderFixture(); await announcementDraft(f);
-  f.control.reviewCreate(); const recipe = f.control.state.pending.body.announcement;
+  await f.control.reviewCreate(); const recipe = f.control.state.pending.body.announcement;
   f.data.rows = [announcementRow(recipe)];
   assert.equal(await f.control.confirm(f.control.state.pending), false);
   assert.match(f.control.state.message, /equivalent schedule #7/);
@@ -1023,7 +1028,7 @@ test('announcement recipes participate in duplicate detection and management def
 test('nullable server recipes acknowledge accurately and a changed announcement reply remains uncertain', async () => {
   for (const changed of [false, true]) {
     const f = builderFixture(); await announcementDraft(f);
-    f.control.reviewCreate(); const pending = f.control.state.pending;
+    await f.control.reviewCreate(); const pending = f.control.state.pending;
     f.reply((body) => ({ id: 99, ...body,
       announcement: { text: null, chime: null, wav_base64: null, voice: null, ...body.announcement,
         ...(changed ? { text: 'Different message' } : {}) },
