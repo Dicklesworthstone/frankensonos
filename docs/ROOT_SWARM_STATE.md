@@ -5486,3 +5486,14 @@ reached, and the decrypt loop's context is never stamped. The harness therefore 
 reach the digest/signature stage yet by flow alone; the next move is a hard patch —
 insert a `bl 0x1002bf8c` (ZZ0033@plt) before the loop at `0x10007148` and supply its
 arguments from the live registers — rather than hunting more branches.
+
+Exact stream-init signature recovered from the real call site (`0x100051e4`-`0x10005214`):
+
+```
+ZZ0033(ctx=r1+11424, mode=1, key=r18, keylen=16, iv=r16, ivlen=16, 0, 0)
+```
+
+i.e. AES-128-CBC with a 16-byte key and 16-byte IV — key and IV are the two pointers the
+header supplies. That is everything needed for a hard patch once the header-derived key/IV
+are read out, and it also says the loop's stack context must be the *same object* as the
+one this site initialises.
