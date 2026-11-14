@@ -229,7 +229,9 @@ fn scene_queue_undo_never_overwrites_a_later_queue_or_room_level_change_even_wit
         }
         let queue = f.queue();
         let start = f.sim.soap_log().len();
-        assert!(f.surface.undo_forced(&Client::Cli, true, true).is_err());
+        // The CLI owns the scene definition, while HTTP owns its application.
+        // Include other callers so this actually attempts to undo that scene.
+        assert!(f.surface.undo_forced(&Client::Cli, false, true).is_err());
         assert!(f.writes_since(start).is_empty());
         assert_eq!(f.queue(), queue);
     }

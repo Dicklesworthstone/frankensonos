@@ -26,7 +26,7 @@ struct Playback {
     position: PositionInfo,
     state: TransportState,
     renderer_failed: bool,
-    playback_required: bool,
+    require_playback: bool,
     observed: Instant,
     positioned: bool,
 }
@@ -79,7 +79,7 @@ impl Playback {
             position,
             state: transport.state,
             renderer_failed: transport.status == "ERROR_OCCURRED",
-            playback_required: false,
+            require_playback: false,
             observed,
             positioned,
         })
@@ -134,7 +134,7 @@ impl Playback {
         target: &PlayerId,
     ) -> Result<(), MoveError> {
         let now = Self::read(t, host, target, self.known_mode())?;
-        if self.playback_required && now.renderer_failed {
+        if self.require_playback && now.renderer_failed {
             return Err(verify::renderer_error().into());
         }
         if !stable(self.state)
@@ -206,7 +206,7 @@ impl Playback {
                 // Only this transfer's Play requires healthy playback. An old
                 // failed source may still be stopped and replaced, or loaded
                 // silently when the incoming source is paused.
-                now.playback_required = self.playback_required || matches!(step, Step::Play);
+                now.require_playback = self.require_playback || matches!(step, Step::Play);
                 now.positioned |= match step {
                     Step::Load(_, positioned) => positioned,
                     _ => self.positioned,

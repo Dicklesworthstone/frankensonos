@@ -40,9 +40,7 @@ fn status(response: &mut String, value: Option<&str>) {
         field(response, "CurrentTransportStatus", value);
     } else {
         let start = response.find("<CurrentTransportStatus>").unwrap();
-        let end = response[start..]
-            .find("</CurrentTransportStatus>")
-            .unwrap()
+        let end = response[start..].find("</CurrentTransportStatus>").unwrap()
             + start
             + "</CurrentTransportStatus>".len();
         response.replace_range(start..end, "");
@@ -123,7 +121,10 @@ fn an_error_with_playing_or_transitioning_never_releases_the_source() {
                 replies.reported_state = Some(state);
                 let since = rig.sim.soap_log().len();
                 let error = rig.copy(&replies).unwrap_err().to_string();
-                assert!(error.contains("ERROR_OCCURRED"), "{kind:?}: {state}: {error}");
+                assert!(
+                    error.contains("ERROR_OCCURRED"),
+                    "{kind:?}: {state}: {error}"
+                );
                 assert!(replies.injected.get());
                 assert_eq!(
                     replies.reads.get(),
@@ -150,7 +151,10 @@ fn late_renderer_errors_remain_a_barrier_through_final_destination_checks() {
                 replies.one_read_only = true;
                 let since = rig.sim.soap_log().len();
                 let error = rig.copy(&replies).unwrap_err().to_string();
-                assert!(error.contains("ERROR_OCCURRED"), "{kind:?}: {healthy}: {error}");
+                assert!(
+                    error.contains("ERROR_OCCURRED"),
+                    "{kind:?}: {healthy}: {error}"
+                );
                 assert!(replies.injected.get(), "the late failure was observed");
                 source_kept(&rig, since);
             }

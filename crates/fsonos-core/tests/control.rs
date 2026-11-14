@@ -602,7 +602,11 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         "all on the coordinator"
     );
     // The household's own album prefix and account, as an album.
-    let add = &sent.iter().find(|(_, action, _)| action == "AddURIToQueue").unwrap().2;
+    let add = &sent
+        .iter()
+        .find(|(_, action, _)| action == "AddURIToQueue")
+        .unwrap()
+        .2;
     assert!(
         add.contains(
             "<EnqueuedURI>x-rincon-cpcontainer:1004206cspotify%3aalbum%3a0FixtureSpotify0000201\
@@ -616,7 +620,9 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         "{add}"
     );
     assert!(
-        sent.iter().find(|(_, action, _)| action == "Seek").unwrap()
+        sent.iter()
+            .find(|(_, action, _)| action == "Seek")
+            .unwrap()
             .2
             .contains("<Unit>TRACK_NR</Unit><Target>1</Target>")
     );
@@ -633,7 +639,11 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
     )
     .unwrap();
     let sent = t.sent.borrow();
-    let add = &sent.iter().find(|(_, action, _)| action == "AddURIToQueue").unwrap().2;
+    let add = &sent
+        .iter()
+        .find(|(_, action, _)| action == "AddURIToQueue")
+        .unwrap()
+        .2;
     assert!(
         add.contains("x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a0FixtureSpotify0000202"),
         "{}",
@@ -758,7 +768,14 @@ impl Transport for ContainerDrift {
             }
             "GetTransportSettings" => "<PlayMode>NORMAL</PlayMode>".into(),
             "GetTransportInfo" => soap::args_xml(&[
-                ("CurrentTransportState", if self.playing.get() { "PLAYING" } else { "STOPPED" }),
+                (
+                    "CurrentTransportState",
+                    if self.playing.get() {
+                        "PLAYING"
+                    } else {
+                        "STOPPED"
+                    },
+                ),
                 ("CurrentTransportStatus", "OK"),
             ]),
             "GetPositionInfo" => {
@@ -895,7 +912,11 @@ fn a_container_refused_at_play_never_replays_the_committed_replacement() {
         .unwrap_err();
         assert!(matches!(error, CoreError::Uncertain(_)), "{error}");
         assert_eq!(t.browses.get(), 1, "a committed source is not relearned");
-        assert_eq!(t.adds.borrow().len(), 1, "the replacement is never repeated");
+        assert_eq!(
+            t.adds.borrow().len(),
+            1,
+            "the replacement is never repeated"
+        );
         assert_eq!(
             t.actions.borrow().iter().filter(|a| *a == "Play").count(),
             1,

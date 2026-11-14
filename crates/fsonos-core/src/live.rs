@@ -666,10 +666,10 @@ impl Engine {
             .release_background(provider, self.stop.load(Ordering::Acquire));
     }
 
-    fn listener_failed(&self, m: &mut Model, closed: routes::Closed) {
+    fn listener_failed(&self, m: &mut Model, closed: &routes::Closed) {
         let now = Instant::now();
         let Some(sinks) = &mut m.sink else { return };
-        let changed = sinks.closed(&closed, now);
+        let changed = sinks.closed(closed, now);
         let empty = sinks.is_empty();
         m.last_error = Some(closed.error.to_string());
         self.sync_routes(m, &changed, now);
@@ -908,7 +908,7 @@ impl Engine {
                 }
                 Ok(None) => None,
                 Err(closed) => {
-                    self.listener_failed(m, closed);
+                    self.listener_failed(m, &closed);
                     return Some(Vec::new());
                 }
             };
@@ -930,7 +930,7 @@ impl Engine {
                         }
                         Ok(None) => return None,
                         Err(closed) => {
-                            self.listener_failed(m, closed);
+                            self.listener_failed(m, &closed);
                             return Some(Vec::new());
                         }
                     }

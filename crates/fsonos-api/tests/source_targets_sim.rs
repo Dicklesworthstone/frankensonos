@@ -10,6 +10,7 @@ use fsonos_core::actions::BeforeState;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::ControlTarget;
+use fsonos_core::snapshot::RestoreOp;
 use fsonos_core::store::{ActionFilter, LoggedAction, MemStore};
 use fsonos_core::{HouseholdState, favorites, inventory, playlists, resolve_room};
 use fsonos_proto::content::{QUEUE, browse_all};
@@ -35,6 +36,14 @@ const ARTIST: &str = "spotify:artist:2000000000000000000001";
 const SHOW: &str = "spotify:show:3000000000000000000001";
 const TRACK: &str = "spotify:track:1000000000000000000001";
 const GROUPS: [&str; 4] = ["Lead@S1", "Guest@S1", "Lead@S2", "Guest@S2"];
+const ROOMS: [&str; 6] = [
+    "Lead@S1",
+    "Member@S1",
+    "Guest@S1",
+    "Lead@S2",
+    "Member@S2",
+    "Guest@S2",
+];
 const CAP: u8 = 25;
 
 struct House {
@@ -163,6 +172,42 @@ impl House {
     }
 
     fn original_playback(&self, zone: &str) {
+        self.original_selection(zone);
+        assert_eq!(
+            soap::get_transport_info(&self.sim.lan(), self.target(zone).coordinator.ip)
+                .unwrap()
+                .state,
+            TransportState::Paused,
+            "{zone}"
+        );
+    }
+
+    fn restored_playback(&self, zone: &str) {
+        self.original_selection(zone);
+        let target = self.target(zone);
+        assert!(matches!(
+            soap::get_transport_info(&self.sim.lan(), target.coordinator.ip)
+                .unwrap()
+                .state,
+            TransportState::Paused | TransportState::Stopped
+        ));
+        for room in target
+            .household
+            .rooms
+            .iter()
+            .filter(|room| room.coordinator == target.coordinator.id)
+        {
+            assert_eq!(
+                fsonos_core::control::volume(&self.sim.lan(), &self.households, &room.primary)
+                    .unwrap(),
+                CAP,
+                "undo retains the current volume cap for {}",
+                room.name
+            );
+        }
+    }
+
+    fn original_selection(&self, zone: &str) {
         let target = self.target(zone);
         let position = soap::get_position_info(&self.sim.lan(), target.coordinator.ip).unwrap();
         assert_eq!(self.queue(zone), ORIGINAL, "{zone}");
@@ -172,13 +217,6 @@ impl House {
             "{zone}"
         );
         assert_eq!(position.uri, ORIGINAL[1], "{zone}");
-        assert_eq!(
-            soap::get_transport_info(&self.sim.lan(), target.coordinator.ip)
-                .unwrap()
-                .state,
-            TransportState::Paused,
-            "{zone}"
-        );
         assert_eq!(
             get_play_mode(&self.sim.lan(), target.coordinator.ip).unwrap(),
             PlayMode::ShuffleRepeatOne,
@@ -213,10 +251,38 @@ fn one_action(surface: &Surface) -> LoggedAction {
     logged.pop().unwrap()
 }
 
-fn undo(surface: &Surface) {
+fn undo(surface: &Surface, house: &House, denied_levels: &[&str]) {
     let preview = surface.preview_undo(&Client::McpStdio).unwrap().unwrap();
-    let restored = surface.undo_checked(&Client::McpStdio, preview.id).unwrap();
-    assert!(restored.failures.is_empty(), "{restored:?}");
+    let start = house.sim.soap_log().len();
+    let mut restored = surface.undo_checked(&Client::McpStdio, preview.id).unwrap();
+    assert_eq!(restored.undone, Some(preview.id));
+    // Reference-only source snapshots captured the original volume of 80.
+    // Restoring that level is correctly refused after playback capped it at
+    // 25; require precisely those room-level policy notes, and no other skip.
+    let mut expected: Vec<_> = denied_levels
+        .iter()
+        .map(|zone| {
+            let target = house.target(zone);
+            format!(
+                "{} Volume: {:?}: {} is capped at {CAP}; it is already at {CAP}",
+                target.coordinator.id.0,
+                RestoreOp::SetVolume {
+                    player: target.player.id.clone(),
+                    level: 80
+                },
+                target.room.name,
+            )
+        })
+        .collect();
+    expected.sort();
+    restored.failures.sort();
+    assert_eq!(restored.failures, expected, "{restored:?}");
+    assert!(
+        house
+            .writes_since(start)
+            .iter()
+            .all(|write| write.action != "Play")
+    );
 }
 
 fn argument<'a>(call: &'a SoapLogEntry, name: &str) -> &'a str {
@@ -266,8 +332,15 @@ fn uri_alias_deduplicates_grouped_rooms_caps_only_its_audience_and_undoes_togeth
     let logged = one_action(&surface);
     let before = BeforeState::parse(logged.action.before_state.as_deref().unwrap()).unwrap();
     assert_eq!(before.zones.len(), 2);
-    undo(&surface);
-    for zone in GROUPS {
+    undo(
+        &surface,
+        &house,
+        &["Lead@S1", "Member@S1", "Lead@S2", "Member@S2"],
+    );
+    for zone in ["Lead@S1", "Lead@S2"] {
+        house.restored_playback(zone);
+    }
+    for zone in ["Guest@S1", "Guest@S2"] {
         house.original_playback(zone);
     }
 }
@@ -362,9 +435,9 @@ fn favorites_and_native_playlist_ids_use_each_households_metadata_once_per_group
         let before = BeforeState::parse(logged.action.before_state.as_deref().unwrap()).unwrap();
         assert_eq!(before.zones.len(), 4);
         assert_eq!(before.queue_undo.len(), if saved_playlist { 4 } else { 0 });
-        undo(&surface);
+        undo(&surface, &house, if saved_playlist { &[] } else { &ROOMS });
         for zone in GROUPS {
-            house.original_playback(zone);
+            house.restored_playback(zone);
         }
     }
 }
@@ -621,9 +694,9 @@ fn artist_and_show_playback_share_one_catalog_observation_and_restore_all_origin
         let logged = one_action(&surface);
         let before = BeforeState::parse(logged.action.before_state.as_deref().unwrap()).unwrap();
         assert_eq!(before.queue_undo.len(), 4);
-        undo(&surface);
+        undo(&surface, &house, &[]);
         for zone in GROUPS {
-            house.original_playback(zone);
+            house.restored_playback(zone);
         }
     }
 }
@@ -726,9 +799,9 @@ fn a_late_speaker_refusal_reports_partial_delivery_and_keeps_one_reversible_acti
     }
     one_action(&surface);
     house.sim.clear_faults(&refused.0).unwrap();
-    undo(&surface);
+    undo(&surface, &house, &ROOMS);
     for zone in GROUPS {
-        house.original_playback(zone);
+        house.restored_playback(zone);
     }
 }
 

@@ -890,6 +890,11 @@ fn rebase_queued<S: Store + ?Sized>(
     target: i64,
     queued: &mut [QueuedBefore],
 ) -> Result<(), CoreError> {
+    #[derive(Deserialize)]
+    struct Transitions {
+        #[serde(default)]
+        queued_restored: Vec<control::queue_removal::QueuedRestoration>,
+    }
     if queued.is_empty() {
         return Ok(());
     }
@@ -897,11 +902,6 @@ fn rebase_queued<S: Store + ?Sized>(
         return Err(CoreError::NotUndoable(
             "this older queue addition has no retained ownership proof; force cannot authorize deleting later occurrences".into(),
         ));
-    }
-    #[derive(Deserialize)]
-    struct Transitions {
-        #[serde(default)]
-        queued_restored: Vec<control::queue_removal::QueuedRestoration>,
     }
     // A missing old transition is a conservative refusal, never permission to
     // infer that an equal-looking queue still contains the original occurrences.

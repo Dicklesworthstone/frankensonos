@@ -47,7 +47,9 @@ impl Recovery {
         self.destination
             .confirm(t, host, coordinator)
             .map_err(uncertain)?;
-        self.owner.confirm(t, host, coordinator).map_err(uncertain)?;
+        self.owner
+            .confirm(t, host, coordinator)
+            .map_err(uncertain)?;
         if read(t, host).map_err(uncertain)? != self.queue {
             return Err(uncertain("the queue changed while relearning its renderer"));
         }

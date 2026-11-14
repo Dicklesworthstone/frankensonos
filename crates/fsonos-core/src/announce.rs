@@ -206,13 +206,16 @@ impl HouseholdAnnouncement {
     }
 }
 
+/// Resolve a clip URL for the household's current lead player.
+pub type ClipUrl<'a> = dyn Fn(&PlayerId) -> Result<String, String> + Sync + 'a;
+
 /// Boundary work that belongs to one household's announcement turn.
 /// Callbacks run while that turn is held; households remain independent.
 pub struct AnnouncementCallbacks<'a> {
     /// Resolve the clip URL for the actual fresh household lead, before
     /// admission/cap callbacks or speaker writes. A missing route fails only
     /// this household. `None` retains the caller's original clip URL.
-    pub clip_url: Option<&'a (dyn Fn(&PlayerId) -> Result<String, String> + Sync)>,
+    pub clip_url: Option<&'a ClipUrl<'a>>,
     /// Recheck admission after waiting for this household, before cap callbacks
     /// can suspend its fades, and after snapshots before the first write.
     /// Core is policy-neutral; a refusal becomes this household's outcome.
