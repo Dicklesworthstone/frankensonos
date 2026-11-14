@@ -18,6 +18,11 @@
 .source-track-list span { margin-top: .25rem; color: var(--muted); font-size: .85rem; }
 .source-track-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .6rem; }
 .source-track-actions button { min-height: 2.5rem; padding: .35rem .65rem; font-size: .85rem; }
+.source-track-select { min-height: 2.75rem; margin-top: .5rem; }
+.source-track-select[aria-pressed="true"] { font-weight: 700; border-color: currentColor; }
+.source-track-selection { display: grid; gap: .65rem; min-width: 0; }
+.source-selected-tracks { margin: 0; padding-left: 1.5rem; overflow-wrap: anywhere; }
+.source-selected-tracks li { padding: .25rem 0; white-space: pre-wrap; }
 .source-online, .source-online-form { display: grid; gap: .65rem; min-width: 0; }
 .source-online-results { margin: 0; padding: .25rem .75rem .25rem 2.5rem; max-height: 28rem; overflow: auto; border: 1px solid var(--line); border-radius: .5rem; }
 .source-online-results:empty { display: none; }

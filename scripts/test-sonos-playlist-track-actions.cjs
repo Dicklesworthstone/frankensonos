@@ -13,7 +13,36 @@ async function until(predicate) {
   assert.ok(predicate(), 'reached the asynchronous command boundary');
 }
 
-async function fixture(kind) {
+function documentFixture() {
+  const nodes = new Map(), doc = { activeElement: null, hidden: false, addEventListener() {}, removeEventListener() {},
+    createElement(tag) {
+      const listeners = new Map();
+      return { tag, ownerDocument: doc, children: [], hidden: false, disabled: false, open: false, textContent: '', value: '', attributes: {},
+        append(...values) { this.children.push(...values); }, replaceChildren(...values) { this.children = values; },
+        setAttribute(key, value) { this.attributes[key] = value; }, getAttribute(key) { return this.attributes[key] ?? null; },
+        addEventListener(key, listener) { listeners.set(key, listener); }, removeEventListener(key) { listeners.delete(key); },
+        fire(key, event = {}) { return listeners.get(key)?.({ target: this, preventDefault() {}, ...event }); },
+        focus() { doc.activeElement = this; }, scrollIntoView() {},
+        contains(node) { return this === node || this.children.some(child => child?.contains?.(node)); },
+        showModal() { this.open = true; }, close() { this.open = false; this.fire('close'); },
+      };
+    }, getElementById(id) { if (!nodes.has(id)) nodes.set(id, { ...doc.createElement('div'), id }); return nodes.get(id); },
+  };
+  const el = (tag, attrs = {}, ...children) => {
+    const node = doc.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (key === 'text') node.textContent = value;
+      else if (key === 'class') node.className = value;
+      else if (key.startsWith('aria-')) node.setAttribute(key, value);
+      else node[key] = value;
+    }
+    node.append(...children); return node;
+  };
+  return { doc, el };
+}
+function descendants(node) { return [node, ...(node.children || []).flatMap(child => child && typeof child === 'object' ? descendants(child) : [])]; }
+
+async function fixture(kind, { dom = false } = {}) {
   const zones = ['S1', 'S2'].map(household => ({ household, coordinator_room: 'Den', members: ['Den'], transport_state: 'paused' }));
   const catalog = [{ id: 'SQ:7', title: 'Saved & repeated' }, { id: 'SQ:8', title: 'Other list' }];
   const entries = [
@@ -46,31 +75,37 @@ async function fixture(kind) {
     throw new Error('Unexpected read ' + url);
   };
   const write = (url, body) => {
-    assert.equal(url, '/sonos/playlists/track', 'never fall back to a whole playlist or raw URI');
+    assert.ok(['/sonos/playlists/track', '/sonos/playlists/tracks'].includes(url), 'never fall back to a whole playlist or raw URI');
+    const positions = url.endsWith('/tracks') ? body.positions : [body.position];
     const q = queues.get(body.zone);
     return { done: body.mode === 'play' ? 'Selected track playing' : 'One selected track queued', changed: true, notes: [{ detail: 'Policy applied.' }],
-      zone: 'Den', playlist: body.playlist, position: body.position, title: entries[body.position - 1].title, mode: body.mode,
-      ...(body.mode === 'play' ? {} : { first: body.mode === 'next' ? q.playing + 1 : q.total + 1, count: 1, playing_queue: true }) };
+      zone: 'Den', playlist: body.playlist, mode: body.mode,
+      ...(url.endsWith('/tracks') ? { positions: [...positions], titles: positions.map(position => entries[position - 1].title) }
+        : { position: body.position, title: entries[body.position - 1].title }),
+      ...(body.mode === 'play' ? {} : { first: body.mode === 'next' ? q.playing + 1 : q.total + 1, count: positions.length, playing_queue: true }) };
   };
   const call = async (url, body, options) => {
     calls.push({ url, body: copy(body), options });
     return body === undefined ? reader ? reader(url, read) : read(url) : writer ? writer(url, body, write) : write(url, body);
   };
+  const view = dom ? documentFixture() : null;
+  if (dom && kind === 'dashboard') view.doc.getElementById('source-contents').append(view.doc.getElementById('source-contents-items'));
   if (kind === 'phone') {
-    api = Phone.model({ call(name, args = {}) {
+    const options = { call(name, args = {}) {
       const [method, path] = Phone.routes[name] || (name === 'zones' ? ['GET', '/zones'] : ['GET', '/zones/{room}/state']);
       const url = path.replace('{room}', encodeURIComponent(args.params?.room)) + (args.query ? '?' + new URLSearchParams(args.query) : '');
       return call(url, method === 'POST' ? args.body : undefined);
-    } });
+    } };
+    api = dom ? Phone.panel({ ...options, el: view.el, document: view.doc }) : Phone.model(options);
     await api.refresh(); api.edit('target', 'Den@S1');
   } else {
     controller = Core.model({ call, changed: () => api?.observe() });
-    api = Dashboard.model({ call, controller });
+    api = dom ? Dashboard.panel({ call, controller, document: view.doc }) : Dashboard.model({ call, controller });
     assert.equal(await controller.refresh(), true); controller.connection(true); api.open();
   }
   api.edit('sourceType', 'playlist'); await api.loadPlaylists(); api.edit('playlist', 'SQ:7');
   assert.equal(await api.loadContents(), true);
-  return { api, controller, calls, entries, rows, queues, catalog,
+  return { api, controller, calls, entries, rows, queues, catalog, doc: view?.doc,
     writes: () => calls.filter(call => call.body !== undefined),
     read(fn) { reader = fn; }, write(fn) { writer = fn; }, revision(value) { revision = value; },
     async review(position = 2, mode = 'play', page) { await api.reviewTrack(position, mode, page); return api.state.pending; },
@@ -219,6 +254,182 @@ for (const kind of ['phone', 'dashboard']) {
     assert.equal(await writing, true); assert.equal(f.writes().length, 1); assert.equal(f.api.state.result.status, 'accepted');
   });
 }
+
+async function reviewSelection(f, mode = 'play', positions = [2, 1]) {
+  for (const position of positions) assert.equal(f.api.selectTrack(position), true);
+  await f.api.reviewTracks(mode);
+  return f.api.state.pending;
+}
+
+for (const kind of ['phone', 'dashboard']) {
+  test(kind + ': displayed selection controls review the ordered native occurrences before one command', async () => {
+    const f = await fixture(kind, { dom: true });
+    f.entries[1].title = '<img src=x onerror=alert(1)> Second'; await f.api.loadContents();
+    const all = () => kind === 'phone' ? descendants(f.api.node)
+      : descendants(f.doc.getElementById('source-contents'));
+    for (const position of [2, 1]) {
+      const select = all().find(node => node.getAttribute?.('data-playlist-select') === String(position));
+      assert.ok(select); assert.equal(select.disabled, false); select.focus(); select.fire('click');
+      assert.equal(f.doc.activeElement.getAttribute('data-playlist-select'), String(position), 'selection preserves keyboard focus');
+    }
+    const panel = all().find(node => node.getAttribute?.('aria-label') === 'Selected saved tracks');
+    const order = panel.children.find(node => node.getAttribute?.('aria-label') === 'Selected tracks in playback order');
+    assert.deepEqual(order.children.map(node => node.textContent), ['Track 2: <img src=x onerror=alert(1)> Second', 'Track 1: First occurrence']);
+    const play = descendants(panel).find(node => node.tag === 'button' && node.textContent === 'Play selected now');
+    play.fire('click'); await until(() => !!f.api.state.pending);
+    assert.equal(f.writes().length, 0);
+    const preview = kind === 'phone' ? descendants(f.api.node).find(node => node.getAttribute?.('aria-label') === 'Review selected playback')
+      : f.doc.getElementById('source-preview');
+    const reviewed = kind === 'phone' ? descendants(preview).find(node => node.getAttribute?.('aria-label') === 'Reviewed saved tracks in playback order')
+      : f.doc.getElementById('source-preview-selection');
+    assert.deepEqual(reviewed.children.map(node => node.textContent), order.children.map(node => node.textContent));
+    const confirm = kind === 'phone' ? descendants(preview).find(node => node.tag === 'button' && node.textContent === 'Play now')
+      : f.doc.getElementById('source-confirm');
+    assert.equal(confirm.disabled, false); confirm.fire('click'); await until(() => f.api.state.result?.status === 'accepted');
+    assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].url, '/sonos/playlists/tracks');
+    assert.deepEqual(f.writes()[0].body.positions, [2, 1]); assert.equal(all().some(node => node.tag === 'img'), false);
+  });
+
+  for (const mode of ['play', 'next', 'end']) test(`${kind}: ${mode} sends one ordered native selection with both source and queue revisions`, async () => {
+    const f = await fixture(kind), reviewed = await reviewSelection(f, mode);
+    assert.ok(reviewed); assert.equal(f.writes().length, 0);
+    assert.deepEqual(reviewed.item.positions, [2, 1]); assert.equal(reviewed.item.tracks[0].uri, reviewed.item.tracks[1].uri);
+    assert.ok(Object.isFrozen(reviewed.item.positions)); assert.ok(Object.isFrozen(reviewed.item.tracks));
+    assert.equal(reviewed.before.queue.revision, 'queue:S1');
+    assert.equal(await f.confirm(reviewed), true); assert.equal(await f.confirm(reviewed), false);
+    assert.deepEqual(f.writes().map(({ url, body }) => ({ url, body })), [{ url: '/sonos/playlists/tracks', body: {
+      zone: 'Den@S1', playlist: 'SQ:7', positions: [2, 1], expected_revision: 'native:1', expected_queue_revision: 'queue:S1',
+      mode: mode === 'end' ? 'append' : mode,
+    } }]);
+    assert.match(f.api.state.result.detail, /Policy applied/);
+    const reads = f.calls.filter(({ url }) => url.includes('/contents?') && new URL(url, 'http://localhost').searchParams.has('expected_revision'));
+    assert.equal(reads.length, 2, 'one bounded selected range read for review and dispatch');
+    for (const { url } of reads) {
+      const query = new URL(url, 'http://localhost').searchParams;
+      assert.equal(query.get('offset'), '0'); assert.equal(query.get('limit'), '2'); assert.equal(query.get('expected_revision'), 'native:1');
+    }
+    const effect = Dashboard.effect(reviewed);
+    assert.match(effect, /order shown/); assert.match(effect, /saved playlist remains unchanged/);
+    assert.match(effect, mode === 'play' ? /shuffle and repeat off/ : /without starting or resuming/);
+  });
+
+  test(kind + ': choosing tracks changes only the local selection and invalidates previous consent', async () => {
+    const f = await fixture(kind), before = f.calls.length;
+    assert.equal(f.api.selectTrack(2), true); assert.equal(f.api.selectTrack(1), true);
+    assert.deepEqual(f.api.state.contentsSelection, [2, 1]); assert.equal(f.calls.length, before);
+    await f.api.reviewTracks('play'); const reviewed = f.api.state.pending; assert.ok(reviewed);
+    assert.equal(f.api.selectTrack(2), true); assert.equal(f.api.state.pending, null);
+    assert.deepEqual(f.api.state.contentsSelection, [1]); assert.equal(await f.confirm(reviewed), false);
+    assert.equal(f.api.selectTrack(2), true); assert.deepEqual(f.api.state.contentsSelection, [1, 2]);
+    assert.equal(f.api.clearTrackSelection(), true); assert.deepEqual(f.api.state.contentsSelection, []);
+    assert.equal(f.writes().length, 0);
+  });
+
+  test(kind + ': the main source review uses the selection until it is explicitly cleared', async () => {
+    const f = await fixture(kind);
+    f.api.selectTrack(2); f.api.selectTrack(1); f.api.edit('mode', 'end');
+    await f.api.review(); const reviewed = f.api.state.pending;
+    assert.equal(reviewed.item.kind, 'sonos_playlist_tracks'); assert.deepEqual(reviewed.body.positions, [2, 1]);
+    assert.equal(reviewed.body.mode, 'append'); assert.equal(reviewed.body.expected_queue_revision, 'queue:S1');
+    assert.equal(f.writes().length, 0);
+    f.api.clearTrackSelection(); assert.equal(await f.confirm(reviewed), false);
+    await f.api.review(); assert.equal(f.api.state.pending.item.kind, 'sonos_playlist');
+    assert.equal(f.writes().length, 0);
+  });
+
+  test(kind + ': native selection is bounded to ten playable observed occurrences', async () => {
+    const f = await fixture(kind), before = f.calls.length;
+    for (const position of [0, 3, 4, -1, 1.5, 100001]) assert.equal(f.api.selectTrack(position), false);
+    assert.equal(f.calls.length, before); assert.deepEqual(f.api.state.contentsSelection, []);
+    f.entries.splice(0, f.entries.length, ...Array.from({ length: 12 }, (_, index) => ({ title: 'Track ' + (index + 1), uri: 'fixture:track:' + index })));
+    await f.api.loadContents();
+    for (let position = 1; position <= 10; ++position) assert.equal(f.api.selectTrack(position), true);
+    assert.equal(f.api.selectTrack(11), false); assert.equal(f.api.state.contentsSelection.length, 10);
+    assert.equal(f.api.selectTrack(4), true); assert.equal(f.api.selectTrack(11), true);
+    assert.deepEqual(f.api.state.contentsSelection, [1, 2, 3, 5, 6, 7, 8, 9, 10, 11]);
+    await f.api.reviewTracks('next'); assert.ok(f.api.state.pending); assert.equal(f.writes().length, 0);
+  });
+
+  test(kind + ': selection is retired on refresh, page navigation, household changes and native invalidation', async () => {
+    for (const change of ['refresh', 'page', 'household', 'catalog']) {
+      const f = await fixture(kind);
+      if (change === 'page') {
+        f.entries.push(...Array.from({ length: 110 }, (_, index) => ({ title: 'Later ' + index, uri: 'fixture:later:' + index })));
+        await f.api.loadContents();
+      }
+      const page = f.api.state.contents, reviewed = await reviewSelection(f);
+      if (change === 'household') f.selectOtherHousehold();
+      else if (change === 'catalog') f.api.catalogChanged({ household: 'S1', playlists: true });
+      else await f.api.loadContents(change === 'page' ? 'next' : 'refresh');
+      assert.deepEqual(f.api.state.contentsSelection, []); assert.equal(f.api.state.pending, null);
+      assert.equal(f.api.selectTrack(2, page), false); assert.equal(await f.confirm(reviewed), false);
+      assert.equal(f.writes().length, 0);
+    }
+  });
+
+  test(kind + ': source changes and same-position substitutions prevent the whole selection', async () => {
+    for (const change of [f => f.revision('native:2'), f => { f.entries[0].uri = 'fixture:other'; },
+      f => { f.entries[1].title = 'Different title'; }, f => { f.entries.push({ title: 'Unexpected', uri: 'fixture:new' }); }]) {
+      const f = await fixture(kind), reviewed = await reviewSelection(f); change(f);
+      assert.equal(await f.confirm(reviewed), false); assert.equal(f.writes().length, 0);
+      assert.notEqual(f.api.state.result?.status, 'uncertain');
+    }
+  });
+
+  for (const mode of ['play', 'next', 'end']) test(`${kind}: ${mode} refuses a changed queue before dispatching the selection`, async () => {
+    const f = await fixture(kind), reviewed = await reviewSelection(f, mode);
+    f.queues.get('Den@S1').revision += ':replacement';
+    assert.equal(await f.confirm(reviewed), false); assert.equal(f.writes().length, 0);
+  });
+
+  test(kind + ': append selection permits track advance while play and next retain the reviewed occurrence', async () => {
+    for (const mode of ['play', 'next', 'end']) {
+      const f = await fixture(kind), reviewed = await reviewSelection(f, mode);
+      f.queues.get('Den@S1').playing = 2; f.rows.get('Den@S1').track.queue_position = 2;
+      assert.equal(await f.confirm(reviewed), mode === 'end');
+      assert.equal(f.writes().length, mode === 'end' ? 1 : 0);
+    }
+  });
+
+  test(kind + ': stale selections and closed reviews cannot return from late native reads', async () => {
+    const f = await fixture(kind), held = deferred(); let waiting = false;
+    f.api.selectTrack(2); f.api.selectTrack(1);
+    f.read(async (url, read) => { const value = read(url); if (url.includes('/contents?')) { waiting = true; await held.promise; } return value; });
+    const task = f.api.reviewTracks('play'); await until(() => waiting); f.api.close(); held.resolve(); await task;
+    assert.equal(f.api.state.pending, null); assert.equal(f.writes().length, 0);
+  });
+
+  test(kind + ': uncertain batch replies retain the outcome and never replay a subset', async () => {
+    for (const patch of [null, { positions: [1, 2] }, { titles: ['First occurrence', 'Second occurrence'] }, { count: 1 },
+      { playlist: 'SQ:8' }, { mode: 'play' }, { zone: 'Other' }, { changed: null }, { positions: [2] }]) {
+      const f = await fixture(kind), reviewed = await reviewSelection(f, 'next');
+      f.write((url, body, write) => { if (patch === null) throw new Error('Lost reply'); return { ...write(url, body), ...patch }; });
+      assert.equal(await f.confirm(reviewed), false); assert.equal(await f.confirm(reviewed), false);
+      assert.equal(f.api.state.result.status, 'uncertain'); assert.equal(f.writes().length, 1);
+      assert.equal(f.writes()[0].url, '/sonos/playlists/tracks');
+    }
+  });
+
+  test(kind + ': an admitted selection preserves its one receipt across closing and catalog invalidation', async () => {
+    const f = await fixture(kind), reviewed = await reviewSelection(f), held = deferred();
+    f.write(async (url, body, write) => { await held.promise; return write(url, body); });
+    const writing = f.confirm(reviewed); await until(() => f.writes().length === 1);
+    assert.equal(f.api.selectTrack(1), false); assert.equal(await f.confirm(reviewed), false);
+    f.api.close(); f.api.catalogChanged({ household: 'S1', playlists: true });
+    held.resolve(); assert.equal(await writing, true); assert.equal(f.api.state.result.status, 'accepted');
+    assert.equal(f.writes().length, 1); assert.equal(await f.confirm(reviewed), false);
+  });
+}
+
+test('an explicit native selection retains repeated positions and rejects an empty or oversized batch', () => {
+  const page = { playlist: { id: 'SQ:7', title: 'Saved' }, revision: 'native:1', total: 2,
+    items: [{ position: 1, title: 'First', uri: 'fixture:one' }, { position: 2, title: 'Second', uri: 'fixture:two' }] };
+  const prepared = Phone.preparePlaylistTracks(page, [2, 1, 2], 'end');
+  assert.deepEqual(Phone.commandBody(prepared, 'Den@S1'), {
+    zone: 'Den@S1', playlist: 'SQ:7', positions: [2, 1, 2], expected_revision: 'native:1', mode: 'append',
+  });
+  for (const positions of [[], Array(11).fill(1), [3], [0], [1.1]]) assert.throws(() => Phone.preparePlaylistTracks(page, positions, 'play'));
+});
 
 test('row actions retain exact occurrence and render track metadata as text', async () => {
   const doc = { createElement(tag) { const handlers = new Map(); return { tag, children: [], textContent: '', disabled: false,

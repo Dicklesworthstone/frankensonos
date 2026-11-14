@@ -46,6 +46,39 @@ and retain them until delivery and restoration finish. A failed lookup or bind
 does not discard the other usable listeners. Existing announcement commands
 and permissions remain the same.
 
+## Keeping a coherent household during topology recovery
+
+A full topology event is checked before it replaces the sender's household.
+The sender must belong to one known household and remain addressable in the
+candidate. Groups need a present, unique coordinator; physical identities and
+control addresses must be unique; live and vanished records cannot conflict.
+An event cannot import another known household's players or their control
+addresses. An actual household transfer is reconciled through discovery.
+
+An empty, incomplete or conflicting event leaves the previous rooms, playback
+state and subscription inventory intact. The daemon requests a fresh initial
+event through the existing subscription recovery path and brings discovery
+forward to within 30 seconds. Failed subscription replacements keep the old
+event cursor usable and honor the existing retry backoff, so repeated bad
+events cannot create a subscription or discovery storm.
+
+Ordinary peer departures, changed addresses, new coordinators, new bonded
+satellites and surviving invisible stereo members still update the model.
+A coherent event may omit other peers: distinguishing a real departure from
+an otherwise valid omission still requires subsequent discovery.
+
+Eight unit cases and two real-socket S1/S2 simulator cases cover admission,
+preserved live state, fresh subscription IDs, failed replacement backoff and
+genuine peer power-off. These additions are not yet execution-verified: the
+build executor was killed during dependency compilation, and subsequent
+executor failures also prevented formatting. Run:
+
+```sh
+cargo test -p fsonos-core --lib events::topology::tests
+cargo test -p fsonos-core --test topology_event_recovery_sim
+cargo test -p fsonos-core --test event_recovery_sim --test reconcile_sim
+```
+
 ## Operating while a callback listener is unavailable
 
 The daemon normally receives speaker state through GENA notifications. Failure

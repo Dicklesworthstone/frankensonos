@@ -13,6 +13,7 @@
 //!   line-in    native audio inputs available on a room's household
 //!   playlist-contents inspect a saved playlist without changing playback
 //!   playlist-track play or queue one observed saved playlist occurrence
+//!   playlist-tracks play or queue an ordered selection of saved playlist occurrences
 //!   playlist-save save the current group queue as a new Sonos playlist
 //!   log / undo the action log, and undoing the newest action
 //!   policy     the house policy in effect (show), and whether policy.toml
@@ -146,6 +147,9 @@ enum Command {
     PlaylistContents(playlist_cmd::PlaylistContentsArgs),
     /// Play or queue an exact track occurrence read from a saved Sonos playlist.
     PlaylistTrack(playlist_cmd::PlaylistTrackArgs),
+    /// Play or queue 1-10 saved-playlist occurrences in caller order, retaining repeats.
+    /// Play replaces the current queue; next and append leave playback unchanged.
+    PlaylistTracks(playlist_cmd::PlaylistTracksArgs),
     /// Save the current group queue as a new Sonos playlist. Playback continues;
     /// existing playlists are never overwritten. No Spotify sign-in is needed.
     PlaylistSave(playlist_cmd::PlaylistSaveArgs),
@@ -445,8 +449,8 @@ enum Command {
     /// `apply` sends only the steps the house needs; `fsonos undo` puts
     /// it back.
     Scene(scene_cmd::SceneArgs),
-    /// Every room with its household, zone and aliases; `fsonos rooms alias
-    /// add|rm` edits aliases.toml (comments and layout are kept).
+    /// Every room with its household, zone and aliases; edit aliases and
+    /// defaults on the selected daemon, or locally with --direct.
     Rooms {
         #[command(subcommand)]
         alias: Option<RoomsCommand>,
@@ -455,7 +459,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum RoomsCommand {
-    /// The owner's names for rooms, in aliases.toml in the data directory.
+    /// The complete saved aliases/defaults and their current editing revision.
+    Configuration,
+    /// The owner's names for rooms, stored on the selected daemon or locally.
     Alias {
         #[command(subcommand)]
         action: AliasAction,
@@ -470,6 +476,10 @@ enum RoomsCommand {
         client: Option<String>,
         #[arg(long, conflicts_with = "room")]
         clear: bool,
+        /// Refuse an edit unless this is the revision from rooms configuration.
+        /// Without it, read the current configuration once before editing.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: Option<String>,
     },
 }
 
@@ -481,10 +491,18 @@ enum AliasAction {
         alias: String,
         #[arg(required = true)]
         rooms: Vec<String>,
+        /// Exact revision from rooms configuration; otherwise read it once.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: Option<String>,
     },
     /// Remove an alias.
     #[command(visible_alias = "remove")]
-    Rm { alias: String },
+    Rm {
+        alias: String,
+        /// Exact revision from rooms configuration; otherwise read it once.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -588,6 +606,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::PlaylistRemove(args) => playlist_cmd::remove(global, &args),
         Command::PlaylistContents(args) => playlist_cmd::contents(global, &args),
         Command::PlaylistTrack(args) => playlist_cmd::track(global, &args),
+        Command::PlaylistTracks(args) => playlist_cmd::tracks(global, &args),
         Command::Announcements(args) => announce_cmd::jobs(global, &args),
         Command::Events(args) => events_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
@@ -741,12 +760,20 @@ fn rooms(global: &config::GlobalArgs, alias: Option<RoomsCommand>) -> anyhow::Re
             let rooms = Direct::survey(global)?.rooms()?;
             emit(global.json, &rooms, |r| direct::rooms_text(r))
         }
-        Some(RoomsCommand::Alias { action }) => alias_command(global, &action),
+        Some(RoomsCommand::Configuration) => rooms_cmd::configuration(global),
+        Some(RoomsCommand::Alias { action }) => rooms_cmd::alias(global, &action),
         Some(RoomsCommand::Default {
             room,
             client,
             clear,
-        }) => default_room_command(global, room.as_deref(), client.as_deref(), clear),
+            expected_revision,
+        }) => rooms_cmd::default_room(
+            global,
+            room.as_deref(),
+            client.as_deref(),
+            clear,
+            expected_revision.as_deref(),
+        ),
     }
 }
 
@@ -776,7 +803,11 @@ fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result
         }
         _ => direct.run(tool, |households| plan_for(control, households))?,
     };
-    emit(global.json, &outcome, outcome_text)
+    if matches!(control, Command::Dj { .. }) {
+        emit_dj_outcome(global.json, &outcome)
+    } else {
+        emit(global.json, &outcome, outcome_text)
+    }
 }
 
 /// A control's outcome as the CLI prints it, directly or through the daemon:
@@ -941,94 +972,6 @@ fn play_search(
     })
 }
 
-/// `fsonos rooms alias add|rm`: edit aliases.toml in the data directory.
-fn alias_command(global: &config::GlobalArgs, action: &AliasAction) -> anyhow::Result<()> {
-    let path = daemon::data_dir(global)?.join(fsonos_api::surface::ALIASES_FILE);
-    let done = match action {
-        AliasAction::Add { alias, rooms } => {
-            if fsonos_core::rooms::RESERVED
-                .contains(&fsonos_core::rooms::normalize_room(alias).as_str())
-            {
-                return Err(Failure::invalid(format!(
-                    "{alias:?} is reserved for every room or yours"
-                ))
-                .with_hint("Pick another name; all, everywhere and here have fixed meanings.")
-                .into());
-            }
-            rooms_cmd::edit_file(&path, |text| Ok(rooms_cmd::set_alias(text, alias, rooms)))?;
-            format!("{alias} names {}", rooms.join(", "))
-        }
-        AliasAction::Rm { alias } => {
-            rooms_cmd::edit_file(&path, |text| {
-                rooms_cmd::remove_alias(text, alias).ok_or_else(|| {
-                    Failure::new(
-                        ErrorCode::UnknownRoom,
-                        format!("no alias {alias:?} in aliases.toml"),
-                    )
-                    .with_hint("List the aliases with fsonos rooms.")
-                })
-            })?;
-            format!("removed the alias {alias}")
-        }
-    };
-    emit(
-        global.json,
-        &serde_json::json!({ "done": done, "file": path }),
-        |_| format!("{done}\n"),
-    )
-}
-
-/// `fsonos rooms default`: set, clear or show the room `here` means.
-fn default_room_command(
-    global: &config::GlobalArgs,
-    room: Option<&str>,
-    client: Option<&str>,
-    clear: bool,
-) -> anyhow::Result<()> {
-    let path = daemon::data_dir(global)?.join(fsonos_api::surface::ALIASES_FILE);
-    let whose = client.unwrap_or("everyone");
-    let done = match (room, clear) {
-        (Some(room), _) => {
-            if fsonos_core::rooms::RESERVED
-                .contains(&fsonos_core::rooms::normalize_room(room).as_str())
-            {
-                return Err(Failure::invalid(format!("{room:?} names no one room"))
-                    .with_hint("Name a room; all, everywhere and here can't be the default.")
-                    .into());
-            }
-            rooms_cmd::edit_file(&path, |text| {
-                Ok(rooms_cmd::set_default_room(text, client, room))
-            })?;
-            format!("here now means {room} for {whose}")
-        }
-        (None, true) => {
-            rooms_cmd::edit_file(&path, |text| {
-                rooms_cmd::clear_default_room(text, client).ok_or_else(|| {
-                    Failure::new(
-                        ErrorCode::UnknownRoom,
-                        format!("no default room is set for {whose}"),
-                    )
-                    .with_hint("Set one with fsonos rooms default <room>.")
-                })
-            })?;
-            format!("here has no default of its own for {whose} now")
-        }
-        (None, false) => {
-            let aliases = fsonos_core::rooms::Aliases::load(&path)
-                .map_err(|e| Failure::invalid(e.to_string()))?;
-            aliases.default_room(client).map_or_else(
-                || format!("here means no room for {whose} yet: fsonos rooms default <room>"),
-                |room| format!("here means {room} for {whose}"),
-            )
-        }
-    };
-    emit(
-        global.json,
-        &serde_json::json!({ "done": done, "file": path }),
-        |_| format!("{done}\n"),
-    )
-}
-
 /// Print `value` as pretty JSON, or as `text` renders it.
 fn emit<T: Serialize + ?Sized>(
     json: bool,
@@ -1053,6 +996,21 @@ fn emit_queue_outcome(json: bool, outcome: &QueueAddOutcome) -> anyhow::Result<(
         anyhow::bail!(
             "queue addition incomplete for {} group(s); read their queues before another add",
             receipt.failed.len()
+        );
+    }
+    Ok(())
+}
+
+/// Print the full per-group result before an incomplete DJ batch exits
+/// nonzero. Successful or uncertain members must never be replayed together.
+fn emit_dj_outcome(json: bool, outcome: &OutcomeDto) -> anyhow::Result<()> {
+    emit(json, outcome, outcome_text)?;
+    let failed = outcome.notes.iter()
+        .filter(|note| note.code == fsonos_api::NoteCode::Skipped)
+        .count();
+    if failed > 0 {
+        anyhow::bail!(
+            "DJ command incomplete for {failed} group(s); inspect their state and action log before another command; do not replay the batch"
         );
     }
     Ok(())
@@ -1128,6 +1086,7 @@ fn plan_for<'a>(
         | Command::PlaylistRemove(_)
         | Command::PlaylistContents(_)
         | Command::PlaylistTrack(_)
+        | Command::PlaylistTracks(_)
         | Command::Queue { .. }
         | Command::QueuePlay(_)
         | Command::QueueSearch(_)
@@ -1179,6 +1138,7 @@ fn takes_set(command: &Command) -> bool {
             | Command::Volume { .. }
             | Command::Mute { .. }
             | Command::Ungroup { .. }
+            | Command::Dj { .. }
     )
 }
 
@@ -1234,6 +1194,7 @@ fn plan_set_for<'a>(
             },
         ),
         Command::Ungroup { zone: z } => plan::plan_ungroup_set(households, &zone(z)),
+        Command::Dj { action } => action.plan_set(&households),
         _ => unreachable!("not a set-accepting command"),
     }
 }
@@ -1546,6 +1507,55 @@ mod tests {
             rooms: vec![room("Den", "RINCON_DEN"), room("Kitchen", "RINCON_KIT")],
             ..Default::default()
         }]
+    }
+
+    #[test]
+    fn dj_controls_use_the_set_path_and_deduplicate_members() {
+        let houses = house();
+        for args in [
+            &["dj", "start", "everywhere"][..],
+            &["dj", "start", "all", "--mood", "calm", "--for", "15m"],
+            &["dj", "steer", "all@S2", "--mood", "calm", "--for", "15m"],
+            &["dj", "steer", "all", "--clear"],
+            &["dj", "skip", "all"],
+            &["dj", "stop", "all"],
+        ] {
+            let command = parse(args);
+            assert!(takes_set(&command), "{args:?}");
+            let planned = plan_set_for(&command, &houses).unwrap();
+            assert_eq!(planned.len(), 1, "Den and Kitchen share one DJ: {args:?}");
+            assert_eq!(planned[0].addressed(), Some(&PlayerId("RINCON_DEN".into())));
+        }
+        let directed = plan_set_for(
+            &parse(&["dj", "start", "all", "--mood", "calm", "--for", "15m"]),
+            &houses,
+        ).unwrap();
+        let Planned::DjSteer { start, steer, .. } = &directed[0] else {
+            panic!("a directed start must apply its steering before playback");
+        };
+        assert!(*start);
+        assert_eq!(**steer, fsonos_api::dj::DjSteer::Set {
+            mood: Some("calm".into()),
+            constraints: fsonos_api::dj::SteerConstraints::default(),
+            for_secs: Some(900),
+        });
+    }
+
+    #[test]
+    fn incomplete_dj_output_is_a_failure_after_printing_its_receipt() {
+        let mut outcome = OutcomeDto {
+            done: "Den@S2: the DJ stopped".into(),
+            changed: true,
+            volume: None,
+            notes: Vec::new(),
+        };
+        assert!(emit_dj_outcome(true, &outcome).is_ok());
+        outcome.notes.push(fsonos_api::Note {
+            code: fsonos_api::NoteCode::Skipped,
+            detail: "Kitchen@S1 failed: no DJ is running".into(),
+        });
+        let error = emit_dj_outcome(true, &outcome).unwrap_err().to_string();
+        assert!(error.contains("1 group(s)") && error.contains("do not replay"), "{error}");
     }
 
     #[test]

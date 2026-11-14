@@ -436,11 +436,11 @@ test('dashboard playlist catalog uses an explicit encoded group over real HTTP',
 });
 
 
-test('saved playlist expansion gets the long command deadline without a retry',async()=>{
+for(const route of ['/sonos/playlists/play','/sonos/playlists/tracks'])test(route+' gets the long command deadline without a retry',async()=>{
   let expire,budget,calls=0,cancelled=false;
   const request=C.request({fetcher:async()=>{calls++;return{ok:true,text:()=>new Promise(()=>{})};},
     schedule:(fn,ms)=>{expire=fn;budget=ms;return 1;},cancel:()=>{cancelled=true;}});
-  const waiting=request('/sonos/playlists/play',{zone:'Den@S2',playlist:'SQ:7'});
+  const waiting=request(route,{zone:'Den@S2',playlist:'SQ:7'});
   assert.equal(budget,600000);expire();await assert.rejects(waiting,/No command confirmation/);
   assert.equal(calls,1);assert.equal(cancelled,true);
 });

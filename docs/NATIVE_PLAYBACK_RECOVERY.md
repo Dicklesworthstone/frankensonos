@@ -84,6 +84,32 @@ contents and sending each playback write once. These new simulator cases still
 require execution: the workspace build was killed with exit 137 in the existing
 asupersync dependency before project checks completed.
 
+## Direct source selection after a playback refusal
+
+Direct source playback and silent loading retain the completed source-selection
+stage when reporting a later failure. Once `SetAVTransportURI` has succeeded
+or its lost reply has been confirmed, a failed `Play` or silent-load confirmation
+returns an uncertain overall operation. The original cause remains in the
+error, but neither Spotify account refresh nor coordinator/address recovery can
+replay that source change. Another controller's newer source therefore stays
+selected, including when the later failure is an explicit SOAP error 800.
+
+An initial `SetAVTransportURI` refusal still permits the existing single
+renderer-account refresh. Successful playback keeps its two-write path, and
+read-back can still confirm a lost acknowledgement without resending it.
+Failure is not rollback: the requested source may already be selected, and
+the caller should inspect current playback before an explicit new request.
+
+```sh
+cargo test --locked -p fsonos-core --test control --test source_start_sim --test source_loading_sim
+```
+
+The added S1/S2 simulator cases exercise a one-shot Play/800 refusal and faults
+at every silent-load confirmation stage, including an intervening listener
+source change. They verify one source selection, no repeated account learning,
+preserved queues and the listener's continued playback. Physical-speaker
+acceptance remains separate from these localhost regressions.
+
 ## Queue replacement after a playback refusal
 
 Album, playlist and container-favorite playback stages new entries after the

@@ -36,6 +36,41 @@ household snapshot used to apply caps. After that snapshot catches up, recovery
 can continue. A group or player boot change during observation or refill
 invalidates that attempt without replaying accepted queue additions.
 
+## Listening evidence stops at observation gaps
+
+Degraded or offline player health interrupts that coordinator's implicit
+listening evidence before any topology handover or feed work. A live stream
+resync interrupts every retained feed, including a coordinator absent from the
+current topology. Time spent without reliable observations cannot turn into a
+full listen or an early-skip preference after connectivity returns.
+
+This interruption performs no speaker I/O and retains the owned queue,
+steering, initiating policy identities and pending refill retries. Maintenance
+waits while the coordinator's current health is degraded or offline. Healthy
+alone does not end the gap: a volume event or subscription renewal can mark a
+player healthy while its playback snapshot remains old. Before feeding again,
+the DJ requires a complete renderer read to agree with the retained transport,
+source, track, queue position, length and any known play mode. An unknown cached
+renderer status requires a fresh `OK`; it cannot hide `ERROR_OCCURRED`. The
+first resumed sample also uses the freshly read position to rule out a false
+early skip after a same-slot seek. The read brackets position with transport
+and source checks; mismatches and failures retain the
+gap and back off, without volume churn repeatedly querying the speaker. The
+pending proof follows the feed through coordinator handovers.
+
+A confirmed observation starts fresh evidence; a later work observed from its
+beginning can still earn a full listen. Ordinary queue-content
+notifications remain separate: the DJ's own appends preserve listening
+continuity when reconciliation confirms the same occurrence survived.
+
+The regression coverage includes elapsed-time feedback checks, both simulator
+generations, and follower dispatch before topology and playback:
+
+```sh
+cargo test --locked -p fsonos-cli --bin fsonos dj::feedback::tests
+cargo test --locked -p fsonos-api --lib surface::dj_follow
+```
+
 ## Current preferences and library
 
 An uninterrupted DJ picks up edits to `preferences.toml` and `moods.toml`

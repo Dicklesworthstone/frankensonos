@@ -33,11 +33,11 @@ mod rehearse;
 pub enum DjAction {
     /// Start the DJ with a mood, artists, genres or other constraints for
     /// new picks. A running feed keeps queued works; without settings,
-    /// keep the group's current steering.
+    /// keep each group's current steering. Accepts a room, alias or all.
     Start(Box<StartArgs>),
-    /// Skip the DJ's current work.
+    /// Skip the DJ's current work in a room, alias or all selected groups.
     Skip { zone: String },
-    /// Stop the DJ.
+    /// Stop the DJ in a room, alias or all selected groups.
     Stop { zone: String },
     /// You like the work playing: the DJ favors it, its composer and its
     /// performer (a song's artist and album). Without a room, the group the
@@ -47,7 +47,7 @@ pub enum DjAction {
     /// performer (a song's artist and album) less; a second dislike keeps the
     /// work out for 180 days.
     Dislike { zone: Option<String> },
-    /// Steer the DJ in a room's group from its next piece, running or not:
+    /// Steer the DJ in a room, alias or all groups from each next piece:
     /// a mood, constraints, how long; or --clear for the time-of-day program.
     Steer(Box<SteerArgs>),
     /// What the DJ plays (in every zone it runs in, without a room), why,
@@ -89,6 +89,7 @@ pub enum DjAction {
 /// `fsonos dj start`: select and start a set in one request.
 #[derive(clap::Args)]
 pub struct StartArgs {
+    /// A room, multi-room alias, all/everywhere, or all@S1 / all@S2.
     zone: String,
     /// A mood (fsonos dj moods lists them), optionally refined by constraints.
     #[arg(long)]
@@ -115,7 +116,7 @@ impl StartArgs {
 /// `fsonos dj steer`: the fields of `dj_steer`.
 #[derive(clap::Args)]
 pub struct SteerArgs {
-    /// The room; its group is steered.
+    /// A room, multi-room alias, all/everywhere, or all@S1 / all@S2.
     zone: String,
     /// A mood: focus, dinner, sunday-morning, bright, calm, or one in
     /// moods.toml.
@@ -330,6 +331,18 @@ impl DjAction {
                 ErrorCode::Internal,
                 "dj status, why, moods, like and dislike run on their own",
             )),
+        }
+    }
+
+    /// The same control for every distinct group named by its target.
+    pub fn plan_set(&self, rooms: &Rooms<'_>) -> Result<Vec<Command>, Failure> {
+        let zone = |zone: &String| ZoneRequest { zone: zone.clone() };
+        match self {
+            Self::Start(args) => plan::plan_dj_start_set(rooms, &args.request()),
+            Self::Skip { zone: z } => plan::plan_dj_set(rooms, &zone(z), PlanDj::Skip),
+            Self::Stop { zone: z } => plan::plan_dj_set(rooms, &zone(z), PlanDj::Stop),
+            Self::Steer(args) => plan::plan_dj_steer_set(rooms, &args.request()),
+            _ => self.plan(rooms).map(|command| vec![command]),
         }
     }
 }

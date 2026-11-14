@@ -10,6 +10,7 @@ use fsonos_core::policy::Client;
 use fsonos_core::scenes::{SceneOp, ScenePlan};
 use fsonos_core::{HouseholdState, Room, control};
 use fsonos_types::PlayerId;
+use fsonos_proto::Transport;
 use std::collections::HashMap;
 
 use super::Surface;
@@ -44,17 +45,29 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
     ) -> Result<Lowered, Failure> {
+        self.lower_before_playing_on(&*self.transport, households, guard, command)
+    }
+
+    /// The ordinary cap path with an operation-scoped transport. DJ batches
+    /// use it to revalidate their selected audience at every actual write.
+    pub(super) fn lower_before_playing_on(
+        &self,
+        transport: &dyn Transport,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        command: &Command,
+    ) -> Result<Lowered, Failure> {
         // Without a DJ here a DJ start is refused: nothing to lower for it.
         if matches!(command, Command::Dj { .. } | Command::DjSteer { .. }) && self.dj.is_none() {
             return Ok(Lowered::default());
         }
         let mut over = Vec::new();
         for (room, cap, why) in guard.playback_caps(households, command) {
-            if let Some(level) = self.above(households, room, cap)? {
+            if let Some(level) = Self::above(transport, households, room, cap)? {
                 over.push((room, level, cap, why));
             }
         }
-        self.lower_with_caps(households, over)
+        self.lower_with_caps(transport, households, over)
     }
 
     /// Before a scene's sources start: lower each room `plan` starts music
@@ -76,7 +89,7 @@ impl Surface {
                 .filter_map(|g| g.policy.cap_for(&room.name, g.client, g.clock.now()))
                 .min_by_key(|(cap, _)| *cap);
             if let Some((cap, why)) = cap
-                && let Some(level) = self.above(households, room, cap)?
+                && let Some(level) = Self::above(&*self.transport, households, room, cap)?
             {
                 over.push((room, level, cap, why));
             }
@@ -88,12 +101,12 @@ impl Surface {
     /// be read is refused, before anything is sent: its group would still
     /// play there, at whatever level it was left (p7vq.13).
     fn above(
-        &self,
+        transport: &dyn Transport,
         households: &[HouseholdState],
         room: &Room,
         cap: u8,
     ) -> Result<Option<u8>, Failure> {
-        let level = control::volume(&*self.transport, households, &room.primary).map_err(|e| {
+        let level = control::volume(transport, households, &room.primary).map_err(|e| {
             Failure::new(
                 ErrorCode::PlayerUnreachable,
                 format!(
@@ -113,12 +126,13 @@ impl Surface {
         households: &[HouseholdState],
         over: Vec<(&Room, u8, u8, String)>,
     ) -> Result<Vec<Note>, Failure> {
-        self.lower_with_caps(households, over)
+        self.lower_with_caps(&*self.transport, households, over)
             .map(|lowered| lowered.notes)
     }
 
     fn lower_with_caps(
         &self,
+        transport: &dyn Transport,
         households: &[HouseholdState],
         over: Vec<(&Room, u8, u8, String)>,
     ) -> Result<Lowered, Failure> {
@@ -130,7 +144,7 @@ impl Surface {
         self.volumes_changing(households, &players);
         let mut lowered = Lowered::default();
         for (room, level, cap, why) in over {
-            control::set_volume(&*self.transport, households, &room.primary, cap)?;
+            control::set_volume(transport, households, &room.primary, cap)?;
             lowered.volumes.push((room.primary.clone(), cap));
             lowered.notes.push(Note {
                 code: NoteCode::VolumeClamped,

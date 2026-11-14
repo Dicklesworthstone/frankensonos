@@ -30,6 +30,7 @@ pub mod dj_feedback;
 pub mod dj_prefs;
 pub mod dj_rehearse;
 pub mod dj_sync;
+pub mod room_config;
 pub mod schedules;
 
 mod house_policy;
@@ -61,7 +62,7 @@ pub use queue_search::SearchQueue;
 mod sonos_playlists;
 pub use sonos_playlists::{
     ListSonosPlaylists, PlaySonosPlaylist, RemoveSonosPlaylist, RenameSonosPlaylist,
-    SaveSonosPlaylist, SonosPlaylistContents, SonosPlaylistTrack,
+    SaveSonosPlaylist, SonosPlaylistContents, SonosPlaylistTrack, SonosPlaylistTracks,
 };
 
 mod spotify_search;
@@ -241,15 +242,17 @@ impl Backend {
         req.zone().map_err(|failure| tool_error(&failure))?;
         req.steer().map_err(|failure| tool_error(&failure))?;
         self.write("/dj/start", req, || {
-            self.control("dj_start", |h| plan::plan_dj_start(h, req))
+            self.control_set("dj_start", |h| plan::plan_dj_start_set(h, req))
         })
+        .map(dj_outcome)
     }
 
     /// The `dj_steer` tool, on the daemon when one runs.
     pub fn dj_steer(&self, req: &DjSteerRequest) -> McpResult<FinalCallToolResult> {
         let body = serde_json::to_value(req).ok();
         self.on_daemon("POST", "/dj/steer", body.as_ref(), sentence)
-            .unwrap_or_else(|| self.control("dj_steer", |h| plan::plan_dj_steer(h, req)))
+            .unwrap_or_else(|| self.control_set("dj_steer", |h| plan::plan_dj_steer_set(h, req)))
+            .map(dj_outcome)
     }
 
     /// `dj_skip` / `dj_stop`, on the daemon's DJ when one runs.
@@ -267,7 +270,8 @@ impl Backend {
         };
         let body = serde_json::to_value(&req).ok();
         path.and_then(|path| self.on_daemon("POST", path, body.as_ref(), sentence))
-            .unwrap_or_else(|| self.control(tool, |h| plan::plan_dj(h, &req, action)))
+            .unwrap_or_else(|| self.control_set(tool, |h| plan::plan_dj_set(h, &req, action)))
+            .map(dj_outcome)
     }
 
     /// The `move_playback` tool: on the daemon when one runs, so its DJ and
@@ -690,6 +694,19 @@ struct ZonesDto {
 /// A control outcome as a tool says it: the sentence, then its notes.
 fn said(outcome: OutcomeDto) -> (String, OutcomeDto) {
     (sentence(&outcome), outcome)
+}
+
+/// Keep a partial batch's complete receipt while making its incomplete
+/// outcome visible to tool consumers. Never turn it into a replay request.
+fn dj_outcome(mut result: FinalCallToolResult) -> FinalCallToolResult {
+    if result.structured_content.as_ref()
+        .and_then(|value| value.get("notes"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|notes| notes.iter().any(|note| note["code"] == "SKIPPED"))
+    {
+        result.is_error = true;
+    }
+    result
 }
 
 /// A control outcome's sentence, then its notes.
@@ -1123,7 +1140,7 @@ async fn dj(
 }
 
 #[tool(
-    description = "Start the DJ in the group a room plays in: it plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. Give a mood (dj_moods lists them), structured constraints, or both to apply them before new picks in this one start request. A fresh session selects its first work under these settings; an existing feed keeps already queued works and uses the new settings for later selections. The constraints match dj_steer: include/exclude artists, genres, composers, periods, decades and keywords; min_minutes/max_minutes bound work length; energy_bias is -2 to 2; allow_long admits long works. For example, 'start jazz from the sixties for two hours' is include_genres [\"jazz\"], decades [1960], for_minutes 120; 'start Miles Davis' is include_artists [\"Miles Davis\"]. A supplied mood or constraints replaces the group's previous session steering. for_minutes requires a mood or nonempty constraints; omit it to keep the new steering until cleared. With no mood, constraints or duration, starts under the group's existing steering or time-of-day program. `strict` true keeps every steering filter even when few works match; no match defers new selections while queued music continues. Omit strict for the existing filter relaxation. Strict does not change standing-preference fallback. Selection otherwise uses the same standing preferences as dj_steer."
+    description = "Start the DJ in every selected group. `zone` accepts a room, multi-room alias, all/everywhere, or all@S1 / all@S2. Each distinct group acts once and keeps its membership; DJs remain independent. Multi-group start checks every selected group's readiness before changes. Inspect SKIPPED notes for incomplete groups; partial results mark the tool result as an error and retain every group outcome. Do not replay a partial batch. It plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. Give a mood (dj_moods lists them), structured constraints, or both to apply them before new picks in this one start request. A fresh session selects its first work under these settings; an existing feed keeps already queued works and uses the new settings for later selections. The constraints match dj_steer: include/exclude artists, genres, composers, periods, decades and keywords; min_minutes/max_minutes bound work length; energy_bias is -2 to 2; allow_long admits long works. For example, 'start jazz from the sixties for two hours' is include_genres [\"jazz\"], decades [1960], for_minutes 120; 'start Miles Davis' is include_artists [\"Miles Davis\"]. A supplied mood or constraints replaces the group's previous session steering. for_minutes requires a mood or nonempty constraints; omit it to keep the new steering until cleared. With no mood, constraints or duration, starts under the group's existing steering or time-of-day program. `strict` true keeps every steering filter even when few works match; no match defers new selections while queued music continues. Omit strict for the existing filter relaxation. Strict does not change standing-preference fallback. Selection otherwise uses the same standing preferences as dj_steer."
 )]
 #[allow(clippy::too_many_arguments)] // the same optional steering vocabulary as dj_steer
 async fn dj_start(
@@ -1177,7 +1194,7 @@ async fn dj_start(
 }
 
 #[tool(
-    description = "Steer the DJ in the group a room plays in. Turn the owner's words into these fields; the daemon never parses language. `mood`: a preset (dj_moods lists them: focus, dinner, sunday-morning, bright, calm, and the owner's own). `include_artists` / `exclude_artists`: any credited artist (\"Miles Davis\", \"The Beatles\"; a classical work's performers count, \"Yo-Yo Ma\"). `include_genres` / `exclude_genres`: the genre tags the library read gave (\"jazz\" finds \"cool jazz\"; every classical work is \"classical\"). `include_composers` / `exclude_composers`: classical composers (\"Bach\", \"J.S. Bach\", \"Saint-Saëns\"). `periods`, for classical works only (a song has none): medieval, renaissance, baroque, classical, romantic, late_romantic, impressionist, modern, contemporary. `decades`: release decades, each by its first year (1960 for the sixties). `exclude_decades` / `exclude_periods`: never these ('no 80s tonight' is exclude_decades [1980]; 'no baroque' is exclude_periods [\"baroque\"]). `include_keywords` / `exclude_keywords`: piano, chamber, orchestral, choral, opera, song and vocal find their forms; other words match whole words. `min_minutes` / `max_minutes`: work length. `energy_bias`: -2 (much calmer) to 2 (much brighter). `allow_long`: let operas and Passions in. `strict`: keep all steering filters, even for a small matching set; if none match, defer new selections while queued music continues. Omit strict for the existing filter relaxation. Strict does not change standing-preference fallback. `for_minutes`: how long, then the time-of-day program returns (omit: until cleared). Examples: 'play some Miles Davis' is include_artists [\"Miles Davis\"]; 'no Beatles today' is exclude_artists [\"The Beatles\"]; 'something calmer for an hour' is energy_bias -1, for_minutes 60; 'no opera' is exclude_keywords [\"opera\"]; 'just piano' is include_keywords [\"piano\"]; 'dinner music' is mood \"dinner\"; 'Bach for the next two hours' is include_composers [\"Bach\"], for_minutes 120; 'jazz from the sixties' is include_genres [\"jazz\"], decades [1960]; 'no classical for now' is exclude_genres [\"classical\"]. A steer replaces the group's previous steering and applies from the DJ's next piece, whether or not it is running. `clear` true, alone, goes back to the time-of-day program. undo_last puts the previous steering back."
+    description = "Steer the DJ in every selected group. `zone` accepts a room, multi-room alias, all/everywhere, or all@S1 / all@S2. Each distinct group acts once and keeps its membership; DJs remain independent. Every selected group's direction is validated before changing sessions. Inspect SKIPPED notes for incomplete groups; partial results mark the tool result as an error and retain every group outcome. Do not replay a partial batch. Turn the owner's words into these fields; the daemon never parses language. `mood`: a preset (dj_moods lists them: focus, dinner, sunday-morning, bright, calm, and the owner's own). `include_artists` / `exclude_artists`: any credited artist (\"Miles Davis\", \"The Beatles\"; a classical work's performers count, \"Yo-Yo Ma\"). `include_genres` / `exclude_genres`: the genre tags the library read gave (\"jazz\" finds \"cool jazz\"; every classical work is \"classical\"). `include_composers` / `exclude_composers`: classical composers (\"Bach\", \"J.S. Bach\", \"Saint-Saëns\"). `periods`, for classical works only (a song has none): medieval, renaissance, baroque, classical, romantic, late_romantic, impressionist, modern, contemporary. `decades`: release decades, each by its first year (1960 for the sixties). `exclude_decades` / `exclude_periods`: never these ('no 80s tonight' is exclude_decades [1980]; 'no baroque' is exclude_periods [\"baroque\"]). `include_keywords` / `exclude_keywords`: piano, chamber, orchestral, choral, opera, song and vocal find their forms; other words match whole words. `min_minutes` / `max_minutes`: work length. `energy_bias`: -2 (much calmer) to 2 (much brighter). `allow_long`: let operas and Passions in. `strict`: keep all steering filters, even for a small matching set; if none match, defer new selections while queued music continues. Omit strict for the existing filter relaxation. Strict does not change standing-preference fallback. `for_minutes`: how long, then the time-of-day program returns (omit: until cleared). Examples: 'play some Miles Davis' is include_artists [\"Miles Davis\"]; 'no Beatles today' is exclude_artists [\"The Beatles\"]; 'something calmer for an hour' is energy_bias -1, for_minutes 60; 'no opera' is exclude_keywords [\"opera\"]; 'just piano' is include_keywords [\"piano\"]; 'dinner music' is mood \"dinner\"; 'Bach for the next two hours' is include_composers [\"Bach\"], for_minutes 120; 'jazz from the sixties' is include_genres [\"jazz\"], decades [1960]; 'no classical for now' is exclude_genres [\"classical\"]. A steer replaces the group's previous steering and applies from the DJ's next piece, whether or not it is running. `clear` true, alone, goes back to the time-of-day program. undo_last puts the previous steering back."
 )]
 #[allow(clippy::too_many_arguments)] // one optional argument per steering field, as agents call it
 async fn dj_steer(
@@ -1255,13 +1272,13 @@ async fn dj_moods(
 }
 
 #[tool(
-    description = "Skip the DJ's current piece in the group a room plays in. `zone` is a room name."
+    description = "Skip the DJ's current piece in every selected group. `zone` accepts a room, multi-room alias, all/everywhere, or all@S1 / all@S2. Each distinct group acts once and keeps its membership; DJs remain independent. An idle group's failure does not prevent another selected group from skipping. Inspect SKIPPED notes for incomplete groups; partial results mark the tool result as an error and retain every group outcome. Do not replay a partial batch."
 )]
 async fn dj_skip(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
     dj(ctx, zone, "dj_skip", DjAction::Skip).await
 }
 
-#[tool(description = "Stop the DJ in the group a room plays in. `zone` is a room name.")]
+#[tool(description = "Stop the DJ in every selected group. `zone` accepts a room, multi-room alias, all/everywhere, or all@S1 / all@S2. Each distinct group acts once and keeps its membership; DJs remain independent. An idle group's failure does not prevent another selected group from stopping. Inspect SKIPPED notes for incomplete groups; partial results mark the tool result as an error and retain every group outcome. Do not replay a partial batch.")]
 async fn dj_stop(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
     dj(ctx, zone, "dj_stop", DjAction::Stop).await
 }
@@ -1392,6 +1409,59 @@ mod tests {
             answer,
             calls: Mutex::new(Vec::new()),
         })
+    }
+
+    #[test]
+    fn partial_dj_results_keep_all_receipts_and_never_fall_back_or_replay() {
+        let receipt = serde_json::json!({
+            "done": "Den@S2: the DJ is playing",
+            "changed": true,
+            "notes": [{
+                "code": "SKIPPED",
+                "detail": "Kitchen@S1 failed: the renderer refused; do not replay the batch"
+            }]
+        });
+        let daemon = fake(Some(receipt.clone()));
+        let (backend, sent, surveys) = backend("", Client::McpStdio);
+        let backend = backend.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let start = DjStartRequest {
+            zone: "all".into(),
+            mood: Some("calm".into()),
+            constraints: SteerConstraints {
+                exclude_composers: vec!["mahler".into()],
+                ..SteerConstraints::default()
+            },
+            for_secs: Some(900),
+        };
+        let steer = DjSteerRequest {
+            zone: "selected".into(),
+            clear: true,
+            ..DjSteerRequest::default()
+        };
+        let results = [
+            backend.dj_start(&start),
+            backend.dj_steer(&steer),
+            backend.dj_action("dj_skip", "everywhere".into(), DjAction::Skip),
+            backend.dj_action("dj_stop", "all@S2".into(), DjAction::Stop),
+        ];
+        for result in results {
+            let result = result.unwrap();
+            assert!(result.is_error, "incomplete batches are visible to agents");
+            assert!(text(&result).contains("Den@S2") && text(&result).contains("Kitchen@S1"));
+            let structured = result.structured_content.unwrap();
+            assert_eq!(structured["done"], receipt["done"]);
+            assert_eq!(structured["notes"], receipt["notes"]);
+        }
+        let calls = daemon.calls.lock().unwrap();
+        assert_eq!(calls.len(), 4, "one request per batch, with no replay");
+        assert_eq!(calls[0].2.as_ref().unwrap(), &serde_json::to_value(&start).unwrap());
+        assert_eq!(calls[1].2.as_ref().unwrap(), &serde_json::to_value(&steer).unwrap());
+        assert_eq!(calls[2].2.as_ref().unwrap()["zone"], "everywhere");
+        assert_eq!(calls[3].2.as_ref().unwrap()["zone"], "all@S2");
+        assert_eq!(calls.iter().map(|call| call.1.as_str()).collect::<Vec<_>>(),
+            ["/dj/start", "/dj/steer", "/dj/skip", "/dj/stop"]);
+        assert!(sent.lock().unwrap().is_empty());
+        assert_eq!(surveys.load(Ordering::SeqCst), 0);
     }
 
     #[test]

@@ -203,11 +203,9 @@ impl LiveFeedback {
         let mut model = Playback::default();
         model.apply_position(&self.id, &info, Instant::now());
         let mut event = model.of(&self.id).unwrap().clone();
-        event.transport = Some(
-            soap::get_transport_info(&self.sim.lan(), host)
-                .unwrap()
-                .state,
-        );
+        let transport = soap::get_transport_info(&self.sim.lan(), host).unwrap();
+        event.transport = Some(transport.state);
+        event.transport_status = Some(transport.status);
         event.media_uri = Some(format!("x-rincon-queue:{}#0", self.id.0));
         event.queue_length = Some(9);
         event.play_mode = Some("NORMAL".into());
@@ -384,6 +382,263 @@ fn queue_notifications_keep_a_full_listen_when_the_occurrence_survives() {
             FeedbackSignal::about(&rig.works[0], Signal::FullListen, 0).performer
         );
     }
+}
+
+#[test]
+fn observation_gaps_break_feedback_without_changing_the_owned_feed() {
+    for generation in [1, 2] {
+        let mut rig = LiveFeedback::new(generation);
+        rig.seek(1);
+        rig.advance(180);
+        rig.seek(2);
+        let other = PlayerId("another-retained-feed".into());
+        {
+            let mut state = rig.dj.state();
+            state.listening.entry(other.clone()).or_default().on_change(
+                0,
+                PLAYING,
+                Some(sample(&rig.works[0], 0)),
+            );
+        }
+        for (all, gap, next) in [(false, 3600, 3), (true, 10, 6)] {
+            if all {
+                rig.advance(180);
+                rig.seek(5);
+            }
+            let before = rig.dj.state().feeds[&rig.id].snapshot();
+            let calls = rig.sim.soap_log().len();
+            let starter = rig.dj.starter(&rig.id);
+            rig.dj.on_observation_gap((!all).then_some(&rig.id));
+            assert_eq!(
+                rig.sim.soap_log().len(),
+                calls,
+                "gaps perform no speaker I/O"
+            );
+            assert_eq!(rig.dj.state().feeds[&rig.id].snapshot(), before);
+            assert_eq!(rig.dj.starter(&rig.id), starter);
+            assert!(rig.dj.feeds(&rig.id));
+            assert_eq!(rig.dj.state().listening[&other].advancing, !all);
+            rig.advance(gap);
+            rig.seek(next);
+            rig.advance(180);
+            rig.seek(next + 1);
+            assert!(
+                rig.signals().is_empty(),
+                "a connectivity or stream gap cannot fabricate a completed work or early skip"
+            );
+        }
+        for position in [8, 9] {
+            rig.advance(180);
+            rig.seek(position);
+        }
+        rig.advance(180);
+        let host = rig.sim.player("Feedback Room").unwrap().ip;
+        soap::stop(&rig.sim.lan(), host).unwrap();
+        rig.observe(&rig.read());
+        let signals = rig.signals();
+        assert_eq!(signals.len(), 1, "fresh observed works still teach taste");
+        assert_eq!(signals[0].signal, Signal::FullListen.value());
+        assert_eq!(
+            signals[0].performer,
+            FeedbackSignal::about(&rig.works[2], Signal::FullListen, 0).performer
+        );
+    }
+}
+
+#[test]
+fn cached_playback_after_a_gap_waits_for_actual_renderer_recovery() {
+    for generation in [1, 2] {
+        for all in [false, true] {
+            let mut rig = LiveFeedback::new(generation);
+            rig.seek(1);
+            let host = rig.sim.player("Feedback Room").unwrap().ip;
+            // Prepare a plausible later snapshot without giving it to the DJ.
+            // A volume/Healthy event or Resync can carry this retained state
+            // even though the renderer has been stopped throughout the gap.
+            control::play_queue_from(&rig.sim.lan(), &rig.households, &rig.id, 4).unwrap();
+            let mut stale = rig.read();
+            soap::stop(&rig.sim.lan(), host).unwrap();
+            rig.dj.on_observation_gap((!all).then_some(&rig.id));
+            let before = rig.dj.state().feeds[&rig.id].snapshot();
+            let calls = rig.sim.soap_log().len();
+            rig.observe(&stale);
+            assert!(!rig.dj.state().listening[&rig.id].advancing);
+            assert!(rig.dj.state().listening[&rig.id].awaiting_observation);
+            assert_eq!(rig.dj.state().feeds[&rig.id].snapshot(), before);
+            let read_back = rig.sim.soap_log();
+            assert!(
+                read_back.len() > calls,
+                "recovery checks the actual renderer"
+            );
+            assert!(
+                read_back[calls..]
+                    .iter()
+                    .all(|call| call.action.starts_with("Get"))
+            );
+
+            rig.advance(180);
+            stale.volume = Some(47);
+            rig.observe(&stale);
+            assert_eq!(
+                rig.sim.soap_log().len(),
+                read_back.len(),
+                "volume-only Healthy/maintenance observations cannot bypass the bounded retry"
+            );
+            rig.dj.on_observation_gap(None);
+            rig.dj.on_queue_changed(&rig.id);
+            rig.observe(&stale);
+            assert_eq!(rig.sim.soap_log().len(), read_back.len());
+            assert!(!rig.dj.state().listening[&rig.id].advancing);
+            assert!(rig.signals().is_empty());
+
+            // A fresh changed AVTransport snapshot agrees with a complete
+            // renderer read and bypasses the old snapshot's retry deadline.
+            rig.seek(5);
+            assert!(!rig.dj.state().listening[&rig.id].awaiting_observation);
+            assert!(rig.dj.state().listening[&rig.id].advancing);
+            for position in [6, 7] {
+                rig.advance(180);
+                rig.seek(position);
+            }
+            assert!(
+                rig.signals().is_empty(),
+                "the unheard opening movement cannot manufacture a full listen"
+            );
+            for position in [8, 9] {
+                rig.advance(180);
+                rig.seek(position);
+            }
+            rig.advance(180);
+            soap::stop(&rig.sim.lan(), host).unwrap();
+            rig.observe(&rig.read());
+            let signals = rig.signals();
+            assert_eq!(signals.len(), 1);
+            assert_eq!(signals[0].signal, Signal::FullListen.value());
+            assert_eq!(
+                signals[0].performer,
+                FeedbackSignal::about(&rig.works[2], Signal::FullListen, 0).performer
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unobserved_owned_feed_also_requires_post_gap_playback_proof() {
+    let mut rig = LiveFeedback::new(2);
+    assert!(rig.dj.state().listening.is_empty());
+    rig.dj.on_observation_gap(Some(&rig.id));
+    assert!(rig.dj.state().listening[&rig.id].awaiting_observation);
+    rig.seek(1);
+    assert!(!rig.dj.state().listening[&rig.id].awaiting_observation);
+    assert!(rig.dj.state().listening[&rig.id].advancing);
+}
+
+#[test]
+fn a_failed_post_gap_read_keeps_the_feed_waiting_until_fresh_playback() {
+    let mut rig = LiveFeedback::new(2);
+    let cached = rig.seek(1);
+    rig.dj.on_observation_gap(None);
+    rig.sim
+        .upnp_fault("Feedback Room", "GetTransportInfo", 701)
+        .unwrap();
+    let before = rig.dj.state().feeds[&rig.id].snapshot();
+    rig.observe(&cached);
+    assert!(rig.dj.state().listening[&rig.id].awaiting_observation);
+    assert!(!rig.dj.state().listening[&rig.id].advancing);
+    assert_eq!(rig.dj.state().feeds[&rig.id].snapshot(), before);
+    let calls = rig.sim.soap_log().len();
+    rig.observe(&cached);
+    assert_eq!(rig.sim.soap_log().len(), calls);
+    rig.sim.clear_faults("Feedback Room").unwrap();
+    rig.seek(2);
+    assert!(!rig.dj.state().listening[&rig.id].awaiting_observation);
+    assert!(rig.dj.state().listening[&rig.id].advancing);
+    assert!(rig.signals().is_empty());
+}
+
+#[test]
+fn unknown_cached_status_accepts_fresh_ok_but_never_hides_a_renderer_error() {
+    let mut rig = LiveFeedback::new(2);
+    let mut cached = rig.seek(1);
+    cached.transport_status = None;
+    rig.dj.on_observation_gap(Some(&rig.id));
+    rig.observe(&cached);
+    assert!(!rig.dj.state().listening[&rig.id].awaiting_observation);
+    assert!(rig.dj.state().listening[&rig.id].advancing);
+
+    rig.sim.playback_error("Feedback Room").unwrap();
+    let mut error = rig.read();
+    assert_eq!(error.transport_status.as_deref(), Some("ERROR_OCCURRED"));
+    error.transport_status = None;
+    rig.dj.on_observation_gap(Some(&rig.id));
+    let before = rig.dj.state().feeds[&rig.id].snapshot();
+    let calls = rig.sim.soap_log().len();
+    rig.observe(&error);
+    assert!(rig.dj.state().listening[&rig.id].awaiting_observation);
+    assert!(!rig.dj.state().listening[&rig.id].advancing);
+    assert_eq!(rig.dj.state().feeds[&rig.id].snapshot(), before);
+    assert!(
+        rig.sim.soap_log()[calls..]
+            .iter()
+            .all(|call| call.action.starts_with("Get"))
+    );
+    assert!(rig.signals().is_empty());
+}
+
+#[test]
+fn a_same_slot_seek_during_the_gap_cannot_manufacture_an_early_skip() {
+    for generation in [1, 2] {
+        let mut rig = LiveFeedback::new(generation);
+        let host = rig.sim.player("Feedback Room").unwrap().ip;
+        control::play_queue_from(&rig.sim.lan(), &rig.households, &rig.id, 1).unwrap();
+        let cached = rig.read();
+        soap::seek_position(&rig.sim.lan(), host, 170).unwrap();
+        // No previous Listening movement can suppress this near-start claim.
+        // The fresh position, not the retained clock, must establish it.
+        rig.dj.on_observation_gap(None);
+        rig.observe(&cached);
+        let state = rig.dj.state();
+        let listening = &state.listening[&rig.id];
+        assert!(!listening.awaiting_observation);
+        assert!(!listening.current.as_ref().unwrap().0.started);
+        drop(state);
+        rig.advance(10);
+        rig.seek(2);
+        assert!(
+            rig.signals().is_empty(),
+            "a late arrival is not an early skip"
+        );
+    }
+}
+
+#[test]
+fn a_paused_recovery_cannot_authorize_a_later_stale_near_start_claim() {
+    let mut rig = LiveFeedback::new(2);
+    let host = rig.sim.player("Feedback Room").unwrap().ip;
+    control::play_queue_from(&rig.sim.lan(), &rig.households, &rig.id, 1).unwrap();
+    soap::pause(&rig.sim.lan(), host).unwrap();
+    let mut cached = rig.read();
+    rig.dj.on_observation_gap(None);
+    rig.observe(&cached);
+    assert!(!rig.dj.state().listening[&rig.id].awaiting_observation);
+
+    // A transport-only resume can retain the old paused-at-zero clock after
+    // an unobserved seek. Paused proof was not evidence of hearing the start.
+    soap::seek_position(&rig.sim.lan(), host, 170).unwrap();
+    soap::play(&rig.sim.lan(), host).unwrap();
+    cached.transport = Some(TransportState::Playing);
+    rig.observe(&cached);
+    assert!(
+        !rig.dj.state().listening[&rig.id]
+            .current
+            .as_ref()
+            .unwrap()
+            .0
+            .started
+    );
+    rig.advance(10);
+    rig.seek(2);
+    assert!(rig.signals().is_empty());
 }
 
 #[test]

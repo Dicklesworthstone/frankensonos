@@ -9,6 +9,7 @@ use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::TransportState;
+use std::cell::Cell;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -308,4 +309,244 @@ fn unavailable_occurrences_stay_visible_but_cannot_be_selected_as_tracks() {
         ));
         assert_read_only(&sim, start);
     }
+}
+
+#[test]
+fn batch_selection_coalesces_pages_but_retains_requested_order_and_repeated_positions() {
+    let (sim, houses) = fixture();
+    for room in ["Kitchen", "Den"] {
+        let lan = sim.lan();
+        let target = resolve_room(&houses, room).unwrap();
+        let page =
+            playlists::contents(&lan, &houses, &target.coordinator.id, "SQ:7", 0, 3, None).unwrap();
+        let start = sim.soap_log().len();
+        let selected = playlists::select_tracks(
+            &lan,
+            &houses,
+            &target.coordinator.id,
+            "SQ:7",
+            &[3, 1, 3, 2],
+            &page.revision,
+        )
+        .unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|track| track.id.as_str())
+                .collect::<Vec<_>>(),
+            ["SQ:7/3", "SQ:7/1", "SQ:7/3", "SQ:7/2"]
+        );
+        for (track, index) in selected.iter().zip([2, 0, 2, 1]) {
+            assert_eq!(
+                parse_didl(&track.metadata).unwrap(),
+                [page.items[index].clone()]
+            );
+        }
+        assert_eq!(selected[0], selected[2]);
+        assert_ne!(selected[0], selected[1]);
+        assert_eq!(selected[0].uri, selected[1].uri);
+        assert_read_only(&sim, start);
+        assert_eq!(
+            sim.soap_log().len() - start,
+            6,
+            "one verified native page for all occurrences"
+        );
+    }
+}
+
+struct ShortPages {
+    lan: SimLan,
+    reads: Cell<u32>,
+    change_on_reread: bool,
+}
+
+impl Transport for ShortPages {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let selected = body.contains("<ObjectID>SQ:7</ObjectID>")
+            && body.contains("<BrowseFlag>BrowseDirectChildren</BrowseFlag>");
+        if !selected {
+            return self.lan.soap_post(host, path, action, body);
+        }
+        self.reads.set(self.reads.get() + 1);
+        let mut body = body.to_string();
+        let start = body.find("<RequestedCount>").unwrap() + "<RequestedCount>".len();
+        let end = body[start..].find("</RequestedCount>").unwrap() + start;
+        body.replace_range(start..end, "1");
+        let response = self.lan.soap_post(host, path, action, &body)?;
+        if self.change_on_reread && self.reads.get() == 5 {
+            Ok(response.replace("&lt;dc:title&gt;", "&lt;dc:title&gt;Changed "))
+        } else {
+            Ok(response)
+        }
+    }
+}
+
+#[test]
+fn short_pages_are_completed_and_every_selected_page_is_rechecked_before_publication() {
+    let (sim, houses) = fixture();
+    let target = resolve_room(&houses, "Kitchen").unwrap();
+    let revision = revision(&sim.lan(), &houses, "Kitchen");
+    for change_on_reread in [false, true] {
+        let transport = ShortPages {
+            lan: sim.lan(),
+            reads: Cell::new(0),
+            change_on_reread,
+        };
+        let start = sim.soap_log().len();
+        let result = playlists::select_tracks(
+            &transport,
+            &houses,
+            &target.coordinator.id,
+            "SQ:7",
+            &[3, 1, 2, 3],
+            &revision,
+        );
+        if change_on_reread {
+            assert!(matches!(result, Err(CoreError::PlaylistChanged(_))));
+            assert_eq!(transport.reads.get(), 5);
+        } else {
+            assert_eq!(
+                result
+                    .unwrap()
+                    .iter()
+                    .map(|track| track.id.as_str())
+                    .collect::<Vec<_>>(),
+                ["SQ:7/3", "SQ:7/1", "SQ:7/2", "SQ:7/3"]
+            );
+            assert_eq!(transport.reads.get(), 6);
+            assert_eq!(
+                sim.soap_log().len() - start,
+                10,
+                "group and metadata shared across all pages"
+            );
+        }
+        assert_read_only(&sim, start);
+    }
+}
+
+#[test]
+fn batch_with_a_missing_or_unavailable_final_occurrence_returns_no_selection() {
+    let (sim, houses) = fixture();
+    let target = resolve_room(&houses, "Kitchen").unwrap();
+    let revision = revision(&sim.lan(), &houses, "Kitchen");
+    let start = sim.soap_log().len();
+    assert!(
+        playlists::select_tracks(
+            &sim.lan(),
+            &houses,
+            &target.coordinator.id,
+            "SQ:7",
+            &[1, 4],
+            &revision,
+        )
+        .is_err()
+    );
+    let transport = Altered {
+        lan: sim.lan(),
+        unavailable: Unavailable::Resource,
+    };
+    assert!(
+        playlists::select_tracks(
+            &transport,
+            &houses,
+            &target.coordinator.id,
+            "SQ:7",
+            &[1, 2],
+            &revision,
+        )
+        .is_err()
+    );
+    assert_read_only(&sim, start);
+}
+
+#[test]
+fn sparse_selected_occurrences_read_only_their_bounded_native_pages() {
+    let (sim, houses) = fixture();
+    let lan = sim.lan();
+    let target = resolve_room(&houses, "Kitchen").unwrap();
+    for index in 1..=103 {
+        soap::add_uri_to_queue(
+            &lan,
+            target.coordinator.ip,
+            &format!("x-file-cifs://example.invalid/library/{index}.flac"),
+            "",
+            false,
+        )
+        .unwrap();
+    }
+    let saved = playlists::save_queue(
+        &lan,
+        &houses,
+        &target.coordinator.id,
+        "Long native playlist",
+    )
+    .unwrap();
+    let observed =
+        playlists::contents(&lan, &houses, &target.coordinator.id, &saved.id, 0, 1, None).unwrap();
+    let start = sim.soap_log().len();
+    let selected = playlists::select_tracks(
+        &lan,
+        &houses,
+        &target.coordinator.id,
+        &saved.id,
+        &[103, 1, 101, 103],
+        &observed.revision,
+    )
+    .unwrap();
+    for (track, index) in selected.iter().zip([103, 1, 101, 103]) {
+        assert_eq!(track.id, format!("{}/{index}", saved.id));
+        assert_eq!(
+            track.uri.as_deref(),
+            Some(format!("x-file-cifs://example.invalid/library/{index}.flac").as_str())
+        );
+    }
+    assert_read_only(&sim, start);
+    assert_eq!(
+        sim.soap_log().len() - start,
+        8,
+        "two selected pages read twice plus one shared metadata/group proof"
+    );
+    let log = sim.soap_log();
+    let ranges: Vec<_> = log[start..]
+        .iter()
+        .filter(|entry| {
+            entry
+                .args
+                .iter()
+                .any(|(name, value)| name == "BrowseFlag" && value == "BrowseDirectChildren")
+        })
+        .map(|entry| {
+            (
+                entry
+                    .args
+                    .iter()
+                    .find(|(name, _)| name == "StartingIndex")
+                    .unwrap()
+                    .1
+                    .clone(),
+                entry
+                    .args
+                    .iter()
+                    .find(|(name, _)| name == "RequestedCount")
+                    .unwrap()
+                    .1
+                    .clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ranges,
+        [
+            ("0".to_string(), "1".to_string()),
+            ("100".to_string(), "3".to_string()),
+            ("0".to_string(), "1".to_string()),
+            ("100".to_string(), "3".to_string())
+        ]
+    );
 }

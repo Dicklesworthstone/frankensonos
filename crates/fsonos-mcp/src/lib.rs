@@ -191,6 +191,10 @@ fn configured_server(
             "dj_configure".into(),
             fsonos_api::surface::dj_config::MAX_CONFIG_BYTES + 1024,
         );
+        http.tool_input_max_bytes.insert(
+            "configure_rooms".into(),
+            fsonos_core::rooms::configuration::MAX_CONFIG_BYTES + 1024,
+        );
     }
     // The essentials, in ESSENTIALS order.
     let builder = fastmcp_server::ServerBuilder::try_new_with_fixed_protocol_policy(
@@ -223,12 +227,15 @@ fn configured_server(
             .tool(Echo)
             .tool(tools::ListRooms)
             .tool(tools::ListPlayers)
+            .tool(tools::room_config::RoomConfiguration)
+            .tool(tools::room_config::ConfigureRooms)
             .tool(tools::ListLineIn)
             .tool(tools::PlayLineIn)
             .tool(tools::GetZone)
             .tool(tools::ListSonosPlaylists)
             .tool(tools::SonosPlaylistContents)
             .tool(tools::SonosPlaylistTrack)
+            .tool(tools::SonosPlaylistTracks)
             .tool(tools::PlaySonosPlaylist)
             .tool(tools::SaveSonosPlaylist)
             .tool(tools::RenameSonosPlaylist)

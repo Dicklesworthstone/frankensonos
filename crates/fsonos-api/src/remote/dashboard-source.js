@@ -27,6 +27,13 @@ const DashboardSource = (() => {
     }
     const q = review.before.queue;
     if (review.item.kind === 'line_in') return `Play the analog input from ${review.item.room} in the selected group. The current source is replaced and the existing queue remains available. Cable and signal state are not reported; start your source device yourself.`;
+    if (review.item.kind === 'sonos_playlist_tracks') {
+      const count = review.item.positions.length;
+      return review.mode === 'play' ? `Replace the current queue with these ${count} selected tracks and start the first in the order shown, with shuffle and repeat off. The saved playlist remains unchanged.`
+        : (review.mode === 'next' && q.playing !== null ? `Add these ${count} tracks after queue position ${q.playing}`
+          : `Append these ${count} tracks after the existing ${q.total} entries`)
+          + ', in the order shown, without starting or resuming playback. The saved playlist remains unchanged.';
+    }
     if (review.item.kind === 'artist' || review.item.kind === 'show') {
       const selection = review.item.kind === 'show'
         ? 'Uses up to 10 available episodes from the show’s first episode page, in Spotify’s order. Requires Spotify sign-in.'
@@ -51,7 +58,7 @@ const DashboardSource = (() => {
     let version = 0, active = true, disposed = false, reading = null;
     const state = { open: false, target: '', scope: '', group: null, sourceType: 'link', input: '', title: '', mode: 'play',
       destinationMode: 'selected', destinationInput: '', nativeQuery: '', suggestions: [],
-      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [],
+      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [], contentsSelection: Object.freeze([]),
       lineInSources: [], lineInUnavailable: [], lineIn: '', lineInTarget: '', lineInStatus: 'idle',
       loading: false, writing: false, pending: null, result: null, message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
@@ -86,7 +93,7 @@ const DashboardSource = (() => {
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
       if (message) state.message = message;
     }
-    const clearContents = () => { state.contents = null; state.contentsHistory = []; };
+    const clearContents = () => { state.contents = null; state.contentsHistory = []; state.contentsSelection = Object.freeze([]); };
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
     const manager = P.playlistManager({ call: targetCall, live,
@@ -215,7 +222,7 @@ const DashboardSource = (() => {
       if (!item) return false;
       const request = P.contentsRequest(state.contents, state.contentsHistory, direction, item.id);
       if (!request) return false;
-      retire();
+      retire(); state.contentsSelection = Object.freeze([]);
       const v = version, selected = state.target, abort = new AbortController();
       reading = abort; state.loading = true; state.message = 'Reading saved tracks…'; publish();
       try {
@@ -253,6 +260,11 @@ const DashboardSource = (() => {
         const value = await call('/sonos/playlists/contents?' + query, undefined, options); valid();
         P.verifyPlaylistTrack(value, reviewed.item, reviewed.group);
       }
+      if (reviewed.item.kind === 'sonos_playlist_tracks') {
+        const query = new URLSearchParams(P.tracksQuery(reviewed.item, reviewed.target));
+        const value = await call('/sonos/playlists/contents?' + query, undefined, options); valid();
+        P.verifyPlaylistTracks(value, reviewed.item, reviewed.group);
+      }
       const base = '/zones/' + encodeURIComponent(reviewed.target);
       const queueNeeded = reviewed.mode !== 'play' || reviewed.item.container;
       const [playback, queue] = await Promise.all([
@@ -272,7 +284,8 @@ const DashboardSource = (() => {
       const v = version, at = now(), abort = new AbortController();
       let choice;
       try { choice = prepared || (nativeQuery() ? T.prepareNative(state.sourceType, state.nativeQuery, state.mode)
-        : state.sourceType === 'playlist' ? P.preparePlaylist(state.playlist, state.playlists, state.mode)
+        : state.sourceType === 'playlist' ? state.contentsSelection.length
+          ? P.preparePlaylistTracks(state.contents, state.contentsSelection, state.mode) : P.preparePlaylist(state.playlist, state.playlists, state.mode)
         : state.sourceType === 'line_in' ? P.prepareLineIn(state.lineIn, state.lineInSources, state.mode)
           : P.prepare(state.input, state.title, state.mode)); }
       catch (error) { state.message = C.problem(error); publish(); return null; }
@@ -290,6 +303,7 @@ const DashboardSource = (() => {
         const before = await inspect(proposed, { signal: abort.signal }, valid); valid();
         const request = proposed.expanded ? T.request(proposed, proposed.target, P) : null;
         const body = request ? request.body : P.commandBody(proposed, proposed.target);
+        if (proposed.item.kind === 'sonos_playlist_tracks') body.expected_queue_revision = before.queue.revision;
         state.pending = Object.freeze({ ...proposed, before, targets: proposed.expanded ? before : null,
           request, body: Object.freeze(body) });
         state.message = ''; return state.pending;
@@ -307,6 +321,30 @@ const DashboardSource = (() => {
       try { choice = P.preparePlaylistTrack(page, position, mode); }
       catch (error) { retire(); state.message = C.problem(error); publish(); return null; }
       return review(choice);
+    }
+    function selectTrack(position, page = state.contents) {
+      if (!canReview() || targetSet() || state.sourceType !== 'playlist' || !page || page !== state.contents
+          || page.playlist.id !== state.playlist) return false;
+      const selected = state.contentsSelection.includes(position);
+      try {
+        P.preparePlaylistTrack(page, position, 'play');
+        if (!selected && state.contentsSelection.length >= P.MAX_PLAYLIST_TRACKS) throw new Error(`Choose at most ${P.MAX_PLAYLIST_TRACKS} tracks.`);
+      } catch (error) { state.message = C.problem(error); publish(); return false; }
+      retire(); state.contentsSelection = Object.freeze(selected ? state.contentsSelection.filter(value => value !== position)
+        : [...state.contentsSelection, position]);
+      state.message = ''; publish(); return true;
+    }
+    async function reviewTracks(mode, page = state.contents) {
+      if (!canReview() || targetSet() || state.sourceType !== 'playlist' || !page || page !== state.contents
+          || page.playlist.id !== state.playlist) return null;
+      let choice;
+      try { choice = P.preparePlaylistTracks(page, state.contentsSelection, mode); }
+      catch (error) { retire(); state.message = C.problem(error); publish(); return null; }
+      return review(choice);
+    }
+    function clearTrackSelection() {
+      if (!editable() || state.loading) return false;
+      retire(); state.contentsSelection = Object.freeze([]); state.message = ''; publish(); return true;
     }
     const canApply = () => !!(ready() && state.pending && state.pending.version === version && now() - state.pending.at < MAX_AGE);
     async function apply(reviewed = state.pending) {
@@ -337,10 +375,12 @@ const DashboardSource = (() => {
             receipt = T.result(value, reviewed.targets, P); detail = receipt.detail;
             return { done: detail, changed: reviewed.mode === 'play' ? value.changed : value.added ? value.added.length > 0 : true };
           }
-          const route = reviewed.item.kind === 'sonos_playlist_track' ? '/sonos/playlists/track'
+          const route = reviewed.item.kind === 'sonos_playlist_tracks' ? '/sonos/playlists/tracks'
+            : reviewed.item.kind === 'sonos_playlist_track' ? '/sonos/playlists/track'
             : reviewed.item.kind === 'line_in' ? '/line-in/play'
             : reviewed.mode === 'play' ? reviewed.item.kind === 'sonos_playlist' ? '/sonos/playlists/play' : '/play' : '/queue';
           const value = await send(route, reviewed.body);
+          if (reviewed.item.kind === 'sonos_playlist_tracks') { detail = P.tracksOutcome(value, reviewed); return { ...value, done: detail }; }
           if (reviewed.item.kind === 'sonos_playlist_track') { detail = P.trackOutcome(value, reviewed); return { ...value, done: detail }; }
           if (reviewed.mode === 'play') { detail = P.outcome(value); return value; }
           detail = P.queued(value, reviewed.group);
@@ -375,7 +415,8 @@ const DashboardSource = (() => {
       }
       publish(); return true;
     }
-    return { state, manager, catalog, chooseCatalog, observe, editable, edit, loadTargets, loadPlaylists, loadLineInSources, loadContents, canReview, review, reviewTrack, canApply, apply, open,
+    return { state, manager, catalog, chooseCatalog, observe, editable, edit, loadTargets, loadPlaylists, loadLineInSources, loadContents,
+      canReview, review, reviewTrack, selectTrack, reviewTracks, clearTrackSelection, canApply, apply, open,
       catalogChanged(change = null) {
         manager.catalogChanged(change);
         const favorite = state.sourceType === 'favorite';
@@ -411,11 +452,13 @@ const DashboardSource = (() => {
 
   function panel({ call, controller, completed, document: doc = document, now }) {
     const $ = id => doc.getElementById(id), dialog = $('source-dialog'), trigger = $('open-source'), preview = $('source-preview');
-    let opener = null, reviewFocus = null, shown = null, shownPlaylists = null, shownPlaylistStatus = '', shownContents = null, shownContentsReady = null;
+    let opener = null, reviewFocus = null, shown = null, shownPlaylists = null, shownPlaylistStatus = '', shownContents = null, shownContentsReady = null, shownContentsSelection = null;
     let shownCatalog = null, shownCatalogReady = null;
     let shownLineIn = null, shownLineInStatus = '';
     let shownSuggestions = null;
     const control = model({ call, controller, completed, now, changed: render });
+    const selectionPanel = P.playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection });
+    $('source-contents').append(selectionPanel.node);
     const managerPanel = P.playlistManagerPanel(control.manager, doc);
     $('source-playlist-manage').append(managerPanel.node);
     function render(s) {
@@ -512,13 +555,16 @@ const DashboardSource = (() => {
       $('source-contents-next').hidden = s.contents?.next_offset == null;
       for (const id of ['source-contents-previous', 'source-contents-next']) $(id).disabled = !control.canReview();
       $('source-contents-help').textContent = P.contentsSummary(s.contents);
-      if (shownContents !== s.contents || shownContentsReady !== control.canReview()) {
-        shownContents = s.contents; shownContentsReady = control.canReview();
-        P.renderContents($('source-contents-items'), s.contents, doc, { review: control.reviewTrack, disabled: !shownContentsReady });
+      selectionPanel.render(s.contents, s.contentsSelection, !control.canReview());
+      if (shownContents !== s.contents || shownContentsReady !== control.canReview() || shownContentsSelection !== s.contentsSelection) {
+        shownContents = s.contents; shownContentsReady = control.canReview(); shownContentsSelection = s.contentsSelection;
+        P.renderContents($('source-contents-items'), s.contents, doc, { review: control.reviewTrack, select: control.selectTrack,
+          selected: s.contentsSelection, disabled: !shownContentsReady });
       }
       $('source-context').textContent = set ? 'Resolve a room, alias, here, all@S1, all@S2, or everywhere before sending one request.' : s.group ? 'Destination: ' + s.group.label
         : 'Search Spotify or prepare a source now. Select a listening group before reviewing playback.';
-      $('source-review').textContent = s.mode === 'play' ? 'Review playback' : 'Review queue addition';
+      $('source-review').textContent = s.contentsSelection.length ? s.mode === 'play' ? 'Review selected playback' : 'Review selected queue addition'
+        : s.mode === 'play' ? 'Review playback' : 'Review queue addition';
       $('source-review').disabled = !control.canReview(); $('source-clear').disabled = !control.editable();
       $('source-message').textContent = s.message;
       dialog.setAttribute('aria-busy', String(s.loading || s.writing));
@@ -528,6 +574,7 @@ const DashboardSource = (() => {
         $('source-preview-title').textContent = P.modes[p.mode] + ': ' + (p.title || p.item.uri);
         $('source-preview-source').textContent = p.item.kind === 'sonos_playlist_track'
           ? `Track ${p.item.position} · ${p.item.playlistTitle} · ${p.item.id}`
+          : p.item.kind === 'sonos_playlist_tracks' ? `${p.item.positions.length} selected tracks · ${p.item.playlistTitle} · ${p.item.id}`
           : p.item.kind === 'line_in' ? 'Line-in · ' + P.lineInLabel(p.item)
           : p.item.kind === 'favorite_query' ? 'Household favorite · ' + p.item.query
           : p.item.kind === 'playlist_query' ? 'Saved Sonos playlist · ' + p.item.query
@@ -540,7 +587,9 @@ const DashboardSource = (() => {
           ? q.total + ' queue entries; this group is not currently using its queue.'
           : q.total + ' queue entries; reported current occurrence: ' + q.playing + '.' : '';
         const groups = $('source-preview-groups'); groups.hidden = !p.targets;
+        const tracks = $('source-preview-selection'); tracks.hidden = p.item.kind !== 'sonos_playlist_tracks';
         if (p !== shown) {
+          P.renderSelectedTracks(tracks, p.item, doc);
           groups.replaceChildren();
           for (const entry of p.targets?.entries || []) {
             const row = doc.createElement('li'), name = doc.createElement('strong'); name.textContent = entry.group.label;

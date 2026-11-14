@@ -58,6 +58,27 @@ pub const ADD: &str = "add_to_queue";
 /// The most items one page carries (Sonos pages at 100).
 pub const MAX_PAGE: u32 = 100;
 
+/// Check a caller's destination token after the core has retained its queue
+/// proof. Native and Spotify selections must use the same public revision.
+pub(super) fn confirm_destination_revision<T: fsonos_proto::Transport + ?Sized>(
+    transport: &T,
+    host: std::net::IpAddr,
+    coordinator: &fsonos_types::PlayerId,
+    expected: Option<&str>,
+) -> Result<(), Failure> {
+    if let Some(expected) = expected {
+        let page = snapshot::page(transport, host, 0, 1)?;
+        if expected != snapshot::revision(coordinator, &page) {
+            return Err(Failure::new(
+                crate::ErrorCode::QueueChanged,
+                "the destination queue changed after the selection was reviewed",
+            )
+            .with_hint("Read the queue and review the selected tracks again."));
+        }
+    }
+    Ok(())
+}
+
 /// A page of a group's queue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueueDto {

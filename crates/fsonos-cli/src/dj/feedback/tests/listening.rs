@@ -5,6 +5,31 @@ use super::*;
 const STOPPED: Option<TransportState> = Some(TransportState::Stopped);
 
 #[test]
+fn an_observation_gap_cannot_be_a_skip_or_a_full_listen() {
+    for gap in [10, 3600] {
+        let mut listening = Listening::default();
+        listening.on_change(0, PLAYING, Some(movement(1, "a", true)));
+        listening.on_change(5, PLAYING, Some(movement(1, "a", true)));
+        listening.interrupt();
+        assert_eq!(
+            listening.on_change(5 + gap, PLAYING, Some(movement(1, "a", true))),
+            None
+        );
+        assert_eq!(listening.current.as_ref().unwrap().1, 5);
+        assert_eq!(
+            listening.on_change(10 + gap, PLAYING, Some(movement(2, "b", true))),
+            None,
+            "neither the outage nor an apparent short departure is a preference"
+        );
+        assert_eq!(
+            listening.on_change(190 + gap, STOPPED, None),
+            Some(("b".into(), Signal::FullListen)),
+            "a later work observed from its start can still teach a full listen"
+        );
+    }
+}
+
+#[test]
 fn a_long_pause_does_not_turn_an_early_skip_into_a_full_listen() {
     let mut listening = Listening::default();
     listening.on_change(0, PLAYING, Some(movement(1, "a", true)));

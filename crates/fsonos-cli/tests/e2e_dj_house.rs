@@ -12,7 +12,8 @@ use e2e::{Scenario, http};
 use fsonos_core::store::SqliteStore;
 use fsonos_proto::content::{QUEUE, browse_all};
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
-use fsonos_sim::SimHousehold;
+use fsonos_sim::{SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_types::PlayerId;
 use fsonos_spotify::cache::apply_library_read;
 use fsonos_spotify::library::{LibraryItem, Origin};
 use serde_json::{Value, json};
@@ -101,7 +102,15 @@ fn queued_works(s: &Scenario, room: &str) -> (BTreeSet<usize>, Vec<String>) {
 #[test]
 fn two_rooms_djs_never_queue_the_same_work() {
     let mut s = Scenario::start("dj_house");
-    s.sim(SimHousehold::standard());
+    s.sim(SimHousehold::builder()
+        .s1(["Kitchen", "Office"].map(|name| SimPlayerSpec::new(name, SimModel::Play5Gen1)))
+        .s2(["Living Room", "Bedroom"].map(|name| SimPlayerSpec::new(name, SimModel::One))));
+    for (member, leader) in [("Office", "Kitchen"), ("Bedroom", "Living Room")] {
+        let coordinator = PlayerId(s.sim_handle().unwrap().player(leader).unwrap().uuid.clone());
+        fsonos_proto::control::join_group(&s.lan(), s.ip(member), &coordinator).unwrap();
+    }
+    std::fs::write(s.dir().join("data").join("aliases.toml"),
+        "[aliases]\nselected = [\"Office@S1\", \"Kitchen@S1\", \"Bedroom@S2\", \"Living Room@S2\"]\n").unwrap();
     seed(&mut s);
     let clock = s.dir().join("clock");
     let pinned = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp(), 0)
@@ -138,19 +147,20 @@ fn two_rooms_djs_never_queue_the_same_work() {
         daemon.seen.join("\n"),
     );
 
-    for room in ["Kitchen", "Living Room"] {
-        let (status, started) = post(&api, "/dj/start", &json!({ "zone": room }));
-        s.check(
-            "start",
-            "http",
-            &format!("POST /dj/start plays the DJ in the {room}"),
-            status == 200
-                && started["done"]
-                    .as_str()
-                    .is_some_and(|d| d.contains("the DJ is playing")),
-            &started,
-        );
-    }
+    let daemon_url = format!("http://{api}");
+    let started = s.cli_env(
+        "start-both",
+        &["dj", "start", "selected", "--mood", "bright", "--not-composer", "Mahler", "--for", "2h", "--json"],
+        &[("FSONOS_DAEMON_URL", &daemon_url)],
+        &[],
+    );
+    let receipt: Value = serde_json::from_str(&started.stdout).unwrap_or(Value::Null);
+    s.check(
+        "start-both", "cli+http", "one alias starts each independent group once with its exact direction",
+        started.ok() && receipt["done"].as_str().is_some_and(|text|
+            text.contains("Kitchen@S1") && text.contains("Living Room@S2")),
+        format!("{} {}", started.stdout, started.stderr),
+    );
     let (kitchen, kitchen_queue) = queued_works(&s, "Kitchen");
     let (living, living_queue) = queued_works(&s, "Living Room");
     s.check(
@@ -178,6 +188,60 @@ fn two_rooms_djs_never_queue_the_same_work() {
         status == 200 && !topped.is_subset(&kitchen) && topped.is_disjoint(&living),
         format!("{skipped}; Kitchen {kitchen_queue:?}; Living Room {living_queue:?}"),
     );
+
+    let steered = s.cli_env(
+        "steer-both",
+        &["dj", "steer", "everywhere", "--mood", "calm", "--genre", "classical", "--for", "15m", "--json"],
+        &[("FSONOS_DAEMON_URL", &daemon_url)],
+        &[],
+    );
+    s.check("steer-both", "cli+http", "one direction reaches both groups",
+        steered.ok(), format!("{} {}", steered.stdout, steered.stderr));
+    for room in ["Kitchen", "Living%20Room"] {
+        let status = http(&api, "GET", &format!("/zones/{room}/dj"), &[], "")
+            .and_then(|(_, _, body)| serde_json::from_str::<Value>(&body).ok()).unwrap_or(Value::Null);
+        s.check("direction", "http", "both groups keep the exact requested steering",
+            status["steering"]["session_mood"] == "calm"
+                && status["steering"]["added"]["include_genres"] == json!(["classical"]),
+            status);
+    }
+
+    let (code, stopped) = post(&api, "/dj/stop", &json!({"zone": "Kitchen"}));
+    s.check("stop-one", "http", "one group's stop leaves the other DJ running", code == 200, stopped);
+    let mut mcp = s.mcp_env(&[], &[("FSONOS_DAEMON_URL", &daemon_url)]);
+    let initialized = mcp.initialize();
+    s.check("initialize", "mcp", "MCP initializes beside the daemon", initialized.get("result").is_some(), initialized);
+    let skipped = mcp.request("tools/call", &json!({
+        "name": "dj_skip", "arguments": {"zone": "everywhere"}
+    }));
+    let partial = &skipped["result"];
+    s.check("skip-both", "mcp+http",
+        "idle Kitchen is reported while Living Room skips, with a tool error and full receipt",
+        partial["isError"] == true
+            && partial["structuredContent"]["done"].as_str().is_some_and(|text| text.contains("Living Room@S2"))
+            && partial["structuredContent"]["notes"].as_array().is_some_and(|notes|
+                notes.iter().any(|note| note["code"] == "SKIPPED"
+                    && note["detail"].as_str().is_some_and(|text| text.contains("Kitchen@S1")))),
+        &skipped);
+    drop(mcp);
+
+    let stopped = s.cli_env(
+        "stop-both", &["dj", "stop", "all", "--json"],
+        &[("FSONOS_DAEMON_URL", &daemon_url)], &[],
+    );
+    let receipt: Value = serde_json::from_str(&stopped.stdout).unwrap_or(Value::Null);
+    s.check("stop-both", "cli+http", "partial DJ control prints the receipt and exits nonzero",
+        !stopped.ok()
+            && receipt["done"].as_str().is_some_and(|text| text.contains("Living Room@S2"))
+            && receipt["notes"].as_array().is_some_and(|notes|
+                notes.iter().any(|note| note["code"] == "SKIPPED"
+                    && note["detail"].as_str().is_some_and(|text| text.contains("Kitchen@S1")))),
+        format!("{} {}", stopped.stdout, stopped.stderr));
+    for room in ["Kitchen", "Living%20Room"] {
+        let status = http(&api, "GET", &format!("/zones/{room}/dj"), &[], "")
+            .and_then(|(_, _, body)| serde_json::from_str::<Value>(&body).ok()).unwrap_or(Value::Null);
+        s.check("stopped", "http", "both selected DJs are stopped", status["running"] == false, status);
+    }
 
     let code = daemon.interrupt(Duration::from_secs(10));
     s.check(

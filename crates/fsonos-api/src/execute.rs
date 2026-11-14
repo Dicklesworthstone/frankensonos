@@ -172,6 +172,30 @@ fn execute_command<T: Transport + ?Sized>(
                 replacement,
             })
         }
+        Command::PlayNativeSelection {
+            coordinator,
+            selection,
+            destination,
+        } => {
+            // Snapshot and policy reads may outlast another controller's edit.
+            // Recheck the native selection immediately before staged insertion.
+            selection.confirm(transport, households, coordinator)?;
+            let replacement = control::play_native_tracks_bound_with_receipt(
+                transport,
+                households,
+                coordinator,
+                &selection.tracks,
+                destination,
+            )?;
+            let room = &control::locate(households, coordinator)?.room_name;
+            Ok(Executed {
+                outcome: OutcomeDto::sent(format!(
+                    "playing {} selected saved playlist tracks in {room}'s group in the supplied order (replaced the queue)",
+                    selection.tracks.len()
+                )),
+                replacement: receipt.then_some(replacement),
+            })
+        }
         Command::PlayFavorite {
             coordinator,
             favorite,
@@ -257,6 +281,7 @@ fn execute_other<T: Transport + ?Sized>(
         Command::Play { .. }
         | Command::PlayTracks { .. }
         | Command::PlaySelection { .. }
+        | Command::PlayNativeSelection { .. }
         | Command::PlayFavorite { .. } => {
             unreachable!("source commands retain their replacement receipt above")
         }

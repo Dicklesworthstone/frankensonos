@@ -59,6 +59,7 @@ pub mod queue;
 mod relocation_tests;
 #[cfg(test)]
 mod resource_changes_tests;
+pub mod room_config;
 pub mod scenes;
 pub mod schedules;
 pub mod sonos_playlists;
@@ -68,6 +69,7 @@ pub mod spotify_search;
 pub mod announce;
 mod bridge;
 mod dj_caps;
+mod dj_targets;
 mod intents;
 mod level_undo;
 mod outside;
@@ -790,28 +792,14 @@ impl Surface {
         receipt: bool,
     ) -> Result<Executed, Failure> {
         if let Command::Dj { coordinator, .. } | Command::DjSteer { coordinator, .. } = command
-            && let Some(dj) = &self.dj
+            && self.dj.is_some()
         {
             let at = DjSpeakers {
                 transport: &*self.transport,
                 households,
                 coordinator,
             };
-            return self
-                .with_dj_store(|store| {
-                    let was_feeding = dj.feeds(coordinator);
-                    let done = run_dj(&**dj, at, store, command, &*self.clock, guard.client);
-                    if done.is_ok() || (!was_feeding && dj.feeds(coordinator)) {
-                        self.dj_starters.carried_out(command, guard.client);
-                    }
-                    let queue_position = self
-                        .live()
-                        .and_then(|live| live.player(coordinator)?.queue_position);
-                    self.publish_dj(&**dj, at, store, queue_position);
-                    Ok(done)
-                })?
-                .unwrap_or_else(|| Err(no_dj_store()))
-                .map(Executed::from);
+            return self.carry_out_dj(at, guard, command, &|| Ok(())).map(Executed::from);
         }
         let destination = std::cell::RefCell::new(None);
         let result = crate::heal::execute_healing_with(
@@ -836,6 +824,31 @@ impl Surface {
             }
         }
         result
+    }
+
+    /// Shared DJ execution, including starter provenance and publication.
+    /// A batch supplies its fenced transport and after-lock admission gate.
+    pub(super) fn carry_out_dj(
+        &self,
+        at: DjSpeakers<'_>,
+        guard: &Guard<'_>,
+        command: &Command,
+        before: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        let dj = self.dj_engine()?;
+        let coordinator = at.coordinator;
+        self.with_dj_store(|store| {
+            let was_feeding = dj.feeds(coordinator);
+            let done = run_dj(dj, at, store, command, &*self.clock, guard.client, before);
+            if done.is_ok() || (!was_feeding && dj.feeds(coordinator)) {
+                self.dj_starters.carried_out(command, guard.client);
+            }
+            let queue_position = self.live()
+                .and_then(|live| live.player(coordinator)?.queue_position);
+            self.publish_dj(dj, at, store, queue_position);
+            Ok(done)
+        })?
+        .unwrap_or_else(|| Err(no_dj_store()))
     }
 
     /// A recovered command has a confirmed audience. Its volumes and any
@@ -1014,6 +1027,7 @@ impl Surface {
         let commands = self
             .prepare_sources(&households, commands)
             .inspect_err(|failure| self.notice(failure))?;
+        self.prepare_dj_set(&households, &guard, &commands)?;
         let guard = self.guard(client);
         guard.authorize(tool, false)?;
         // A volume or mute change ends a sleep fade in flight on each affected
@@ -1054,9 +1068,15 @@ impl Surface {
             return outcome;
         }
         let intent = intents::of(tool, &households, &commands);
+        let sessions: Vec<_> = commands
+            .iter()
+            .flat_map(|command| self.sessions_before(command))
+            .collect();
         // One before-state across every affected zone, so one undo restores
         // the whole set.
         let run = self.run_set(&households, &guard, &commands, true);
+        let incomplete_dj = dj_targets::is_set(&commands)
+            && run.outcomes.iter().any(Result::is_err);
         let unsafe_undo = run.unsafe_undo;
         let (snaps, missed) = (run.snaps, run.missed);
         let attempted: Vec<_> = commands
@@ -1066,7 +1086,7 @@ impl Surface {
             .map(|(command, _)| command.clone())
             .collect();
         let before = replacement_undo::attach(
-            actions::before_state_with(&snaps, &[]),
+            actions::before_state_with(&snaps, &sessions),
             &commands[..run.outcomes.len()],
             &run.queue_undo,
         );
@@ -1078,8 +1098,20 @@ impl Surface {
             self.notice(f);
         }
         let before = level_undo::scope(before, &households, &guard, &attempted, &snaps);
-        let (decision, text, before) = log_entry(&result, before, missed.len());
+        let (decision, mut text, before) = log_entry(&result, before, missed.len());
+        if incomplete_dj && let Ok(outcome) = &result {
+            // Keep the complete DJ receipt in the one batch action, including
+            // groups whose engine could not complete its command.
+            for skipped in outcome.notes.iter().filter(|note| note.code == NoteCode::Skipped) {
+                let _ = write!(text, " (skipped: {})", skipped.detail);
+            }
+        }
         let before = recovery::protect(before, unsafe_undo);
+        let before = if incomplete_dj {
+            Some(actions::before_state_not_undoable("incomplete multi-group DJ command"))
+        } else {
+            before
+        };
         let before = self.with_after(before, &snaps, &[]);
         let logged = self.record(client, intent, decision, text, before);
         note_unlogged(result, logged)
@@ -1518,6 +1550,29 @@ impl Surface {
                 favorite,
                 ..
             } => (coordinator, favorite.uri.as_deref()),
+            Command::PlayNativeSelection {
+                coordinator,
+                selection,
+                ..
+            } => {
+                let Some(uri) = selection
+                    .tracks
+                    .first()
+                    .and_then(|track| track.uri.as_deref())
+                else {
+                    return;
+                };
+                let Ok(now) = control::playback(&*self.transport, households, coordinator) else {
+                    return;
+                };
+                if now.transport.state != TransportState::Playing
+                    || now.position.track != 1
+                    || played_uri(&now.position.uri) != played_uri(uri)
+                {
+                    return;
+                }
+                (coordinator, Some(uri))
+            }
             _ => return,
         };
         let Some(uri) = uri.map(played_uri) else {
@@ -1903,15 +1958,16 @@ fn run_dj(
     command: &Command,
     clock: &dyn Clock,
     client: &Client,
+    before: &dyn Fn() -> Result<(), Failure>,
 ) -> Result<OutcomeDto, Failure> {
     match command {
-        Command::Dj { action, .. } => dj.act_as(at, store, *action, clock, client),
+        Command::Dj { action, .. } => dj.act_as_checked(at, store, *action, clock, client, before),
         Command::DjSteer { steer, start, .. } => {
-            let steered = dj.steer(at, store, steer, clock)?;
+            let steered = dj.steer_checked(at, store, steer, clock, before)?;
             if !start {
                 return Ok(steered);
             }
-            let started = dj.act_as(at, store, DjAction::Start, clock, client)?;
+            let started = dj.act_as_checked(at, store, DjAction::Start, clock, client, before)?;
             Ok(OutcomeDto {
                 done: format!("{}; {}", steered.done, started.done),
                 ..started
@@ -2188,6 +2244,7 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
         Command::Play { coordinator, .. }
         | Command::PlayTracks { coordinator, .. }
         | Command::PlaySelection { coordinator, .. }
+        | Command::PlayNativeSelection { coordinator, .. }
         | Command::PlayLineIn { coordinator, .. }
         | Command::PlayFavorite { coordinator, .. }
         | Command::Transport { coordinator, .. }

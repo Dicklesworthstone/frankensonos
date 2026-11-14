@@ -15,7 +15,9 @@ use crate::plan::Command;
 pub(super) fn replaces(command: &Command) -> bool {
     match command {
         Command::Play { source_uri, .. } => SpotifyContainer::of(source_uri).is_some(),
-        Command::PlayTracks { .. } | Command::PlaySelection { .. } => true,
+        Command::PlayTracks { .. }
+        | Command::PlaySelection { .. }
+        | Command::PlayNativeSelection { .. } => true,
         Command::PlayFavorite { favorite, .. } => favorite.kind == FavoriteKind::Container,
         _ => false,
     }
@@ -101,6 +103,7 @@ pub(super) fn attach(
         let label = match commands {
             [Command::PlayTracks { selection, .. }] => selection.kind.source_label(),
             [Command::PlaySelection { .. }] => "selected tracks",
+            [Command::PlayNativeSelection { .. }] => "selected saved playlist tracks",
             _ => "source",
         };
         return Some(actions::before_state_not_undoable(&format!(

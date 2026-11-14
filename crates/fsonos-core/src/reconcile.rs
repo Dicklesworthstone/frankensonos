@@ -458,6 +458,12 @@ impl Reconciler {
             // remains usable if the fresh subscription cannot be made.
             let recovery = self.subscriptions.refresh(lan, &n.sid, &callback_url, now);
             self.health.record(&recovery, now);
+            if service == Service::ZoneGroupTopology {
+                // Discovery can settle a real household transfer without
+                // letting an incomplete event erase the current household.
+                // Repeated bad events must not cause a survey storm.
+                self.schedule.retry_within(now, events::RETRY);
+            }
         })?;
         if service == Service::ZoneGroupTopology {
             self.invalidate_inventory();

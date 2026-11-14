@@ -73,6 +73,162 @@ fn track_request() -> SonosPlaylistTrackRequest {
     }
 }
 
+fn tracks_request() -> SonosPlaylistTracksRequest {
+    SonosPlaylistTracksRequest {
+        zone: "Den@S2".into(),
+        playlist: "SQ:7".into(),
+        positions: vec![3, 1, 3],
+        expected_revision: "native:a&b=2".into(),
+        mode: fsonos_api::surface::sonos_playlists::SonosPlaylistTrackMode::Next,
+        expected_queue_revision: Some("queue:destination".into()),
+    }
+}
+
+#[test]
+fn selected_tracks_forward_order_duplicates_and_both_revisions_once() {
+    for mode in ["play", "next", "append"] {
+        let request = SonosPlaylistTracksRequest {
+            mode: mode.parse().unwrap(),
+            ..tracks_request()
+        };
+        let outcome = json!({
+            "done":"selected native tracks", "zone":"Den", "playlist":"SQ:7",
+            "positions":[3,1,3], "titles":["Repeat","First","Repeat"],
+            "mode":mode, "changed":true, "notes":[],
+            "first":2, "count":3, "playing_queue":true,
+        });
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Ok(outcome.clone())),
+        });
+        let result = backend(&reply).sonos_playlist_tracks(&request).unwrap();
+        assert!(!result.is_error);
+        assert_eq!(result.structured_content, Some(outcome));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/sonos/playlists/tracks", request])]
+        );
+    }
+}
+
+#[test]
+fn selected_batch_uncertainty_or_malformed_receipt_never_replays_locally() {
+    for answer in [
+        Err(Failure::new(
+            ErrorCode::QueueChanged,
+            "playlist or destination changed",
+        )),
+        Err(Failure::new(
+            ErrorCode::OutcomeUncertain,
+            "batch reply lost",
+        )),
+        Err(Failure::new(
+            ErrorCode::PlayerUnreachable,
+            "speaker unavailable",
+        )),
+        Err(Failure::new(ErrorCode::PolicyDenied, "not allowed")),
+        Ok(json!({"done":"missing ordered selection receipt"})),
+        Ok(json!({
+            "done":"invalid mode", "zone":"Den", "playlist":"SQ:7",
+            "positions":[3,1,3], "titles":["Repeat","First","Repeat"],
+            "mode":"replace", "changed":true
+        })),
+    ] {
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(answer),
+        });
+        assert!(
+            backend(&reply)
+                .sonos_playlist_tracks(&tracks_request())
+                .is_err()
+        );
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/sonos/playlists/tracks", tracks_request()])]
+        );
+    }
+}
+
+#[test]
+fn invalid_native_batches_are_rejected_before_forwarding_and_local_reads() {
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: None,
+    });
+    for request in [
+        SonosPlaylistTracksRequest {
+            positions: vec![],
+            ..tracks_request()
+        },
+        SonosPlaylistTracksRequest {
+            positions: vec![1; 11],
+            ..tracks_request()
+        },
+        SonosPlaylistTracksRequest {
+            positions: vec![1, 0],
+            ..tracks_request()
+        },
+        SonosPlaylistTracksRequest {
+            positions: vec![100_001],
+            ..tracks_request()
+        },
+        SonosPlaylistTracksRequest {
+            playlist: "Evening".into(),
+            ..tracks_request()
+        },
+        SonosPlaylistTracksRequest {
+            expected_revision: String::new(),
+            ..tracks_request()
+        },
+        SonosPlaylistTracksRequest {
+            expected_queue_revision: Some(" ".into()),
+            ..tracks_request()
+        },
+    ] {
+        assert!(backend(&reply).sonos_playlist_tracks(&request).is_err());
+    }
+    assert!(reply.calls.lock().unwrap().is_empty());
+    assert!(
+        backend(&reply)
+            .sonos_playlist_tracks(&tracks_request())
+            .unwrap_err()
+            .message
+            .contains("POLICY_DENIED")
+    );
+    assert_eq!(reply.calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn selected_tracks_tool_requires_native_selection_and_keeps_destination_revision_optional() {
+    let server = fastmcp_server::ServerBuilder::try_new_with_fixed_protocol_policy(
+        "native-tracks-test",
+        "1.0",
+        fastmcp::ProtocolPolicy::Auto,
+    )
+    .unwrap()
+    .tool(SonosPlaylistTracks)
+    .try_build()
+    .unwrap();
+    let tools = server.tools();
+    let tool = tools
+        .iter()
+        .find(|tool| tool.name == "sonos_playlist_tracks")
+        .unwrap();
+    let value = serde_json::to_value(tool).unwrap();
+    let required = value["inputSchema"]["required"].as_array().unwrap();
+    for field in ["zone", "playlist", "positions", "expected_revision", "mode"] {
+        assert!(required.contains(&json!(field)), "{value}");
+    }
+    assert!(!required.contains(&json!("expected_queue_revision")));
+    assert_eq!(
+        value["inputSchema"]["properties"]["positions"]["type"],
+        "array"
+    );
+    assert_ne!(value["annotations"]["readOnlyHint"], true);
+    assert_ne!(value["annotations"]["idempotentHint"], true);
+}
+
 #[test]
 fn selected_track_forwards_the_exact_household_occurrence_and_revision_once() {
     let outcome = json!({

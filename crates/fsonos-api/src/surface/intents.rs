@@ -52,6 +52,16 @@ fn describe(households: &[HouseholdState], command: &Command) -> String {
             tracks.len(),
             room(coordinator)
         ),
+        Command::PlayNativeSelection {
+            coordinator,
+            selection,
+            ..
+        } => format!(
+            "play saved playlist {} occurrences {:?} in {} in the supplied order",
+            selection.playlist,
+            selection.positions,
+            room(coordinator)
+        ),
         Command::PlayLineIn {
             coordinator,
             prepared,

@@ -20,7 +20,7 @@ use fsonos_proto::soap::{
     AV_TRANSPORT, CONTENT_DIRECTORY, GROUP_RENDERING_CONTROL, RENDERING_CONTROL,
     ZONE_GROUP_TOPOLOGY,
 };
-use fsonos_proto::topology::parse_zone_group_state;
+
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 
 mod content;
 mod maintenance;
+mod topology;
 pub use content::ContentChanges;
 
 /// The subscription timeout requested; renewals happen halfway through
@@ -649,10 +650,7 @@ pub fn apply(
         }
         Service::ZoneGroupTopology => {
             if let Some(doc) = n.property("ZoneGroupState") {
-                let zgs = parse_zone_group_state(doc)?;
-                if let Some(h) = households.iter_mut().find(|h| h.player(player).is_some()) {
-                    h.apply_topology(&zgs);
-                }
+                topology::apply(households, player, doc)?;
             }
             return Ok(Changes::default());
         }

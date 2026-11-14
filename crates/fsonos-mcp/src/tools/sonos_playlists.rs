@@ -8,7 +8,7 @@ use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::sonos_playlists::{
     self, PlaySonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto,
     SonosPlaylistContentsRequest, SonosPlaylistDto, SonosPlaylistTrackDto,
-    SonosPlaylistTrackRequest,
+    SonosPlaylistTrackRequest, SonosPlaylistTracksDto, SonosPlaylistTracksRequest,
 };
 use fsonos_api::{ErrorCode, Failure};
 use serde::Serialize;
@@ -21,6 +21,30 @@ struct PlaylistsDto {
 }
 
 impl Backend {
+    /// Resolve an ordered native selection on the chosen daemon in one command.
+    pub fn sonos_playlist_tracks(
+        &self,
+        req: &SonosPlaylistTracksRequest,
+    ) -> McpResult<FinalCallToolResult> {
+        req.validate()
+            .map_err(|failure| crate::tool_error(&failure))?;
+        let body = serde_json::to_value(req).map_err(|error| {
+            crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
+        })?;
+        if let Some(result) = self.on_daemon::<SonosPlaylistTracksDto>(
+            "POST",
+            "/sonos/playlists/tracks",
+            Some(&body),
+            SonosPlaylistTracksDto::text,
+        ) {
+            return result;
+        }
+        respond(|| {
+            let selected = self.surface.sonos_playlist_tracks(&self.client, req)?;
+            Ok((selected.text(), selected))
+        })
+    }
+
     /// Act on the selected daemon's native occurrence once, with no local fallback.
     pub fn sonos_playlist_track(
         &self,
@@ -127,7 +151,7 @@ async fn list_sonos_playlists(
 }
 
 #[tool(
-    description = "Inspect a playlist saved on a Sonos household without replacing the playing queue or changing playback, volume or the DJ. This reads native SQ: contents, not Spotify's cached playlists, and needs no Spotify sign-in. Give zone (Room@S1 or Room@S2 disambiguates households) and playlist as an SQ: id, current catalog number or unambiguous title from list_sonos_playlists. Returns title, artist, album, available duration/art/renderer identity, and exact one-based positions; duplicate tracks remain separate occurrences. limit is 1-100 (default 100). Continue with next_offset, the returned playlist.id and revision as expected_revision. An offset above zero requires the revision; a changed playlist, player or group fails instead of mixing pages. Start a fresh read explicitly after change. Uses list_favorites read permission. Use sonos_playlist_track with the exact playlist.id, item position and revision to play or queue one occurrence; play_sonos_playlist or add_to_queue select the whole native playlist.",
+    description = "Inspect a playlist saved on a Sonos household without replacing the playing queue or changing playback, volume or the DJ. This reads native SQ: contents, not Spotify's cached playlists, and needs no Spotify sign-in. Give zone (Room@S1 or Room@S2 disambiguates households) and playlist as an SQ: id, current catalog number or unambiguous title from list_sonos_playlists. Returns title, artist, album, available duration/art/renderer identity, and exact one-based positions; duplicate tracks remain separate occurrences. limit is 1-100 (default 100). Continue with next_offset, the returned playlist.id and revision as expected_revision. An offset above zero requires the revision; a changed playlist, player or group fails instead of mixing pages. Start a fresh read explicitly after change. Uses list_favorites read permission. Use sonos_playlist_track with the exact playlist.id, item position and revision to play or queue one occurrence; sonos_playlist_tracks selects 1-10 occurrences in the requested order with the same revision proof. play_sonos_playlist or add_to_queue select the whole native playlist.",
     annotations(read_only, idempotent)
 )]
 async fn sonos_playlist_contents(
@@ -202,6 +226,34 @@ async fn sonos_playlist_track(
             position,
             expected_revision,
             mode,
+        })
+    })
+    .await
+}
+
+#[tool(
+    description = "Play or queue an ordered selection of 1-10 exact track occurrences from one native Sonos saved playlist. First read sonos_playlist_contents, then pass its exact playlist.id (SQ:n), one-based positions in the desired order, and revision as expected_revision, on the same household/group. Repeated positions are retained deliberately. mode is required: play stages and verifies the full selection before replacing the queue and starts its first item in NORMAL order; next inserts after the current queue occurrence or appends when another source is selected; append adds at the end. Both queue modes leave playback and volume unchanged and retain one confirmed-range undo. expected_queue_revision optionally binds the destination queue separately from the saved playlist. All entries are reread and validated before a write using their native service metadata; raw media URIs and client metadata are never accepted. An unavailable entry or changed saved contents/group/player rejects the whole selection. Uses play_favorite for play and add_to_queue for next/append, with existing caps and action history. An uncertain partial batch is never replayed automatically; inspect the queue and playback before a new request. No Spotify sign-in is needed."
+)]
+async fn sonos_playlist_tracks(
+    ctx: &McpContext,
+    zone: String,
+    playlist: String,
+    positions: Vec<u32>,
+    expected_revision: String,
+    mode: String,
+    expected_queue_revision: Option<String>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let mode = mode
+        .parse()
+        .map_err(|failure| crate::tool_error(&failure))?;
+    with_backend_off_thread(ctx, move |backend| {
+        backend.sonos_playlist_tracks(&SonosPlaylistTracksRequest {
+            zone,
+            playlist,
+            positions,
+            expected_revision,
+            mode,
+            expected_queue_revision,
         })
     })
     .await

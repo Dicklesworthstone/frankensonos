@@ -51,68 +51,177 @@ pub fn contents<T: Transport + ?Sized>(
     expected_revision: Option<&str>,
 ) -> Result<PlaylistContents, CoreError> {
     validate_request(playlist_id, offset, limit, expected_revision)?;
-    let mut owners = households
-        .iter()
-        .filter(|house| house.player(coordinator).is_some());
-    let house = owners
-        .next()
-        .ok_or_else(|| CoreError::UnknownPlayer(coordinator.0.clone()))?;
-    if owners.next().is_some() {
-        return Err(changed(
-            "the playlist player belongs to more than one household",
-        ));
-    }
-    let mut groups = house
-        .groups
-        .iter()
-        .filter(|group| group.coordinator == *coordinator);
-    let group = groups
-        .next()
-        .ok_or_else(|| changed("the playlist player no longer coordinates its group"))?;
-    if groups.next().is_some() {
-        return Err(changed("the playlist player's group is ambiguous"));
-    }
-    let host = control::locate(households, coordinator)?.ip;
-    let before_group = GroupProof::read(transport, host, coordinator)?;
-    let mut members = group.members.clone();
-    members.sort_by(|left, right| left.0.cmp(&right.0));
-    members.dedup();
-    if before_group.members != members {
-        return Err(changed("the playlist player's group membership changed"));
-    }
-    let before_metadata = metadata(transport, host, playlist_id)?;
-    let selected = playlist(&before_metadata.objects[0])?;
-    let before = page(transport, host, playlist_id, offset, limit)?;
-    let revision = revision(
-        house,
-        coordinator,
-        &before_group,
-        &selected,
-        before_metadata.update_id,
-        &before,
-    );
+    let observation = Observation::read(transport, households, coordinator, playlist_id)?;
+    let before = page(transport, observation.host, playlist_id, offset, limit)?;
+    let revision = observation.revision(&before);
     if expected_revision.is_some_and(|expected| expected != revision) {
         return Err(changed(
             "the saved playlist observation is no longer current",
         ));
     }
-    let after = page(transport, host, playlist_id, offset, limit)?;
-    let after_metadata = metadata(transport, host, playlist_id)?;
-    let after_group = GroupProof::read(transport, host, coordinator)?;
-    if before != after || before_metadata != after_metadata || before_group != after_group {
+    let after = page(transport, observation.host, playlist_id, offset, limit)?;
+    if before != after {
         return Err(changed(
             "the saved playlist or its player changed while it was read",
         ));
     }
+    observation.confirm(transport, playlist_id)?;
     let next = offset + before.number_returned;
     Ok(PlaylistContents {
-        playlist: selected,
+        playlist: observation.playlist,
         revision,
         total: before.total_matches,
         offset,
         next_offset: (next < before.total_matches).then_some(next),
         items: before.objects,
     })
+}
+
+/// Read a bounded selection against one group/catalog observation. Nearby
+/// occurrences share a page; short native pages continue from the next
+/// requested occurrence rather than scanning unrelated entries. Each page is
+/// verified again before any selected item is returned.
+pub(super) fn selected_items<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    playlist_id: &str,
+    positions: &[u32],
+    expected_revision: &str,
+) -> Result<Vec<DidlObject>, CoreError> {
+    validate_request(playlist_id, 0, 1, Some(expected_revision))?;
+    let observation = Observation::read(transport, households, coordinator, playlist_id)?;
+    let mut pending = positions.to_vec();
+    pending.sort_unstable();
+    pending.dedup();
+    let mut selected = std::collections::BTreeMap::new();
+    let mut pages = Vec::new();
+    while let Some(&first) = pending.first() {
+        let last = pending
+            .iter()
+            .copied()
+            .take_while(|position| position - first < MAX_CONTENTS_PAGE)
+            .last()
+            .expect("a nonempty selection includes its first occurrence");
+        let offset = first - 1;
+        let limit = last - first + 1;
+        let before = page(transport, observation.host, playlist_id, offset, limit)?;
+        if observation.revision(&before) != expected_revision {
+            return Err(changed(
+                "the saved playlist observation is no longer current",
+            ));
+        }
+        if before.objects.is_empty() {
+            return Err(invalid(
+                "the saved playlist has no track at a selected position",
+            ));
+        }
+        let end = first + before.number_returned;
+        for &position in pending.iter().take_while(|&&position| position < end) {
+            let index =
+                usize::try_from(position - first).expect("native playlist pages fit in usize");
+            selected.insert(position, before.objects[index].clone());
+        }
+        pending.retain(|position| *position >= end);
+        pages.push((offset, limit, before));
+    }
+    for (offset, limit, before) in pages {
+        let after = page(transport, observation.host, playlist_id, offset, limit)?;
+        if before != after {
+            return Err(changed(
+                "the selected saved playlist occurrences changed while they were read",
+            ));
+        }
+    }
+    observation.confirm(transport, playlist_id)?;
+    Ok(positions
+        .iter()
+        .map(|position| selected[position].clone())
+        .collect())
+}
+
+struct Observation<'a> {
+    house: &'a HouseholdState,
+    coordinator: &'a PlayerId,
+    host: IpAddr,
+    group: GroupProof,
+    metadata: BrowsePage,
+    playlist: Favorite,
+}
+
+impl<'a> Observation<'a> {
+    fn read<T: Transport + ?Sized>(
+        transport: &T,
+        households: &'a [HouseholdState],
+        coordinator: &'a PlayerId,
+        playlist_id: &str,
+    ) -> Result<Self, CoreError> {
+        let mut owners = households
+            .iter()
+            .filter(|house| house.player(coordinator).is_some());
+        let house = owners
+            .next()
+            .ok_or_else(|| CoreError::UnknownPlayer(coordinator.0.clone()))?;
+        if owners.next().is_some() {
+            return Err(changed(
+                "the playlist player belongs to more than one household",
+            ));
+        }
+        let mut groups = house
+            .groups
+            .iter()
+            .filter(|group| group.coordinator == *coordinator);
+        let group = groups
+            .next()
+            .ok_or_else(|| changed("the playlist player no longer coordinates its group"))?;
+        if groups.next().is_some() {
+            return Err(changed("the playlist player's group is ambiguous"));
+        }
+        let host = control::locate(households, coordinator)?.ip;
+        let before_group = GroupProof::read(transport, host, coordinator)?;
+        let mut members = group.members.clone();
+        members.sort_by(|left, right| left.0.cmp(&right.0));
+        members.dedup();
+        if before_group.members != members {
+            return Err(changed("the playlist player's group membership changed"));
+        }
+        let before_metadata = metadata(transport, host, playlist_id)?;
+        let selected = playlist(&before_metadata.objects[0])?;
+        Ok(Self {
+            house,
+            coordinator,
+            host,
+            group: before_group,
+            metadata: before_metadata,
+            playlist: selected,
+        })
+    }
+
+    fn revision(&self, page: &BrowsePage) -> String {
+        revision(
+            self.house,
+            self.coordinator,
+            &self.group,
+            &self.playlist,
+            self.metadata.update_id,
+            page,
+        )
+    }
+
+    fn confirm<T: Transport + ?Sized>(
+        &self,
+        transport: &T,
+        playlist_id: &str,
+    ) -> Result<(), CoreError> {
+        let after_metadata = metadata(transport, self.host, playlist_id)?;
+        let after_group = GroupProof::read(transport, self.host, self.coordinator)?;
+        if self.metadata != after_metadata || self.group != after_group {
+            return Err(changed(
+                "the saved playlist or its player changed while it was read",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn validate_request(

@@ -272,6 +272,20 @@ impl Surface {
         households: &[HouseholdState],
         command: &Command,
     ) -> Result<(), Failure> {
+        if let Command::PlayNativeSelection {
+            coordinator,
+            selection,
+            destination,
+        } = command
+        {
+            selection.confirm(&*self.transport, households, coordinator)?;
+            destination.confirm(
+                &*self.transport,
+                control::locate(households, coordinator)?.ip,
+                coordinator,
+            )?;
+            self.confirm_source_audience(households, coordinator)?;
+        }
         if let Command::PlayLineIn {
             coordinator,
             prepared,

@@ -46,6 +46,19 @@ fn handle(surface: &Weak<Surface>, event: Option<&LiveEvent>) -> bool {
     // implied ownership or a direct household survey.
     let snapshot = live.snapshot();
     drop(live);
+    // Lost observations cannot become listening time when a feed recovers.
+    // Interrupt before topology can hand an old feed to a new coordinator.
+    // Resync includes retained feeds absent from this current snapshot.
+    if let Some(dj) = &surface.dj {
+        match event {
+            Some(LiveEvent::Health {
+                player,
+                health: Health::Degraded | Health::Offline,
+            }) => dj.on_observation_gap(Some(player)),
+            Some(LiveEvent::Resync) => dj.on_observation_gap(None),
+            _ => {}
+        }
+    }
     // Queue length and the playing URI cannot detect a same-size edit in a
     // paused queue. Retire the old proof before any topology or feed work.
     if let Some(dj) = &surface.dj {
@@ -126,7 +139,7 @@ fn targets(
                 || snapshot
                     .health
                     .of(player)
-                    .is_some_and(|h| h.health == Health::Offline)
+                    .is_some_and(|h| h.health != Health::Healthy)
                 || snapshot
                     .playback
                     .of(player)
@@ -489,6 +502,35 @@ mod tests {
         snapshot.health.ok(&ids[0], Instant::now());
         assert_eq!(targets(&snapshot, Some(&recovered), feeds), ids[..1]);
     }
+
+    #[test]
+    fn degraded_snapshots_cannot_resume_listening_from_cached_playback() {
+        let (mut snapshot, ids) = snapshot();
+        snapshot
+            .health
+            .failed(&ids[0], "a playback observation failed");
+        let playback = LiveEvent::Playback {
+            player: ids[0].clone(),
+            changes: Changes::default(),
+        };
+        let recovered = LiveEvent::Health {
+            player: ids[0].clone(),
+            health: Health::Healthy,
+        };
+        for event in [
+            None,
+            Some(&playback),
+            Some(&recovered),
+            Some(&LiveEvent::Resync),
+        ] {
+            assert!(targets(&snapshot, event, |id| *id == ids[0]).is_empty());
+        }
+        snapshot.health.ok(&ids[0], Instant::now());
+        assert_eq!(
+            targets(&snapshot, Some(&recovered), |id| *id == ids[0]),
+            ids[..1]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -509,6 +551,8 @@ mod simulator_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Sender};
 
+    type Trace = Arc<Mutex<Vec<String>>>;
+
     struct Probe {
         active: PlayerId,
         seen: Sender<Option<u8>>,
@@ -516,6 +560,15 @@ mod simulator_tests {
         panic_on_topology: bool,
         /// A feed it reports carried over, once.
         handover: Mutex<Option<(PlayerId, PlayerId)>>,
+        trace: Option<Trace>,
+    }
+
+    impl Probe {
+        fn trace(&self, event: String) {
+            if let Some(trace) = &self.trace {
+                trace.lock().unwrap().push(event);
+            }
+        }
     }
 
     impl DjEngine for Probe {
@@ -574,7 +627,19 @@ mod simulator_tests {
         ) {
             assert!(!self.panic_on_topology, "injected DJ follower failure");
             assert!(!snapshot.households.is_empty());
+            self.trace("topology".into());
             self.topology_seen.store(true, Ordering::SeqCst);
+        }
+
+        fn on_observation_gap(&self, coordinator: Option<&PlayerId>) {
+            self.trace(format!(
+                "gap:{}",
+                coordinator.map_or("all", |player| player.0.as_str())
+            ));
+        }
+
+        fn on_queue_changed(&self, coordinator: &PlayerId) {
+            self.trace(format!("queue:{}", coordinator.0));
         }
 
         fn take_handovers(&self) -> Vec<(PlayerId, PlayerId)> {
@@ -589,6 +654,7 @@ mod simulator_tests {
             _: &dyn Clock,
         ) {
             assert_eq!(*at.coordinator, self.active, "inactive feed was visited");
+            self.trace(format!("playback:{}", at.coordinator.0));
             let _ = self.seen.send(playback.volume);
         }
     }
@@ -653,6 +719,17 @@ mod simulator_tests {
         handover: Option<(PlayerId, PlayerId)>,
         panic_on_topology: bool,
     ) -> (Arc<Surface>, Receiver<Option<u8>>) {
+        surface_probe_traced(sim, live, active, handover, panic_on_topology, None)
+    }
+
+    fn surface_probe_traced(
+        sim: &SimHandle,
+        live: &Arc<Live>,
+        active: PlayerId,
+        handover: Option<(PlayerId, PlayerId)>,
+        panic_on_topology: bool,
+        trace: Option<Trace>,
+    ) -> (Arc<Surface>, Receiver<Option<u8>>) {
         let (seen, received) = mpsc::channel();
         let surface = Surface::new(
             Box::new(sim.lan()),
@@ -667,9 +744,91 @@ mod simulator_tests {
             topology_seen: AtomicBool::new(false),
             panic_on_topology,
             handover: Mutex::new(handover),
+            trace,
         }))
         .with_action_log(Box::new(MemStore::default()), "test");
         (Arc::new(surface), received)
+    }
+
+    #[test]
+    fn gaps_interrupt_before_topology_and_feed_but_content_notifications_do_not() {
+        use fsonos_core::events::ContentChanges;
+
+        let (sim, live, active) = household();
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let (surface, received) = surface_probe_traced(
+            &sim,
+            &live,
+            active.clone(),
+            None,
+            false,
+            Some(Arc::clone(&trace)),
+        );
+        let weak = Arc::downgrade(&surface);
+        for health in [Health::Degraded, Health::Offline] {
+            assert!(handle(
+                &weak,
+                Some(&LiveEvent::Health {
+                    player: active.clone(),
+                    health,
+                })
+            ));
+            assert_eq!(
+                std::mem::take(&mut *trace.lock().unwrap()),
+                [format!("gap:{}", active.0), "topology".into()]
+            );
+            assert!(matches!(
+                received.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+        }
+        assert!(handle(&weak, Some(&LiveEvent::Resync)));
+        let resync = std::mem::take(&mut *trace.lock().unwrap());
+        assert_eq!(resync.first().map(String::as_str), Some("gap:all"));
+        let topology = resync.iter().position(|step| step == "topology").unwrap();
+        assert!(
+            resync[1..topology]
+                .iter()
+                .all(|step| step.starts_with("queue:"))
+        );
+        assert_eq!(resync.last(), Some(&format!("playback:{}", active.0)));
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let content = LiveEvent::ContentChanged {
+            player: active.clone(),
+            changes: ContentChanges {
+                queue: true,
+                ..ContentChanges::default()
+            },
+        };
+        assert!(handle(&weak, Some(&content)));
+        assert_eq!(
+            std::mem::take(&mut *trace.lock().unwrap()),
+            [
+                format!("queue:{}", active.0),
+                "topology".into(),
+                format!("playback:{}", active.0),
+            ],
+            "our own queue notifications preserve continuous listening evidence"
+        );
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let gone = PlayerId("no-longer-in-topology".into());
+        assert!(handle(
+            &weak,
+            Some(&LiveEvent::Health {
+                player: gone.clone(),
+                health: Health::Offline,
+            })
+        ));
+        assert_eq!(
+            std::mem::take(&mut *trace.lock().unwrap()),
+            [format!("gap:{}", gone.0), "topology".into()],
+            "a retained old feed must be interrupted before it can hand over"
+        );
+        drop(surface);
+        drop(live);
+        sim.shutdown();
     }
 
     fn wait_finished(worker: &JoinHandle<()>) {

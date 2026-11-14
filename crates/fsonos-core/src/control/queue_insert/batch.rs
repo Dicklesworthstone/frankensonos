@@ -80,16 +80,16 @@ fn prepare_batch<T: Transport + ?Sized>(
     count: usize,
     next: bool,
 ) -> Result<Plan, CoreError> {
-    if count == 0 || count > crate::control::MAX_SPOTIFY_TRACK_BATCH {
+    if count == 0 || count > crate::control::MAX_TRACK_BATCH {
         return Err(invalid(
-            "a Spotify track batch must contain between 1 and 10 tracks",
+            "a track batch must contain between 1 and 10 tracks",
         ));
     }
     destination.confirm(t, host, coordinator)?;
     let plan = prepare(t, host, coordinator, next)?;
     if plan.before != destination.queue {
         return Err(invalid(
-            "the queue changed while resolving Spotify tracks; nothing was added",
+            "the queue changed while preparing selected tracks; nothing was added",
         ));
     }
     if plan.before.uris.len().saturating_add(count)

@@ -1,11 +1,13 @@
-//! Resolve one observed saved-playlist occurrence into a native track. The
-//! caller supplies its position and revision, never a renderer URI or DIDL.
+//! Resolve observed saved-playlist occurrences into native tracks. The caller
+//! supplies positions and a revision, never renderer URIs or DIDL.
 
 use super::contents;
 use crate::favorites::{Favorite, FavoriteKind};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::content::MAX_BROWSE_OBJECTS;
-use fsonos_proto::didl::{DidlKind, DidlObject, item_metadata, spotify_uri_from_renderer_uri};
+use fsonos_proto::didl::{
+    DidlKind, DidlObject, item_metadata, parse_didl, spotify_uri_from_renderer_uri,
+};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 
@@ -29,7 +31,41 @@ pub fn select_track<T: Transport + ?Sized>(
     position: u32,
     expected_revision: &str,
 ) -> Result<Favorite, CoreError> {
-    if position == 0 || position > MAX_BROWSE_OBJECTS {
+    let mut selected = select_tracks(
+        transport,
+        households,
+        coordinator,
+        playlist_id,
+        &[position],
+        expected_revision,
+    )?;
+    Ok(selected.remove(0))
+}
+
+/// Resolve 1–10 native occurrences in the requested order, retaining repeats
+/// of a position as well as different occurrences of the same resource. All
+/// selected pages share one checked household, player and playlist revision.
+/// A missing or unplayable occurrence rejects the complete selection.
+///
+/// These reads never change playback or the saved playlist. The returned
+/// metadata is the speaker's and needs no Spotify sign-in or renderer lookup.
+pub fn select_tracks<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    playlist_id: &str,
+    positions: &[u32],
+    expected_revision: &str,
+) -> Result<Vec<Favorite>, CoreError> {
+    if positions.is_empty() || positions.len() > crate::control::MAX_TRACK_BATCH {
+        return Err(invalid(
+            "a saved playlist selection must contain between 1 and 10 occurrences",
+        ));
+    }
+    if positions
+        .iter()
+        .any(|position| *position == 0 || *position > MAX_BROWSE_OBJECTS)
+    {
         return Err(invalid(
             "saved playlist track position is outside the supported range",
         ));
@@ -39,21 +75,34 @@ pub fn select_track<T: Transport + ?Sized>(
             "selecting a saved playlist track requires its observed revision",
         ));
     }
-    let page = contents(
+    contents::selected_items(
         transport,
         households,
         coordinator,
         playlist_id,
-        position - 1,
-        1,
-        Some(expected_revision),
-    )?;
-    let [item] = page.items.as_slice() else {
+        positions,
+        expected_revision,
+    )?
+    .iter()
+    .map(track)
+    .collect()
+}
+
+/// Public core callers retain native metadata, rather than constructing a
+/// track-shaped container or substituting another resource after selection.
+pub(crate) fn validate_native_track(selected: &Favorite) -> Result<(), CoreError> {
+    let objects = parse_didl(&selected.metadata)?;
+    let [item] = objects.as_slice() else {
         return Err(invalid(
-            "the saved playlist has no track at the selected position",
+            "a native track must retain exactly one metadata item",
         ));
     };
-    track(item)
+    if track(item)? != *selected {
+        return Err(invalid(
+            "a native track must match its retained resource and metadata",
+        ));
+    }
+    Ok(())
 }
 
 fn track(item: &DidlObject) -> Result<Favorite, CoreError> {
@@ -283,5 +332,16 @@ mod tests {
             ));
         }
         assert!(select_track(&NoIo, &[], &coordinator, "SQ:7", 1, &"x".repeat(4097)).is_err());
+        for positions in [
+            vec![],
+            vec![1; 11],
+            vec![1, 0],
+            vec![1, MAX_BROWSE_OBJECTS + 1],
+        ] {
+            assert!(matches!(
+                select_tracks(&NoIo, &[], &coordinator, "SQ:7", &positions, "observed"),
+                Err(CoreError::Proto(ProtoError::Malformed(_)))
+            ));
+        }
     }
 }

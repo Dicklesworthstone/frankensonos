@@ -267,6 +267,14 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 - **Reconciliation loop.** Periodic + event-driven refresh of inventory/topology
   with backoff; health of each player.
 
+Topology events now admit a coherent candidate before replacing a known
+household. Missing senders, conflicting identities or addresses, and incoherent
+groups preserve the last live inventory and trigger bounded subscription and
+discovery recovery. Valid regrouping, bonded speakers, IP changes and real peer
+departures still apply. Eight admission cases and two S1/S2 event-stream
+regressions have been added; Rust execution remains pending after executor
+failures. See [Callback recovery](docs/CALLBACK_RECOVERY.md).
+
 ### LANE C — `fsonos-spotify` (library + DJ)
 
 - **Spotify Web API client**, read-only on the owner's **own** account:
@@ -802,6 +810,20 @@ their standing preferences on every surface and in the daemon. What is on
   setup. Whole works in order, the long-work policy, `PickReason`s and feedback
   learning are unchanged for classical music.
 
+**DJ control across groups:** start, steer, skip and stop now use the shared
+set executor on CLI, HTTP and MCP. Saved aliases, `all` / `everywhere`, and
+`all@S1` / `all@S2` deduplicate grouped members while retaining independent
+feeds. Start and steering validate every selected group before batch writes;
+execution retains the original membership through engine admission and
+speaker-write checks. Per-group caps, starter identity and cross-group repeat
+avoidance remain in force. Partial outcomes keep every group result in one
+receipt and action log, block whole-batch undo, exit nonzero on the CLI and
+set MCP's `isError`. Successful steering retains each prior session for undo.
+Scene, schedule and browser DJ targets keep their existing contracts.
+Simulator and cross-surface regression cases are included, with compilation,
+execution and formatting pending after the executor became unavailable.
+See [Multi-room DJ](docs/MULTI_ROOM_DJ.md).
+
 ### 12.2 `fsonos doctor` and `fsonos setup`
 
 [`b-doctor-engine`, `b-doctor-lan-checks`, `b-doctor-render-checks`,
@@ -1046,6 +1068,13 @@ and any intervening source change for explicit inspection; it does not claim
 rollback or a completed replacement receipt. See
 [`docs/NATIVE_PLAYBACK_RECOVERY.md`](docs/NATIVE_PLAYBACK_RECOVERY.md).
 
+Direct source starts and silent loads retain the same completed-stage boundary.
+After source selection succeeds or is confirmed, a failed Play or silent-load
+read-back cannot trigger renderer-account or coordinator/address replay, even
+for SOAP 800. Initial source-selection refusals keep bounded recovery, while
+later errors preserve their original cause and require explicit inspection.
+S1/S2 regressions cover listener takeovers and every silent-load read-back stage.
+
 Native saved Sonos playlists are also readable and playable directly from the
 household's `SQ:` catalog, independent of favorites or Spotify's cached library.
 `fsonos playlists <room>` lists them; `play <room> --playlist <name-or-id>`
@@ -1152,6 +1181,19 @@ resuming playback, with the existing exact-range undo. The browser reviews
 and rechecks both the selected track and destination, consumes each submission
 once, and retains uncertain outcomes. Browser regressions execute under Node;
 the added Rust/simulator cases still await a successful dependency build.
+
+Native saved-playlist selections also support 1–10 ordered occurrences through
+`fsonos playlist-tracks`, `POST /sonos/playlists/tracks`, MCP
+`sonos_playlist_tracks`, and the phone/dashboard track selectors. Repeated
+positions and native service/local-file metadata survive unchanged. Batch play
+stages the complete selection before removing the original queue, starts in
+NORMAL order, and retains bounded replacement undo; next/append stay silent
+and record one exact-range undo. Native contents and optional destination queue
+revisions are separate, with the original source/group/boot/queue retained
+through preparation. Each browser reviews and rechecks both observations before
+one submission, retaining uncertain outcomes without replay. The focused browser
+regressions pass (422 tests); added Rust simulation coverage remains unexecuted
+after dependency-build failures. See `docs/SONOS_PLAYLISTS.md`.
 
 Explicit online Spotify catalog search now complements cached library search.
 The CLI `spotify-search`, HTTP `GET /spotify/search`, and MCP
@@ -1574,6 +1616,21 @@ review native titles against each household's own catalog, then recheck before
 one daemon mutation. Queue receipts account for every reviewed coordinator and
 retain partial failures and undo limitations. Existing browser command lanes
 cover the entire selection; no browser loop sends separate playback writes.
+
+Saved aliases and global/per-client defaults are now editable on the selected
+daemon through the phone remote, dashboard, CLI, HTTP and MCP. `rooms configuration` / `GET
+/rooms/configuration` / `room_configuration` return the complete authored
+configuration and exact revision, including offline targets. A single typed
+change uses that revision under a shared file lock, preserves unrelated entries
+and comments, and updates subsequent target resolution without speaker I/O.
+Writes require both house-config permission and owner/administrator authority.
+CLI alias/default commands reach the selected daemon and never replay failed
+remote edits locally; direct mode remains available offline. Both browser
+surfaces provide the same create/edit/remove alias and set/clear default form,
+retain offline targets and exact client keys, and review each change against
+its original revision. Lost acknowledgements retain the draft and require an
+explicit configuration observation before another submission. See
+[Room configuration](docs/ROOM_CONFIGURATION.md).
 
 ### Milestone placement
 

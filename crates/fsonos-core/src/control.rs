@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod grouping_state;
 mod loading;
+mod native_tracks;
 mod navigation;
 mod queue_insert;
 pub mod queue_removal;
@@ -31,6 +32,7 @@ mod seek_relative;
 mod source_start;
 mod spotify_source;
 mod spotify_tracks;
+mod track_batch;
 mod transport_state;
 
 pub use crate::queue_source::QueueReplacement;
@@ -39,12 +41,14 @@ pub use loading::{
     load_queue_from, load_queue_from_in_order, load_spotify_container,
     load_spotify_container_with_receipt, load_spotify_track, load_uri, pause_confirmed,
 };
+pub use native_tracks::{enqueue_native_tracks_bound, play_native_tracks_bound_with_receipt};
 pub use spotify_tracks::{
-    MAX_SPOTIFY_TRACK_BATCH, TrackBatchDestination, enqueue_spotify_tracks,
-    enqueue_spotify_tracks_bound, load_spotify_tracks, load_spotify_tracks_bound,
-    load_spotify_tracks_bound_with_receipt, play_spotify_tracks, play_spotify_tracks_bound,
-    play_spotify_tracks_bound_with_receipt, play_spotify_tracks_with_receipt,
+    MAX_SPOTIFY_TRACK_BATCH, enqueue_spotify_tracks, enqueue_spotify_tracks_bound,
+    load_spotify_tracks, load_spotify_tracks_bound, load_spotify_tracks_bound_with_receipt,
+    play_spotify_tracks, play_spotify_tracks_bound, play_spotify_tracks_bound_with_receipt,
+    play_spotify_tracks_with_receipt,
 };
+pub use track_batch::{MAX_TRACK_BATCH, TrackBatchDestination};
 
 /// How long a player that left its group may take to show alone (real ones
 /// do within about a second). Not a settle-time knob: a fleet-verified
@@ -183,7 +187,7 @@ pub fn play_uri<T: Transport + ?Sized>(
     metadata: &str,
 ) -> Result<(), CoreError> {
     let host = addr(households, coordinator)?;
-    Ok(source_start::play(t, host, coordinator, uri, metadata)?)
+    source_start::play(t, host, coordinator, uri, metadata)
 }
 
 /// The household's Spotify render parameters, learned from its own
@@ -254,11 +258,13 @@ fn is_render_800(e: &CoreError) -> bool {
 
 /// Play `spotify_uri` (a `spotify:track:<id>`) on the group `coordinator`
 /// leads, self-healing one round of parameter drift: if the renderer
-/// refuses the first attempt with UPnP 800, the household's render
+/// refuses the initial source selection with UPnP 800, the household's render
 /// parameters are relearned from its favorites and the render retried
 /// exactly once. A second 800 (or a household that lost its Spotify
 /// favorites mid-flight) fails with [`CoreError::RenderParamsStale`] /
-/// [`CoreError::NoSpotifyFavorite`]; the retry never loops.
+/// [`CoreError::NoSpotifyFavorite`]; the retry never loops. Once the source is
+/// selected, a failed Play is an uncertain overall start and never replays
+/// the completed source change, even when Play explicitly returns 800.
 pub fn play_spotify_track<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],

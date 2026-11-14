@@ -24,6 +24,57 @@ const CONTENTS: &str = "/sonos/playlists/contents?zone=Room&playlist=SQ%3A7";
 const RENAME: &str = "/sonos/playlists/rename";
 const REMOVE: &str = "/sonos/playlists/remove";
 
+#[test]
+fn http_native_occurrence_batches_retain_order_and_distinguish_queue_and_playlist_proofs() {
+    for s2 in [false, true] {
+        let sim = sim(s2);
+        let api = Api::start(&sim, Client::LoopbackHttp);
+        for mode in ["append", "next", "play"] {
+            let page = api.get(CONTENTS);
+            let queue = api.get("/zones/Room/queue");
+            let body = json!({
+                "zone":"Room", "playlist":"SQ:7", "positions":[3,2,3],
+                "expected_revision":page["revision"], "mode":mode,
+                "expected_queue_revision":queue["revision"],
+            });
+            let (status, result) = api.call("/sonos/playlists/tracks", Some(&body));
+            assert_eq!(status, 200, "{mode}: {result}");
+            assert_eq!(result["positions"], json!([3, 2, 3]));
+            assert_eq!(result["mode"], mode);
+            assert_eq!(
+                result["titles"],
+                json!([
+                    page["items"][2]["title"],
+                    page["items"][1]["title"],
+                    page["items"][2]["title"]
+                ])
+            );
+            assert_eq!(result["changed"], true);
+            assert!(result.get("metadata").is_none());
+            if mode == "play" {
+                assert!(result.get("first").is_none());
+                let after = api.get("/zones/Room/queue");
+                assert_eq!(after["total"], 3);
+                assert_eq!(after["playing"], 1);
+            } else {
+                assert_eq!(result["count"], 3);
+            }
+            // A source token never substitutes for a destination queue token.
+            let mut stale = body;
+            stale["expected_queue_revision"] = page["revision"].clone();
+            let start = sim.soap_log().len();
+            let (status, result) = api.call("/sonos/playlists/tracks", Some(&stale));
+            assert_eq!(status, 409, "{result}");
+            assert_eq!(result["code"], "QUEUE_CHANGED");
+            assert!(
+                sim.soap_log()[start..]
+                    .iter()
+                    .all(|call| call.action == "Browse" || call.action.starts_with("Get"))
+            );
+        }
+    }
+}
+
 fn runtime() -> Runtime {
     RuntimeBuilder::current_thread()
         .with_reactor(create_reactor().unwrap())

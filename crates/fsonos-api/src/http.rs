@@ -23,6 +23,7 @@
 //! | `GET /sonos/playlists/contents?zone=<room>&playlist=<id>` | | ordered native saved contents with revision-bound continuation; changes no playback |
 //! | `POST /sonos/playlists/play` | [`crate::surface::sonos_playlists::PlaySonosPlaylistRequest`] | [`crate::OutcomeDto`]: replaces the queue and plays the saved playlist |
 //! | `POST /sonos/playlists/track` | [`crate::surface::sonos_playlists::SonosPlaylistTrackRequest`] | [`crate::surface::sonos_playlists::SonosPlaylistTrackDto`]: plays or queues one observed native track |
+//! | `POST /sonos/playlists/tracks` | [`crate::surface::sonos_playlists::SonosPlaylistTracksRequest`] | [`crate::surface::sonos_playlists::SonosPlaylistTracksDto`]: plays or queues an ordered native occurrence selection |
 //! | `POST /sonos/playlists/save` | [`crate::surface::sonos_playlists::SaveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::SavedSonosPlaylistDto`]: saves the current queue as a new native playlist |
 //! | `POST /sonos/playlists/rename` | [`crate::surface::sonos_playlists::RenameSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::ManagedSonosPlaylistDto`]: renames an exact native playlist at its observed revision |
 //! | `POST /sonos/playlists/remove` | [`crate::surface::sonos_playlists::RemoveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::ManagedSonosPlaylistDto`]: permanently removes an exact native playlist, leaving playback unchanged |
@@ -39,6 +40,8 @@
 //! | `GET /undo/preview` | | the `ActionDto` an undo would put back, or `null`; changes nothing |
 //! | `POST /undo/checked` | the previewed action's id | [`crate::UndoDto`]: undoes it only while it is still the newest |
 //! | `GET /policy` | | [`crate::surface::house_policy::PolicyDto`]: the house policy, and the caller under it |
+//! | `GET /rooms/configuration` | | [`crate::surface::room_config::RoomConfigurationDto`]: all saved aliases/defaults and their revision |
+//! | `POST /rooms/configuration` | [`crate::surface::room_config::RoomConfigureRequest`] | [`crate::surface::room_config::RoomConfiguredDto`]: one revision-bound alias/default edit without speaker I/O |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /play/tracks` | [`crate::surface::queue::PlayTracksRequest`] | [`OutcomeDto`]: replace the queue with 1–10 ordered tracks or episodes and start at the first |
 //! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
@@ -150,6 +153,7 @@ mod announce;
 pub mod bridge;
 
 mod players;
+mod room_config;
 
 mod remote;
 
@@ -223,6 +227,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(house_verbs(cx));
     routes.extend(announce::routes(cx));
     routes.extend(players::routes(cx));
+    routes.extend(room_config::routes(cx));
     routes.extend(scenes::routes(cx));
     routes.extend(dj(cx));
     routes.extend(dj_config::routes(cx));
@@ -240,23 +245,23 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// The DJ: start, skip, stop, steer; its status and moods.
 fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = vec![
-        cx.control(
+        cx.control_set(
             Op::post(
                 "/dj/start",
                 "dj_start",
                 DJ,
-                "Start the DJ on a room's zone, in a mood when one is named",
+                "Start independent DJs in a room, alias or all selected groups; checks every start before changes",
             ),
-            |h, r: &DjStartRequest| plan::plan_dj_start(h, r),
+            |h, r: &DjStartRequest| plan::plan_dj_start_set(h, r),
         ),
-        cx.control(
+        cx.control_set(
             Op::post(
                 "/dj/steer",
                 "dj_steer",
                 DJ,
-                "Steer the DJ in a room's zone (a mood and constraints, for a while), or clear it",
+                "Steer or clear the DJ direction in each group named by a room, alias or all",
             ),
-            |h, r: &DjSteerRequest| plan::plan_dj_steer(h, r),
+            |h, r: &DjSteerRequest| plan::plan_dj_steer_set(h, r),
         ),
         cx.route(
             &Op::get(
@@ -295,14 +300,14 @@ fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         (
             "/dj/skip",
             "dj_skip",
-            "Skip the DJ's current pick",
+            "Skip the DJ's current pick in each selected group",
             DjAction::Skip,
         ),
-        ("/dj/stop", "dj_stop", "Stop the DJ", DjAction::Stop),
+        ("/dj/stop", "dj_stop", "Stop the DJ in each selected group", DjAction::Stop),
     ] {
-        routes.push(cx.control(
+        routes.push(cx.control_set(
             Op::post(path, id, DJ, summary),
-            move |h, r: &ZoneRequest| plan::plan_dj(h, r, action),
+            move |h, r: &ZoneRequest| plan::plan_dj_set(h, r, action),
         ));
     }
     routes

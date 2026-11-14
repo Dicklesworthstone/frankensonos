@@ -9,6 +9,7 @@ const StudioRemote = (() => {
     activity: ['CONFIDENCE, NOT GUESSWORK.', 'Know what changed.', 'Stay in control.', 'Review the action history and recovery details. Undo is offered only where the daemon supports it.'],
   });
   const tools = Object.freeze([
+    { id: 'room-configuration', workspace: 'house', match: /room.configuration|aliases.and.default.rooms/i, title: 'Edit aliases and default rooms', description: 'Save room-set names and global or client default rooms for future commands and routines.', keywords: 'alias aliases room set here default client fallback configuration saved targets' },
     { id: 'room-sets', workspace: 'house', match: /room.set|household controls/i, title: 'Control room sets and households', description: 'Resolve aliases and review collective pause, resume, mute and per-room volume.', keywords: 'alias here all everywhere household multiple collective pause resume mute lower raise volume' },
     { id: 'house-policy', workspace: 'activity', match: /house.policy|policy and volume caps/i, title: 'Understand volume caps and command limits', description: 'Read your caller identity, configured limits, quiet hours, and tool rules.', keywords: 'policy quiet hours denied capped rights permissions client why volume' },
     { id: 'diagnostics', workspace: 'activity', match: /diagnostic/i, title: 'Diagnose missing rooms or silence', description: 'Read setup checks, evidence, and concrete remedies without changing playback.', keywords: 'doctor setup troubleshoot failure wifi network callback tailscale spotify silence missing rooms' },
@@ -266,8 +267,8 @@ const StudioRemote = (() => {
       if (!found) return false;
       const [node, tool] = found;
       navigate(tool.workspace, false);
-      if (id === 'dj-configuration') {
-        const trigger = node.querySelector('.dj-config-trigger');
+      if (id === 'dj-configuration' || id === 'room-configuration') {
+        const trigger = node.querySelector(id === 'dj-configuration' ? '.dj-config-trigger' : '.room-config-trigger');
         if (!trigger || trigger.disabled) return false;
         // Opening reads the owner-wide configuration; it never saves a draft.
         trigger.click();

@@ -18,6 +18,7 @@
 //! to retry: the known rooms, or the qualified candidates for an ambiguous name.
 
 mod aliases;
+pub mod configuration;
 
 pub use aliases::{Alias, AliasError, AliasWarning, Aliases};
 

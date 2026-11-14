@@ -88,7 +88,7 @@ const DashboardCore = (() => {
       }
       const write = method !== 'GET', abort = new AbortController();
       const budget = method === 'POST' && url === '/announce' ? 1200000
-        : write && (url === '/queue' || url === '/queue/tracks' || url === '/play/tracks' || url === '/sonos/playlists/play' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
+        : write && (url === '/queue' || url === '/queue/tracks' || url === '/play/tracks' || url === '/sonos/playlists/play' || url === '/sonos/playlists/tracks' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
         || (method === 'PUT' && /^\/scenes\/[^/]+$/.test(url) && body?.backup_queues === true)) ? 600000
         : write ? 120000 : /^\/(?:spotify\/search|zones\/[^/]+\/queue\/search)(?:\?|$)/.test(url) ? 60000 : 10000;
       let timer, finished = false, stopped = null, rejectStopped;
@@ -154,6 +154,7 @@ const DashboardCore = (() => {
     const canManage = () => !demo && !disposed && state.active && !state.busy && !state.uncertain;
     const stores = {
       schedules: { path: '/schedules', label: 'routines', observed: 'stored list', route: /^\/schedules(?:\/(?:pause|resume|remove|update))?$/ },
+      roomConfiguration: { path: '/rooms/configuration', label: 'room configuration', observed: 'saved aliases and defaults', route: /^\/rooms\/configuration$/ },
       preferences: { path: '/dj/preferences', label: 'preferences', observed: 'standing taste', route: /^\/dj\/preferences$/ },
       playlists: { path: target => `/sonos/playlists?zone=${encodeURIComponent(target)}`, scoped: true,
         label: 'saved playlists', observed: 'original household catalog', route: /^\/sonos\/playlists\/(?:save|rename|remove)$/ },

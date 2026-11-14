@@ -137,13 +137,45 @@ impl Fixture {
                     .unwrap()
                     .unwrap()
             }
-            _ => control::play_spotify_tracks_with_receipt(
+            5 => control::play_spotify_tracks_with_receipt(
                 &self.lan,
                 &self.houses,
                 &self.coordinator,
                 &EPISODES,
             )
             .unwrap(),
+            _ => {
+                let destination =
+                    control::TrackBatchDestination::read(&self.lan, self.host, &self.coordinator)
+                        .unwrap();
+                let page = playlists::contents(
+                    &self.lan,
+                    &self.houses,
+                    &self.coordinator,
+                    "SQ:7",
+                    0,
+                    3,
+                    None,
+                )
+                .unwrap();
+                let tracks = playlists::select_tracks(
+                    &self.lan,
+                    &self.houses,
+                    &self.coordinator,
+                    "SQ:7",
+                    &[3, 2, 1, 3],
+                    &page.revision,
+                )
+                .unwrap();
+                control::play_native_tracks_bound_with_receipt(
+                    &self.lan,
+                    &self.houses,
+                    &self.coordinator,
+                    &tracks,
+                    &destination,
+                )
+                .unwrap()
+            }
         }
     }
 
@@ -231,11 +263,11 @@ fn record<S: Store + ?Sized>(store: &mut S, saved: QueueUndo) {
 fn successful_sources_restore_the_original_duplicate_bookmark_mode_and_quiet_intent() {
     for generation in [1, 2] {
         for playing in [false, true] {
-            for source in 0..6 {
+            for source in 0..7 {
                 let f = Fixture::new(generation, playing);
                 let pending = f.capture();
                 let receipt = f.replace(source);
-                if source == 2 {
+                if source == 2 || source == 6 {
                     assert_eq!(
                         f.queue().len(),
                         4,

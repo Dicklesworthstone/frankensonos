@@ -122,6 +122,65 @@ coordinator room in `zone`, and includes `done`, `changed` and policy/logging
 `playing_queue`. A failed or uncertain write is never automatically repeated;
 inspect current playback or the queue before issuing another action.
 
+## Play or queue an ordered selection
+
+Select 1–10 native occurrences together, in the order you want to hear them:
+
+```sh
+fsonos playlist-contents Kitchen SQ:7
+fsonos playlist-tracks Kitchen SQ:7 3 1 3 --revision '<contents revision>' --mode play
+fsonos playlist-tracks Kitchen SQ:7 3 1 3 --revision '<contents revision>' --mode next
+fsonos playlist-tracks Kitchen SQ:7 3 1 3 --revision '<contents revision>' --mode append
+```
+
+The plural command requires an explicit mode. Repeated positions deliberately
+add repeated occurrences, and equal resources at different positions remain
+distinct. Selection uses native resources and DIDL, including local files and
+non-Spotify services, without a Spotify account lookup. A stale, missing or
+unplayable occurrence refuses the complete selection before insertion.
+
+| Mode | Result |
+|---|---|
+| `play` | Replace the queue with the selected occurrences, switch to `NORMAL` order, and start the first selected track. Playback caps and the normal DJ handoff apply. |
+| `next` | Insert the selection immediately after the current queue occurrence, or append when the group is not using its queue. Leave playback and volume unchanged. |
+| `append` | Append the selection in supplied order. Leave playback and volume unchanged. |
+
+Batch `play` stages and verifies the entire selected list before removing the
+original queue prefix. A confirmed replacement uses the existing bounded
+queue-replacement undo, including its original occurrence, position and mode.
+A confirmed `next` or `append` has one exact-range undo record for the whole
+selection. Partial or ambiguous writes are not replayed; their outcome must be
+inspected before another command. The singular `playlist-track` command keeps
+its existing direct-play behavior, which retains the current queue.
+
+HTTP uses `POST /sonos/playlists/tracks`; MCP uses `sonos_playlist_tracks`:
+
+```json
+{
+  "zone": "Kitchen",
+  "playlist": "SQ:7",
+  "positions": [3, 1, 3],
+  "expected_revision": "<saved-playlist contents revision>",
+  "expected_queue_revision": "<destination queue revision>",
+  "mode": "play"
+}
+```
+
+Only `expected_queue_revision` is optional. It binds the action to a previously
+reviewed destination queue and is distinct from the mandatory saved-playlist
+contents revision. CLI accepts it as `--queue-revision` (also
+`--expected-queue-revision`); `--revision` also accepts `--expected-revision`.
+Unknown fields and caller-supplied renderer metadata are rejected. The server
+retains the original destination group, source, boot and queue through source
+selection and rechecks the selected occurrences before writing.
+
+The phone and dashboard let you select up to ten occurrences from the displayed
+saved-playlist page. The ordered review offers **Play selected now**, **Play
+selected next**, and **Add selected to queue**, rechecks both revisions, and
+sends one batch request. Closing the panel or losing a reply does not replay
+that request. Changing the page or saved-playlist observation clears obsolete
+selections. Playback requires `play_favorite`; queue modes require `add_to_queue`.
+
 ## Save the current queue
 
 `fsonos playlist-save <room> <title>` saves the current group's nonempty queue
@@ -265,6 +324,7 @@ read and review.
 | List the selected household's saved playlists | `GET /sonos/playlists?zone=Kitchen` | `list_sonos_playlists(zone="Kitchen")` |
 | Inspect ordered saved tracks | `GET /sonos/playlists/contents?zone=Kitchen&playlist=SQ:7&offset=0&limit=100` | `sonos_playlist_contents(zone="Kitchen", playlist="SQ:7", offset=0, limit=100)` |
 | Play or queue one observed track | `POST /sonos/playlists/track` with `zone`, exact `playlist`, `position`, `expected_revision`, and `mode` | `sonos_playlist_track` with the same fields |
+| Play or queue 1–10 ordered occurrences | `POST /sonos/playlists/tracks` with `zone`, exact `playlist`, `positions`, `expected_revision`, explicit `mode`, and optional `expected_queue_revision` | `sonos_playlist_tracks` with the same fields |
 | Save the current queue as a new playlist | `POST /sonos/playlists/save` with `{"zone":"Kitchen","title":"Evening Mix"}` | `save_sonos_playlist(zone="Kitchen", title="Evening Mix")` |
 | Rename an exact observed playlist | `POST /sonos/playlists/rename` with `zone`, exact `playlist`, `expected_revision`, and `title` | `rename_sonos_playlist` with the same fields |
 | Permanently remove an exact observed playlist | `POST /sonos/playlists/remove` with `zone`, exact `playlist`, and `expected_revision` | `remove_sonos_playlist` with the same fields |
@@ -373,6 +433,16 @@ Selected-track browser coverage runs with
 three modes on both shipped command models, exact duplicate positions, stale
 catalog and destination observations, missing resources, changed households,
 late reads, one-shot submissions, lost replies and mismatched receipts. The
-27 new cases and the existing source/contents suites pass together (164 tests).
-The corresponding core/API/CLI/MCP Rust regressions are added but have not run
-past the dependency-build resource limit described above.
+track-action file now has 66 cases, including 34 additions for ordered batch
+selection and both production DOM panels. The focused source, contents,
+management, room-target and HTTP-budget suites pass together (422 tests).
+
+Batch simulator coverage in `fsonos-core/tests/native_track_batch_sim.rs` and
+the extended native selection and queue-replacement undo suites covers local
+metadata, duplicate order, sparse pages, silent queue modes, stale proofs,
+partial writes, lost replies and complete replacement undo. API, CLI and MCP
+regressions cover mode permissions, request validation, action history,
+once-only daemon delegation and typed receipts. These Rust additions have not
+run: the baseline workspace check was killed during dependency compilation,
+and the focused core check stalled in `syn` before reaching project code.
+Physical-speaker batch acceptance remains unverified.

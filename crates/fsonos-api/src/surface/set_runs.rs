@@ -11,7 +11,7 @@ use fsonos_core::{HouseholdState, actions};
 use fsonos_types::PlayerId;
 use std::thread;
 
-use super::{Surface, affected, recovery, speaker_side};
+use super::{Surface, affected, dj_targets, recovery, speaker_side};
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
@@ -77,8 +77,11 @@ impl Surface {
             let (snaps, missed) = captured(zones);
             let recovery = recovery::Audience::new(households, command);
             let mut queue_undo = None;
-            let outcome =
-                self.execute_following(households, guard, command, &recovery, &mut queue_undo);
+            let outcome = if dj_targets::is_set(commands) {
+                self.execute_dj_member(households, guard, command)
+            } else {
+                self.execute_following(households, guard, command, &recovery, &mut queue_undo)
+            };
             let unsafe_undo = recovery.unsafe_undo(&outcome);
             Ran {
                 snaps,
@@ -145,11 +148,16 @@ impl Surface {
         for command in commands {
             let recovery = recovery::Audience::new(households, command);
             let mut restored_queue = None;
-            let outcome =
-                self.execute_following(households, guard, command, &recovery, &mut restored_queue);
+            let outcome = if dj_targets::is_set(commands) {
+                self.execute_dj_member(households, guard, command)
+            } else {
+                self.execute_following(households, guard, command, &recovery, &mut restored_queue)
+            };
             queue_undo.extend(restored_queue);
             unsafe_undo |= recovery.unsafe_undo(&outcome);
-            let ends = outcome.as_ref().is_err_and(|f| ends_set(commands.len(), f));
+            let ends = outcome.as_ref().is_err_and(|f| {
+                !dj_targets::is_set(commands) && ends_set(commands.len(), f)
+            });
             outcomes.push(outcome);
             if ends {
                 break;
@@ -189,6 +197,7 @@ pub(super) fn merged(
     commands: &[Command],
     outcomes: Vec<Result<OutcomeDto, Failure>>,
 ) -> Result<OutcomeDto, Failure> {
+    let dj_set = dj_targets::is_set(commands);
     let mut combined = OutcomeDto {
         done: String::new(),
         changed: false,
@@ -199,14 +208,24 @@ pub(super) fn merged(
     for (command, outcome) in commands.iter().zip(outcomes) {
         let outcome = match outcome {
             Ok(outcome) => outcome,
-            Err(failure) if !ends_set(commands.len(), &failure) => {
+            Err(failure) if dj_set || !ends_set(commands.len(), &failure) => {
                 let room = command
                     .addressed()
                     .and_then(|id| households.iter().find_map(|h| h.player(id)))
                     .map_or("a room", |p| p.room_name.as_str());
+                let detail = if dj_set {
+                    format!(
+                        "{} failed: {} ({}). Inspect this group before another command; do not replay the batch",
+                        dj_targets::label(households, command),
+                        failure.detail,
+                        failure.code.as_str(),
+                    )
+                } else {
+                    format!("{room} skipped: {}", failure.detail)
+                };
                 combined.notes.push(Note {
                     code: NoteCode::Skipped,
-                    detail: format!("{room} skipped: {}", failure.detail),
+                    detail,
                 });
                 skipped.get_or_insert(failure);
                 continue;
@@ -214,8 +233,12 @@ pub(super) fn merged(
             Err(failure) => return Err(failure),
         };
         went = true;
-        if !combined.done.is_empty() && !outcome.done.is_empty() {
+        if !combined.done.is_empty() && (dj_set || !outcome.done.is_empty()) {
             combined.done.push_str("; ");
+        }
+        if dj_set {
+            combined.done.push_str(&dj_targets::label(households, command));
+            combined.done.push_str(": ");
         }
         combined.done.push_str(&outcome.done);
         combined.changed |= outcome.changed;
@@ -223,6 +246,11 @@ pub(super) fn merged(
         combined.notes.extend(outcome.notes);
     }
     match skipped {
+        Some(_) if !went && dj_set => Err(Failure::new(
+            ErrorCode::OutcomeUncertain,
+            combined.notes.iter().map(|note| note.detail.as_str()).collect::<Vec<_>>().join("; "),
+        )
+        .with_hint("No group returned a successful DJ result. Read the groups and action log; do not replay the batch.")),
         Some(failure) if !went => Err(failure),
         _ => Ok(combined),
     }

@@ -1,60 +1,19 @@
 //! Render a bounded Spotify catalog expansion through one household account.
 //! Music tracks and episodes share queue insertion proofs and staged replacement.
 
-use super::queue_removal::{self, Snapshot};
 use super::{
-    QueueReplacement, Queued, SourceDestination, addr, pause_confirmed, queue_insert,
-    spotify_params,
+    MAX_TRACK_BATCH, QueueReplacement, Queued, TrackBatchDestination, addr, queue_insert,
+    spotify_params, track_batch,
 };
-use crate::queue_source::{self, Staged};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::didl::{
     spotify_bare_didl, spotify_bare_uri, spotify_queue_uri, spotify_track_didl,
 };
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
-use std::net::IpAddr;
 
 /// At most ten concrete music tracks or episodes are resolved by a catalog read.
-pub const MAX_SPOTIFY_TRACK_BATCH: usize = 10;
-
-/// The source, group, boot and complete queue observed before source lookup.
-/// Retain this proof until insertion begins, so a changed queue cannot become
-/// the replacement's new baseline merely because its source URI is unchanged.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrackBatchDestination {
-    pub(crate) source: SourceDestination,
-    pub(crate) queue: Snapshot,
-}
-
-impl TrackBatchDestination {
-    pub fn read<T: Transport + ?Sized>(
-        t: &T,
-        host: IpAddr,
-        coordinator: &PlayerId,
-    ) -> Result<Self, ProtoError> {
-        let source = SourceDestination::read(t, host, coordinator)?;
-        let queue = queue_removal::read(t, host)?;
-        let destination = Self { source, queue };
-        destination.confirm(t, host, coordinator)?;
-        Ok(destination)
-    }
-
-    pub fn confirm<T: Transport + ?Sized>(
-        &self,
-        t: &T,
-        host: IpAddr,
-        coordinator: &PlayerId,
-    ) -> Result<(), ProtoError> {
-        self.source.confirm(t, host, coordinator)?;
-        if !queue_insert::still_observed(t, host, &self.queue)? {
-            return Err(ProtoError::Malformed(
-                "the queue changed while resolving Spotify tracks; nothing was added".into(),
-            ));
-        }
-        Ok(())
-    }
-}
+pub const MAX_SPOTIFY_TRACK_BATCH: usize = MAX_TRACK_BATCH;
 
 fn validate(tracks: &[(&str, &str)]) -> Result<(), CoreError> {
     if tracks.is_empty() || tracks.len() > MAX_SPOTIFY_TRACK_BATCH {
@@ -275,30 +234,14 @@ fn replace<T: Transport + ?Sized>(
     let host = addr(households, coordinator)?;
     destination.confirm(t, host, coordinator)?;
     let rendered = render(t, households, coordinator, tracks)?;
-    destination.confirm(t, host, coordinator)?;
-    let mut owner = receipt
-        .then(|| queue_source::replacement_owner(t, host, coordinator))
-        .flatten();
-    if !autoplay {
-        pause_confirmed(t, households, coordinator)?;
-        destination.confirm(t, host, coordinator)?;
-        owner = owner.and_then(|owner| owner.after_pause(t, host, coordinator));
-    }
     let requests = requests(tracks, &rendered, false);
-    let batch = queue_insert::enqueue_batch(t, host, coordinator, destination, &requests, false)?;
-    queue_source::commit(
+    track_batch::replace(
         t,
         households,
         coordinator,
-        Staged {
-            destination: &destination.source,
-            before: &batch.before,
-            after: &batch.after,
-            owner,
-        },
+        &requests,
         autoplay,
-        true,
-    ).map_err(|error| CoreError::Uncertain(format!(
-        "Spotify track replacement was not completed: {error}; the batch was not replayed; inspect the queue before retrying"
-    )))
+        destination,
+        receipt,
+    )
 }
