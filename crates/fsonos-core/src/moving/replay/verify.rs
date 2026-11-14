@@ -4,10 +4,10 @@
 
 use super::{Item, Prepared, Source, invalid};
 use crate::moving::{JOIN_DEADLINE, MoveError};
-use fsonos_proto::Transport;
 use fsonos_proto::content::{self, BrowseFlag, QUEUE};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
+use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -81,6 +81,12 @@ pub(super) fn source<T: Transport + ?Sized>(
     Ok(position)
 }
 
+pub(super) fn renderer_error() -> ProtoError {
+    ProtoError::Malformed(
+        "the destination reported ERROR_OCCURRED; the original source was not stopped".into(),
+    )
+}
+
 pub(super) fn transport<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
@@ -88,7 +94,11 @@ pub(super) fn transport<T: Transport + ?Sized>(
 ) -> Result<(), MoveError> {
     let started = Instant::now();
     loop {
-        if soap::get_transport_info(t, host)?.state == expected {
+        let info = soap::get_transport_info(t, host)?;
+        if expected == TransportState::Playing && info.status == "ERROR_OCCURRED" {
+            return Err(renderer_error().into());
+        }
+        if info.state == expected {
             return Ok(());
         }
         let remaining = JOIN_DEADLINE.saturating_sub(started.elapsed());

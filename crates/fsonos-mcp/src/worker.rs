@@ -3,7 +3,6 @@
 use crate::{tool_error, tools};
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult, ResultMeta};
-use fsonos_api::{ErrorCode, Failure};
 
 pub(crate) async fn run(
     ctx: &McpContext,
@@ -24,12 +23,8 @@ async fn perform(
     fsonos_api::off_thread::off_thread(call)
         .map_err(|failure| tool_error(&failure))?
         .await
-        .ok_or_else(|| {
-            tool_error(&Failure::new(
-                ErrorCode::Internal,
-                "the call stopped before it answered; inspect state before trying again",
-            ))
-        })?
+        // The generic tool runner has no proof that its closure was read-only.
+        .ok_or_else(|| tool_error(&fsonos_api::off_thread::interrupted(true)))?
 }
 
 #[cfg(test)]

@@ -18,6 +18,10 @@ on:
       - "scripts/test-line-in-source.cjs"
       - "scripts/test-sonos-playlist-contents.cjs"
       - "scripts/test-sonos-playlist-track-actions.cjs"
+      - "scripts/test-playlist-save-remote.cjs"
+      - "scripts/test-dashboard-playlist-save.cjs"
+      - "scripts/test-dashboard-playlist-save-panel.cjs"
+      - "scripts/test-dashboard-playlist-store.cjs"
       - "scripts/test-remote-fades.cjs"
       - "scripts/test-remote-library.cjs"
       - "scripts/test-remote-library-browse.cjs"
@@ -137,6 +141,9 @@ jobs:
       - name: Web direct source playback regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs scripts/test-sonos-playlist-contents.cjs scripts/test-sonos-playlist-track-actions.cjs scripts/test-line-in-source.cjs
+      - name: Native playlist saving and recovery regressions
+        if: ${{ !cancelled() }}
+        run: node --test scripts/test-playlist-save-remote.cjs scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-playlist-save-panel.cjs scripts/test-dashboard-playlist-store.cjs
       - name: Web speaker sound regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-equalizer.cjs scripts/test-remote-fades.cjs scripts/test-remote-sound-copy.cjs

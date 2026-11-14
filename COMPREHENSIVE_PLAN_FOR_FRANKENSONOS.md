@@ -1037,6 +1037,15 @@ Spotify track won't enqueue. Library search is token-scored fuzzy matching over
 the cached library and favorites (title, composer, performer, album). The
 surfaces are in 12.3.
 
+Staged container replacement also treats every post-commit start failure as
+an uncertain overall operation. A late URI/Seek/Play refusal, including SOAP
+800, cannot replay the append and prefix removal through renderer-account
+recovery. The initial enqueue can still use bounded account refresh after a
+definite rejection. Once committed, a failed start leaves the observed queue
+and any intervening source change for explicit inspection; it does not claim
+rollback or a completed replacement receipt. See
+[`docs/NATIVE_PLAYBACK_RECOVERY.md`](docs/NATIVE_PLAYBACK_RECOVERY.md).
+
 Native saved Sonos playlists are also readable and playable directly from the
 household's `SQ:` catalog, independent of favorites or Spotify's cached library.
 `fsonos playlists <room>` lists them; `play <room> --playlist <name-or-id>`
@@ -1051,8 +1060,9 @@ containers, including file-backed resources. See
 contract; simulator coverage is separate from physical-speaker acceptance.
 
 Native queue creation is available through `fsonos playlist-save <room> <title>`,
-`POST /sonos/playlists/save`, MCP `save_sonos_playlist`, and the dashboard's
-**Speaker queue → Save queue as playlist** review. It saves a nonempty
+`POST /sonos/playlists/save`, MCP `save_sonos_playlist`, the phone's
+**Queue → Save queue as playlist**, and the dashboard's **Speaker queue →
+Save queue as playlist** review. It saves a nonempty
 queue on the selected Sonos household without changing playback, queue contents,
 volume or the DJ, including a retained queue while radio plays. Titles are
 trimmed, nonblank, free of control characters and at most 1023 UTF-8 bytes.
@@ -1069,12 +1079,24 @@ reread that household's saved catalog before another save. The new Rust save
 regressions still require execution; local compilation stopped at
 `asupersync` with SIGKILL before tests ran.
 
-The dashboard captures a bounded queue observation and rechecks the selected
-group, revision and entry count before its single save request. Its shared
-command lane associates uncertain saves with the original qualified room.
+Both browser views capture a bounded queue observation and recheck the selected
+group, revision and entry count before their single save request. Their shared
+command lanes associate uncertain saves with the original qualified room.
 Only an explicit, valid catalog read for that target releases the uncertainty;
-playback refreshes, other households and obsolete reads do not. Confirmed
-receipts retain the native id and offer a separate catalog-browsing handoff.
+playback refreshes, other households and obsolete reads do not. A relevant
+catalog event retires an in-flight recovery read before it can release that
+uncertainty. Confirmed receipts retain the native id and offer a separate
+catalog-browsing handoff.
+
+The phone keeps its save controller and result outside disposable room cards.
+Its Music & DJ recovery entry remains available when the original card is
+replaced or every speaker goes offline. Queue events, changed groups and
+workspace or visibility changes retire pending reviews. A submitted save keeps
+the phone's command lane until its reply settles, including across card
+replacement. Browsing an accepted receipt rechecks the original group and
+native id; it preserves existing source drafts and sends no playback command.
+Unopened controls issue no reads and introduce no background polling. See
+[`docs/WEB_QUEUE.md`](docs/WEB_QUEUE.md) for usage and focused regressions.
 
 Native saved-playlist contents are inspectable before playback through
 `fsonos playlist-contents`, `GET /sonos/playlists/contents`, MCP
@@ -1323,6 +1345,15 @@ with `DelegateGroupCoordinationTo` when the source leads, so the track and
 position carry over and the DJ session follows.
 `party` groups every room in a household. S1 and S2 players cannot be grouped
 together, and the command says so instead of failing quietly.
+
+Copied playback and the fallback for unsupported native handoff retain the
+source until destination playback is confirmed without an explicit renderer
+error. `ERROR_OCCURRED` defeats a `PLAYING` or `TRANSITIONING` observation,
+including later confirmation reads, so a failed destination cannot stop the
+working source. Missing or other transport-status values preserve their prior
+behavior. An error on the old destination source does not block replacing it,
+and paused transfers remain silent. Commands are never repeated to clear a
+renderer error; inspect the destination before requesting another move.
 
 ### 12.12 Announcements
 

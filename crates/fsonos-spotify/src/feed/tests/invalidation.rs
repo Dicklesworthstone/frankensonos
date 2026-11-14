@@ -86,8 +86,8 @@ impl Paused {
 #[test]
 fn invalidation_is_lazy_and_retains_the_feed_until_a_fresh_read() {
     let mut run = Paused::new(true);
-    let snapshot = run.feed.snapshot();
     run.feed.dry_end = run.feed.queue_len;
+    let snapshot = run.feed.snapshot();
     assert!(run.feed.accepted_playback());
     let marker = run.rig.sim.soap_log().len();
     run.feed.invalidate_queue();

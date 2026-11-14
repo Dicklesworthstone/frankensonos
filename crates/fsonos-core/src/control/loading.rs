@@ -231,9 +231,8 @@ pub fn load_spotify_container_with_receipt<T: Transport + ?Sized>(
         kind,
         spotify_uri,
         title,
-        |uri, metadata| {
-            crate::queue_source::load_with_receipt(t, households, coordinator, uri, metadata)
-        },
+        false,
+        true,
     )
 }
 
@@ -253,14 +252,10 @@ pub(super) fn spotify_container<T: Transport + ?Sized>(
         kind,
         spotify_uri,
         title,
-        |uri, metadata| {
-            if autoplay {
-                crate::queue_source::play(t, households, coordinator, uri, metadata)
-            } else {
-                crate::queue_source::load(t, households, coordinator, uri, metadata)
-            }
-        },
+        autoplay,
+        false,
     )
+    .map(|_| ())
 }
 
 pub(super) fn spotify_container_with_receipt<T: Transport + ?Sized>(
@@ -278,21 +273,22 @@ pub(super) fn spotify_container_with_receipt<T: Transport + ?Sized>(
         kind,
         spotify_uri,
         title,
-        |uri, metadata| {
-            crate::queue_source::play_with_receipt(t, households, coordinator, uri, metadata)
-        },
+        true,
+        true,
     )
 }
 
-fn spotify_container_render<T: Transport + ?Sized, R>(
+#[allow(clippy::too_many_arguments)]
+fn spotify_container_render<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
     kind: SpotifyContainer,
     spotify_uri: &str,
     title: &str,
-    render: impl Fn(&str, &str) -> Result<R, CoreError>,
-) -> Result<R, CoreError> {
+    autoplay: bool,
+    receipt: bool,
+) -> Result<super::QueueReplacement, CoreError> {
     let host = addr(households, coordinator)?;
     let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
@@ -302,13 +298,5 @@ fn spotify_container_render<T: Transport + ?Sized, R>(
         }
         .ok_or(CoreError::NoSpotifyFavorite)
     };
-    let render = |(uri, metadata): &(String, String)| render(uri, metadata);
-    let initial = source(None)?;
-    match render(&initial) {
-        Err(error) if is_render_800(&error) => match render(&source(Some(&initial))?) {
-            Err(error) if is_render_800(&error) => Err(CoreError::RenderParamsStale),
-            other => other,
-        },
-        other => other,
-    }
+    crate::queue_source::replace_recovering(t, households, coordinator, autoplay, receipt, source)
 }

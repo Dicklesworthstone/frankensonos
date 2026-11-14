@@ -84,6 +84,32 @@ contents and sending each playback write once. These new simulator cases still
 require execution: the workspace build was killed with exit 137 in the existing
 asupersync dependency before project checks completed.
 
+## Queue replacement after a playback refusal
+
+Album, playlist and container-favorite playback stages new entries after the
+existing queue, verifies them, and only then removes the old prefix. Once that
+replacement is committed, a failure selecting the queue, seeking its first
+entry or starting playback ends the operation. Even a definite SOAP error 800
+is reported as an uncertain overall replacement; it cannot trigger another
+append/removal through Spotify renderer-account recovery or address healing.
+An intervening queue edit or source selection therefore remains untouched by
+a replay of that completed replacement.
+
+A definite rejection of the initial enqueue can still use the existing bounded
+renderer-account refresh because the replacement has not been committed. A
+later failure is not a rollback: the queue may already have changed, and the
+original prefix is not automatically restored. Inspect the current queue and
+source before explicitly requesting another start.
+
+```sh
+cargo test --locked -p fsonos-core --test spotify_replacement_sim
+```
+
+The regression cases exercise S1/S2 simulator transports, normal and receipt
+entry points, and late URI/Seek/Play refusals with intervening queue edits or
+source takeovers. They were added without a usable Rust execution environment;
+CI and physical-speaker acceptance remain separate checks.
+
 ## Next and Previous
 
 All surfaces now use the shared core navigation operation. It sends the native

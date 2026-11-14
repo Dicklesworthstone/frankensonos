@@ -31,6 +31,14 @@ are added at the end.
 `retryable` means the same request, sent again unchanged a little later, can
 succeed.
 
+A worker that panics after a control request starts cannot prove that nothing
+changed. HTTP control routes, the compatibility bridge and MCP tools report
+`OUTCOME_UNCERTAIN` and advise inspecting current state and the action log before
+another action. They never replay the command. Known read-only HTTP and MCP
+resource failures remain `INTERNAL`; failure to start a worker is `NOT_READY`
+and explicitly says no command started. MCP's generic tool worker conservatively
+retains uncertainty when it cannot establish that a call was read-only.
+
 | Code | HTTP | Exit | Retryable | Meaning | Hint |
 |---|---|---|---|---|---|
 | `INVALID_ARGUMENT` | 422 | 2 | no | A request field is missing, malformed or out of range. | Fix the field the detail names and send the request again. |

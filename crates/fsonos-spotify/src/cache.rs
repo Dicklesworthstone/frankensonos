@@ -284,7 +284,18 @@ async fn sync_library_observed<S: Store + ?Sized>(
         artist_base.as_deref(),
     )
     .await;
-    items.extend(taste.tracks.iter().cloned());
+    if read.unavailable_overflow {
+        return Err(SpotifyError::Decode(
+            "unavailable-track evidence exceeded its 10,000-identity limit; the library refresh was not published".into(),
+        ));
+    }
+    items.extend(
+        taste
+            .tracks
+            .iter()
+            .filter(|item| !read.unavailable.contains(&item.source_uri))
+            .cloned(),
+    );
     retain_unread_taste(store, &mut items, &taste, &read)?;
     taste.weigh(&mut items);
     let genres = tag_genres(session, cx, store, &mut items, now).await;
@@ -419,6 +430,7 @@ fn retain_unread_taste<S: Store + ?Sized>(
             cached
                 .iter()
                 .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
+                .filter(|e| !read.unavailable.contains(&e.track.source_uri))
                 .map(from_entry),
         );
     } else if !taste.artists_unread.is_empty() {
@@ -436,6 +448,7 @@ fn retain_unread_taste<S: Store + ?Sized>(
             cached
                 .iter()
                 .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
+                .filter(|e| !read.unavailable.contains(&e.track.source_uri))
                 .filter(|e| {
                     e.artist_id
                         .as_deref()

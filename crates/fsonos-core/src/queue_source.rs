@@ -15,8 +15,16 @@ use fsonos_types::{PlayerId, TransportState};
 use std::time::Instant;
 
 pub(crate) mod destination;
+mod recovery;
 
 use destination::Destination;
+pub(crate) use recovery::replace as replace_recovering;
+
+#[derive(Clone, Copy)]
+struct Behavior {
+    autoplay: bool,
+    receipt: bool,
+}
 
 /// The exact result of one completed, staged queue replacement. Only the
 /// replacement path can issue this receipt; an arbitrary post-action queue
@@ -131,8 +139,9 @@ fn uncertain(detail: impl std::fmt::Display) -> CoreError {
 ///
 /// This is not an atomic device transaction: a failed append can leave new
 /// entries at the end, and a failed start after removal cannot restore the
-/// original queue. Errors do not imply that nothing changed. Definite enqueue
-/// and playback refusals retain their SOAP codes for bounded source recovery.
+/// original queue. Errors do not imply that nothing changed. Only an initial
+/// enqueue refusal retains its SOAP code for bounded source recovery; once
+/// committed, a failed start must not replay the replacement.
 pub(crate) fn play<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -185,18 +194,54 @@ fn replace<T: Transport + ?Sized>(
     autoplay: bool,
     receipt: bool,
 ) -> Result<QueueReplacement, CoreError> {
+    replace_once(
+        t,
+        households,
+        coordinator,
+        uri,
+        metadata,
+        Behavior { autoplay, receipt },
+        None,
+    )
+}
+
+fn replace_once<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    uri: &str,
+    metadata: &str,
+    behavior: Behavior,
+    mut recovery: Option<&mut recovery::State>,
+) -> Result<QueueReplacement, CoreError> {
+    let Behavior { autoplay, receipt } = behavior;
     if uri.trim().is_empty() {
         return Err(ProtoError::Malformed("cannot load an empty source URI".into()).into());
     }
     let host = control::locate(households, coordinator)?.ip;
-    let destination = Destination::read(t, host, coordinator).map_err(unconfirmed)?;
-    let before = read(t, host)?;
+    let boundary = recovery.as_ref().and_then(|state| state.boundary.as_ref());
+    let (destination, before) = if let Some(boundary) = boundary {
+        boundary.confirm(t, host, coordinator)?;
+        (boundary.destination.clone(), boundary.queue.clone())
+    } else {
+        (
+            Destination::read(t, host, coordinator).map_err(unconfirmed)?,
+            read(t, host)?,
+        )
+    };
     destination
         .confirm(t, host, coordinator)
         .map_err(unconfirmed)?;
-    let mut owner = receipt
-        .then(|| replacement_owner(t, host, coordinator))
-        .flatten();
+    let mut owner = if let Some(boundary) = boundary {
+        Some(ReceiptOwner {
+            original: boundary.owner.clone(),
+            execution: None,
+        })
+    } else {
+        (receipt || recovery.is_some())
+            .then(|| replacement_owner(t, host, coordinator))
+            .flatten()
+    };
     if !autoplay {
         // This is not a source-parameter refusal: do not retry the whole
         // replacement when pausing or its read-back fails.
@@ -206,8 +251,19 @@ fn replace<T: Transport + ?Sized>(
             .map_err(uncertain)?;
         owner = owner.and_then(|owner| owner.after_pause(t, host, coordinator));
     }
+    if let Some(boundary) = boundary {
+        // Retain the rejected attempt through all preparation reads. No
+        // freshly observed owner or queue may replace it before another add.
+        boundary.confirm(t, host, coordinator)?;
+    }
     let added = match soap::enqueue_uri(t, host, uri, metadata, 0, false) {
         Ok(added) => added,
+        Err(error @ ProtoError::SoapFault { code: 800, .. }) if recovery.is_some() => {
+            let proof =
+                recovery::after_enqueue_refusal(t, host, coordinator, destination, before, owner)?;
+            recovery.as_mut().expect("recovery requested").refused = Some(proof);
+            return Err(error.into());
+        }
         Err(error @ ProtoError::SoapFault { .. }) => return Err(error.into()),
         Err(error) => return Err(uncertain(error)),
     };
@@ -217,7 +273,7 @@ fn replace<T: Transport + ?Sized>(
             "the append did not preserve the original prefix and the reported new range",
         ));
     }
-    commit(
+    commit_recoverable(
         t,
         households,
         coordinator,
@@ -229,6 +285,7 @@ fn replace<T: Transport + ?Sized>(
         },
         autoplay,
         false,
+        recovery.as_ref().and_then(|state| state.boundary.as_ref()),
     )
 }
 
@@ -250,6 +307,18 @@ pub(crate) fn commit<T: Transport + ?Sized>(
     autoplay: bool,
     in_order: bool,
 ) -> Result<QueueReplacement, CoreError> {
+    commit_recoverable(t, households, coordinator, staged, autoplay, in_order, None)
+}
+
+fn commit_recoverable<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    staged: Staged<'_>,
+    autoplay: bool,
+    in_order: bool,
+    boundary: Option<&recovery::Recovery>,
+) -> Result<QueueReplacement, CoreError> {
     let host = control::locate(households, coordinator)?.ip;
     let Staged {
         destination,
@@ -270,7 +339,21 @@ pub(crate) fn commit<T: Transport + ?Sized>(
     destination
         .confirm(t, host, coordinator)
         .map_err(uncertain)?;
-    let owner = owner.and_then(|owner| owner.confirmed(t, host, coordinator));
+    let owner = if let Some(boundary) = boundary {
+        // Staging the retry may change the queue, but cannot authorize a
+        // listener's new playback intent before removing its old prefix.
+        boundary
+            .owner
+            .confirm(t, host, coordinator)
+            .map_err(uncertain)?;
+        Some(
+            owner
+                .ok_or_else(|| uncertain("retry preparation lost its playback owner"))?
+                .original,
+        )
+    } else {
+        owner.and_then(|owner| owner.confirmed(t, host, coordinator))
+    };
     let revision = if before.uris.is_empty() {
         after.revision
     } else {
@@ -319,13 +402,11 @@ pub(crate) fn commit<T: Transport + ?Sized>(
     } else {
         control::play_queue_from(t, households, coordinator, 1)
     };
-    match started {
-        Ok(()) => Ok(receipt),
-        Err(error @ CoreError::Proto(ProtoError::SoapFault { .. })) => Err(error),
-        // The queue has already changed. A lost start reply may be recovered
-        // inside queue_start, but must not replay this entire replacement.
-        Err(error) => Err(uncertain(error)),
-    }
+    // The queue has already changed. Even a definite playback refusal must
+    // not replay the replacement through render-parameter recovery: a retry
+    // could delete a newer queue and lose the original replacement receipt.
+    // Lost replies may still be reconciled inside queue_start.
+    started.map(|()| receipt).map_err(uncertain)
 }
 
 #[cfg(test)]

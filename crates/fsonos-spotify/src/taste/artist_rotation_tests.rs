@@ -356,16 +356,27 @@ fn empty_or_unplayable_top_samples_retain_accepted_music_and_continue_rotation()
                 json!({ "tracks": tracks }),
             );
             let second = full(&server, &cx, &mut store).await;
-            assert_eq!((second.library.candidates, second.library.retired), (60, 0));
             assert_eq!(
-                store
-                    .library()
-                    .unwrap()
-                    .into_iter()
-                    .find(|entry| entry.track.source_uri == "spotify:track:TestTrack1")
-                    .unwrap(),
-                accepted
+                (second.library.candidates, second.library.retired),
+                if unplayable { (59, 1) } else { (60, 0) }
             );
+            let current = store
+                .library()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.track.source_uri == "spotify:track:TestTrack1")
+                .unwrap();
+            if unplayable {
+                // A confirmed provider denial retires a cached taste candidate,
+                // while keeping the cached metadata for a future playable read.
+                assert!(!current.is_candidate());
+                let mut retired = accepted.clone();
+                retired.candidate = Some(false);
+                assert_eq!(current, retired);
+            } else {
+                // An empty sample proves nothing about availability.
+                assert_eq!(current, accepted);
+            }
             assert!(
                 second
                     .notes

@@ -1,5 +1,6 @@
 use super::*;
 use fastmcp::ContentBlock;
+use fsonos_api::Failure;
 use serde_json::json;
 use std::future::Future;
 use std::sync::Arc;
@@ -86,6 +87,20 @@ fn a_control_error_retains_its_code_and_is_not_replayed() {
     .unwrap_err();
     assert_eq!(error.message, message);
     assert_eq!(error.data, data);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_worker_panic_after_dispatch_never_advises_replaying_the_command() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let written = Arc::clone(&calls);
+    let error = finish(perform(move || {
+        written.fetch_add(1, Ordering::SeqCst);
+        panic!("worker failed after dispatch");
+    }))
+    .unwrap_err();
+    assert!(error.message.contains("OUTCOME_UNCERTAIN"), "{error:?}");
+    assert!(!error.message.contains("Retry once"), "{error:?}");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 

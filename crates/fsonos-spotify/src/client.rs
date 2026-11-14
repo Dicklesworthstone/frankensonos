@@ -878,6 +878,43 @@ pub struct PlaylistItem {
 }
 
 impl PlaylistItem {
+    /// Explicit availability evidence can exist even when an unavailable row
+    /// omits its title or album. Missing/malformed flags and identities supply
+    /// no authority to retire previously accepted music.
+    pub(crate) fn unavailable_uri(&self) -> Option<&str> {
+        let value = self.item.as_ref().or(self.track.as_ref())?;
+        if value
+            .get("type")
+            .is_some_and(|kind| kind.as_str() != Some("track"))
+            || value
+                .get("is_local")
+                .is_some_and(|local| local.as_bool() != Some(false))
+        {
+            return None;
+        }
+        let is_playable = match value.get("is_playable") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::Bool(flag)) => Some(*flag),
+            _ => return None,
+        };
+        let restrictions = value.get("restrictions");
+        let album = value.get("album");
+        let album_restrictions = album.and_then(|album| album.get("restrictions"));
+        if ![restrictions, album, album_restrictions]
+            .into_iter()
+            .all(valid_availability_object)
+        {
+            return None;
+        }
+        unavailable_uri(
+            value.get("uri")?.as_str()?,
+            false,
+            is_playable,
+            restrictions.and_then(serde_json::Value::as_object),
+            album_restrictions.and_then(serde_json::Value::as_object),
+        )
+    }
+
     /// The entry's track as a library item of `origin`; `None` for an
     /// episode, a local file or an unrenderable track.
     #[must_use]
@@ -1130,6 +1167,16 @@ impl SavedTrack {
 }
 
 impl FullTrack {
+    pub(crate) fn unavailable_uri(&self) -> Option<&str> {
+        unavailable_uri(
+            &self.uri,
+            self.is_local,
+            self.is_playable,
+            self.restrictions.as_ref(),
+            self.album.restrictions.as_ref(),
+        )
+    }
+
     /// This track as a library item of `origin`; `None` if Sonos can't
     /// render it (a local file, an unplayable track, or a restriction on the
     /// track or its album).
@@ -1188,6 +1235,41 @@ pub(crate) fn renderable(
     restricted: bool,
 ) -> bool {
     uri.starts_with("spotify:track:") && !is_local && is_playable != Some(false) && !restricted
+}
+
+/// A concrete provider denial for one canonical track, not a missing entry or
+/// a decode failure. Keep identities bounded before retaining negative evidence.
+pub(crate) fn unavailable_uri<'a>(
+    uri: &'a str,
+    is_local: bool,
+    is_playable: Option<bool>,
+    restrictions: Option<&serde_json::Map<String, serde_json::Value>>,
+    album_restrictions: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<&'a str> {
+    // Unknown future string reasons still deny playback. A malformed reason
+    // supplies no authority to retire cached tracks, even on minimal rows.
+    if [restrictions, album_restrictions]
+        .into_iter()
+        .flatten()
+        .any(|restriction| {
+            restriction
+                .get("reason")
+                .is_some_and(|reason| !reason.is_string())
+        })
+    {
+        return None;
+    }
+    (!is_local
+        && (is_playable == Some(false) || restrictions.is_some() || album_restrictions.is_some())
+        && uri.strip_prefix("spotify:track:").is_some_and(|id| {
+            !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }))
+    .then_some(uri)
+}
+
+/// Absent optional metadata differs from a field with an invalid shape.
+fn valid_availability_object(value: Option<&serde_json::Value>) -> bool {
+    value.is_none_or(|value| value.is_null() || value.is_object())
 }
 
 /// An RFC 3339 timestamp (Spotify's `added_at`, `played_at`) as Unix seconds.

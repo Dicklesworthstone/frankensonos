@@ -107,10 +107,7 @@ fn entry(surface: &Arc<Surface>, method: Method, path: &'static str, work: Work)
         }) {
             Ok(working) => Box::pin(async move {
                 working.await.unwrap_or_else(|| {
-                    failed(&Failure::new(
-                        ErrorCode::Internal,
-                        "the call stopped before it answered",
-                    ))
+                    failed(&crate::off_thread::interrupted(method != Method::Get))
                 })
             }) as BoxFuture<'_, Response>,
             Err(busy) => Box::pin(ready(failed(&busy))) as BoxFuture<'_, Response>,

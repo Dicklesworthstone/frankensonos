@@ -145,6 +145,13 @@ fn observation(body: &[u8], now: i64) -> Result<Observation, SpotifyError> {
     })
 }
 
+/// Full-library taste reads publish through the same monotonic heard-state
+/// merge as the lightweight reader. Validate their whole window too: a future
+/// timestamp must never become permanent evidence through another intake path.
+pub(crate) fn validated_plays(body: &[u8], now: i64) -> Result<Vec<(String, i64)>, SpotifyError> {
+    Ok(observation(body, now)?.plays)
+}
+
 /// Refresh anti-repeat evidence from one latest-50 history window, with at most
 /// three logical HTTP reads: identity, recent plays, then identity again. The
 /// session's existing bounded retries, authentication handling and server

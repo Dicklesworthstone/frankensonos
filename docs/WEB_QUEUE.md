@@ -55,6 +55,35 @@ occurrences and current playback with one undo record. The same capability is
 available in the Listening Room, CLI and MCP. See
 [Ordered track selections](QUEUE_TRACK_SELECTIONS.md).
 
+## Save a queue for later
+
+Inside a room card's **Queue** section, choose **Save queue as playlist**. The
+dialog reads that exact listening group's retained queue and shows its household,
+entry count, and name before you choose **Create Sonos playlist**. This creates
+a new native Sonos playlist; an existing playlist with the same name is never
+replaced. You can save a retained queue while radio or another source plays.
+Saving leaves playback, queue order, and the DJ unchanged.
+
+The phone remote uses the same reviewed save model as the Listening Room.
+Changing the group, replacing a room card, or receiving a queue invalidation
+retires a pending review. **Read current queue** explicitly refreshes the original
+group and queue when an observation expires; unopened controls do not poll.
+The save shares the room's transport lane with other phone controls until its
+request settles, even if you close the dialog or the cards are rebuilt.
+
+After a confirmed save, **Browse saved playlists** opens that exact native
+playlist in the source editor without starting playback. The handoff waits for
+the original group and catalog to be checked again, and preserves an existing
+source draft. Choose and review playback separately.
+
+If a response is missing or unreadable, the request is never retried
+automatically. **Check saved playlists** reads the original household's catalog
+before another native save is allowed. A matching title is only an observation,
+not proof that this request created it. The receipt and recovery remain
+available under **Music & DJ → Save queues as Sonos playlists**, including after
+selecting another household or losing the original room card. An ordinary
+playback refresh does not clear this uncertainty.
+
 ## Remove a range
 
 Select one entry, or up to 100 consecutive entries across pages, then
@@ -106,6 +135,13 @@ suite covers paging, exact identities/revisions, stale asynchronous reads,
 disposal, single-dispatch writes, malformed responses, review/cancel behavior,
 contiguous removal, duplicate URIs, and Spotify queue additions. The Linux
 workspace workflow runs it before the Rust gates.
+
+`node --test scripts/test-playlist-save-remote.cjs` covers the phone save adapter
+and mounted shared dialog: exact household destinations, single-dispatch writes,
+shared transport ownership, invalidated reviews, retained uncertain receipts,
+original-catalog recovery, explicit freshness renewal, and read-only source
+handoff with draft preservation. The shared native-save model, panel, and store
+suites also run in the Linux workspace workflow.
 
 Chromium DOM checks with mocked API responses cover phone/desktop rendering,
 keyboard focus, read-play-conflict, review/cancel/remove, and Spotify queueing.

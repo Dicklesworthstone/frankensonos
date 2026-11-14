@@ -770,6 +770,7 @@ impl Op {
     /// JSON), documented with the error answers it can give.
     fn entry(&self, web: &Arc<WebPolicy>, handle: Handler) -> RouteEntry {
         let write = self.method == Method::Post;
+        let may_have_mutated = self.method != Method::Get || self.id == "spotify_sign_in_callback";
         let web = Arc::clone(web);
         let route = Route::new(self.method, self.path)
             .operation_id(self.id)
@@ -791,8 +792,7 @@ impl Op {
             match crate::off_thread::off_thread(move || handle(&mut owned)) {
                 Ok(working) => Box::pin(async move {
                     working.await.unwrap_or_else(|| {
-                        Failure::new(ErrorCode::Internal, "the call stopped before it answered")
-                            .http_response()
+                        crate::off_thread::interrupted(may_have_mutated).http_response()
                     })
                 }) as BoxFuture<'_, Response>,
                 Err(busy) => Box::pin(ready(busy.http_response())) as BoxFuture<'_, Response>,

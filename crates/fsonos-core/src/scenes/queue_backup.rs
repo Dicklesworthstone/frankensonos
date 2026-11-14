@@ -300,6 +300,7 @@ pub(crate) fn capture<T: Transport + ?Sized>(
     Ok(Some(backup))
 }
 
+#[derive(Clone)]
 pub(crate) struct Owner {
     pub(crate) group: Group,
     pub(crate) playback: Playback,

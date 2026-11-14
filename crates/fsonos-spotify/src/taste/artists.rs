@@ -122,6 +122,9 @@ impl Reader<'_> {
             match self.session.get_brief(self.cx, &url).await {
                 Ok(body) => {
                     let top: ArtistTopTracks = decode(&body, "artist top tracks")?;
+                    for track in &top.tracks {
+                        self.unavailable(track.unavailable_uri());
+                    }
                     let mut seen = HashSet::new();
                     let tracks: Vec<_> = top
                         .tracks
@@ -181,6 +184,13 @@ impl Reader<'_> {
                 ));
             }
             for track in &page.items {
+                self.unavailable(crate::client::unavailable_uri(
+                    &track.uri,
+                    track.is_local,
+                    track.is_playable,
+                    track.restrictions.as_ref(),
+                    None,
+                ));
                 // A shared release can contain another artist's solo tracks.
                 // Only the followed/top artist's actual credits add taste.
                 if !track

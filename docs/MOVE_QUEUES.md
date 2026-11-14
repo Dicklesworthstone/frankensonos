@@ -50,7 +50,12 @@ After a confirmed prefix removal, a later playback failure cannot bring the
 old entries back automatically. Read the current queue before retrying.
 
 The source is not stopped unless destination playback is confirmed and the
-source still matches the playback that was copied. A new destination source,
+source still matches the playback that was copied. A destination reporting
+`ERROR_OCCURRED` cannot confirm a playing transfer, even when its transport
+state still says `PLAYING` or `TRANSITIONING`. This check also applies to the
+final playback observations, so a late renderer failure cannot release the
+source. Missing or vendor-specific status values remain distinct from an
+explicit renderer error; they do not prevent otherwise confirmed playback. A new destination source,
 seek, mode, group, or reboot stops reconstruction when observed. The native
 revision check also rejects a queue edit in the final read/write race.
 Independent controller actions cannot be made atomic with these reads.
@@ -68,7 +73,15 @@ removal, and a native revision race. Existing moving and play-mode suites
 continue to cover delegation fallback and release of the source only after
 read-back.
 
+The `moving_direct_sim::renderer_status` cases cover explicit renderer errors
+with playing or transitioning state, errors appearing only at later confirmation
+reads, lost Play replies, missing/vendor status values, replacement of an old
+failed destination, silent paused transfers, and native-delegation fallback.
+These cases cover both S1-to-S2 and S2-to-S1 directions where applicable.
+
 Run:
+
+    cargo test -p fsonos-core --test moving_direct_sim
 
     cargo test -p fsonos-core --test moving_queue_staging_sim
     cargo test -p fsonos-core --test moving_spotify_sim

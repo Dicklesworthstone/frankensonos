@@ -76,6 +76,12 @@ const SOUND_COPY_STYLE: &str = include_str!("../remote/sound-copy.css");
 const FADES_SCRIPT: &str = include_str!("../remote/fades.js");
 const FADES_STYLE: &str = include_str!("../remote/fades.css");
 const SOURCE_PLAYER_SCRIPT: &str = include_str!("../remote/source-player.js");
+const DASHBOARD_CORE_SCRIPT: &str = include_str!("../remote/dashboard-core.js");
+const PLAYLIST_SAVE_SCRIPT: &str = include_str!("../remote/dashboard-playlist-save.js");
+const PLAYLIST_SAVE_PANEL_SCRIPT: &str = include_str!("../remote/dashboard-playlist-save-panel.js");
+const PLAYLIST_SAVE_STYLE: &str = include_str!("../remote/dashboard-playlist-save.css");
+const NATIVE_SAVE_SCRIPT: &str = include_str!("../remote/playlist-save.js");
+const NATIVE_SAVE_STYLE: &str = include_str!("../remote/playlist-save.css");
 const ROOM_SETS_SCRIPT: &str = include_str!("../remote/room-sets.js");
 const SOURCE_TARGETS_SCRIPT: &str = include_str!("../remote/source-targets.js");
 const SOURCE_PLAYER_STYLE: &str = include_str!("../remote/source-player.css");
@@ -118,7 +124,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENT_FEED_SCRIPT}\n{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{QUEUE_TRACKS_SCRIPT}\n{PLAYLIST_SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{DIRECTION_SCRIPT}\n{CONFIG_SCRIPT}\n{CONFIG_PANEL_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENE_QUEUE_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{ROOM_SETS_SCRIPT}\n{SOURCE_TARGETS_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
+                        "{EVENT_FEED_SCRIPT}\n{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{QUEUE_TRACKS_SCRIPT}\n{PLAYLIST_SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{DIRECTION_SCRIPT}\n{CONFIG_SCRIPT}\n{CONFIG_PANEL_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENE_QUEUE_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{ROOM_SETS_SCRIPT}\n{SOURCE_TARGETS_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{DASHBOARD_CORE_SCRIPT}\n{PLAYLIST_SAVE_SCRIPT}\n{PLAYLIST_SAVE_PANEL_SCRIPT}\n{NATIVE_SAVE_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
                     ),
                 )
             },
@@ -135,7 +141,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{CONFIG_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}\n{EQ_STYLE}\n{SOUND_COPY_STYLE}\n{SOURCE_PLAYER_STYLE}\n{LISTENING_STYLE}\n{FADES_STYLE}\n{GROUP_VOLUME_STYLE}\n{ROUTINES_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{CONFIG_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}\n{EQ_STYLE}\n{SOUND_COPY_STYLE}\n{SOURCE_PLAYER_STYLE}\n{PLAYLIST_SAVE_STYLE}\n{NATIVE_SAVE_STYLE}\n{LISTENING_STYLE}\n{FADES_STYLE}\n{GROUP_VOLUME_STYLE}\n{ROUTINES_STYLE}"
                     ),
                 )
             },

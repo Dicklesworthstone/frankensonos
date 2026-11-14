@@ -28,18 +28,34 @@ struct Slot<T> {
     done: bool,
 }
 
-/// `work`'s answer, once its thread has it: `None` if the work panicked or
-/// no thread could start.
+/// `work`'s answer, once its thread has it: `None` if the work panicked.
 pub struct OffThread<T>(Arc<Mutex<Slot<T>>>);
 
 /// Run `work` on a thread of its own; await its answer.
 ///
 /// # Errors
-/// `NOT_READY` when [`MAX_CALLS`] are running already.
+/// `NOT_READY` when [`MAX_CALLS`] are running already or no thread could start.
 pub fn off_thread<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<OffThread<T>, Failure> {
     bounded(&RUNNING, MAX_CALLS, work)
+}
+
+/// A started worker stopped without an answer. Its writes may have completed,
+/// so only a known read-only call may receive the ordinary retry guidance.
+#[must_use]
+pub fn interrupted(may_have_mutated: bool) -> Failure {
+    if may_have_mutated {
+        Failure::new(
+            ErrorCode::OutcomeUncertain,
+            "the call stopped before it answered; its changes may have completed",
+        )
+        .with_hint(
+            "Read the current state and action log before another action; do not automatically replay the command.",
+        )
+    } else {
+        Failure::new(ErrorCode::Internal, "the read stopped before it answered")
+    }
 }
 
 /// Gives a reserved place back when its thread ends, however it ends.
@@ -83,10 +99,14 @@ fn bounded<T: Send + 'static>(
                 waker.wake();
             }
         });
-    if spawned.is_err() {
-        // The closure (and its place) went with the failed spawn.
-        slot.lock().unwrap_or_else(PoisonError::into_inner).done = true;
-    }
+    spawned.map_err(|error| {
+        // The closure (and its place) went with the failed spawn. No work ran.
+        Failure::new(
+            ErrorCode::NotReady,
+            format!("the daemon could not start a call worker: {error}"),
+        )
+        .with_hint("No command was started. Retry when the daemon has capacity.")
+    })?;
     Ok(OffThread(slot))
 }
 

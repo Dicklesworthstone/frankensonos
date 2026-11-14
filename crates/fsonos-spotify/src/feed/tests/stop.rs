@@ -108,7 +108,10 @@ impl Transport for Observed<'_> {
         }
         let mut response = self.inner.soap_post(host, path, action, body)?;
         if name == "Stop"
-            && matches!(self.stop_reply, StopReply::Lost | StopReply::LostAndUnreadable)
+            && matches!(
+                self.stop_reply,
+                StopReply::Lost | StopReply::LostAndUnreadable
+            )
         {
             return Err(ProtoError::Network {
                 target: "simulated stop reply".into(),
@@ -191,9 +194,7 @@ fn stop_releases_radio_connect_and_announcements_without_interrupting_them() {
             assert!(observed.writes().is_empty());
             assert_eq!(rig.queue(), queue);
             assert_eq!(
-                transport::get_media_info(&rig.lan, rig.host())
-                    .unwrap()
-                    .uri,
+                transport::get_media_info(&rig.lan, rig.host()).unwrap().uri,
                 source,
             );
             assert_eq!(
