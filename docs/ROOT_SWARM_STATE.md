@@ -5529,3 +5529,15 @@ breakpoint, which proves the decrypt loop is *not* inside `0x10006a20` — they 
 different functions after all.
 So: handler needs a struct pointer that has not yet been identified; candidates are the
 routine's own first argument and any `lwz` from a high stack slot near the loop.
+
+Loop register dump (first pass) is the durable artefact of this stretch:
+
+- `r4`/`r23` = `0x2AE50` = **175696** (payload length), `r19`/`r22`/`r25` = `0x4085c000`
+  (payload buffer base), `r5=0x407fd664`, `r6=0x14`, `r16=0x407fb5d0`, `r31=0x407fb660`,
+  `r28=0x407fddd0`, `r13=0x10033e8c`, `lr=0x10007124`.
+
+Argument trials for the handler `0x10004c88`: `(r30)` segv in libc, `(r26)` segv (`r26=0x10`),
+`(r28)` segv, `(r31)` segv, but **`(1, r25, r23)` returns 1 without faulting** — i.e. the
+handler takes the same `(mode, buffer, length)` shape as the loop's own decrypt call.
+So 1 is its failure code under this shape; the next read is why it fails (likely it needs
+the stream ctx initialised, which is still the missing link).
