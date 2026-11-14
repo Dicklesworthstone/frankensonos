@@ -5556,3 +5556,12 @@ zeroed context is tolerated for updates but not for finalisation.
 
 That pins the requirement precisely: the context must be genuinely initialised with key and
 IV before the loop. Nothing else in the loop path is broken.
+
+Key/IV origin settled: the *encryption* side generates them randomly per package
+(`mbedtls_ctr_drbg_random(r24, buf, 16)` twice — key into `r1+11392`, IV into `r1+11408`)
+and writes them into the header. So on the decrypt side they must be **read from the
+header**, which is exactly why the handler takes the buffer as its argument and why a
+hand-built `ZZ0033` call needs the header plaintext rather than a derivation.
+
+Practical consequence: call the handler with the *decrypted header* buffer (the 8 KiB one
+produced by the unwrap and sitting in the loop frame), not the payload buffer.
