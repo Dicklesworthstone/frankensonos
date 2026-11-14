@@ -7,15 +7,15 @@
 //! by disc and track number, or by the movement's numeral when the numbers
 //! are missing. The same work on two albums is two works sharing a
 //! `work_key`, and two recordings of it on one album split where the movement
-//! numbering starts over. A song (a track not judged classical) is a work of
-//! its own, so the demo and the album take of one song never play as one
-//! work. Pure: no I/O.
+//! numbering starts over or a complete movement title repeats. A song (a track
+//! not judged classical) is a work of its own, so the demo and the album take
+//! of one song never play as one work. Pure: no I/O.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::classical::{ClassicalTrack, EnergyBasis, Period};
+use crate::classical::{ClassicalTrack, EnergyBasis, Period, normalize};
 use crate::library::Origin;
 
 /// Whether a work holds every one of its movements.
@@ -164,9 +164,9 @@ pub fn group_works(tracks: &[ClassicalTrack]) -> Vec<Work> {
         .collect()
 }
 
-/// Order a group's movements, then split it wherever the numbering starts
-/// over (two recordings of one work on one album). Repeated numerals are
-/// sections of one movement (`III. Sequentia: No. 1 …`, `III. … No. 2 …`).
+/// Order a group's movements, then split alternate recordings using the
+/// same boundaries as album expansion. Repeated numerals alone can be sections
+/// of one movement (`III. Sequentia: No. 1 …`, `III. … No. 2 …`).
 fn split_recordings(mut group: Vec<&ClassicalTrack>) -> Vec<Vec<&ClassicalTrack>> {
     let positioned = group.iter().all(|t| t.track_number.is_some());
     if positioned {
@@ -177,19 +177,42 @@ fn split_recordings(mut group: Vec<&ClassicalTrack>) -> Vec<Vec<&ClassicalTrack>
         return vec![group];
     }
     let mut works: Vec<Vec<&ClassicalTrack>> = Vec::new();
-    let mut last: Option<u32> = None;
+    let mut order = RecordingOrder::default();
     for track in group {
-        let n = numeral(track);
-        let restart = matches!((last, n), (Some(prev), Some(now)) if now < prev);
+        let restart = order.push(track.movement.as_deref(), &track.track.title);
         if restart || works.is_empty() {
             works.push(Vec::new());
-        }
-        if n.is_some() {
-            last = n;
         }
         works.last_mut().expect("a work was started").push(track);
     }
     works
+}
+
+/// Recording boundaries shared by saved-library grouping and album expansion.
+/// Call only in album order: a disc boundary alone does not start another take.
+#[derive(Default)]
+pub(crate) struct RecordingOrder {
+    last: Option<u32>,
+    seen: HashSet<String>,
+}
+
+impl RecordingOrder {
+    /// Observe one full movement title and report whether it starts a new take.
+    /// Distinct sections with the same numeral stay together; an exact repeated
+    /// movement or a strict numeral decrease starts another recording.
+    pub(crate) fn push(&mut self, movement: Option<&str>, title: &str) -> bool {
+        let label = normalize(movement.unwrap_or(title));
+        let number = movement.and_then(movement_number);
+        let restarts = matches!((self.last, number), (Some(prev), Some(now)) if now < prev)
+            || self.seen.contains(&label);
+        if restarts {
+            self.seen.clear();
+            self.last = None;
+        }
+        self.seen.insert(label);
+        self.last = number.or(self.last);
+        restarts
+    }
 }
 
 /// A work from movements already in playing order.

@@ -591,7 +591,11 @@ from a genre the DJ was built around.
   recording (same album, same `work_key`), in disc and track order. `Track`
   gains `disc_number`, `track_number`, and `album_uri`; `LibraryItem` gains the
   two numbers, which the Web API client already parses. Other music is picked
-  track by track.
+  track by track. With album positions present, saved-library grouping and
+  liked-track completion share the same recording boundaries: a repeated full
+  movement label or decreasing movement number starts another performance.
+  Unnumbered alternate takes and repeated single-movement pieces stay separate;
+  distinct sections with the same numeral and works spanning discs stay whole.
 - A liked single movement is completed into its whole work by reading the
   album's track list (`GET /v1/albums/{id}/tracks`, read-only) and caching it.
   Unfinished album reads have their own bounded background continuation:
