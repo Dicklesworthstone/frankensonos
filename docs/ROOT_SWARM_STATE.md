@@ -5410,3 +5410,14 @@ to its destination (`r16`), which is exactly what an emulator without the flash 
 would suffer. Next: identify `r16` (what device/file the updater opens) and point it at
 something writable, or stub `ZZ0050`'s failure so the loop continues and the digest /
 signature stage is reached.
+
+Correction worth making: the 8192-byte return at `0x10006a20` is the **envelope header
+unwrap**, not bulk payload decryption (a fixed 8 KiB header buffer). The actual payload
+stream is `ZZ0050` → `ZZ0037`, and with the write-failure branch nop'd the run now
+reaches "enveloped data decrypt final failed" (`ZZ0047`), with `ZZ0050`'s own failure
+hidden behind the nop.
+
+So the real fault is inside `ZZ0037` (stream update) returning non-zero: `ZZ0050` sets
+`r28=6`, tears the stream down (`ZZ0044`) and returns 6. Next: read `ZZ0037`'s failure
+condition — it is the AES/stream layer, most likely a state/counter the header unwrap was
+supposed to populate from the 8 KiB buffer.
