@@ -5504,3 +5504,12 @@ structure (`r27 = r1+32`, `r29 = r3`) and it derives the key/IV into stack buffe
 `r1+11408` / `r1+11424` before calling `ZZ0033`. So this routine — not the loop — owns the
 whole cipher setup, and hooking/entering *it* is the way forward: it needs the header
 structure pointer as r3 and does everything else itself.
+
+`0x10004c88` is not called directly — its address appears exactly once, in a **handler
+table** at `0x100169b4` (neighbours `0x10016638`, `0x100166d0` are code pointers too, table
+continues at `0x100169d0`). So the cipher routine is dispatched by index from that table,
+which is why neither it nor its `ZZ0033` call ever runs on the route the emulator takes:
+the dispatcher picks a different entry.
+
+Next concrete probe: break on reads of the table base and print the index, to learn which
+handler *is* selected and what the index should have been.
