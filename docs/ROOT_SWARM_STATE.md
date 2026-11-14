@@ -5479,3 +5479,10 @@ the failure (`(49)` → `(1) format unknown`), proving the block is the right ne
 Hence the remaining work is explicit: get `ZZ0033(ctx, …)` executed once before the first
 `ZZ0037` — either by patching a `bl` into the flow at `0x10007148`, or by finding the
 branch that should have routed through it.
+
+Final probe of this stretch: the *real* `ZZ0033` call site (`0x10005214`, the only import
+of it in the binary) also never fires. So there are two independent init sites, neither
+reached, and the decrypt loop's context is never stamped. The harness therefore cannot
+reach the digest/signature stage yet by flow alone; the next move is a hard patch —
+insert a `bl 0x1002bf8c` (ZZ0033@plt) before the loop at `0x10007148` and supply its
+arguments from the live registers — rather than hunting more branches.
