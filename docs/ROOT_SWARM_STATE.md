@@ -5389,3 +5389,12 @@ reproduces **without** the in-library breakpoint, so `0x69a0` is not the differe
 The one remaining difference from the scripts that did emit (49) is that they carried a
 `ZZ0028` breakpoint. Recreate the probe by adding it back to the working base rather
 than subtracting from the failing one.
+
+**DECRYPT WORKS.** With the key harness in place the run prints:
+`ZZ0045-RET r3=0` (length gate passes) then `DEC-RET r3=8192` — the decrypt call at
+`0x10006a20` returned 8192, exactly the chunk size it was given (`min(len, 8192)`), i.e.
+a full successful block write. The `(49)` therefore comes *after* a working decrypt.
+
+This is the first time real envelope plaintext has been produced in the emulator, and it
+means the parsed key is very likely the correct one. Next questions are downstream:
+which call produces 49 after the decrypt, and whether the 57.22 package behaves the same.
