@@ -7,7 +7,8 @@ const SourcePlayerRemote = (() => {
     sourceLineInSources: ['GET', '/line-in'], sourceLineInPlay: ['POST', '/line-in/play'],
     sourceQueueState: ['GET', '/zones/{room}/queue'],
     sourcePlaylists: ['GET', '/sonos/playlists'], sourcePlaylistPlay: ['POST', '/sonos/playlists/play'],
-    sourcePlaylistContents: ['GET', '/sonos/playlists/contents'], sourcePlaylistTrack: ['POST', '/sonos/playlists/track'] };
+    sourcePlaylistContents: ['GET', '/sonos/playlists/contents'], sourcePlaylistTrack: ['POST', '/sonos/playlists/track'],
+    sourcePlaylistRename: ['POST', '/sonos/playlists/rename'], sourcePlaylistRemove: ['POST', '/sonos/playlists/remove'] };
   const modes = Object.freeze({ play: 'Play now', next: 'Queue next', end: 'Queue at end' });
   const MAX_BYTES = 2048, MAX_TITLE = 256;
   const catalogKinds = Object.freeze({ track: 'Tracks', album: 'Albums', artist: 'Artists',
@@ -420,6 +421,192 @@ const SourcePlayerRemote = (() => {
       ...(choice.mode === 'play' ? {} : { next: choice.mode === 'next' }) };
   }
 
+  function nativePlaylistTitle(raw) {
+    if (typeof raw !== 'string') throw new Error('Enter a new playlist title.');
+    const title = raw.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+    if (!title || /[\u0000-\u001f\u007f-\u009f\uD800-\uDFFF]/u.test(title)
+        || new TextEncoder().encode(title).length > 1023) {
+      throw new Error('Use a nonblank playlist title of at most 1023 UTF-8 bytes without control characters.');
+    }
+    return title;
+  }
+
+  function managedPlaylist(value, reviewed) {
+    const item = playlists([value?.playlist])[0];
+    if (!value || value.zone !== reviewed.group.coordinator || item.id !== reviewed.item.id
+        || value.operation !== reviewed.operation || typeof value.changed !== 'boolean' || typeof value.logged !== 'boolean'
+        || !text(value.done) || item.title !== (reviewed.operation === 'rename' ? reviewed.title : reviewed.item.title)
+        || value.changed !== (reviewed.operation === 'remove' || reviewed.title !== reviewed.item.title)) {
+      throw new Error('The saved-playlist command response was incomplete.');
+    }
+    return Object.freeze({ ...value, playlist: item, detail: value.done + (value.logged ? ''
+      : ' The catalog result was confirmed, but the action log could not be written. Do not repeat this operation.') });
+  }
+
+  // One catalog-write workflow for both remotes. Its receipt survives source,
+  // room and dialog changes; only an explicit original-household read resolves
+  // an uncertain dispatch. Playback refreshes never acknowledge catalog edits.
+  function playlistManager({ call, selection, available, live, changed = () => {}, completed = () => {},
+    commit = (_, work) => work({ check() {}, send: (route, body) => call(route, { body }) }),
+    readCatalog = (target, decode) => call('sourcePlaylists', { query: { zone: target } }).then(decode) }) {
+    let epoch = 0;
+    const state = { title: '', pending: null, reading: false, writing: false, result: null, recovery: null, message: '' };
+    const publish = () => { try { changed(state); } catch (_) { /* Presentation only. */ } };
+    const busy = () => state.reading || state.writing;
+    const same = reviewed => {
+      const current = selection();
+      return current && current.group.target === reviewed.group.target && current.group.signature === reviewed.group.signature
+        && current.item.id === reviewed.item.id && current.item.title === reviewed.item.title;
+    };
+    const invalidate = () => { ++epoch; state.pending = null; state.reading = false; };
+    async function inspect(reviewed, valid, revision) {
+      valid();
+      const fresh = groups(await call('zones')); valid();
+      if (!fresh.some(group => group.target === reviewed.group.target && group.signature === reviewed.group.signature)) {
+        throw new Error('The playlist’s original group changed. Read its current catalog and review again.');
+      }
+      const query = { zone: reviewed.group.target, playlist: reviewed.item.id, offset: 0, limit: 1,
+        ...(revision ? { expected_revision: revision } : {}) };
+      const value = await call('sourcePlaylistContents', { query }); valid();
+      const page = playlistContents(value, query, reviewed.item, reviewed.group);
+      if (revision && page.revision !== revision) throw new Error('The saved playlist changed. Read it and review again.');
+      return page;
+    }
+    async function review(operation) {
+      if (!live() || !available() || busy() || state.recovery || !['rename', 'remove'].includes(operation)) return null;
+      const selected = selection();
+      if (!selected) return null;
+      invalidate(); const version = epoch;
+      let title;
+      try { title = operation === 'rename' ? nativePlaylistTitle(state.title) : selected.item.title; }
+      catch (error) { state.message = problem(error); publish(); return null; }
+      const reviewed = { ...selected, operation, title };
+      const valid = () => { if (!live() || version !== epoch || !same(reviewed)) throw new Error('This playlist review is no longer current. Review it again.'); };
+      state.reading = true; state.message = 'Reading the selected playlist in its original household…'; publish();
+      try {
+        const page = await inspect(reviewed, valid); valid();
+        state.pending = Object.freeze({ ...reviewed, revision: page.revision, total: page.total,
+          body: Object.freeze({ zone: reviewed.group.target, playlist: reviewed.item.id, expected_revision: page.revision,
+            ...(operation === 'rename' ? { title } : {}) }) });
+        state.message = ''; return state.pending;
+      } catch (error) { if (version === epoch) state.message = problem(error); return null; }
+      finally { if (version === epoch) { state.reading = false; publish(); } }
+    }
+    async function confirm(reviewed = state.pending) {
+      if (!live() || !available() || busy() || state.recovery || !reviewed || reviewed !== state.pending || !same(reviewed)) return false;
+      const version = ++epoch;
+      state.pending = null; state.writing = true; state.message = 'Checking the reviewed playlist again…'; publish();
+      let sent = false, receipt = null;
+      try {
+        await commit(reviewed, async ({ check, send }) => {
+          const valid = () => { check(); if (!live() || version !== epoch || !same(reviewed)) throw new Error('This playlist review closed or changed before sending.'); };
+          const page = await inspect(reviewed, valid, reviewed.revision); valid();
+          if (page.total !== reviewed.total) throw new Error('The saved playlist changed. Review it again.');
+          if (sent) throw new Error('The playlist command was already dispatched.');
+          sent = true;
+          receipt = managedPlaylist(await send(reviewed.operation === 'rename' ? 'sourcePlaylistRename' : 'sourcePlaylistRemove', reviewed.body), reviewed);
+          return receipt;
+        });
+        if (!receipt) throw new Error('The playlist command was not sent. Review it again.');
+        state.result = Object.freeze({ status: 'accepted', group: reviewed.group, item: reviewed.item,
+          operation: reviewed.operation, playlist: receipt.playlist, detail: receipt.detail });
+        state.message = '';
+        try { completed(state.result); } catch (_) { /* A confirmed native result stays successful. */ }
+        return true;
+      } catch (error) {
+        state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent', group: reviewed.group, item: reviewed.item,
+          operation: reviewed.operation, detail: problem(error) + (sent
+            ? ' The household catalog may have changed. Read the original household catalog before another edit; nothing was retried.'
+            : ' No catalog edit was sent.') });
+        if (sent) state.recovery = state.result;
+        state.message = ''; return false;
+      } finally { state.writing = false; publish(); }
+    }
+    async function recover() {
+      const result = state.recovery;
+      if (!live() || busy() || !result) return null;
+      const version = ++epoch; state.pending = null; state.reading = true;
+      state.message = 'Reading saved playlists for ' + result.group.target + '…'; publish();
+      const valid = () => { if (!live() || version !== epoch || state.recovery !== result) throw new Error('Read the original household catalog again.'); };
+      try {
+        const catalog = await readCatalog(result.group.target, value => { valid(); return playlists(value); }); valid();
+        if (catalog === null) throw new Error('The original household catalog was not refreshed.');
+        const found = catalog.find(item => item.id === result.item.id);
+        state.recovery = null;
+        state.result = Object.freeze({ ...result, status: 'observed', detail: result.detail + ' Current observation in '
+          + result.group.target + ': ' + (found ? `${found.title} (${found.id}) is present.` : `${result.item.id} is absent.`)
+          + ' This observation does not prove how the earlier request finished. Review any new edit separately.' });
+        state.message = ''; return catalog;
+      } catch (error) { if (version === epoch) state.message = problem(error); return null; }
+      finally { if (version === epoch) { state.reading = false; publish(); } }
+    }
+    return { state, busy, review, confirm, recover, invalidate,
+      catalogChanged(change = null) {
+        if (change?.playlists === false) return;
+        const group = state.recovery?.group || state.pending?.group || selection()?.group;
+        if (!group) return;
+        if (change?.household && group?.household !== change.household) return;
+        invalidate(); state.message = 'The saved catalog changed. Read its current contents before another review.'; publish();
+      },
+      canReview: () => !!(live() && available() && !busy() && !state.recovery && selection()),
+      editTitle(value) {
+        if (!live() || !available() || busy() || typeof value !== 'string' || value.length > 8192) return false;
+        invalidate(); state.title = value; state.message = ''; publish(); return true;
+      },
+      cancel() { if (!state.writing) { invalidate(); state.message = ''; publish(); } },
+    };
+  }
+
+  function playlistManagerPanel(manager, doc) {
+    const el = (tag, content, className) => {
+      const node = doc.createElement(tag); if (content) node.textContent = content; if (className) node.className = className; return node;
+    };
+    const node = el('section', null, 'source-playlist-manage');
+    node.setAttribute('aria-label', 'Manage saved Sonos playlist');
+    const fields = el('div'), title = el('input'), label = el('label', 'New playlist title ');
+    title.type = 'text'; title.maxLength = 1023; title.autocomplete = 'off'; title.setAttribute('aria-label', 'New playlist title'); label.append(title);
+    const rename = el('button', 'Review rename'), remove = el('button', 'Review deletion');
+    const actions = el('div', null, 'row'); actions.append(rename, remove);
+    fields.append(el('h3', 'Manage saved playlist'), label, actions);
+    const message = el('p'), consent = el('div', null, 'source-review'), result = el('p'), recovery = el('button', 'Read original household catalog');
+    for (const item of [message, result]) { item.setAttribute('role', 'status'); item.setAttribute('aria-live', 'polite'); }
+    for (const button of [rename, remove, recovery]) button.type = 'button';
+    node.append(fields, message, consent, result, recovery);
+    title.addEventListener('input', () => manager.editTitle(title.value));
+    rename.addEventListener('click', () => { void manager.review('rename'); });
+    remove.addEventListener('click', () => { void manager.review('remove'); });
+    recovery.addEventListener('click', () => { void manager.recover(); });
+    let shown = null, confirm = null;
+    return { node, render(selected) {
+      const s = manager.state;
+      node.hidden = !selected && !s.result && !s.message && !s.pending;
+      fields.hidden = !selected;
+      if (title.value !== s.title) title.value = s.title;
+      title.disabled = !manager.canReview(); rename.disabled = !manager.canReview() || !s.title.trim(); remove.disabled = !manager.canReview();
+      message.textContent = s.message; result.textContent = s.result ? `${s.result.group.target}: ${s.result.detail}` : '';
+      recovery.hidden = !s.recovery; recovery.disabled = manager.busy();
+      consent.hidden = !s.pending;
+      if (shown !== s.pending) {
+        shown = s.pending; consent.replaceChildren(); confirm = null;
+        if (shown) {
+          const pending = shown;
+          consent.append(el('p', `${pending.operation === 'remove' ? 'Delete' : 'Rename'} “${pending.item.title}” (${pending.item.id}) in ${pending.group.label}?`),
+            el('p', pending.operation === 'remove'
+              ? `Permanently remove this saved playlist of ${pending.total} track(s) from this household. This cannot be undone here. Current playback and queues stay unchanged.`
+              : `New title: “${pending.title}”. The ${pending.total} saved track(s), current playback and queues stay unchanged.`),
+            el('p', pending.operation === 'remove'
+              ? 'Saved scenes and routines using this playlist will refuse playback until you update them.'
+              : 'Saved scenes using this playlist must be saved again with its new title before those scenes or their routines can play it.'));
+          confirm = el('button', pending.operation === 'remove' ? 'Delete saved playlist' : 'Rename saved playlist');
+          const back = el('button', 'Cancel catalog edit'); confirm.type = back.type = 'button';
+          confirm.addEventListener('click', () => { void manager.confirm(pending); }); back.addEventListener('click', () => manager.cancel());
+          consent.append(confirm, back);
+        }
+      }
+      if (confirm) confirm.disabled = manager.busy();
+    } };
+  }
+
   function model({ call, changed = () => {}, execute = (_, work) => work(), executeSet = (_, work) => work() }) {
     let epoch = 0, disposed = false, setReader = null;
     const state = { open: false, groups: [], target: '', sourceType: 'link', input: '', title: '', mode: 'play', pending: null,
@@ -436,9 +623,23 @@ const SourcePlayerRemote = (() => {
     state.catalog = catalog.state;
     const selected = () => state.groups.find((group) => group.target === state.target);
     const collective = () => state.targetMode === 'set' || state.sourceType === 'favorite';
+    const manager = playlistManager({ call,
+      selection: () => {
+        const group = selected(), item = state.playlists.find(item => item.id === state.playlist);
+        return !collective() && state.sourceType === 'playlist' && state.playlistStatus === 'ready'
+          && group && item && state.playlistTarget === group.target ? { group, item } : null;
+      },
+      available: () => !state.reading && !state.writing && !state.pending,
+      live: () => !disposed && state.open, changed: publish,
+      commit: (reviewed, work) => execute(reviewed.group, () => work({ check() {}, send: (route, body) => call(route, { body }) })),
+      completed: () => { clearPlaylists(); publish(); },
+    });
+    state.managing = manager.state;
+    const blocked = () => state.writing || manager.state.writing;
     const current = (version) => !disposed && state.open && epoch === version;
-    const invalidate = () => {
+    const invalidate = (manage = true) => {
       ++epoch; setReader?.abort(); setReader = null; state.pending = null; state.reading = false;
+      if (manage) manager.invalidate();
       catalog.retire();
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
@@ -450,7 +651,7 @@ const SourcePlayerRemote = (() => {
     async function refresh() {
       if (disposed) return false;
       state.open = true;
-      if (state.writing) { publish(); return false; }
+      if (blocked()) { publish(); return false; }
       const prior = selected();
       invalidate(); clearPlaylists(); clearLineIn(); const version = epoch;
       state.reading = true; state.message = ''; publish();
@@ -468,7 +669,7 @@ const SourcePlayerRemote = (() => {
     }
 
     function edit(field, value) {
-      if (disposed || state.writing || !['target', 'targetMode', 'targetQuery', 'nativeQuery', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
+      if (disposed || blocked() || !['target', 'targetMode', 'targetQuery', 'nativeQuery', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
       if (field === 'target' && !state.groups.some((group) => group.target === value)) return false;
       if (field === 'targetMode' && (!['group', 'set'].includes(value) || value === 'set' && state.sourceType === 'line_in')) return false;
       if (field === 'mode' && (!Object.hasOwn(modes, value) || state.sourceType === 'line_in' && value !== 'play')) return false;
@@ -484,7 +685,7 @@ const SourcePlayerRemote = (() => {
     }
 
     async function loadTargetSuggestions() {
-      if (disposed || !state.open || state.writing || state.reading) return false;
+      if (disposed || !state.open || blocked() || state.reading) return false;
       invalidate(); const version = epoch, abort = new AbortController(); setReader = abort;
       state.reading = true; state.message = ''; publish();
       try {
@@ -506,7 +707,7 @@ const SourcePlayerRemote = (() => {
 
     async function loadPlaylists() {
       const group = selected();
-      if (disposed || !state.open || state.writing || collective() || state.sourceType !== 'playlist' || !group) return false;
+      if (disposed || !state.open || blocked() || collective() || state.sourceType !== 'playlist' || !group) return false;
       invalidate(); clearPlaylists(); const version = epoch;
       state.reading = true; state.playlistStatus = 'loading'; state.message = 'Reading saved Sonos playlists…'; publish();
       try {
@@ -522,7 +723,7 @@ const SourcePlayerRemote = (() => {
 
     async function loadLineInSources() {
       const group = selected();
-      if (disposed || !state.open || state.writing || state.reading || state.sourceType !== 'line_in' || !group) return false;
+      if (disposed || !state.open || blocked() || state.reading || state.sourceType !== 'line_in' || !group) return false;
       invalidate(); clearLineIn(); const version = epoch;
       state.reading = true; state.lineInStatus = 'loading'; state.message = 'Reading line-in sources…'; publish();
       try {
@@ -538,7 +739,7 @@ const SourcePlayerRemote = (() => {
 
     async function loadContents(direction = 'refresh') {
       const group = selected(), item = state.playlists.find(item => item.id === state.playlist);
-      if (disposed || !state.open || state.writing || state.reading || collective() || state.sourceType !== 'playlist'
+      if (disposed || !state.open || blocked() || state.reading || collective() || state.sourceType !== 'playlist'
           || !group || !item || state.playlistStatus !== 'ready' || state.playlistTarget !== group.target) return false;
       const request = contentsRequest(state.contents, state.contentsHistory, direction, item.id);
       if (!request) return false;
@@ -561,7 +762,7 @@ const SourcePlayerRemote = (() => {
       try { incoming = offeredSource(value); }
       catch (error) { state.message = problem(error); publish(); return false; }
       state.open = true;
-      if (state.writing || state.reading || state.pending || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
+      if (blocked() || state.reading || manager.busy() || state.pending || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
         state.message = 'Finish the current source action, or explicitly clear its draft before importing another source.';
         publish(); return false;
       }
@@ -584,7 +785,7 @@ const SourcePlayerRemote = (() => {
         incoming = { target: value.target, signature: value.signature, playlist: playlists([value.playlist])[0] };
       } catch (error) { state.message = problem(error); publish(); return false; }
       state.open = true;
-      if (state.writing || state.reading || state.pending || state.input.trim() || state.title.trim()
+      if (blocked() || state.reading || manager.busy() || state.pending || state.input.trim() || state.title.trim()
           || state.targetQuery.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
         state.message = 'Finish the current source action, or explicitly clear its draft before browsing the saved playlist.';
         publish(); return false;
@@ -612,7 +813,7 @@ const SourcePlayerRemote = (() => {
     }
 
     function clearDraft() {
-      if (disposed || state.writing) return false;
+      if (disposed || blocked()) return false;
       invalidate(); clearPlaylists(); clearLineIn(); state.input = ''; state.title = ''; state.target = '';
       state.targetMode = 'group'; state.targetQuery = ''; state.nativeQuery = ''; state.mode = 'play'; state.sourceType = 'link';
       state.message = 'Source draft cleared. No playback command was sent.';
@@ -641,7 +842,7 @@ const SourcePlayerRemote = (() => {
     }
 
     async function review(choice = null) {
-      if (disposed || !state.open || state.writing || state.reading || state.sourceType === 'catalog') return false;
+      if (disposed || !state.open || blocked() || state.reading || state.sourceType === 'catalog') return false;
       invalidate();
       const version = epoch, group = selected(), mode = choice?.mode || state.mode;
       if (collective()) {
@@ -688,7 +889,7 @@ const SourcePlayerRemote = (() => {
     }
 
     async function reviewTrack(position, mode, page = state.contents) {
-      if (disposed || !state.open || state.writing || state.reading || collective() || state.sourceType !== 'playlist'
+      if (disposed || !state.open || blocked() || state.reading || collective() || state.sourceType !== 'playlist'
           || !page || page !== state.contents || page.playlist.id !== state.playlist) return false;
       let choice;
       try { choice = preparePlaylistTrack(page, position, mode); }
@@ -697,7 +898,7 @@ const SourcePlayerRemote = (() => {
     }
 
     async function confirm(pending) {
-      if (disposed || !state.open || state.writing || state.reading || !pending || pending !== state.pending) return false;
+      if (disposed || !state.open || blocked() || state.reading || !pending || pending !== state.pending) return false;
       const version = ++epoch;
       state.pending = null; state.writing = true; state.message = 'Checking the destination…'; state.result = null; publish();
       let sent = false, accepted = false;
@@ -743,16 +944,17 @@ const SourcePlayerRemote = (() => {
       return accepted;
     }
 
-    return { state, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, browseSaved, clearDraft,
+    return { state, manager, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, browseSaved, clearDraft,
       catalogChanged(change = null) {
+        manager.catalogChanged(change);
         if (disposed || !['playlist', 'favorite'].includes(state.sourceType)
             || state.sourceType === 'playlist' && change?.playlists === false
             || state.targetMode !== 'set' && change?.household && selected()?.household !== change.household) return;
-        invalidate(); clearPlaylists();
+        invalidate(false); clearPlaylists();
         state.message = 'The saved household sources changed. Read the current sources and review again.';
         publish();
       },
-      cancel() { if (!state.writing && !disposed) { invalidate(); state.message = ''; publish(); } },
+      cancel() { if (!blocked() && !disposed) { invalidate(); state.message = ''; publish(); } },
       close() { state.open = false; invalidate(); state.message = ''; publish(); },
       dispose() { disposed = true; state.open = false; invalidate(); },
     };
@@ -824,19 +1026,23 @@ const SourcePlayerRemote = (() => {
     const message = el('p', { role: 'status', 'aria-live': 'polite' });
     const result = el('p', { role: 'status', 'aria-live': 'polite' });
     const consent = el('div', { class: 'source-review', hidden: true, tabindex: '-1', 'aria-label': 'Review selected playback' });
+    const managerHost = el('div');
     const inputField = el('label', {}, 'Link or stream ', input), titleField = el('label', {}, 'Title ', title);
     const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Spotify, links, playlists & line-in' }),
       el('div', {}, el('p', { text: 'Search Spotify, choose a saved Sonos playlist, favorite or line-in source, paste a link, or send a direct audio stream. Review the destinations and action before playing or adding music to the queue.' }),
         targetField, el('label', {}, 'Destination selection ', targetMode), targetSetFields,
         el('label', {}, 'Music source ', sourceType), inputField, titleField, nativeFields, playlistFields, catalogFields, lineInFields,
-        modeField, el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
+        modeField, el('div', { class: 'row' }, refresh, review, clear), message, managerHost, consent, result));
     const node = el('section', { class: 'scenes', 'aria-label': 'Spotify, links, Sonos playlists and line-in' }, details);
     let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, shownContents = null, shownContentsBusy = null, confirmButton = null;
     let shownCatalog = null, shownCatalogBusy = null, shownSuggestions = null;
     let shownLineIn = null, shownLineInStatus = '';
     const control = model({ call, execute, executeSet, changed: render });
+    const managerPanel = playlistManagerPanel(control.manager, doc);
+    managerHost.append(managerPanel.node);
     function render(state) {
-      const busy = state.reading || state.writing;
+      const writing = state.writing || state.managing.writing;
+      const busy = state.reading || writing || control.manager.busy();
       if (shownGroups !== state.groups) {
         shownGroups = state.groups;
         target.replaceChildren(el('option', { value: '', text: 'Choose a group…', disabled: true }));
@@ -845,12 +1051,13 @@ const SourcePlayerRemote = (() => {
       target.value = state.target; mode.value = state.mode; sourceType.value = state.sourceType;
       const set = state.targetMode === 'set', favorite = state.sourceType === 'favorite';
       const saved = state.sourceType === 'playlist', online = state.sourceType === 'catalog', analog = state.sourceType === 'line_in';
+      managerPanel.render(saved && !set && !!state.playlist && state.playlistStatus === 'ready');
       const nativeTitle = favorite || set && saved;
       targetMode.value = state.targetMode; targetField.hidden = set; targetSetFields.hidden = !set;
       if (targetQuery.value !== state.targetQuery) targetQuery.value = state.targetQuery;
       if (nativeQuery.value !== state.nativeQuery) nativeQuery.value = state.nativeQuery;
-      targetMode.disabled = state.writing || analog; targetQuery.disabled = state.writing;
-      nativeQuery.disabled = state.writing; refreshTargets.disabled = busy; targetSuggestions.disabled = busy;
+      targetMode.disabled = writing || analog; targetQuery.disabled = writing;
+      nativeQuery.disabled = writing; refreshTargets.disabled = busy; targetSuggestions.disabled = busy;
       if (shownSuggestions !== state.targetSuggestions) {
         shownSuggestions = state.targetSuggestions;
         targetSuggestions.replaceChildren(el('option', { value: '', text: 'Choose a suggestion…' }));
@@ -879,7 +1086,7 @@ const SourcePlayerRemote = (() => {
         for (const item of state.playlists) playlist.append(el('option', { value: item.id, text: item.title || item.id }));
       }
       playlist.value = state.playlist;
-      playlist.disabled = state.writing || state.playlistStatus !== 'ready' || !state.playlists.length;
+      playlist.disabled = writing || state.playlistStatus !== 'ready' || !state.playlists.length;
       refreshPlaylists.disabled = busy || !state.target;
       playlistHelp.textContent = state.playlistStatus === 'ready' ? state.playlists.length
         ? 'Saved on the speakers in this household. Read its tracks before choosing how to play it.'
@@ -910,9 +1117,9 @@ const SourcePlayerRemote = (() => {
       }
       review.textContent = state.mode === 'play' ? 'Review playback' : 'Review queue addition';
       for (const [field, element] of [['input', input], ['title', title]]) if (element.value !== state[field]) element.value = state[field];
-      for (const element of [target, sourceType, input, title, mode]) element.disabled = state.writing;
-      mode.disabled = state.writing || analog;
-      clear.disabled = state.writing;
+      for (const element of [target, sourceType, input, title, mode]) element.disabled = writing;
+      mode.disabled = writing || analog;
+      clear.disabled = writing;
       refresh.disabled = busy; review.disabled = busy || online || !(set ? state.targetQuery.trim() : state.target)
         || (nativeTitle ? !state.nativeQuery.trim() : saved ? !state.playlist || state.playlistStatus !== 'ready'
         : analog ? !state.lineIn || state.lineInStatus !== 'ready' : !state.input.trim());
@@ -1051,6 +1258,7 @@ const SourcePlayerRemote = (() => {
   }
 
   return { source, prepare, playlists, preparePlaylist, verifyPlaylist, contentsRequest, playlistContents, contentsSummary, renderContents,
+    nativePlaylistTitle, managedPlaylist, playlistManager, playlistManagerPanel,
     lineInSources, lineInLabel, lineInHelp, prepareLineIn, verifyLineIn,
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
     commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE,

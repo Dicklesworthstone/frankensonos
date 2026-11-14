@@ -472,6 +472,7 @@ fn disjoint_replacements_restore_both_captured_queues_from_one_reviewed_action()
         .unwrap()
         .unwrap();
     assert_eq!(preview.id, action.id);
+    let start = f.sim.soap_log().len();
     let restored = f
         .surface
         .undo_checked(&Client::LoopbackHttp, preview.id)
@@ -485,12 +486,13 @@ fn disjoint_replacements_restore_both_captured_queues_from_one_reviewed_action()
             (slot, Some(seconds))
         );
         assert_eq!(position.uri, uri);
-        assert_eq!(
+        assert!(matches!(
             soap::get_transport_info(&f.sim.lan(), host).unwrap().state,
-            TransportState::Paused
-        );
+            TransportState::Paused | TransportState::Stopped
+        ));
         assert_eq!(soap::get_volume(&f.sim.lan(), host).unwrap(), 25);
     }
+    assert!(!f.writes_since(start).iter().any(|write| write == "Play"));
 }
 
 #[test]

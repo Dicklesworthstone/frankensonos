@@ -233,7 +233,7 @@ impl QueueUndo {
     fn validate(&self) -> Result<(), CoreError> {
         self.backup.validate().map_err(unavailable)?;
         let saved = &self.backup.reference;
-        if !matches!(self.version, 1 | 2 | 3)
+        if !matches!(self.version, 1..=3)
             || self.snapshot.coordinator != saved.coordinator
             || self.snapshot.household != saved.household
             || self.after.binding.coordinator != saved.coordinator

@@ -183,13 +183,13 @@ mod tests {
     use std::cell::Cell;
     use std::net::Ipv4Addr;
 
-    struct Status {
+    struct Renderer {
         state: &'static str,
         status: Option<&'static str>,
         calls: Cell<u32>,
     }
 
-    impl Status {
+    impl Renderer {
         fn new(state: &'static str) -> Self {
             Self {
                 state,
@@ -206,7 +206,7 @@ mod tests {
         }
     }
 
-    impl Transport for Status {
+    impl Transport for Renderer {
         fn soap_post(
             &self,
             _: IpAddr,
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn exhausted_transition_budget_does_not_start_another_read() {
-        let t = Status::new("TRANSITIONING");
+        let t = Renderer::new("TRANSITIONING");
         let host = Ipv4Addr::LOCALHOST.into();
         assert!(!wait_with_budget(&t, host, Duration::ZERO, || Ok(true)).unwrap());
         assert_eq!(t.calls.get(), 1);
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn paused_stopped_and_unknown_states_do_not_wait_for_an_owner_to_resume() {
         for state in ["PAUSED_PLAYBACK", "STOPPED", "UNKNOWN"] {
-            let t = Status::new(state);
+            let t = Renderer::new(state);
             let host = Ipv4Addr::LOCALHOST.into();
             assert!(!wait_for_playing(&t, host, || Ok(true)).unwrap());
             assert_eq!(t.calls.get(), 1);
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn renderer_errors_never_confirm_or_extend_a_lost_play_reply() {
         for state in ["PLAYING", "TRANSITIONING"] {
-            let t = Status::with_status(state, " ERROR_OCCURRED ");
+            let t = Renderer::with_status(state, " ERROR_OCCURRED ");
             let host = Ipv4Addr::LOCALHOST.into();
             let mut proofs = 0;
             assert!(
@@ -269,9 +269,9 @@ mod tests {
     #[test]
     fn playing_with_no_reported_error_keeps_the_existing_confirmation_contract() {
         for status in [None, Some(""), Some("OK"), Some("vendor-specific")] {
-            let t = Status {
+            let t = Renderer {
                 status,
-                ..Status::new("PLAYING")
+                ..Renderer::new("PLAYING")
             };
             let host = Ipv4Addr::LOCALHOST.into();
             assert!(wait_for_playing(&t, host, || Ok(true)).unwrap());
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn a_changed_identity_prevents_even_the_transport_read() {
-        let t = Status::new("PLAYING");
+        let t = Renderer::new("PLAYING");
         let host = Ipv4Addr::LOCALHOST.into();
         assert!(!wait_for_playing(&t, host, || Ok(false)).unwrap());
         assert_eq!(t.calls.get(), 0);
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn read_errors_propagate_without_retrying() {
-        let t = Status::new("PLAYING");
+        let t = Renderer::new("PLAYING");
         let host = Ipv4Addr::LOCALHOST.into();
         let result = wait_for_playing(&t, host, || {
             Err(ProtoError::Malformed("proof unavailable".into()))
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn playing_requires_identity_to_match_on_both_sides_of_the_read() {
         for stable in [false, true] {
-            let t = Status::new("PLAYING");
+            let t = Renderer::new("PLAYING");
             let host = Ipv4Addr::LOCALHOST.into();
             let mut proofs = 0;
             let result = wait_for_playing(&t, host, || {

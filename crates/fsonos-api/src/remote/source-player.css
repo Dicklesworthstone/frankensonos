@@ -32,3 +32,7 @@
 .source-target-preview strong, .source-target-preview span { display: block; }
 .source-target-preview span { margin-top: .2rem; overflow-wrap: anywhere; }
 .source-player [role="status"] { white-space: pre-wrap; }
+.source-playlist-manage, .source-playlist-manage > div { display: grid; gap: .65rem; }
+.source-playlist-manage { border-top: 1px solid var(--line); padding-top: .75rem; }
+.source-playlist-manage h3 { margin: 0; font-size: 1rem; }
+.source-playlist-manage .row { display: flex; flex-wrap: wrap; }

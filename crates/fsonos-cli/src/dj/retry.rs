@@ -69,13 +69,14 @@ mod tests {
     use crate::dj::SpotifyDj;
     use fsonos_api::dj::{DjEngine, DjSpeakers, DjSteer};
     use fsonos_api::plan::DjAction;
-    use fsonos_core::HouseholdState;
     use fsonos_core::clock::SystemClock;
     use fsonos_core::store::MemStore;
+    use fsonos_core::{HouseholdState, control};
+    use fsonos_proto::control as soap;
     use fsonos_proto::topology::get_zone_group_state;
     use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
-    use fsonos_spotify::dj::DjConfig;
-    use fsonos_spotify::feed::{FeedSnapshot, QueueFeed};
+    use fsonos_spotify::dj::{DjConfig, PickReason};
+    use fsonos_spotify::feed::{FeedSnapshot, Movement, QueueFeed, QueuedWork};
     use fsonos_types::PlayerId;
 
     fn playback() -> PlayerPlayback {
@@ -175,6 +176,39 @@ mod tests {
     fn failed_stop_keeps_the_feed_for_a_successful_retry() {
         let (sim, households, id, dj) = household();
         let lan = sim.lan();
+        let host = sim.player("Den").unwrap().ip;
+        let uri = "spotify:track:0OwnedDjTrack000000001";
+        let (renderer, metadata) =
+            control::spotify_track_source(&lan, &households, &id, uri, "Owned DJ track")
+                .unwrap()
+                .unwrap();
+        soap::add_uri_to_queue(&lan, host, &renderer, &metadata, false).unwrap();
+        control::play_queue_from(&lan, &households, &id, 1).unwrap();
+        {
+            let mut state = dj.state();
+            let mut snapshot = state.feeds.get(&id).unwrap().snapshot().unwrap();
+            snapshot.queued = vec![QueuedWork {
+                title: "Owned DJ track".into(),
+                composer: "Synthetic artist".into(),
+                work_key: "owned-dj-track".into(),
+                movements: vec![Movement {
+                    uri: uri.into(),
+                    title: "Owned DJ track".into(),
+                    position: Some(1),
+                    added: true,
+                }],
+                reason: PickReason {
+                    factors: Vec::new(),
+                    relaxed: Vec::new(),
+                    summary: "fixture".into(),
+                },
+            }];
+            snapshot.playing = Some(1);
+            state.feeds.insert(
+                id.clone(),
+                QueueFeed::restore(snapshot, DjConfig::default(), 1),
+            );
+        }
         let at = DjSpeakers {
             transport: &lan,
             households: &households,
@@ -187,6 +221,13 @@ mod tests {
             .act(at, &mut store, DjAction::Stop, &SystemClock)
             .unwrap_err();
         assert_eq!(failed.upnp_code, Some(701));
+        assert_eq!(
+            sim.soap_log()
+                .iter()
+                .filter(|entry| entry.action == "Stop")
+                .count(),
+            1
+        );
         assert!(dj.feeds(&id));
         let after = dj.state().feeds.get(&id).unwrap().snapshot();
         assert_eq!(after, before);
@@ -197,6 +238,14 @@ mod tests {
         assert!(stopped.changed);
         assert!(!dj.feeds(&id));
         assert!(!dj.state().feeds.contains_key(&id));
+        assert_eq!(
+            sim.soap_log()
+                .iter()
+                .filter(|entry| entry.action == "Stop")
+                .count(),
+            2,
+            "only the explicit retry sends a second Stop"
+        );
     }
 
     #[test]

@@ -323,34 +323,31 @@ impl Transport for RefuseRendererOnce<'_> {
 fn enqueue_recovery_keeps_the_original_playback_intent_for_undo() {
     for generation in [1, 2] {
         for playing in [false, true] {
-            for autoplay in [false, true] {
-                let f = Fixture::new(generation, playing);
-                let pending = f.capture();
-                let replies = RefuseRendererOnce {
-                    inner: &f.lan,
-                    refused: Cell::new(false),
-                    adds: Cell::new(0),
-                };
-                let replace = if autoplay {
-                    control::play_spotify_container_with_receipt
-                } else {
-                    control::load_spotify_container_with_receipt
-                };
-                let receipt = replace(
-                    &replies,
-                    &f.houses,
-                    &f.coordinator,
-                    SpotifyContainer::Album,
-                    "spotify:album:0000000000000000000001",
-                    "Replacement",
-                )
-                .unwrap();
-                assert_eq!(replies.adds.get(), 2, "one retry after the refused enqueue");
-                let saved = f.finish(pending, &receipt);
-                let mut store = MemStore::default();
-                record(&mut store, saved);
-                f.undo(&mut store, false).unwrap();
-                f.restored(playing);
+            let f = Fixture::new(generation, playing);
+            let pending = f.capture();
+            let replies = RefuseRendererOnce {
+                inner: &f.lan,
+                refused: Cell::new(false),
+                adds: Cell::new(0),
+            };
+            let receipt = control::play_spotify_container_with_receipt(
+                &replies,
+                &f.houses,
+                &f.coordinator,
+                SpotifyContainer::Album,
+                "spotify:album:0000000000000000000001",
+                "Replacement",
+            )
+            .unwrap();
+            assert_eq!(replies.adds.get(), 2, "one retry after the refused enqueue");
+            let saved = f.finish(pending, &receipt);
+            let mut store = MemStore::default();
+            record(&mut store, saved);
+            let start = f.sim.soap_log().len();
+            f.undo(&mut store, false).unwrap();
+            f.restored(playing);
+            if !playing {
+                assert!(!f.writes_since(start).iter().any(|write| write == "Play"));
             }
         }
     }

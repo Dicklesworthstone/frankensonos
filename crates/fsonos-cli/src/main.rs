@@ -149,6 +149,11 @@ enum Command {
     /// Save the current group queue as a new Sonos playlist. Playback continues;
     /// existing playlists are never overwritten. No Spotify sign-in is needed.
     PlaylistSave(playlist_cmd::PlaylistSaveArgs),
+    /// Rename an exact saved Sonos playlist using its freshly read contents revision.
+    PlaylistRename(playlist_cmd::PlaylistRenameArgs),
+    /// Permanently remove an exact saved Sonos playlist. Does not change playback;
+    /// requires its contents revision and cannot be undone through action history.
+    PlaylistRemove(playlist_cmd::PlaylistRemoveArgs),
     /// What played lately, newest first: when, the room whose group played
     /// it, and what.
     History {
@@ -579,6 +584,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
         Command::PlayMode(args) => play_mode_cmd::run(global, &args),
         Command::PlaylistSave(args) => playlist_cmd::run(global, &args),
+        Command::PlaylistRename(args) => playlist_cmd::rename(global, &args),
+        Command::PlaylistRemove(args) => playlist_cmd::remove(global, &args),
         Command::PlaylistContents(args) => playlist_cmd::contents(global, &args),
         Command::PlaylistTrack(args) => playlist_cmd::track(global, &args),
         Command::Announcements(args) => announce_cmd::jobs(global, &args),
@@ -1117,6 +1124,8 @@ fn plan_for<'a>(
         | Command::Playlists { .. }
         | Command::LineIn { .. }
         | Command::PlaylistSave(_)
+        | Command::PlaylistRename(_)
+        | Command::PlaylistRemove(_)
         | Command::PlaylistContents(_)
         | Command::PlaylistTrack(_)
         | Command::Queue { .. }

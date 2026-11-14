@@ -1041,34 +1041,43 @@ mod tests {
             };
             let out = execute(&t, &households(), &play_spotify(uri)).unwrap();
             assert!(out.changed && out.done.contains(uri), "{}", out.done);
-            // The old queue stays until the new tracks are read back after it,
-            // and each staged write first checks the group and its source are
-            // still the ones it started with (25a53ff9), as core's control
-            // tests pin.
+            // Owner/recovery evidence can add reads without adding writes.
+            // Keep the exact mutation sequence and require the queue, group
+            // and source proof before each irreversible replacement stage.
+            let actions = t.actions();
             assert_eq!(
-                t.actions(),
+                actions
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|action| !action.starts_with("Get") && *action != "Browse")
+                    .collect::<Vec<_>>(),
                 [
-                    "Browse",
-                    "GetZoneGroupState",
-                    "GetMediaInfo",
-                    "Browse",
-                    "GetZoneGroupState",
-                    "GetMediaInfo",
                     "AddURIToQueue",
-                    "Browse",
-                    "GetZoneGroupState",
-                    "GetMediaInfo",
-                    "GetZoneGroupState",
                     "RemoveTrackRangeFromQueue",
-                    "Browse",
-                    "GetZoneGroupState",
-                    "GetZoneGroupState",
-                    "GetMediaInfo",
                     "SetAVTransportURI",
                     "Seek",
                     "Play"
                 ]
             );
+            let stages = [
+                "AddURIToQueue",
+                "RemoveTrackRangeFromQueue",
+                "SetAVTransportURI",
+            ]
+            .map(|stage| actions.iter().position(|action| action == stage).unwrap());
+            for (start, end) in [
+                (0, stages[0]),
+                (stages[0] + 1, stages[1]),
+                (stages[1] + 1, stages[2]),
+            ] {
+                for required in ["Browse", "GetZoneGroupState", "GetMediaInfo"] {
+                    assert!(
+                        actions[start..end].iter().any(|action| action == required),
+                        "{required} must precede {}: {actions:?}",
+                        actions[end]
+                    );
+                }
+            }
         }
         // No favorite to learn the account from: said so, the queue untouched.
         let t = Canned::ok("");

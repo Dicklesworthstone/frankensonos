@@ -372,10 +372,24 @@ fn every_route_the_page_calls_exists() {
             "the page calls {method} {path}, which the API lacks"
         );
     }
-    // Every request goes through the table (one fetch), and the live feed
-    // reads only the event stream (one more fetch, which refuses any other
-    // URL, with EventSource where it cannot run).
-    assert_eq!(script.matches("fetch(").count(), 2);
+    // Shared save models also serve the dashboard. Their raw paths go through
+    // the phone's injected route adapter, not the library's default fetch.
+    // Keep auditing the full route inventory above, then isolate phone code
+    // to check that it has no transport outside its request layer/event feed.
+    let mut phone = script.clone();
+    for shared in [
+        include_str!("../src/remote/dashboard-core.js"),
+        include_str!("../src/remote/dashboard-playlist-save.js"),
+        include_str!("../src/remote/dashboard-playlist-save-panel.js"),
+    ] {
+        assert_eq!(
+            phone.matches(shared).count(),
+            1,
+            "shared module shipped once"
+        );
+        phone = phone.replacen(shared, "", 1);
+    }
+    assert_eq!(phone.matches("fetch(").count(), 2);
     assert!(script.contains("if (url !== '/events') throw"));
     assert!(script.contains("RemoteEventFeed.open(path('events'))"));
     assert_eq!(script.matches("new EventSource(").count(), 1);
@@ -383,7 +397,7 @@ fn every_route_the_page_calls_exists() {
     // Every other path names one of the API's routes (or, ending in "/",
     // a family of them), and none is templated.
     let api = openapi["paths"].as_object().expect("documented paths");
-    let others = other_paths(&script);
+    let others = other_paths(&phone);
     assert!(others.contains(&"/announce"), "{others:?}");
     for literal in others {
         assert!(
@@ -393,7 +407,7 @@ fn every_route_the_page_calls_exists() {
         );
     }
     assert!(
-        !script.contains("`/"),
+        !phone.contains("`/"),
         "a templated path outside the route tables"
     );
 }

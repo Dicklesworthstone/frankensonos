@@ -201,6 +201,64 @@ fn finish(
         .unwrap()
 }
 
+#[test]
+fn recovered_scene_receipts_keep_original_playback_intent_for_silent_and_started_sources() {
+    for generation in [1, 2] {
+        for playing in [false, true] {
+            for start in [false, true] {
+                let f = fixture(generation, playing);
+                let plan = plan(&f, 0, start);
+                let pending = actions::capture_scene_queue_undo(
+                    &f.lan,
+                    &f.houses,
+                    &f.coordinator,
+                    &plan,
+                    100,
+                )
+                .unwrap();
+                let replies = RefuseRendererOnce {
+                    inner: &f.lan,
+                    refused: Cell::new(false),
+                    adds: Cell::new(0),
+                };
+                let hooks = Receipts::new(&f);
+                let before = f.sim.soap_log().len();
+                let report = scenes::apply(
+                    &replies,
+                    &f.houses,
+                    &plan,
+                    &ApplyOptions {
+                        fade: None,
+                        hooks: &hooks,
+                    },
+                );
+                assert!(report.is_complete(), "{report:?}");
+                assert_eq!(replies.adds.get(), 2, "one retry after the refused enqueue");
+                assert_eq!(*hooks.attempts.borrow(), [f.coordinator.clone()]);
+                if !start {
+                    assert!(!f.writes_since(before).iter().any(|write| write == "Play"));
+                }
+                let mut receipts = hooks.receipts.take();
+                assert_eq!(receipts.len(), 1);
+                let saved = finish(&f, (pending, receipts.remove(0), report));
+                let mut store = MemStore::default();
+                record(&mut store, saved);
+                let before = f.sim.soap_log().len();
+                f.undo(&mut store, false).unwrap();
+                f.restored(playing);
+                assert_eq!(
+                    f.writes_since(before)
+                        .iter()
+                        .filter(|write| *write == "Play")
+                        .count(),
+                    usize::from(playing),
+                    "undo resumes only an originally playing queue"
+                );
+            }
+        }
+    }
+}
+
 /// Every restoration level write must address an inactive original queue.
 /// Optionally make a real concurrent queue edit after the first such volume
 /// write, proving that the later unmute and resume cannot follow it.

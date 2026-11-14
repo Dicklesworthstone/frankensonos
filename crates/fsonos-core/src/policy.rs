@@ -106,6 +106,8 @@ pub const CLASSES: [(&str, &[&str]); 10] = [
         "house-config",
         &[
             "save_sonos_playlist",
+            "rename_sonos_playlist",
+            "remove_sonos_playlist",
             "save_scene",
             "delete_scene",
             "add_schedule",
@@ -1780,19 +1782,25 @@ deny = ["house-config"]
         ));
         assert_eq!(class_of("fade_volume"), Some("volume"));
         assert_eq!(class_of("list_zones"), None);
-        assert_eq!(class_of("save_sonos_playlist"), Some("house-config"));
-        assert!(matches!(
-            p.authorize(call("save_sonos_playlist", false), &who("catalog_reader")),
-            Decision::Deny { .. }
-        ));
+        for tool in [
+            "save_sonos_playlist",
+            "rename_sonos_playlist",
+            "remove_sonos_playlist",
+        ] {
+            assert_eq!(class_of(tool), Some("house-config"));
+            assert!(matches!(
+                p.authorize(call(tool, false), &who("catalog_reader")),
+                Decision::Deny { .. }
+            ));
+            assert!(matches!(
+                p.authorize(call(tool, false), &reader),
+                Decision::Deny { .. }
+            ));
+        }
         assert_eq!(
             p.authorize(call("list_favorites", true), &who("catalog_reader")),
             Decision::Allow
         );
-        assert!(matches!(
-            p.authorize(call("save_sonos_playlist", false), &reader),
-            Decision::Deny { .. }
-        ));
     }
 
     #[test]

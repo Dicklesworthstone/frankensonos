@@ -256,7 +256,9 @@ fn a_route_move_settles_then_changes_only_that_players_callback() {
         listeners
             .reconcile(
                 &[host(1), host(2)],
-                now + ROUTE_SETTLE - Duration::from_secs(1),
+                (now + ROUTE_SETTLE)
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap(),
                 false,
                 resolve,
                 open
@@ -481,7 +483,7 @@ fn local_listener_loss_does_not_mark_its_reachable_household_offline() {
         .unwrap();
     engine.listener_failed(
         &mut model,
-        Closed {
+        &Closed {
             local: local(2),
             error: ProtoError::NotWired("second callback listener stopped"),
         },

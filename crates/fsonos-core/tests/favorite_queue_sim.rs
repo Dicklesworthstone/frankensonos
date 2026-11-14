@@ -105,15 +105,13 @@ impl Tape {
 
     fn assert_only_adds(&self, expected: usize) {
         assert_eq!(self.adds.get(), expected);
-        for (action, _) in self.calls.borrow().iter() {
-            assert!(
-                matches!(
-                    action.as_str(),
-                    "GetMediaInfo" | "GetPositionInfo" | "Browse" | "AddURIToQueue"
-                ),
-                "unexpected playback mutation: {action}"
-            );
-        }
+        let calls = self.calls.borrow();
+        let writes: Vec<_> = calls
+            .iter()
+            .map(|(action, _)| action.as_str())
+            .filter(|action| !action.starts_with("Get") && *action != "Browse")
+            .collect();
+        assert_eq!(writes, vec!["AddURIToQueue"; expected]);
     }
 }
 

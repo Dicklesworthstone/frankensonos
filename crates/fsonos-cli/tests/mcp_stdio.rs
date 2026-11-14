@@ -226,6 +226,8 @@ fn control_tools_are_advertised_with_their_arguments() {
         "sonos_playlist_track",
         "play_sonos_playlist",
         "save_sonos_playlist",
+        "rename_sonos_playlist",
+        "remove_sonos_playlist",
         "add_to_queue",
         "add_tracks_to_queue",
         "announce",
@@ -284,6 +286,21 @@ fn control_tools_are_advertised_with_their_arguments() {
         tool("save_sonos_playlist"),
         tool("add_to_queue"),
     );
+    for (name, fields) in [
+        (
+            "rename_sonos_playlist",
+            vec!["zone", "playlist", "expected_revision", "title"],
+        ),
+        (
+            "remove_sonos_playlist",
+            vec!["zone", "playlist", "expected_revision"],
+        ),
+    ] {
+        let schema = tool(name);
+        assert_tool_arguments(schema, &fields, &fields);
+        assert_ne!(schema["annotations"]["readOnlyHint"], true);
+        assert_ne!(schema["annotations"]["idempotentHint"], true);
+    }
     let inputs = tool("list_line_in");
     assert_tool_arguments(inputs, &["zone"], &["zone"]);
     assert_eq!(inputs["annotations"]["readOnlyHint"], true);

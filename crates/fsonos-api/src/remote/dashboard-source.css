@@ -17,6 +17,15 @@
 .source-preview footer{margin-top:17px}
 .source-message{font-size:12px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:15px}
 .source-message:empty{display:none}
+.source-playlist-manage{display:grid;gap:12px;margin-top:20px;padding:17px;border:1px solid var(--line-strong);border-radius:11px;background:var(--raised);overflow-wrap:anywhere}
+.source-playlist-manage>div,.source-playlist-manage label{display:grid;gap:10px}
+.source-playlist-manage h3,.source-playlist-manage p{margin:0;white-space:pre-wrap;font-size:12px;line-height:1.7}
+.source-playlist-manage input{min-width:0;min-height:44px;padding:10px 12px;background:var(--raised);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;font:inherit}
+.source-playlist-manage button{min-height:44px;padding:8px 12px;background:transparent;color:var(--text);border:1px solid var(--line-strong);border-radius:8px;font:inherit;cursor:pointer}
+.source-playlist-manage button:disabled{opacity:.5;cursor:default}
+.source-playlist-manage .row{display:flex;flex-wrap:wrap;gap:10px}
+.source-playlist-manage .source-review{border-top:1px solid var(--line-strong);padding-top:12px}
+.source-playlist-manage[hidden],.source-playlist-manage [hidden],.source-playlist-manage [role=status]:empty{display:none}
 @media(max-width:480px){.source-dialog .source-fields{grid-template-columns:minmax(0,1fr)}.source-fields .source-address,.source-fields>p{grid-column:auto}.source-preview dl{grid-template-columns:minmax(0,1fr);gap:3px}.source-preview dd{margin-bottom:8px}.source-actions{align-items:stretch}.source-actions .outline-button{flex:1}.source-trigger{white-space:nowrap}}
 
 .source-catalog-controls{grid-column:1/-1;display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px}

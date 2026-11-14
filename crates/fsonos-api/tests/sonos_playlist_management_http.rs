@@ -1,0 +1,310 @@
+//! Native playlist lifecycle through the real HTTP listener and S1/S2 speakers.
+
+use asupersync::Cx;
+use asupersync::http::Client as HttpClient;
+use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
+use fastapi::{ServerConfig, TcpServer};
+use fsonos_api::{Identity, Surface, WebPolicy};
+use fsonos_core::HouseholdState;
+use fsonos_core::clock::SystemClock;
+use fsonos_core::policy::{Client, Policy};
+use fsonos_core::store::MemStore;
+use fsonos_proto::content::{QUEUE, browse_snapshot};
+use fsonos_proto::control as soap;
+use fsonos_proto::topology::get_zone_group_state;
+use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_types::HouseholdId;
+use serde_json::{Value, json};
+use std::net::SocketAddr;
+use std::sync::{Arc, mpsc};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+const CONTENTS: &str = "/sonos/playlists/contents?zone=Room&playlist=SQ%3A7";
+const RENAME: &str = "/sonos/playlists/rename";
+const REMOVE: &str = "/sonos/playlists/remove";
+
+fn runtime() -> Runtime {
+    RuntimeBuilder::current_thread()
+        .with_reactor(create_reactor().unwrap())
+        .blocking_threads(0, 4)
+        .build()
+        .unwrap()
+}
+
+struct Api {
+    addr: SocketAddr,
+    server: Arc<TcpServer>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl Api {
+    fn start(sim: &SimHandle, client: Client) -> Self {
+        let player = sim.player("Room").unwrap();
+        let mut household = HouseholdState::default();
+        household.apply_topology(&get_zone_group_state(&sim.lan(), player.ip).unwrap());
+        household.id = Some(HouseholdId(player.household.clone()));
+        let surface = Surface::new(
+            Box::new(sim.lan()),
+            Box::new(move |_| Ok(vec![household.clone()])),
+            Policy::default(),
+            Box::new(SystemClock),
+        )
+        .with_action_log(Box::new(MemStore::default()), "http");
+        let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+        let app = Arc::new(fsonos_api::app(
+            &Arc::new(surface),
+            &Identity::fixed(client),
+            &web,
+        ));
+        let server = Arc::new(TcpServer::new(
+            ServerConfig::new("127.0.0.1:0").with_allowed_hosts(web.hosts().to_vec()),
+        ));
+        let (tx, rx) = mpsc::channel();
+        let running = Arc::clone(&server);
+        let worker = thread::spawn(move || {
+            runtime().block_on(async move {
+                let cx = Cx::current().unwrap();
+                let listener = asupersync::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .unwrap();
+                tx.send(listener.local_addr().unwrap()).unwrap();
+                let _ = running.serve_on_app(&cx, listener, app).await;
+            });
+        });
+        Self {
+            addr: rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            server,
+            worker: Some(worker),
+        }
+    }
+
+    fn call(&self, path: &str, body: Option<&Value>) -> (u16, Value) {
+        runtime().block_on(async {
+            let cx = Cx::current().unwrap();
+            let http = HttpClient::default_for_runtime(&cx);
+            let url = format!("http://{}{path}", self.addr);
+            let request = match body {
+                Some(body) => http
+                    .post(url)
+                    .header("Content-Type", "application/json")
+                    .body(body.to_string()),
+                None => http.get(url),
+            };
+            let response = request.send(&cx).await.unwrap();
+            (
+                response.status,
+                serde_json::from_slice(&response.body).unwrap(),
+            )
+        })
+    }
+
+    fn get(&self, path: &str) -> Value {
+        let (status, body) = self.call(path, None);
+        assert_eq!(status, 200, "{path}: {body}");
+        body
+    }
+}
+
+impl Drop for Api {
+    fn drop(&mut self) {
+        self.server.shutdown();
+        drop(std::net::TcpStream::connect(self.addr));
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn sim(s2: bool) -> SimHandle {
+    let model = if s2 {
+        SimModel::One
+    } else {
+        SimModel::Play5Gen1
+    };
+    let players = [SimPlayerSpec::new("Room", model)];
+    let builder = SimHousehold::builder();
+    if s2 {
+        builder.s2(players)
+    } else {
+        builder.s1(players)
+    }
+    .spawn()
+    .unwrap()
+}
+
+#[test]
+fn http_rename_and_remove_use_reviewed_identity_without_changing_playback() {
+    for s2 in [false, true] {
+        let sim = sim(s2);
+        let player = sim.player("Room").unwrap();
+        let host = player.ip;
+        let lan = sim.lan();
+        soap::enqueue_uri(
+            &lan,
+            host,
+            "x-file-cifs://example.invalid/playing.flac",
+            "",
+            0,
+            false,
+        )
+        .unwrap();
+        soap::set_av_transport_uri(&lan, host, &format!("x-rincon-queue:{}#0", player.uuid), "")
+            .unwrap();
+        soap::seek_track(&lan, host, 1).unwrap();
+        soap::play(&lan, host).unwrap();
+        let playback = || {
+            (
+                browse_snapshot(&lan, host, QUEUE).unwrap(),
+                soap::get_position_info(&lan, host).unwrap(),
+                soap::get_transport_info(&lan, host).unwrap(),
+            )
+        };
+        let before_playback = playback();
+        let api = Api::start(&sim, Client::LoopbackHttp);
+        let catalog = api.get("/sonos/playlists?zone=Room");
+        let before = api.get(CONTENTS);
+        let title = "Bach, Dvořák & <friends>";
+        let start = sim.soap_log().len();
+        let (status, renamed) = api.call(RENAME, Some(&json!({
+            "zone":"Room", "playlist":"SQ:7", "expected_revision":before["revision"], "title":title
+        })));
+        assert_eq!(status, 200, "{renamed}");
+        assert_eq!(renamed["playlist"]["id"], "SQ:7");
+        assert_eq!(renamed["playlist"]["title"], title);
+        assert_eq!(renamed["operation"], "rename");
+        assert_eq!(renamed["changed"], true);
+        assert_eq!(renamed["logged"], true);
+        assert_eq!(playback(), before_playback);
+        let (status, stale) = api.call(
+            REMOVE,
+            Some(&json!({
+                "zone":"Room", "playlist":"SQ:7", "expected_revision":before["revision"]
+            })),
+        );
+        assert_eq!(status, 409, "{stale}");
+        assert_eq!(stale["code"], "PLAYLIST_CHANGED");
+        assert_eq!(stale["retryable"], false);
+        let reviewed = api.get(CONTENTS);
+        assert_eq!(reviewed["items"], before["items"]);
+        assert_ne!(reviewed["revision"], before["revision"]);
+        let (status, removed) = api.call(
+            REMOVE,
+            Some(&json!({
+                "zone":"Room", "playlist":"SQ:7", "expected_revision":reviewed["revision"]
+            })),
+        );
+        assert_eq!(status, 200, "{removed}");
+        assert_eq!(removed["playlist"], renamed["playlist"]);
+        assert_eq!(removed["operation"], "remove");
+        assert_eq!(removed["changed"], true);
+        assert_eq!(removed["logged"], true);
+        assert_eq!(playback(), before_playback);
+        let remaining = api.get("/sonos/playlists?zone=Room");
+        assert_eq!(
+            remaining,
+            json!(
+                catalog
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry["id"] != "SQ:7")
+                    .collect::<Vec<_>>()
+            )
+        );
+        let writes: Vec<_> = sim.soap_log()[start..]
+            .iter()
+            .filter(|entry| entry.action != "Browse" && !entry.action.starts_with("Get"))
+            .map(|entry| entry.action.clone())
+            .collect();
+        assert_eq!(writes, ["UpdateObject", "DestroyObject"]);
+        drop(api);
+        sim.shutdown();
+    }
+}
+
+#[test]
+fn malformed_management_requests_are_rejected_before_speaker_io() {
+    let sim = sim(true);
+    let api = Api::start(&sim, Client::LoopbackHttp);
+    let start = sim.soap_log().len();
+    for path in [RENAME, REMOVE] {
+        let mut valid = json!({"zone":"Room", "playlist":"SQ:7", "expected_revision":"observed"});
+        if path == RENAME {
+            valid["title"] = json!("New title");
+        }
+        for field in ["zone", "playlist", "expected_revision"] {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            let (status, failure) = api.call(path, Some(&missing));
+            assert_eq!(status, 422, "{path}/{field}: {failure}");
+        }
+        for (field, value) in [
+            ("force", json!(true)),
+            ("expected_revision", json!("")),
+            ("playlist", json!("Morning")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            let (status, failure) = api.call(path, Some(&invalid));
+            assert_eq!(status, 422, "{path}/{field}: {failure}");
+        }
+    }
+    assert_eq!(sim.soap_log().len(), start);
+    drop(api);
+    sim.shutdown();
+}
+
+fn schema<'a>(doc: &'a Value, value: &'a Value) -> &'a Value {
+    value["$ref"]
+        .as_str()
+        .and_then(|reference| reference.rsplit('/').next())
+        .map_or(value, |name| &doc["components"]["schemas"][name])
+}
+
+#[test]
+fn openapi_exposes_revision_bound_management_requests_and_confirmed_results() {
+    let sim = sim(true);
+    let api = Api::start(&sim, Client::LoopbackHttp);
+    let doc = api.get("/openapi.json");
+    for (path, operation) in [
+        (RENAME, "rename_sonos_playlist"),
+        (REMOVE, "remove_sonos_playlist"),
+    ] {
+        let op = &doc["paths"][path]["post"];
+        assert_eq!(op["operationId"], operation);
+        let input = schema(
+            &doc,
+            &op["requestBody"]["content"]["application/json"]["schema"],
+        );
+        for field in ["zone", "playlist", "expected_revision"] {
+            assert!(
+                input["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(field)),
+                "{path}: {input}"
+            );
+        }
+        if path == RENAME {
+            assert!(
+                input["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("title"))
+            );
+        }
+        let output = schema(
+            &doc,
+            &op["responses"]["200"]["content"]["application/json"]["schema"],
+        );
+        for field in ["done", "zone", "playlist", "operation", "changed", "logged"] {
+            assert!(
+                output["properties"][field].is_object(),
+                "{path}/{field}: {output}"
+            );
+        }
+    }
+    drop(api);
+    sim.shutdown();
+}

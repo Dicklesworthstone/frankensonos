@@ -7,6 +7,8 @@
 //! queueing paths, including staged replacement and uncertain-write handling.
 //! [`save_queue`] creates a new native playlist from the current queue without
 //! changing playback; its confirmed catalog entry is immediately recallable.
+//! [`rename`] and [`remove`] manage an exactly observed saved playlist without
+//! changing its queued occurrences or the currently playing source.
 
 use crate::favorites::{Favorite, FavoriteKind};
 use crate::{CoreError, HouseholdState, control};
@@ -20,9 +22,11 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 
 mod contents;
+mod management;
 mod selection;
 
 pub use contents::{MAX_CONTENTS_PAGE, PlaylistContents, contents};
+pub use management::{PlaylistChange, remove, rename};
 pub use selection::select_track;
 
 /// The native `SaveQueue` Title argument holds at most 1023 UTF-8 bytes.
@@ -214,7 +218,7 @@ impl GroupProof {
     ) -> Result<(), CoreError> {
         if *self != Self::read(transport, host, coordinator)? {
             return Err(invalid(
-                "the playlist target's group or boot identity changed while saving",
+                "the playlist target's group or boot identity changed during the operation",
             ));
         }
         Ok(())

@@ -136,17 +136,31 @@ impl Rig {
     }
 
     fn assert_original_playback(&self) {
-        let position = soap::get_position_info(&self.sim.lan(), self.lead).unwrap();
-        assert_eq!((position.track, position.position_secs), (2, Some(17)));
-        assert_eq!(
-            spotify_uri_from_renderer_uri(&position.uri).as_deref(),
-            Some(FIRST)
-        );
+        self.assert_original_position();
         assert_eq!(
             soap::get_transport_info(&self.sim.lan(), self.lead)
                 .unwrap()
                 .state,
             TransportState::Paused
+        );
+    }
+
+    fn assert_restored_playback(&self) {
+        self.assert_original_position();
+        assert!(matches!(
+            soap::get_transport_info(&self.sim.lan(), self.lead)
+                .unwrap()
+                .state,
+            TransportState::Paused | TransportState::Stopped
+        ));
+    }
+
+    fn assert_original_position(&self) {
+        let position = soap::get_position_info(&self.sim.lan(), self.lead).unwrap();
+        assert_eq!((position.track, position.position_secs), (2, Some(17)));
+        assert_eq!(
+            spotify_uri_from_renderer_uri(&position.uri).as_deref(),
+            Some(FIRST)
         );
         assert_eq!(
             get_play_mode(&self.sim.lan(), self.lead).unwrap(),
@@ -284,11 +298,17 @@ fn selected_mixed_occurrences_start_in_order_with_caps_and_complete_queue_undo()
         assert_eq!(saved.queue_undo.len(), 1);
         let preview = surface.preview_undo(&Client::McpStdio).unwrap().unwrap();
         assert!(preview.undoable);
+        let start = rig.sim.soap_log().len();
         let undone = surface.undo_checked(&Client::McpStdio, preview.id).unwrap();
         assert_eq!(undone.undone, Some(preview.id));
         assert!(undone.failures.is_empty(), "{undone:?}");
         assert_eq!(rig.queue(), original);
-        rig.assert_original_playback();
+        rig.assert_restored_playback();
+        assert!(
+            rig.writes_since(start)
+                .iter()
+                .all(|write| write.action != "Play")
+        );
         assert_eq!(
             rig.volumes(),
             [25, 25, 60],
@@ -563,6 +583,7 @@ fn lost_add_replies_are_observed_once_and_partial_selections_never_replace_the_o
                 lost.store(false, Ordering::SeqCst);
                 let preview = surface.preview_undo(&Client::McpStdio).unwrap().unwrap();
                 assert!(preview.undoable);
+                let start = rig.sim.soap_log().len();
                 assert!(
                     surface
                         .undo_checked(&Client::McpStdio, preview.id)
@@ -571,7 +592,12 @@ fn lost_add_replies_are_observed_once_and_partial_selections_never_replace_the_o
                         .is_empty()
                 );
                 assert_eq!(rig.queue(), original);
-                rig.assert_original_playback();
+                rig.assert_restored_playback();
+                assert!(
+                    rig.writes_since(start)
+                        .iter()
+                        .all(|write| write.action != "Play")
+                );
             }
         }
     }

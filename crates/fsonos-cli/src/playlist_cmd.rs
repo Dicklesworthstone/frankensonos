@@ -1,4 +1,7 @@
-//! Inspect, select from and save native playlists through the selected daemon.
+//! Inspect, play and manage native playlists through the selected daemon.
+
+mod manage;
+pub use manage::{PlaylistRemoveArgs, PlaylistRenameArgs, remove, rename};
 
 use clap::Args;
 use fsonos_api::Failure;

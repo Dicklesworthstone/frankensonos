@@ -20,6 +20,12 @@ pub use contents::{SonosPlaylistContentsDto, SonosPlaylistContentsRequest, Sonos
 mod track;
 pub use track::{SonosPlaylistTrackDto, SonosPlaylistTrackMode, SonosPlaylistTrackRequest};
 
+mod manage;
+pub use manage::{
+    ManagedSonosPlaylistDto, RemoveSonosPlaylistRequest, RenameSonosPlaylistRequest,
+    SonosPlaylistOperation,
+};
+
 /// Saving a queue changes the household's catalog, not playback.
 pub const SAVE: &str = "save_sonos_playlist";
 

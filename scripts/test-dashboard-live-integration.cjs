@@ -60,6 +60,7 @@ function setup(groups = null) {
   queue=Q.model({call:request});
   const workspace=vm.runInNewContext(`({${workspaceInvalidation}})`,{queue,controller,activity:null});
   const context=vm.createContext({controller,session,request,active:true,catalogsDirty:true,historyVersion:0,demo:false,
+    sourcePlayer:null,playlistSave:null,
     workspace:{invalidate(targets){invalidations++;workspace.invalidate(targets);}},history:async()=>{histories++;},
     RemoteEventFeed:{open:(url)=>F.open(url,{fetcher,schedule:t.schedule,cancel:t.cancel,now:t.now,random:()=>0,gate})},
     DashboardLive:{create:options=>L.create({...options,schedule:t.schedule,cancel:t.cancel,now:t.now})},

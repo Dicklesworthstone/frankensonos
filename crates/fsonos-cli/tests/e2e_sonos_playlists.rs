@@ -6,8 +6,8 @@ mod e2e;
 use e2e::{Run, Scenario};
 use fsonos_api::surface::queue::QueueAddedDto;
 use fsonos_api::surface::sonos_playlists::{
-    SavedSonosPlaylistDto, SonosPlaylistContentsDto, SonosPlaylistDto, SonosPlaylistTrackDto,
-    SonosPlaylistTrackMode,
+    ManagedSonosPlaylistDto, SavedSonosPlaylistDto, SonosPlaylistContentsDto, SonosPlaylistDto,
+    SonosPlaylistOperation, SonosPlaylistTrackDto, SonosPlaylistTrackMode,
 };
 use fsonos_proto::content::{QUEUE, browse_all};
 use fsonos_proto::control as soap;
@@ -116,7 +116,113 @@ fn exercise(s: &mut Scenario, route: &str) {
 
         save_and_recall(s, route, room, generation, &selected);
         select_native_track(s, route, room);
+        manage_saved_playlist(s, route, room);
     }
+}
+
+fn manage_saved_playlist(s: &mut Scenario, route: &str, room: &str) {
+    let host = s.ip(room);
+    let queue = browse_all(&s.lan(), host, QUEUE).unwrap();
+    let playing = soap::get_position_info(&s.lan(), host).unwrap();
+    let transport = soap::get_transport_info(&s.lan(), host).unwrap();
+    let read = call(
+        s,
+        route,
+        "native-manage-read",
+        &["playlist-contents", room, "SQ:8"],
+    );
+    assert!(read.ok(), "{read:?}");
+    let before: SonosPlaylistContentsDto = serde_json::from_str(&read.stdout).unwrap();
+    let renamed = call(
+        s,
+        route,
+        "native-rename",
+        &[
+            "playlist-rename",
+            room,
+            "SQ:8",
+            "Café, A & B",
+            "--expected-revision",
+            &before.revision,
+        ],
+    );
+    assert!(renamed.ok(), "{renamed:?}");
+    let result: ManagedSonosPlaylistDto = serde_json::from_str(&renamed.stdout).unwrap();
+    assert_eq!(result.operation, SonosPlaylistOperation::Rename);
+    assert!(result.changed && result.logged);
+    assert_eq!(result.playlist.id, "SQ:8");
+    assert_eq!(result.playlist.title, "Café, A & B");
+
+    let stale = call(
+        s,
+        route,
+        "native-remove-stale",
+        &[
+            "playlist-remove",
+            room,
+            "SQ:8",
+            "--expected-revision",
+            &before.revision,
+        ],
+    );
+    assert!(!stale.ok(), "{stale:?}");
+    let read = call(
+        s,
+        route,
+        "native-renamed-read",
+        &["playlist-contents", room, "SQ:8"],
+    );
+    assert!(read.ok(), "{read:?}");
+    let after: SonosPlaylistContentsDto = serde_json::from_str(&read.stdout).unwrap();
+    assert_eq!(before.items, after.items);
+    assert_ne!(before.revision, after.revision);
+    let unchanged = call(
+        s,
+        route,
+        "native-rename-no-op",
+        &[
+            "playlist-rename",
+            room,
+            "SQ:8",
+            "Café, A & B",
+            "--expected-revision",
+            &after.revision,
+        ],
+    );
+    assert!(unchanged.ok(), "{unchanged:?}");
+    let no_op: ManagedSonosPlaylistDto = serde_json::from_str(&unchanged.stdout).unwrap();
+    assert!(!no_op.changed);
+    let removed = call(
+        s,
+        route,
+        "native-remove",
+        &[
+            "playlist-remove",
+            room,
+            "SQ:8",
+            "--expected-revision",
+            &after.revision,
+        ],
+    );
+    assert!(removed.ok(), "{removed:?}");
+    let result: ManagedSonosPlaylistDto = serde_json::from_str(&removed.stdout).unwrap();
+    assert_eq!(result.operation, SonosPlaylistOperation::Remove);
+    assert!(result.changed && result.logged);
+    assert_eq!(result.playlist, after.playlist);
+    let catalog = call(s, route, "native-removed-catalog", &["playlists", room]);
+    assert!(catalog.ok(), "{catalog:?}");
+    let entries: Vec<SonosPlaylistDto> = serde_json::from_str(&catalog.stdout).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(!entries.iter().any(|entry| entry.id == "SQ:8"));
+    s.check(
+        "native-manage",
+        "cli",
+        "rename and remove leave queue and playback unchanged",
+        browse_all(&s.lan(), host, QUEUE).unwrap() == queue
+            && soap::get_position_info(&s.lan(), host).unwrap() == playing
+            && soap::get_transport_info(&s.lan(), host).unwrap() == transport,
+        &removed.stdout,
+    );
 }
 
 fn select_native_track(s: &mut Scenario, route: &str, room: &str) {

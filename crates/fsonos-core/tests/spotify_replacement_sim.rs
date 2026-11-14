@@ -580,14 +580,23 @@ fn retry_staging_keeps_the_original_playback_owner_before_prefix_removal() {
         let replies = Relearning::new(&sim, DuringRelearning::SeekDuringRetry);
         let error = replace_receipt(&replies, &houses, &id, true).unwrap_err();
         assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
-        assert_eq!(replies.count("AddURIToQueue"), 2, "the second append was staged");
+        assert_eq!(
+            replies.count("AddURIToQueue"),
+            2,
+            "the second append was staged"
+        );
         assert_eq!(replies.count("RemoveTrackRangeFromQueue"), 0);
         assert_eq!(replies.count("Play"), 0);
         let contents = queue(&sim, host);
         assert_eq!(contents[0], OLD, "the old prefix remains intact");
-        assert!(contents.len() > 1, "staging may leave a suffix, never replay it");
+        assert!(
+            contents.len() > 1,
+            "staging may leave a suffix, never replay it"
+        );
         assert_eq!(
-            soap::get_position_info(&sim.lan(), host).unwrap().position_secs,
+            soap::get_position_info(&sim.lan(), host)
+                .unwrap()
+                .position_secs,
             Some(23)
         );
     }
