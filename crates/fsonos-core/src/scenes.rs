@@ -991,6 +991,7 @@ fn load_source<T: Transport + ?Sized>(
     control::load_uri(t, households, coordinator, uri, metadata)
 }
 
+#[allow(clippy::too_many_lines)] // one dispatch table for scene operation completion
 fn run<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],

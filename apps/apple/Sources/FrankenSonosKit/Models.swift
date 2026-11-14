@@ -253,7 +253,7 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
 
         public var summary: String { "Saved Sonos playlist: \(title) · \(id) · \(household)" }
         public var recallNote: String {
-            "Recall loads this saved playlist’s current contents and replaces the group’s queue. A renamed or missing playlist requires saving the scene again. Ordinary undo cannot restore the replaced queue contents."
+            "Recall loads this saved playlist’s current contents and replaces the group’s queue. A renamed or missing playlist requires saving the scene again. Bounded queue undo requires a complete verified scene on unchanged groups; inspect the result and undo preview."
         }
     }
     /// A captured position on the original coordinator. A non-nil total

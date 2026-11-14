@@ -59,7 +59,9 @@ private func queueScene(coordinator: String = "RINCON_TEST", household: String? 
     let queue = try #require(scene.groups.first?.source.queue)
     #expect(queue.total == 5)
     #expect(queue.summary == "Saved queue backup · 5 entries · track 3 at 1:23")
-    #expect(queue.recallNote == "Recall replaces the original player’s current queue. Action-history undo cannot restore the replaced queue contents.")
+    #expect(queue.recallNote.contains("Recall replaces the original player’s current queue."))
+    #expect(queue.recallNote.contains("Bounded queue undo is available only after a complete verified scene on unchanged groups"))
+    #expect(queue.recallNote.contains("inspect the result and undo preview"))
     let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
     let encoded = try encoder.encode(scene)
     #expect(try DaemonClient.decode(Scene.self, from: encoded).validated() == scene)

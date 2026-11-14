@@ -42,7 +42,8 @@ private func savedPlaylistScene(reference: Scene.PlaylistReference = savedPlayli
     #expect(reference.recallNote.contains("current contents"))
     #expect(reference.recallNote.contains("replaces the group’s queue"))
     #expect(reference.recallNote.contains("renamed or missing"))
-    #expect(reference.recallNote.contains("undo cannot restore"))
+    #expect(reference.recallNote.contains("Bounded queue undo requires a complete verified scene on unchanged groups"))
+    #expect(reference.recallNote.contains("inspect the result and undo preview"))
 
     let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
     let encoded = try encoder.encode(scene)

@@ -312,6 +312,7 @@ fn silence<T: Transport + ?Sized>(
 }
 
 #[allow(clippy::too_many_arguments)] // optional ownership inherited from a logged edit
+#[allow(clippy::too_many_lines)] // keep staging, commit, selection and their receipt together
 pub(super) fn restore<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
