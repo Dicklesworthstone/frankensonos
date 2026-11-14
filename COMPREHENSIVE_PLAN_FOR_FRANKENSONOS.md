@@ -946,6 +946,13 @@ undos after restart. Missing proof, counter gaps or wrap, legacy unproved rows,
 and changed ownership remain barriers even under force. See
 [`docs/QUEUE_UNDO.md`](docs/QUEUE_UNDO.md#queue-additions).
 
+Manual volume writes, native ramp starts and stepped fades serialize through
+the same per-room intent lock. A device-speed ramp that receives a definite
+unsupported-action response keeps its original intent through fallback reads;
+a newer listener volume supersedes it before any old fallback writes. An
+ambiguous native reply never authorizes a second ramp. This also keeps a slow
+older manual SetVolume from landing after a newer manual or native-ramp start.
+
 New volume, mute, group-volume and volume-fade actions retain the exact room
 players and level fields they changed. Their undo restores those fields while
 preserving the current source, queue occurrence, playback state, grouping and

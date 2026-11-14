@@ -127,7 +127,10 @@ mod tests {
             Err(RecvTimeoutError::Disconnected)
         );
         live.halt();
-        assert!(live.is_finished(), "consuming the handle retains completion");
+        assert!(
+            live.is_finished(),
+            "consuming the handle retains completion"
+        );
     }
 
     #[test]

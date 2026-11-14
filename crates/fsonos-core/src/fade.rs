@@ -32,6 +32,9 @@ use std::time::{Duration, Instant};
 mod timing;
 use timing::Timing;
 
+#[cfg(test)]
+mod device_ramp_tests;
+
 /// Time between the steps of a fade.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
 /// How long a player's own SLEEP_TIMER ramp spends per volume step.
@@ -42,8 +45,8 @@ pub const DEVICE_STEP: Duration = Duration::from_millis(800);
 pub enum FadeOutcome {
     /// Every player reached its target.
     Reached,
-    /// A newer volume intent took over; `at` is the last level this fade set
-    /// on the first player.
+    /// A newer volume intent took over; `at` is the last level this fade observed
+    /// or set on the first player.
     Superseded { at: u8 },
 }
 
@@ -213,8 +216,13 @@ impl Fader {
         player: &PlayerId,
         level: u8,
     ) -> Result<(), CoreError> {
-        self.supersede(player);
-        Ok(soap::set_volume(t, ip(households, player)?, level)?)
+        let host = ip(households, player)?;
+        // A manual write has the same serialization as a fade step: a later
+        // intent cannot start until this older write has landed.
+        let step = self.step(player);
+        let _writing = step.lock().unwrap_or_else(PoisonError::into_inner);
+        self.next_intent(player);
+        Ok(soap::set_volume(t, host, level)?)
     }
 
     /// Fade `player` to `to` over `over`.
@@ -465,28 +473,37 @@ impl Fader {
         to: u8,
     ) -> Result<RampOutcome, CoreError> {
         let host = ip(households, player)?;
-        let refused = self.no_device_ramp.lock().is_ok_and(|s| s.contains(player));
-        if !refused {
-            // The ramp starts under the step lock, as a step is written: a
-            // newer level waits for the start to land, then stops the ramp.
+        let intent = {
+            // Admission and a native start share the step lock. A fallback
+            // keeps this same intent across its reads: it must not reclaim a
+            // room whose owner set a newer level while the speaker replied.
             let step = self.step(player);
             let _starting = step.lock().unwrap_or_else(PoisonError::into_inner);
-            self.next_intent(player);
-            match soap::ramp_to_volume(t, host, RampType::SleepTimer, to) {
-                Ok(secs) => return Ok(RampOutcome::Device { secs }),
-                Err(ProtoError::SoapFault {
-                    code: 401 | 402, ..
-                }) => {
-                    if let Ok(mut s) = self.no_device_ramp.lock() {
-                        s.insert(player.clone());
+            let intent = self.next_intent(player);
+            let refused = self.no_device_ramp.lock().is_ok_and(|s| s.contains(player));
+            if !refused {
+                match soap::ramp_to_volume(t, host, RampType::SleepTimer, to) {
+                    Ok(secs) => return Ok(RampOutcome::Device { secs }),
+                    Err(ProtoError::SoapFault {
+                        code: 401 | 402, ..
+                    }) => {
+                        if let Ok(mut s) = self.no_device_ramp.lock() {
+                            s.insert(player.clone());
+                        }
                     }
+                    // An uncertain start may already be running on the
+                    // speaker; neither a fallback nor another start is safe.
+                    Err(e) => return Err(e.into()),
                 }
-                Err(e) => return Err(e.into()),
             }
-        }
+            intent
+        };
         let from = soap::get_volume(t, host)?;
+        if self.current(player) != intent {
+            return Ok(RampOutcome::Stepped(FadeOutcome::Superseded { at: from }));
+        }
         let over = self.device_step * u32::from(from.abs_diff(to));
-        let claimed = self.claim(std::slice::from_ref(player));
+        let claimed = [(player.clone(), intent)];
         let stepped = self.stepped(
             t,
             households,

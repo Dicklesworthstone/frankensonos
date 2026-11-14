@@ -1,7 +1,7 @@
 //! Exercise the production pump while a real lease operation is outstanding.
 
 use super::*;
-use crate::events::{Subscriber, Want};
+use crate::events::{Service, Subscriber, Want};
 use crate::reconcile::Health;
 use fsonos_proto::gena::Subscription;
 
