@@ -5573,3 +5573,10 @@ One clue worth keeping: at the loop `r13 = 0x10033e8c`, which is *also* the firs
 the table at `0x100169c0` — so `r13` plausibly points into the dispatch structure and is the
 context the handler really wants. That makes the next probe `(r13, r31)` rather than more
 length/pointer permutations.
+
+`(r13, header)` also faults, so `r13` is not the dispatch object either. Method change:
+stop guessing and read the dispatch. The binary has few indirect calls; one is *inside*
+the handler itself at `0x10004d6c` (`mtctr r11`), and others cluster at
+`0x100034dc`, `0x100035f4`, `0x100037bc` — those are the table dispatchers worth reading,
+since whichever one loads `0x100169c0` will show the true argument registers for
+`0x10004c88`.
