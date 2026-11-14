@@ -11,6 +11,9 @@ use std::net::IpAddr;
 mod updates;
 pub use updates::{ContentUpdate, MAX_UPDATE_CONTAINERS, parse_update};
 
+mod manage;
+pub use manage::{destroy_object, rename_object};
+
 /// Sonos favorites (the household-wide "My Sonos" list).
 pub const FAVORITES: &str = "FV:2";
 /// The coordinator's play queue.

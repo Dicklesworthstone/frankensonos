@@ -14,6 +14,8 @@ use crate::docs::{self, ServiceDef};
 use crate::{SimClock, SimModel, SoapLogEntry};
 use fsonos_proto::didl::{SpotifyRenderParams, parse_didl};
 
+mod catalog;
+
 /// A UPnP error code returned in a SOAP fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Fault(pub u16);
@@ -1462,9 +1464,11 @@ impl State {
         }
     }
 
-    fn content_directory(&self, p: usize, action: &str, args: &Args<'_>) -> Result<Out, Fault> {
-        if action != "Browse" {
-            return Err(INVALID_ACTION);
+    fn content_directory(&mut self, p: usize, action: &str, args: &Args<'_>) -> Result<Out, Fault> {
+        match action {
+            "UpdateObject" | "DestroyObject" => return self.manage_playlist(p, action, args),
+            "Browse" => {}
+            _ => return Err(INVALID_ACTION),
         }
         let object = args.get("ObjectID")?;
         let flag = args.get("BrowseFlag")?;

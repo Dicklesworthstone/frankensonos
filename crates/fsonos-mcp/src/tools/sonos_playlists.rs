@@ -1,5 +1,8 @@
 //! Native Sonos playlists use the shared household metadata and control path.
 
+mod manage;
+pub use manage::{RemoveSonosPlaylist, RenameSonosPlaylist};
+
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::sonos_playlists::{

@@ -24,6 +24,8 @@
 //! | `POST /sonos/playlists/play` | [`crate::surface::sonos_playlists::PlaySonosPlaylistRequest`] | [`crate::OutcomeDto`]: replaces the queue and plays the saved playlist |
 //! | `POST /sonos/playlists/track` | [`crate::surface::sonos_playlists::SonosPlaylistTrackRequest`] | [`crate::surface::sonos_playlists::SonosPlaylistTrackDto`]: plays or queues one observed native track |
 //! | `POST /sonos/playlists/save` | [`crate::surface::sonos_playlists::SaveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::SavedSonosPlaylistDto`]: saves the current queue as a new native playlist |
+//! | `POST /sonos/playlists/rename` | [`crate::surface::sonos_playlists::RenameSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::ManagedSonosPlaylistDto`]: renames an exact native playlist at its observed revision |
+//! | `POST /sonos/playlists/remove` | [`crate::surface::sonos_playlists::RemoveSonosPlaylistRequest`] | [`crate::surface::sonos_playlists::ManagedSonosPlaylistDto`]: permanently removes an exact native playlist, leaving playback unchanged |
 //! | `POST /library/play` | [`crate::SearchPlayRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /library/search?q=<text>&zone=<room>&limit=<n>` | | `[HitDto]`: the owner's library, and the room's favorites |
 //! | `GET /spotify/search` | | Spotify catalog results for the signed-in account; changes no playback |
@@ -40,6 +42,7 @@
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /play/tracks` | [`crate::surface::queue::PlayTracksRequest`] | [`OutcomeDto`]: replace the queue with 1–10 ordered tracks or episodes and start at the first |
 //! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
+//! | `POST /queue/tracks` | [`crate::surface::queue::QueueTracksRequest`] | quietly inserts 1–10 ordered tracks or episodes next or at the end |
 //! | `POST /queue/play`, `/queue/remove`, `/queue/move` | the entries, by position and URI, at the queue's revision | play one, remove a run, or move them without restarting playback; edits report whether a complete undo backup was saved |
 //! | `POST /play-mode` | the zone and its shuffle and repeat | [`crate::OutcomeDto`], undoable |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |

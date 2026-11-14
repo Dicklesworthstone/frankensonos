@@ -8,6 +8,8 @@ use serde_json::{Value, json};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
+mod manage;
+
 struct NoSpeakerIo;
 
 impl Transport for NoSpeakerIo {

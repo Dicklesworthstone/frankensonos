@@ -1066,8 +1066,8 @@ Save queue as playlist** review. It saves a nonempty
 queue on the selected Sonos household without changing playback, queue contents,
 volume or the DJ, including a retained queue while radio plays. Titles are
 trimmed, nonblank, free of control characters and at most 1023 UTF-8 bytes.
-Each save creates a new id, even for an existing title; no overwrite, rename or
-delete operation is exposed. Fresh topology resolves the room's coordinator,
+Each save creates a new id, even for an existing title; it never overwrites an
+existing playlist. Fresh topology resolves the room's coordinator,
 one native save is sent, and a catalog read confirms its new id and title.
 SaveQueue has no queue-revision compare-and-set, so the saved contents are those
 Sonos handles at dispatch, not a locked preview. The `save_sonos_playlist`
@@ -1078,6 +1078,23 @@ confirmation remain uncertain and are never automatically retried; callers
 reread that household's saved catalog before another save. The new Rust save
 regressions still require execution; local compilation stopped at
 `asupersync` with SIGKILL before tests ran.
+
+The native catalog lifecycle now includes rename and removal through CLI
+`playlist-rename` / `playlist-remove`, HTTP `/sonos/playlists/rename` /
+`/sonos/playlists/remove`, and MCP `rename_sonos_playlist` /
+`remove_sonos_playlist`. These require the exact household-local `SQ:` identity
+and an opaque revision from a fresh contents read. The core rechecks metadata,
+saved contents, coordinator, group and boot identity before one native
+`UpdateObject` or `DestroyObject`, and confirms the result with a complete
+catalog read afterward. A same-title rename is a validated no-op. Both are
+`house-config` operations that leave playback, current queues, volume and DJ
+ownership alone; neither creates a playback undo record. Failed confirmations
+remain uncertain with no automatic replay. These checks detect changes but
+cannot lock Sonos against another controller between the last read and write.
+Renaming does not rewrite scene definitions: existing captured scene titles
+must be re-saved, and removing a referenced playlist causes those scene sources
+to refuse playback. Simulator coverage is separate from physical-device
+acceptance. Saved track-order editing remains outside these operations.
 
 Both browser views capture a bounded queue observation and recheck the selected
 group, revision and entry count before their single save request. Their shared

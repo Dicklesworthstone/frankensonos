@@ -231,6 +231,8 @@ fn configured_server(
             .tool(tools::SonosPlaylistTrack)
             .tool(tools::PlaySonosPlaylist)
             .tool(tools::SaveSonosPlaylist)
+            .tool(tools::RenameSonosPlaylist)
+            .tool(tools::RemoveSonosPlaylist)
             .tool(tools::RecentActions)
             .tool(reviewed_undo::PreviewUndo)
             .tool(reviewed_undo::UndoChecked)

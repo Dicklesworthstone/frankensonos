@@ -1,6 +1,6 @@
 # Saved Sonos playlists
 
-FrankenSonos can list, inspect, play and create playlists saved on the Sonos household, including
+FrankenSonos can list, inspect, play, create, rename and remove playlists saved on the Sonos household, including
 ones that are not in My Sonos favorites. These are the native `SQ:` saved queues,
 separate from the Spotify account's cached playlists.
 
@@ -132,9 +132,9 @@ the saved content is the queue, not the active radio stream.
 Titles are trimmed, must be nonblank and contain no control characters, and
 may contain at most **1023 UTF-8 bytes** after trimming. Saving the same title
 again creates a distinct `SQ:` id. Existing playlists are never overwritten;
-use the returned id to distinguish equal titles. Editing, renaming and deleting
-saved playlists are not exposed, and creating one is not an action-history undo
-operation.
+use the returned id to distinguish equal titles. Creating a saved playlist is
+not an action-history undo operation. Renaming and removal use the separate,
+revision-bound operations below; editing its saved track order is not exposed.
 
 The native save has no queue-revision compare-and-set argument. Sonos copies
 the queue when it handles the request; a prior queue read does not lock out
@@ -148,6 +148,56 @@ playlist is still saved on Sonos; only the separate local action log failed.
 Do not repeat the save to repair logging. A lost write reply or failed
 confirmation returns `OUTCOME_UNCERTAIN` and is never retried automatically.
 Read this household's saved catalog before deciding whether to save again.
+
+## Rename or remove a saved playlist
+
+Read the exact playlist first, then use its returned `revision`:
+
+```sh
+fsonos --json playlist-contents 'Kitchen@S1' SQ:7 --limit 1
+fsonos playlist-rename 'Kitchen@S1' SQ:7 'Evening & Friends' \
+  --expected-revision '<revision from that contents read>'
+
+# Read again after renaming: a rename changes the observed revision.
+fsonos --json playlist-contents 'Kitchen@S1' SQ:7 --limit 1
+fsonos playlist-remove 'Kitchen@S1' SQ:7 \
+  --expected-revision '<revision from the fresh contents read>'
+```
+
+Both commands require an exact household-local `SQ:<n>` identity and a nonempty
+contents revision. Names and catalog positions are rejected. The room, group,
+player boot identity, playlist metadata and saved-content revision must still
+match a fresh observation. Stale observations return `QUEUE_CHANGED` before a
+catalog write; read and review again. The title rules are the same as for saving.
+A same-title rename still validates freshness and returns `changed: false`.
+
+Rename sends one native ContentDirectory `UpdateObject` with the observed
+current title and requested new title, retaining the playlist's native id and
+tracks. Removal sends one `DestroyObject` for that id and permanently removes
+the saved entry. Equal titles in other entries are unaffected. Both operations
+leave already loaded queues, playback, volume and DJ ownership unchanged. A
+fresh, complete catalog read must confirm the new title or the removed id's
+absence before success is reported.
+
+Sonos does not accept our opaque revision as an atomic catalog lock. Another
+controller can still change the playlist between the final read and native
+write. An explicit native refusal is returned as a refusal; a lost or malformed
+acknowledgement, changed group after submission, or failed confirmation remains
+`OUTCOME_UNCERTAIN`. The controller never retries the write, recreates a removed
+playlist, or replaces the playing queue as a fallback. Inspect the **original
+household's** saved catalog before deciding on another edit.
+
+Results include the confirmed renamed entry or the observed removed entry in
+`playlist`, along with `operation` (`rename` or `remove`), `changed`, `zone`,
+`done`, and `logged`. A logging failure leaves a confirmed native result
+successful with `logged: false`; repeating the operation cannot repair the log.
+Neither operation is undoable through action history.
+
+Saved scene references retain the native title they originally reviewed as
+well as the id. After renaming, re-save scenes that reference that playlist.
+Removing a referenced playlist causes those scenes and their routines to refuse
+playback until the source is replaced; catalog edits do not silently rewrite
+scene definitions. See [native playlists in scenes](SONOS_PLAYLIST_SCENES.md).
 
 ## Phone remote and desktop dashboard
 
@@ -198,6 +248,8 @@ read and review.
 | Inspect ordered saved tracks | `GET /sonos/playlists/contents?zone=Kitchen&playlist=SQ:7&offset=0&limit=100` | `sonos_playlist_contents(zone="Kitchen", playlist="SQ:7", offset=0, limit=100)` |
 | Play or queue one observed track | `POST /sonos/playlists/track` with `zone`, exact `playlist`, `position`, `expected_revision`, and `mode` | `sonos_playlist_track` with the same fields |
 | Save the current queue as a new playlist | `POST /sonos/playlists/save` with `{"zone":"Kitchen","title":"Evening Mix"}` | `save_sonos_playlist(zone="Kitchen", title="Evening Mix")` |
+| Rename an exact observed playlist | `POST /sonos/playlists/rename` with `zone`, exact `playlist`, `expected_revision`, and `title` | `rename_sonos_playlist` with the same fields |
+| Permanently remove an exact observed playlist | `POST /sonos/playlists/remove` with `zone`, exact `playlist`, and `expected_revision` | `remove_sonos_playlist` with the same fields |
 | Replace the queue and play | `POST /sonos/playlists/play` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `play_sonos_playlist(zone="Kitchen", playlist="SQ:7")` |
 | Append | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `add_to_queue(zone="Kitchen", playlist="SQ:7")` |
 | Play next in the queue | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7","next":true}` | `add_to_queue(zone="Kitchen", playlist="SQ:7", next=true)` |
@@ -214,6 +266,11 @@ favorites. This keeps existing client allowlists effective. Saving requires
 `save_sonos_playlist`, in the `house-config` class; it records the catalog change
 without a DJ handoff, volume changes or a playback undo record. The save body
 accepts only `zone` and `title`, never an existing playlist id or overwrite flag.
+Rename and removal require their own `rename_sonos_playlist` and
+`remove_sonos_playlist` permissions, also in `house-config`. A read-only catalog
+allowlist cannot perform these writes. All three catalog operations are in the
+MCP Full profile. Request bodies reject unknown fields, including overwrite or
+force flags.
 
 ## Playback and failure behavior
 
@@ -264,6 +321,18 @@ The protocol follows the native catalog and enqueue operations documented in
 and [queue implementation](https://github.com/SoCo/SoCo/blob/master/soco/core.py).
 Its [DIDL model](https://github.com/SoCo/SoCo/blob/master/soco/data_structures.py)
 records the two playlist element forms; FrankenSonos keeps the form it reads.
+
+Native catalog management is covered by
+`fsonos-core/tests/sonos_playlist_management_sim.rs`, protocol wire tests and
+the API/CLI/MCP native-playlist suites. They exercise S1/S2 identities, duplicate
+names, unchanged queues and radio, stale revisions, group and boot changes,
+refusals, lost replies and unconfirmed results. The protocol follows the
+[ContentDirectory action definitions](https://sonos.svrooij.io/services/content-directory)
+and the device-specific title handling documented in
+[SoCo's metadata updater](https://github.com/SoCo/SoCo/blob/master/soco/favorites.py):
+commas and backslashes remain literal inside XML-escaped title fragments.
+Physical-speaker rename/removal acceptance remains unverified; an unsupported
+native action is surfaced without an alternate destructive operation.
 
 Contents-specific simulator coverage lives in
 `fsonos-sim/tests/saved_playlist_contents.rs` and

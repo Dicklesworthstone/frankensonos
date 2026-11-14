@@ -5,7 +5,8 @@ use fastapi::{JsonSchema, Request, fastapi_openapi};
 
 use super::{Ctx, Op, answer, body, query_param, whole_number};
 use crate::surface::sonos_playlists::{
-    PlaySonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto,
+    ManagedSonosPlaylistDto, PlaySonosPlaylistRequest, RemoveSonosPlaylistRequest,
+    RenameSonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto,
     SonosPlaylistContentsDto, SonosPlaylistContentsRequest, SonosPlaylistDto,
     SonosPlaylistTrackDto, SonosPlaylistTrackRequest,
 };
@@ -63,6 +64,26 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<SaveSonosPlaylistRequest>(true)
         .response_schema::<SavedSonosPlaylistDto>(200, "A new playlist confirmed on the Sonos household"),
+        cx.route(
+            &Op::post(
+                "/sonos/playlists/rename", "rename_sonos_playlist", TAG,
+                "Rename a reviewed native playlist without changing playback (house-config permission)",
+            ),
+            |s, c, req| answer(body::<RenameSonosPlaylistRequest>(req)
+                .and_then(|r| s.rename_sonos_playlist(c, &r))),
+        )
+        .request_schema::<RenameSonosPlaylistRequest>(true)
+        .response_schema::<ManagedSonosPlaylistDto>(200, "The renamed entry confirmed in its original household"),
+        cx.route(
+            &Op::post(
+                "/sonos/playlists/remove", "remove_sonos_playlist", TAG,
+                "Permanently remove a reviewed native playlist without changing playback (house-config permission)",
+            ),
+            |s, c, req| answer(body::<RemoveSonosPlaylistRequest>(req)
+                .and_then(|r| s.remove_sonos_playlist(c, &r))),
+        )
+        .request_schema::<RemoveSonosPlaylistRequest>(true)
+        .response_schema::<ManagedSonosPlaylistDto>(200, "The native playlist was confirmed removed"),
     ]
 }
 
