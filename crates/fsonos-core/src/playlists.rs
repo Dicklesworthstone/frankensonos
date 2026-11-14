@@ -165,13 +165,13 @@ fn uncertain(detail: impl std::fmt::Display) -> CoreError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct GroupProof {
-    members: Vec<PlayerId>,
-    boot_seq: Option<u32>,
+pub(crate) struct GroupProof {
+    pub(crate) members: Vec<PlayerId>,
+    pub(crate) boot_seq: Option<u32>,
 }
 
 impl GroupProof {
-    fn read<T: Transport + ?Sized>(
+    pub(crate) fn read<T: Transport + ?Sized>(
         transport: &T,
         host: IpAddr,
         coordinator: &PlayerId,
@@ -211,7 +211,7 @@ impl GroupProof {
         })
     }
 
-    fn confirm<T: Transport + ?Sized>(
+    pub(crate) fn confirm<T: Transport + ?Sized>(
         &self,
         transport: &T,
         host: IpAddr,

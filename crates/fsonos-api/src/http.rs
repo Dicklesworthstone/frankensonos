@@ -16,6 +16,11 @@
 //! | `GET /zones/{room}/eq` | | [`crate::surface::eq::EqDto`]: the room's bass, treble and loudness |
 //! | `GET /zones/{room}/play-mode` | | the group's shuffle and repeat, and whether the DJ owns its queue |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
+//! | `GET /favorites/current?zone=<room>` | | observed current track/station and a revision for saving |
+//! | `GET /favorites/inspect?zone=<room>&favorite=<id>` | | exact native favorite and a revision for editing |
+//! | `POST /favorites/save` | [`crate::surface::favorite_management::SaveFavoriteRequest`] | confirmed native favorite, without playback changes |
+//! | `POST /favorites/rename` | [`crate::surface::favorite_management::RenameFavoriteRequest`] | renamed native favorite at its observed revision |
+//! | `POST /favorites/remove` | [`crate::surface::favorite_management::RemoveFavoriteRequest`] | exact favorite confirmed absent from its household |
 //! | `GET /line-in?zone=<room>` | | [`crate::LineInSourcesDto`]: native inputs in the destination household |
 //! | `POST /line-in/play` | [`crate::PlayLineInRequest`] | [`crate::OutcomeDto`]: play a native input while retaining the queue |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
@@ -142,6 +147,7 @@ mod dj_prefs;
 mod dj_sync;
 mod schedules;
 
+mod favorite_management;
 mod sonos_playlists;
 mod spotify_auth;
 mod spotify_search;
@@ -238,6 +244,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(spotify_auth::routes(cx));
     routes.extend(spotify_search::routes(cx));
     routes.extend(sonos_playlists::routes(cx));
+    routes.extend(favorite_management::routes(cx));
     routes.extend(remote::routes(cx));
     routes
 }

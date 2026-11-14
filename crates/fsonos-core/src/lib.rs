@@ -112,6 +112,12 @@ pub enum CoreError {
     /// contents observation the caller is continuing. Read again from zero.
     #[error("{0}")]
     PlaylistChanged(String),
+    /// A reviewed favorite or current source no longer has its original identity.
+    #[error("{0}")]
+    FavoriteChanged(String),
+    /// The current source cannot be retained as a reusable Sonos favorite.
+    #[error("{0}")]
+    FavoriteUnavailable(String),
     /// The selected player cannot currently supply a native analog input.
     #[error("{0}")]
     LineInUnavailable(String),

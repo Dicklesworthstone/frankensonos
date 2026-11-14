@@ -62,12 +62,13 @@ pub(crate) struct Favorite {
     pub id: usize,
     pub title: String,
     pub uri: String,
-    pub protocol_info: &'static str,
+    pub protocol_info: String,
     /// The DIDL the favorite is replayed with (`r:resMD`).
     pub metadata: String,
     /// `instantPlay` or `shortcut`.
     pub kind: &'static str,
     pub description: String,
+    pub art_uri: Option<String>,
 }
 
 /// A native `SQ:` container, independent of the household's favorites.
@@ -1466,6 +1467,10 @@ impl State {
 
     fn content_directory(&mut self, p: usize, action: &str, args: &Args<'_>) -> Result<Out, Fault> {
         match action {
+            "CreateObject" => return self.create_favorite(p, args),
+            "UpdateObject" | "DestroyObject" if args.get("ObjectID")?.starts_with("FV:2/") => {
+                return self.manage_favorite(p, action, args);
+            }
             "UpdateObject" | "DestroyObject" => return self.manage_playlist(p, action, args),
             "Browse" => {}
             _ => return Err(INVALID_ACTION),

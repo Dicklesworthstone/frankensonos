@@ -12,7 +12,7 @@ mod updates;
 pub use updates::{ContentUpdate, MAX_UPDATE_CONTAINERS, parse_update};
 
 mod manage;
-pub use manage::{destroy_object, rename_object};
+pub use manage::{create_object, destroy_object, rename_object};
 
 /// Sonos favorites (the household-wide "My Sonos" list).
 pub const FAVORITES: &str = "FV:2";

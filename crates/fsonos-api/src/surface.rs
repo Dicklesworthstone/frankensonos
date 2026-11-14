@@ -51,6 +51,7 @@ pub mod dj_prefs;
 pub mod dj_rehearse;
 pub mod dj_sync;
 pub mod eq;
+pub mod favorite_management;
 mod heard;
 pub mod house_policy;
 pub mod line_in;

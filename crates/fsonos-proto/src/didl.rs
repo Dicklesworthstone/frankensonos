@@ -78,6 +78,35 @@ pub fn item_metadata(item: &DidlObject) -> String {
     xml
 }
 
+/// Keep the source's native metadata bytes while removing artwork elements
+/// from a favorite's nested `r:resMD`. Sonos stores art on the outer favorite;
+/// repeating long, doubly escaped URLs in resMD can exceed its native limit.
+/// Structural ranges preserve service descriptors and unknown extensions.
+pub fn favorite_metadata(metadata: &str) -> Result<String, ProtoError> {
+    let document = xml::parse(metadata)?;
+    if document.root_element().tag_name().name() != "DIDL-Lite" {
+        return Err(ProtoError::Malformed(
+            "favorite metadata must be DIDL-Lite".into(),
+        ));
+    }
+    let mut ranges: Vec<_> = document
+        .descendants()
+        .filter(|node| node.has_tag_name(("urn:schemas-upnp-org:metadata-1-0/upnp/", "albumArtURI")))
+        .filter(|node| {
+            !node.ancestors().skip(1).any(|parent| {
+                parent.has_tag_name(("urn:schemas-upnp-org:metadata-1-0/upnp/", "albumArtURI"))
+            })
+        })
+        .map(|node| node.range())
+        .collect();
+    ranges.sort_by_key(|range| range.start);
+    let mut result = metadata.to_owned();
+    for range in ranges.into_iter().rev() {
+        result.replace_range(range, "");
+    }
+    Ok(result)
+}
+
 /// Parameters needed to render a Spotify track on a specific household. These
 /// are discovered from the household's own favorites, never guessed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -589,6 +618,16 @@ mod tests {
     #[test]
     fn escapes_xml() {
         assert_eq!(xml_escape("a&b<c>"), "a&amp;b&lt;c&gt;");
+    }
+
+    #[test]
+    fn favorite_metadata_moves_art_out_without_rewriting_native_extensions() {
+        let metadata = "<DIDL-Lite xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" xmlns:r=\"urn:example\"><item id=\"track\"><upnp:albumArtURI>https://example.invalid/art?a=1&amp;b=2</upnp:albumArtURI><r:service native=\"keep\">unchanged &amp; literal</r:service><upnp:albumArtURI><upnp:albumArtURI>nested</upnp:albumArtURI></upnp:albumArtURI></item></DIDL-Lite>";
+        let stripped = favorite_metadata(metadata).unwrap();
+        assert!(!stripped.contains("albumArtURI"));
+        assert!(stripped.contains("<r:service native=\"keep\">unchanged &amp; literal</r:service>"));
+        assert_eq!(favorite_metadata(&stripped).unwrap(), stripped);
+        assert!(favorite_metadata("not XML").is_err());
     }
 
     #[test]

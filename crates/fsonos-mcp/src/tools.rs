@@ -59,7 +59,11 @@ pub use queue_tracks::{AddTracksToQueue, PlayTracks};
 mod queue_search;
 pub use queue_search::SearchQueue;
 
+mod favorite_management;
 mod sonos_playlists;
+pub use favorite_management::{
+    CurrentFavorite, InspectFavorite, RemoveFavorite, RenameFavorite, SaveFavorite,
+};
 pub use sonos_playlists::{
     ListSonosPlaylists, PlaySonosPlaylist, RemoveSonosPlaylist, RenameSonosPlaylist,
     SaveSonosPlaylist, SonosPlaylistContents, SonosPlaylistTrack, SonosPlaylistTracks,

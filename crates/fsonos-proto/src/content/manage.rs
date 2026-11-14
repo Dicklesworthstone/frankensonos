@@ -5,6 +5,32 @@ use crate::didl::xml_escape;
 use crate::{ProtoError, Transport, soap};
 use std::net::IpAddr;
 
+/// Create one native catalog entry from an observed DIDL-Lite document.
+/// `Elements` is XML inside a SOAP string argument. The returned identity is
+/// authoritative only after the caller confirms it in the same catalog.
+/// No lost or malformed response is retried.
+pub fn create_object<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    container_id: &str,
+    elements: &str,
+) -> Result<String, ProtoError> {
+    let response = soap::call(
+        transport,
+        host,
+        &soap::CONTENT_DIRECTORY,
+        "CreateObject",
+        &soap::args_xml(&[("ContainerID", container_id), ("Elements", elements)]),
+    )?;
+    let id = response.require("ObjectID")?;
+    if id.is_empty() || id.len() > 1024 || id.chars().any(char::is_control) {
+        return Err(ProtoError::Malformed(
+            "CreateObject did not return a usable native identity".into(),
+        ));
+    }
+    Ok(id.to_owned())
+}
+
 /// Change only the title of the exact observed native object. The title
 /// fragments are XML inside SOAP string arguments, so both layers are escaped.
 /// Commas and backslashes remain literal title text. This follows Sonos's
@@ -87,7 +113,11 @@ mod tests {
                     Ok(soap::envelope(
                         &soap::CONTENT_DIRECTORY,
                         &format!("{name}Response"),
-                        "",
+                        if name == "CreateObject" {
+                            "<ObjectID>FV:2/7</ObjectID><Result/>"
+                        } else {
+                            ""
+                        },
                     ))
                 }
             }
@@ -150,6 +180,57 @@ mod tests {
         assert!(calls[0].1.ends_with("#DestroyObject\""));
         assert!(calls[0].2.contains("<ObjectID>SQ:7</ObjectID>"));
         assert!(!calls[0].2.contains("InstanceID"));
+    }
+
+    #[test]
+    fn creation_preserves_the_complete_nested_document_as_one_soap_argument() {
+        let transport = replies(0);
+        let elements = "<DIDL-Lite><item id=\"\" parentID=\"FV:2\"><title>A &amp; B</title><resMD>&lt;DIDL-Lite&gt;&amp;amp;&lt;/DIDL-Lite&gt;</resMD></item></DIDL-Lite>";
+        let id = create_object(
+            &transport,
+            "192.0.2.10".parse().unwrap(),
+            "FV:2",
+            elements,
+        )
+        .unwrap();
+        assert_eq!(id, "FV:2/7");
+        let calls = transport.calls.borrow();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "/MediaServer/ContentDirectory/Control");
+        assert!(calls[0].1.ends_with("#CreateObject\""));
+        let doc = roxmltree::Document::parse(&calls[0].2).unwrap();
+        assert_eq!(
+            doc.descendants()
+                .find(|node| node.has_tag_name("Elements"))
+                .unwrap()
+                .text(),
+            Some(elements)
+        );
+        assert_eq!(
+            doc.descendants()
+                .find(|node| node.has_tag_name("ContainerID"))
+                .unwrap()
+                .text(),
+            Some("FV:2")
+        );
+        assert!(!calls[0].2.contains("InstanceID"));
+    }
+
+    #[test]
+    fn creation_never_repeats_an_uncertain_or_refused_request() {
+        for fault in [1, 2, 3] {
+            let transport = replies(fault);
+            assert!(
+                create_object(
+                    &transport,
+                    "192.0.2.10".parse().unwrap(),
+                    "FV:2",
+                    "<DIDL-Lite/>"
+                )
+                .is_err()
+            );
+            assert_eq!(transport.calls.borrow().len(), 1);
+        }
     }
 
     #[test]

@@ -295,14 +295,19 @@ pub(crate) fn favorite_items(favorites: &[Favorite], start: usize) -> String {
             "<item id=\"FV:2/{id}\" parentID=\"FV:2\" restricted=\"false\"><dc:title>{title}</dc:title>\
              <upnp:class>object.itemobject.item.sonos-favorite</upnp:class><r:ordinal>{n}</r:ordinal>\
              <res protocolInfo=\"{pi}\">{uri}</res><r:type>{kind}</r:type>\
-             <r:description>{desc}</r:description><r:resMD>{md}</r:resMD></item>",
+             {art}<r:description>{desc}</r:description><r:resMD>{md}</r:resMD></item>",
             id = f.id,
             title = xml_escape(&f.title),
-            pi = f.protocol_info,
+            pi = xml_escape(&f.protocol_info),
             uri = xml_escape(&f.uri),
             kind = f.kind,
             desc = xml_escape(&f.description),
             md = xml_escape(&f.metadata),
+            art = f
+                .art_uri
+                .as_deref()
+                .map(|uri| format!("<upnp:albumArtURI>{}</upnp:albumArtURI>", xml_escape(uri)))
+                .unwrap_or_default(),
         );
     }
     out

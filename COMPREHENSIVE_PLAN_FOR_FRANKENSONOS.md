@@ -1082,6 +1082,17 @@ Spotify track won't enqueue. Library search is token-scored fuzzy matching over
 the cached library and favorites (title, composer, performer, album). The
 surfaces are in 12.3.
 
+My Sonos favorites also support native authoring through CLI, HTTP and MCP.
+An observed-current-source preview selects the actual queue occurrence or the
+direct track/station; saving retains the speaker's resource and service
+metadata. Rename and removal require an exact household-local `FV:2/<n>` ID
+and its observed revision. Source, queue, catalog, household, group and boot
+checks precede one native mutation and catalog confirmation. Playback, queue,
+levels and DJ ownership continue. All writes use `house-config` permission;
+an uncertain acknowledgement is not replayed. See
+[Favorite management](docs/FAVORITES_MANAGEMENT.md) for interfaces and the
+current Rust execution limitation.
+
 Staged container replacement also treats every post-commit start failure as
 an uncertain overall operation. A late URI/Seek/Play refusal, including SOAP
 800, cannot replay the append and prefix removal through renderer-account
@@ -1120,6 +1131,13 @@ and the destination queue at preparation and confirmation, then submits both
 revisions with one native batch request. Catalog, group or lifecycle changes
 retire stale selections. Lost or contradictory receipts remain uncertain and
 are never replayed; native save/rename/removal continues through the same writer.
+
+The native Apple remote also provides reviewed queue saving and exact saved-
+playlist rename/deletion. It shares the existing command lane, retains the
+original household and revision, and keeps uncertain results across navigation
+and suspension until an explicit original-household catalog read. No Swift
+toolchain was available for local execution; see
+[Native playlist management](docs/NATIVE_SONOS_PLAYLIST_MANAGEMENT.md).
 
 Native queue creation is available through `fsonos playlist-save <room> <title>`,
 `POST /sonos/playlists/save`, MCP `save_sonos_playlist`, the phone's
