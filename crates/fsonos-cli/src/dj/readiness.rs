@@ -10,6 +10,25 @@ use fsonos_core::clock::Clock;
 use fsonos_core::store::Store;
 use fsonos_types::PlayerId;
 
+pub(super) fn direction(
+    dj: &SpotifyDj,
+    at: DjSpeakers<'_>,
+    store: &dyn Store,
+    steer: &DjSteer,
+    clock: &dyn Clock,
+) -> Result<(), Failure> {
+    // Clearing must remain possible while an owner repairs malformed moods
+    // or preferences. The write only needs the existing session to be readable.
+    if matches!(steer, DjSteer::Clear) {
+        store
+            .dj_session(&at.coordinator.0)
+            .map_err(super::store_failure)?;
+        return Ok(());
+    }
+    let candidate = State::read_plan(store, dj.moods_file.as_ref(), clock.now().timestamp())?;
+    context(&candidate, store, at.coordinator, Some(steer), clock).map(|_| ())
+}
+
 pub(super) fn check(
     dj: &SpotifyDj,
     at: DjSpeakers<'_>,

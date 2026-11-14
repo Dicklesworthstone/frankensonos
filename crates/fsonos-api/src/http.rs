@@ -245,23 +245,23 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// The DJ: start, skip, stop, steer; its status and moods.
 fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = vec![
-        cx.control(
+        cx.control_set(
             Op::post(
                 "/dj/start",
                 "dj_start",
                 DJ,
-                "Start the DJ on a room's zone, in a mood when one is named",
+                "Start independent DJs in a room, alias or all selected groups; checks every start before changes",
             ),
-            |h, r: &DjStartRequest| plan::plan_dj_start(h, r),
+            |h, r: &DjStartRequest| plan::plan_dj_start_set(h, r),
         ),
-        cx.control(
+        cx.control_set(
             Op::post(
                 "/dj/steer",
                 "dj_steer",
                 DJ,
-                "Steer the DJ in a room's zone (a mood and constraints, for a while), or clear it",
+                "Steer or clear the DJ direction in each group named by a room, alias or all",
             ),
-            |h, r: &DjSteerRequest| plan::plan_dj_steer(h, r),
+            |h, r: &DjSteerRequest| plan::plan_dj_steer_set(h, r),
         ),
         cx.route(
             &Op::get(
@@ -300,14 +300,14 @@ fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         (
             "/dj/skip",
             "dj_skip",
-            "Skip the DJ's current pick",
+            "Skip the DJ's current pick in each selected group",
             DjAction::Skip,
         ),
-        ("/dj/stop", "dj_stop", "Stop the DJ", DjAction::Stop),
+        ("/dj/stop", "dj_stop", "Stop the DJ in each selected group", DjAction::Stop),
     ] {
-        routes.push(cx.control(
+        routes.push(cx.control_set(
             Op::post(path, id, DJ, summary),
-            move |h, r: &ZoneRequest| plan::plan_dj(h, r, action),
+            move |h, r: &ZoneRequest| plan::plan_dj_set(h, r, action),
         ));
     }
     routes

@@ -887,7 +887,11 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             }
             let (path, body) = control_request(&daemon, command)?;
             let outcome: OutcomeDto = daemon.post(path, &body)?;
-            emit(json, &outcome, done)?;
+            if matches!(command, Command::Dj { .. }) {
+                crate::emit_dj_outcome(json, &outcome)?;
+            } else {
+                emit(json, &outcome, done)?;
+            }
         }
     }
     Ok(true)

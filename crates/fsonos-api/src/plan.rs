@@ -806,6 +806,67 @@ pub fn plan_dj_steer<'a>(
     })
 }
 
+/// DJ controls over the independent groups named by a room, alias or
+/// `all`/`everywhere`. A group selected through several members acts once.
+pub fn plan_dj_set<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &ZoneRequest,
+    action: DjAction,
+) -> Result<Vec<Command>, Failure> {
+    dj_set(rooms.into(), req.zone()?, |coordinator| Command::Dj {
+        coordinator,
+        action,
+    })
+}
+
+/// Apply the same explicit direction to each selected group before starting
+/// its own feed. With no direction, each group retains its existing steering.
+pub fn plan_dj_start_set<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &DjStartRequest,
+) -> Result<Vec<Command>, Failure> {
+    let (zone, steer) = (req.zone()?, req.steer()?);
+    dj_set(rooms.into(), zone, |coordinator| match &steer {
+        Some(steer) => Command::DjSteer {
+            coordinator,
+            steer: Box::new(steer.clone()),
+            start: true,
+        },
+        None => Command::Dj {
+            coordinator,
+            action: DjAction::Start,
+        },
+    })
+}
+
+/// Replace or clear steering in every selected group without regrouping or
+/// changing its already queued music.
+pub fn plan_dj_steer_set<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &DjSteerRequest,
+) -> Result<Vec<Command>, Failure> {
+    let (zone, steer) = (req.zone()?, req.steer()?);
+    dj_set(rooms.into(), zone, |coordinator| Command::DjSteer {
+        coordinator,
+        steer: Box::new(steer.clone()),
+        start: false,
+    })
+}
+
+fn dj_set(
+    rooms: Rooms<'_>,
+    zone: &str,
+    command: impl Fn(PlayerId) -> Command,
+) -> Result<Vec<Command>, Failure> {
+    let mut coordinators = Vec::new();
+    for target in resolve_set(&rooms, zone)? {
+        if !coordinators.contains(&target.coordinator.id) {
+            coordinators.push(target.coordinator.id.clone());
+        }
+    }
+    Ok(coordinators.into_iter().map(command).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -810,6 +810,20 @@ their standing preferences on every surface and in the daemon. What is on
   setup. Whole works in order, the long-work policy, `PickReason`s and feedback
   learning are unchanged for classical music.
 
+**DJ control across groups:** start, steer, skip and stop now use the shared
+set executor on CLI, HTTP and MCP. Saved aliases, `all` / `everywhere`, and
+`all@S1` / `all@S2` deduplicate grouped members while retaining independent
+feeds. Start and steering validate every selected group before batch writes;
+execution retains the original membership through engine admission and
+speaker-write checks. Per-group caps, starter identity and cross-group repeat
+avoidance remain in force. Partial outcomes keep every group result in one
+receipt and action log, block whole-batch undo, exit nonzero on the CLI and
+set MCP's `isError`. Successful steering retains each prior session for undo.
+Scene, schedule and browser DJ targets keep their existing contracts.
+Simulator and cross-surface regression cases are included, with compilation,
+execution and formatting pending after the executor became unavailable.
+See [Multi-room DJ](docs/MULTI_ROOM_DJ.md).
+
 ### 12.2 `fsonos doctor` and `fsonos setup`
 
 [`b-doctor-engine`, `b-doctor-lan-checks`, `b-doctor-render-checks`,

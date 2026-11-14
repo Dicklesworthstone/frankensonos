@@ -803,7 +803,11 @@ fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result
         }
         _ => direct.run(tool, |households| plan_for(control, households))?,
     };
-    emit(global.json, &outcome, outcome_text)
+    if matches!(control, Command::Dj { .. }) {
+        emit_dj_outcome(global.json, &outcome)
+    } else {
+        emit(global.json, &outcome, outcome_text)
+    }
 }
 
 /// A control's outcome as the CLI prints it, directly or through the daemon:
@@ -997,6 +1001,21 @@ fn emit_queue_outcome(json: bool, outcome: &QueueAddOutcome) -> anyhow::Result<(
     Ok(())
 }
 
+/// Print the full per-group result before an incomplete DJ batch exits
+/// nonzero. Successful or uncertain members must never be replayed together.
+fn emit_dj_outcome(json: bool, outcome: &OutcomeDto) -> anyhow::Result<()> {
+    emit(json, outcome, outcome_text)?;
+    let failed = outcome.notes.iter()
+        .filter(|note| note.code == fsonos_api::NoteCode::Skipped)
+        .count();
+    if failed > 0 {
+        anyhow::bail!(
+            "DJ command incomplete for {failed} group(s); inspect their state and action log before another command; do not replay the batch"
+        );
+    }
+    Ok(())
+}
+
 /// `fsonos party [target]`: a household label names the household;
 /// anything else is the room that leads.
 fn party_request(households: &[fsonos_core::HouseholdState], target: Option<&str>) -> PartyRequest {
@@ -1119,6 +1138,7 @@ fn takes_set(command: &Command) -> bool {
             | Command::Volume { .. }
             | Command::Mute { .. }
             | Command::Ungroup { .. }
+            | Command::Dj { .. }
     )
 }
 
@@ -1174,6 +1194,7 @@ fn plan_set_for<'a>(
             },
         ),
         Command::Ungroup { zone: z } => plan::plan_ungroup_set(households, &zone(z)),
+        Command::Dj { action } => action.plan_set(&households),
         _ => unreachable!("not a set-accepting command"),
     }
 }
@@ -1486,6 +1507,55 @@ mod tests {
             rooms: vec![room("Den", "RINCON_DEN"), room("Kitchen", "RINCON_KIT")],
             ..Default::default()
         }]
+    }
+
+    #[test]
+    fn dj_controls_use_the_set_path_and_deduplicate_members() {
+        let houses = house();
+        for args in [
+            &["dj", "start", "everywhere"][..],
+            &["dj", "start", "all", "--mood", "calm", "--for", "15m"],
+            &["dj", "steer", "all@S2", "--mood", "calm", "--for", "15m"],
+            &["dj", "steer", "all", "--clear"],
+            &["dj", "skip", "all"],
+            &["dj", "stop", "all"],
+        ] {
+            let command = parse(args);
+            assert!(takes_set(&command), "{args:?}");
+            let planned = plan_set_for(&command, &houses).unwrap();
+            assert_eq!(planned.len(), 1, "Den and Kitchen share one DJ: {args:?}");
+            assert_eq!(planned[0].addressed(), Some(&PlayerId("RINCON_DEN".into())));
+        }
+        let directed = plan_set_for(
+            &parse(&["dj", "start", "all", "--mood", "calm", "--for", "15m"]),
+            &houses,
+        ).unwrap();
+        let Planned::DjSteer { start, steer, .. } = &directed[0] else {
+            panic!("a directed start must apply its steering before playback");
+        };
+        assert!(*start);
+        assert_eq!(**steer, fsonos_api::dj::DjSteer::Set {
+            mood: Some("calm".into()),
+            constraints: fsonos_api::dj::SteerConstraints::default(),
+            for_secs: Some(900),
+        });
+    }
+
+    #[test]
+    fn incomplete_dj_output_is_a_failure_after_printing_its_receipt() {
+        let mut outcome = OutcomeDto {
+            done: "Den@S2: the DJ stopped".into(),
+            changed: true,
+            volume: None,
+            notes: Vec::new(),
+        };
+        assert!(emit_dj_outcome(true, &outcome).is_ok());
+        outcome.notes.push(fsonos_api::Note {
+            code: fsonos_api::NoteCode::Skipped,
+            detail: "Kitchen@S1 failed: no DJ is running".into(),
+        });
+        let error = emit_dj_outcome(true, &outcome).unwrap_err().to_string();
+        assert!(error.contains("1 group(s)") && error.contains("do not replay"), "{error}");
     }
 
     #[test]

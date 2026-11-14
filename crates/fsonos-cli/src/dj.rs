@@ -898,6 +898,16 @@ impl SpotifyDj {
 }
 
 impl DjEngine for SpotifyDj {
+    fn steer_ready(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        steer: &DjSteer,
+        clock: &dyn Clock,
+    ) -> Result<(), Failure> {
+        readiness::direction(self, at, store, steer, clock)
+    }
+
     fn start_ready(
         &self,
         at: DjSpeakers<'_>,
@@ -927,12 +937,25 @@ impl DjEngine for SpotifyDj {
         clock: &dyn Clock,
         client: &Client,
     ) -> Result<OutcomeDto, Failure> {
+        self.act_as_checked(at, store, action, clock, client, &|| Ok(()))
+    }
+
+    fn act_as_checked(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        action: DjAction,
+        clock: &dyn Clock,
+        client: &Client,
+        before: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<OutcomeDto, Failure> {
         if action == DjAction::Start && saved::identity(client).is_none() {
             return Err(Failure::invalid(
                 "the DJ's initiating policy client is invalid",
             ));
         }
         let mut state = self.state();
+        before()?;
         let was_feeding = state
             .feeds
             .get(at.coordinator)
@@ -958,6 +981,22 @@ impl DjEngine for SpotifyDj {
         state.refill_retries.remove(at.coordinator);
         state.problems.remove(at.coordinator);
         let done = self.carry_out(&mut state, at, store, action, clock);
+        if let Err(failure) = before() {
+            // A refused batch may already have appended whole works. A new
+            // feed must not continue that invalidated start on a later event.
+            // The pre-carry checkpoint contains no such feed, so even a failed
+            // final save cannot resurrect it. Leave speaker playback and the
+            // accepted queue entries alone; an existing feed keeps its intent.
+            if !was_feeding {
+                state.feeds.remove(at.coordinator);
+                state.starters.remove(at.coordinator);
+                state.listening.remove(at.coordinator);
+                state.refill_retries.remove(at.coordinator);
+            }
+            state.problems.insert(at.coordinator.clone(), failure.detail.clone());
+            self.save(&mut state);
+            return Err(failure);
+        }
         if action == DjAction::Start
             && state
                 .feeds
@@ -986,7 +1025,19 @@ impl DjEngine for SpotifyDj {
         steer_by: &DjSteer,
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
+        self.steer_checked(at, store, steer_by, clock, &|| Ok(()))
+    }
+
+    fn steer_checked(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        steer_by: &DjSteer,
+        clock: &dyn Clock,
+        before: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<OutcomeDto, Failure> {
         let mut state = self.state();
+        before()?;
         if matches!(steer_by, DjSteer::Set { .. }) {
             self.take_library_fresh(&mut state);
             // A session must resolve against the complete accepted plan, not a
@@ -994,6 +1045,7 @@ impl DjEngine for SpotifyDj {
             // session remains available even while the owner repairs an edit.
             state.refresh(store, self.moods_file.as_ref(), clock.now().timestamp())?;
         }
+        before()?;
         let done = steer(&state, at, store, steer_by, clock);
         if done.is_ok() {
             state.refill_retries.remove(at.coordinator);

@@ -61,6 +61,20 @@ pub enum DjStarter {
 
 /// Runs the DJ; see the module docs.
 pub trait DjEngine: Send + Sync {
+    /// Validate prospective steering without saving it or changing a feed.
+    /// Multi-group controls check every direction before changing any group.
+    /// Engines with no separate validation keep their existing behavior.
+    fn steer_ready(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        steer: &DjSteer,
+        clock: &dyn Clock,
+    ) -> Result<(), Failure> {
+        let _ = (at, store, steer, clock);
+        Ok(())
+    }
+
     /// Check that a start can select music and address its renderer without
     /// changing a speaker, session, feed, RNG or listening history. `steer`
     /// is the direction the caller will apply before starting; `None` keeps
@@ -105,6 +119,22 @@ pub trait DjEngine: Send + Sync {
         self.act(at, store, action, clock)
     }
 
+    /// An operation-scoped gate rechecks the originally selected group.
+    /// Engines that wait for their own state lock must call it after the
+    /// lock is acquired, before changing feed ownership or persistent state.
+    fn act_as_checked(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        action: DjAction,
+        clock: &dyn Clock,
+        client: &Client,
+        before: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        before()?;
+        self.act_as(at, store, action, clock, client)
+    }
+
     /// The initiating policy client of this feed, including after restart
     /// or coordinator handoff. Missing persistent provenance must never fall
     /// back to a stale in-memory identity or the DJ's own exemption.
@@ -124,6 +154,21 @@ pub trait DjEngine: Send + Sync {
         steer: &DjSteer,
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure>;
+
+    /// Recheck a group after any engine lock or preparation, immediately
+    /// before replacing its stored direction. Speaker writes are fenced
+    /// separately; this gate also covers a steering-only request.
+    fn steer_checked(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        steer: &DjSteer,
+        clock: &dyn Clock,
+        before: &dyn Fn() -> Result<(), Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        before()?;
+        self.steer(at, store, steer, clock)
+    }
 
     /// What the DJ plays in the group `at.coordinator` leads, why, what comes
     /// next, and how its next pick is steered. `queue_position` is the
