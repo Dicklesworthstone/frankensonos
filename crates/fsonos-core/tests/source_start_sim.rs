@@ -238,7 +238,20 @@ fn unapplied_requests_and_definite_refusals_never_advance_or_repeat() {
             let replies = Replies::new(&f.sim, fault, Some(stage));
             let error = f.start(&replies, NEW, "").unwrap_err();
             assert_eq!(replies.writes(), WRITES[..=index]);
-            if matches!(fault, Fault::Rejected) {
+            if index == 1 {
+                let CoreError::Uncertain(detail) = error else {
+                    panic!("a completed source selection must not be replayed: {error:?}");
+                };
+                let cause = if matches!(fault, Fault::Rejected) {
+                    "soap fault 701: injected definite refusal"
+                } else {
+                    "injected lost source-start reply"
+                };
+                assert!(detail.contains(cause), "{detail}");
+                if matches!(fault, Fault::Rejected) {
+                    assert_eq!(*replies.calls.borrow(), WRITES[..=index]);
+                }
+            } else if matches!(fault, Fault::Rejected) {
                 assert!(matches!(
                     error,
                     CoreError::Proto(ProtoError::SoapFault { code: 701, .. })
@@ -335,4 +348,149 @@ fn empty_sources_are_rejected_before_interrupting_existing_music() {
     assert!(f.start(&replies, " \n", "").is_err());
     assert!(replies.calls.borrow().is_empty());
     assert_eq!(soap::get_media_info(&f.sim.lan(), f.host).unwrap().uri, OLD);
+}
+
+/// Refuse a later stage after the real simulator accepted source selection.
+/// A listener's independent takeover bypasses our request log. The fault is
+/// one-shot so an unsafe renderer retry would succeed and overwrite that music.
+struct RefusalAfterSelection {
+    inner: SimLan,
+    stage: &'static str,
+    takeover: bool,
+    selected: Cell<bool>,
+    refused: Cell<bool>,
+    calls: RefCell<Vec<String>>,
+}
+
+impl RefusalAfterSelection {
+    fn new(sim: &SimHandle, stage: &'static str, takeover: bool) -> Self {
+        Self {
+            inner: sim.lan(),
+            stage,
+            takeover,
+            selected: Cell::new(false),
+            refused: Cell::new(false),
+            calls: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn assert_attempted_once(&self, writes: &[&str]) {
+        assert!(self.refused.get(), "the post-selection fault must be exercised");
+        let calls = self.calls.borrow();
+        assert_eq!(
+            calls.iter().filter(|name| *name == "Browse").count(),
+            1,
+            "a later refusal cannot restart renderer-account learning"
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .map(String::as_str)
+                .filter(|name| WRITES.contains(name))
+                .collect::<Vec<_>>(),
+            writes,
+            "completed stages must not be replayed"
+        );
+    }
+}
+
+impl Transport for RefusalAfterSelection {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        self.calls.borrow_mut().push(name.into());
+        if self.selected.get() && name == self.stage && !self.refused.replace(true) {
+            if self.takeover {
+                soap::set_av_transport_uri(&self.inner, host, OTHER, "")?;
+                soap::play(&self.inner, host)?;
+            }
+            return Err(ProtoError::SoapFault {
+                code: 800,
+                reason: "injected post-selection refusal".into(),
+            });
+        }
+        let response = self.inner.soap_post(host, path, action, body)?;
+        if name == "SetAVTransportURI" {
+            self.selected.set(true);
+        }
+        Ok(response)
+    }
+}
+
+fn assert_post_selection_failure(error: CoreError) {
+    let CoreError::Uncertain(detail) = error else {
+        panic!("source selection already completed: {error:?}");
+    };
+    assert!(detail.contains("soap fault 800: injected post-selection refusal"));
+    assert!(detail.contains("source selection was not replayed"));
+}
+
+#[test]
+fn spotify_play_refusal_after_selection_never_relearns_or_replays() {
+    for generation in [1, 2] {
+        for takeover in [false, true] {
+            let f = Fixture::new(generation);
+            let replies = RefusalAfterSelection::new(&f.sim, "Play", takeover);
+            let error = control::play_spotify_track(
+                &replies,
+                &f.houses,
+                &f.id,
+                "spotify:track:0SimNewTrack0000000001",
+                "Test track",
+            )
+            .unwrap_err();
+            assert_post_selection_failure(error);
+            replies.assert_attempted_once(&WRITES);
+            let expected = if takeover { OTHER.into() } else { f.spotify().0 };
+            assert_eq!(
+                soap::get_media_info(&f.sim.lan(), f.host).unwrap().uri,
+                expected
+            );
+            if takeover {
+                assert_eq!(
+                    soap::get_transport_info(&f.sim.lan(), f.host)
+                        .unwrap()
+                        .state,
+                    TransportState::Playing
+                );
+            }
+            f.assert_queue_preserved();
+        }
+    }
+}
+
+#[test]
+fn silent_spotify_readback_refusal_never_reloads_over_a_listener() {
+    for generation in [1, 2] {
+        for stage in ["GetMediaInfo", "GetZoneGroupState", "GetTransportInfo"] {
+            let f = Fixture::new(generation);
+            let replies = RefusalAfterSelection::new(&f.sim, stage, true);
+            let error = control::load_spotify_track(
+                &replies,
+                &f.houses,
+                &f.id,
+                "spotify:track:0SimNewTrack0000000001",
+                "Test track",
+            )
+            .unwrap_err();
+            assert_post_selection_failure(error);
+            replies.assert_attempted_once(&WRITES[..1]);
+            assert_eq!(
+                soap::get_media_info(&f.sim.lan(), f.host).unwrap().uri,
+                OTHER
+            );
+            assert_eq!(
+                soap::get_transport_info(&f.sim.lan(), f.host)
+                    .unwrap()
+                    .state,
+                TransportState::Playing
+            );
+            f.assert_queue_preserved();
+        }
+    }
 }

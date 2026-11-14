@@ -1046,6 +1046,13 @@ and any intervening source change for explicit inspection; it does not claim
 rollback or a completed replacement receipt. See
 [`docs/NATIVE_PLAYBACK_RECOVERY.md`](docs/NATIVE_PLAYBACK_RECOVERY.md).
 
+Direct source starts and silent loads retain the same completed-stage boundary.
+After source selection succeeds or is confirmed, a failed Play or silent-load
+read-back cannot trigger renderer-account or coordinator/address replay, even
+for SOAP 800. Initial source-selection refusals keep bounded recovery, while
+later errors preserve their original cause and require explicit inspection.
+S1/S2 regressions cover listener takeovers and every silent-load read-back stage.
+
 Native saved Sonos playlists are also readable and playable directly from the
 household's `SQ:` catalog, independent of favorites or Spotify's cached library.
 `fsonos playlists <room>` lists them; `play <room> --playlist <name-or-id>`

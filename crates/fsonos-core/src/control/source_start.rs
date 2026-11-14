@@ -2,8 +2,11 @@
 //! lost. Each write is sent once. Read-back must establish the requested
 //! source and coordinator before advancing; a Play reply also needs Playing
 //! without an explicitly reported renderer error.
-//! Definite refusals keep their meaning for the caller's existing recovery.
+//! A definite refusal of source selection retains the caller's existing
+//! recovery. After selection, a failed Play or silent-load read-back
+//! must not replay the already completed source change.
 
+use crate::CoreError;
 use fsonos_proto::control::{self as soap, MediaInfo};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
@@ -38,7 +41,7 @@ pub(super) fn play<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     uri: &str,
     metadata: &str,
-) -> Result<(), ProtoError> {
+) -> Result<(), CoreError> {
     start(transport, host, coordinator, uri, metadata, true)
 }
 
@@ -49,21 +52,24 @@ pub(super) fn load<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     uri: &str,
     metadata: &str,
-) -> Result<(), ProtoError> {
+) -> Result<(), CoreError> {
     start(transport, host, coordinator, uri, metadata, false)?;
     let source = Source { uri, metadata };
-    if !confirmed(transport, host, coordinator, &source, Stage::Source)?
-        || !matches!(
-            soap::get_transport_info(transport, host)?.state,
-            TransportState::Paused | TransportState::Stopped
-        )
-        || !source.matches(&soap::get_media_info(transport, host)?)
-    {
-        return Err(ProtoError::Malformed(
-            "the requested source was not confirmed loaded without playback".into(),
-        ));
+    let loaded = (|| -> Result<bool, ProtoError> {
+        Ok(confirmed(transport, host, coordinator, &source, Stage::Source)?
+            && matches!(
+                soap::get_transport_info(transport, host)?.state,
+                TransportState::Paused | TransportState::Stopped
+            )
+            && source.matches(&soap::get_media_info(transport, host)?))
+    })();
+    match loaded {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(after_selection(
+            "the requested source was not confirmed loaded without playback",
+        )),
+        Err(error) => Err(after_selection(error)),
     }
-    Ok(())
 }
 
 fn start<T: Transport + ?Sized>(
@@ -73,10 +79,10 @@ fn start<T: Transport + ?Sized>(
     uri: &str,
     metadata: &str,
     autoplay: bool,
-) -> Result<(), ProtoError> {
+) -> Result<(), CoreError> {
     if uri.trim().is_empty() {
         let detail = "cannot start an empty source URI";
-        return Err(ProtoError::Malformed(detail.into()));
+        return Err(ProtoError::Malformed(detail.into()).into());
     }
     let source = Source { uri, metadata };
     for stage in [Stage::Source, Stage::Play] {
@@ -97,12 +103,25 @@ fn start<T: Transport + ?Sized>(
             {
                 // Keep the original failure, not the read-back error. Never
                 // reset the source, repeat Play, or roll back another app.
-                return Err(error);
+                return Err(match stage {
+                    Stage::Source => error.into(),
+                    Stage::Play => after_selection(error),
+                });
             }
             tracing::warn!(cause = %error, "source start confirmed without replaying its write");
         }
     }
     Ok(())
+}
+
+/// A completed SetAVTransportURI is a mutation even when Play was explicitly
+/// refused. Keep the original cause, but retire the outer retry permission:
+/// another controller may already have selected different music or regrouped.
+fn after_selection(error: impl std::fmt::Display) -> CoreError {
+    CoreError::Uncertain(format!(
+        "source selection completed but the requested playback state was not confirmed: \
+         {error}; source selection was not replayed; read the current source before trying again"
+    ))
 }
 
 /// Recheck source identity across topology/transport reads. A transitioning

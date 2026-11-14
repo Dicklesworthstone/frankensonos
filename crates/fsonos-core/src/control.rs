@@ -183,7 +183,7 @@ pub fn play_uri<T: Transport + ?Sized>(
     metadata: &str,
 ) -> Result<(), CoreError> {
     let host = addr(households, coordinator)?;
-    Ok(source_start::play(t, host, coordinator, uri, metadata)?)
+    source_start::play(t, host, coordinator, uri, metadata)
 }
 
 /// The household's Spotify render parameters, learned from its own
@@ -254,11 +254,13 @@ fn is_render_800(e: &CoreError) -> bool {
 
 /// Play `spotify_uri` (a `spotify:track:<id>`) on the group `coordinator`
 /// leads, self-healing one round of parameter drift: if the renderer
-/// refuses the first attempt with UPnP 800, the household's render
+/// refuses the initial source selection with UPnP 800, the household's render
 /// parameters are relearned from its favorites and the render retried
 /// exactly once. A second 800 (or a household that lost its Spotify
 /// favorites mid-flight) fails with [`CoreError::RenderParamsStale`] /
-/// [`CoreError::NoSpotifyFavorite`]; the retry never loops.
+/// [`CoreError::NoSpotifyFavorite`]; the retry never loops. Once the source is
+/// selected, a failed Play is an uncertain overall start and never replays
+/// the completed source change, even when Play explicitly returns 800.
 pub fn play_spotify_track<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],

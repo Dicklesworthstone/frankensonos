@@ -100,7 +100,7 @@ pub fn load_uri<T: Transport + ?Sized>(
     }
     let host = addr(households, coordinator)?;
     coordinator_at(t, host, coordinator)?;
-    Ok(source_start::load(t, host, coordinator, uri, metadata)?)
+    source_start::load(t, host, coordinator, uri, metadata)
 }
 
 /// Select an existing queue slot, without Play or a mode change.
