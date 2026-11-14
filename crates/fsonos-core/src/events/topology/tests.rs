@@ -57,7 +57,13 @@ fn empty_partial_and_incoherent_groups_cannot_erase_the_sender_household() {
         group("a", &a) + &group("b", &(b.clone() + &a)),
         group("a", &(a.clone() + &player("", 3, ""))),
         group("a", &(a.clone() + &player("b", 1, ""))),
-        group("a", &a.replace("http://192.0.2.1:1400/xml/device_description.xml", "unknown")),
+        group(
+            "a",
+            &a.replace(
+                "http://192.0.2.1:1400/xml/device_description.xml",
+                "unknown",
+            ),
+        ),
     ] {
         rejects_without_replacing(&document(&groups));
     }
@@ -87,10 +93,7 @@ fn satellites_and_vanished_reports_do_not_bypass_identity_checks() {
 #[test]
 fn known_other_households_cannot_be_imported_by_id_or_control_address() {
     for foreign in [player("other", 11, ""), player("new", 10, "")] {
-        rejects_without_replacing(&document(&group(
-            "a",
-            &(player("a", 1, "") + &foreign),
-        )));
+        rejects_without_replacing(&document(&group("a", &(player("a", 1, "") + &foreign))));
     }
 }
 
@@ -130,7 +133,10 @@ fn valid_regrouping_new_bonds_and_peer_disappearance_are_adopted_together() {
     assert_eq!(a.model, "learned model");
     assert_eq!(a.room_name, "New name");
     assert_eq!(houses[0].groups[0].coordinator, PlayerId("new".into()));
-    assert_eq!(houses[0].rooms[1].players, [PlayerId("a".into()), PlayerId("sub".into())]);
+    assert_eq!(
+        houses[0].rooms[1].players,
+        [PlayerId("a".into()), PlayerId("sub".into())]
+    );
     assert_eq!(houses[1], other);
 }
 
@@ -154,12 +160,18 @@ fn changed_addresses_and_ordinary_bridges_are_admitted() {
         &player("bridge", 20, "IsZoneBridge=\"1\" Invisible=\"1\""),
     );
     let doc = document(
-        &(group("a", &(player("a", 9, "BootSeq=\"4\"") + &player("b", 2, "")))
-            + &bridge),
+        &(group(
+            "a",
+            &(player("a", 9, "BootSeq=\"4\"") + &player("b", 2, "")),
+        ) + &bridge),
     );
     apply(&mut houses, &PlayerId("a".into()), &doc).unwrap();
     assert_eq!(
-        houses[0].player(&PlayerId("a".into())).unwrap().ip.to_string(),
+        houses[0]
+            .player(&PlayerId("a".into()))
+            .unwrap()
+            .ip
+            .to_string(),
         "192.0.2.9"
     );
     assert_eq!(houses[0].players.len(), 2);
@@ -179,5 +191,8 @@ fn a_known_satellite_sender_can_report_a_coherent_household() {
     apply(&mut houses, &PlayerId("sub".into()), &doc).unwrap();
     assert_eq!(houses[0].players.len(), 2);
     assert_eq!(houses[0].rooms.len(), 1);
-    assert_eq!(houses[0].rooms[0].players, [PlayerId("a".into()), PlayerId("sub".into())]);
+    assert_eq!(
+        houses[0].rooms[0].players,
+        [PlayerId("a".into()), PlayerId("sub".into())]
+    );
 }

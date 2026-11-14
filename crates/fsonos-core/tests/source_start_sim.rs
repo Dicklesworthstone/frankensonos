@@ -375,7 +375,10 @@ impl RefusalAfterSelection {
     }
 
     fn assert_attempted_once(&self, writes: &[&str]) {
-        assert!(self.refused.get(), "the post-selection fault must be exercised");
+        assert!(
+            self.refused.get(),
+            "the post-selection fault must be exercised"
+        );
         let calls = self.calls.borrow();
         assert_eq!(
             calls.iter().filter(|name| *name == "Browse").count(),
@@ -446,7 +449,11 @@ fn spotify_play_refusal_after_selection_never_relearns_or_replays() {
             .unwrap_err();
             assert_post_selection_failure(error);
             replies.assert_attempted_once(&WRITES);
-            let expected = if takeover { OTHER.into() } else { f.spotify().0 };
+            let expected = if takeover {
+                OTHER.into()
+            } else {
+                f.spotify().0
+            };
             assert_eq!(
                 soap::get_media_info(&f.sim.lan(), f.host).unwrap().uri,
                 expected

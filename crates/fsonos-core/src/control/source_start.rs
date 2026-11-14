@@ -56,12 +56,14 @@ pub(super) fn load<T: Transport + ?Sized>(
     start(transport, host, coordinator, uri, metadata, false)?;
     let source = Source { uri, metadata };
     let loaded = (|| -> Result<bool, ProtoError> {
-        Ok(confirmed(transport, host, coordinator, &source, Stage::Source)?
-            && matches!(
-                soap::get_transport_info(transport, host)?.state,
-                TransportState::Paused | TransportState::Stopped
-            )
-            && source.matches(&soap::get_media_info(transport, host)?))
+        Ok(
+            confirmed(transport, host, coordinator, &source, Stage::Source)?
+                && matches!(
+                    soap::get_transport_info(transport, host)?.state,
+                    TransportState::Paused | TransportState::Stopped
+                )
+                && source.matches(&soap::get_media_info(transport, host)?),
+        )
     })();
     match loaded {
         Ok(true) => Ok(()),

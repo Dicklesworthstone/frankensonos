@@ -1161,6 +1161,30 @@ impl DjEngine for SpotifyDj {
         }
     }
 
+    fn on_observation_gap(&self, coordinator: Option<&PlayerId>) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let State {
+            feeds, listening, ..
+        } = &mut *state;
+        if let Some(coordinator) = coordinator {
+            if feeds.contains_key(coordinator) || listening.contains_key(coordinator) {
+                listening
+                    .entry(coordinator.clone())
+                    .or_default()
+                    .observation_gap();
+            }
+        } else {
+            // A retained feed may not have produced its first accepted
+            // observation yet. It needs the same fresh-read boundary.
+            for coordinator in feeds.keys() {
+                listening.entry(coordinator.clone()).or_default();
+            }
+            for listening in listening.values_mut() {
+                listening.observation_gap();
+            }
+        }
+    }
+
     fn on_playback(
         &self,
         at: DjSpeakers<'_>,
@@ -1185,6 +1209,11 @@ impl DjEngine for SpotifyDj {
             return;
         }
         if !state.feeds.contains_key(at.coordinator) || state.held.contains(at.coordinator) {
+            return;
+        }
+        if let Some(listening) = state.listening.get_mut(at.coordinator)
+            && !listening.confirm_observation(at, playback)
+        {
             return;
         }
         if matches!(expected, DjStarter::Missing)

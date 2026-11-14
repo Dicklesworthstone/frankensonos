@@ -17,6 +17,7 @@ struct PlaybackKey {
     uri: Option<String>,
     position: Option<u32>,
     length: Option<u32>,
+    play_mode: Option<String>,
 }
 
 impl From<&PlayerPlayback> for PlaybackKey {
@@ -28,6 +29,7 @@ impl From<&PlayerPlayback> for PlaybackKey {
             uri: playback.track_uri.clone(),
             position: playback.queue_position,
             length: playback.queue_length,
+            play_mode: playback.play_mode.clone(),
         }
     }
 }
@@ -122,7 +124,7 @@ mod tests {
         let now = Instant::now();
         let original = playback();
         let retry = Retry::failed(None, &original, now);
-        for change in 0..6 {
+        for change in 0..7 {
             let mut changed = original.clone();
             match change {
                 0 => changed.track_uri = Some("test:next-track".into()),
@@ -130,7 +132,8 @@ mod tests {
                 2 => changed.queue_position = Some(2),
                 3 => changed.queue_length = Some(3),
                 4 => changed.transport_status = Some("ERROR_OCCURRED".into()),
-                _ => changed.media_uri = Some("test:other-source".into()),
+                5 => changed.media_uri = Some("test:other-source".into()),
+                _ => changed.play_mode = Some("SHUFFLE".into()),
             }
             assert!(retry.ready(&changed, now));
             let failed = Retry::failed(Some(&retry), &changed, now);

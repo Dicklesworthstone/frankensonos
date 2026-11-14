@@ -21,8 +21,9 @@ use fsonos_spotify::feedback::{
 use fsonos_spotify::works::Work;
 use fsonos_types::TransportState;
 use std::path::PathBuf;
+use std::time::Instant;
 
-use super::{State, room};
+use super::{State, retry, room};
 use crate::config::GlobalArgs;
 use crate::dj_view::store_failure;
 use crate::remote::Daemon;
@@ -85,14 +86,67 @@ pub struct Listening {
     finished: Option<FeedbackSignal>,
     observed_at: Option<i64>,
     advancing: bool,
+    /// Health and Resync retain cached playback. It cannot establish a new
+    /// listening interval until an actual renderer read agrees with it.
+    awaiting_observation: bool,
+    observation_retry: Option<retry::Retry>,
+    /// A same-slot seek during a gap must not reuse the cached near-start clock.
+    recovered_start: Option<bool>,
 }
 
 impl Listening {
-    /// Lost ownership or unreadable identity is not a listener's preference.
+    pub(super) fn observation_gap(&mut self) {
+        self.interrupt();
+        self.awaiting_observation = true;
+        self.recovered_start = None;
+    }
+
+    /// Confirm a post-gap snapshot once, before it can feed or teach taste.
+    /// A Healthy event can come from volume or subscription renewal, so it
+    /// is not itself evidence that the retained transport is still current.
+    pub(super) fn confirm_observation(
+        &mut self,
+        at: DjSpeakers<'_>,
+        playback: &PlayerPlayback,
+    ) -> bool {
+        if !self.awaiting_observation {
+            return true;
+        }
+        let now = Instant::now();
+        if self
+            .observation_retry
+            .as_ref()
+            .is_some_and(|retry| !retry.ready(playback, now))
+        {
+            return false;
+        }
+        match confirms_playback(at, playback) {
+            Ok(Some(near_start)) => {
+                self.awaiting_observation = false;
+                self.observation_retry = None;
+                self.recovered_start = Some(near_start);
+                true
+            }
+            result => {
+                if let Err(error) = result {
+                    tracing::debug!(%error, "DJ listening awaits a fresh playback observation");
+                }
+                self.observation_retry = Some(retry::Retry::failed(
+                    self.observation_retry.as_ref(),
+                    playback,
+                    Instant::now(),
+                ));
+                false
+            }
+        }
+    }
+
+    /// Lost observations, ownership or unreadable identity are not a preference.
     pub(super) fn interrupt(&mut self) {
         self.advancing = false;
         self.prefix_complete = false;
         self.finished = None;
+        self.recovered_start = self.recovered_start.map(|_| false);
         if let Some((movement, _)) = &mut self.current {
             movement.started = false;
         }
@@ -105,11 +159,20 @@ impl Listening {
         &mut self,
         now: i64,
         transport: Option<TransportState>,
-        playing: Option<Movement>,
+        mut playing: Option<Movement>,
     ) -> Option<(String, Signal)> {
         self.finished = None;
+        if self.awaiting_observation {
+            return None;
+        }
         if self.observed_at.is_some_and(|at| now < at) {
             return None;
+        }
+        if transport == Some(TransportState::Playing)
+            && let Some(movement) = &mut playing
+            && let Some(near_start) = self.recovered_start.take()
+        {
+            movement.started &= near_start;
         }
         let elapsed = self
             .observed_at
@@ -171,6 +234,54 @@ impl Listening {
         self.finished = Some(evidence);
         Some((movement.work_key, signal))
     }
+}
+
+/// Separate UPnP reads are not a transaction. Bracket the position with
+/// transport and source reads, and keep waiting across an observed change.
+/// The accepted snapshot must agree too: accepting a different fresh state
+/// would let the next cached event immediately resurrect the old playback.
+fn confirms_playback(
+    at: DjSpeakers<'_>,
+    cached: &PlayerPlayback,
+) -> Result<Option<bool>, fsonos_core::CoreError> {
+    use fsonos_proto::control as soap;
+
+    let host = control::locate(at.households, at.coordinator)?.ip;
+    let before = soap::get_transport_info(at.transport, host)?;
+    let source = soap::get_media_info(at.transport, host)?;
+    let position = soap::get_position_info(at.transport, host)?;
+    let current_source = soap::get_media_info(at.transport, host)?;
+    let after = soap::get_transport_info(at.transport, host)?;
+    let status_matches = cached
+        .transport_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|status| !status.is_empty())
+        .map_or(after.status.trim() == "OK", |status| {
+            status == after.status.trim()
+        });
+    if before != after
+        || source.uri != current_source.uri
+        || source.tracks != current_source.tracks
+        || cached.transport != Some(after.state)
+        || !status_matches
+        || cached.media_uri.as_deref() != Some(source.uri.as_str())
+        || cached.track_uri.as_deref() != Some(position.uri.as_str())
+        || cached.queue_position != (position.track > 0).then_some(position.track)
+        || cached.queue_length != Some(source.tracks)
+        || (source.uri.starts_with("x-rincon-queue:") && position.track > source.tracks)
+    {
+        return Ok(None);
+    }
+    if let Some(mode) = &cached.play_mode
+        && fsonos_proto::play_mode::get_play_mode(at.transport, host)?.as_str() != mode.trim()
+    {
+        return Ok(None);
+    }
+    Ok(Some(
+        after.state == TransportState::Playing
+            && position.position_secs.is_some_and(|seconds| seconds <= 1),
+    ))
 }
 
 /// Record `signal` about `work` (its composer and performer too) at `now`.

@@ -40,9 +40,8 @@ pub(super) fn apply(
         if other_index == index {
             continue;
         }
-        let foreign = |id: &PlayerId| {
-            other.player(id).is_some() || other.coordinator_of(id).is_some()
-        };
+        let foreign =
+            |id: &PlayerId| other.player(id).is_some() || other.coordinator_of(id).is_some();
         if candidate.players.iter().any(|player| {
             foreign(&player.id) || other.players.iter().any(|old| old.ip == player.ip)
         }) || topology.vanished.iter().any(|player| foreign(&player.uuid))
@@ -61,7 +60,10 @@ fn validate(topology: &ZoneGroupState) -> Result<(), ProtoError> {
     for group in &topology.groups {
         if group.coordinator.0.trim().is_empty()
             || !coordinators.insert(&group.coordinator)
-            || !group.members.iter().any(|member| member.uuid == group.coordinator)
+            || !group
+                .members
+                .iter()
+                .any(|member| member.uuid == group.coordinator)
         {
             return Err(invalid("a group has no unique present coordinator"));
         }
@@ -71,7 +73,9 @@ fn validate(topology: &ZoneGroupState) -> Result<(), ProtoError> {
             .flat_map(|member| std::iter::once(member).chain(&member.satellites))
         {
             if member.uuid.0.trim().is_empty() || !players.insert(&member.uuid) {
-                return Err(invalid("a physical player has an empty or repeated identity"));
+                return Err(invalid(
+                    "a physical player has an empty or repeated identity",
+                ));
             }
             let Some(address) = member.ip() else {
                 return Err(invalid("a present player has no usable address"));
@@ -87,7 +91,9 @@ fn validate(topology: &ZoneGroupState) -> Result<(), ProtoError> {
             || !vanished.insert(&missing.uuid)
             || players.contains(&missing.uuid)
         {
-            return Err(invalid("vanished-player evidence conflicts with the live players"));
+            return Err(invalid(
+                "vanished-player evidence conflicts with the live players",
+            ));
         }
     }
     Ok(())

@@ -84,7 +84,15 @@ impl Fixture {
             assert!(fixture.accept(&notify).is_some());
         }
         assert_eq!(fixture.topology.len(), 2);
-        assert_eq!(fixture.rec.households.iter().map(|h| h.players.len()).sum::<usize>(), 6);
+        assert_eq!(
+            fixture
+                .rec
+                .households
+                .iter()
+                .map(|h| h.players.len())
+                .sum::<usize>(),
+            6
+        );
         fixture
     }
 
@@ -157,7 +165,10 @@ fn s1_and_s2_recover_incomplete_events_without_losing_rooms_or_subscriptions() {
                 .iter()
                 .flat_map(|house| &house.players)
                 .map(|player| {
-                    (player.id.clone(), fixture.playback.of(&player.id).unwrap().clone())
+                    (
+                        player.id.clone(),
+                        fixture.playback.of(&player.id).unwrap().clone(),
+                    )
                 })
                 .collect();
             let leases = fixture.rec.subscriptions.len();
@@ -178,7 +189,10 @@ fn s1_and_s2_recover_incomplete_events_without_losing_rooms_or_subscriptions() {
             assert_eq!(fixture.rec.subscriptions.len(), leases);
             for (player, state) in states {
                 assert_eq!(fixture.playback.of(&player), Some(&state));
-                assert_ne!(fixture.rec.health.of(&player).unwrap().health, Health::Offline);
+                assert_ne!(
+                    fixture.rec.health.of(&player).unwrap().health,
+                    Health::Offline
+                );
             }
 
             // Recovery requests a real full-state event from a new SID.
@@ -231,7 +245,10 @@ fn s1_and_s2_recover_incomplete_events_without_losing_rooms_or_subscriptions() {
                 .iter()
                 .all(|house| house.player(&peer).is_none())
         );
-        assert_eq!(fixture.rec.health.of(&peer).unwrap().health, Health::Offline);
+        assert_eq!(
+            fixture.rec.health.of(&peer).unwrap().health,
+            Health::Offline
+        );
         assert!(fixture.rec.subscriptions.len() < leases);
     }
     assert!(fixture.rec.households.iter().all(|house| {
@@ -285,9 +302,16 @@ fn rejected_topology_keeps_the_event_cursor_and_bounds_recovery_retries() {
         assert_eq!(fixture.rec.households, before);
         assert!(fixture.rec.subscriptions.route(&invalid).is_some());
         assert_eq!(fixture.rec.schedule.next_at(), fixture.now + RETRY);
-        assert_eq!(fixture.rec.subscriptions.next_due(), Some(fixture.now + RETRY));
+        assert_eq!(
+            fixture.rec.subscriptions.next_due(),
+            Some(fixture.now + RETRY)
+        );
     }
-    assert_eq!(outage.attempts.get(), 1, "bad events cannot bypass retry backoff");
+    assert_eq!(
+        outage.attempts.get(),
+        1,
+        "bad events cannot bypass retry backoff"
+    );
 
     // A corrected document at the rejected SEQ remains usable on the old
     // lease when its replacement could not be established.

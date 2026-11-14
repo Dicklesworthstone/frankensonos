@@ -190,6 +190,18 @@ pub trait DjEngine: Send + Sync {
         let _ = coordinator;
     }
 
+    /// Break implicit listening evidence when playback observations are lost.
+    /// `Some` names the affected coordinator, even if it has left the current
+    /// topology; `None` interrupts every retained feed after an upstream gap.
+    /// This is not a queue edit or playback command: retain queue ownership,
+    /// pending retries and steering, and perform no speaker I/O in this
+    /// callback. Before feeding or beginning fresh listening evidence, require
+    /// a fresh playback observation: Healthy can mean only a volume event or
+    /// subscription renewal, and Resync retains the old playback snapshot.
+    fn on_observation_gap(&self, coordinator: Option<&PlayerId>) {
+        let _ = coordinator;
+    }
+
     /// Reconcile feed ownership before processing playback, including after
     /// a spontaneous coordinator re-election. The engine must prove that a
     /// replacement inherited its queue before moving a feed or its steering.

@@ -272,8 +272,8 @@ household. Missing senders, conflicting identities or addresses, and incoherent
 groups preserve the last live inventory and trigger bounded subscription and
 discovery recovery. Valid regrouping, bonded speakers, IP changes and real peer
 departures still apply. Eight admission cases and two S1/S2 event-stream
-regressions have been added; Rust execution and formatting remain pending after
-executor failures. See [Callback recovery](docs/CALLBACK_RECOVERY.md).
+regressions have been added; Rust execution remains pending after executor
+failures. See [Callback recovery](docs/CALLBACK_RECOVERY.md).
 
 ### LANE C — `fsonos-spotify` (library + DJ)
 
