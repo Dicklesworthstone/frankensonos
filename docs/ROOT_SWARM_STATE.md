@@ -5470,3 +5470,12 @@ Redirect experiment: forcing `pc = 0x10007040` on the first loop hit changes the
 decrypt loop at `0x10007148` sits in the same routine but is reached after download
 returns. The stream init still never runs on that route, which is the one real gap left
 before the digest/signature stage.
+
+Measured after forcing the init block: `ZZ0052` returns **0** (success) yet the magic word
+stays **0**, so `ZZ0052` is the *key schedule*, not the magic-stamper — `ZZ0033` is the
+one that stamps it, and nothing on this route calls `ZZ0033`. Forcing the block does move
+the failure (`(49)` → `(1) format unknown`), proving the block is the right neighbourhood.
+
+Hence the remaining work is explicit: get `ZZ0033(ctx, …)` executed once before the first
+`ZZ0037` — either by patching a `bl` into the flow at `0x10007148`, or by finding the
+branch that should have routed through it.
