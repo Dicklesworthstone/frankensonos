@@ -5580,3 +5580,12 @@ the handler itself at `0x10004d6c` (`mtctr r11`), and others cluster at
 `0x100034dc`, `0x100035f4`, `0x100037bc` — those are the table dispatchers worth reading,
 since whichever one loads `0x100169c0` will show the true argument registers for
 `0x10004c88`.
+
+Handler is a **vtable method**: `0x100169c4` is exactly table+0x10, and the dispatchers
+call `lwz r9,0(obj); lwz r9,N(r9); mtctr; bctrl` — so the handler sits at vtable index 4
+and its object's first word must be `0x100169b4`.
+
+Scanning the loop's pointer registers for that word found none: `r28 -> 0x3`,
+`r30 -> 0x886499ca`, `r31 -> 0`, `r16 -> 0`. So the object is not in the loop frame; it
+belongs to the caller and is not passed down. (Also: `r20 = 0x1` is an int, not a pointer —
+worth remembering for future deref probes.)
