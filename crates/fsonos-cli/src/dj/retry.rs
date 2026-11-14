@@ -186,7 +186,7 @@ mod tests {
         control::play_queue_from(&lan, &households, &id, 1).unwrap();
         {
             let mut state = dj.state();
-            let mut snapshot = state.feeds.get(&id).unwrap().snapshot();
+            let mut snapshot = state.feeds.get(&id).unwrap().snapshot().unwrap();
             snapshot.queued = vec![QueuedWork {
                 title: "Owned DJ track".into(),
                 composer: "Synthetic artist".into(),
