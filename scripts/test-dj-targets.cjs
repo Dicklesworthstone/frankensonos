@@ -224,3 +224,25 @@ test('dashboard stale state in any reviewed group retires the batch while leavin
   assert.equal(h.controller.selected().fresh, true); assert.equal(h.control.state.pending, null);
   assert.equal(await h.control.confirm(p), false); assert.equal(h.writes().length, 0);
 });
+
+
+test('missing notes are valid but explicit malformed notes retain the DJ recovery barrier', async () => {
+  for (const notes of [undefined, [], null, {}, 'SKIPPED']) {
+    const h = fixture(), pending = await h.review();
+    h.reply = () => ({ done: 'The selected DJ request returned', changed: true,
+      ...(notes === undefined ? {} : { notes }) });
+    const valid = notes === undefined || Array.isArray(notes);
+    assert.equal(await h.control.confirm(pending), valid);
+    assert.equal(h.writes().length, 1);
+    assert.equal(h.control.state.result.status, valid ? 'accepted' : 'uncertain');
+    if (valid) assert.equal(h.control.state.recovery, null);
+    else {
+      assert.ok(h.control.state.recovery);
+      assert.equal(await h.control.review(), null);
+      assert.equal(await h.control.confirm(pending), false);
+      assert.equal(h.writes().length, 1);
+      assert.equal(await h.control.observeResult(), true);
+      assert.equal(h.writes().length, 1);
+    }
+  }
+});

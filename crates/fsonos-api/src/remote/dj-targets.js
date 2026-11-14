@@ -189,6 +189,11 @@ const DjTargetsRemote = (() => {
             if (dispatched) fail('This DJ review already dispatched its command.');
             dispatched = true;
             const value = await send('djTargetsControl', pending.body);
+            // Omitted notes mean none; an explicit malformed field cannot prove
+            // that every selected group completed its command.
+            if (value && Object.hasOwn(value, 'notes') && !Array.isArray(value.notes)) {
+              fail('The daemon did not return a complete DJ command receipt.');
+            }
             const result = R.outcomeOf(value);
             receipt = Object.freeze({ ...result, done: value.done, target: pending.body.zone, groups: pending.before.groups,
               action: pending.action, detail: result.detail + (result.partial ? ' Read affected rooms before another action. Do not repeat the whole batch.' : '') });
