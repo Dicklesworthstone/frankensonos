@@ -5613,3 +5613,13 @@ builder, so its AES key can be unwrapped **on the Mac** with the model16 private
 (`openssl pkeyutl -decrypt -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha1`) and
 compared byte-for-byte with the 16 bytes at the emulator's `r31`. That turns the last guess
 into a check.
+
+Mode check: `ZZ0033(..., 2, ...)` returns 3 and stamps nothing; **mode 1 is the correct
+(AES-128-CBC) mode** and does stamp the magic. So the init call shape is settled:
+`ZZ0033(ctx, 1, key, 16, iv, 16, 0, 0)` with ctx `r16`, key = unwrap buffer `r31`.
+
+Still failing at the final call, so the two remaining unknowns are narrower than before and
+purely about *content*: whether the unwrap buffer at `r31` really holds the AES key at
+offset 0, and whether `r30+12` is the IV (r30 does begin with the ENV magic `0x886499ca`, so
+it is the record; the question is only the offset, and whether the record's own layout puts
+the IV there for this 0x1000000-length header form).
