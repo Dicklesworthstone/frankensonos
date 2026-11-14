@@ -5522,3 +5522,10 @@ fields are populated.
 
 Also note: `set unwindonsignal off` is required to see any of this — with it on, gdb
 restores the context and the fault location is lost.
+
+Negative results worth keeping: `r26` is `0x10` at the loop (reused), and `r3` at
+`0x10006a20`'s entry is `0x1`, not a struct. The loop fired **before** the entry
+breakpoint, which proves the decrypt loop is *not* inside `0x10006a20` — they are
+different functions after all.
+So: handler needs a struct pointer that has not yet been identified; candidates are the
+routine's own first argument and any `lwz` from a high stack slot near the loop.
