@@ -5450,3 +5450,8 @@ before it).
 
 Signature for future work (courtesy of `0x1000705c`-`0x10007098`): `ZZ0052(ctx=r3,
 buf=r4, algo=r5, len=r6, ?=r7)`; call site passes `(r1+7312, r30, 0x1003bf84, r21, 0)`.
+
+Housekeeping sweep (from the Mac — css is cloud-side and cannot see this LAN):
+LAN is `192.168.4.x`. `.84` and `.135` answer 200 on `:1400`; `.137` is down, `.202` is
+still down (needs the physical power-cycle). Note for future checks: the earlier habit of
+probing `192.168.1.x` from css fails for this reason.
