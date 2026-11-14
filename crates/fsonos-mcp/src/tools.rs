@@ -7,7 +7,7 @@
 //! tool errors (`CODE: detail. Hint: ...`, see `docs/ERRORS.md`).
 
 use fastmcp::prelude::*;
-use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
+use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult};
 use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
     ActionDto, ActionsQuery, DjStartRequest, DjStatusDto, DjSteerRequest, ErrorCode, Failure,
@@ -776,18 +776,7 @@ async fn with_backend_off_thread(
     ctx: &McpContext,
     run: impl FnOnce(&Backend) -> McpResult<FinalCallToolResult> + Send + 'static,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    ctx.checkpoint()?;
-    let backend = backend_for(ctx).map_err(|f| tool_error(&f))?;
-    let done = fsonos_api::off_thread::off_thread(move || run(&backend))
-        .map_err(|busy| tool_error(&busy))?
-        .await
-        .ok_or_else(|| {
-            tool_error(&Failure::new(
-                ErrorCode::Internal,
-                "the call stopped before it answered",
-            ))
-        })??;
-    Ok(CompleteResult::new(done, ResultMeta::empty()))
+    crate::worker::run(ctx, run).await
 }
 
 #[tool(

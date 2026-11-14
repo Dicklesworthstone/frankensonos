@@ -61,6 +61,25 @@ impl Transport for Canned {
     }
 }
 
+/// The device accepted a command, but the worker failed before returning it.
+struct PanicAfterWrite(Canned);
+
+impl Transport for PanicAfterWrite {
+    fn soap_post(
+        &self,
+        ip: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let result = self.0.soap_post(ip, path, action, body);
+        if action.trim_matches('"').ends_with("#Next") {
+            panic!("worker failed after the device accepted Next");
+        }
+        result
+    }
+}
+
 /// One S2 household: `Living Room` coordinating `Kitchen`.
 fn house() -> Vec<HouseholdState> {
     let id = |s: &str| PlayerId(s.into());
@@ -253,6 +272,66 @@ impl Api {
     fn actions(&self) -> Vec<String> {
         self.sent.lock().unwrap().clone()
     }
+}
+
+#[test]
+fn a_worker_panic_after_a_control_reports_an_uncertain_outcome_without_retrying() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let surface = Surface::new(
+        Box::new(PanicAfterWrite(Canned {
+            out_args: "",
+            sent: Arc::clone(&sent),
+        })),
+        Box::new(|_| Ok(house())),
+        Policy::default(),
+        Box::new(SystemClock),
+    );
+    let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+    let app = fsonos_api::app(
+        &Arc::new(surface),
+        &fsonos_api::Identity::fixed(Client::Cli),
+        &web,
+    );
+    let api = Api::serve(app, sent, &web);
+    let (status, body) = api.post("/next", &json!({"zone":"Kitchen"}));
+    assert_eq!(status, 502, "{body}");
+    assert_eq!(body["code"], "OUTCOME_UNCERTAIN");
+    assert_eq!(body["retryable"], false);
+    assert!(body["hint"].as_str().unwrap().contains("do not"));
+    assert_eq!(
+        api.actions()
+            .iter()
+            .filter(|action| *action == "Next")
+            .count(),
+        1,
+        "the dispatched command is never replayed"
+    );
+    assert_eq!(api.get("/health").0, 200, "the listener stays available");
+}
+
+#[test]
+fn a_read_worker_panic_remains_an_internal_failure() {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let surface = Surface::new(
+        Box::new(Canned {
+            out_args: "",
+            sent: Arc::clone(&sent),
+        }),
+        Box::new(|_| panic!("the inventory read failed")),
+        Policy::default(),
+        Box::new(SystemClock),
+    );
+    let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+    let app = fsonos_api::app(
+        &Arc::new(surface),
+        &fsonos_api::Identity::fixed(Client::Cli),
+        &web,
+    );
+    let api = Api::serve(app, sent, &web);
+    let (status, body) = api.get("/zones");
+    assert_eq!(status, 500, "{body}");
+    assert_eq!(body["code"], "INTERNAL");
+    assert!(api.actions().is_empty());
 }
 
 #[test]
