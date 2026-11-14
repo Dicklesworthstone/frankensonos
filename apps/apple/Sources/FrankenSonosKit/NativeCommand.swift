@@ -17,6 +17,7 @@ public enum NativeCommand: Equatable, Sendable {
     case queueAdd(String, next: Bool)
     case queueFavorite(FavoriteQueue)
     case sonosPlaylist(SonosPlaylistSelection)
+    case sonosPlaylistTracks(SonosPlaylistTracksSelection)
     case lineIn(LineInSelection)
     case playlistTrack(PlaylistTrackSelection)
     case queuePlay(QueueItem, revision: String)
@@ -46,6 +47,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd(_, let next): next ? "Queue next" : "Add to queue"
         case .queueFavorite(let favorite): favorite.title
         case .sonosPlaylist(let selection): selection.title
+        case .sonosPlaylistTracks(let selection): selection.title
         case .lineIn(let selection): selection.title
         case .playlistTrack(let selection): selection.title
         case .queuePlay(let item, _): "Play \(item.title)"
@@ -73,6 +75,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd(let uri, _): Self.sourceExplanation(uri, queued: true)
         case .queueFavorite(let favorite): favorite.explanation
         case .sonosPlaylist(let selection): selection.explanation
+        case .sonosPlaylistTracks(let selection): selection.explanation
         case .lineIn(let selection): selection.explanation
         case .playlistTrack(let selection): selection.explanation
         case .queueRemove: "Removes this exact revision-bound entry. Removing the current entry can advance or stop playback. Undo requires a complete backup saved by the daemon; check the result."
@@ -116,7 +119,7 @@ public enum NativeCommand: Equatable, Sendable {
             return selection + "Adds the selected source without starting or resuming playback. The daemon resolves the source and applies its queue rules."
         }
         if kind == .artist || kind == .show {
-            return selection + "Replaces this group’s queue and plays the selected entries in order through the household’s own Sonos Spotify link. The previous queue contents cannot be recovered through ordinary undo. Playback volume caps apply."
+            return selection + "Replaces this group’s queue and plays the selected entries in order through the household’s own Sonos Spotify link. Undo depends on the daemon retaining and verifying a complete bounded queue backup; inspect the result and action history. Playback volume caps apply."
         }
         return "Replaces what this group plays and can change its queue. The daemon applies playback volume caps."
     }
@@ -132,6 +135,7 @@ public enum NativeCommand: Equatable, Sendable {
         switch self {
         case .queueAdd, .queueFavorite: true
         case .sonosPlaylist(let selection): selection.action != .play
+        case .sonosPlaylistTracks(let selection): selection.action != .play
         case .playlistTrack(let selection): selection.isQueueAdd
         default: false
         }
@@ -159,7 +163,7 @@ public enum NativeCommand: Equatable, Sendable {
     func payload(in zone: Zone) throws -> Payload {
         _ = try zone.validated()
         var path: [String] = [], body: [String: JSONValue] = ["zone": .string(zone.id.address)]
-        let nativePlaylist: Bool = if case .sonosPlaylist = self { true } else { false }
+        let nativePlaylist: Bool = switch self { case .sonosPlaylist, .sonosPlaylistTracks: true; default: false }
         let timeout: TimeInterval = isAnnouncement ? Announcement.timeout
             : requiresDJ || savedScene != nil || isQueueAdd || requiresFreshTopology || nativePlaylist ? 600 : 120
         func require(_ flag: Bool, _ message: String) throws { if !flag { throw ContractError.invalid(message) } }
@@ -191,6 +195,8 @@ public enum NativeCommand: Equatable, Sendable {
             path = ["queue"]; body = try favorite.fields(in: zone)
         case .sonosPlaylist(let selection):
             path = selection.path; body = try selection.fields(in: zone)
+        case .sonosPlaylistTracks(let selection):
+            path = ["sonos", "playlists", "tracks"]; body = try selection.fields(in: zone)
         case .lineIn(let selection):
             path = ["line-in", "play"]; body = try selection.fields(in: zone)
         case .playlistTrack(let selection):
@@ -269,6 +275,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd(_, let next): matches = !next || before.samePlayback(as: current)
         case .queueFavorite(let favorite): matches = !favorite.next || before.samePlayback(as: current)
         case .sonosPlaylist(let selection): matches = selection.action == .append || before.samePlayback(as: current)
+        case .sonosPlaylistTracks(let selection): matches = selection.action == .append || before.samePlayback(as: current)
         case .playlistTrack(let selection): matches = selection.allowsTrackProgress || before.samePlayback(as: current)
         default: matches = before.samePlayback(as: current)
         }
@@ -360,6 +367,7 @@ public enum NativeCommand: Equatable, Sendable {
             return CommandReceipt(title: report.done, detail: report.work + "\n" + report.done)
         case .queueFavorite(let favorite): return try favorite.receipt(data, in: zone)
         case .sonosPlaylist(let selection): return try selection.receipt(data, in: zone)
+        case .sonosPlaylistTracks(let selection): return try selection.receipt(data, in: zone)
         case .playlistTrack(let selection): return try selection.receipt(data, in: zone)
         case .queueAdd:
             let report = try DaemonClient.decode(QueueAdded.self, from: data)

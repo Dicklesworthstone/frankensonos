@@ -41,7 +41,8 @@ public actor CommandReviewSession {
         _ = try command.payload(in: zone)
         let observed = try await CommandObservation.read(client, command: command, zone: zone)
         try check(token)
-        let review = CommandReview(id: UUID(), command: command, zone: zone,
+        let bound = try observed.bindQueueRevision(command)
+        let review = CommandReview(id: UUID(), command: bound, zone: zone,
                                    state: try observed.state(for: command, in: zone),
                                    dj: observed.dj, favorite: observed.favorite, sleepTimer: observed.sleepTimer,
                                    observedAt: Date(), observation: observed)
@@ -135,6 +136,14 @@ fileprivate struct CommandObservation: Sendable {
     let sleepTimer: SleepTimer?
     let sourceQueue: SourceQueueReview?
 
+    func bindQueueRevision(_ command: NativeCommand) throws -> NativeCommand {
+        guard case .sonosPlaylistTracks(let selection) = command else { return command }
+        guard let sourceQueue else {
+            throw ContractError.invalid("Read the destination queue before reviewing selected saved tracks.")
+        }
+        return .sonosPlaylistTracks(try selection.bound(toQueueRevision: sourceQueue.revision))
+    }
+
     func state(for command: NativeCommand, in zone: Zone) throws -> ZoneState {
         let id = RoomID(household: zone.household, room: command.room ?? zone.coordinatorRoom)
         guard let value = house.states[id] else {
@@ -220,6 +229,8 @@ fileprivate struct CommandObservation: Sendable {
             try selection.validate(await client.playlistContents(selection.request))
         case .sonosPlaylist(let selection):
             try selection.validate(await client.sonosPlaylists(zone), in: zone)
+        case .sonosPlaylistTracks(let selection):
+            try await selection.validate { try await client.sonosPlaylistContents($0) }
         case .listeningSettings(let change):
             try await change.preflight(client, in: zone)
         default: break

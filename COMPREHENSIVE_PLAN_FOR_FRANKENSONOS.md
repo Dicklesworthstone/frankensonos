@@ -1111,6 +1111,16 @@ containers, including file-backed resources. See
 [`docs/SONOS_PLAYLISTS.md`](docs/SONOS_PLAYLISTS.md) for the interface and failure
 contract; simulator coverage is separate from physical-speaker acceptance.
 
+The native iPhone, iPad and Mac remote also selects one to ten saved playlist
+occurrences in **Music → Sonos → Read tracks**. Ordered selections can span
+same-revision pages and include deliberate repeats, with move/remove controls.
+Play replaces the destination queue in normal order; Next and Append insert
+silently. The existing one-use command review rereads every selected source page
+and the destination queue at preparation and confirmation, then submits both
+revisions with one native batch request. Catalog, group or lifecycle changes
+retire stale selections. Lost or contradictory receipts remain uncertain and
+are never replayed; native save/rename/removal continues through the same writer.
+
 Native queue creation is available through `fsonos playlist-save <room> <title>`,
 `POST /sonos/playlists/save`, MCP `save_sonos_playlist`, the phone's
 **Queue → Save queue as playlist**, and the dashboard's **Speaker queue →

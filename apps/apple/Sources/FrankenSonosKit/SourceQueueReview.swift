@@ -38,7 +38,7 @@ struct SourceQueueReview: Decodable, Sendable {
 extension NativeCommand {
     var needsSourceQueueReview: Bool {
         switch self {
-        case .queueAdd, .queueFavorite, .sonosPlaylist: true
+        case .queueAdd, .queueFavorite, .sonosPlaylist, .sonosPlaylistTracks: true
         case .playlistTrack(let selection): selection.isQueueAdd
         case .playSource(let uri):
             if let canonical = try? SceneDefinition.sourceURI(uri) {
@@ -53,6 +53,7 @@ extension NativeCommand {
         case .queueAdd(_, let next): next
         case .queueFavorite(let favorite): favorite.next
         case .sonosPlaylist(let selection): selection.action != .append
+        case .sonosPlaylistTracks(let selection): selection.action != .append
         case .playlistTrack(let selection): !selection.allowsTrackProgress
         case .playSource: true
         default: false

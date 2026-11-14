@@ -32,6 +32,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var sonosPlaylists: [SonosPlaylist] = [] { willSet { onChange?() } }
     public private(set) var sonosPlaylistContents: SonosPlaylistContents? { willSet { onChange?() } }
     public private(set) var sonosPlaylistRequest: SonosPlaylistContentsRequest? { willSet { onChange?() } }
+    public private(set) var sonosPlaylistTracks = SonosPlaylistTracksDraft() { willSet { onChange?() } }
     public private(set) var lineInCatalog: LineInCatalog? { willSet { onChange?() } }
     public private(set) var dj: DJStatus? { willSet { onChange?() } }
     public private(set) var moods: [MoodCatalog.Mood] = [] { willSet { onChange?() } }
@@ -255,7 +256,7 @@ public struct RemoteResult: Identifiable, Sendable {
         do {
             let request = try SonosPlaylistContentsRequest(playlist: page.playlist, in: zone,
                 offset: offset, expectedRevision: page.revision)
-            invalidatePanel(); sonosPlaylistRequest = request; refreshPanel()
+            invalidatePanel(preservingSonosTracks: true); sonosPlaylistRequest = request; refreshPanel()
         } catch { panelProblem = error.localizedDescription }
     }
 
@@ -276,6 +277,40 @@ public struct RemoteResult: Identifiable, Sendable {
               sonosPlaylists.contains(where: { $0.sameSelection(as: playlist) })
                 || sonosPlaylistContents?.playlist.sameSelection(as: playlist) == true else { return }
         do { prepare(.sonosPlaylist(try SonosPlaylistSelection(playlist, in: zone, action: action)), in: zone) }
+        catch { panelProblem = error.localizedDescription }
+    }
+
+    public func addSonosPlaylistTrack(_ item: SonosPlaylistItem, from page: SonosPlaylistContents,
+                                     request: SonosPlaylistContentsRequest, in expectedZone: Zone) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone),
+              sonosPlaylistRequest == request, sonosPlaylistContents == page else { return }
+        do { try sonosPlaylistTracks.append(item, from: page, request: request) }
+        catch { panelProblem = error.localizedDescription }
+    }
+
+    public func changeSonosPlaylistTrack(_ choice: UUID, selection: UUID, move: Int? = nil, repeatEntry: Bool = false) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              sonosPlaylistTracks.id == selection else { return }
+        do {
+            if let move { try sonosPlaylistTracks.move(choice, by: move) }
+            else if repeatEntry { try sonosPlaylistTracks.repeatChoice(choice) }
+            else { try sonosPlaylistTracks.remove(choice) }
+        } catch { panelProblem = error.localizedDescription }
+    }
+
+    public func clearSonosPlaylistTracks(_ selection: UUID) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading,
+              sonosPlaylistTracks.id == selection else { return }
+        sonosPlaylistTracks.clear()
+    }
+
+    public func prepareSonosPlaylistTracks(_ action: SonosPlaylistAction, selection: UUID, in expectedZone: Zone) {
+        guard canPrepare && panel == .sonosPlaylists && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone),
+              let request = sonosPlaylistRequest, let page = sonosPlaylistContents,
+              sonosPlaylistTracks.isCurrent(selection, page: page, request: request) else { return }
+        do { prepare(.sonosPlaylistTracks(try SonosPlaylistTracksSelection(sonosPlaylistTracks, action: action)), in: zone) }
         catch { panelProblem = error.localizedDescription }
     }
 
@@ -327,6 +362,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public func confirm(_ id: UUID) {
         guard active, actionPhase == .idle, let reviewed = review, reviewed.id == id else { return }
         review = nil; actionPhase = .confirming
+        if case .sonosPlaylistTracks = reviewed.command { sonosPlaylistTracks.clear() }
         let target = RoomID(household: reviewed.zone.household, room: reviewed.command.room ?? reviewed.zone.coordinatorRoom)
         let commands = commands
         actionTask = Task { [weak self] in
@@ -392,7 +428,8 @@ public struct RemoteResult: Identifiable, Sendable {
         }
     }
 
-    private func invalidatePanel() {
+    private func invalidatePanel(preservingSonosTracks: Bool = false) {
+        if !preservingSonosTracks { sonosPlaylistTracks.clear() }
         panelEpoch &+= 1
         panelTask?.cancel(); panelPending = false
         queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; scenesObservedAt = nil; sleepTimer = nil; sleepObservedAt = nil
@@ -466,7 +503,10 @@ public struct RemoteResult: Identifiable, Sendable {
                     case .queue(let value): self.queue = value
                     case .favorites(let value): self.favorites = value
                     case .sonosPlaylists(let value): self.sonosPlaylists = value
-                    case .sonosContents(let value): self.sonosPlaylistContents = value
+                    case .sonosContents(let value):
+                        guard let sonosRequest else { throw ContractError.invalid("The saved playlist read has no source observation.") }
+                        try self.sonosPlaylistTracks.observe(value, request: sonosRequest)
+                        self.sonosPlaylistContents = value
                     case .lineIn(let value): self.lineInCatalog = value
                     case .scenes(let value): self.scenes = value; self.scenesObservedAt = Date()
                     case .sleep(let value): self.sleepTimer = value; self.sleepObservedAt = Date()
@@ -477,7 +517,7 @@ public struct RemoteResult: Identifiable, Sendable {
             } catch {
                 if let self, self.active && self.panelEpoch == token && !Task.isCancelled {
                     self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []; self.scenesObservedAt = nil; self.sleepTimer = nil; self.sleepObservedAt = nil
-                    self.sonosPlaylists = []; self.sonosPlaylistContents = nil
+                    self.sonosPlaylists = []; self.sonosPlaylistContents = nil; self.sonosPlaylistTracks.clear()
                     self.lineInCatalog = nil
                     self.schedules = []; self.schedulesObservedAt = nil
                     self.scheduleScenes = []; self.scheduleScenesProblem = nil

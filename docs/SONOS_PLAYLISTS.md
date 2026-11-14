@@ -181,6 +181,15 @@ sends one batch request. Closing the panel or losing a reply does not replay
 that request. Changing the page or saved-playlist observation clears obsolete
 selections. Playback requires `play_favorite`; queue modes require `add_to_queue`.
 
+The native iPhone, iPad and Mac remote offers the same ordered selection in
+**Music → Sonos → Read tracks**. Its selection can span same-revision pages;
+add, move, remove or repeat up to ten occurrences, then choose **Review selected
+tracks**. A one-entry selection uses the same queue-replacement or queue-add
+contract. Review and confirmation reread every selected page and the destination
+queue before sending one revision-bound request. Refreshing, changing households,
+catalog failure or suspending the app clears the selection. See
+[Native Apple remotes](APPLE_REMOTE.md) for the review and recovery behavior.
+
 ## Save the current queue
 
 `fsonos playlist-save <room> <title>` saves the current group's nonempty queue
