@@ -304,8 +304,19 @@ fn partial_scheduled_starts_keep_one_complete_receipt_and_are_never_replayed() {
     let probe = probe();
     let house = House::mixed(&target("all")).with_dj(&probe);
     *probe.fail_group.lock().unwrap() = Some(id(&house, "Room1@S2"));
+    let schedule = house.surface.load_schedules().unwrap().remove(0);
+    let prepared = ready(&house.surface, &schedule).unwrap();
+    claim(&house, &schedule);
+    // Inspect the same result the worker reports, then resume ordinary ticks.
+    // A partial action must not become a success-only scheduler message.
+    let failure = fire(&house.surface, &schedule, None, prepared).unwrap_err();
+    assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
+    for room in ["Room0@S1", "Room1@S1", "Room0@S2", "Room1@S2"] {
+        assert!(failure.detail.contains(room), "{failure:?}");
+    }
+    assert!(failure.detail.contains("lost its acknowledgement"));
+    assert!(failure.detail.contains("do not replay"));
     let scheduler = Scheduler::new(&house.surface);
-    house.tick(&scheduler, house.at);
     assert_eq!(house.recorded(), Some(house.at));
     assert_eq!(probe.starts.load(Ordering::SeqCst), 4);
     let actions = house

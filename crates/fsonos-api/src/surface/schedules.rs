@@ -44,7 +44,7 @@ use super::dj_targets::PreparedDj;
 use super::{Surface, room_view};
 use crate::dj::DjDirectionDto;
 use crate::execute::OutcomeDto;
-use crate::failure::{ErrorCode, Failure};
+use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::plan::{self, TransportAction, resolve};
 use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, zone_name};
 
@@ -1911,7 +1911,27 @@ fn fire(
             })?;
             surface
                 .control_prepared_dj(&client, "dj_start", prepared)
-                .map(|o| o.done)
+                .and_then(|outcome| {
+                    let failed: Vec<_> = outcome
+                        .notes
+                        .iter()
+                        .filter(|note| note.code == NoteCode::Skipped)
+                        .map(|note| note.detail.as_str())
+                        .collect();
+                    if failed.is_empty() {
+                        return Ok(outcome.done);
+                    }
+                    // The control path already recorded the one batch action.
+                    // Keep failures in the scheduler warning as well, without
+                    // reopening an occurrence that may have changed speakers.
+                    Err(Failure::new(
+                        ErrorCode::OutcomeUncertain,
+                        format!("{}; {}", outcome.done, failed.join("; ")),
+                    )
+                    .with_hint(
+                        "This occurrence was consumed and will not be retried. Inspect the groups and action log before another DJ command.",
+                    ))
+                })
         }
         ScheduleAction::Pause { room, fade_secs: 0 } => surface
             .control_set(&client, "pause", |rooms| {
