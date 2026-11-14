@@ -352,7 +352,10 @@ fn background_shutdown_has_one_deadline_for_all_workers() {
             .to_string()
             .contains("first blocked worker")
     );
-    assert!(elapsed < Duration::from_secs(1), "shutdown waited {elapsed:?}");
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "shutdown waited {elapsed:?}"
+    );
 }
 
 #[test]
@@ -431,7 +434,10 @@ fn a_real_library_watcher_panic_reaches_daemon_supervision() {
         error.contains("fsonos-library-watch stopped unexpectedly"),
         "{error}"
     );
-    assert!(error.contains("injected library watcher failure"), "{error}");
+    assert!(
+        error.contains("injected library watcher failure"),
+        "{error}"
+    );
     running.shutdown().unwrap();
 }
 
@@ -454,7 +460,10 @@ fn an_unconfigured_library_starts_no_worker_and_a_signed_out_watch_stops_cleanly
     ));
     let deadline = Instant::now() + Duration::from_secs(2);
     while !visited.load(Ordering::Acquire) {
-        assert!(Instant::now() < deadline, "the library watcher never started");
+        assert!(
+            Instant::now() < deadline,
+            "the library watcher never started"
+        );
         thread::sleep(Duration::from_millis(10));
     }
     assert!(

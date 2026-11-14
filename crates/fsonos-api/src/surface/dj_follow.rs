@@ -699,7 +699,10 @@ mod simulator_tests {
             let result = worker.join();
             assert_eq!(result.is_err(), name == "fsonos-dj", "{name}");
         }
-        assert!(!live.is_finished(), "the failure belongs to the DJ follower");
+        assert!(
+            !live.is_finished(),
+            "the failure belongs to the DJ follower"
+        );
         drop(surface);
         drop(live);
         sim.shutdown();

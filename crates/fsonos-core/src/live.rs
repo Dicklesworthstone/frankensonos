@@ -554,6 +554,7 @@ impl Subscriber for Via<'_> {
 }
 
 impl Engine {
+    #[cfg(test)]
     fn via(&self) -> Via<'_> {
         Via {
             transport: &*self.transport,
