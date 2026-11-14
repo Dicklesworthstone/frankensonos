@@ -5565,3 +5565,11 @@ hand-built `ZZ0033` call needs the header plaintext rather than a derivation.
 
 Practical consequence: call the handler with the *decrypted header* buffer (the 8 KiB one
 produced by the unwrap and sitting in the loop frame), not the payload buffer.
+
+Handler with the decrypted header (`r31 = 0x407fb660`) plus `(1, buf, 8192)` still returns
+1. So the third argument is not a length either, and the routine wants something more.
+
+One clue worth keeping: at the loop `r13 = 0x10033e8c`, which is *also* the first entry of
+the table at `0x100169c0` — so `r13` plausibly points into the dispatch structure and is the
+context the handler really wants. That makes the next probe `(r13, r31)` rather than more
+length/pointer permutations.
