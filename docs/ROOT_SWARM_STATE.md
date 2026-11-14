@@ -5398,3 +5398,15 @@ a full successful block write. The `(49)` therefore comes *after* a working decr
 This is the first time real envelope plaintext has been produced in the emulator, and it
 means the parsed key is very likely the correct one. Next questions are downstream:
 which call produces 49 after the decrypt, and whether the 57.22 package behaves the same.
+
+**`(49)` decoded: it is a write failure, not a crypto failure.** The chain is
+`0x10007190 bl ZZ0050` with `(r3=r16, r4=r31 buf, r5=8192, r6=r19, r7=&out)`; its
+non-zero return branches to `0x10007254` which sets `r20=49` (`li r20,49` at
+`0x10007268`) and logs "error decrypting upgrade" — a misleading message, since the
+decrypt itself already returned a full 8192 bytes.
+
+So the envelope is decrypting correctly and the updater then fails **writing** the chunk
+to its destination (`r16`), which is exactly what an emulator without the flash device
+would suffer. Next: identify `r16` (what device/file the updater opens) and point it at
+something writable, or stub `ZZ0050`'s failure so the loop continues and the digest /
+signature stage is reached.
