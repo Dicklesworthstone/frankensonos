@@ -5432,3 +5432,10 @@ missing init is in the library path that unwrapped the header, and that is the r
 worth breaking next, not the write loop.
 
 Magic recorded for future probes: `0x8FC3EC9E`.
+
+Stream layer identity: `ZZ0033` (lib `0x5f5c`) is the initialiser — it calls
+`mbedtls_cipher_init` and then stamps the magic `0x8FC3EC9E` at `*(ctx)` (`0x5fec`).
+A breakpoint on it does **not** fire, and neither does one on `ZZ0052` (`0x10007098`),
+although both are lexically inside the routine that reaches the decrypt loop at
+`0x10007190` — so the init blocks are being bypassed by the control flow taken.
+`ZZ0052`'s result check is the very instruction that was `nop`ed earlier (`0x100070a0`).
