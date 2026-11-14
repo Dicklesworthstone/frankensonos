@@ -5547,3 +5547,12 @@ builds two large local areas (`r27 = r1+32`, `r28 = r1+608`). It derives everyth
 itself from the buffer, which means a call made *before* the buffer is decrypted returns
 its failure code (1) — exactly what the trial showed. The handler is therefore downstream
 of the stream context, not a substitute for it.
+
+Guard bypass applied on the library: `ZZ0037`'s magic test at `0x5d3c` changed
+`beq 0x5d8c` → `b 0x5d8c` (bytes `41 9e 00 50` → `48 00 00 50`). Result: the payload loop
+*does* run to completion and the failure moves to the **final** call
+("enveloped data decrypt final failed") — so the loop was never the obstacle, and the
+zeroed context is tolerated for updates but not for finalisation.
+
+That pins the requirement precisely: the context must be genuinely initialised with key and
+IV before the loop. Nothing else in the loop path is broken.
