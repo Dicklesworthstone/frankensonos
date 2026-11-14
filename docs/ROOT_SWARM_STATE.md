@@ -5421,3 +5421,14 @@ So the real fault is inside `ZZ0037` (stream update) returning non-zero: `ZZ0050
 `r28=6`, tears the stream down (`ZZ0044`) and returns 6. Next: read `ZZ0037`'s failure
 condition — it is the AES/stream layer, most likely a state/counter the header unwrap was
 supposed to populate from the 8 KiB buffer.
+
+Context probe: `CTX=0x407fb5d0 MAGIC=0` — the stream context is a *stack buffer of the
+caller* that is **never initialised**; `ZZ0037`'s guard (`*(ctx) == 0x8FC3EC9E`, built as
+`lis 0x8fc3 / ori 0xec9e`) therefore always fails.
+
+And the updater calls none of the stream API itself (no `ZZ0046/48/49` imports in the
+binary at all) — the init happens *inside* the library, from the header bytes. So the
+missing init is in the library path that unwrapped the header, and that is the routine
+worth breaking next, not the write loop.
+
+Magic recorded for future probes: `0x8FC3EC9E`.
