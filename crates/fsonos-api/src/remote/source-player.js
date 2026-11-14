@@ -572,6 +572,45 @@ const SourcePlayerRemote = (() => {
       return refresh();
     }
 
+    async function browseSaved(value) {
+      if (disposed) return false;
+      let incoming;
+      try {
+        if (!value || typeof value !== 'object' || Array.isArray(value)
+            || Object.keys(value).some(key => !['target', 'signature', 'playlist'].includes(key))
+            || !text(value.target) || !text(value.signature)) {
+          throw new Error('The saved-playlist handoff is incomplete.');
+        }
+        incoming = { target: value.target, signature: value.signature, playlist: playlists([value.playlist])[0] };
+      } catch (error) { state.message = problem(error); publish(); return false; }
+      state.open = true;
+      if (state.writing || state.reading || state.pending || state.input.trim() || state.title.trim()
+          || state.targetQuery.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
+        state.message = 'Finish the current source action, or explicitly clear its draft before browsing the saved playlist.';
+        publish(); return false;
+      }
+      invalidate(); const version = epoch;
+      state.reading = true; state.message = 'Reading the saved playlist’s current household…'; publish();
+      try {
+        const fresh = groups(await call('zones'));
+        if (!current(version)) return false;
+        const group = fresh.find(group => group.target === incoming.target && group.signature === incoming.signature);
+        if (!group) throw new Error('The saved playlist’s original group changed. Choose its current household and read the saved catalog.');
+        const catalog = playlists(await call('sourcePlaylists', { query: { zone: group.target } }));
+        if (!current(version)) return false;
+        verifyPlaylist(catalog, incoming.playlist);
+        clearPlaylists(); clearLineIn();
+        state.groups = fresh; state.target = group.target; state.targetMode = 'group'; state.targetQuery = '';
+        state.sourceType = 'playlist'; state.mode = 'play'; state.playlists = catalog;
+        state.playlistTarget = group.target; state.playlistStatus = 'ready'; state.playlist = incoming.playlist.id;
+        state.message = 'Saved playlist selected for browsing. Read its tracks, or review a playback action separately.';
+        return true;
+      } catch (error) {
+        if (current(version)) state.message = problem(error);
+        return false;
+      } finally { if (current(version)) { state.reading = false; publish(); } }
+    }
+
     function clearDraft() {
       if (disposed || state.writing) return false;
       invalidate(); clearPlaylists(); clearLineIn(); state.input = ''; state.title = ''; state.target = '';
@@ -704,7 +743,7 @@ const SourcePlayerRemote = (() => {
       return accepted;
     }
 
-    return { state, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, clearDraft,
+    return { state, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, browseSaved, clearDraft,
       catalogChanged(change = null) {
         if (disposed || !['playlist', 'favorite'].includes(state.sourceType)
             || state.sourceType === 'playlist' && change?.playlists === false
@@ -994,6 +1033,14 @@ const SourcePlayerRemote = (() => {
         node.scrollIntoView({ block: 'start' });
       }
       return offered;
+    }, openSavedPlaylist(value) {
+      const opened = control.browseSaved(value);
+      if (control.state.open) {
+        details.open = true;
+        target.focus({ preventScroll: true });
+        node.scrollIntoView({ block: 'start' });
+      }
+      return opened;
     }, dispose() {
       doc.removeEventListener('visibilitychange', hide);
       doc.removeEventListener('fsonos:catalog-changed', catalogChanged);
@@ -1042,6 +1089,11 @@ else if (typeof ROUTES !== 'undefined') {
     document.addEventListener('fsonos:source-review', (event) => {
       event.preventDefault();
       void sourcePanel.openSource(event.detail);
+    });
+    document.addEventListener('fsonos:playlist-browse', event => {
+      if (!event.detail || typeof event.detail !== 'object' || Array.isArray(event.detail)) return;
+      event.preventDefault();
+      event.detail.response = sourcePanel.openSavedPlaylist(event.detail.selection);
     });
   }
 }

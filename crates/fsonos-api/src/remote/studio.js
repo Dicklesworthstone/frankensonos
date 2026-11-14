@@ -16,6 +16,7 @@ const StudioRemote = (() => {
     { id: 'dj-configuration', workspace: 'music', match: /dj.configuration|reusable.*mood|daily.program/i, title: 'Save moods and daily programs', description: 'Create reusable mood rules and choose their automatic weekday and overnight windows.', keywords: 'custom preset factory defaults reusable moods daily program time window' },
     { id: 'dj-session', workspace: 'music', match: /dj session/i, title: 'See why the DJ chose it', description: 'The current work, upcoming selections, and the reasons behind them.', keywords: 'reason explain upcoming movement classical' },
     { id: 'dj-preferences', workspace: 'music', match: /preference|taste/i, title: 'Teach the DJ your taste', description: 'Standing preferences, favorites, avoids, and explicit-content choices.', keywords: 'pin ban artist genre explicit' },
+    { id: 'queue-save', workspace: 'music', match: /save.*queue|queue.*playlist/i, title: 'Save a queue for another day', description: 'Create a Sonos playlist from a group’s retained queue and check the last save result.', keywords: 'save queue native sonos playlist catalog retained create' },
     { id: 'music-library', workspace: 'music', match: /music library/i, title: 'Find music in your library', description: 'Browse and search your music and household favorites.', keywords: 'search spotify album playlist track favorite' },
     { id: 'source-player', workspace: 'music', match: /source|link or stream/i, title: 'Play or queue a link', description: 'Spotify music, artists, podcasts, or a direct audio stream.', keywords: 'paste url queue next end radio' },
     { id: 'spotify', workspace: 'music', match: /spotify|sync|library/i, title: 'Connect and refresh your library', description: 'Account connection and the library the DJ learns from.', keywords: 'sign in saved likes sync refresh' },
@@ -306,6 +307,7 @@ const StudioRemote = (() => {
       opener = doc.activeElement;
       $('studio-search').value = ''; results(); dialog.showModal(); $('studio-search').focus();
     }
+    listen(doc, 'fsonos:playlist-browse', event => { if (event.defaultPrevented) openTool('source-player'); });
     for (const button of $('studio-nav').querySelectorAll('button')) listen(button, 'click', () => navigate(button.dataset.workspace));
     for (const button of doc.querySelectorAll('[data-tool]')) listen(button, 'click', () => openTool(button.dataset.tool));
     listen($('studio-command'), 'click', palette);

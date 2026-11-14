@@ -2,11 +2,12 @@
 'use strict';
 const DashboardPlaylistSavePanel = (() => {
   const S = typeof DashboardPlaylistSave !== 'undefined' ? DashboardPlaylistSave : require('./dashboard-playlist-save.js');
-  function panel({ call, controller, saved, browse = () => false, demo = false, document: doc = document, now }) {
+  function panel({ call, controller, saved, browse = () => false, changed = () => {},
+    prepareRead = null, canPrepareRead = () => false, demo = false, document: doc = document, now }) {
     const dialog = doc.getElementById('playlist-save-dialog'), trigger = doc.getElementById('open-playlist-save');
     if (!dialog || !trigger) throw new Error('The save-queue dialog or trigger is missing.');
     let control, disposed = false, opener = null, shownReview = null, shownResult = null, shownCatalog = null, reviewFocus = null;
-    let viewMessage = '', browsing = false;
+    let viewMessage = '', browsing = false, preparing = false, preparation = 0;
     const listeners = [];
     const on = (node, event, fn) => { node.addEventListener(event, fn); listeners.push([node, event, fn]); };
     const el = (tag, text, className) => {
@@ -32,7 +33,7 @@ const DashboardPlaylistSavePanel = (() => {
     const destination = el('strong'); destination.id = 'playlist-save-target';
     const observed = el('p', '', 'small-note'); observed.id = 'playlist-save-observation';
     context.append(destination, observed);
-    const read = button('playlist-save-read', 'Read current queue', () => { viewMessage = ''; void control.read(); });
+    const read = button('playlist-save-read', 'Read current queue', () => { viewMessage = ''; void readQueue(); });
     const retained = el('p', 'You can save a retained queue while a stream or radio plays. Saving does not start, stop or rearrange music, or change the DJ.', 'small-note');
     const form = el('form', null, 'playlist-save-form'); form.id = 'playlist-save-form';
     const label = el('label', 'Playlist name'); label.htmlFor = 'playlist-save-name';
@@ -90,8 +91,26 @@ const DashboardPlaylistSavePanel = (() => {
         return bytes + ' of ' + S.MAX_TITLE_BYTES + ' UTF-8 bytes.' + (title !== value ? ' Spaces at the beginning and end will be removed.' : '');
       } catch (error) { return error.message; }
     }
+    const canReadQueue = () => !preparing && (control.canRead()
+      || (typeof prepareRead === 'function' && control.state.open && !control.state.loading
+        && !control.state.writing && control.state.catalogStatus !== 'loading' && canPrepareRead()));
+    async function readQueue() {
+      if (!canReadQueue()) return false;
+      if (control.canRead()) return control.read();
+      const token = ++preparation, target = controller.state.selected, scope = control.state.scope;
+      preparing = true; control.invalidate(); render(control.state);
+      try {
+        if (await prepareRead() !== true || disposed || token !== preparation || !control.state.open
+            || target !== controller.state.selected || scope !== control.state.scope) return false;
+        return await control.read();
+      } catch (error) {
+        if (!disposed && token === preparation && control.state.open) viewMessage = error.message || 'The listening group could not be refreshed.';
+        return false;
+      } finally { preparing = false; render(control.state); }
+    }
     function render(s) {
       if (disposed || !control) return;
+      if (!s.open) ++preparation;
       trigger.disabled = !controller.state.active || (controller.state.busy && !s.writing)
         || (!controller.selected() && !s.result);
       trigger.setAttribute('aria-expanded', String(s.open));
@@ -99,16 +118,16 @@ const DashboardPlaylistSavePanel = (() => {
       else if (!s.open && dialog.open) {
         dialog.close(); if (opener?.isConnected && !opener.disabled) opener.focus();
       }
-      dialog.setAttribute('aria-busy', String(s.loading || s.writing || s.catalogStatus === 'loading'));
+      dialog.setAttribute('aria-busy', String(preparing || s.loading || s.writing || s.catalogStatus === 'loading'));
       destination.textContent = s.group?.label || 'Select a listening group to save its queue.';
       observed.textContent = s.loading ? 'Reading this group and its retained queue…' : s.queue
         ? (s.loaded ? 'Observed queue: ' : 'Last queue observation: ') + s.queue.total.toLocaleString() + ' ' + (s.queue.total === 1 ? 'entry.' : 'entries.')
           + (!s.queue.total ? ' Add music to this queue before saving.' : !s.loaded ? ' Read it again before a new save.' : '')
         : 'Read the current queue to see what you are saving.';
-      name.disabled = !control.editable();
+      name.disabled = preparing || !control.editable();
       if (name.value !== s.title) name.value = s.title;
       nameHelp.textContent = titleHelp(s.title);
-      read.disabled = !control.canRead(); reviewButton.disabled = !control.canReview();
+      read.disabled = !canReadQueue(); reviewButton.disabled = preparing || !control.canReview();
       message.textContent = viewMessage || s.message;
       preview.hidden = !s.pending;
       if (s.pending) {
@@ -116,7 +135,7 @@ const DashboardPlaylistSavePanel = (() => {
         reviewedTarget.textContent = s.pending.group.label;
         reviewedQueue.textContent = s.pending.queue.total.toLocaleString() + ' ' + (s.pending.queue.total === 1 ? 'entry' : 'entries');
       }
-      confirm.disabled = !control.canApply(); back.disabled = s.writing;
+      confirm.disabled = preparing || !control.canApply(); back.disabled = preparing || s.writing;
       const receipt = s.result, uncertain = receipt?.status === 'uncertain', accepted = receipt?.status === 'accepted';
       result.hidden = !receipt;
       result.dataset.status = receipt?.status || '';
@@ -161,6 +180,7 @@ const DashboardPlaylistSavePanel = (() => {
       shownReview = s.pending;
       if (receipt && receipt !== shownResult && s.open && !s.writing) result.focus({ preventScroll: true });
       if (!s.writing) shownResult = receipt;
+      try { changed(s); } catch (_) { /* Presentation only. */ }
     }
     control = S.model({ call, controller, saved, now, changed: render });
     async function browseSaved() {
@@ -181,7 +201,7 @@ const DashboardPlaylistSavePanel = (() => {
     const open = () => {
       opener = doc.activeElement; viewMessage = '';
       if (!control.open()) return false;
-      if (control.canRead()) void control.read();
+      if (canReadQueue()) void readQueue();
       if (!name.disabled) name.focus();
       return true;
     };

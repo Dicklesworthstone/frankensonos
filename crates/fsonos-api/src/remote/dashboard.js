@@ -503,14 +503,14 @@
     connection: (value) => controller.connection(value),
     content(kind, change) {
       if (kind === 'queue') session.queueChanged(change?.room);
-      else { sourcePlayer?.catalogChanged(change); session.catalogChanged(change); }
+      else { sourcePlayer?.catalogChanged(change); session.catalogChanged(change); playlistSave?.control.catalogChanged(change); }
     },
     invalidate(hard, targets = null) {
       controller.invalidate(targets); workspace?.invalidate(targets);
       if (hard) {
         ++historyVersion; catalogsDirty = true;
         if (typeof sourcePlayer !== 'undefined') sourcePlayer?.catalogChanged(null);
-        session.catalogChanged(null);
+        session.catalogChanged(null); playlistSave?.control.catalogChanged(null);
         session.suspend();
         if (active) session.resume();
         request.cancelReads();

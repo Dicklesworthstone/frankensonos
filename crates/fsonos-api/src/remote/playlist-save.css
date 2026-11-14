@@ -1,0 +1,20 @@
+/* Shared save dialog, scoped to the phone remote's existing theme. */
+.playlist-save-remote-dialog {
+  --raised: var(--bg); --panel: var(--card); --line-strong: var(--line);
+  --accent-soft: var(--warn-bg); --warm: var(--warn-text);
+  padding: 24px; background: var(--card); color: var(--text);
+  border: 1px solid var(--line); border-radius: 16px;
+}
+.playlist-save-remote-dialog::backdrop { background: #070b08c9; }
+.playlist-save-remote-dialog > header { display: flex; gap: 16px; justify-content: space-between; align-items: center; }
+.playlist-save-remote-dialog > h2 { font-size: 1.4rem; color: var(--text); margin: 20px 0 12px; }
+.playlist-save-remote-dialog .eyebrow { font-size: .7rem; letter-spacing: .12em; color: var(--muted); }
+.playlist-save-remote-dialog .small-note { font-size: .85rem; line-height: 1.6; color: var(--muted); }
+.playlist-save-remote-dialog button.primary-button { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.playlist-save-remote-dialog button { min-height: 44px; }
+.playlist-save-remote summary { cursor: pointer; font-weight: 600; padding: 10px 0; }
+.playlist-save-remote { padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; }
+.queue-save-action { padding-top: 12px; border-top: 1px solid var(--line); }
+.queue-save-action > button { width: 100%; min-height: 44px; }
+.queue-save-action > p:empty { display: none; }
+@media(max-width:520px) { .playlist-save-remote-dialog { padding: 18px; } }

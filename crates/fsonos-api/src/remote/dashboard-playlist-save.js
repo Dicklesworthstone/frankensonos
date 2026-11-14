@@ -213,6 +213,18 @@ const DashboardPlaylistSave = (() => {
       }
       publish(); return true;
     }, read, edit, editable, canRead, canReview, review, canApply, apply, canCheckCatalog, checkCatalog, observe, close,
+      invalidate({ catalog = false } = {}) {
+        if (disposed) return;
+        retire();
+        if (catalog) stopCatalog();
+        publish();
+      },
+      catalogChanged(change = null) {
+        if (disposed || change?.playlists === false) return;
+        if (!change?.household || change.household === state.group?.household) retire();
+        if (!change?.household || change.household === state.result?.group.household) stopCatalog();
+        publish();
+      },
       cancelReview() { if (state.writing) return false; state.pending = null; state.message = ''; publish(); return true; },
       suspend() { active = false; close(); },
       resume() { if (!disposed) { active = true; observe(); } },
