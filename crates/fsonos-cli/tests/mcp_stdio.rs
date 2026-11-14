@@ -197,48 +197,7 @@ fn control_tools_are_advertised_with_their_arguments() {
             .find(|t| t["name"] == name)
             .unwrap_or_else(|| panic!("no {name} tool: {list}"))
     };
-    for name in [
-        "list_zones",
-        "play",
-        "pause",
-        "resume",
-        "next",
-        "previous",
-        "seek",
-        "set_volume",
-        "mute",
-        "group",
-        "ungroup",
-        "dj_start",
-        "dj_skip",
-        "dj_stop",
-        "dj_steer",
-        "dj_status",
-        "dj_moods",
-        "dj_rehearse",
-        "search_queue",
-        "browse_library",
-        "playlist_contents",
-        "list_sonos_playlists",
-        "list_line_in",
-        "play_line_in",
-        "sonos_playlist_contents",
-        "sonos_playlist_track",
-        "play_sonos_playlist",
-        "save_sonos_playlist",
-        "rename_sonos_playlist",
-        "remove_sonos_playlist",
-        "update_schedule",
-        "add_to_queue",
-        "add_tracks_to_queue",
-        "announce",
-    ] {
-        let t = tool(name);
-        assert!(
-            t["description"].as_str().is_some_and(|d| d.len() > 20),
-            "{t}"
-        );
-    }
+    assert_tool_descriptions(tools);
     assert_control_schemas(tool("set_volume"), tool("group"), tool("announce"));
     let edit = tool("update_schedule");
     assert_tool_arguments(
@@ -248,6 +207,11 @@ fn control_tools_are_advertised_with_their_arguments() {
     );
     assert_ne!(edit["annotations"]["readOnlyHint"], true);
     assert_ne!(edit["annotations"]["idempotentHint"], true);
+    assert_tool_arguments(
+        tool("configure_rooms"),
+        &["expected_revision", "change"],
+        &["expected_revision", "change"],
+    );
     assert_eq!(
         tool("list_zones")["annotations"]["readOnlyHint"],
         true,
@@ -259,6 +223,11 @@ fn control_tools_are_advertised_with_their_arguments() {
         true,
         "{list}"
     );
+    assert_music_tool_schemas(tools);
+}
+
+fn assert_music_tool_schemas(tools: &[Value]) {
+    let tool = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap();
     let rehearse = tool("dj_rehearse");
     assert_eq!(rehearse["annotations"]["readOnlyHint"], true, "{rehearse}");
     assert_tool_arguments(
@@ -334,6 +303,54 @@ fn control_tools_are_advertised_with_their_arguments() {
     );
     assert_ne!(selected["annotations"]["readOnlyHint"], true);
     assert_ne!(selected["annotations"]["idempotentHint"], true);
+}
+
+fn assert_tool_descriptions(tools: &[Value]) {
+    let tool = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap();
+    for name in [
+        "list_zones",
+        "play",
+        "pause",
+        "resume",
+        "next",
+        "previous",
+        "seek",
+        "set_volume",
+        "mute",
+        "group",
+        "ungroup",
+        "dj_start",
+        "dj_skip",
+        "dj_stop",
+        "dj_steer",
+        "dj_status",
+        "dj_moods",
+        "dj_rehearse",
+        "search_queue",
+        "browse_library",
+        "playlist_contents",
+        "list_sonos_playlists",
+        "list_line_in",
+        "play_line_in",
+        "sonos_playlist_contents",
+        "sonos_playlist_track",
+        "play_sonos_playlist",
+        "save_sonos_playlist",
+        "rename_sonos_playlist",
+        "remove_sonos_playlist",
+        "update_schedule",
+        "room_configuration",
+        "configure_rooms",
+        "add_to_queue",
+        "add_tracks_to_queue",
+        "announce",
+    ] {
+        let t = tool(name);
+        assert!(
+            t["description"].as_str().is_some_and(|d| d.len() > 20),
+            "{t}"
+        );
+    }
 }
 
 fn assert_native_playlist_schemas(list: &Value, play: &Value, save: &Value, queue: &Value) {

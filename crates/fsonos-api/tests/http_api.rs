@@ -17,6 +17,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+#[path = "http_api/room_configuration.rs"]
+mod room_configuration;
 #[path = "http_api/schedule_update.rs"]
 mod schedule_update;
 

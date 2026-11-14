@@ -30,6 +30,7 @@ pub mod dj_feedback;
 pub mod dj_prefs;
 pub mod dj_rehearse;
 pub mod dj_sync;
+pub mod room_config;
 pub mod schedules;
 
 mod house_policy;

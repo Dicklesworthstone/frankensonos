@@ -39,6 +39,8 @@
 //! | `GET /undo/preview` | | the `ActionDto` an undo would put back, or `null`; changes nothing |
 //! | `POST /undo/checked` | the previewed action's id | [`crate::UndoDto`]: undoes it only while it is still the newest |
 //! | `GET /policy` | | [`crate::surface::house_policy::PolicyDto`]: the house policy, and the caller under it |
+//! | `GET /rooms/configuration` | | [`crate::surface::room_config::RoomConfigurationDto`]: all saved aliases/defaults and their revision |
+//! | `POST /rooms/configuration` | [`crate::surface::room_config::RoomConfigureRequest`] | [`crate::surface::room_config::RoomConfiguredDto`]: one revision-bound alias/default edit without speaker I/O |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /play/tracks` | [`crate::surface::queue::PlayTracksRequest`] | [`OutcomeDto`]: replace the queue with 1–10 ordered tracks or episodes and start at the first |
 //! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
@@ -150,6 +152,7 @@ mod announce;
 pub mod bridge;
 
 mod players;
+mod room_config;
 
 mod remote;
 
@@ -223,6 +226,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(house_verbs(cx));
     routes.extend(announce::routes(cx));
     routes.extend(players::routes(cx));
+    routes.extend(room_config::routes(cx));
     routes.extend(scenes::routes(cx));
     routes.extend(dj(cx));
     routes.extend(dj_config::routes(cx));

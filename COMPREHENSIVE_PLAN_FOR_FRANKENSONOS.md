@@ -1575,6 +1575,17 @@ one daemon mutation. Queue receipts account for every reviewed coordinator and
 retain partial failures and undo limitations. Existing browser command lanes
 cover the entire selection; no browser loop sends separate playback writes.
 
+Saved aliases and global/per-client defaults are now editable on the selected
+daemon through CLI, HTTP and MCP. `rooms configuration` / `GET
+/rooms/configuration` / `room_configuration` return the complete authored
+configuration and exact revision, including offline targets. A single typed
+change uses that revision under a shared file lock, preserves unrelated entries
+and comments, and updates subsequent target resolution without speaker I/O.
+Writes require both house-config permission and owner/administrator authority.
+CLI alias/default commands reach the selected daemon and never replay failed
+remote edits locally; direct mode remains available offline. See
+[Room configuration](docs/ROOM_CONFIGURATION.md).
+
 ### Milestone placement
 
 - **M2:** 12.3 reads and now-playing state, 12.4 sim and e2e harness, 12.6

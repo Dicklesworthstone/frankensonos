@@ -59,6 +59,7 @@ pub mod queue;
 mod relocation_tests;
 #[cfg(test)]
 mod resource_changes_tests;
+pub mod room_config;
 pub mod scenes;
 pub mod schedules;
 pub mod sonos_playlists;

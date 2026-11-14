@@ -206,6 +206,21 @@ impl Aliases {
             .map(|(room, _)| room.as_str())
     }
 
+    /// The owner's global default, without applying a client's override.
+    #[must_use]
+    pub fn global_default_room(&self) -> Option<&str> {
+        self.default_room.as_ref().map(|(room, _)| room.as_str())
+    }
+
+    /// Explicit client overrides, without substituting the global default.
+    /// Client identities retain their exact spelling and match exactly.
+    #[must_use]
+    pub fn client_defaults(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.client_rooms
+            .iter()
+            .map(|(client, (room, _))| (client.as_str(), room.as_str()))
+    }
+
     /// Entries that do not match `households` unambiguously right now: rooms
     /// no household shows (perhaps offline), duplicate room names, targets
     /// that are aliases rather than rooms, and aliases a real room name

@@ -445,8 +445,8 @@ enum Command {
     /// `apply` sends only the steps the house needs; `fsonos undo` puts
     /// it back.
     Scene(scene_cmd::SceneArgs),
-    /// Every room with its household, zone and aliases; `fsonos rooms alias
-    /// add|rm` edits aliases.toml (comments and layout are kept).
+    /// Every room with its household, zone and aliases; edit aliases and
+    /// defaults on the selected daemon, or locally with --direct.
     Rooms {
         #[command(subcommand)]
         alias: Option<RoomsCommand>,
@@ -455,7 +455,9 @@ enum Command {
 
 #[derive(Subcommand)]
 enum RoomsCommand {
-    /// The owner's names for rooms, in aliases.toml in the data directory.
+    /// The complete saved aliases/defaults and their current editing revision.
+    Configuration,
+    /// The owner's names for rooms, stored on the selected daemon or locally.
     Alias {
         #[command(subcommand)]
         action: AliasAction,
@@ -470,6 +472,10 @@ enum RoomsCommand {
         client: Option<String>,
         #[arg(long, conflicts_with = "room")]
         clear: bool,
+        /// Refuse an edit unless this is the revision from rooms configuration.
+        /// Without it, read the current configuration once before editing.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: Option<String>,
     },
 }
 
@@ -481,10 +487,18 @@ enum AliasAction {
         alias: String,
         #[arg(required = true)]
         rooms: Vec<String>,
+        /// Exact revision from rooms configuration; otherwise read it once.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: Option<String>,
     },
     /// Remove an alias.
     #[command(visible_alias = "remove")]
-    Rm { alias: String },
+    Rm {
+        alias: String,
+        /// Exact revision from rooms configuration; otherwise read it once.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -741,12 +755,20 @@ fn rooms(global: &config::GlobalArgs, alias: Option<RoomsCommand>) -> anyhow::Re
             let rooms = Direct::survey(global)?.rooms()?;
             emit(global.json, &rooms, |r| direct::rooms_text(r))
         }
-        Some(RoomsCommand::Alias { action }) => alias_command(global, &action),
+        Some(RoomsCommand::Configuration) => rooms_cmd::configuration(global),
+        Some(RoomsCommand::Alias { action }) => rooms_cmd::alias(global, &action),
         Some(RoomsCommand::Default {
             room,
             client,
             clear,
-        }) => default_room_command(global, room.as_deref(), client.as_deref(), clear),
+            expected_revision,
+        }) => rooms_cmd::default_room(
+            global,
+            room.as_deref(),
+            client.as_deref(),
+            clear,
+            expected_revision.as_deref(),
+        ),
     }
 }
 
@@ -939,94 +961,6 @@ fn play_search(
     emit(global.json, &outcome, |o: &OutcomeDto| {
         format!("{}\n", o.done)
     })
-}
-
-/// `fsonos rooms alias add|rm`: edit aliases.toml in the data directory.
-fn alias_command(global: &config::GlobalArgs, action: &AliasAction) -> anyhow::Result<()> {
-    let path = daemon::data_dir(global)?.join(fsonos_api::surface::ALIASES_FILE);
-    let done = match action {
-        AliasAction::Add { alias, rooms } => {
-            if fsonos_core::rooms::RESERVED
-                .contains(&fsonos_core::rooms::normalize_room(alias).as_str())
-            {
-                return Err(Failure::invalid(format!(
-                    "{alias:?} is reserved for every room or yours"
-                ))
-                .with_hint("Pick another name; all, everywhere and here have fixed meanings.")
-                .into());
-            }
-            rooms_cmd::edit_file(&path, |text| Ok(rooms_cmd::set_alias(text, alias, rooms)))?;
-            format!("{alias} names {}", rooms.join(", "))
-        }
-        AliasAction::Rm { alias } => {
-            rooms_cmd::edit_file(&path, |text| {
-                rooms_cmd::remove_alias(text, alias).ok_or_else(|| {
-                    Failure::new(
-                        ErrorCode::UnknownRoom,
-                        format!("no alias {alias:?} in aliases.toml"),
-                    )
-                    .with_hint("List the aliases with fsonos rooms.")
-                })
-            })?;
-            format!("removed the alias {alias}")
-        }
-    };
-    emit(
-        global.json,
-        &serde_json::json!({ "done": done, "file": path }),
-        |_| format!("{done}\n"),
-    )
-}
-
-/// `fsonos rooms default`: set, clear or show the room `here` means.
-fn default_room_command(
-    global: &config::GlobalArgs,
-    room: Option<&str>,
-    client: Option<&str>,
-    clear: bool,
-) -> anyhow::Result<()> {
-    let path = daemon::data_dir(global)?.join(fsonos_api::surface::ALIASES_FILE);
-    let whose = client.unwrap_or("everyone");
-    let done = match (room, clear) {
-        (Some(room), _) => {
-            if fsonos_core::rooms::RESERVED
-                .contains(&fsonos_core::rooms::normalize_room(room).as_str())
-            {
-                return Err(Failure::invalid(format!("{room:?} names no one room"))
-                    .with_hint("Name a room; all, everywhere and here can't be the default.")
-                    .into());
-            }
-            rooms_cmd::edit_file(&path, |text| {
-                Ok(rooms_cmd::set_default_room(text, client, room))
-            })?;
-            format!("here now means {room} for {whose}")
-        }
-        (None, true) => {
-            rooms_cmd::edit_file(&path, |text| {
-                rooms_cmd::clear_default_room(text, client).ok_or_else(|| {
-                    Failure::new(
-                        ErrorCode::UnknownRoom,
-                        format!("no default room is set for {whose}"),
-                    )
-                    .with_hint("Set one with fsonos rooms default <room>.")
-                })
-            })?;
-            format!("here has no default of its own for {whose} now")
-        }
-        (None, false) => {
-            let aliases = fsonos_core::rooms::Aliases::load(&path)
-                .map_err(|e| Failure::invalid(e.to_string()))?;
-            aliases.default_room(client).map_or_else(
-                || format!("here means no room for {whose} yet: fsonos rooms default <room>"),
-                |room| format!("here means {room} for {whose}"),
-            )
-        }
-    };
-    emit(
-        global.json,
-        &serde_json::json!({ "done": done, "file": path }),
-        |_| format!("{done}\n"),
-    )
 }
 
 /// Print `value` as pretty JSON, or as `text` renders it.
