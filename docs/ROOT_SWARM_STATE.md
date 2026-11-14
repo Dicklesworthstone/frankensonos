@@ -5464,3 +5464,9 @@ which explains the signal.
 Conclusion for the harness: rather than synthesise the call, force execution *through*
 the real init site by branching into `0x10007040` once, so the code populates everything
 itself.
+
+Redirect experiment: forcing `pc = 0x10007040` on the first loop hit changes the failure to
+`(30) network read I/O error` — so that block belongs to the **download** path, and the
+decrypt loop at `0x10007148` sits in the same routine but is reached after download
+returns. The stream init still never runs on that route, which is the one real gap left
+before the digest/signature stage.
