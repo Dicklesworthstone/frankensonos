@@ -5455,3 +5455,12 @@ Housekeeping sweep (from the Mac — css is cloud-side and cannot see this LAN):
 LAN is `192.168.4.x`. `.84` and `.135` answer 200 on `:1400`; `.137` is down, `.202` is
 still down (needs the physical power-cycle). Note for future checks: the earlier habit of
 probing `192.168.1.x` from css fails for this reason.
+
+`ZZ0052` (`0xcf2c`, 388 bytes) unpacks `(r3, r4=r28, r5=r26, r6=r27, r7=r24)` and reads
+`lbz r0, 2128(r4)` — i.e. **r4 is a large structure** (offset 0x850), with r5/r6 further
+pointers and r7 flags. So a hand-built call needs the whole structure, not just a buffer,
+which explains the signal.
+
+Conclusion for the harness: rather than synthesise the call, force execution *through*
+the real init site by branching into `0x10007040` once, so the code populates everything
+itself.
