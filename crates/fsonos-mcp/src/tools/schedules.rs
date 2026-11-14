@@ -3,6 +3,9 @@
 //! `resume_schedule` and `remove_schedule` (see
 //! `fsonos_api::surface::schedules`).
 
+mod update;
+pub use update::UpdateSchedule;
+
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::dj::DjDirectionDto;
@@ -232,7 +235,7 @@ async fn list_sleep_timers(
 }
 
 #[tool(
-    description = "List the schedules: what each does, when (`when`), who added it, whether it is paused, and its next run.",
+    description = "List the schedules: what each does, when (`when`), who added it, whether it is paused, and its next run. Each current row includes an opaque revision for update_schedule; reread after an edit, pause/resume or claimed occurrence.",
     annotations(read_only, idempotent)
 )]
 async fn list_schedules(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {

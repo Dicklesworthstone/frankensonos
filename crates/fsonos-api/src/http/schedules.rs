@@ -6,6 +6,7 @@
 //! | `POST /sleep` | [`SleepRequest`] | [`SleepTimerDto`] |
 //! | `GET /schedules` | | `[ScheduleDto]` |
 //! | `POST /schedules` | [`ScheduleRequest`] | [`ScheduleDto`] |
+//! | `POST /schedules/update` | [`UpdateScheduleRequest`] | [`ScheduleDto`]: revision-bound edit retaining the creator and enabled state |
 //! | `POST /schedules/remove`, `/pause`, `/resume` | [`ScheduleIdRequest`] | [`ScheduleDto`] |
 //! | `POST /volume/fade` | [`FadeVolumeRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /pause/fade` | [`FadePauseRequest`] | [`crate::OutcomeDto`] |
@@ -18,7 +19,7 @@ use crate::execute::OutcomeDto;
 use crate::failure::Failure;
 use crate::surface::schedules::{
     FadePauseRequest, FadeVolumeRequest, ScheduleDto, ScheduleIdRequest, ScheduleRequest,
-    SleepRequest, SleepTimerDto,
+    SleepRequest, SleepTimerDto, UpdateScheduleRequest,
 };
 
 const SCHEDULES: &str = "schedules";
@@ -69,6 +70,17 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<ScheduleRequest>(true)
         .response_schema::<ScheduleDto>(200, "The schedule added"),
+        cx.route(
+            &Op::post(
+                "/schedules/update",
+                "update_schedule",
+                SCHEDULES,
+                "Edit a reviewed schedule's future runs while retaining its identity, creator and enabled state",
+            ),
+            |s, c, req| answer(body::<UpdateScheduleRequest>(req).and_then(|r| s.update_schedule(c, &r))),
+        )
+        .request_schema::<UpdateScheduleRequest>(true)
+        .response_schema::<ScheduleDto>(200, "The confirmed edited schedule with its new revision"),
     ];
     for (path, id, summary, paused) in [
         (

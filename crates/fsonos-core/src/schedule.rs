@@ -407,6 +407,27 @@ impl Schedule {
         })
     }
 
+    /// A stable equality token for this complete observed definition and
+    /// occurrence receipt. It is not an authorization credential: an edit
+    /// still requires permission and an atomic comparison of the stored row.
+    #[must_use]
+    pub fn revision(&self) -> String {
+        let bytes = serde_json::to_vec(&(
+            self.id,
+            self.spec.to_string(),
+            &self.action,
+            &self.creator,
+            self.enabled,
+            self.created.timestamp(),
+            self.last_fired.map(|at| at.timestamp()),
+        ))
+        .expect("schedule observation fields serialize to JSON");
+        let digest = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
+        });
+        format!("schedule-v1-{digest:016x}")
+    }
+
     /// When it runs next after `now` (ignoring whether it is enabled).
     #[must_use]
     pub fn next<Tz: TimeZone>(&self, now: DateTime<Utc>, tz: &Tz) -> Option<DateTime<Utc>> {

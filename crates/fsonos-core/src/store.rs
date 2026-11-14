@@ -1062,6 +1062,33 @@ pub trait Store {
     /// Turn schedule `id` on or off; whether it exists.
     fn set_schedule_enabled(&mut self, id: i64, enabled: bool) -> Result<bool, StoreError>;
 
+    /// Replace an exact observed schedule atomically. Its id, creator and
+    /// creation time must be retained, and its occurrence receipt cannot move
+    /// backward. A changed or missing row returns false without writing;
+    /// replacing a matching row with itself confirms a no-op. Custom stores
+    /// must implement this boundary before accepting schedule edits.
+    fn replace_schedule(
+        &mut self,
+        _expected: &StoredSchedule,
+        _replacement: &StoredSchedule,
+    ) -> Result<bool, StoreError> {
+        Err(StoreError::Backend(
+            "this store does not support atomic schedule replacement".into(),
+        ))
+    }
+
+    /// Remove a schedule only while its complete observed definition,
+    /// enabled state and previous occurrence receipt still match. Comparison
+    /// and removal must be atomic across every connection.
+    fn delete_schedule_if_unchanged(
+        &mut self,
+        _expected: &StoredSchedule,
+    ) -> Result<bool, StoreError> {
+        Err(StoreError::Backend(
+            "this store does not support atomic schedule removal".into(),
+        ))
+    }
+
     /// Record schedule `id`'s run at `at` (unix seconds), only if `at` is
     /// later than the run recorded last. True means this caller claimed the
     /// run; false (already recorded, or no such schedule) means do not run
@@ -1092,6 +1119,26 @@ pub trait Store {
 pub enum StoreError {
     #[error("store backend error: {0}")]
     Backend(String),
+}
+
+fn validate_schedule_replacement(
+    expected: &StoredSchedule,
+    replacement: &StoredSchedule,
+) -> Result<(), StoreError> {
+    if replacement.id != expected.id
+        || replacement.creator != expected.creator
+        || replacement.created != expected.created
+    {
+        return Err(StoreError::Backend(
+            "a schedule replacement must retain its id, creator and creation time".into(),
+        ));
+    }
+    if replacement.last_fired < expected.last_fired {
+        return Err(StoreError::Backend(
+            "a schedule replacement cannot forget a recorded occurrence".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// An album's tracks keyed by (disc, track), so iteration is in album order.
@@ -2323,6 +2370,32 @@ impl Store for MemStore {
             .get_mut(&id)
             .map(|s| s.enabled = enabled)
             .is_some())
+    }
+
+    fn replace_schedule(
+        &mut self,
+        expected: &StoredSchedule,
+        replacement: &StoredSchedule,
+    ) -> Result<bool, StoreError> {
+        validate_schedule_replacement(expected, replacement)?;
+        match self.schedules.get_mut(&expected.id) {
+            Some(current) if *current == *expected => {
+                current.clone_from(replacement);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn delete_schedule_if_unchanged(
+        &mut self,
+        expected: &StoredSchedule,
+    ) -> Result<bool, StoreError> {
+        if self.schedules.get(&expected.id) != Some(expected) {
+            return Ok(false);
+        }
+        self.schedules.remove(&expected.id);
+        Ok(true)
     }
 
     fn mark_schedule_fired(&mut self, id: i64, at: i64) -> Result<bool, StoreError> {

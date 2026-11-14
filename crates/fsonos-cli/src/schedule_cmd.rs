@@ -29,6 +29,7 @@ use crate::config::GlobalArgs;
 use crate::remote::Daemon;
 
 mod announcement;
+mod edit;
 
 /// `fsonos sleep [<room> [duration] [--extend <duration>] [--cancel]]`.
 #[derive(Args)]
@@ -71,6 +72,10 @@ pub enum ScheduleCommand {
         )]
         action: Vec<String>,
     },
+    /// Edit an existing routine in place, preserving its owner and paused state.
+    /// Read its revision with --json schedule list; put --expected-revision
+    /// before the action. The new definition affects future runs only.
+    Edit(edit::ScheduleEditArgs),
     /// List the schedules, with their next runs.
     List,
     /// Remove a schedule by its id.
@@ -154,6 +159,7 @@ pub fn schedule(global: &GlobalArgs, command: &ScheduleCommand) -> anyhow::Resul
     let daemon = || Daemon::find(global, global.daemon);
     let line = |d: &ScheduleDto| format!("{}\n", d.line());
     match command {
+        ScheduleCommand::Edit(args) => edit::run(global, args),
         ScheduleCommand::Add { when, action } => {
             let req = schedule_request(when, action)?;
             let added: ScheduleDto = match daemon()? {

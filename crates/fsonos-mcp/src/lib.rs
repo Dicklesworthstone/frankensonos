@@ -290,6 +290,7 @@ fn configured_server(
             .tool(tools::schedules::ListSleepTimers)
             .tool(tools::schedules::ListSchedules)
             .tool(tools::schedules::AddSchedule)
+            .tool(tools::schedules::UpdateSchedule)
             .tool(tools::schedules::PauseSchedule)
             .tool(tools::schedules::ResumeSchedule)
             .tool(tools::schedules::RemoveSchedule),

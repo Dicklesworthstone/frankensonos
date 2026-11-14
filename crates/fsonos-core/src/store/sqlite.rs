@@ -2683,6 +2683,60 @@ impl Store for SqliteStore {
         Ok(changed > 0)
     }
 
+    fn replace_schedule(
+        &mut self,
+        expected: &StoredSchedule,
+        replacement: &StoredSchedule,
+    ) -> Result<bool, StoreError> {
+        super::validate_schedule_replacement(expected, replacement)?;
+        let changed = self.in_transaction(|c| {
+            c.execute_with_params_sync(
+                "UPDATE schedules SET spec = ?8, action = ?9, enabled = ?10, last_fired = ?11 \
+                 WHERE id = ?1 AND spec = ?2 AND action = ?3 AND creator = ?4 \
+                 AND enabled = ?5 AND created = ?6 \
+                 AND (last_fired = ?7 OR (last_fired IS NULL AND ?7 IS NULL))",
+                &[
+                    expected.id.into(),
+                    expected.spec.as_str().into(),
+                    expected.action.as_str().into(),
+                    expected.creator.as_str().into(),
+                    i64::from(expected.enabled).into(),
+                    expected.created.into(),
+                    opt_value(expected.last_fired),
+                    replacement.spec.as_str().into(),
+                    replacement.action.as_str().into(),
+                    i64::from(replacement.enabled).into(),
+                    opt_value(replacement.last_fired),
+                ],
+            )
+        })?;
+        Ok(changed > 0)
+    }
+
+    fn delete_schedule_if_unchanged(
+        &mut self,
+        expected: &StoredSchedule,
+    ) -> Result<bool, StoreError> {
+        let removed = self.in_transaction(|c| {
+            c.execute_with_params_sync(
+                "DELETE FROM schedules \
+                 WHERE id = ?1 AND spec = ?2 AND action = ?3 AND creator = ?4 \
+                 AND enabled = ?5 AND created = ?6 \
+                 AND (last_fired = ?7 OR (last_fired IS NULL AND ?7 IS NULL))",
+                &[
+                    expected.id.into(),
+                    expected.spec.as_str().into(),
+                    expected.action.as_str().into(),
+                    expected.creator.as_str().into(),
+                    i64::from(expected.enabled).into(),
+                    expected.created.into(),
+                    opt_value(expected.last_fired),
+                ],
+            )
+        })?;
+        Ok(removed > 0)
+    }
+
     fn mark_schedule_fired(&mut self, id: i64, at: i64) -> Result<bool, StoreError> {
         let claimed = self.in_transaction(|c| {
             c.execute_with_params_sync(

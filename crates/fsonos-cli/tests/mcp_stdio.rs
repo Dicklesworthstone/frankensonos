@@ -228,6 +228,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "save_sonos_playlist",
         "rename_sonos_playlist",
         "remove_sonos_playlist",
+        "update_schedule",
         "add_to_queue",
         "add_tracks_to_queue",
         "announce",
@@ -239,6 +240,14 @@ fn control_tools_are_advertised_with_their_arguments() {
         );
     }
     assert_control_schemas(tool("set_volume"), tool("group"), tool("announce"));
+    let edit = tool("update_schedule");
+    assert_tool_arguments(
+        edit,
+        &["id", "expected_revision", "schedule"],
+        &["id", "expected_revision", "schedule"],
+    );
+    assert_ne!(edit["annotations"]["readOnlyHint"], true);
+    assert_ne!(edit["annotations"]["idempotentHint"], true);
     assert_eq!(
         tool("list_zones")["annotations"]["readOnlyHint"],
         true,

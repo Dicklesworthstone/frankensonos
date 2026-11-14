@@ -111,6 +111,7 @@ pub const CLASSES: [(&str, &[&str]); 10] = [
             "save_scene",
             "delete_scene",
             "add_schedule",
+            "update_schedule",
             "remove_schedule",
             "pause_schedule",
             "resume_schedule",
@@ -1786,6 +1787,7 @@ deny = ["house-config"]
             "save_sonos_playlist",
             "rename_sonos_playlist",
             "remove_sonos_playlist",
+            "update_schedule",
         ] {
             assert_eq!(class_of(tool), Some("house-config"));
             assert!(matches!(

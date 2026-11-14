@@ -523,6 +523,21 @@ impl Store for SharedStore<'_> {
         self.lock().put_schedule(schedule)
     }
 
+    fn replace_schedule(
+        &mut self,
+        expected: &StoredSchedule,
+        replacement: &StoredSchedule,
+    ) -> Result<bool, StoreError> {
+        self.lock().replace_schedule(expected, replacement)
+    }
+
+    fn delete_schedule_if_unchanged(
+        &mut self,
+        expected: &StoredSchedule,
+    ) -> Result<bool, StoreError> {
+        self.lock().delete_schedule_if_unchanged(expected)
+    }
+
     fn schedules(&self) -> Result<Vec<StoredSchedule>, StoreError> {
         self.lock().schedules()
     }

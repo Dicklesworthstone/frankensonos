@@ -14,6 +14,8 @@
 //!   is removed.
 
 mod e2e;
+#[path = "e2e_schedules/edits.rs"]
+mod edits;
 
 use chrono::{DateTime, FixedOffset, Local, NaiveTime, TimeDelta, TimeZone, Timelike};
 use e2e::{Daemon, Scenario, http};

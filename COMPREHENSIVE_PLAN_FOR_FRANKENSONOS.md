@@ -1354,6 +1354,20 @@ removal, replacement or competing claim committed by another process before
 this boundary prevents the stale prepared action from running. Later edits do
 not cancel an already claimed run, and delivery errors never replay it.
 
+Saved routines now support in-place definition updates through CLI
+`schedule edit`, HTTP `POST /schedules/update` and MCP `update_schedule`.
+Every current schedule read supplies an opaque revision; replacement compares
+the complete observed row atomically, including its last occurrence. The
+routine retains its id, creator, creation identity and paused state. Both the
+editor and original creator must be allowed the new action, target and DJ
+direction. A changed definition applies only to future occurrences, while a
+matching definition is a validated no-op. Changed one-shots require a future
+time. A competing claim invalidates the editor's revision; a committed edit
+fences an old prepared action. Pause, resume and removal use the same guarded
+store boundary. Edits send no immediate speaker commands and are explicitly
+non-undoable configuration changes with an action-history barrier. See
+[`docs/ROUTINE_EDITING.md`](docs/ROUTINE_EDITING.md).
+
 Scheduled DJ starts and scenes now check the exact prospective steering,
 selectable music and required Spotify renderer before claiming an occurrence.
 For a player that already leads its group, admission also checks current owner,

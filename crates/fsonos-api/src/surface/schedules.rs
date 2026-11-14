@@ -51,6 +51,8 @@ mod announcements;
 mod dispatch;
 mod recovery;
 mod sleep_dispatch;
+mod update;
+pub use update::UpdateScheduleRequest;
 
 #[cfg(test)]
 mod announcement_tests;
@@ -516,6 +518,10 @@ pub struct ScheduleIdRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ScheduleDto {
     pub id: i64,
+    /// Opaque observed definition and run-state revision required for editing.
+    /// Older daemons omit this field; their schedules remain readable.
+    #[serde(default)]
+    pub revision: String,
     /// When it runs, as stored: `weekdays 07:30`, or `once <RFC 3339>`.
     pub when: String,
     /// `dj_start`, `pause`, `volume`, `apply_scene` or `announce`.
@@ -543,7 +549,8 @@ pub struct ScheduleDto {
     /// Its next run (RFC 3339, local time); absent when paused or done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
-    /// Its last run, or the last run skipped as too late.
+    /// The latest consumed occurrence or the future-only cutoff established by
+    /// an edit or resume. This timestamp alone does not mean playback ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_fired: Option<String>,
 }
@@ -584,6 +591,7 @@ impl ScheduleDto {
         }
         Self {
             id: s.id,
+            revision: s.revision(),
             when: s.spec.to_string(),
             action: action_kind(&s.action).into(),
             zone,
@@ -1451,15 +1459,6 @@ impl Surface {
             .collect())
     }
 
-    fn find_schedule(&self, id: i64) -> Result<Schedule, Failure> {
-        let schedules = self.load_schedules()?;
-        let ids: Vec<String> = schedules.iter().map(|s| s.id.to_string()).collect();
-        schedules.into_iter().find(|s| s.id == id).ok_or_else(|| {
-            Failure::new(ErrorCode::UnknownSchedule, format!("no schedule #{id}"))
-                .with_suggestions(ids)
-        })
-    }
-
     /// Add a schedule run with `client`'s rights (`add_schedule`). Its rooms
     /// must exist now, and `client` must be allowed what it does.
     pub fn add_schedule(
@@ -1473,9 +1472,39 @@ impl Surface {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let action = req.action()?;
-        self.authorize_write(client, action_tool(&action))?;
+        self.validate_schedule_action(client, &action)?;
+        let now = self.clock.now();
+        let spec = ScheduleSpec::parse(&req.when, now).map_err(|e| schedule_failure(&e))?;
+        let created = now.to_utc();
+        let result = self
+            .with_store(|s| Ok(core_schedule::add(s, &spec, &action, client.key(), created)))?
+            .ok_or_else(no_store)?
+            .map_err(|e| schedule_failure(&e))
+            .map(|id| Schedule {
+                id,
+                spec,
+                action: action.clone(),
+                creator: client.key().to_string(),
+                enabled: true,
+                created: DateTime::from_timestamp(created.timestamp(), 0).unwrap_or(created),
+                last_fired: None,
+            })
+            .map(|s| ScheduleDto::new(&s, created));
+        let intent = format!("add_schedule: {spec}: {}", summary(&action));
+        self.log_write(client, intent, &result, |d| format!("added {}", d.line()));
+        result
+    }
+
+    /// The permissions and targets an action needs, shared by creation and
+    /// revision-bound editing. Editing also calls this for the preserved creator.
+    fn validate_schedule_action(
+        &self,
+        client: &Client,
+        action: &ScheduleAction,
+    ) -> Result<(), Failure> {
+        self.authorize_write(client, action_tool(action))?;
         if matches!(
-            &action,
+            action,
             ScheduleAction::DjStart {
                 direction: Some(_),
                 ..
@@ -1483,9 +1512,7 @@ impl Surface {
         ) {
             self.authorize_write(client, "dj_steer")?;
         }
-        let now = self.clock.now();
-        let spec = ScheduleSpec::parse(&req.when, now).map_err(|e| schedule_failure(&e))?;
-        match &action {
+        match action {
             ScheduleAction::Announce { rooms: names, .. } => {
                 let households = self.households()?;
                 let aliases = self.aliases();
@@ -1511,24 +1538,7 @@ impl Surface {
                 self.zone_of(client, room)?;
             }
         }
-        let created = now.to_utc();
-        let result = self
-            .with_store(|s| Ok(core_schedule::add(s, &spec, &action, client.key(), created)))?
-            .ok_or_else(no_store)?
-            .map_err(|e| schedule_failure(&e))
-            .map(|id| Schedule {
-                id,
-                spec,
-                action: action.clone(),
-                creator: client.key().to_string(),
-                enabled: true,
-                created: DateTime::from_timestamp(created.timestamp(), 0).unwrap_or(created),
-                last_fired: None,
-            })
-            .map(|s| ScheduleDto::new(&s, created));
-        let intent = format!("add_schedule: {spec}: {}", summary(&action));
-        self.log_write(client, intent, &result, |d| format!("added {}", d.line()));
-        result
+        Ok(())
     }
 
     /// `mood` is one of the DJ's moods (built in, or in moods.toml).
@@ -1549,7 +1559,12 @@ impl Surface {
     pub fn remove_schedule(&self, client: &Client, id: i64) -> Result<ScheduleDto, Failure> {
         let tool = "remove_schedule";
         self.authorize_write(client, tool)?;
-        let schedule = self.find_schedule(id)?;
+        let _restoring = self.log.as_ref().map(|log| {
+            log.restoring
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        let (schedule, row) = self.observed_schedule(id)?;
         self.authorize_change(
             client,
             tool,
@@ -1558,18 +1573,15 @@ impl Surface {
         )?;
         let dto = ScheduleDto::new(&schedule, self.clock.now().to_utc());
         let removed = self
-            .with_store(|s| {
-                let was = actions::schedule_row(s, id)?;
-                s.delete_schedule(id)?;
-                Ok(was)
-            })?
-            .ok_or_else(no_store);
+            .with_store(|s| s.delete_schedule_if_unchanged(&row))?
+            .ok_or_else(no_store)
+            .and_then(|removed| removed.then_some(()).ok_or_else(update::changed));
         // What it removed, so undo can put it back.
-        let before = removed.as_ref().ok().cloned().flatten().and_then(|was| {
+        let before = removed.as_ref().ok().and_then(|()| {
             actions::before_state_config(
                 &[],
                 &[ScheduleBefore {
-                    was,
+                    was: row.into(),
                     left_enabled: None,
                 }],
             )
@@ -1601,7 +1613,12 @@ impl Surface {
             "resume_schedule"
         };
         self.authorize_write(client, tool)?;
-        let mut schedule = self.find_schedule(id)?;
+        let _restoring = self.log.as_ref().map(|log| {
+            log.restoring
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        let (schedule, row) = self.observed_schedule(id)?;
         self.authorize_change(
             client,
             tool,
@@ -1609,37 +1626,38 @@ impl Surface {
             Some(schedule.creator.as_str()),
         )?;
         let now = self.clock.now().to_utc();
-        let switched = self
-            .with_store(|s| {
-                let was = actions::schedule_row(s, id)?;
-                if was.as_ref().is_some_and(|was| was.enabled != paused) {
-                    return Ok(None);
-                }
-                // Resuming skips the runs missed while paused.
-                if !paused {
-                    s.mark_schedule_fired(id, now.timestamp())?;
-                }
-                s.set_schedule_enabled(id, !paused)?;
-                Ok(was)
-            })?
-            .ok_or_else(no_store);
-        // What it switched, so undo can switch it back; nothing for a no-op.
-        let before = switched.as_ref().ok().cloned().flatten().and_then(|was| {
-            actions::before_state_config(
-                &[],
-                &[ScheduleBefore {
-                    was,
-                    left_enabled: Some(!paused),
-                }],
-            )
-        });
-        let result = switched.map(|_| {
-            schedule.enabled = !paused;
+        let did_change = row.enabled == paused;
+        let mut replacement = row.clone();
+        if did_change {
+            replacement.enabled = !paused;
+            // Resuming skips missed occurrences, without erasing a later claim.
             if !paused {
-                schedule.last_fired = schedule.last_fired.max(Some(now));
+                replacement.last_fired = row.last_fired.max(Some(now.timestamp()));
             }
-            ScheduleDto::new(&schedule, now)
-        });
+        }
+        let switched = self
+            .with_store(|s| s.replace_schedule(&row, &replacement))?
+            .ok_or_else(no_store)
+            .and_then(|switched| switched.then_some(()).ok_or_else(update::changed));
+        // What it switched, so undo can switch it back; nothing for a no-op.
+        let before = switched
+            .as_ref()
+            .ok()
+            .filter(|_| did_change)
+            .and_then(|()| {
+                actions::before_state_config(
+                    &[],
+                    &[ScheduleBefore {
+                        was: row.into(),
+                        left_enabled: Some(!paused),
+                    }],
+                )
+            });
+        let result = switched
+            .and_then(|()| {
+                Schedule::from_stored(&replacement).map_err(|error| schedule_failure(&error))
+            })
+            .map(|schedule| ScheduleDto::new(&schedule, now));
         let intent = format!("{tool}: #{id}");
         self.log_undoable_write(client, intent, &result, ScheduleDto::line, before);
         result

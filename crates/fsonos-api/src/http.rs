@@ -67,6 +67,7 @@
 //! | `GET /dj/moods?zone=<room>` | | [`crate::DjMoodsDto`] (`now` is the room's steering, else the house's program) |
 //! | `GET`/`POST /dj/configuration` | `DjConfigureRequest` for writes | editable and effective owner-wide moods/programs; atomic revision-checked saves for future picks |
 //! | `GET`/`POST /sleep`, `GET`/`POST /schedules`, `POST /schedules/remove`, `/schedules/pause`, `/schedules/resume` | | sleep timers and schedules: see [`schedules`] |
+//! | `POST /schedules/update` | [`crate::surface::schedules::UpdateScheduleRequest`] | [`crate::surface::schedules::ScheduleDto`]: edit a reviewed routine in place for future runs |
 //! | `GET`/`POST /announcements`, `GET /announcements/{id}`, `POST /announcements/{id}/cancel` | announcement request, or `{}` to cancel | bounded job status and ownership-checked cancellation; asynchronous delivery |
 //! | `POST /announce` | [`crate::surface::announce::AnnounceRequest`] | [`crate::surface::announce::AnnounceDto`] |
 //! | `POST /dj/feedback` | [`crate::surface::dj_feedback::DjFeedbackRequest`] | [`crate::surface::dj_feedback::DjFeedbackDto`] |
