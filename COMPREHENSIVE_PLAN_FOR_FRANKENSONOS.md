@@ -1424,6 +1424,17 @@ an undo boundary; a coordinator-only handover remains undoable. Coordinator
 and address recovery still share one retry budget, and partially completed
 operations are not restarted. See [`docs/COMMAND_RECOVERY.md`](docs/COMMAND_RECOVERY.md).
 
+The daemon supervises its live inventory/event worker, DJ queue follower,
+listening-history follower and configured Spotify refresh watcher alongside
+required HTTP/MCP listeners and the scheduler. An unexpected worker return or
+panic triggers the normal shutdown drain and a nonzero exit for the installed
+service manager to recover. Worker-creation errors fail startup. Shutdown stops
+event consumers promptly and bounds waits for outstanding network work; it does
+not replay a failed playback command. Ordinary player outages and Spotify read
+failures retain their existing retry/backoff behavior. A dead live model
+withdraws readiness and callback URLs, disconnects subscribers and retains its
+last observations with an explicit diagnostic.
+
 ### 12.15 Room aliases and smart targets
 
 [`b-room-aliases`, `d-house-verbs`] `aliases.toml` (`kitchen` → "Kitchen",

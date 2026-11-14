@@ -5,30 +5,33 @@ use fsonos_core::live::{LiveEvent, Snapshot};
 use fsonos_core::reconcile::Health;
 use fsonos_types::PlayerId;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Weak};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// Retry from cached state even if the speaker sends no further delta.
 /// This is not a speaker poll: only an active feed that needs work does I/O.
 const MAINTENANCE: Duration = Duration::from_secs(30);
 
-pub(super) fn follow(surface: &Arc<Surface>) {
+pub(super) fn follow(
+    surface: &Arc<Surface>,
+    stop: Arc<AtomicBool>,
+) -> std::io::Result<Option<JoinHandle<()>>> {
     let (Some(live), true) = (surface.live(), surface.dj.is_some()) else {
-        return;
+        return Ok(None);
     };
     let changes = live.subscribe();
     let surface = Arc::downgrade(surface);
-    if let Err(error) = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("fsonos-dj".into())
         .spawn(move || {
-            drive(&changes, MAINTENANCE, |event| {
+            drive_until(&changes, MAINTENANCE, &stop, |event| {
                 handle(&surface, event.as_ref())
             });
         })
-    {
-        tracing::error!(%error, "could not start the DJ queue follower");
-    }
+        .map(Some)
 }
 
 fn handle(surface: &Weak<Surface>, event: Option<&LiveEvent>) -> bool {
@@ -142,30 +145,43 @@ fn targets(
 /// `None` asks for maintenance; `Some` delivers an event. Returning false
 /// stops the worker. Run once immediately, then at most once per interval,
 /// including while a busy event stream never lets recv_timeout time out.
-fn drive<T>(events: &Receiver<T>, interval: Duration, mut handle: impl FnMut(Option<T>) -> bool) {
-    if !handle(None) {
+fn drive_until<T>(
+    events: &Receiver<T>,
+    interval: Duration,
+    stop: &AtomicBool,
+    mut handle: impl FnMut(Option<T>) -> bool,
+) {
+    if stop.load(Ordering::Acquire) || !handle(None) {
         return;
     }
     let mut due = Instant::now() + interval;
-    loop {
-        match events.recv_timeout(due.saturating_duration_since(Instant::now())) {
+    while !stop.load(Ordering::Acquire) {
+        // A quiet stream must not hold shutdown until its next maintenance pass.
+        let wait = due
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(100));
+        match events.recv_timeout(wait) {
             Ok(event) => {
-                if !handle(Some(event)) {
+                if stop.load(Ordering::Acquire) || !handle(Some(event)) {
                     return;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        if Instant::now() >= due {
+        if !stop.load(Ordering::Acquire) && Instant::now() >= due {
             if !handle(None) {
                 return;
             }
-            // Do not replay missed ticks after a slow network operation or
-            // host sleep; one pass over current state is sufficient.
+            // Do not replay missed ticks after a slow operation or host sleep.
             due = Instant::now() + interval;
         }
     }
+}
+
+#[cfg(test)]
+fn drive<T>(events: &Receiver<T>, interval: Duration, handle: impl FnMut(Option<T>) -> bool) {
+    drive_until(events, interval, &AtomicBool::new(false), handle);
 }
 
 #[cfg(test)]
@@ -175,6 +191,47 @@ mod tests {
     use fsonos_core::playback::{Changes, EventSource};
     use fsonos_proto::gena::Notify;
     use std::sync::mpsc;
+
+    #[test]
+    fn shutdown_prevents_startup_and_queued_maintenance_work() {
+        let (send, events) = mpsc::channel();
+        send.send(1).unwrap();
+        let stop = AtomicBool::new(true);
+        drive_until(&events, Duration::from_secs(60), &stop, |_| {
+            panic!("a stopped follower must not start work")
+        });
+        stop.store(false, Ordering::Release);
+        let mut calls = 0;
+        drive_until(&events, Duration::from_secs(60), &stop, |event| {
+            assert!(event.is_none());
+            calls += 1;
+            stop.store(true, Ordering::Release);
+            true
+        });
+        assert_eq!(calls, 1, "queued events remain unprocessed during shutdown");
+    }
+
+    #[test]
+    fn an_idle_follower_observes_shutdown_without_a_new_event() {
+        let (_send, events) = mpsc::channel::<()>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let (started, ready) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            drive_until(&events, Duration::from_secs(60), &stopped, |event| {
+                assert!(event.is_none());
+                started.send(()).unwrap();
+                true
+            });
+            finished.send(()).unwrap();
+        });
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        stop.store(true, Ordering::Release);
+        done.recv_timeout(Duration::from_secs(2))
+            .expect("shutdown must not wait sixty seconds for maintenance");
+        worker.join().unwrap();
+    }
 
     #[test]
     fn starts_from_cached_state_without_waiting_for_an_event() {
@@ -456,6 +513,7 @@ mod simulator_tests {
         active: PlayerId,
         seen: Sender<Option<u8>>,
         topology_seen: AtomicBool,
+        panic_on_topology: bool,
         /// A feed it reports carried over, once.
         handover: Mutex<Option<(PlayerId, PlayerId)>>,
     }
@@ -514,6 +572,7 @@ mod simulator_tests {
             snapshot: &Snapshot,
             _: &mut dyn Store,
         ) {
+            assert!(!self.panic_on_topology, "injected DJ follower failure");
             assert!(!snapshot.households.is_empty());
             self.topology_seen.store(true, Ordering::SeqCst);
         }
@@ -584,6 +643,16 @@ mod simulator_tests {
         active: PlayerId,
         handover: Option<(PlayerId, PlayerId)>,
     ) -> (Arc<Surface>, Receiver<Option<u8>>) {
+        surface_probe(sim, live, active, handover, false)
+    }
+
+    fn surface_probe(
+        sim: &SimHandle,
+        live: &Arc<Live>,
+        active: PlayerId,
+        handover: Option<(PlayerId, PlayerId)>,
+        panic_on_topology: bool,
+    ) -> (Arc<Surface>, Receiver<Option<u8>>) {
         let (seen, received) = mpsc::channel();
         let surface = Surface::new(
             Box::new(sim.lan()),
@@ -596,10 +665,68 @@ mod simulator_tests {
             active,
             seen,
             topology_seen: AtomicBool::new(false),
+            panic_on_topology,
             handover: Mutex::new(handover),
         }))
         .with_action_log(Box::new(MemStore::default()), "test");
         (Arc::new(surface), received)
+    }
+
+    fn wait_finished(worker: &JoinHandle<()>) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !worker.is_finished() {
+            assert!(Instant::now() < deadline, "a follower failed to finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn supervised_followers_report_a_dj_panic_without_losing_the_handle() {
+        let (sim, live, active) = household();
+        let (surface, _received) = surface_probe(&sim, &live, active, None, true);
+        let stop = Arc::new(AtomicBool::new(false));
+        let workers = crate::surface::follow_supervised(&surface, &stop).unwrap();
+        assert_eq!(workers.len(), 2, "the DJ and history both have owners");
+        let dj = workers
+            .iter()
+            .find(|worker| worker.thread().name() == Some("fsonos-dj"))
+            .unwrap();
+        wait_finished(dj);
+        stop.store(true, Ordering::Release);
+        for worker in workers {
+            wait_finished(&worker);
+            let name = worker.thread().name().unwrap().to_owned();
+            let result = worker.join();
+            assert_eq!(result.is_err(), name == "fsonos-dj", "{name}");
+        }
+        assert!(!live.is_finished(), "the failure belongs to the DJ follower");
+        drop(surface);
+        drop(live);
+        sim.shutdown();
+    }
+
+    #[test]
+    fn supervised_followers_stop_while_the_live_model_and_surface_remain_alive() {
+        let (sim, live, active) = household();
+        let expected = live.player(&active).unwrap().volume;
+        let (surface, received) = surface(&sim, &live, active);
+        let stop = Arc::new(AtomicBool::new(false));
+        let workers = crate::surface::follow_supervised(&surface, &stop).unwrap();
+        assert_eq!(workers.len(), 2);
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(2)).unwrap(),
+            expected
+        );
+        stop.store(true, Ordering::Release);
+        for worker in workers {
+            wait_finished(&worker);
+            worker.join().expect("ordinary shutdown is successful");
+        }
+        assert!(!live.is_finished());
+        assert!(live.wait_ready(Duration::ZERO));
+        drop(surface);
+        drop(live);
+        sim.shutdown();
     }
 
     /// A coordinator re-elected under the DJ: the engine carries the feed,
@@ -626,7 +753,7 @@ mod simulator_tests {
         let (surface, received) = surface(&sim, &live, active);
         // The real follower subscribes after Live already has every initial
         // state. No new playback change is needed to visit a restored feed.
-        follow(&surface);
+        let _worker = follow(&surface, Arc::new(AtomicBool::new(false))).unwrap();
         assert_eq!(
             received.recv_timeout(Duration::from_secs(2)).unwrap(),
             expected

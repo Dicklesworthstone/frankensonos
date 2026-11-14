@@ -199,6 +199,17 @@ The job sets `KeepAlive` to restart on any exit, at most once every 10 s
 (`ThrottleInterval`). It also gets 90 s between SIGTERM and SIGKILL
 (`ExitTimeOut`): announcements in flight put the music back (the daemon waits
 up to 60 s for them), then it cancels its event subscriptions cleanly.
+
+The daemon also requests this restart when an essential background worker
+unexpectedly returns or panics: the live event/inventory engine, DJ queue
+follower, listening-history follower and configured Spotify refresh watcher,
+as well as required listeners and the scheduler. It logs the failed role,
+drains active work and exits with an error. Player/network outages and Spotify
+read failures still follow their normal bounded retries; they do not by
+themselves trigger a process restart. A dead event worker retires its callback
+addresses and readiness and closes event streams instead of keeping a healthy
+snapshot indefinitely. No failed speaker command is replayed by the supervisor.
+
 A DJ that was playing keeps playing across a restart: serve keeps its queues
 in `dj-feeds.json` in the data directory and feeds them on, unless the queue
 was cleared or replaced meanwhile. Sleep timers carry over the same way, in
