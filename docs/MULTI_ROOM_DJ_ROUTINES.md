@@ -42,6 +42,27 @@ The `add_schedule` MCP tool accepts the same set in its existing `zone`
 argument. Revision-bound schedule editing also accepts these targets and
 keeps the schedule's identity, original creator and paused state.
 
+## Phone and dashboard
+
+Open **Scheduled routines** in the phone remote or **Routines** in the
+dashboard and create a DJ routine. The **DJ rooms or saved set** field offers
+individual rooms, saved aliases, the whole house and household-qualified sets.
+Choose its time and optional mood or full direction, then review the routine.
+
+The review resolves only the selected expression and lists each independent
+group, including members affected through grouping but absent from the alias.
+Saving reads that target again. A changed alias, physical group or mood requires
+a new review. One schedule definition is saved; no DJ or speaker command runs
+during creation. Each future occurrence resolves the authored expression again.
+
+Edits retain the original creator. For an existing `here` routine, the browser
+can only preview its current caller's default through the room resolver. The
+review labels that preview separately and names the saved creator whose default
+the scheduled run actually uses; those audiences may already differ. Saving
+keeps `here`, the original creator, the reviewed routine revision and its
+paused or enabled state. See [routine editing](ROUTINE_EDITING.md) for changed
+revisions and recovery after an unacknowledged save.
+
 ## What the routine retains
 
 The stored action keeps the authored target expression. It does not freeze

@@ -831,21 +831,29 @@ const SchedulesRemote = (() => {
   function routineTargets(planned, el) {
     if (planned.body.action !== 'dj_start') return null;
     const destination = planned.destination, view = destination.resolution;
-    const node = el('section', { class: 'routine-targets', 'aria-label': 'Currently affected DJ groups' },
-      el('h4', { text: 'Current DJ target: ' + planned.body.zone }));
+    const creatorDefault = planned.action === 'update'
+      && (view?.matched === 'here' || planned.body.zone.trim().toLowerCase() === 'here');
+    const node = el('section', { class: 'routine-targets',
+      'aria-label': creatorDefault ? 'Current browser default preview' : 'Currently affected DJ groups' },
+      el('h4', { text: (creatorDefault ? 'Current browser default preview: ' : 'Current DJ target: ') + planned.body.zone }));
+    if (creatorDefault) node.append(el('p', { role: 'note',
+      text: `This preview resolves “here” for the current browser caller. Routine #${planned.row.id} keeps ${planned.row.creator} as its creator and uses that creator’s default, which may already select different rooms. This edit preserves the authored “here” target.` }));
     if (view) {
       const selected = new Set(view.rooms.map(room => stamp([room.household, room.player])));
-      node.append(el('p', { text: `${view.rooms.length} selected room(s), ${view.groups.length} independent group(s). Each group starts once.` }));
+      node.append(el('p', { text: creatorDefault
+        ? `${view.rooms.length} preview room(s), ${view.groups.length} group(s) in this browser caller’s current default. The routine’s actual groups follow its creator’s default.`
+        : `${view.rooms.length} selected room(s), ${view.groups.length} independent group(s). Each group starts once.` }));
       const groups = el('ul');
       for (const group of view.groups) {
         const outside = group.members.filter(room => !selected.has(stamp([room.household, room.player])));
         groups.append(el('li', {}, el('strong', { text: `${group.coordinator_room}@${group.household}` }),
-          el('p', { text: 'Affected rooms: ' + group.members.map(room => `${room.room}@${room.household}`).join(', ') }),
-          ...(outside.length ? [el('p', { text: 'Also affected through grouping: ' + outside.map(room => `${room.room}@${room.household}`).join(', ') })] : [])));
+          el('p', { text: (creatorDefault ? 'Preview rooms: ' : 'Affected rooms: ') + group.members.map(room => `${room.room}@${room.household}`).join(', ') }),
+          ...(outside.length ? [el('p', { text: (creatorDefault ? 'Also included in this preview through grouping: ' : 'Also affected through grouping: ')
+            + outside.map(room => `${room.room}@${room.household}`).join(', ') })] : [])));
       }
       node.append(groups);
     } else node.append(el('p', { text: `The saved target is not currently resolved: ${destination.unresolved || 'refresh its current rooms'}. It is retained exactly; the daemon validates it when saving and before a run.` }));
-    node.append(el('p', { text: 'This review describes the current target, not fixed future rooms. Each occurrence resolves the saved target with its creator’s defaults and permissions. Alias edits, discovery and regrouping can change future groups. No music starts while saving this routine.' }));
+    node.append(el('p', { text: 'This review describes the current caller’s target, not fixed future rooms. Each occurrence resolves the saved target with its creator’s defaults and permissions. Alias edits, discovery and regrouping can change future groups. No music starts while saving this routine.' }));
     return node;
   }
 

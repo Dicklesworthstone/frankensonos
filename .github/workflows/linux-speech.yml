@@ -54,6 +54,8 @@ on:
       - "scripts/test-remote-dj-rehearsal.cjs"
       - "scripts/test-remote-dj-handoff.cjs"
       - "scripts/test-remote-schedules.cjs"
+      - "scripts/test-scheduled-dj-targets.cjs"
+      - "scripts/schedule-targets-fixture.cjs"
       - "scripts/test-schedule-editing.cjs"
       - "scripts/test-favorite-routines.cjs"
       - "scripts/test-favorite-routines-panel.cjs"
@@ -182,7 +184,7 @@ jobs:
         run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs scripts/test-remote-dj-rehearsal.cjs scripts/test-remote-dj-handoff.cjs scripts/test-dj-targets.cjs scripts/test-dj-targets-panel.cjs
       - name: Web scheduled routine regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-schedules.cjs scripts/test-schedule-editing.cjs
+        run: node --test scripts/test-remote-schedules.cjs scripts/test-schedule-editing.cjs scripts/test-scheduled-dj-targets.cjs
       - name: Saved room aliases and default target regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-room-configuration.cjs

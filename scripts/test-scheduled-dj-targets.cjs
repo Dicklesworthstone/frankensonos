@@ -215,3 +215,31 @@ for (const surface of ['phone', 'dashboard']) {
     assert.equal(await fresh.control.reviewCreate(), false); assert.equal(fresh.writes().length, 0);
   });
 }
+
+for (const surface of ['phone', 'dashboard']) {
+  test(surface + ': editing here distinguishes the current browser preview from the saved creator default', async () => {
+    const f = fixture(surface, [row({ zone: 'here' })]);
+    f.aliases.here = ['Lead@S2'];
+    f.intercept(url => {
+      if (url !== '/rooms/resolve?target=here') return;
+      return { ...f.resolve('here'), matched: 'here' };
+    });
+    const pending = await f.review(null, true);
+    assert.equal(pending.destination.resolution.groups.length, 1);
+    assert.equal(pending.destination.resolution.groups[0].household, 'S2');
+    const node = S.routineTargets(pending, element), preview = node.textContent;
+    assert.equal(node.attrs['aria-label'], 'Current browser default preview');
+    assert.match(preview, /Current browser default preview/);
+    assert.match(preview, /original creator/);
+    assert.match(preview, /may already.*different rooms/i);
+    assert.doesNotMatch(preview, /Each group starts once|Affected rooms:/);
+    assert.match(preview, /Lead@S2/);
+    assert.equal(pending.body.zone, 'here');
+    assert.equal(pending.request.expected_revision, 'saved-v1');
+    assert.equal(await f.apply(pending), true, f.control.state.message);
+    assert.equal(f.writes().length, 1);
+    assert.equal(f.writes()[0].body.schedule.zone, 'here');
+    assert.equal(f.rows()[0].creator, 'original creator');
+    assert.equal(f.rows()[0].enabled, false);
+  });
+}
