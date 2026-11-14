@@ -1,0 +1,19 @@
+.room-config-dialog{width:min(64rem,calc(100vw - 2rem));max-width:none;max-height:calc(100dvh - 2rem);overflow:auto;padding:clamp(1rem,3vw,2rem);border:1px solid var(--line,#394151);border-radius:1rem;color:var(--text,#eceef5);background:var(--card,var(--panel,#171b26));box-sizing:border-box}
+.room-config-dialog::backdrop{background:rgb(0 0 0 / 65%)}
+.room-config-heading,.room-config-actions,.room-config-add-room{display:flex;align-items:center;flex-wrap:wrap;gap:.6rem}
+.room-config-heading{align-items:flex-start;justify-content:space-between}.room-config-heading h2{margin:0;font-size:clamp(1.4rem,3vw,2rem)}
+.room-config-heading p{max-width:45rem}.room-config-actions{margin:.8rem 0}
+.room-config-dialog button,.room-config-dialog input{font:inherit}
+.room-config-dialog button{min-height:44px;border:1px solid var(--line,#394151);border-radius:.6rem;padding:.5rem .8rem;color:inherit;background:var(--card,var(--raised,#222938));cursor:pointer}
+.room-config-dialog button:disabled{opacity:.45;cursor:default}.room-config-dialog .primary-button{background:var(--accent,#92bdf5);color:#111721;font-weight:650}
+.room-config-field{display:grid;gap:.35rem;min-width:0;margin:.8rem 0;font-size:.9rem}
+.room-config-field input{display:block;width:100%;min-width:0;min-height:44px;padding:.6rem;border:1px solid var(--line,#394151);border-radius:.5rem;color:inherit;background:var(--bg,#10151e);box-sizing:border-box}
+.room-config-field input:read-only{opacity:.75}.room-config-add-room{align-items:end}.room-config-add-room label{flex:1}
+.room-config-columns{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:1.5rem}.room-config-columns>section{min-width:0}
+.room-config-card,.room-config-draft,.room-config-review{margin:1rem 0;padding:1rem;border:1px solid var(--line,#394151);border-radius:.7rem;min-width:0;overflow-wrap:anywhere}
+.room-config-review{border:2px solid var(--accent,#92bdf5)}.room-config-card h4{margin:0 0 .6rem}.room-config-card ul{max-height:18rem;overflow:auto;padding-left:1.2rem}
+.room-config-members{padding-left:1.5rem;max-height:24rem;overflow:auto}.room-config-members li{margin:.5rem 0;overflow-wrap:anywhere}.room-config-members li span{margin-right:.6rem}
+.room-config-note,.room-config-status,.room-config-result,.room-config-warning,.room-config-warnings{font-size:.88rem;line-height:1.6;overflow-wrap:anywhere}
+.room-config-result,.room-config-warning{padding:.8rem;border-left:3px solid var(--accent,#92bdf5);background:var(--bg,#10151e)}
+.room-config-dialog p,.room-config-dialog li{line-height:1.6;overflow-wrap:anywhere}.room-config-dialog :focus-visible{outline:2px solid var(--accent,#92bdf5);outline-offset:3px}
+@media(max-width:700px){.room-config-columns{grid-template-columns:minmax(0,1fr)}.room-config-dialog{width:calc(100vw - 1rem);max-height:calc(100dvh - 1rem);padding:1rem}.room-config-add-room{align-items:stretch;flex-direction:column}}

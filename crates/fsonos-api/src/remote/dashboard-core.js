@@ -154,6 +154,7 @@ const DashboardCore = (() => {
     const canManage = () => !demo && !disposed && state.active && !state.busy && !state.uncertain;
     const stores = {
       schedules: { path: '/schedules', label: 'routines', observed: 'stored list', route: /^\/schedules(?:\/(?:pause|resume|remove|update))?$/ },
+      roomConfiguration: { path: '/rooms/configuration', label: 'room configuration', observed: 'saved aliases and defaults', route: /^\/rooms\/configuration$/ },
       preferences: { path: '/dj/preferences', label: 'preferences', observed: 'standing taste', route: /^\/dj\/preferences$/ },
       playlists: { path: target => `/sonos/playlists?zone=${encodeURIComponent(target)}`, scoped: true,
         label: 'saved playlists', observed: 'original household catalog', route: /^\/sonos\/playlists\/(?:save|rename|remove)$/ },

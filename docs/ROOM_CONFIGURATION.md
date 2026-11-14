@@ -5,10 +5,33 @@ room `here` means, globally or for a particular policy client. These settings
 live in the selected daemon's `aliases.toml` and take effect on the next target
 resolution. They do not group speakers or immediately change playback.
 
-The CLI, HTTP API and MCP can read and change this configuration without
-filesystem access to the daemon host. The complete read includes saved targets
-that are offline, unlike the discovered-room list. Each mutation changes one
-alias or default, retaining other settings and comments.
+The phone remote, dashboard, CLI, HTTP API and MCP can read and change this
+configuration without filesystem access to the daemon host. The complete read
+includes saved targets that are offline, unlike the discovered-room list. Each
+mutation changes one alias or default, retaining other settings and comments.
+
+## Phone remote and dashboard
+
+On the phone, open **House & sound**, then **Edit aliases and default rooms**.
+On the dashboard, choose **Aliases & default rooms** beside the room controls.
+Both surfaces use the same editor:
+
+1. Read the current aliases, house default and explicit client defaults.
+2. Create an alias, edit its members, remove it, or set/clear a default. Room
+   suggestions come from discovery; exact offline names and existing client
+   identities remain available. Repeated members and their order are retained.
+3. Review the current setting and proposed change, then save it once.
+
+An alias edit changes its members while preserving its name. Clearing a client
+default restores the house fallback, when one exists. Changes affect future
+commands and routines; saving does not start music or regroup speakers.
+
+The editor retains the original revision throughout review. A changed
+configuration requires a fresh edit; it never silently rebases the draft. If
+the acknowledgement is lost or unreadable, the draft and outcome stay visible.
+Use **Refresh room configuration** to observe the saved state before deciding
+on another change. A playback refresh cannot clear this uncertainty, and the
+browser never repeats the earlier mutation automatically.
 
 ## CLI
 
@@ -151,5 +174,11 @@ all four changes and terminal remote errors. The CLI daemon scenario edits
 from a separate data directory, confirms that the local file remains
 untouched, controls the selected rooms through the new alias, and reopens the
 saved configuration offline.
+
+The browser regression suite exercises all four changes on both surfaces,
+review and draft retention, exact client identities, no-op receipts, stale
+revisions, unrelated-setting preservation, lost acknowledgements, stored
+command coordination, and real loopback HTTP requests. It also covers panel
+focus and plain-text rendering of saved names.
 
 Executed test results are reported separately from tests added to the source.

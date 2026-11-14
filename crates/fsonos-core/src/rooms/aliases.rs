@@ -214,7 +214,6 @@ impl Aliases {
 
     /// Explicit client overrides, without substituting the global default.
     /// Client identities retain their exact spelling and match exactly.
-    #[must_use]
     pub fn client_defaults(&self) -> impl Iterator<Item = (&str, &str)> {
         self.client_rooms
             .iter()

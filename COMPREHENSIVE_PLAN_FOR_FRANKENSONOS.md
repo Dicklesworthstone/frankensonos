@@ -1576,14 +1576,18 @@ retain partial failures and undo limitations. Existing browser command lanes
 cover the entire selection; no browser loop sends separate playback writes.
 
 Saved aliases and global/per-client defaults are now editable on the selected
-daemon through CLI, HTTP and MCP. `rooms configuration` / `GET
+daemon through the phone remote, dashboard, CLI, HTTP and MCP. `rooms configuration` / `GET
 /rooms/configuration` / `room_configuration` return the complete authored
 configuration and exact revision, including offline targets. A single typed
 change uses that revision under a shared file lock, preserves unrelated entries
 and comments, and updates subsequent target resolution without speaker I/O.
 Writes require both house-config permission and owner/administrator authority.
 CLI alias/default commands reach the selected daemon and never replay failed
-remote edits locally; direct mode remains available offline. See
+remote edits locally; direct mode remains available offline. Both browser
+surfaces provide the same create/edit/remove alias and set/clear default form,
+retain offline targets and exact client keys, and review each change against
+its original revision. Lost acknowledgements retain the draft and require an
+explicit configuration observation before another submission. See
 [Room configuration](docs/ROOM_CONFIGURATION.md).
 
 ### Milestone placement
