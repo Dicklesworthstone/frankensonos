@@ -76,6 +76,31 @@ and fit 1023 UTF-8 bytes. Sonos can refuse an already-favorited source or a full
 favorites catalog. A definite refusal is returned to the caller; it is not
 converted into an invented successful save.
 
+## Phone and desktop remotes
+
+The phone remote offers **Manage favorites** under **Music → Sonos favorites**
+for each group. The desktop dashboard has the same manager beside its source
+controls. Open it to read that household's favorites, preview the selected
+track or station, and review a save, rename or removal.
+
+The current-source preview identifies what will be saved. A selected queue
+track becomes one favorite; saving the entire queue remains the separate
+**Save queue as playlist** workflow. Rename and removal retain the exact
+native favorite ID, so equal titles do not redirect an edit.
+
+Review records the original household, group and source or catalog revision.
+Confirmation rereads the target before one POST. Changing groups, refreshing
+the catalog or receiving an external catalog change retires a stale review.
+Phone commands use the existing group command and volume lanes; dashboard
+edits retain their original household target.
+
+Closing the panel, suspending the page or choosing another group preserves a
+pending or uncertain result. Read the original household's catalog explicitly
+to recover, including after its original room joins another group. Recovery
+does not replay a write. Confirmed local changes refresh existing favorite
+pickers immediately, without waiting for the event feed. A confirmed result
+with unavailable action logging remains confirmed and must not be repeated.
+
 ## HTTP and MCP
 
 | Operation | HTTP | Full MCP profile |
@@ -144,3 +169,18 @@ locally. Rust compilation and runtime tests remain unverified: the existing
 asupersync dependency build had already failed under memory constraints before
 reaching project code, and the environment subsequently became unavailable.
 Physical Sonos acceptance remains separate from simulator coverage.
+
+The browser suites contain 51 cases for review, exact identity, catalog drift,
+group command coordination, retained results, recovery after regrouping, and
+existing picker invalidation. Before executor loss, 48 cases passed under Node.
+The last picker callback, its three new cases, and final preview/CI integration
+changes were reviewed from the restored sources; those final deltas were not
+rerun under Node or an actual browser. Production, preview and browser-test
+dashboard asset lists were independently compared in memory and match in order.
+
+Three targeted checks did execute in the available JavaScript V8 environment
+against the shipped phone completion adapter, CatalogRemote and real picker
+code, with an accepted result supplied by a stubbed model. Save, rename and
+removal each retired the original household's cache, reread its picker once,
+left the other household untouched and emitted one scoped catalog event.
+These checks do not substitute for running the complete final Node suites.

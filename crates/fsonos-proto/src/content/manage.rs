@@ -225,7 +225,7 @@ mod tests {
                     &transport,
                     "192.0.2.10".parse().unwrap(),
                     "FV:2",
-                    "<DIDL-Lite/>"
+                    "<DIDL-Lite/>",
                 )
                 .is_err()
             );

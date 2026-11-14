@@ -158,6 +158,8 @@ const DashboardCore = (() => {
       preferences: { path: '/dj/preferences', label: 'preferences', observed: 'standing taste', route: /^\/dj\/preferences$/ },
       playlists: { path: target => `/sonos/playlists?zone=${encodeURIComponent(target)}`, scoped: true,
         label: 'saved playlists', observed: 'original household catalog', route: /^\/sonos\/playlists\/(?:save|rename|remove)$/ },
+      favorites: { path: target => `/favorites?zone=${encodeURIComponent(target)}`, scoped: true,
+        label: 'favorites', observed: 'original household catalog', route: /^\/favorites\/(?:save|rename|remove)$/ },
     };
     const qualified = target => text(target) && !/[\u0000-\u001f\u007f]/.test(target)
       && target.lastIndexOf('@') > 0 && target.lastIndexOf('@') < target.length - 1;

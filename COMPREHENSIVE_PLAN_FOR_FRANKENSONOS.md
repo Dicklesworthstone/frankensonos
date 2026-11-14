@@ -1082,7 +1082,11 @@ Spotify track won't enqueue. Library search is token-scored fuzzy matching over
 the cached library and favorites (title, composer, performer, album). The
 surfaces are in 12.3.
 
-My Sonos favorites also support native authoring through CLI, HTTP and MCP.
+My Sonos favorites also support native authoring through CLI, HTTP, MCP and
+both web remotes. The phone and dashboard review the exact source or saved
+entry, retain pending and uncertain results through navigation, and recover
+against the original household even if its room has joined another group.
+Confirmed local changes invalidate the existing favorite pickers immediately.
 An observed-current-source preview selects the actual queue occurrence or the
 direct track/station; saving retains the speaker's resource and service
 metadata. Rename and removal require an exact household-local `FV:2/<n>` ID
