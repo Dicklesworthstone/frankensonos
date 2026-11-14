@@ -5605,3 +5605,11 @@ buffer at `r31` holds key material and why its first bytes are random), and the 
 
 That corrects the last init attempts, which used header+0 and header+16 as key/IV: the key
 is right there (offset 0) but the IV is not (offset 12 of the *record*).
+
+Init with (key = unwrap buffer+0, IV = record+12) returns 0 and stamps the magic, but the
+run still ends at the final call. So at least one pointer is still wrong — and rather than
+permute further, the ground truth is available locally: `g5723.upd` was built by our own
+builder, so its AES key can be unwrapped **on the Mac** with the model16 private key
+(`openssl pkeyutl -decrypt -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha1`) and
+compared byte-for-byte with the 16 bytes at the emulator's `r31`. That turns the last guess
+into a check.
