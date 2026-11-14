@@ -1219,6 +1219,18 @@ account signals (§12.1). Today the `feedback` rows carry `work_key`,
 of `c-dj-taste`. Time-of-day programs set the
 default mood when none is given.
 
+`dj stop` now checks the current source, selected queue occurrence, retained
+work contents and group incarnation before sending Stop. A source handed to
+radio, Connect, an announcement or a replaced queue releases the DJ without
+interrupting the listener's new playback. Failed prerequisite reads and definite
+speaker refusals remain explicit errors; an attempted Stop with an uncertain
+outcome retires automatic feeding, including any saved exhausted-queue retry.
+The daemon checkpoints retirement before any Stop can reach the speaker; an
+unwritable checkpoint returns an error before speaker I/O. A successful or
+uncertain Stop stays retired across restart even if storage fails immediately
+afterward. These are bounded observations, not an atomic lock on another
+controller's changes.
+
 The DJ feed records anti-repeat play history only after observing `Playing`
 for its exact owned queue occurrence. Selecting a track while stopped, paused
 or buffering does not count as listening, including a refused initial `Play`.

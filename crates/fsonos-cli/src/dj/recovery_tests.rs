@@ -373,3 +373,275 @@ fn completed_recoveries_keep_the_budget_across_real_saved_feed_reopens() {
     assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
     rig.sim.shutdown();
 }
+
+struct UncertainStop<'a> {
+    inner: &'a SimLan,
+    writes: Cell<usize>,
+}
+
+impl Transport for UncertainStop<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        if name != "Browse" && !name.starts_with("Get") {
+            self.writes.set(self.writes.get() + 1);
+        }
+        if name == "GetTransportInfo" {
+            return Err(ProtoError::Network {
+                target: "simulated stop read-back".into(),
+                detail: "the stopped state could not be observed".into(),
+            });
+        }
+        let response = self.inner.soap_post(host, path, action, body)?;
+        if name == "Stop" {
+            return Err(ProtoError::Network {
+                target: "simulated stop reply".into(),
+                detail: "Stop succeeded but its reply was lost".into(),
+            });
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn an_uncertain_stop_persists_release_and_cannot_restart_a_dry_queue_after_reopen() {
+    for s2 in [false, true] {
+        let rig = Rig::new(s2);
+        let dj = rig.start();
+        let lan = rig.sim.lan();
+        let mut store = MemStore::default();
+        dj.on_playback(rig.at(&lan), &mut store, &rig.playback(), &clock());
+        {
+            let mut state = dj.state();
+            assert!(state.listening.contains_key(&rig.coordinator));
+            let mut snapshot = state.feeds[&rig.coordinator].snapshot().unwrap();
+            snapshot.dry_end = snapshot.queued.last().and_then(QueuedWork::last);
+            assert!(snapshot.dry_end.is_some());
+            state.feeds.insert(
+                rig.coordinator.clone(),
+                QueueFeed::restore(snapshot, DjConfig::default(), 1),
+            );
+            dj.save_checked(&mut state).unwrap();
+        }
+        let queue = browse_snapshot(&lan, rig.host, QUEUE).unwrap();
+        let observed = UncertainStop {
+            inner: &lan,
+            writes: Cell::new(0),
+        };
+        assert!(
+            dj.act_as(
+                rig.at(&observed),
+                &mut store,
+                DjAction::Stop,
+                &clock(),
+                &Client::Cli,
+            )
+            .is_err()
+        );
+        assert_eq!(observed.writes.get(), 1);
+        assert!(!dj.feeds(&rig.coordinator));
+        assert!(!dj.state().feeds.contains_key(&rig.coordinator));
+        assert!(!dj.state().listening.contains_key(&rig.coordinator));
+        assert_eq!(dj.starter(&rig.coordinator), DjStarter::Missing);
+        assert!(rig.saved()["feeds"].as_array().unwrap().is_empty());
+        assert!(rig.saved().get("starters").is_none());
+        assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
+        let stopped = rig.playback();
+        assert_eq!(stopped.transport, Some(TransportState::Stopped));
+        dj.on_playback(rig.at(&NoIo), &mut store, &stopped, &clock());
+        drop(dj);
+
+        let reopened = rig.engine();
+        assert!(!reopened.feeds(&rig.coordinator));
+        assert_eq!(reopened.starter(&rig.coordinator), DjStarter::Missing);
+        reopened.on_playback(rig.at(&NoIo), &mut store, &stopped, &clock());
+        assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
+        rig.sim.shutdown();
+    }
+}
+
+#[test]
+fn an_unwritable_stop_checkpoint_preserves_the_feed_without_touching_the_speaker() {
+    for s2 in [false, true] {
+        let rig = Rig::new(s2);
+        let mut dj = rig.start();
+        let before = rig.saved();
+        let feed = dj.state().feeds[&rig.coordinator].snapshot();
+        let starter = dj.starter(&rig.coordinator);
+        let lan = rig.sim.lan();
+        let queue = browse_snapshot(&lan, rig.host, QUEUE).unwrap();
+        // Replacing a directory fails even when the tests run as root.
+        dj.feeds_file = Some(rig.directory.path().to_path_buf());
+        let error = dj
+            .act_as(
+                rig.at(&NoIo),
+                &mut MemStore::default(),
+                DjAction::Stop,
+                &clock(),
+                &Client::Cli,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Internal);
+        assert_eq!(dj.state().feeds[&rig.coordinator].snapshot(), feed);
+        assert_eq!(dj.starter(&rig.coordinator), starter);
+        assert_eq!(rig.saved(), before);
+        assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
+        assert_eq!(rig.playback().transport, Some(TransportState::Playing));
+        rig.sim.shutdown();
+    }
+}
+
+#[test]
+fn stop_prerequisite_failures_and_definite_refusals_rearm_the_saved_feed() {
+    for s2 in [false, true] {
+        for action in ["GetMediaInfo", "Stop"] {
+            let rig = Rig::new(s2);
+            let dj = rig.start();
+            let before = rig.saved();
+            let feed = dj.state().feeds[&rig.coordinator].snapshot();
+            let starter = dj.starter(&rig.coordinator);
+            let lan = rig.sim.lan();
+            let queue = browse_snapshot(&lan, rig.host, QUEUE).unwrap();
+            rig.sim.upnp_fault("Den", action, 701).unwrap();
+            assert!(
+                dj.act_as(
+                    rig.at(&lan),
+                    &mut MemStore::default(),
+                    DjAction::Stop,
+                    &clock(),
+                    &Client::Cli,
+                )
+                .is_err()
+            );
+            assert_eq!(dj.state().feeds[&rig.coordinator].snapshot(), feed);
+            assert_eq!(dj.starter(&rig.coordinator), starter);
+            assert_eq!(rig.saved(), before);
+            rig.sim.clear_faults("Den").unwrap();
+            assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
+            assert_eq!(rig.playback().transport, Some(TransportState::Playing));
+            rig.sim.shutdown();
+        }
+    }
+}
+
+/// Inspect the retired revision before Stop is sent, then make the original
+/// store path unwritable after the real speaker accepted it. The saved copy
+/// represents the last durable revision a restarted daemon could recover.
+struct CheckpointedStop<'a> {
+    inner: &'a SimLan,
+    path: &'a Path,
+    retained: &'a Path,
+    uncertain: bool,
+    writes: Cell<usize>,
+}
+
+impl Transport for CheckpointedStop<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        if name != "Browse" && !name.starts_with("Get") {
+            self.writes.set(self.writes.get() + 1);
+        }
+        if name == "GetTransportInfo" && self.uncertain {
+            return Err(ProtoError::Network {
+                target: "simulated stop read-back".into(),
+                detail: "the stopped state could not be observed".into(),
+            });
+        }
+        if name == "Stop" {
+            let saved: Value =
+                serde_json::from_str(&std::fs::read_to_string(self.path).unwrap()).unwrap();
+            assert!(saved["feeds"].as_array().unwrap().is_empty());
+            assert!(saved.get("starters").is_none());
+            assert!(saved.get("groups").is_none());
+        }
+        let response = self.inner.soap_post(host, path, action, body)?;
+        if name == "Stop" {
+            std::fs::rename(self.path, self.retained).unwrap();
+            std::fs::create_dir(self.path).unwrap();
+            if self.uncertain {
+                return Err(ProtoError::Network {
+                    target: "simulated stop reply".into(),
+                    detail: "Stop succeeded but its reply was lost".into(),
+                });
+            }
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_stop_remains_retired_after_store_loss_and_daemon_restart() {
+    for s2 in [false, true] {
+        for uncertain in [false, true] {
+            let rig = Rig::new(s2);
+            let dj = rig.start();
+            {
+                let mut state = dj.state();
+                let mut snapshot = state.feeds[&rig.coordinator].snapshot().unwrap();
+                snapshot.dry_end = snapshot.queued.last().and_then(QueuedWork::last);
+                assert!(snapshot.dry_end.is_some());
+                state.feeds.insert(
+                    rig.coordinator.clone(),
+                    QueueFeed::restore(snapshot, DjConfig::default(), 1),
+                );
+                dj.save_checked(&mut state).unwrap();
+            }
+            let path = rig.path();
+            let retained = rig.directory.path().join("last-durable-feed.json");
+            let lan = rig.sim.lan();
+            let queue = browse_snapshot(&lan, rig.host, QUEUE).unwrap();
+            let observed = CheckpointedStop {
+                inner: &lan,
+                path: &path,
+                retained: &retained,
+                uncertain,
+                writes: Cell::new(0),
+            };
+            let result = dj.act_as(
+                rig.at(&observed),
+                &mut MemStore::default(),
+                DjAction::Stop,
+                &clock(),
+                &Client::Cli,
+            );
+            assert_eq!(result.is_err(), uncertain);
+            assert_eq!(observed.writes.get(), 1);
+            assert!(path.is_dir(), "the original store is no longer writable");
+            assert!(!dj.feeds(&rig.coordinator));
+            assert_eq!(dj.starter(&rig.coordinator), DjStarter::Missing);
+            let stopped = rig.playback();
+            assert_eq!(stopped.transport, Some(TransportState::Stopped));
+            assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
+            dj.on_playback(
+                rig.at(&NoIo),
+                &mut MemStore::default(),
+                &stopped,
+                &clock(),
+            );
+            drop(dj);
+
+            let reopened = SpotifyDj::new(None).with_saved_feeds(Some(retained));
+            assert!(!reopened.feeds(&rig.coordinator));
+            assert_eq!(reopened.starter(&rig.coordinator), DjStarter::Missing);
+            reopened.on_playback(
+                rig.at(&NoIo),
+                &mut MemStore::default(),
+                &stopped,
+                &clock(),
+            );
+            assert_eq!(browse_snapshot(&lan, rig.host, QUEUE).unwrap(), queue);
+            rig.sim.shutdown();
+        }
+    }
+}

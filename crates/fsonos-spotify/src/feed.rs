@@ -20,7 +20,8 @@
 //! An indeterminate write relinquishes automatic feeding, without stopping
 //! the music: replaying that write could duplicate a movement.
 //! [`QueueFeed::skip`] re-reads the queue and skips the rest of the current
-//! work; [`QueueFeed::stop`] stops. Played works stay where they are until
+//! work; [`QueueFeed::stop`] stops owned playback and releases management.
+//! Played works stay where they are until
 //! the queue grows past [`DjConfig::trim_queue_at`]; then the long-played
 //! ones come off it, so a DJ left on for days never fills the queue.
 //!
@@ -59,6 +60,7 @@ mod enqueue;
 mod mode;
 mod readiness;
 mod recovery;
+mod stop;
 pub use recovery::{RecoveryBudget, RecoveryNotice};
 mod navigation {
     //! Follow a listener back through the retained DJ queue without mistaking an
@@ -938,10 +940,27 @@ impl QueueFeed {
         Ok(&self.queued[next])
     }
 
-    /// Stop playback and let go of the queue (its items stay; nothing more
-    /// is added).
+    /// Stop the selected DJ work and let go of the queue (its items stay).
+    /// Another source or a replaced occurrence only releases management: the
+    /// listener's playback is left alone. Failed prerequisite reads and definite
+    /// refusals retain the session. An ambiguous Stop relinquishes feeding even
+    /// on error, so automatic recovery cannot undo a possibly successful stop.
     pub fn stop<T: Transport + ?Sized>(&mut self, at: &Speakers<'_, T>) -> Result<(), FeedError> {
-        control::stop(at.transport, at.households, at.coordinator)?;
+        if !self.active || self.coordinator() != *at.coordinator {
+            return Err(FeedError::Inactive);
+        }
+        if stop::owned(self, at)?
+            && let Err(error) = control::stop(at.transport, at.households, at.coordinator)
+        {
+            if matches!(
+                &error,
+                CoreError::Proto(ProtoError::Network { .. } | ProtoError::Malformed(_))
+                    | CoreError::Uncertain(_)
+            ) {
+                self.release();
+            }
+            return Err(error.into());
+        }
         self.release();
         Ok(())
     }
@@ -1592,6 +1611,7 @@ mod tests {
     mod navigation;
     mod recovery;
     mod source;
+    mod stop;
 
     const ROOM: &str = "Living Room";
 
