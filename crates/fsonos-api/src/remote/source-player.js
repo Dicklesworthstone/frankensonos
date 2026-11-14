@@ -8,9 +8,10 @@ const SourcePlayerRemote = (() => {
     sourceQueueState: ['GET', '/zones/{room}/queue'],
     sourcePlaylists: ['GET', '/sonos/playlists'], sourcePlaylistPlay: ['POST', '/sonos/playlists/play'],
     sourcePlaylistContents: ['GET', '/sonos/playlists/contents'], sourcePlaylistTrack: ['POST', '/sonos/playlists/track'],
+    sourcePlaylistTracks: ['POST', '/sonos/playlists/tracks'],
     sourcePlaylistRename: ['POST', '/sonos/playlists/rename'], sourcePlaylistRemove: ['POST', '/sonos/playlists/remove'] };
   const modes = Object.freeze({ play: 'Play now', next: 'Queue next', end: 'Queue at end' });
-  const MAX_BYTES = 2048, MAX_TITLE = 256;
+  const MAX_BYTES = 2048, MAX_TITLE = 256, MAX_PLAYLIST_TRACKS = 10;
   const catalogKinds = Object.freeze({ track: 'Tracks', album: 'Albums', artist: 'Artists',
     playlist: 'Playlists', show: 'Podcast shows', episode: 'Episodes' });
   const CATALOG_LIMIT = 10, MAX_QUERY_BYTES = 256;
@@ -385,7 +386,47 @@ const SourcePlayerRemote = (() => {
     return mode === 'play' ? detail : [queued(value, reviewed.group), ...(value.notes || []).map(note => note.detail)].join(' ');
   }
 
-  function renderContents(list, page, doc, { review, disabled = false } = {}) {
+  function preparePlaylistTracks(page, positions, mode) {
+    if (!Array.isArray(positions) || !positions.length || positions.length > MAX_PLAYLIST_TRACKS) {
+      throw new Error(`Choose 1 to ${MAX_PLAYLIST_TRACKS} saved track occurrences from this page.`);
+    }
+    const tracks = positions.map(position => preparePlaylistTrack(page, position, mode).item);
+    return Object.freeze({ item: Object.freeze({ kind: 'sonos_playlist_tracks', container: true,
+      id: page.playlist.id, playlistTitle: page.playlist.title, revision: page.revision,
+      total: page.total, positions: Object.freeze([...positions]), tracks: Object.freeze(tracks) }),
+      title: `${tracks.length} selected track(s) from ${page.playlist.title || page.playlist.id}`, mode });
+  }
+
+  function tracksQuery(item, target) {
+    const first = Math.min(...item.positions), last = Math.max(...item.positions);
+    return { zone: target, playlist: item.id, offset: first - 1, limit: last - first + 1,
+      expected_revision: item.revision };
+  }
+
+  function verifyPlaylistTracks(value, item, group) {
+    const page = playlistContents(value, tracksQuery(item, group.target), { title: item.playlistTitle }, group);
+    if (page.total !== item.total || item.tracks.some(selected => {
+      const track = page.items.find(track => track.position === selected.position);
+      return !track || track.uri !== selected.uri || track.title !== selected.title;
+    })) throw new Error('The selected saved tracks changed. Read tracks and choose them again.');
+  }
+
+  function tracksOutcome(value, reviewed) {
+    const item = reviewed.item, mode = reviewed.mode === 'end' ? 'append' : reviewed.mode;
+    if (!value || value.zone !== reviewed.group.coordinator || value.playlist !== item.id || value.mode !== mode
+        || !Array.isArray(value.positions) || JSON.stringify(value.positions) !== JSON.stringify(item.positions)
+        || !Array.isArray(value.titles) || JSON.stringify(value.titles) !== JSON.stringify(item.tracks.map(track => track.title))
+        || (mode !== 'play' && value.count !== item.positions.length)) {
+      throw new Error('The saved track selection was not confirmed in its reviewed order.');
+    }
+    const detail = outcome(value);
+    return mode === 'play' ? detail : [queued(value, reviewed.group), ...(value.notes || []).map(note => note.detail)].join(' ');
+  }
+
+  function renderContents(list, page, doc, { review, select, selected = [], disabled = false } = {}) {
+    const focused = list.contains?.(doc.activeElement) ? doc.activeElement?.getAttribute('data-playlist-select') : null;
+    const scroll = list.scrollTop;
+    let focus;
     list.replaceChildren();
     for (const item of page?.items || []) {
       const row = doc.createElement('li'); row.value = item.position;
@@ -393,6 +434,19 @@ const SourcePlayerRemote = (() => {
       const detail = [item.creator, item.album].filter(Boolean);
       if (item.duration_secs != null) detail.push(Math.floor(item.duration_secs / 60) + ':' + String(item.duration_secs % 60).padStart(2, '0'));
       if (detail.length) { const text = doc.createElement('span'); text.textContent = detail.join(' · '); row.append(text); }
+      if (select) {
+        const button = doc.createElement('button'), index = selected.indexOf(item.position);
+        button.type = 'button'; button.className = 'source-track-select';
+        button.textContent = index < 0 ? 'Select track' : `Selected · ${index + 1} in order`;
+        button.setAttribute('aria-pressed', String(index >= 0));
+        button.setAttribute('data-playlist-select', String(item.position));
+        button.setAttribute('aria-label', `${index < 0 ? 'Select' : 'Remove selection for'} track ${item.position}, ${item.title || 'Untitled track'}`);
+        button.disabled = disabled || !text(item.uri) || item.uri.trim() === 'NOT_IMPLEMENTED'
+          || (index < 0 && selected.length >= MAX_PLAYLIST_TRACKS);
+        button.addEventListener('click', () => { if (!button.disabled) select(item.position, page); });
+        if (String(item.position) === focused) focus = button;
+        row.append(button);
+      }
       if (review) {
         const actions = doc.createElement('div'); actions.className = 'source-track-actions';
         for (const [mode, label] of [['play', 'Play now'], ['next', 'Play next'], ['end', 'Add to queue']]) {
@@ -406,6 +460,46 @@ const SourcePlayerRemote = (() => {
       }
       list.append(row);
     }
+    if (scroll !== undefined) list.scrollTop = scroll;
+    focus?.focus?.({ preventScroll: true });
+  }
+
+  function renderSelectedTracks(list, item, doc) {
+    list.replaceChildren();
+    for (const track of item?.tracks || []) {
+      const row = doc.createElement('li');
+      row.textContent = `Track ${track.position}: ${track.title || 'Untitled track'}`;
+      list.append(row);
+    }
+  }
+
+  function playlistTrackSelectionPanel(doc, { review, clear }) {
+    const node = doc.createElement('section'), help = doc.createElement('p'), list = doc.createElement('ol');
+    node.className = 'source-track-selection'; node.setAttribute('aria-label', 'Selected saved tracks');
+    help.className = 'source-help'; help.setAttribute('role', 'status'); help.setAttribute('aria-live', 'polite');
+    list.className = 'source-selected-tracks'; list.setAttribute('aria-label', 'Selected tracks in playback order');
+    const actions = doc.createElement('div'); actions.className = 'source-track-actions';
+    let current = null, shown = null, shownPage = null;
+    const buttons = [['play', 'Play selected now'], ['next', 'Play selected next'], ['end', 'Add selected to queue']]
+      .map(([mode, label]) => {
+        const button = doc.createElement('button'); button.type = 'button'; button.textContent = label;
+        button.addEventListener('click', () => { if (!button.disabled) void review(mode, current); });
+        actions.append(button); return button;
+      });
+    const reset = doc.createElement('button'); reset.type = 'button'; reset.textContent = 'Clear selection';
+    reset.addEventListener('click', () => { if (!reset.disabled) clear(); }); actions.append(reset);
+    node.append(help, list, actions);
+    return { node, render(page, positions, disabled) {
+      current = page; node.hidden = !page;
+      help.textContent = positions.length ? `${positions.length} of ${MAX_PLAYLIST_TRACKS} selected, in the order shown. Clear the selection to review the whole playlist.`
+        : `Select up to ${MAX_PLAYLIST_TRACKS} tracks from this page in the order you want. Repeated saved occurrences remain separate. Changing pages clears the selection.`;
+      list.hidden = !positions.length; actions.hidden = !positions.length;
+      for (const button of [...buttons, reset]) button.disabled = disabled || !positions.length;
+      if (shown !== positions || shownPage !== page) {
+        shown = positions; shownPage = page;
+        renderSelectedTracks(list, { tracks: positions.map(position => page?.items.find(track => track.position === position)).filter(Boolean) }, doc);
+      }
+    } };
   }
 
   function commandBody(choice, target) {
@@ -415,6 +509,8 @@ const SourcePlayerRemote = (() => {
     }
     if (choice.item.kind === 'sonos_playlist_track') return { zone: target, playlist: choice.item.id,
       position: choice.item.position, expected_revision: choice.item.revision, mode: choice.mode === 'end' ? 'append' : choice.mode };
+    if (choice.item.kind === 'sonos_playlist_tracks') return { zone: target, playlist: choice.item.id,
+      positions: choice.item.positions, expected_revision: choice.item.revision, mode: choice.mode === 'end' ? 'append' : choice.mode };
     return { zone: target, ...(choice.item.kind === 'sonos_playlist'
       ? { playlist: choice.item.id }
       : { source_uri: choice.item.uri, ...(choice.title ? { title: choice.title } : {}) }),
@@ -611,7 +707,7 @@ const SourcePlayerRemote = (() => {
     let epoch = 0, disposed = false, setReader = null;
     const state = { open: false, groups: [], target: '', sourceType: 'link', input: '', title: '', mode: 'play', pending: null,
       targetMode: 'group', targetQuery: '', targetSuggestions: [], nativeQuery: '',
-      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [],
+      playlists: [], playlist: '', playlistTarget: '', playlistStatus: 'idle', contents: null, contentsHistory: [], contentsSelection: Object.freeze([]),
       lineInSources: [], lineInUnavailable: [], lineIn: '', lineInTarget: '', lineInStatus: 'idle',
       reading: false, writing: false, message: '', result: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
@@ -644,7 +740,7 @@ const SourcePlayerRemote = (() => {
       if (state.playlistStatus === 'loading') state.playlistStatus = 'idle';
       if (state.lineInStatus === 'loading') state.lineInStatus = 'idle';
     };
-    const clearContents = () => { state.contents = null; state.contentsHistory = []; };
+    const clearContents = () => { state.contents = null; state.contentsHistory = []; state.contentsSelection = Object.freeze([]); };
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
 
@@ -743,7 +839,7 @@ const SourcePlayerRemote = (() => {
           || !group || !item || state.playlistStatus !== 'ready' || state.playlistTarget !== group.target) return false;
       const request = contentsRequest(state.contents, state.contentsHistory, direction, item.id);
       if (!request) return false;
-      invalidate(); const version = epoch;
+      invalidate(); state.contentsSelection = Object.freeze([]); const version = epoch;
       state.reading = true; state.message = 'Reading saved tracks…'; publish();
       try {
         const value = await call('sourcePlaylistContents', { query: { zone: group.target, ...request.query } });
@@ -829,6 +925,9 @@ const SourcePlayerRemote = (() => {
       if (item.kind === 'sonos_playlist_track') {
         verifyPlaylistTrack(await call('sourcePlaylistContents', { query: trackQuery(item, group.target) }), item, group);
       }
+      if (item.kind === 'sonos_playlist_tracks') {
+        verifyPlaylistTracks(await call('sourcePlaylistContents', { query: tracksQuery(item, group.target) }), item, group);
+      }
       const before = playback(await call('state', { params: { room: group.target } }), group);
       if (mode === 'play' && !item.container) return before;
       const snapshot = queue(await call('sourceQueueState', {
@@ -874,7 +973,8 @@ const SourcePlayerRemote = (() => {
           throw new Error('Read the line-in sources for this destination first.');
         }
         ({ item, title } = choice || (state.sourceType === 'playlist'
-          ? preparePlaylist(state.playlist, state.playlists, mode) : state.sourceType === 'line_in'
+          ? state.contentsSelection.length ? preparePlaylistTracks(state.contents, state.contentsSelection, mode)
+            : preparePlaylist(state.playlist, state.playlists, mode) : state.sourceType === 'line_in'
             ? prepareLineIn(state.lineIn, state.lineInSources, mode) : prepare(state.input, state.title, mode)));
       } catch (error) { state.message = problem(error); publish(); return false; }
       state.reading = true; state.message = ''; publish();
@@ -882,6 +982,7 @@ const SourcePlayerRemote = (() => {
         const before = await inspect(group, mode, item);
         if (!current(version)) return false;
         const body = commandBody({ item, title, mode }, group.target);
+        if (item.kind === 'sonos_playlist_tracks') body.expected_queue_revision = before.queue.revision;
         state.pending = Object.freeze({ group, item, title, mode, before, body: Object.freeze(body) });
         return true;
       } catch (error) { if (current(version)) state.message = problem(error); return false; }
@@ -895,6 +996,33 @@ const SourcePlayerRemote = (() => {
       try { choice = preparePlaylistTrack(page, position, mode); }
       catch (error) { invalidate(); state.message = problem(error); publish(); return false; }
       return review(choice);
+    }
+
+    function selectTrack(position, page = state.contents) {
+      if (disposed || !state.open || blocked() || manager.busy() || state.reading || collective() || state.sourceType !== 'playlist'
+          || !page || page !== state.contents || page.playlist.id !== state.playlist) return false;
+      const selected = state.contentsSelection.includes(position);
+      try {
+        preparePlaylistTrack(page, position, 'play');
+        if (!selected && state.contentsSelection.length >= MAX_PLAYLIST_TRACKS) throw new Error(`Choose at most ${MAX_PLAYLIST_TRACKS} tracks.`);
+      } catch (error) { state.message = problem(error); publish(); return false; }
+      invalidate(); state.contentsSelection = Object.freeze(selected ? state.contentsSelection.filter(value => value !== position)
+        : [...state.contentsSelection, position]);
+      state.message = ''; publish(); return true;
+    }
+
+    async function reviewTracks(mode, page = state.contents) {
+      if (disposed || !state.open || blocked() || manager.busy() || state.reading || collective() || state.sourceType !== 'playlist'
+          || !page || page !== state.contents || page.playlist.id !== state.playlist) return false;
+      let choice;
+      try { choice = preparePlaylistTracks(page, state.contentsSelection, mode); }
+      catch (error) { invalidate(); state.message = problem(error); publish(); return false; }
+      return review(choice);
+    }
+
+    function clearTrackSelection() {
+      if (disposed || !state.open || blocked() || manager.busy() || state.reading) return false;
+      invalidate(); state.contentsSelection = Object.freeze([]); state.message = ''; publish(); return true;
     }
 
     async function confirm(pending) {
@@ -918,11 +1046,13 @@ const SourcePlayerRemote = (() => {
           if (before.signature !== (pending.targets || pending.before).signature) throw new Error('Playback, the queue, or the resolved destinations changed since your review. Review the current destinations again.');
           setReader = null;
           sent = true;
-          const route = pending.route || (pending.item.kind === 'sonos_playlist_track' ? 'sourcePlaylistTrack'
+          const route = pending.route || (pending.item.kind === 'sonos_playlist_tracks' ? 'sourcePlaylistTracks'
+            : pending.item.kind === 'sonos_playlist_track' ? 'sourcePlaylistTrack'
             : pending.item.kind === 'line_in' ? 'sourceLineInPlay'
             : pending.mode === 'play' ? pending.item.kind === 'sonos_playlist' ? 'sourcePlaylistPlay' : 'sourcePlay' : 'sourceQueue');
           const response = await call(route, { body: pending.body });
-          const detail = pending.targets ? null : pending.item.kind === 'sonos_playlist_track' ? trackOutcome(response, pending)
+          const detail = pending.targets ? null : pending.item.kind === 'sonos_playlist_tracks' ? tracksOutcome(response, pending)
+            : pending.item.kind === 'sonos_playlist_track' ? trackOutcome(response, pending)
             : pending.mode === 'play' ? outcome(response) : queued(response, pending.group);
           // A dispatched outcome belongs to this operation, even if its view closed.
           state.result = pending.targets ? targets().result(response, pending.targets, SourcePlayerRemote)
@@ -944,7 +1074,8 @@ const SourcePlayerRemote = (() => {
       return accepted;
     }
 
-    return { state, manager, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents, review, reviewTrack, confirm, offer, browseSaved, clearDraft,
+    return { state, manager, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents,
+      review, reviewTrack, selectTrack, reviewTracks, clearTrackSelection, confirm, offer, browseSaved, clearDraft,
       catalogChanged(change = null) {
         manager.catalogChanged(change);
         if (disposed || !['playlist', 'favorite'].includes(state.sourceType)
@@ -1034,10 +1165,12 @@ const SourcePlayerRemote = (() => {
         el('label', {}, 'Music source ', sourceType), inputField, titleField, nativeFields, playlistFields, catalogFields, lineInFields,
         modeField, el('div', { class: 'row' }, refresh, review, clear), message, managerHost, consent, result));
     const node = el('section', { class: 'scenes', 'aria-label': 'Spotify, links, Sonos playlists and line-in' }, details);
-    let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, shownContents = null, shownContentsBusy = null, confirmButton = null;
+    let shownGroups = null, shownPlaylists = null, shownPlaylistStatus = '', shownReview = null, shownContents = null, shownContentsBusy = null, shownContentsSelection = null, confirmButton = null;
     let shownCatalog = null, shownCatalogBusy = null, shownSuggestions = null;
     let shownLineIn = null, shownLineInStatus = '';
     const control = model({ call, execute, executeSet, changed: render });
+    const selectionPanel = playlistTrackSelectionPanel(doc, { review: control.reviewTracks, clear: control.clearTrackSelection });
+    contentsFields.append(selectionPanel.node);
     const managerPanel = playlistManagerPanel(control.manager, doc);
     managerHost.append(managerPanel.node);
     function render(state) {
@@ -1111,11 +1244,14 @@ const SourcePlayerRemote = (() => {
       previousContents.hidden = !state.contentsHistory.length; previousContents.disabled = busy;
       nextContents.hidden = state.contents?.next_offset == null; nextContents.disabled = busy;
       contentsHelp.textContent = contentsSummary(state.contents);
-      if (shownContents !== state.contents || shownContentsBusy !== busy) {
-        shownContents = state.contents; shownContentsBusy = busy;
-        renderContents(contentsList, state.contents, doc, { review: control.reviewTrack, disabled: busy });
+      selectionPanel.render(state.contents, state.contentsSelection, busy);
+      if (shownContents !== state.contents || shownContentsBusy !== busy || shownContentsSelection !== state.contentsSelection) {
+        shownContents = state.contents; shownContentsBusy = busy; shownContentsSelection = state.contentsSelection;
+        renderContents(contentsList, state.contents, doc, { review: control.reviewTrack, select: control.selectTrack,
+          selected: state.contentsSelection, disabled: busy });
       }
-      review.textContent = state.mode === 'play' ? 'Review playback' : 'Review queue addition';
+      review.textContent = state.contentsSelection.length ? state.mode === 'play' ? 'Review selected playback' : 'Review selected queue addition'
+        : state.mode === 'play' ? 'Review playback' : 'Review queue addition';
       for (const [field, element] of [['input', input], ['title', title]]) if (element.value !== state[field]) element.value = state[field];
       for (const element of [target, sourceType, input, title, mode]) element.disabled = writing;
       mode.disabled = writing || analog;
@@ -1156,16 +1292,21 @@ const SourcePlayerRemote = (() => {
           } else {
           const snapshot = pending.before.queue;
           const effect = pending.mode === 'play'
-            ? pending.item.kind === 'artist' ? 'This replaces the group’s queue with up to 10 artist tracks and starts them in order.'
+            ? pending.item.kind === 'sonos_playlist_tracks' ? 'This replaces the group’s queue with the selected tracks and starts the first in the order shown, with shuffle and repeat off. The saved playlist remains unchanged.'
+              : pending.item.kind === 'artist' ? 'This replaces the group’s queue with up to 10 artist tracks and starts them in order.'
               : pending.item.kind === 'show' ? 'This replaces the group’s queue with up to 10 available episodes and starts them in Spotify’s order.'
               : pending.item.container ? 'This replaces the group’s queue and starts the album or playlist.'
               : 'This replaces the group’s current source and starts playback. The existing queue remains available.'
             : pending.mode === 'next' && snapshot.playing !== null
               ? `Add after queue position ${snapshot.playing}, keeping the existing queue and playback.`
               : `Append after the ${snapshot.total} existing queue entries. This does not start or resume playback.`;
+          const selectedTracks = pending.item.kind === 'sonos_playlist_tracks'
+            ? el('ol', { class: 'source-selected-tracks', 'aria-label': 'Reviewed saved tracks in playback order' }) : null;
+          if (selectedTracks) renderSelectedTracks(selectedTracks, pending.item, doc);
           consent.append(el('p', { text: `${modes[pending.mode]}: ${pending.title || pending.item.uri} in ${pending.group.label}?` }),
             el('p', { text: `Current playback: ${pending.before.label}.` }),
             el('p', { text: effect }),
+            ...(selectedTracks ? [selectedTracks, el('p', { class: 'source-help', text: 'The selected saved occurrences and destination queue are checked again before one request. Selection order and repeated tracks are retained; the saved playlist is unchanged.' })] : []),
             ...(pending.item.kind === 'artist' ? [el('p', { class: 'source-help', text: 'Uses the artist’s top tracks or a small sample from their albums, in Spotify’s order. Requires Spotify sign-in.' })] : []),
             ...(pending.item.kind === 'show' ? [el('p', { class: 'source-help', text: 'Selects up to 10 available episodes from the show’s first episode page, in Spotify’s order. Requires Spotify sign-in.' })] : []),
             ...(snapshot && pending.mode !== 'play' && snapshot.playing === null ? [el('p', { text: 'The group is not using its queue. Select an existing queue entry separately when you are ready to start it.' })] : []),
@@ -1261,6 +1402,7 @@ const SourcePlayerRemote = (() => {
     nativePlaylistTitle, managedPlaylist, playlistManager, playlistManagerPanel,
     lineInSources, lineInLabel, lineInHelp, prepareLineIn, verifyLineIn,
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
+    preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,
     commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE,
     catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, CATALOG_LIMIT, MAX_QUERY_BYTES };
 })();

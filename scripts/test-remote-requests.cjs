@@ -293,6 +293,7 @@ test('long-running actions get finite route-aware deadlines, not the short read 
   assert.equal(r.timeoutFor('POST', '/pause/fade'), 120000);
   assert.equal(r.timeoutFor('POST', '/sonos/playlists/play'), 600000);
   assert.equal(r.timeoutFor('POST', '/sonos/playlists/play?scope=current'), 600000);
+  assert.equal(r.timeoutFor('POST', '/sonos/playlists/tracks'), 600000);
   assert.equal(r.timeoutFor('GET', '/sonos/playlists?zone=Den%40S1'), 15000);
   for (const where of ['/dj/start', '/dj/steer', '/queue', '/scenes/Quiet%20night/apply']) {
     assert.equal(r.timeoutFor('POST', where), 600000);
