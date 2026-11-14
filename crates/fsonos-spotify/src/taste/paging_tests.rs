@@ -292,6 +292,12 @@ mod explicit_metadata;
 #[path = "availability_tests.rs"]
 mod availability;
 
+#[path = "availability_retention_tests.rs"]
+mod availability_retention;
+
+#[path = "recent_validation_tests.rs"]
+mod recent_validation;
+
 #[path = "genre_continuation_tests.rs"]
 mod genre_continuation;
 

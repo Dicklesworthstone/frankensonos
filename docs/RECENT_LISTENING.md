@@ -45,6 +45,27 @@ This evidence participates in the DJ's existing repeat-avoidance rules. Those
 rules still depend on the available music and current selection constraints.
 Previously queued works are not removed or reordered when a new window arrives.
 
+## Full-library refreshes
+
+The optional history read during a full saved-library refresh now uses the same
+whole-window validation as the independent reader: at most 50 rows and 2 MiB of
+response data, canonical track identities, and valid nonnegative timestamps no
+more than five minutes ahead of the observation clock. The clock includes time
+spent on earlier optional reads. An invalid window keeps the previously accepted
+listening evidence while allowing the useful saved-library refresh to finish.
+A valid play remains listening evidence even when that track is currently
+restricted; it does not become a playable DJ candidate.
+
+When an optional taste source fails, the refresh retains previously accepted
+taste tracks it could not recheck. An explicit availability denial from another
+successfully decoded source prevents that fallback from reviving the denied
+track. This applies to top tracks, recent plays, artist samples and accepted,
+version-checked playlist windows. Malformed denial data and changed playlist
+versions cannot retire cached music, and newly accepted saved-library music keeps
+precedence over optional taste evidence. If a pass exceeds the 10,000-identity
+bound for availability denials, it rejects library publication and leaves the
+previous library snapshot available.
+
 ## Inspect freshness
 
 Use the phone/dashboard sync panel, `fsonos dj sync --status`, HTTP
@@ -71,7 +92,10 @@ unfinished, so another account's old counts cannot claim current freshness.
 ## Validation
 
 The source includes account-switch, concurrent-publication, malformed-window,
-cooldown, actual-next-pick, and browser-status regression tests. The isolated
-Rust retention tests and browser regressions ran successfully in this session.
-Full Rust workspace compilation and integration-test execution remain blocked
-by the existing dependency build's resource requirements in this environment.
+cooldown, actual-next-pick, and browser-status regression tests. Full-refresh
+regressions also cover retained history across SQLite reopen, rejected future
+timestamps, optional-source failures, explicit availability denials, malformed
+denial data and the bounded-evidence publication guard. Check the matching CI
+results for executed Rust validation; the local full-workspace build was killed
+while compiling the existing asupersync dependency before these regressions
+could execute.

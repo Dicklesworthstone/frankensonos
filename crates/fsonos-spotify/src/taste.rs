@@ -32,14 +32,13 @@
 //! advance that cursor or discard unfinished samples.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use asupersync::Cx;
 use fsonos_core::store::{CachedPlaylist, SpotifyLibraryOwner, Store};
 
 use crate::SpotifyError;
-use crate::client::{
-    Artist, CursorPage, FullTrack, PlayHistory, TASTE_SCOPES, decode, unix_seconds,
-};
+use crate::client::{Artist, CursorPage, FullTrack, PlayHistory, TASTE_SCOPES, decode};
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
 use crate::session::Session;
@@ -93,6 +92,8 @@ const MAX_PLAYLIST_REQUESTS: usize = 4;
 /// and how many of each one's tracks join the pool.
 const MAX_ARTIST_READS: usize = 50;
 const ARTIST_TRACKS: usize = 3;
+/// Bound transient negative evidence as well as accepted candidate metadata.
+const MAX_UNAVAILABLE_TRACKS: usize = 10_000;
 
 /// What one taste read did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -129,6 +130,13 @@ pub struct TasteRead {
     pub failed: Vec<(String, String)>,
     /// Why the run stopped early, if it did.
     pub halted: Option<String>,
+    /// Canonical tracks explicitly unavailable in successfully decoded reads.
+    /// A full refresh must not revive these from retained taste after an
+    /// unrelated optional-source failure. Fresh saved music keeps precedence.
+    pub unavailable: HashSet<String>,
+    /// More denials arrived than the bounded evidence set can retain. Such a
+    /// pass cannot safely publish a union containing retained taste candidates.
+    pub unavailable_overflow: bool,
 }
 
 impl TasteRead {
@@ -136,7 +144,7 @@ impl TasteRead {
     /// the sync then keeps the taste-only tracks it cached before.
     #[must_use]
     pub fn incomplete(&self) -> bool {
-        self.halted.is_some() || !self.failed.is_empty()
+        self.unavailable_overflow || self.halted.is_some() || !self.failed.is_empty()
     }
 }
 
@@ -267,6 +275,7 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
     owner: Option<&SpotifyLibraryOwner>,
     artist_base: Option<&str>,
 ) -> (Taste, TasteRead) {
+    let started = Instant::now();
     let mut taste = Taste::default();
     let mut read = TasteRead {
         missing_scopes: session.missing_taste_scopes(),
@@ -327,6 +336,7 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
             .page::<FullTrack>(&url, "top tracks", MAX_PAGES)
             .await
         {
+            reader.unavailable(track.unavailable_uri());
             if let Some(item) = track.library_item(Origin::Taste, None) {
                 taste.track(item, TOP_TRACK_PM);
                 reader.read.top_tracks += 1;
@@ -334,7 +344,7 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
         }
     }
     if recent {
-        reader.recent_plays(&mut taste).await;
+        reader.recent_plays(&mut taste, now, started).await;
     }
     if playlists {
         reader.playlist_taste(store, &mut taste, now).await;
@@ -454,36 +464,72 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
+    fn unavailable(&mut self, uri: Option<&str>) {
+        let Some(uri) = uri else {
+            return;
+        };
+        if self.read.unavailable.len() < MAX_UNAVAILABLE_TRACKS
+            || self.read.unavailable.contains(uri)
+        {
+            self.read.unavailable.insert(uri.to_owned());
+        } else {
+            self.read.unavailable_overflow = true;
+        }
+    }
+
     /// The recently played tracks into `taste`, and when each was played
     /// (`taste.heard`). A track played over and over counts once: recent
     /// rotation is a nudge, not a top track.
-    async fn recent_plays(&mut self, taste: &mut Taste) {
+    async fn recent_plays(&mut self, taste: &mut Taste, now: i64, started: Instant) {
         let url = self.session.endpoints().recently_played();
-        let Some(page) = self
-            .get::<CursorPage<PlayHistory>>(&url, "recently played")
-            .await
-        else {
+        let Some(body) = self.body(&url, "recently played").await else {
             return;
         };
+        // Followed-artist and top-list reads may take minutes. Validate against
+        // this window's observation time rather than the full pass's start.
+        let observed_at =
+            now.saturating_add(i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX));
+        let observed = match crate::recent::validated_plays(&body, observed_at) {
+            Ok(plays) => plays,
+            Err(error) => {
+                self.read
+                    .failed
+                    .push(("recently played".into(), error.to_string()));
+                return;
+            }
+        };
+        let page: CursorPage<PlayHistory> = match decode(&body, "recently played") {
+            Ok(page) => page,
+            Err(error) => {
+                self.read
+                    .failed
+                    .push(("recently played".into(), error.to_string()));
+                return;
+            }
+        };
+        let identities: HashSet<&str> = observed.iter().map(|(uri, _)| uri.as_str()).collect();
         let mut heard = HashSet::new();
-        let mut when = Vec::new();
         for h in &page.items {
+            self.unavailable(
+                h.track
+                    .as_ref()
+                    .and_then(FullTrack::unavailable_uri)
+                    .filter(|uri| identities.contains(uri)),
+            );
             let Some(item) = h
                 .track
                 .as_ref()
                 .and_then(|t| t.library_item(Origin::Taste, None))
+                .filter(|item| identities.contains(item.source_uri.as_str()))
             else {
                 continue;
             };
-            if let Some(at) = unix_seconds(h.played_at.as_deref()) {
-                when.push((item.source_uri.clone(), at));
-            }
             if heard.insert(item.source_uri.clone()) {
                 taste.track(item, RECENT_PM);
                 self.read.recent_tracks += 1;
             }
         }
-        taste.heard = Some(when);
+        taste.heard = Some(observed);
     }
 
     /// The owner's playlists' tracks into `taste`, and the playlists listed
@@ -510,22 +556,27 @@ impl Reader<'_> {
         }
     }
 
-    /// GET and decode one response, recording a failure or a halt.
-    async fn get<T: serde::de::DeserializeOwned>(&mut self, url: &str, what: &str) -> Option<T> {
+    /// GET one response, recording a failure or a halt before any decoding.
+    async fn body(&mut self, url: &str, what: &str) -> Option<Vec<u8>> {
         if self.read.halted.is_some() {
             return None;
         }
-        let body = match self.session.get_brief(self.cx, url).await {
-            Ok(body) => body,
+        match self.session.get_brief(self.cx, url).await {
+            Ok(body) => Some(body),
             Err(e) if halts(&e) => {
                 self.read.halted = Some(format!("{what}: {e}"));
-                return None;
+                None
             }
             Err(e) => {
                 self.read.failed.push((what.to_owned(), e.to_string()));
-                return None;
+                None
             }
-        };
+        }
+    }
+
+    /// GET and decode one response, recording a failure or a halt.
+    async fn get<T: serde::de::DeserializeOwned>(&mut self, url: &str, what: &str) -> Option<T> {
+        let body = self.body(url, what).await?;
         match decode(&body, what) {
             Ok(value) => Some(value),
             Err(e) => {
@@ -568,7 +619,7 @@ mod tests {
     use crate::dj::{DjConfig, Factor, PickContext, Rng, WorkPool, pick_next};
     use crate::fake_spotify::{Fake, FakeSpotify, config, runtime, scratch_dir};
 
-    const NOW: i64 = 1_790_035_200;
+    const NOW: i64 = 1_791_403_200;
 
     /// A fake Spotify and a token cache granting `scope`.
     fn signed_in(name: &str, scope: &str) -> (FakeSpotify, TokenCache, PathBuf) {
@@ -664,15 +715,11 @@ mod tests {
                 ),
             ])
         );
-        // What they played lately is kept with when: every play.
+        // What they played lately is kept with each track's latest timestamp.
         let track = |n: u32| format!("spotify:track:FakeTrack{n:013}");
         assert_eq!(
             taste.heard,
-            Some(vec![
-                (track(102), 1_791_403_200),
-                (track(102), 1_791_401_400),
-                (track(1), 1_791_399_600),
-            ])
+            Some(vec![(track(1), 1_791_399_600), (track(102), 1_791_403_200)])
         );
         // Followed and top artists' genres go to the artist genre cache.
         assert_eq!(

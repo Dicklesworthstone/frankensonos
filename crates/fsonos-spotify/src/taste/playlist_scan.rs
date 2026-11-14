@@ -97,8 +97,12 @@ impl Progress {
         })
     }
 
-    fn append(&mut self, entries: Observation<serde_json::Value>) -> Result<(), SpotifyError> {
+    fn append(
+        &mut self,
+        entries: Observation<serde_json::Value>,
+    ) -> Result<Vec<String>, SpotifyError> {
         let mut tracks = Vec::new();
+        let mut unavailable = Vec::new();
         for (position, entry) in (self.examined + 1..).zip(entries.items) {
             if entry.is_null()
                 || entry.get("is_local").and_then(serde_json::Value::as_bool) == Some(true)
@@ -107,6 +111,9 @@ impl Progress {
             }
             let entry: PlaylistItem = serde_json::from_value(entry)
                 .map_err(|error| SpotifyError::Decode(format!("playlist entry: {error}")))?;
+            if let Some(uri) = entry.unavailable_uri() {
+                unavailable.push(uri.to_owned());
+            }
             if let Some(item) = entry
                 .checked_library_item(Origin::Taste)?
                 .filter(valid_taste_track)
@@ -118,7 +125,7 @@ impl Progress {
         self.examined = entries.examined;
         self.source_total = entries.source_total;
         self.complete = entries.complete;
-        Ok(())
+        Ok(unavailable)
     }
 
     fn observation(&self, now: i64) -> CachedPlaylist {
@@ -415,14 +422,24 @@ impl Reader<'_> {
             return None;
         }
         let failed = entries.failed;
-        if let Err(error) = progress.append(entries) {
-            self.playlist_failed(error);
-            return None;
-        }
+        let unavailable = match progress.append(entries) {
+            Ok(unavailable) => unavailable,
+            Err(error) => {
+                self.playlist_failed(error);
+                return None;
+            }
+        };
         progress.applied = false;
         progress.fetched_at = Some(now);
-        self.accept_window(store, &checkpoint, progress, failed, first)
-            .await
+        let accepted = self
+            .accept_window(store, &checkpoint, progress, failed, first)
+            .await?;
+        if !accepted.1 {
+            for uri in &unavailable {
+                self.unavailable(Some(uri));
+            }
+        }
+        Some(accepted)
     }
 
     async fn refresh_snapshot<S: Store + ?Sized>(
@@ -472,10 +489,13 @@ impl Reader<'_> {
             &progress.snapshot_id,
         );
         window.examined = first;
-        if let Err(error) = window.append(entries) {
-            self.playlist_failed(error);
-            return None;
-        }
+        let unavailable = match window.append(entries) {
+            Ok(unavailable) => unavailable,
+            Err(error) => {
+                self.playlist_failed(error);
+                return None;
+            }
+        };
         // Raw positions, including null/unavailable entries, define the replaced
         // interval. A track disappearing within it must not survive from cache.
         progress
@@ -496,6 +516,9 @@ impl Reader<'_> {
         };
         if !self.save_checkpoint(store, checkpoint, &progress, &encoded) {
             return None;
+        }
+        for uri in &unavailable {
+            self.unavailable(Some(uri));
         }
         self.read.continuation.advanced = self
             .read
