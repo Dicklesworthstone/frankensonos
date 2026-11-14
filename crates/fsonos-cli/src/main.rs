@@ -1005,7 +1005,9 @@ fn emit_queue_outcome(json: bool, outcome: &QueueAddOutcome) -> anyhow::Result<(
 /// nonzero. Successful or uncertain members must never be replayed together.
 fn emit_dj_outcome(json: bool, outcome: &OutcomeDto) -> anyhow::Result<()> {
     emit(json, outcome, outcome_text)?;
-    let failed = outcome.notes.iter()
+    let failed = outcome
+        .notes
+        .iter()
         .filter(|note| note.code == fsonos_api::NoteCode::Skipped)
         .count();
     if failed > 0 {
@@ -1529,16 +1531,20 @@ mod tests {
         let directed = plan_set_for(
             &parse(&["dj", "start", "all", "--mood", "calm", "--for", "15m"]),
             &houses,
-        ).unwrap();
+        )
+        .unwrap();
         let Planned::DjSteer { start, steer, .. } = &directed[0] else {
             panic!("a directed start must apply its steering before playback");
         };
         assert!(*start);
-        assert_eq!(**steer, fsonos_api::dj::DjSteer::Set {
-            mood: Some("calm".into()),
-            constraints: fsonos_api::dj::SteerConstraints::default(),
-            for_secs: Some(900),
-        });
+        assert_eq!(
+            **steer,
+            fsonos_api::dj::DjSteer::Set {
+                mood: Some("calm".into()),
+                constraints: fsonos_api::dj::SteerConstraints::default(),
+                for_secs: Some(900),
+            }
+        );
     }
 
     #[test]
@@ -1555,7 +1561,10 @@ mod tests {
             detail: "Kitchen@S1 failed: no DJ is running".into(),
         });
         let error = emit_dj_outcome(true, &outcome).unwrap_err().to_string();
-        assert!(error.contains("1 group(s)") && error.contains("do not replay"), "{error}");
+        assert!(
+            error.contains("1 group(s)") && error.contains("do not replay"),
+            "{error}"
+        );
     }
 
     #[test]

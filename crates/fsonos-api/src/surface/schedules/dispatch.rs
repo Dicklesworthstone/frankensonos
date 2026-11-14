@@ -8,11 +8,11 @@
 
 use super::{
     Ran, Schedule, ScheduleAction, Scheduler, Surface, Tick, announcements, client_of,
-    core_schedule, dj_start_command, fire, room_view, span, summary,
+    core_schedule, dj_start_commands, fire, room_view, span, summary,
 };
-use crate::dj::DjSpeakers;
 use crate::failure::{ErrorCode, Failure};
 use crate::plan;
+use crate::surface::dj_targets::PreparedDj;
 use crate::surface::scenes::scene_failure;
 use chrono::{DateTime, TimeZone, Utc};
 use fsonos_core::rooms::{Matched, ResolveContext, named_room, resolve_targets};
@@ -192,7 +192,7 @@ fn claim_current(
 /// Readiness is checked before the durable claim, never by retrying a failed
 /// action. A scheduled scene waits for all its named rooms instead of partially
 /// applying while another household is still being discovered.
-fn ready(surface: &Surface, schedule: &Schedule) -> Result<(), Failure> {
+fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedDj>, Failure> {
     let households = surface.households()?;
     if households.iter().all(|house| house.rooms.is_empty()) {
         return Err(Failure::new(ErrorCode::NotReady, "no Sonos rooms answered"));
@@ -231,32 +231,24 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<(), Failure> {
             mood,
             direction,
         } => {
-            targets_ready(&rooms, room, true)?;
-            let dj = surface.dj_engine()?;
-            let command = dj_start_command(
-                &rooms,
-                room,
-                mood.as_deref(),
-                direction.as_ref(),
-                surface.mood_lasts(),
-            )?;
-            let (coordinator, steer) = match &command {
-                plan::Command::Dj { coordinator, .. } => (coordinator, None),
-                plan::Command::DjSteer {
-                    coordinator, steer, ..
-                } => (coordinator, Some(steer.as_ref())),
-                _ => unreachable!("a scheduled DJ start always plans a DJ command"),
-            };
-            let at = DjSpeakers {
-                transport: &*surface.transport,
-                households: &households,
-                coordinator,
-            };
-            surface
-                .with_dj_store(|store| Ok(dj.start_ready(at, store, steer, &*surface.clock)))?
-                .unwrap_or_else(|| Err(crate::surface::no_dj_store()))
+            if direction.is_some() {
+                surface.authorize_write(&client, "dj_steer")?;
+            }
+            return surface
+                .prepare_dj_controls(&client, "dj_start", |rooms| {
+                    targets_ready(rooms, room, false)?;
+                    dj_start_commands(
+                        rooms,
+                        room,
+                        mood.as_deref(),
+                        direction.as_ref(),
+                        surface.mood_lasts(),
+                    )
+                })
+                .map(Some);
         }
-    }
+    }?;
+    Ok(None)
 }
 
 fn named_ready(households: &[HouseholdState], name: &str) -> Result<(), Failure> {
@@ -355,15 +347,20 @@ fn launch(
                 Admission::Run
             }
         };
-        if admission() == Admission::Run
-            && let Err(failure) = ready(&surface, &schedule)
-        {
-            tracing::debug!("schedule #{id} awaits its targets: {}", failure.detail);
-            reservation
-                .dispatch
-                .defer_readiness(id, now, admitted.elapsed());
-            return;
-        }
+        let prepared_dj = if admission() == Admission::Run {
+            match ready(&surface, &schedule) {
+                Ok(prepared) => prepared,
+                Err(failure) => {
+                    tracing::debug!("schedule #{id} awaits its targets: {}", failure.detail);
+                    reservation
+                        .dispatch
+                        .defer_readiness(id, now, admitted.elapsed());
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         // A due announcement needs its normal caller slot before it can be
         // claimed. Carry the lease into delivery: checking occupancy alone
         // races immediate calls and can consume a reminder without playing it.
@@ -398,7 +395,7 @@ fn launch(
                 return;
             }
         }
-        match fire(&surface, &schedule, announcement) {
+        match fire(&surface, &schedule, announcement, prepared_dj) {
             Ok(done) => tracing::info!("schedule #{id} ({}): {done}", summary(&schedule.action)),
             Err(failure) => tracing::warn!(
                 "schedule #{id} ({}): {}",

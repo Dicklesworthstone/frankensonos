@@ -9,8 +9,8 @@
 use fsonos_core::policy::Client;
 use fsonos_core::scenes::{SceneOp, ScenePlan};
 use fsonos_core::{HouseholdState, Room, control};
-use fsonos_types::PlayerId;
 use fsonos_proto::Transport;
+use fsonos_types::PlayerId;
 use std::collections::HashMap;
 
 use super::Surface;

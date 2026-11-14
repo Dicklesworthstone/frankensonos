@@ -819,9 +819,17 @@ speaker-write checks. Per-group caps, starter identity and cross-group repeat
 avoidance remain in force. Partial outcomes keep every group result in one
 receipt and action log, block whole-batch undo, exit nonzero on the CLI and
 set MCP's `isError`. Successful steering retains each prior session for undo.
-Scene, schedule and browser DJ targets keep their existing contracts.
-Simulator and cross-surface regression cases are included, with compilation,
-execution and formatting pending after the executor became unavailable.
+Scheduled DJ starts now accept the same aliases and whole-house targets. They
+validate every selected group before the durable occurrence claim and retain
+the original command list and physical audience through execution, including
+single-group runs. Later alias edits or discovery growth cannot enlarge the
+run; partial completion is logged once and never replayed after a restart.
+`POST /dj/control` also binds a reviewed request to the revision returned by
+`GET /rooms/resolve`, including physical members and addresses, before any
+readiness or mutation. Scene DJ entries retain their existing group contracts.
+Simulator and cross-surface regression cases are included. The changed Rust
+paths have passed the pinned formatter; compilation and execution remain
+pending under shared build-host resource pressure.
 See [Multi-room DJ](docs/MULTI_ROOM_DJ.md).
 
 ### 12.2 `fsonos doctor` and `fsonos setup`

@@ -245,6 +245,20 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// The DJ: start, skip, stop, steer; its status and moods.
 fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = vec![
+        cx.route(
+            &Op::post(
+                "/dj/control",
+                "dj_control",
+                DJ,
+                "Apply one DJ action to the exact room set reviewed with /rooms/resolve",
+            ),
+            |s, c, req| {
+                answer(body::<crate::surface::dj_control::ReviewedDjRequest>(req)
+                    .and_then(|request| s.control_reviewed_dj(c, &request)))
+            },
+        )
+        .request_schema::<crate::surface::dj_control::ReviewedDjRequest>(true)
+        .response_schema::<OutcomeDto>(200, "Per-group results for the reviewed audience"),
         cx.control_set(
             Op::post(
                 "/dj/start",
@@ -303,7 +317,12 @@ fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             "Skip the DJ's current pick in each selected group",
             DjAction::Skip,
         ),
-        ("/dj/stop", "dj_stop", "Stop the DJ in each selected group", DjAction::Stop),
+        (
+            "/dj/stop",
+            "dj_stop",
+            "Stop the DJ in each selected group",
+            DjAction::Stop,
+        ),
     ] {
         routes.push(cx.control_set(
             Op::post(path, id, DJ, summary),

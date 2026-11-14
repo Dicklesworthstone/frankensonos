@@ -53,6 +53,7 @@ pub struct SleepArgs {
 pub enum ScheduleCommand {
     /// Add a schedule, run by `fsonos serve`:
     /// `fsonos schedule add "weekdays 07:30" dj start Kitchen`,
+    /// `... "daily 08:00" dj start all@S2 --mood bright`,
     /// `... "in 45m" pause Bedroom --fade 2m`, `... "daily 22:00" volume
     /// Kitchen 15`, `... "sat 09:00" scene brunch`,
     /// `... "weekdays 08:15" say "Time to leave" --rooms Kitchen,Office`.
@@ -60,7 +61,7 @@ pub enum ScheduleCommand {
         /// When: "in 45m", an RFC 3339 time, "daily 22:30", "weekdays 07:30",
         /// "weekends 09:00", "sat,sun 09:00", "mon-fri 07:00" (local time).
         when: String,
-        /// What: dj start <room> [DJ direction flags] | pause <room> [--fade <duration>] |
+        /// What: dj start <room|alias|all> [DJ direction flags] | pause <room> [--fade <duration>] |
         /// volume <room> <0-100> | scene <name> |
         /// say <text> [--rooms <rooms>] [--voice <voice>] [--volume <0-100>] |
         /// chime <bell|beep|rise> [--rooms <rooms>] [--volume <0-100>].
@@ -300,6 +301,7 @@ pub fn schedule_request(when: &str, action: &[String]) -> Result<ScheduleRequest
     disable_version_flag = true
 )]
 struct ScheduledDj {
+    /// A room, alias, all, or all@S1 / all@S2; each selected group starts once.
     #[arg(required = true, num_args = 1..)]
     room: Vec<String>,
     #[arg(long)]

@@ -40,6 +40,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::announce::{AnnounceRequest, AnnouncementPermit};
+use super::dj_targets::PreparedDj;
 use super::{Surface, room_view};
 use crate::dj::DjDirectionDto;
 use crate::execute::OutcomeDto;
@@ -337,7 +338,8 @@ pub struct ScheduleRequest {
     /// What it does: `dj_start` (zone), `pause` (zone, optional fade_secs),
     /// `volume` (zone, volume), `apply_scene` (scene), or `announce` (announcement).
     pub action: String,
-    /// The room it acts on (every action but apply_scene and announce).
+    /// Its room target (every action but apply_scene and announce). DJ starts,
+    /// immediate pauses and volume also accept an alias or `all` / `all@S2`.
     #[serde(default)]
     pub zone: Option<String>,
     /// apply_scene: the scene's name.
@@ -929,23 +931,35 @@ fn dj_start(room: &str, mood: Option<&str>, for_secs: Option<u64>) -> DjStartReq
 
 /// Admission and execution must preview the same prospective steering,
 /// including an explicit return to automatic mode and legacy mood duration.
-fn dj_start_command(
+fn dj_start_commands(
     rooms: &plan::Rooms<'_>,
     room: &str,
     mood: Option<&str>,
     direction: Option<&DjDirection>,
     mood_lasts: Option<u64>,
-) -> Result<plan::Command, Failure> {
+) -> Result<Vec<plan::Command>, Failure> {
     match direction {
-        Some(direction) => Ok(plan::Command::DjSteer {
-            coordinator: resolve(rooms, zone_name("zone", room)?)?
-                .coordinator
-                .id
-                .clone(),
-            steer: Box::new(DjDirectionDto::from(direction).steer(mood)?),
-            start: true,
-        }),
-        None => plan::plan_dj_start(rooms, &dj_start(room, mood, mood_lasts)),
+        Some(direction) => {
+            let steer = DjDirectionDto::from(direction).steer(mood)?;
+            Ok(plan::plan_dj_set(
+                rooms,
+                &ZoneRequest { zone: room.into() },
+                plan::DjAction::Start,
+            )?
+            .into_iter()
+            .map(|command| {
+                let plan::Command::Dj { coordinator, .. } = command else {
+                    unreachable!("the DJ start planner only returns DJ commands")
+                };
+                plan::Command::DjSteer {
+                    coordinator,
+                    steer: Box::new(steer.clone()),
+                    start: true,
+                }
+            })
+            .collect())
+        }
+        None => plan::plan_dj_start_set(rooms, &dj_start(room, mood, mood_lasts)),
     }
 }
 
@@ -1524,7 +1538,10 @@ impl Surface {
                 self.scene(client, name)?;
             }
             ScheduleAction::DjStart { room, mood, .. } => {
-                self.zone_of(client, room)?;
+                let households = self.households()?;
+                let aliases = self.aliases();
+                let rooms = room_view(&households, aliases.as_ref(), client);
+                dispatch::targets_ready(&rooms, room, false)?;
                 if let Some(mood) = mood {
                     self.check_mood(client, room, mood)?;
                 }
@@ -1877,28 +1894,23 @@ fn fire(
     surface: &Surface,
     schedule: &Schedule,
     announcement: Option<AnnouncementPermit>,
+    prepared_dj: Option<PreparedDj>,
 ) -> Result<String, Failure> {
     let client = client_of(&schedule.creator);
     let zone = |room: &str| ZoneRequest { zone: room.into() };
     match &schedule.action {
-        ScheduleAction::DjStart {
-            room,
-            mood,
-            direction,
-        } => {
+        ScheduleAction::DjStart { direction, .. } => {
             if direction.is_some() {
                 surface.authorize_write(&client, "dj_steer")?;
             }
+            let prepared = prepared_dj.ok_or_else(|| {
+                Failure::new(
+                    ErrorCode::Internal,
+                    "scheduled DJ dispatch has no admitted audience",
+                )
+            })?;
             surface
-                .control(&client, "dj_start", |rooms| {
-                    dj_start_command(
-                        &rooms,
-                        room,
-                        mood.as_deref(),
-                        direction.as_ref(),
-                        surface.mood_lasts(),
-                    )
-                })
+                .control_prepared_dj(&client, "dj_start", prepared)
                 .map(|o| o.done)
         }
         ScheduleAction::Pause { room, fade_secs: 0 } => surface

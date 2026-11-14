@@ -993,7 +993,9 @@ impl DjEngine for SpotifyDj {
                 state.listening.remove(at.coordinator);
                 state.refill_retries.remove(at.coordinator);
             }
-            state.problems.insert(at.coordinator.clone(), failure.detail.clone());
+            state
+                .problems
+                .insert(at.coordinator.clone(), failure.detail.clone());
             self.save(&mut state);
             return Err(failure);
         }

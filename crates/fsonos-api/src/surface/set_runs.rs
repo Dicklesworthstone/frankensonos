@@ -53,6 +53,7 @@ impl Surface {
         guard: &Guard<'_>,
         commands: &[Command],
         capture: bool,
+        pinned_dj: bool,
     ) -> SetRun {
         let zones: Vec<Vec<PlayerId>> = commands.iter().map(|c| affected(households, c)).collect();
         let now = self.now();
@@ -71,13 +72,13 @@ impl Surface {
                 }
             }
             let (snaps, missed) = captured(&every);
-            return self.run_sequential(households, guard, commands, snaps, missed);
+            return self.run_sequential(households, guard, commands, snaps, missed, pinned_dj);
         }
         let one = |command: &Command, zones: &[PlayerId]| {
             let (snaps, missed) = captured(zones);
             let recovery = recovery::Audience::new(households, command);
             let mut queue_undo = None;
-            let outcome = if dj_targets::is_set(commands) {
+            let outcome = if pinned_dj || dj_targets::is_set(commands) {
                 self.execute_dj_member(households, guard, command)
             } else {
                 self.execute_following(households, guard, command, &recovery, &mut queue_undo)
@@ -141,6 +142,7 @@ impl Surface {
         commands: &[Command],
         snaps: Vec<ZoneSnapshot>,
         missed: Vec<(PlayerId, String)>,
+        pinned_dj: bool,
     ) -> SetRun {
         let mut outcomes = Vec::new();
         let mut queue_undo = Vec::new();
@@ -148,16 +150,16 @@ impl Surface {
         for command in commands {
             let recovery = recovery::Audience::new(households, command);
             let mut restored_queue = None;
-            let outcome = if dj_targets::is_set(commands) {
+            let outcome = if pinned_dj || dj_targets::is_set(commands) {
                 self.execute_dj_member(households, guard, command)
             } else {
                 self.execute_following(households, guard, command, &recovery, &mut restored_queue)
             };
             queue_undo.extend(restored_queue);
             unsafe_undo |= recovery.unsafe_undo(&outcome);
-            let ends = outcome.as_ref().is_err_and(|f| {
-                !dj_targets::is_set(commands) && ends_set(commands.len(), f)
-            });
+            let ends = outcome
+                .as_ref()
+                .is_err_and(|f| !dj_targets::is_set(commands) && ends_set(commands.len(), f));
             outcomes.push(outcome);
             if ends {
                 break;
@@ -237,7 +239,9 @@ pub(super) fn merged(
             combined.done.push_str("; ");
         }
         if dj_set {
-            combined.done.push_str(&dj_targets::label(households, command));
+            combined
+                .done
+                .push_str(&dj_targets::label(households, command));
             combined.done.push_str(": ");
         }
         combined.done.push_str(&outcome.done);

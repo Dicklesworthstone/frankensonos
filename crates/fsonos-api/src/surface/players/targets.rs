@@ -8,9 +8,11 @@ use fsonos_core::rooms::{Aliases, Matched, ResolveContext, resolve_targets};
 use fsonos_core::{HouseholdState, Room};
 use fsonos_types::TransportState;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::Surface;
-use crate::failure::Failure;
+use crate::failure::{ErrorCode, Failure};
+use crate::plan::Rooms;
 use crate::request::ZoneRequest;
 use crate::zones::zone_for_target;
 
@@ -38,6 +40,9 @@ pub struct TargetGroupDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ResolvedRoomsDto {
     pub target: String,
+    /// Opaque observation of these identities, complete physical groups and
+    /// addresses. Reviewed DJ controls require it; it grants no permission.
+    pub revision: String,
     /// `room`, `alias`, `here`, `everywhere`, or `prefix`.
     pub matched: String,
     /// Currently addressable rooms selected by the core resolver.
@@ -61,12 +66,25 @@ fn resolved(
     client: &Client,
     query: &str,
 ) -> Result<ResolvedRoomsDto, Failure> {
+    resolve_view(
+        &Rooms {
+            households,
+            aliases,
+            client: Some(client.key()),
+        },
+        query,
+    )
+}
+
+/// Build the same observation inside a command's admitted planning snapshot.
+pub(crate) fn resolve_view(rooms: &Rooms<'_>, query: &str) -> Result<ResolvedRoomsDto, Failure> {
+    let households = rooms.households;
     let resolution = resolve_targets(
         households,
         query,
         ResolveContext {
-            aliases,
-            client: Some(client.key()),
+            aliases: rooms.aliases,
+            client: rooms.client,
         },
     )?;
     let matched = match resolution.matched {
@@ -78,6 +96,7 @@ fn resolved(
     };
     let mut rooms = Vec::new();
     let mut groups: Vec<TargetGroupDto> = Vec::new();
+    let mut physical = Vec::new();
     for target in &resolution.targets {
         let zone = zone_for_target(households, target, |_| TransportState::Unknown);
         rooms.push(room_view(target.room, &zone.household));
@@ -94,6 +113,30 @@ fn resolved(
             .map(|room| room_view(room, &zone.household))
             .collect();
         members.sort_by(|a, b| (&a.room, &a.player).cmp(&(&b.room, &b.player)));
+        // Room primaries alone miss stereo partners, satellites and address
+        // changes. Include every physical member even when it has no address.
+        let mut players: Vec<_> = target
+            .household
+            .groups
+            .iter()
+            .filter(|group| group.coordinator == target.coordinator.id)
+            .flat_map(|group| &group.members)
+            .map(|id| {
+                (
+                    id.0.clone(),
+                    target.household.player(id).map(|player| player.ip),
+                )
+            })
+            .collect();
+        players.sort();
+        players.dedup();
+        physical.push((
+            zone.household.clone(),
+            target.household.id.as_ref().map(|id| id.0.clone()),
+            target.coordinator.id.0.clone(),
+            target.coordinator.ip,
+            players,
+        ));
         groups.push(TargetGroupDto {
             household: zone.household,
             coordinator: target.coordinator.id.0.clone(),
@@ -105,8 +148,13 @@ fn resolved(
         (&a.household, &a.room, &a.player).cmp(&(&b.household, &b.room, &b.player))
     });
     groups.sort_by(|a, b| (&a.household, &a.coordinator).cmp(&(&b.household, &b.coordinator)));
+    physical.sort();
+    let observation = serde_json::to_vec(&(1_u8, query, matched, &rooms, &groups, physical))
+        .map_err(|error| Failure::new(ErrorCode::Internal, error.to_string()))?;
+    let revision = format!("{:x}", Sha256::digest(observation));
     Ok(ResolvedRoomsDto {
         target: query.to_string(),
+        revision,
         matched: matched.to_string(),
         rooms,
         groups,

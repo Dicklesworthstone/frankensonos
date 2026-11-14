@@ -1,6 +1,7 @@
 //! One DJ request over independent groups. Readiness precedes every batch
 //! mutation; each execution still checks the originally selected audience.
 
+use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, HouseholdState};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{Discovered, HttpBody, ProtoError, Transport, mdns, ssdp};
@@ -8,12 +9,20 @@ use std::cell::RefCell;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use super::{Surface, affected, no_dj_store};
+use super::{Surface, affected, no_dj_store, room_view};
+use crate::OutcomeDto;
 use crate::dj::DjSpeakers;
 use crate::failure::{ErrorCode, Failure};
 use crate::guard::Guard;
-use crate::OutcomeDto;
-use crate::plan::{Command, DjAction};
+use crate::plan::{Command, DjAction, Rooms};
+
+/// A reviewed or scheduled DJ operation keeps the exact audience admitted by
+/// its read-only checks. Alias edits and new groups cannot expand it later.
+#[derive(Debug)]
+pub(crate) struct PreparedDj {
+    households: Vec<HouseholdState>,
+    commands: Vec<Command>,
+}
 
 pub(super) fn is_set(commands: &[Command]) -> bool {
     commands.len() > 1
@@ -39,6 +48,60 @@ pub(super) fn label(households: &[HouseholdState], command: &Command) -> String 
 }
 
 impl Surface {
+    /// Resolve and admit a DJ operation without changing sessions or speakers.
+    /// The planner may additionally bind the request to a reviewed target set.
+    /// Even one selected group keeps its physical audience through execution.
+    pub(crate) fn prepare_dj_controls(
+        &self,
+        client: &Client,
+        tool: &str,
+        plan: impl FnOnce(&Rooms<'_>) -> Result<Vec<Command>, Failure>,
+    ) -> Result<PreparedDj, Failure> {
+        let guard = self.guard(client);
+        if let Err(denied) = guard.authorize(tool, false) {
+            self.record(
+                client,
+                tool.to_string(),
+                format!("deny: {}", denied.detail),
+                denied.detail.clone(),
+                None,
+            );
+            return Err(denied);
+        }
+        let households = self.households()?;
+        let aliases = self.aliases();
+        let rooms = room_view(&households, aliases.as_ref(), client);
+        let commands = plan(&rooms).map_err(|failure| self.explain(failure))?;
+        if commands.is_empty()
+            || commands
+                .iter()
+                .any(|command| !matches!(command, Command::Dj { .. } | Command::DjSteer { .. }))
+        {
+            return Err(Failure::invalid("a prepared DJ request needs DJ commands"));
+        }
+        self.prepare_dj_commands(&households, &guard, &commands)?;
+        // Library preparation may have waited for another engine operation.
+        // Do not admit an audience already known to have changed during it.
+        for command in &commands {
+            self.confirm_dj_group(&households, command)?;
+        }
+        Ok(PreparedDj {
+            households,
+            commands,
+        })
+    }
+
+    /// Dispatch the admitted commands without resolving their targets again.
+    /// The normal batch action record and per-group receipts are retained.
+    pub(crate) fn control_prepared_dj(
+        &self,
+        client: &Client,
+        tool: &str,
+        prepared: PreparedDj,
+    ) -> Result<OutcomeDto, Failure> {
+        self.control_prepared_set(client, tool, &prepared.households, prepared.commands, true)
+    }
+
     /// A batch keeps its audience through cap reads and engine lock waits.
     /// The same cap and DJ bookkeeping paths run over a fenced transport;
     /// session-only mutations also recheck after the engine takes its lock.
@@ -49,7 +112,10 @@ impl Surface {
         command: &Command,
     ) -> Result<OutcomeDto, Failure> {
         let fence = AudienceTransport {
-            surface: self, households, command, refused: RefCell::new(None),
+            surface: self,
+            households,
+            command,
+            refused: RefCell::new(None),
         };
         let result = (|| {
             fence.check()?;
@@ -86,13 +152,26 @@ impl Surface {
         if !is_set(commands) {
             return Ok(());
         }
+        self.prepare_dj_commands(households, guard, commands)
+    }
+
+    /// Scheduled and reviewed requests also admit single-group target sets.
+    fn prepare_dj_commands(
+        &self,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        commands: &[Command],
+    ) -> Result<(), Failure> {
         let dj = self.dj_engine()?;
         // Stop and skip need no selectable library or renderer refresh. Their
         // per-group execution can continue even when another group is idle.
         if !commands.iter().any(|command| {
             matches!(
                 command,
-                Command::Dj { action: DjAction::Start, .. } | Command::DjSteer { .. }
+                Command::Dj {
+                    action: DjAction::Start,
+                    ..
+                } | Command::DjSteer { .. }
             )
         }) {
             return Ok(());
@@ -151,7 +230,9 @@ impl Surface {
             failure.code,
             format!("No DJ commands started; batch readiness failed. {detail}"),
         )
-        .with_hint("Resolve the reported prerequisites and read the selected groups before a new request."))
+        .with_hint(
+            "Resolve the reported prerequisites and read the selected groups before a new request.",
+        ))
     }
 
     /// A slow preparation cannot turn an old coordinator into permission to
@@ -164,7 +245,10 @@ impl Surface {
         let changed = || {
             Failure::new(
                 ErrorCode::NotCoordinator,
-                format!("{}'s selected group changed before the DJ command", label(households, command)),
+                format!(
+                    "{}'s selected group changed before the DJ command",
+                    label(households, command)
+                ),
             )
             .with_hint("Read the groups again; do not replay the whole batch.")
         };
@@ -179,8 +263,8 @@ impl Surface {
             .iter()
             .find(|group| group.coordinator == *coordinator)
             .ok_or_else(changed)?;
-        let topology = get_zone_group_state(&*self.transport, player.ip)
-            .map_err(CoreError::from)?;
+        let topology =
+            get_zone_group_state(&*self.transport, player.ip).map_err(CoreError::from)?;
         let mut current = house.clone();
         current.apply_topology(&topology);
         let after = current
@@ -189,7 +273,11 @@ impl Surface {
             .find(|group| group.coordinator == *coordinator)
             .ok_or_else(changed)?;
         let members = |group: &fsonos_types::ZoneGroup| {
-            let mut members: Vec<_> = group.members.iter().map(|member| member.0.clone()).collect();
+            let mut members: Vec<_> = group
+                .members
+                .iter()
+                .map(|member| member.0.clone())
+                .collect();
             members.sort_unstable();
             members
         };
@@ -242,7 +330,10 @@ impl Transport for AudienceTransport<'_> {
                 // A definite local refusal, never a lost reply or the Sonos
                 // 800 fault that can trigger address/coordinator recovery.
                 code: 403,
-                reason: format!("DJ audience check refused before sending {verb}: {}", failure.detail),
+                reason: format!(
+                    "DJ audience check refused before sending {verb}: {}",
+                    failure.detail
+                ),
             })?;
         }
         self.surface.transport.soap_post(host, path, action, body)
