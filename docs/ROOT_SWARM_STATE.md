@@ -5541,3 +5541,9 @@ Argument trials for the handler `0x10004c88`: `(r30)` segv in libc, `(r26)` segv
 handler takes the same `(mode, buffer, length)` shape as the loop's own decrypt call.
 So 1 is its failure code under this shape; the next read is why it fails (likely it needs
 the stream ctx initialised, which is still the missing link).
+
+Handler prologue settles its contract: `r29 = r3` (mode), `r30 = r4` (buffer), and it
+builds two large local areas (`r27 = r1+32`, `r28 = r1+608`). It derives everything else
+itself from the buffer, which means a call made *before* the buffer is decrypted returns
+its failure code (1) — exactly what the trial showed. The handler is therefore downstream
+of the stream context, not a substitute for it.
