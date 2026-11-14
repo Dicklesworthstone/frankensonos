@@ -29,7 +29,7 @@ const SceneQueue = (() => {
 
   function describe(value) {
     const q = read(value), position = `${Math.floor(q.position_secs / 60)}:${String(q.position_secs % 60).padStart(2, '0')}`;
-    if (q.total != null) return `Saved queue backup, ${q.total} entries, track #${q.track} at ${position}${q.play_mode ? ` · ${q.play_mode.replaceAll('_', ' ')}` : ''}. Recall replaces the original player’s current queue. Action-history undo cannot restore the replaced queue contents.`;
+    if (q.total != null) return `Saved queue backup, ${q.total} entries, track #${q.track} at ${position}${q.play_mode ? ` · ${q.play_mode.replaceAll('_', ' ')}` : ''}. Recall replaces the original player’s current queue. Bounded queue undo is available only after a complete verified scene on unchanged groups; inspect the result and undo preview.`;
     return `Saved queue, track #${q.track} at ${position}${q.play_mode ? ` · ${q.play_mode.replaceAll('_', ' ')}` : ''}. Requires the original player and unchanged queue. Queue contents are not saved.`;
   }
 

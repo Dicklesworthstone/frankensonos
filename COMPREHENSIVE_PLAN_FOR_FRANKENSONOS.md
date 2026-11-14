@@ -1276,9 +1276,13 @@ MCP and web capture) retains complete ordered contents with a 1,000-entry and
 before removing the old prefix with the speaker's revision guard, then
 restores occurrence, time, mode and playback intent on the original player.
 It tolerates prior queue edits and reboots, but fences concurrent changes and
-never replays uncertain writes. Paused recall stays silent. Replacement queue
-contents are outside action-history undo. Existing `keep` scenes retain their
-original behavior.
+never replays uncertain writes. Paused recall stays silent. A complete backup
+recall on unchanged groups now retains its actual reconstruction receipt and a
+bounded backup of each replaced original queue. Reviewed undo restores the
+original duplicate occurrences, selected track, elapsed position, known mode
+and scene-scoped levels in silence before restoring the original play intent.
+Partial scenes, missing proof, changed groups and unproved content no-ops remain
+whole-action barriers. Existing `keep` scenes retain their original behavior.
 See `docs/SCENE_QUEUES.md` for the capture and apply contract.
 
 Authored scenes also accept native saved Sonos playlists through

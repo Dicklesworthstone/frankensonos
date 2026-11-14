@@ -4,7 +4,7 @@
 use fsonos_core::HouseholdState;
 use fsonos_core::actions::{self, PendingSceneQueueUndo};
 use fsonos_core::control::QueueReplacement;
-use fsonos_core::scenes::{SceneOp, ScenePlan, SceneReport};
+use fsonos_core::scenes::{QueueRestoration, SceneOp, ScenePlan, SceneReport};
 use fsonos_proto::didl::SpotifyContainer;
 use fsonos_types::PlayerId;
 use std::cell::RefCell;
@@ -12,12 +12,17 @@ use std::cell::RefCell;
 use crate::Surface;
 use crate::source::is_catalog_source;
 
+enum Receipt {
+    Replacement(QueueReplacement),
+    Restoration(QueueRestoration),
+}
+
 #[derive(Default)]
 pub(super) struct Recording {
     catalog: bool,
     pending: RefCell<Vec<(PlayerId, PendingSceneQueueUndo)>>,
     attempts: RefCell<Vec<PlayerId>>,
-    receipts: RefCell<Vec<(PlayerId, QueueReplacement)>>,
+    receipts: RefCell<Vec<(PlayerId, Receipt)>>,
 }
 
 impl Recording {
@@ -33,7 +38,8 @@ impl Recording {
             for op in &plan.ops {
                 let coordinator = match op {
                     SceneOp::Favorite { coordinator, .. }
-                    | SceneOp::SonosPlaylist { coordinator, .. } => coordinator,
+                    | SceneOp::SonosPlaylist { coordinator, .. }
+                    | SceneOp::QueueBackup { coordinator, .. } => coordinator,
                     SceneOp::Uri {
                         coordinator, uri, ..
                     } if SpotifyContainer::of(uri).is_some() || is_catalog_source(uri) => {
@@ -79,7 +85,13 @@ impl Recording {
     pub(super) fn finished(&self, coordinator: &PlayerId, receipt: QueueReplacement) {
         self.receipts
             .borrow_mut()
-            .push((coordinator.clone(), receipt));
+            .push((coordinator.clone(), Receipt::Replacement(receipt)));
+    }
+
+    pub(super) fn restored(&self, coordinator: &PlayerId, receipt: QueueRestoration) {
+        self.receipts
+            .borrow_mut()
+            .push((coordinator.clone(), Receipt::Restoration(receipt)));
     }
 
     /// Return the action's before-state and whether its queue restoration is
@@ -126,14 +138,25 @@ impl Recording {
                 return barrier();
             };
             let (_, saved) = pending.remove(index);
-            let Ok(queue) = actions::finish_scene_queue_replacement(
-                &*surface.transport,
-                households,
-                saved,
-                receipt,
-                report,
-                surface.now(),
-            ) else {
+            let completed = match receipt {
+                Receipt::Replacement(receipt) => actions::finish_scene_queue_replacement(
+                    &*surface.transport,
+                    households,
+                    saved,
+                    receipt,
+                    report,
+                    surface.now(),
+                ),
+                Receipt::Restoration(receipt) => actions::finish_scene_queue_restoration(
+                    &*surface.transport,
+                    households,
+                    saved,
+                    receipt,
+                    report,
+                    surface.now(),
+                ),
+            };
+            let Ok(queue) = completed else {
                 return barrier();
             };
             queues.push(queue);

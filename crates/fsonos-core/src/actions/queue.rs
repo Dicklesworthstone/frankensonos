@@ -16,7 +16,10 @@ mod replacement;
 mod scene;
 use proof::{Fenced, Proof};
 pub use replacement::finish_queue_replacement;
-pub use scene::{PendingSceneQueueUndo, capture_scene_queue_undo, finish_scene_queue_replacement};
+pub use scene::{
+    PendingSceneQueueUndo, capture_scene_queue_undo, finish_scene_queue_replacement,
+    finish_scene_queue_restoration,
+};
 
 fn unavailable(detail: impl std::fmt::Display) -> CoreError {
     CoreError::NotUndoable(format!("queue undo unavailable: {detail}"))
@@ -233,7 +236,7 @@ impl QueueUndo {
     fn validate(&self) -> Result<(), CoreError> {
         self.backup.validate().map_err(unavailable)?;
         let saved = &self.backup.reference;
-        if !matches!(self.version, 1..=3)
+        if !matches!(self.version, 1..=4)
             || self.snapshot.coordinator != saved.coordinator
             || self.snapshot.household != saved.household
             || self.after.binding.coordinator != saved.coordinator
@@ -242,8 +245,8 @@ impl QueueUndo {
             || self.after.revision == saved.update_id
             || (self.version == 1 && self.after.uris.len() > self.backup.entries.len())
             || (self.version == 2 && !replacement::valid_result(&self.after))
-            || (self.version != 3 && self.scene.is_some())
-            || (self.version == 3 && !scene::valid_result(self))
+            || (!matches!(self.version, 3 | 4) && self.scene.is_some())
+            || (matches!(self.version, 3 | 4) && !scene::valid_result(self))
             || self.snapshot.play_mode != saved.play_mode
             || self.snapshot.source
                 != (SnapshotSource::Queue {

@@ -332,3 +332,5 @@ fn multi_group_scenes_require_complete_recovery_for_every_replaced_queue() {
         }
     }
 }
+#[path = "scenes/backups.rs"]
+mod backups;

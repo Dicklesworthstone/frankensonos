@@ -6,7 +6,10 @@ use super::proof::{Fenced, Playback, Proof};
 use super::{PendingQueueUndo, QueueUndo, cap_levels, capture_queue_undo, later, unavailable};
 use crate::actions::LevelScope;
 use crate::control::QueueReplacement;
-use crate::scenes::{SceneOp, ScenePlan, SceneReport, queue, queue_backup};
+use crate::scenes::{
+    MAX_QUEUE_BACKUP_BYTES, MAX_QUEUE_BACKUP_ENTRIES, QueueRestoration, SceneOp, ScenePlan,
+    SceneReport, queue, queue_backup,
+};
 use crate::snapshot::{Aspect, MemberLevel, RestoreOp, RestoreReport};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::{ProtoError, Transport, control as soap};
@@ -34,8 +37,8 @@ pub(super) struct SceneLevels {
 }
 
 /// Capture a bounded original queue for one replacement on an unchanged
-/// group. Regrouping, DJ changes and queue-backup recalls remain barriers for
-/// the entire scene; unsupported scenes still execute through their usual path.
+/// group. Regrouping and DJ changes remain barriers for the entire scene;
+/// unsupported scenes still execute through their usual path.
 pub fn capture_scene_queue_undo<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -46,14 +49,11 @@ pub fn capture_scene_queue_undo<T: Transport + ?Sized>(
     if plan.ops.iter().any(|op| {
         matches!(
             op,
-            SceneOp::Leave { .. }
-                | SceneOp::Join { .. }
-                | SceneOp::QueueBackup { .. }
-                | SceneOp::Dj { .. }
+            SceneOp::Leave { .. } | SceneOp::Join { .. } | SceneOp::Dj { .. }
         )
     }) {
         return Err(unavailable(
-            "scene queue undo requires unchanged groups without DJ or queue-backup changes",
+            "scene queue undo requires unchanged groups without DJ changes",
         ));
     }
     let sources: Vec<_> = plan
@@ -71,6 +71,11 @@ pub fn capture_scene_queue_undo<T: Transport + ?Sized>(
                 ..
             }
             | SceneOp::Uri {
+                coordinator: id,
+                start,
+                ..
+            }
+            | SceneOp::QueueBackup {
                 coordinator: id,
                 start,
                 ..
@@ -139,23 +144,60 @@ pub fn capture_scene_queue_undo<T: Transport + ?Sized>(
     })
 }
 
+fn playback_matches(after: &Proof, playing: bool) -> bool {
+    if playing {
+        after.playback.state == TransportState::Playing
+    } else {
+        matches!(
+            after.playback.state,
+            TransportState::Paused | TransportState::Stopped
+        )
+    }
+}
+
 fn selected(after: &Proof, playing: bool) -> bool {
-    super::replacement::valid_queue(after)
-        && if playing {
-            after.playback.state == TransportState::Playing
-        } else {
-            matches!(
-                after.playback.state,
-                TransportState::Paused | TransportState::Stopped
-            )
-        }
+    super::replacement::valid_queue(after) && playback_matches(after, playing)
+}
+
+/// Durable recalls may select any saved occurrence. Keep the version-2/3
+/// first-track contract separate: only a restoration receipt issues version 4.
+fn restored_selection(after: &Proof, playing: bool) -> bool {
+    !after.uris.is_empty()
+        && after.uris.len() <= MAX_QUEUE_BACKUP_ENTRIES
+        && after
+            .uris
+            .iter()
+            .try_fold(0_usize, |bytes, uri| {
+                if uri.is_empty() {
+                    None
+                } else {
+                    bytes.checked_add(uri.len())
+                }
+            })
+            .is_some_and(|bytes| bytes <= MAX_QUEUE_BACKUP_BYTES)
+        && after.playback.source == format!("x-rincon-queue:{}#0", after.binding.coordinator.0)
+        && after.playback.metadata.is_empty()
+        && after
+            .playback
+            .track
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| after.uris.get(index))
+            .is_some_and(|uri| super::proof::same_track(uri, &after.playback.uri))
+        && after.playback.position.is_some()
+        && playback_matches(after, playing)
 }
 
 pub(super) fn valid_result(saved: &QueueUndo) -> bool {
     let Some(scene) = &saved.scene else {
         return false;
     };
-    if !selected(&saved.after, scene.playing) {
+    let valid_selection = match saved.version {
+        3 => selected(&saved.after, scene.playing),
+        4 => restored_selection(&saved.after, scene.playing),
+        _ => false,
+    };
+    if !valid_selection {
         return false;
     }
     let mut seen = Vec::new();
@@ -186,16 +228,7 @@ pub(super) fn valid_result(saved: &QueueUndo) -> bool {
     })
 }
 
-/// Bind a completed scene to its native replacement receipt. Failed steps,
-/// incomplete fades or changed final levels cannot publish a partial undo.
-pub fn finish_scene_queue_replacement<T: Transport + ?Sized>(
-    t: &T,
-    households: &[HouseholdState],
-    pending: PendingSceneQueueUndo,
-    receipt: &QueueReplacement,
-    report: &SceneReport,
-    at: i64,
-) -> Result<QueueUndo, CoreError> {
+fn completed_scene(pending: &PendingSceneQueueUndo, report: &SceneReport) -> Result<(), CoreError> {
     if !report.is_complete()
         || report.notes != pending.plan.notes
         || report
@@ -210,6 +243,25 @@ pub fn finish_scene_queue_replacement<T: Transport + ?Sized>(
     {
         return Err(unavailable(
             "the scene did not complete all of its requested changes",
+        ));
+    }
+    Ok(())
+}
+
+/// Bind a completed scene to its native replacement receipt. Failed steps,
+/// incomplete fades or changed final levels cannot publish a partial undo.
+pub fn finish_scene_queue_replacement<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    pending: PendingSceneQueueUndo,
+    receipt: &QueueReplacement,
+    report: &SceneReport,
+    at: i64,
+) -> Result<QueueUndo, CoreError> {
+    completed_scene(&pending, report)?;
+    if matches!(pending.source, SceneOp::QueueBackup { .. }) {
+        return Err(unavailable(
+            "a durable queue recall requires its reconstruction receipt",
         ));
     }
     let original = pending.pending;
@@ -259,6 +311,96 @@ pub fn finish_scene_queue_replacement<T: Transport + ?Sized>(
     }
     let undo = QueueUndo {
         version: 3,
+        snapshot: original.snapshot,
+        backup: original.backup,
+        after,
+        scene: Some(pending.restore),
+    };
+    undo.validate()?;
+    Ok(undo)
+}
+
+/// Bind a complete durable-queue scene to the reconstruction that actually ran.
+///
+/// The original owner and ordered contents must match the pre-scene capture,
+/// and the final queue must still select the saved occurrence, time and mode on
+/// the same physical group. Unchanged contents, failed steps, or a later edit
+/// remain an undo barrier; no subsequent read can manufacture a receipt.
+pub fn finish_scene_queue_restoration<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    pending: PendingSceneQueueUndo,
+    receipt: &QueueRestoration,
+    report: &SceneReport,
+    at: i64,
+) -> Result<QueueUndo, CoreError> {
+    completed_scene(&pending, report)?;
+    let SceneOp::QueueBackup {
+        coordinator,
+        backup,
+        start,
+    } = &pending.source
+    else {
+        return Err(unavailable(
+            "the scene source is not a durable queue recall",
+        ));
+    };
+    let target_uris: Vec<_> = backup
+        .entries
+        .iter()
+        .map(|entry| entry.uri.clone())
+        .collect();
+    let original = pending.pending;
+    let before = &original.before;
+    let mut expected_reference = backup.reference.clone();
+    expected_reference.update_id = receipt.reference.update_id;
+    expected_reference.boot_seq = before.binding.boot();
+    let elapsed = u32::try_from(original.observed.elapsed().as_secs()).unwrap_or(u32::MAX);
+    if !receipt.rebuilt
+        || original.expected.is_some()
+        || receipt.start != *start
+        || receipt.start != pending.restore.playing
+        || coordinator != &original.snapshot.coordinator
+        || receipt.reference != expected_reference
+        || receipt.uris != target_uris
+        || !original.matches_before(receipt.before_revision, &receipt.before_uris)
+        || receipt.reference.update_id == 0
+        || receipt.reference.update_id == receipt.before_revision
+        || receipt.before_owner.group.boot_seq != before.binding.boot()
+        || !before
+            .playback
+            .agrees(&Playback::from_owner(&receipt.before_owner), elapsed)
+    {
+        return Err(unavailable(
+            "the scene recall does not own the saved queue and playback",
+        ));
+    }
+    let mode = receipt.reference.play_mode.or(before.playback.mode);
+    let (after, _) = Proof::read(t, households, coordinator, mode.is_some(), at)?;
+    let selected_for = u32::try_from(receipt.selected_at.elapsed().as_secs()).unwrap_or(u32::MAX);
+    let position = receipt.reference.position_secs;
+    if !restored_selection(&after, pending.restore.playing)
+        || after.revision != receipt.reference.update_id
+        || after.uris != receipt.uris
+        || after.binding != before.binding
+        || after.levels != pending.levels
+        || after.playback.track != receipt.reference.track
+        || after.playback.mode != mode
+        || after.playback.position.is_none_or(|current| {
+            if receipt.start {
+                current < position
+                    || current > position.saturating_add(selected_for).saturating_add(1)
+            } else {
+                current != position
+            }
+        })
+    {
+        return Err(unavailable(
+            "the scene's restored queue, bookmark, levels or physical group changed before logging",
+        ));
+    }
+    let undo = QueueUndo {
+        version: 4,
         snapshot: original.snapshot,
         backup: original.backup,
         after,

@@ -172,7 +172,7 @@ test('queue backups retain their count and expose replacement and undo limits', 
   assert.equal(scene.groups[0].source.queue.total, 4);
   assert.match(Scenes.detail(scene), /Saved queue backup, 4 entries, track #3 at 1:10/);
   assert.match(Scenes.detail(scene), /replaces the original player’s current queue/);
-  assert.match(Scenes.detail(scene), /undo cannot restore the replaced queue contents/);
+  assert.match(Scenes.detail(scene), /Bounded queue undo is available only after a complete verified scene on unchanged groups/);
   for (const total of [undefined, null, 0, 2, 1001, 3.5, '4']) {
     const bad = backupRow(); bad.groups[0].source.queue.total = total;
     assert.throws(() => Scenes.sceneOf(bad));
