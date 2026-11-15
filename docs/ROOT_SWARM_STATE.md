@@ -5649,3 +5649,12 @@ Source buffer layout at `r19`: same converted header (`886499ca 13a 10000 0 1000
 (`f2642a9c 89a44747 c7b4342c db483fe1`). Init with them returns 0 and stamps the magic, but
 the final call still fails — consistent with the stream starting at the wrong offset (the
 loop re-decrypts from the record start while the header has already been consumed).
+
+**Correction to my own last claim.** The cursor update at `0x100071a4` is
+`r17 += r0; r19 += r0; r18 -= r0` — `r19` is the **destination** and `r18` the remaining
+count, so in the `ZZ0050` call `r4=r31` is the **source** and `r6=r19` the **destination**.
+
+Therefore the random bytes at `r31` are *ciphertext*, not an AES key — the key lives
+elsewhere (very likely inside the context struct `r16`, which is what the vtable object
+would hold). This reframes the last few attempts: key placement, not only IV, is still
+open.
