@@ -18,6 +18,13 @@ reply is not replayed: a confirmed move advances; an unconfirmed move fails.
 Topology witnesses that fail are not repeatedly polled during the transition.
 Each read retains the transport's own timeout in addition to the settle budget.
 
+A witness must identify its own player at the contacted address and report a
+coherent topology. Duplicate identities, conflicting addresses, and claims about
+another known household cannot replace the last accepted model. Another witness
+may still confirm the transition. The final audience includes every physical
+player in each logical room, so a missing stereo half or newly added satellite
+also prevents dependent playback and level changes.
+
 Original groups connected by requested joins form a dependency component. A
 failed or unconfirmed move blocks later group changes and sound changes in that
 component, while independent groups and households continue. Before starting
@@ -41,6 +48,7 @@ retrying; an unconfirmed network operation may still have taken effect.
 
 ```sh
 cargo test --locked -p fsonos-core --lib scenes
+cargo test --locked -p fsonos-core --test scenes_topology_sim
 cargo test --locked -p fsonos-api --test scenes_layout_sim
 cargo test --locked -p fsonos-api --test scenes_sim --test scenes_households_sim
 ```

@@ -5,10 +5,11 @@ use super::{
     ApplyOptions, HouseholdState, Room, SceneOp, ScenePlan, SceneReport, fade_players,
     fade_volumes, leads, run, silence_starting,
 };
-use fsonos_proto::Transport;
-use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::topology::{ZoneGroupState, get_zone_group_state};
+use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 const SETTLE: Duration = Duration::from_secs(2);
@@ -196,11 +197,16 @@ fn confirm<T: Transport + ?Sized>(
     op: &SceneOp,
 ) -> Result<(), String> {
     let player = target(op);
-    let (index, household) = before
+    let mut owners = before
         .iter()
         .enumerate()
-        .find(|(_, h)| h.player(player).is_some())
+        .filter(|(_, h)| h.player(player).is_some());
+    let (index, household) = owners
+        .next()
         .ok_or_else(|| "group player is no longer addressable".to_string())?;
+    if owners.next().is_some() {
+        return Err("group player belongs to more than one household".into());
+    }
     let old = room(before, player).map(|r| &r.coordinator);
     let mut ids = Vec::new();
     if let SceneOp::Join { coordinator, .. } = op {
@@ -211,19 +217,21 @@ fn confirm<T: Transport + ?Sized>(
     let mut hosts = Vec::new();
     for id in ids {
         if let Some(p) = household.player(id)
-            && !hosts.contains(&p.ip)
+            && !hosts.iter().any(|(_, host)| *host == p.ip)
         {
-            hosts.push(p.ip);
+            hosts.push((p.id.clone(), p.ip));
         }
     }
     let started = Instant::now();
     let mut detail = "group change was not observed before the scene's settle deadline".to_string();
     loop {
         let mut failed = Vec::new();
-        for host in &hosts {
-            match get_zone_group_state(t, *host) {
-                Ok(topology) => {
-                    live[index].apply_topology(&topology);
+        for (responder, host) in &hosts {
+            let observation = get_zone_group_state(t, *host)
+                .and_then(|topology| candidate(live, index, responder, *host, &topology));
+            match observation {
+                Ok(household) => {
+                    live[index] = household;
                     if observed(before, live, op) {
                         return Ok(());
                     }
@@ -234,13 +242,62 @@ fn confirm<T: Transport + ?Sized>(
                 }
             }
         }
-        hosts.retain(|host| !failed.contains(host));
+        hosts.retain(|(_, host)| !failed.contains(host));
         let left = SETTLE.saturating_sub(started.elapsed());
         if hosts.is_empty() || left.is_zero() {
             return Err(detail);
         }
         std::thread::sleep(POLL.min(left));
     }
+}
+
+/// A parsed reply is not yet evidence that a group change happened. Keep the
+/// previous household until this witness identifies itself at the contacted
+/// address and the complete candidate is coherent with the other households.
+fn candidate(
+    households: &[HouseholdState],
+    index: usize,
+    responder: &PlayerId,
+    host: IpAddr,
+    topology: &ZoneGroupState,
+) -> Result<HouseholdState, ProtoError> {
+    crate::topology::validate_response(topology, responder)?;
+    let physical: Vec<_> = topology
+        .groups
+        .iter()
+        .flat_map(|group| &group.members)
+        .flat_map(|member| std::iter::once(member).chain(&member.satellites))
+        .collect();
+    if !physical
+        .iter()
+        .any(|member| member.uuid == *responder && member.ip() == Some(host))
+    {
+        return Err(ProtoError::Malformed(
+            "scene topology does not identify its responder at the contacted address".into(),
+        ));
+    }
+    for (other_index, other) in households.iter().enumerate() {
+        if other_index == index {
+            continue;
+        }
+        let foreign =
+            |id: &PlayerId| other.player(id).is_some() || other.coordinator_of(id).is_some();
+        if physical.iter().any(|member| {
+            foreign(&member.uuid)
+                || other
+                    .players
+                    .iter()
+                    .any(|player| Some(player.ip) == member.ip())
+        }) || topology.vanished.iter().any(|member| foreign(&member.uuid))
+        {
+            return Err(ProtoError::Malformed(
+                "scene topology conflicts with another known household".into(),
+            ));
+        }
+    }
+    let mut candidate = households[index].clone();
+    candidate.apply_topology(topology);
+    Ok(candidate)
 }
 
 fn audience_matches(
@@ -279,13 +336,15 @@ fn audience_matches(
                     && destination(&original.primary).is_none()
                     && r.coordinator == original.coordinator)
         })
-        .map(|r| r.primary.0.as_str())
+        .flat_map(|r| &r.players)
+        .map(|player| player.0.as_str())
         .collect();
     let mut actual: Vec<_> = live
         .iter()
         .flat_map(|h| &h.rooms)
         .filter(|r| r.coordinator == current.coordinator)
-        .map(|r| r.primary.0.as_str())
+        .flat_map(|r| &r.players)
+        .map(|player| player.0.as_str())
         .collect();
     expected.sort_unstable();
     actual.sort_unstable();
