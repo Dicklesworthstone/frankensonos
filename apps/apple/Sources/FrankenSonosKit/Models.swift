@@ -66,13 +66,31 @@ public struct Track: Codable, Equatable, Sendable {
 public struct ZoneState: Codable, Equatable, Sendable {
     public let zone: Zone
     public let transportState: String
+    /// The renderer's own report, independent of playing/paused/stopped.
+    /// Older daemons and absent reports remain unknown, never an inferred OK.
+    public let transportStatus: String?
     public let volume: Int?
     public let mute: Bool?
     public let groupVolume: Int?
     public let track: Track?
     public let shuffle: Bool?
     public let `repeat`: String?
+    public init(zone: Zone, transportState: String, volume: Int?, mute: Bool?,
+                groupVolume: Int?, track: Track?, shuffle: Bool?, repeat repeatMode: String?,
+                transportStatus: String? = nil) {
+        self.zone = zone; self.transportState = transportState; self.transportStatus = transportStatus
+        self.volume = volume; self.mute = mute; self.groupVolume = groupVolume; self.track = track
+        self.shuffle = shuffle; self.repeat = repeatMode
+    }
     public var isPlaying: Bool { transportState == "playing" }
+    public var hasPlaybackError: Bool { transportStatus == "ERROR_OCCURRED" }
+    public var playbackLabel: String {
+        if hasPlaybackError { return "Playback error" }
+        if let transportStatus, transportStatus != "OK" {
+            return "\(transportState.capitalized) · renderer status: \(transportStatus)"
+        }
+        return transportState.capitalized
+    }
     public func validated(for expected: Zone) throws -> Self {
         _ = try zone.validated()
         guard zone.sameGroup(as: expected), ["playing", "paused", "stopped", "transitioning", "unknown"].contains(transportState),
@@ -81,13 +99,19 @@ public struct ZoneState: Codable, Equatable, Sendable {
               track == nil || !(track!.uri.isEmpty || track!.uri == "NOT_IMPLEMENTED") else {
             throw ContractError.invalid("Playback no longer matches the selected group. Refresh the house.")
         }
+        if let transportStatus {
+            guard !transportStatus.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  transportStatus.utf8.count <= 4_096 else {
+                throw ContractError.invalid("The speaker's renderer status could not be read.")
+            }
+        }
         if let duration = track?.durationSecs, duration > 0, let position = track?.positionSecs, position > duration {
             throw ContractError.invalid("The playback position is outside the track.")
         }
         return self
     }
     public func samePlayback(as other: ZoneState) -> Bool {
-        zone.sameGroup(as: other.zone) && transportState == other.transportState &&
+        zone.sameGroup(as: other.zone) && transportState == other.transportState && transportStatus == other.transportStatus &&
         (track == nil ? other.track == nil : track!.sameItem(as: other.track))
     }
 }

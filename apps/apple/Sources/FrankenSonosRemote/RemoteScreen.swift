@@ -295,9 +295,13 @@ import FrankenSonosKit
 
     private func playerDetails(_ state: ZoneState, in zone: Zone) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label(model.selectedPlaybackIsFresh ? state.transportState.capitalized : "Last known playback",
-                  systemImage: state.isPlaying ? "waveform" : "music.note")
-                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Label(model.selectedPlaybackIsFresh ? state.playbackLabel : "Last known: \(state.playbackLabel)",
+                  systemImage: state.hasPlaybackError ? "exclamationmark.triangle" : state.isPlaying ? "waveform" : "music.note")
+                .font(.caption.weight(.semibold)).foregroundStyle(state.hasPlaybackError ? Color.orange : Color.secondary)
+            if state.hasPlaybackError {
+                Text("The speaker reported a playback error. Inspect the source or choose what to play next.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
             VStack(alignment: .leading, spacing: 7) {
                 Text(state.track?.displayTitle ?? "Ready when you are")
                     .font(.title2.bold()).fixedSize(horizontal: false, vertical: true)
@@ -437,6 +441,11 @@ import FrankenSonosKit
                         Text(model.selectedState?.track?.displayTitle ?? (model.selectedState == nil ? "Playback unavailable" : "Ready to listen"))
                             .font(.subheadline.weight(.semibold)).lineLimit(1).foregroundStyle(.primary)
                         Text(model.selectedZone?.title ?? "").font(.caption).lineLimit(1).foregroundStyle(.secondary)
+                        if let state = model.selectedState, state.hasPlaybackError {
+                            Label(model.selectedPlaybackIsFresh ? "Playback error" : "Last known playback error",
+                                  systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(.orange)
+                        }
                     }
                     Spacer(minLength: 0)
                 }.contentShape(Rectangle())
@@ -546,7 +555,7 @@ import FrankenSonosKit
                     Text(review.command.explanation)
                     requestDetails
                     Divider()
-                    Text("Observed: \(review.state.transportState) • \(review.state.track?.displayTitle ?? "No reported track")")
+                    Text("Observed: \(review.state.playbackLabel) • \(review.state.track?.displayTitle ?? "No reported track")")
                     if let volume = review.state.volume { Text("Room level: \(volume)") }
                     if let favorite = review.favorite { Text("Favorite: \(favorite.title)") }
                     if let work = review.dj?.now { Text("DJ selection: \(work.composer) — \(work.title)") }

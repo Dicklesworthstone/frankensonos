@@ -88,6 +88,11 @@ import FrankenSonosKit
                     Text(room).font(.headline).foregroundStyle(.primary)
                     Text(unavailable ? "Room unavailable" : (state?.track?.displayTitle ?? (state == nil ? "Playback unavailable" : "Ready to listen")))
                         .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                    if !unavailable, state?.hasPlaybackError == true {
+                        Label(model.house?.isFresh(for: zone.id) == true ? "Playback error" : "Last known playback error",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     if !companions.isEmpty {
                         Text("With " + companions.joined(separator: ", "))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -97,7 +102,7 @@ import FrankenSonosKit
                 if selected {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(RemoteStyle.accent)
                         .accessibilityLabel("Selected")
-                } else if state?.isPlaying == true {
+                } else if state?.isPlaying == true && state?.hasPlaybackError != true {
                     Image(systemName: "waveform").foregroundStyle(RemoteStyle.accent)
                         .accessibilityLabel("Playing")
                 }

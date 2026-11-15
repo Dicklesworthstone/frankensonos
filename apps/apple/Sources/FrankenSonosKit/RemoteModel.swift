@@ -111,7 +111,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public var selectedTimeline: PlaybackTimeline? {
         guard let zone = selectedZone, let state = selectedState,
               let observedAt = house?.snapshot?.stateObservedAt[zone.id] else { return nil }
-        return PlaybackTimeline(track: state.track, isPlaying: state.isPlaying, observedAt: observedAt,
+        return PlaybackTimeline(track: state.track, isPlaying: state.isPlaying && !state.hasPlaybackError, observedAt: observedAt,
                                 isFresh: selectedPlaybackIsFresh,
                                 allowsSeeking: ["playing", "paused"].contains(state.transportState),
                                 frozenAt: timelineFrozenAt)
