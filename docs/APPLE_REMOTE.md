@@ -106,6 +106,11 @@ unknown durations remain explicit. Seek and volume sliders build a draft; the
 app presents the existing command review before sending any change. Reviews
 scroll independently of their persistent confirmation controls on small screens.
 
+The full player, mini player and room list display an explicit Sonos
+`ERROR_OCCURRED` report as a playback error. Missing reports remain unknown,
+and the progress estimate stops advancing while the renderer reports that error.
+Playback reviews also retire when the renderer status changes.
+
 Rooms are grouped by household. Selection anchors to a household-qualified room
 and follows its group if a coordinator changes. The screen shows playback,
 reported track details, member levels and mute, group levels, unavailable-room
@@ -225,6 +230,27 @@ reads have local errors; a failed panel does not prevent a fresh playback review
 on a reachable room. Panels refresh on selection, explicit refresh, relevant
 live-state transitions and completed commands; they are observations, not an
 independent event log.
+
+Native Sonos favorites and saved playlists follow household-scoped
+`catalog.changed` events. Affected open catalogs and scene favorite choices
+refresh after coalescing an event burst; closed and unrelated views stay lazy.
+An open saved-playlist contents preview and its selected occurrences retire
+when that household's playlist catalog changes. The app returns to the current
+catalog directory; explicitly reopen the playlist to inspect its fresh contents
+before selecting tracks again.
+
+Unsent native-source and playlist-management reviews retire immediately, and
+obsolete catalog responses cannot restore a retired selection. Already-sent
+changes retain their original receipts. A later event also retires an earlier
+recovery observation, so an uncertain save, rename or removal requires another
+explicit read of its original household before another catalog change, including
+one being prepared in a different household. Events never acknowledge or repeat
+a mutation.
+
+Regression sources cover renderer status, catalog scope, coalescing, stale reads
+and reviews, retained receipts, and original-household recovery. Execution of
+these additions remains unverified after the validation environment disconnected
+during the native test run; no Apple SDK build or device pass is claimed here.
 
 The Scenes panel captures the current house, creates custom definitions, reviews
 replacement and deletion, and applies stored house settings with optional fades.

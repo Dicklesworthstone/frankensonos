@@ -86,11 +86,14 @@ public struct RemoteResult: Identifiable, Sendable {
     private var observer: Task<Void, Never>?
     private var lifecycle: Task<Void, Never>?
     private var actionTask: Task<Void, Never>?
+    private var preparingCommand: NativeCommand?
     private var cancellation: Task<Void, Never>?
     private var panelTask: Task<Void, Never>?
     private var epoch: UInt64 = 0
     private var panelEpoch: UInt64 = 0
     private var panelPending = false
+    private var catalogPanelPending = false
+    private var catalogScenePending: UUID?
     private var stopped = false
     private var choseInitialRoom = false
     private var timelineFrozenAt: Date?
@@ -341,7 +344,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public func prepare(_ command: NativeCommand, in expectedZone: Zone? = nil) {
         guard canPrepare, let zone = selectedZone, expectedZone.map({ $0.sameGroup(as: zone) }) != false else { return }
         let target = RoomID(household: zone.household, room: command.room ?? zone.coordinatorRoom)
-        actionPhase = .preparing
+        actionPhase = .preparing; preparingCommand = command
         let token = epoch, barrier = cancellation, commands = commands
         actionTask = Task { [weak self] in
             defer { self?.actionFinished() }
@@ -387,7 +390,8 @@ public struct RemoteResult: Identifiable, Sendable {
     public func cancelReview() {
         preferences.cancel()
         playlistManagement.cancel()
-        epoch &+= 1; review = nil; scheduleReview = nil; undoReview = nil; sceneMutationReview = nil
+        epoch &+= 1; review = nil; preparingCommand = nil
+        scheduleReview = nil; undoReview = nil; sceneMutationReview = nil
         actionTask?.cancel()
         let previous = cancellation, commands = commands
         cancellation = Task { await previous?.value; await commands.cancel() }
@@ -396,7 +400,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func dismissResult() { result = nil }
 
-    private func actionFinished() { actionTask = nil; scheduleAction = false; undoAction = false; sceneMutationAction = false; actionPhase = .idle }
+    private func actionFinished() { actionTask = nil; preparingCommand = nil; scheduleAction = false; undoAction = false; sceneMutationAction = false; actionPhase = .idle }
 
     private func receive(_ value: LiveHouseView) {
         guard !stopped else { return }
@@ -407,6 +411,7 @@ public struct RemoteResult: Identifiable, Sendable {
             choseInitialRoom = true; selectedRoom = first.id
         }
         let newZone = selectedZone
+        observeCatalogs(value.catalogs, since: previous?.catalogs ?? .init())
         let layoutChanged = oldZone.map { old in newZone.map { !old.sameGroup(as: $0) } ?? true } ?? (newZone != nil)
         if selectedPlaybackIsFresh { timelineFrozenAt = nil }
         else if layoutChanged || timelineFrozenAt == nil { timelineFrozenAt = Date() }
@@ -426,12 +431,48 @@ public struct RemoteResult: Identifiable, Sendable {
                   value.hasNewPlaybackObservation(for: zone.id, since: previous) {
             if panel == .queue || panel == .dj || panel == .sleep { refreshPanel() }
         }
+        if active && value.catalogReadRevision != (previous?.catalogReadRevision ?? 0) {
+            if catalogPanelPending { refreshPanel() }
+            if let group = catalogScenePending {
+                catalogScenePending = nil; loadSceneChoices(for: group)
+            }
+        }
+    }
+
+    private func observeCatalogs(_ current: NativeCatalogRevisions, since previous: NativeCatalogRevisions) {
+        guard active else { return }
+        playlistManagement.observeCatalogs(current, since: previous)
+        if let zone = selectedZone {
+            let favoritesChanged = current.favoritesChanged(in: zone.household, since: previous)
+            let playlistsChanged = current.playlistsChanged(in: zone.household, since: previous)
+            if actionPhase != .confirming, let command = review?.command ?? preparingCommand {
+                let obsolete: Bool
+                switch command {
+                case .playFavorite, .queueFavorite: obsolete = favoritesChanged
+                case .sonosPlaylist, .sonosPlaylistTracks: obsolete = playlistsChanged
+                default: obsolete = false
+                }
+                if obsolete { cancelReview() }
+            }
+            if favoritesChanged && (panel == .favorites || panel == .library) ||
+               playlistsChanged && panel == .sonosPlaylists {
+                // Retire the old read immediately; only the coalesced deadline
+                // starts a replacement. Closed and unrelated panels stay lazy.
+                invalidatePanel(); catalogPanelPending = true
+            }
+        }
+        if let group = sceneChoicesSelection, group.source == .favorite,
+           let household = group.coordinator?.household,
+           current.favoritesChanged(in: household, since: previous) {
+            invalidateSceneChoices()
+            if sceneComposerOpen && panel == .scenes { catalogScenePending = group.id }
+        }
     }
 
     private func invalidatePanel(preservingSonosTracks: Bool = false) {
         if !preservingSonosTracks { sonosPlaylistTracks.clear() }
         panelEpoch &+= 1
-        panelTask?.cancel(); panelPending = false
+        panelTask?.cancel(); panelPending = false; catalogPanelPending = false
         queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; scenesObservedAt = nil; sleepTimer = nil; sleepObservedAt = nil
         sonosPlaylists = []; sonosPlaylistContents = nil; sonosPlaylistRequest = nil
         lineInCatalog = nil
@@ -445,7 +486,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public func refreshPanel() {
         guard active else { return }
         guard !stopped && (panel == .schedules || panel == .scenes || selectedZone != nil) else { return }
-        panelPending = true
+        catalogPanelPending = false; panelPending = true
         startPanelRead()
     }
 
@@ -732,7 +773,7 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     private func invalidateSceneChoices() {
-        sceneChoicesEpoch &+= 1; sceneChoicesTask?.cancel(); sceneChoicesPending = nil
+        sceneChoicesEpoch &+= 1; sceneChoicesTask?.cancel(); sceneChoicesPending = nil; catalogScenePending = nil
         sceneChoicesSelection = nil; sceneSourceChoices = nil; sceneChoicesProblem = nil
         if sceneChoicesTask == nil { sceneChoicesLoading = false }
     }

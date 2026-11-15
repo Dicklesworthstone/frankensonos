@@ -1,5 +1,41 @@
 import Foundation
 
+/// Local invalidations, never native revisions that authorize a write. Every
+/// view retains them so bufferingNewest cannot hide a missed catalog event.
+struct NativeCatalogRevisions: Sendable, Equatable {
+    private var sequence: UInt64 = 0
+    private var allFavorites: UInt64 = 0, allPlaylists: UInt64 = 0
+    private var favorites: [String: UInt64] = [:], playlists: [String: UInt64] = [:]
+
+    mutating func invalidate(household: String?, favorites changedFavorites: Bool,
+                             playlists changedPlaylists: Bool, zones: [Zone]?) {
+        guard changedFavorites || changedPlaylists else { return }
+        sequence &+= 1
+        let household = household.flatMap { name in
+            zones?.contains(where: { $0.household == name }) == true ? name : nil
+        }
+        // Unknown scopes invalidate all catalogs. Historical scopes stay
+        // bounded even when the daemon sees a succession of different houses.
+        if changedFavorites {
+            if let household, favorites[household] != nil || favorites.count < 256 {
+                favorites[household] = sequence
+            } else { allFavorites = sequence; favorites.removeAll() }
+        }
+        if changedPlaylists {
+            if let household, playlists[household] != nil || playlists.count < 256 {
+                playlists[household] = sequence
+            } else { allPlaylists = sequence; playlists.removeAll() }
+        }
+    }
+
+    func favoritesChanged(in household: String, since previous: Self) -> Bool {
+        allFavorites != previous.allFavorites || favorites[household] != previous.favorites[household]
+    }
+    func playlistsChanged(in household: String, since previous: Self) -> Bool {
+        allPlaylists != previous.allPlaylists || playlists[household] != previous.playlists[household]
+    }
+}
+
 /// Every update is a complete view. A slow UI may skip intermediate display
 /// states, but cannot lose a delta required to reconstruct the latest one.
 public struct LiveHouseView: Sendable {
@@ -14,11 +50,17 @@ public struct LiveHouseView: Sendable {
     /// Coalesced invalidations of data not represented by room playback, such
     /// as saved scenes, schedules, sleep timers and queue edits. Not a command ACK.
     public let panelRevision: UInt64
+    let catalogs: NativeCatalogRevisions
+    /// Unsent consent and obsolete reads retire immediately. Visible catalog
+    /// reloads wait for this fixed coalescing deadline.
+    let catalogReadRevision: UInt64
 
     init(snapshot: HouseSnapshot?, phase: Phase, problem: String?,
-         isConnected: Bool? = nil, freshRooms: Set<RoomID>? = nil, panelRevision: UInt64 = 0) {
+         isConnected: Bool? = nil, freshRooms: Set<RoomID>? = nil, panelRevision: UInt64 = 0,
+         catalogs: NativeCatalogRevisions = .init(), catalogReadRevision: UInt64 = 0) {
         self.snapshot = snapshot; self.phase = phase; self.problem = problem
         self.panelRevision = panelRevision
+        self.catalogs = catalogs; self.catalogReadRevision = catalogReadRevision
         self.isConnected = phase != .suspended && (isConnected ?? (phase == .live))
         if self.isConnected, let snapshot {
             let observed = Set(snapshot.states.keys).intersection(snapshot.stateObservedAt.keys)
@@ -64,6 +106,9 @@ public actor LiveHouse {
     private var phase: LiveHouseView.Phase = .suspended
     private var panelRevision: UInt64 = 0
     private var panelFlush: Task<Void, Never>?
+    private var catalogs = NativeCatalogRevisions()
+    private var catalogReadRevision: UInt64 = 0
+    private var catalogFlush: Task<Void, Never>?
     private var feedDelay: Duration, readDelay: Duration
     private var feedTask: Task<Void, Never>?, readTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?, feedRetry: Task<Void, Never>?, readRetry: Task<Void, Never>?
@@ -98,6 +143,7 @@ public actor LiveHouse {
         feedTask?.cancel(); feedTask = nil
         flushTask?.cancel(); flushTask = nil
         panelFlush?.cancel(); panelFlush = nil
+        catalogFlush?.cancel(); catalogFlush = nil
         feedRetry?.cancel(); feedRetry = nil
         cancelReadRetry()
         // Keep the read slot until its cancelled operation has drained. A
@@ -126,7 +172,35 @@ public actor LiveHouse {
                 .subtracting(snapshot.affected(by: names))
         }
         output.yield(LiveHouseView(snapshot: snapshot, phase: phase, problem: problem,
-                                  isConnected: active && connected, freshRooms: fresh, panelRevision: panelRevision))
+                                  isConnected: active && connected, freshRooms: fresh, panelRevision: panelRevision,
+                                  catalogs: catalogs, catalogReadRevision: catalogReadRevision))
+    }
+
+    private func invalidateCatalogs(_ body: [String: JSONValue]? = nil) {
+        let household: String?
+        if case .string(let name) = body?["household"] { household = name } else { household = nil }
+        let favorites: Bool, playlists: Bool
+        if case .bool(let f) = body?["favorites"], case .bool(let p) = body?["playlists"] {
+            favorites = f; playlists = p
+        } else { favorites = true; playlists = true }
+        guard favorites || playlists else { return }
+        catalogs.invalidate(household: household, favorites: favorites,
+                            playlists: playlists, zones: snapshot?.zones)
+        publish(phase)
+        guard active, catalogFlush == nil else { return }
+        let token = generation, delay = timing.coalesce
+        catalogFlush = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+                await self?.flushCatalogs(generation: token)
+            } catch { }
+        }
+    }
+
+    private func flushCatalogs(generation token: UInt64) {
+        guard active && generation == token else { return }
+        catalogFlush = nil; catalogReadRevision &+= 1
+        publish(phase)
     }
 
     /// Panel invalidations need no new house snapshot. Publish one durable
@@ -289,14 +363,19 @@ public actor LiveHouse {
         switch signal {
         case .connected:
             connected = true; problem = nil
-            invalidatePanels()
-            // Every connection gets a new full snapshot, even with a replay
-            // cursor. Events received during that read stay pending afterwards.
+            // Mark cached rooms stale before any catalog publication can make
+            // this new connection visible. Replay still requires a full read.
             invalidate()
+            invalidateCatalogs()
+            invalidatePanels()
         case .event(let event):
             if let id = event.id, UInt64(id) != nil { cursor = id }
             switch event.kind {
-            case "events.reset": cursor = nil; invalidate(); invalidatePanels()
+            case "events.reset":
+                cursor = nil; invalidate(); invalidateCatalogs(); invalidatePanels()
+            case "catalog.changed":
+                let body = try? JSONDecoder().decode([String: JSONValue].self, from: Data(event.data.utf8))
+                invalidateCatalogs(body)
             case "action.logged":
                 if Self.invalidatesPanels(event.data) { invalidatePanels() }
             case "topology.changed", "player.health": invalidate()
@@ -351,6 +430,6 @@ public actor LiveHouse {
 
     deinit {
         feedTask?.cancel(); readTask?.cancel(); flushTask?.cancel()
-        feedRetry?.cancel(); readRetry?.cancel(); panelFlush?.cancel(); output.finish()
+        feedRetry?.cancel(); readRetry?.cancel(); panelFlush?.cancel(); catalogFlush?.cancel(); output.finish()
     }
 }

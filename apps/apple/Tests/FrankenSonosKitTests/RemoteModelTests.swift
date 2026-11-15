@@ -301,3 +301,30 @@ private final class ScreenTransport: DaemonTransport, Sendable {
             stale.position(at: stale.observedAt.addingTimeInterval(600)))
     #expect(await transport.base.writes().isEmpty)
 }
+
+
+@Test @MainActor func nativeFavoriteEventsRetireOnlyTheirHouseholdsUnsentSourceReview() async throws {
+    let transport = ScreenTransport(), model = try await screen(transport)
+    defer { model.stop() }
+    model.show(.favorites)
+    try await screenEventually {
+        !model.panelLoading && model.favorites.first?.title == "Test station" &&
+        (model.house?.catalogReadRevision ?? 0) > 0
+    }
+    model.prepare(.playFavorite("FV:1"))
+    try await screenEventually { model.review != nil && model.actionPhase == .idle }
+    let review = try #require(model.review)
+    let reads = await transport.base.requests.filter { $0.url?.path == "/favorites" }.count
+    transport.output.yield(.event(ServerEvent(id: nil, kind: "catalog.changed",
+        data: #"{"household":"TEST-B","favorites":true,"playlists":false}"#)))
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(model.review?.id == review.id)
+    #expect(await transport.base.requests.filter { $0.url?.path == "/favorites" }.count == reads)
+    await transport.base.setFavorite("Changed elsewhere")
+    transport.output.yield(.event(ServerEvent(id: nil, kind: "catalog.changed",
+        data: #"{"household":"TEST-A","favorites":true,"playlists":false}"#)))
+    try await screenEventually { model.review == nil && !model.panelLoading && model.favorites.first?.title == "Changed elsewhere" }
+    model.confirm(review.id)
+    #expect(await transport.base.writes().isEmpty)
+    #expect(model.selectedRoom?.household == "TEST-A")
+}

@@ -284,3 +284,60 @@ func panelQueueEditsInvalidateWithoutAPlaybackChange(_ tool: String) async throw
         #expect(!LiveHouse.invalidatesPanels(try panelAction("get_queue: \(tool)", decision: "deny: policy")))
     }
 }
+
+
+@Test func nativeCatalogEventsRetainExactHouseholdAndCoalesceWithoutPlaybackReads() async throws {
+    try await withPanelRig([panelZone("TEST-A"), panelZone("TEST-B")]) { rig in
+        try await rig.start()
+        try await panelEventually { (await rig.views.latest?.catalogReadRevision ?? 0) > 0 }
+        let before = try #require(await rig.views.latest)
+        let reads = await rig.transport.requests.count
+        await rig.transport.emit("catalog.changed",
+            data: #"{"household":"TEST-A","favorites":false,"playlists":true}"#, count: 100)
+        try await panelEventually { await rig.views.latest?.catalogReadRevision == before.catalogReadRevision + 1 }
+        let after = try #require(await rig.views.latest)
+        #expect(after.catalogs.playlistsChanged(in: "TEST-A", since: before.catalogs))
+        #expect(!after.catalogs.playlistsChanged(in: "TEST-B", since: before.catalogs))
+        #expect(!after.catalogs.favoritesChanged(in: "TEST-A", since: before.catalogs))
+        #expect(after.panelRevision == before.panelRevision && after.isFresh)
+        #expect(after.snapshot?.stateObservedAt == before.snapshot?.stateObservedAt)
+        #expect(await rig.transport.requests.count == reads)
+    }
+}
+
+@Test func nativeUnknownCatalogScopeInvalidatesBothCatalogsAndSurvivesLaterViews() async throws {
+    try await withPanelRig([panelZone("TEST-A"), panelZone("TEST-B")]) { rig in
+        try await rig.start()
+        try await panelEventually { (await rig.views.latest?.catalogReadRevision ?? 0) > 0 }
+        let before = try #require(await rig.views.latest)
+        await rig.transport.emit("catalog.changed", data: "{")
+        try await panelEventually { await rig.views.latest?.catalogReadRevision == before.catalogReadRevision + 1 }
+        // A later playback observation may replace the intermediate buffered
+        // view. Its catalog invalidations must remain visible.
+        await rig.transport.emit("zone.state", data: #"{"room":"Studio"}"#)
+        try await panelEventually {
+            let view = await rig.views.latest
+            return view?.isFresh == true && view?.snapshot?.stateObservedAt != before.snapshot?.stateObservedAt
+        }
+        let after = try #require(await rig.views.latest)
+        for household in ["TEST-A", "TEST-B"] {
+            #expect(after.catalogs.favoritesChanged(in: household, since: before.catalogs))
+            #expect(after.catalogs.playlistsChanged(in: household, since: before.catalogs))
+        }
+    }
+}
+
+@Test func nativeCatalogNoopEventsCannotPollTheHouse() async throws {
+    try await withPanelRig { rig in
+        try await rig.start()
+        try await panelEventually { (await rig.views.latest?.catalogReadRevision ?? 0) > 0 }
+        let before = try #require(await rig.views.latest)
+        let reads = await rig.transport.requests.count
+        await rig.transport.emit("catalog.changed",
+            data: #"{"household":"TEST-A","favorites":false,"playlists":false}"#, count: 100)
+        try await Task.sleep(for: .milliseconds(90))
+        #expect(await rig.views.latest?.catalogs == before.catalogs)
+        #expect(await rig.views.latest?.catalogReadRevision == before.catalogReadRevision)
+        #expect(await rig.transport.requests.count == reads)
+    }
+}

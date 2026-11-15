@@ -26,6 +26,7 @@ private func managedString(_ value: JSONValue?) -> String? {
 /// code owns all reviews, dependency reads, dispatch, uncertainty and lifetime.
 private actor PlaylistManagementTransport: DaemonTransport {
     var requests: [URLRequest] = []
+    var streams: [AsyncThrowingStream<EventSignal, Error>.Continuation] = []
     var topology = [managedZone(), managedZone("S2")]
     var catalogs = ["S1": [managedPlaylist()], "S2": [managedPlaylist("Other household")]]
     var queueRevision = "retained-1"
@@ -138,7 +139,19 @@ private actor PlaylistManagementTransport: DaemonTransport {
         return response
     }
     nonisolated func events(_ request: URLRequest) -> AsyncThrowingStream<EventSignal, Error> {
-        AsyncThrowingStream { $0.yield(.connected) }
+        let pair = AsyncThrowingStream<EventSignal, Error>.makeStream()
+        Task { await register(pair.continuation) }
+        return pair.stream
+    }
+    private func register(_ output: AsyncThrowingStream<EventSignal, Error>.Continuation) {
+        streams.append(output); output.yield(.connected)
+    }
+    func catalogEvent(_ household: String = "S1", count: Int = 1) {
+        let fields: [String: Any] = ["household": household, "favorites": false, "playlists": true]
+        let data = try! JSONSerialization.data(withJSONObject: fields)
+        for _ in 0..<count {
+            streams.last?.yield(.event(ServerEvent(id: nil, kind: "catalog.changed", data: String(decoding: data, as: UTF8.self))))
+        }
     }
 }
 private func managedClient(_ transport: PlaylistManagementTransport) throws -> DaemonClient {
@@ -424,5 +437,164 @@ private func managedWait(_ condition: @Sendable () async -> Bool) async throws {
         workflow.resume(); #expect(workflow.openResult())
         #expect(await transport.writes().count == 1)
         workflow.stop()
+    }
+
+    @Test @MainActor func nativeCatalogEventsFenceLateReadsWithoutRepaintingOldCatalogs() async throws {
+        let transport = PlaylistManagementTransport(), model = try RemoteModel(client: managedClient(transport))
+        model.resume(); model.show(.sonosPlaylists)
+        defer { model.stop() }
+        try await managedWait { await MainActor.run {
+            model.sonosPlaylists.first?.title == "Evening" && !model.panelLoading &&
+            (model.house?.catalogReadRevision ?? 0) > 0
+        } }
+        let before = try #require(model.house)
+        await transport.hold("GET", "/sonos/playlists"); model.refreshPanel()
+        try await managedWait { await transport.blocked }
+        await transport.replace([managedPlaylist("Changed elsewhere")])
+        await transport.catalogEvent(count: 100)
+        try await managedWait { await MainActor.run {
+            (model.house?.catalogReadRevision ?? 0) > before.catalogReadRevision && model.sonosPlaylists.isEmpty
+        } }
+        await transport.release()
+        try await managedWait { await MainActor.run {
+            !model.panelLoading && model.sonosPlaylists.first?.title == "Changed elsewhere"
+        } }
+        #expect(model.sonosPlaylistRequest == nil && model.sonosPlaylistContents == nil)
+        #expect(await transport.writes().isEmpty)
+    }
+
+    @Test @MainActor func nativeCatalogEventsRetireUnsentReviewsAndKeepSentReceipts() async throws {
+        let transport = PlaylistManagementTransport(), model = try RemoteModel(client: managedClient(transport))
+        model.resume(); model.show(.sonosPlaylists)
+        defer { model.stop() }
+        try await managedWait { await MainActor.run {
+            model.sonosPlaylists.first != nil && !model.panelLoading && (model.house?.catalogReadRevision ?? 0) > 0
+        } }
+        let workflow = model.playlistManagement
+        model.openPlaylistManagement(managedPlaylist(), in: managedZone(), removing: false)
+        workflow.editTitle("Updated"); workflow.prepare()
+        try await managedWait { await MainActor.run { workflow.review != nil && workflow.phase == .idle } }
+        let original = try #require(workflow.review)
+        await transport.catalogEvent("S2")
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(workflow.review?.id == original.id)
+        await transport.catalogEvent()
+        try await managedWait { await MainActor.run { workflow.review == nil && !workflow.isEngaged } }
+        workflow.confirm(original.id)
+        #expect(await transport.writes().isEmpty)
+        workflow.prepare()
+        try await managedWait { await MainActor.run { workflow.review != nil && workflow.phase == .idle } }
+        let current = try #require(workflow.review)
+        await transport.hold("POST", "/sonos/playlists/rename"); workflow.confirm(current.id)
+        try await managedWait { await transport.blocked }
+        await transport.catalogEvent()
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(workflow.phase == .confirming && workflow.result == nil)
+        await transport.release()
+        try await managedWait { await MainActor.run { workflow.result != nil && !workflow.isEngaged } }
+        #expect(workflow.result?.kind == .confirmed && workflow.result?.receipt?.playlist.title == "Updated")
+        #expect(await transport.writes().count == 1)
+    }
+
+    @Test @MainActor func catalogInvalidationCannotReleaseOrReplayUncertainOriginalHouseholdRecovery() async throws {
+        let transport = PlaylistManagementTransport(), workflow = try managedWorkflow(transport)
+        defer { workflow.stop() }
+        workflow.openRemove(managedPlaylist(), in: managedZone()); workflow.prepare()
+        try await managedWait { await MainActor.run { workflow.review != nil && workflow.phase == .idle } }
+        let review = try #require(workflow.review)
+        await transport.loseReply(); workflow.confirm(review.id)
+        try await managedWait { await MainActor.run { workflow.result != nil && !workflow.isEngaged } }
+        let result = try #require(workflow.result)
+        await transport.hold("GET", "/sonos/playlists")
+        workflow.checkCatalog(); try await managedWait { await transport.blocked }
+        let before = NativeCatalogRevisions()
+        var changed = before
+        changed.invalidate(household: "S1", favorites: false, playlists: true,
+                           zones: [managedZone(), managedZone("S2")])
+        workflow.observeCatalogs(changed, since: before)
+        await transport.release()
+        try await managedWait { await MainActor.run { !workflow.isEngaged } }
+        #expect(workflow.needsRefresh && workflow.recovery == nil && workflow.result?.id == result.id)
+        workflow.checkCatalog()
+        try await managedWait { await MainActor.run { !workflow.isEngaged && workflow.recovery != nil } }
+        #expect(!workflow.needsRefresh && workflow.result?.kind == .uncertain)
+        var other = changed
+        other.invalidate(household: "S2", favorites: false, playlists: true,
+                         zones: [managedZone(), managedZone("S2")])
+        workflow.observeCatalogs(other, since: changed)
+        #expect(!workflow.needsRefresh && workflow.recovery != nil)
+        changed = other
+        changed.invalidate(household: "S1", favorites: false, playlists: true,
+                           zones: [managedZone(), managedZone("S2")])
+        workflow.observeCatalogs(changed, since: other)
+        #expect(workflow.needsRefresh && workflow.recovery == nil && workflow.result?.kind == .uncertain)
+        #expect(await transport.writes().count == 1)
+    }
+
+    @Test @MainActor func nativeCatalogEventsRetireContentsUntilExplicitlyReopened() async throws {
+        let transport = PlaylistManagementTransport(), model = try RemoteModel(client: managedClient(transport))
+        model.resume(); model.show(.sonosPlaylists)
+        defer { model.stop() }
+        try await managedWait { await MainActor.run {
+            model.sonosPlaylists.first != nil && !model.panelLoading && (model.house?.catalogReadRevision ?? 0) > 0
+        } }
+        model.openSonosPlaylist(managedPlaylist(), in: managedZone())
+        try await managedWait { await MainActor.run { model.sonosPlaylistContents != nil && !model.panelLoading } }
+        let page = try #require(model.sonosPlaylistContents)
+        let request = try #require(model.sonosPlaylistRequest)
+        let item = try #require(page.items.first)
+        model.addSonosPlaylistTrack(item, from: page, request: request, in: managedZone())
+        #expect(model.sonosPlaylistTracks.choices.count == 1)
+        let selection = model.sonosPlaylistTracks.id
+        let reads = await transport.requests.filter { $0.url?.path == "/sonos/playlists/contents" }.count
+
+        await transport.changeSaved(revision: "saved-2")
+        await transport.replace([managedPlaylist("Renamed elsewhere")])
+        await transport.catalogEvent()
+        try await managedWait { await MainActor.run {
+            model.sonosPlaylists.first?.title == "Renamed elsewhere" && !model.panelLoading
+        } }
+        #expect(model.sonosPlaylistContents == nil && model.sonosPlaylistRequest == nil)
+        #expect(model.sonosPlaylistTracks.id != selection)
+        #expect(await transport.requests.filter { $0.url?.path == "/sonos/playlists/contents" }.count == reads)
+        model.prepareSonosPlaylistTracks(.play, selection: selection, in: managedZone())
+        #expect(model.review == nil && model.actionPhase == .idle)
+
+        model.openSonosPlaylist(managedPlaylist("Renamed elsewhere"), in: managedZone())
+        try await managedWait { await MainActor.run {
+            model.sonosPlaylistContents?.revision == "saved-2" && !model.panelLoading
+        } }
+        #expect(model.sonosPlaylistContents?.playlist.title == "Renamed elsewhere")
+        #expect(await transport.writes().isEmpty)
+    }
+
+    @Test @MainActor func originalHouseholdInvalidationRetiresAnotherHouseholdsUnsentReview() async throws {
+        let transport = PlaylistManagementTransport(), workflow = try managedWorkflow(transport)
+        defer { workflow.stop() }
+        workflow.openRemove(managedPlaylist(), in: managedZone()); workflow.prepare()
+        try await managedWait { await MainActor.run { workflow.review != nil && workflow.phase == .idle } }
+        let original = try #require(workflow.review)
+        await transport.loseReply(); workflow.confirm(original.id)
+        try await managedWait { await MainActor.run { workflow.result != nil && !workflow.isEngaged } }
+        let result = try #require(workflow.result)
+        workflow.checkCatalog()
+        try await managedWait { await MainActor.run { workflow.recovery != nil && !workflow.isEngaged } }
+        #expect(!workflow.needsRefresh && workflow.result?.kind == .uncertain)
+
+        #expect(workflow.openRename(managedPlaylist("Other household"), in: managedZone("S2")))
+        workflow.editTitle("Changed in S2"); workflow.prepare()
+        try await managedWait { await MainActor.run { workflow.review != nil && workflow.phase == .idle } }
+        let other = try #require(workflow.review)
+        let before = NativeCatalogRevisions()
+        var changed = before
+        changed.invalidate(household: "S1", favorites: false, playlists: true,
+                           zones: [managedZone(), managedZone("S2")])
+        workflow.observeCatalogs(changed, since: before)
+        try await managedWait { await MainActor.run { !workflow.isEngaged } }
+        #expect(workflow.needsRefresh && workflow.recovery == nil && workflow.review == nil)
+        #expect(workflow.result?.id == result.id && workflow.result?.command.zone.household == "S1")
+        workflow.confirm(other.id)
+        #expect(workflow.phase == .idle)
+        #expect(await transport.writes().count == 1)
     }
 }

@@ -127,7 +127,7 @@ public struct SonosPlaylistManagementResult: Identifiable, Sendable {
     }
 
     public func confirm(_ id: UUID) {
-        guard active && !stopped && task == nil && cancellation == nil,
+        guard active && !stopped && !needsRefresh && task == nil && cancellation == nil,
               let reviewed = review, reviewed.id == id else { return }
         review = nil; result = nil; recovery = nil; problem = nil; phase = .confirming
         let commands = commands
@@ -176,6 +176,35 @@ public struct SonosPlaylistManagementResult: Identifiable, Sendable {
             self?.finished()
         }
         publish()
+    }
+
+    /// Events invalidate observations, never acknowledge or replay a mutation.
+    /// Recovery stays attached to the receipt's original household even while
+    /// another room is selected or the editor is closed.
+    func observeCatalogs(_ current: NativeCatalogRevisions, since previous: NativeCatalogRevisions) {
+        var changed = false
+        var invalidation: String?
+        if phase != .confirming, let zone,
+           current.playlistsChanged(in: zone.household, since: previous),
+           review != nil || phase == .preparing {
+            invalidation = "The saved playlist catalog changed. Review its current contents again."
+            changed = true
+        }
+        if let result, current.playlistsChanged(in: result.command.zone.household, since: previous) {
+            recovery = nil
+            if result.kind == .uncertain {
+                needsRefresh = true
+                if phase != .confirming, review != nil || phase == .preparing {
+                    invalidation = "The original household's saved playlist catalog changed. Check that household again before another catalog change."
+                }
+            }
+            if phase == .checkingCatalog {
+                invalidation = "The saved playlist catalog changed during recovery. Check the original household again."
+            }
+            changed = true
+        }
+        if let invalidation { cancel(); problem = invalidation }
+        if changed { publish() }
     }
 
     public func cancel() {
