@@ -398,6 +398,375 @@ fn a_paused_owned_queue_can_still_skip_to_the_next_whole_work() {
     assert_eq!(run.sample().transport, Some(TransportState::Playing));
 }
 
+#[derive(Clone, Copy)]
+enum PartialWork {
+    Current,
+    Waiting,
+}
+
+fn partially_enqueued(s2: bool, partial: PartialWork) -> Running {
+    let rig = Rig::generation(s2);
+    let feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+    let mut run = Running {
+        rig,
+        feed,
+        pool: multi_movement_pool(),
+        store: MemStore::default(),
+        started: Vec::new(),
+    };
+    let flaky = Flaky::new(run.rig.lan.clone());
+    if matches!(partial, PartialWork::Waiting) {
+        run.started = run
+            .feed
+            .start(
+                &run.rig.speakers(&flaky),
+                plan(&run.pool, MIDNIGHT),
+                &mut run.store,
+            )
+            .unwrap()
+            .to_vec();
+        run.seek(run.started[1].first().unwrap());
+    }
+    flaky.fail_add_in(2);
+    let failure = match partial {
+        PartialWork::Current => run
+            .feed
+            .start(
+                &run.rig.speakers(&flaky),
+                plan(&run.pool, MIDNIGHT),
+                &mut run.store,
+            )
+            .unwrap_err(),
+        PartialWork::Waiting => {
+            let playback = run.sample();
+            run.feed
+                .on_playback(
+                    &run.rig.speakers(&flaky),
+                    plan(&run.pool, MIDNIGHT + 600),
+                    &mut run.store,
+                    &playback,
+                )
+                .unwrap_err()
+        }
+    };
+    assert!(matches!(
+        failure,
+        FeedError::Proto(ProtoError::SoapFault { code: 501, .. })
+    ));
+    let unfinished = run.feed.queued().last().unwrap();
+    assert!(!unfinished.is_whole());
+    assert_eq!(unfinished.movements.iter().filter(|m| m.added).count(), 1);
+    if matches!(partial, PartialWork::Current) {
+        run.seek(unfinished.first().unwrap());
+    }
+    run
+}
+
+/// One unavailable movement stays refused while all other traffic reaches
+/// the real simulator. A skip must not require the music it is leaving.
+struct RefusingMovement {
+    inner: Flaky,
+    uri: String,
+    refused: Cell<usize>,
+}
+
+impl Transport for RefusingMovement {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let enqueue = format!(
+            "<EnqueuedURI>{}</EnqueuedURI>",
+            spotify_queue_uri(&self.uri)
+        );
+        if action.contains("#AddURIToQueue") && body.contains(&enqueue) {
+            self.refused.set(self.refused.get() + 1);
+            return Err(ProtoError::SoapFault {
+                code: 501,
+                reason: "this movement cannot be enqueued".into(),
+            });
+        }
+        self.inner.soap_post(host, path, action, body)
+    }
+}
+
+#[test]
+fn skip_leaves_a_refused_current_movement_and_starts_the_next_whole_work() {
+    for s2 in [false, true] {
+        let mut run = partially_enqueued(s2, PartialWork::Current);
+        let unfinished = run.feed.queued()[0].clone();
+        let before = run.rig.queue();
+        let refusing = RefusingMovement {
+            inner: Flaky::new(run.rig.lan.clone()),
+            uri: unfinished.movements[1].uri.clone(),
+            refused: Cell::new(0),
+        };
+        let playback = run.sample();
+        assert!(matches!(
+            run.feed.on_playback(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 800),
+                &mut run.store,
+                &playback,
+            ),
+            Err(FeedError::Proto(ProtoError::SoapFault { code: 501, .. }))
+        ));
+        let heard = plays(&run.store);
+        assert_eq!(heard, [unfinished.movements[0].uri.clone()]);
+        assert_eq!(refusing.refused.get(), 1);
+        let next = run
+            .feed
+            .skip(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 900),
+                &mut run.store,
+            )
+            .unwrap()
+            .clone();
+        assert_eq!(
+            refusing.refused.get(),
+            1,
+            "the skipped work is not completed"
+        );
+        assert!(next.is_whole());
+        assert_ne!(next.work_key, unfinished.work_key);
+        assert_eq!(next.first(), unfinished.last().map(|position| position + 1));
+        assert_eq!(run.rig.position(), next.first().unwrap());
+        assert_eq!(run.sample().transport, Some(TransportState::Playing));
+        let queue = run.rig.queue();
+        assert_eq!(&queue[..before.len()], before);
+        assert_eq!(&queue[before.len()..], next.tracks());
+        assert_eq!(plays(&run.store), heard, "skip alone is not listening");
+
+        // A restart and rewind can leave the same partial current work with
+        // an intact successor already waiting. Skip must use that successor
+        // without retrying the old refusal or adding another copy.
+        run.feed = reread(&run.feed, 19);
+        run.seek(unfinished.first().unwrap());
+        let again = run
+            .feed
+            .skip(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 901),
+                &mut run.store,
+            )
+            .unwrap()
+            .clone();
+        assert_eq!(again, next);
+        assert_eq!(refusing.refused.get(), 1);
+        assert_eq!(run.rig.queue(), queue);
+        assert_eq!(run.rig.position(), next.first().unwrap());
+
+        let playback = run.sample();
+        run.feed
+            .on_playback(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 902),
+                &mut run.store,
+                &playback,
+            )
+            .unwrap();
+        assert_eq!(
+            refusing.refused.get(),
+            1,
+            "automatic feeding leaves the skipped fragment"
+        );
+        assert!(
+            run.feed
+                .queued()
+                .iter()
+                .all(|work| work.work_key != unfinished.work_key)
+        );
+        assert_eq!(&run.rig.queue()[..before.len()], before);
+    }
+}
+
+#[test]
+fn skip_requires_the_waiting_work_to_be_complete_before_leaving_the_current_one() {
+    for s2 in [false, true] {
+        let mut run = partially_enqueued(s2, PartialWork::Waiting);
+        let unfinished = run.feed.queued().last().unwrap().clone();
+        let position = run.rig.position();
+        let queue = run.rig.queue();
+        let heard = plays(&run.store);
+        let writes = || {
+            run.rig
+                .sim
+                .soap_log()
+                .iter()
+                .filter(|entry| {
+                    matches!(entry.action.as_str(), "SetAVTransportURI" | "Seek" | "Play")
+                })
+                .count()
+        };
+        let before = writes();
+        let refusing = RefusingMovement {
+            inner: Flaky::new(run.rig.lan.clone()),
+            uri: unfinished.movements[1].uri.clone(),
+            refused: Cell::new(0),
+        };
+        let result = run.feed.skip(
+            &run.rig.speakers(&refusing),
+            plan(&run.pool, MIDNIGHT + 900),
+            &mut run.store,
+        );
+        assert!(matches!(
+            result,
+            Err(FeedError::Proto(ProtoError::SoapFault { code: 501, .. }))
+        ));
+        assert_eq!(refusing.refused.get(), 1);
+        assert_eq!(writes(), before, "an incomplete successor never starts");
+        assert_eq!(run.rig.position(), position);
+        assert_eq!(run.rig.queue(), queue);
+        assert_eq!(plays(&run.store), heard);
+        assert!(run.feed.is_active(), "a definite refusal remains retryable");
+
+        let next = run.skip().unwrap();
+        assert!(next.is_whole());
+        assert_eq!(next.work_key, unfinished.work_key);
+        assert_eq!(next.first(), unfinished.first());
+        assert_eq!(run.rig.position(), next.first().unwrap());
+        assert_eq!(run.sample().transport, Some(TransportState::Playing));
+        assert_eq!(
+            &run.rig.queue()[usize::try_from(next.first().unwrap() - 1).unwrap()..],
+            next.tracks(),
+        );
+    }
+}
+
+#[test]
+fn a_failed_new_successor_is_completed_on_explicit_retry_without_revisiting_the_skipped_work() {
+    for s2 in [false, true] {
+        let mut run = partially_enqueued(s2, PartialWork::Current);
+        let current = run.feed.queued()[0].clone();
+        let before = run.rig.queue();
+        let refusing = RefusingMovement {
+            inner: Flaky::new(run.rig.lan.clone()),
+            uri: current.movements[1].uri.clone(),
+            refused: Cell::new(0),
+        };
+        refusing.inner.fail_add_in(2);
+        assert!(matches!(
+            run.feed.skip(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 900),
+                &mut run.store,
+            ),
+            Err(FeedError::Proto(ProtoError::SoapFault { code: 501, .. }))
+        ));
+        assert_eq!(refusing.refused.get(), 0);
+        assert!(run.feed.is_active());
+        assert_eq!(run.feed.queued().len(), 2);
+        assert_eq!(run.feed.queued()[0], current);
+        let successor = run.feed.queued()[1].clone();
+        assert!(!successor.is_whole());
+        assert_eq!(successor.movements.iter().filter(|m| m.added).count(), 1);
+        assert_eq!(run.rig.position(), current.first().unwrap());
+        assert_eq!(&run.rig.queue()[..before.len()], before);
+
+        run.feed = reread(&run.feed, 19);
+        let next = run
+            .feed
+            .skip(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 901),
+                &mut run.store,
+            )
+            .unwrap()
+            .clone();
+        assert_eq!(
+            refusing.refused.get(),
+            0,
+            "retry completes only the waiting work"
+        );
+        assert_eq!(next.work_key, successor.work_key);
+        assert_eq!(next.first(), successor.first());
+        assert!(next.is_whole());
+        assert_eq!(run.feed.queued()[0], current);
+        assert_eq!(
+            run.feed.queued().len(),
+            2,
+            "retry never chooses another work"
+        );
+        assert_eq!(run.rig.position(), next.first().unwrap());
+        assert_eq!(run.sample().transport, Some(TransportState::Playing));
+        let queue = run.rig.queue();
+        assert_eq!(&queue[..before.len()], before);
+        assert_eq!(&queue[before.len()..], next.tracks());
+    }
+}
+
+#[test]
+fn playback_completes_the_partial_successor_after_a_failed_skip_before_adding_another_work() {
+    for s2 in [false, true] {
+        let mut run = partially_enqueued(s2, PartialWork::Current);
+        let current = run.feed.queued()[0].clone();
+        let before = run.rig.queue();
+        let refusing = RefusingMovement {
+            inner: Flaky::new(run.rig.lan.clone()),
+            uri: current.movements[1].uri.clone(),
+            refused: Cell::new(0),
+        };
+        let playback = run.sample();
+        assert!(matches!(
+            run.feed.on_playback(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 800),
+                &mut run.store,
+                &playback,
+            ),
+            Err(FeedError::Proto(ProtoError::SoapFault { code: 501, .. }))
+        ));
+        refusing.inner.fail_add_in(2);
+        assert!(matches!(
+            run.feed.skip(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 900),
+                &mut run.store,
+            ),
+            Err(FeedError::Proto(ProtoError::SoapFault { code: 501, .. }))
+        ));
+        assert_eq!(run.feed.queued().len(), 2);
+        let successor = run.feed.queued()[1].clone();
+        assert!(!successor.is_whole());
+
+        run.rig.next();
+        assert_eq!(run.rig.position(), successor.first().unwrap());
+        let playback = run.sample();
+        let added = run
+            .feed
+            .on_playback(
+                &run.rig.speakers(&refusing),
+                plan(&run.pool, MIDNIGHT + 901),
+                &mut run.store,
+                &playback,
+            )
+            .unwrap();
+        assert_eq!(
+            refusing.refused.get(),
+            1,
+            "the old refusal is not revisited"
+        );
+        assert_eq!(added, 1);
+        let completed = &run.feed.queued()[0];
+        assert_eq!(completed.work_key, successor.work_key);
+        assert_eq!(completed.first(), successor.first());
+        assert!(completed.is_whole());
+        let waiting = &run.feed.queued()[1];
+        assert!(waiting.is_whole());
+        assert_eq!(waiting.first(), completed.last().map(|last| last + 1));
+        assert_eq!(run.rig.position(), completed.first().unwrap());
+        let queue = run.rig.queue();
+        assert_eq!(&queue[..before.len()], before);
+        let end = before.len() + completed.movements.len();
+        assert_eq!(&queue[before.len()..end], completed.tracks());
+        assert_eq!(&queue[end..], waiting.tracks());
+    }
+}
+
 #[test]
 fn skip_on_an_owner_item_still_finds_the_shifted_waiting_work() {
     let mut run = Running::classical();

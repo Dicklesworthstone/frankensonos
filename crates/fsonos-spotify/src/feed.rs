@@ -918,13 +918,18 @@ impl QueueFeed {
             return Err(FeedError::Inactive);
         }
         navigation::prepare_skip(self, at)?;
-        self.finish_partial(at, store, plan.now)?;
         let playing = self.playing.unwrap_or(0);
         let waiting = self
             .queued
             .iter()
             .position(|w| w.first().is_some_and(|first| first > playing));
         let next = if let Some(next) = waiting {
+            // Skip leaves the current work, including movements an earlier
+            // enqueue could not add. Only the selected successor must be
+            // completed before playback can move to it.
+            if !self.queued[next].is_whole() {
+                self.finish_partial_work(at, store, plan.now, next)?;
+            }
             next
         } else {
             self.enqueue(at, plan, store, 1)?;
@@ -1159,18 +1164,18 @@ impl QueueFeed {
         Ok(want - ahead)
     }
 
-    /// Discard only the unfinished work a start would already have passed.
+    /// Discard unfinished works a start would already have passed.
     /// Admission applies the same decision to a clone before counting picks.
     fn partial_to_finish(&mut self) -> Option<usize> {
-        let index = self.queued.iter().position(|work| !work.is_whole())?;
-        if self.queued[index]
-            .last()
-            .is_some_and(|last| !self.playing.is_some_and(|playing| playing > last))
-        {
-            Some(index)
-        } else {
+        loop {
+            let index = self.queued.iter().position(|work| !work.is_whole())?;
+            if self.queued[index]
+                .last()
+                .is_some_and(|last| !self.playing.is_some_and(|playing| playing > last))
+            {
+                return Some(index);
+            }
             self.queued.remove(index);
-            None
         }
     }
 
@@ -1186,6 +1191,16 @@ impl QueueFeed {
         let Some(index) = self.partial_to_finish() else {
             return Ok(());
         };
+        self.finish_partial_work(at, store, now, index)
+    }
+
+    fn finish_partial_work<T: Transport + ?Sized, S: Store + ?Sized>(
+        &mut self,
+        at: &Speakers<'_, T>,
+        store: &mut S,
+        now: i64,
+        index: usize,
+    ) -> Result<(), FeedError> {
         let params = render_params(at, store, now)?;
         let host = host_of(at)?;
         let mut proof = enqueue::Batch::new(at.coordinator);
