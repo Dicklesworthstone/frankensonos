@@ -12,6 +12,7 @@ use fsonos_proto::topology::{ZoneGroupState, ZoneMember};
 use fsonos_types::{Generation, Player, PlayerId, ZoneGroup};
 use std::collections::HashSet;
 use std::iter;
+use std::net::IpAddr;
 
 fn invalid(detail: &str) -> ProtoError {
     ProtoError::Malformed(format!("incoherent topology: {detail}"))
@@ -85,6 +86,22 @@ pub fn validate_response(
         return Err(invalid("the responding player is absent"));
     }
     Ok(())
+}
+
+/// A household-wide topology can be read from any player. Merely naming a
+/// coordinator does not prove that the responding endpoint owns its queue.
+pub(crate) fn coordinator_at(
+    topology: &ZoneGroupState,
+    host: IpAddr,
+    coordinator: &PlayerId,
+) -> Result<bool, ProtoError> {
+    validate(topology)?;
+    Ok(topology.groups.iter().any(|group| {
+        group.coordinator == *coordinator
+            && group.members.iter().any(|member| {
+                member.uuid == *coordinator && member.ip() == Some(host) && !member.is_zone_bridge
+            })
+    }))
 }
 
 /// A logical room ("zone" in the Sonos apps), addressed by name.
@@ -223,6 +240,44 @@ mod tests {
 
     fn pid(s: &str) -> PlayerId {
         PlayerId(s.into())
+    }
+
+    #[test]
+    fn a_coordinator_elsewhere_in_the_household_does_not_own_the_endpoint() {
+        let topology = parse_zone_group_state(
+            r#"<ZoneGroups>
+            <ZoneGroup Coordinator="A" ID="A:1">
+              <ZoneGroupMember UUID="A" Location="http://192.0.2.1:1400/x" ZoneName="A"/>
+            </ZoneGroup>
+            <ZoneGroup Coordinator="B" ID="B:1">
+              <ZoneGroupMember UUID="B" Location="http://192.0.2.2:1400/x" ZoneName="B"/>
+            </ZoneGroup></ZoneGroups>"#,
+        )
+        .unwrap();
+        let host = "192.0.2.1".parse().unwrap();
+        assert!(coordinator_at(&topology, host, &pid("A")).unwrap());
+        assert!(!coordinator_at(&topology, host, &pid("B")).unwrap());
+        assert!(!coordinator_at(&topology, host, &pid("missing")).unwrap());
+        let mut bridge = topology;
+        bridge.groups[0].members[0].is_zone_bridge = true;
+        assert!(!coordinator_at(&bridge, host, &pid("A")).unwrap());
+    }
+
+    #[test]
+    fn malformed_topology_cannot_establish_queue_endpoint_ownership() {
+        let document = r#"<ZoneGroups><ZoneGroup Coordinator="A" ID="A:1">
+            <ZoneGroupMember UUID="A" Location="http://192.0.2.1:1400/x" ZoneName="A"/>
+            <ZoneGroupMember UUID="B" Location="http://192.0.2.2:1400/x" ZoneName="B"/>
+            </ZoneGroup></ZoneGroups>"#;
+        for malformed in [
+            document.replace("UUID=\"B\"", "UUID=\"A\""),
+            document.replace("192.0.2.2", "192.0.2.1"),
+            document.replace("Coordinator=\"A\"", "Coordinator=\"absent\""),
+            document.replace("http://192.0.2.2:1400/x", "unavailable"),
+        ] {
+            let topology = parse_zone_group_state(&malformed).unwrap();
+            assert!(coordinator_at(&topology, "192.0.2.1".parse().unwrap(), &pid("A")).is_err());
+        }
     }
 
     #[test]

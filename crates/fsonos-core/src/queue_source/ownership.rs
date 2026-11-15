@@ -119,6 +119,46 @@ impl Rig {
             }
         }
     }
+
+    fn matching_queues(s2: bool) -> Self {
+        let rig = Self::new(s2, true);
+        for uri in OLD {
+            soap::add_uri_to_queue(&rig.lan, rig.peer_host, uri, "", false).unwrap();
+        }
+        control::play_queue_from(&rig.lan, &rig.houses, &rig.peer, 1).unwrap();
+        assert_eq!(
+            super::read(&rig.lan, rig.host).unwrap(),
+            super::read(&rig.lan, rig.peer_host).unwrap(),
+            "different groups can have identical queue contents and revisions"
+        );
+        rig
+    }
+
+    fn stale_addresses(&self) -> Vec<HouseholdState> {
+        let mut houses = self.houses.clone();
+        for player in &mut houses[0].players {
+            if player.id == self.id {
+                player.ip = self.peer_host;
+            } else if player.id == self.peer {
+                player.ip = self.host;
+            }
+        }
+        houses
+    }
+
+    fn both_queues_unchanged(&self) {
+        for host in [self.host, self.peer_host] {
+            assert_eq!(super::read(&self.lan, host).unwrap().uris, OLD);
+            assert_eq!(
+                soap::get_transport_info(&self.lan, host).unwrap().state,
+                TransportState::Playing
+            );
+            assert_eq!(
+                soap::get_position_info(&self.lan, host).unwrap().uri,
+                OLD[0]
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -145,6 +185,8 @@ enum Fault {
     UnreadableAfterAdd,
     UnreadableAfterRemoval,
     MissingSource,
+    ConflictingAddress,
+    SwappedAddressesAfterAdd,
 }
 
 struct Replies<'a> {
@@ -189,6 +231,17 @@ impl<'a> Replies<'a> {
         ] {
             assert_eq!(self.count(action), 0, "unexpected {action}");
         }
+    }
+
+    fn no_writes(&self) {
+        assert!(
+            self.calls
+                .borrow()
+                .iter()
+                .all(|name| name.starts_with("Get") || name == "Browse"),
+            "unexpected mutation: {:?}",
+            self.calls.borrow()
+        );
     }
 
     fn lost(host: IpAddr) -> ProtoError {
@@ -254,7 +307,156 @@ impl Transport for Replies<'_> {
         if name == "GetMediaInfo" && matches!(self.fault, Fault::MissingSource) {
             return Ok(response.replace("CurrentURI", "AbsentURI"));
         }
+        if name == "GetZoneGroupState" && matches!(self.fault, Fault::ConflictingAddress) {
+            return Ok(
+                response.replace(&self.rig.peer_host.to_string(), &self.rig.host.to_string())
+            );
+        }
+        if name == "GetZoneGroupState"
+            && self.added.get()
+            && matches!(self.fault, Fault::SwappedAddressesAfterAdd)
+        {
+            return Ok(response
+                .replace(&self.rig.host.to_string(), "relocated-player")
+                .replace(&self.rig.peer_host.to_string(), &self.rig.host.to_string())
+                .replace("relocated-player", &self.rig.peer_host.to_string()));
+        }
         Ok(response)
+    }
+}
+
+#[test]
+fn queue_replacements_and_track_batches_refuse_a_reused_coordinator_address() {
+    for s2 in [false, true] {
+        let rig = Rig::matching_queues(s2);
+        let houses = rig.stale_addresses();
+        for autoplay in [false, true] {
+            let t = Replies::new(&rig, None, Fault::None);
+            let result = if autoplay {
+                control::play_spotify_container(
+                    &t,
+                    &houses,
+                    &rig.id,
+                    SpotifyContainer::Album,
+                    ALBUM,
+                    "Replacement",
+                )
+            } else {
+                control::load_spotify_container(
+                    &t,
+                    &houses,
+                    &rig.id,
+                    SpotifyContainer::Album,
+                    ALBUM,
+                    "Replacement",
+                )
+            };
+            assert!(result.is_err());
+            let tracks = [("spotify:track:0000000000000000000789", "New track")];
+            let batch = if autoplay {
+                control::play_spotify_tracks(&t, &houses, &rig.id, &tracks)
+            } else {
+                control::load_spotify_tracks(&t, &houses, &rig.id, &tracks)
+            };
+            assert!(batch.is_err());
+            t.no_writes();
+            rig.both_queues_unchanged();
+        }
+    }
+}
+
+#[test]
+fn both_enqueue_adapters_refuse_a_reused_coordinator_address() {
+    for s2 in [false, true] {
+        let rig = Rig::matching_queues(s2);
+        let houses = rig.stale_addresses();
+        let favorite = crate::favorites::list(&rig.lan, &rig.houses, &rig.id)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.kind == crate::favorites::FavoriteKind::Track)
+            .unwrap();
+        for next in [false, true] {
+            let t = Replies::new(&rig, None, Fault::None);
+            assert!(
+                control::enqueue_spotify(
+                    &t,
+                    &houses,
+                    &rig.id,
+                    "spotify:track:0000000000000000000789",
+                    "New track",
+                    next,
+                )
+                .is_err()
+            );
+            assert!(crate::favorite_queue::enqueue(&t, &houses, &rig.id, &favorite, next).is_err());
+            t.no_writes();
+            rig.both_queues_unchanged();
+        }
+    }
+}
+
+#[test]
+fn queue_deletion_refuses_a_peer_even_when_its_revision_and_contents_match() {
+    for s2 in [false, true] {
+        let rig = Rig::matching_queues(s2);
+        let before = super::read(&rig.lan, rig.host).unwrap();
+        let t = Replies::new(&rig, None, Fault::None);
+        let error =
+            control::queue_removal::remove(&t, rig.peer_host, &rig.id, &before, 1, 1).unwrap_err();
+        assert!(matches!(
+            error,
+            control::queue_removal::RemovalError::Invalid(_)
+        ));
+        t.no_writes();
+        rig.both_queues_unchanged();
+    }
+}
+
+#[test]
+fn conflicting_topology_addresses_cannot_authorize_any_queue_mutation() {
+    for s2 in [false, true] {
+        let rig = Rig::matching_queues(s2);
+        let before = super::read(&rig.lan, rig.host).unwrap();
+        let t = Replies::new(&rig, None, Fault::ConflictingAddress);
+        assert!(rig.replace(&t, true).is_err());
+        assert!(control::queue_removal::remove(&t, rig.host, &rig.id, &before, 1, 1).is_err());
+        assert!(
+            control::enqueue_spotify(
+                &t,
+                &rig.houses,
+                &rig.id,
+                "spotify:track:0000000000000000000789",
+                "New track",
+                false,
+            )
+            .is_err()
+        );
+        t.no_writes();
+        rig.both_queues_unchanged();
+    }
+}
+
+#[test]
+fn a_matching_favorite_insertion_does_not_override_a_changed_coordinator_address() {
+    for s2 in [false, true] {
+        let rig = Rig::matching_queues(s2);
+        let favorite = crate::favorites::list(&rig.lan, &rig.houses, &rig.id)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.kind == crate::favorites::FavoriteKind::Track)
+            .unwrap();
+        let t = Replies::new(&rig, None, Fault::SwappedAddressesAfterAdd);
+        let error =
+            crate::favorite_queue::enqueue(&t, &rig.houses, &rig.id, &favorite, false).unwrap_err();
+        assert!(crate::favorite_queue::is_uncertain(&error));
+        assert_eq!(
+            t.count("AddURIToQueue"),
+            1,
+            "the uncertain add is not retried"
+        );
+        assert_eq!(rig.queue().len(), OLD.len() + 1, "the first add happened");
+        assert_eq!(super::read(&rig.lan, rig.peer_host).unwrap().uris, OLD);
+        t.no_selection();
     }
 }
 

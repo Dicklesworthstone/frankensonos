@@ -222,3 +222,22 @@ cargo test --locked -p fsonos-api --test dj_move_sim --test sleep_move_sim
 The tests use real S1/S2 simulator sockets and discard an acknowledgement only
 after the simulated player accepted the operation. Physical-speaker acceptance
 remains a separate check.
+
+## Queue operations retain the actual coordinator endpoint
+
+A household-wide topology response can come from any of its players. Queue
+replacement, explicit track batches, Spotify insertion, native-favorite
+insertion and removal now require the intended coordinator's advertised
+address to match the endpoint receiving the command. The shared check also
+rejects incoherent topology and bridge identities. A matching queue revision
+or identical contents on another player do not establish ownership.
+
+Replacement observations retain that address through source transitions.
+Native-favorite insertion and removal check endpoint identity again after
+their write: a changed or unreadable result stays uncertain and is not
+replayed. These observations detect address reuse and ownership changes;
+they do not lock out another controller between the final read and write.
+
+The `fsonos-core` `queue_source::ownership` simulator cases cover S1 and S2
+with independent groups, identical queue revisions, reassigned addresses,
+malformed topology, and an address change after an accepted insertion.

@@ -41,10 +41,7 @@ fn leads<T: Transport + ?Sized>(
     host: IpAddr,
     expected: &PlayerId,
 ) -> Result<bool, ProtoError> {
-    Ok(get_zone_group_state(t, host)?
-        .groups
-        .iter()
-        .any(|group| group.coordinator == *expected))
+    crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, expected)
 }
 
 fn same_track(left: &str, right: &str) -> bool {

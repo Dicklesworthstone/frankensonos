@@ -26,6 +26,11 @@ impl Destination {
         coordinator: &PlayerId,
     ) -> Result<Self, ProtoError> {
         let topology = get_zone_group_state(t, host)?;
+        if !crate::topology::coordinator_at(&topology, host, coordinator)? {
+            return Err(ProtoError::Malformed(
+                "the replacement target's address no longer identifies its coordinator".into(),
+            ));
+        }
         let mut groups = topology
             .groups
             .iter()
@@ -106,7 +111,9 @@ impl Destination {
 
     /// A source transition cannot change the intended audience or reboot.
     pub(crate) fn same_group(&self, other: &Self) -> bool {
-        self.members == other.members && self.boot_seq == other.boot_seq
+        self.members == other.members
+            && self.boot_seq == other.boot_seq
+            && self.coordinator_host == other.coordinator_host
     }
 
     /// Prove the requested renderer source, retaining account metadata when

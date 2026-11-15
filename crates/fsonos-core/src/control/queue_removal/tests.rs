@@ -298,6 +298,24 @@ fn matching_contents_on_a_changed_coordinator_do_not_confirm_success() {
 }
 
 #[test]
+fn a_changed_coordinator_address_after_removal_does_not_confirm_success() {
+    let wire = Wire::new([
+        ("GetZoneGroupState", Ok(topology(true))),
+        ("RemoveTrackRangeFromQueue", Err(lost())),
+        ("Browse", Ok(browse(8, &[]))),
+        (
+            "GetZoneGroupState",
+            Ok(topology(true).replace("127.0.0.1", "127.0.0.2")),
+        ),
+    ]);
+    let error = remove(&wire, host(), &owner(), &snapshot(7, &["a"]), 1, 1).unwrap_err();
+    assert!(matches!(error, RemovalError::Uncertain(_)));
+    assert!(error.to_string().contains("reply lost"));
+    assert_eq!(wire.writes(), 1);
+    wire.finished();
+}
+
+#[test]
 fn acknowledged_but_incorrect_changes_are_uncertain() {
     for (revision, uris) in [
         (7, vec!["a", "d"]),
