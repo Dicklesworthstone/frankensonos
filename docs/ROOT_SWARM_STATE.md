@@ -5643,3 +5643,9 @@ Consequence: the IV must be taken **later**, after the records are materialised,
 from the source side (`r19`/`r22` = `0x4085c000`) rather than from `r30`. That also explains
 why every offset-based IV guess produced zeros and why init "succeeds" but final fails —
 it is being initialised with a zero IV.
+
+Source buffer layout at `r19`: same converted header (`886499ca 13a 10000 0 1000000`), a
+4-byte value `0x1403fd88`, then 16 random bytes at `+24` which read as a plausible IV
+(`f2642a9c 89a44747 c7b4342c db483fe1`). Init with them returns 0 and stamps the magic, but
+the final call still fails — consistent with the stream starting at the wrong offset (the
+loop re-decrypts from the record start while the header has already been consumed).
