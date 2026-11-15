@@ -5658,3 +5658,12 @@ Therefore the random bytes at `r31` are *ciphertext*, not an AES key — the key
 elsewhere (very likely inside the context struct `r16`, which is what the vtable object
 would hold). This reframes the last few attempts: key placement, not only IV, is still
 open.
+
+Argument dump at `0x10007168`: `(mode=1, 16, buf=0x407fb660, 0x2000, 0)`. So `0x10006a20` is
+the **key-material producer** — mode 1, 16-byte output, into `r31` — and its 8192 return is
+the output capacity, not "bytes written". That vindicates `r31` as the key buffer and
+retires the previous correction's doubt about it.
+
+So the current best configuration is: key = `r31` (produced by this call), IV = `r19+24`.
+Both are genuine now; the final call still fails, so what remains is the third element —
+where the *ciphertext* for `ZZ0050` comes from, since `r31` is key and `r19` is destination.
