@@ -25,6 +25,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
+#[path = "support/topology.rs"]
+mod topology;
+
 const ORIGINAL: [&str; 3] = [
     "x-file-cifs://example.invalid/repeated.flac",
     "x-file-cifs://example.invalid/repeated.flac",
@@ -342,6 +345,44 @@ fn uri_alias_deduplicates_grouped_rooms_caps_only_its_audience_and_undoes_togeth
     }
     for zone in ["Guest@S1", "Guest@S2"] {
         house.original_playback(zone);
+    }
+}
+
+#[test]
+fn source_sets_wait_for_coherent_topology_before_changing_any_group() {
+    let house = House::new();
+    let enabled = Arc::new(AtomicBool::new(true));
+    let surface = house.surface_over(Box::new(topology::IncoherentTopology {
+        inner: house.sim.lan(),
+        enabled: Arc::clone(&enabled),
+    }));
+    let start = house.sim.soap_log().len();
+    let failure = surface
+        .control_set(&Client::McpStdio, "play", |rooms| {
+            plan_play_set(rooms, &request("selected", STREAM))
+        })
+        .unwrap_err();
+    assert_eq!(failure.code, ErrorCode::UpnpFault);
+    assert!(failure.detail.contains("incoherent topology"));
+    house.untouched(start);
+
+    enabled.store(false, Ordering::SeqCst);
+    assert!(
+        surface
+            .control_set(&Client::McpStdio, "play", |rooms| {
+                plan_play_set(rooms, &request("selected", STREAM))
+            })
+            .unwrap()
+            .changed
+    );
+    for zone in ["Lead@S1", "Lead@S2"] {
+        let host = house.target(zone).coordinator.ip;
+        assert_eq!(
+            soap::get_media_info(&house.sim.lan(), host).unwrap().uri,
+            STREAM
+        );
+        assert_eq!(soap::get_volume(&house.sim.lan(), host).unwrap(), CAP);
+        assert_eq!(house.queue(zone), ORIGINAL);
     }
 }
 

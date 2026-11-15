@@ -24,9 +24,12 @@ use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[path = "support/topology.rs"]
+mod topology;
 
 const GROUPS: [&str; 4] = ["Lead@S1", "Guest@S1", "Lead@S2", "Guest@S2"];
 const SELECTED: [&str; 2] = ["Lead@S1", "Lead@S2"];
@@ -465,6 +468,57 @@ fn a_reviewed_dj_start_uses_one_admitted_command_per_group() {
         assert_eq!(status.steering.added, direction());
     }
     assert!(one_action(&surface).action.intent.starts_with("dj_start:"));
+}
+
+#[test]
+fn reviewed_dj_start_waits_for_coherent_topology_before_starting_any_feed() {
+    let house = House::new();
+    let enabled = Arc::new(AtomicBool::new(false));
+    let surface = house.surface_over(Box::new(topology::IncoherentTopology {
+        inner: house.sim.lan(),
+        enabled: Arc::clone(&enabled),
+    }));
+    let request = reviewed(&surface, "selected", ReviewedDjAction::Start);
+    enabled.store(true, Ordering::SeqCst);
+    let start = house.sim.soap_log().len();
+    let failure = surface
+        .control_reviewed_dj(&Client::McpStdio, &request)
+        .unwrap_err();
+    assert_eq!(failure.code, ErrorCode::UpnpFault);
+    assert!(failure.detail.contains("incoherent topology"));
+    assert_eq!(house.writes_since(start), 0);
+    assert!(
+        house
+            .events()
+            .iter()
+            .all(|event| !matches!(event, Event::Act(..) | Event::Steer(..)))
+    );
+    for player in house.sim.players() {
+        assert_eq!(soap::get_volume(&house.sim.lan(), player.ip).unwrap(), 80);
+    }
+
+    enabled.store(false, Ordering::SeqCst);
+    assert!(
+        surface
+            .control_reviewed_dj(&Client::McpStdio, &request)
+            .unwrap()
+            .changed
+    );
+    assert_eq!(
+        house
+            .events()
+            .iter()
+            .filter(|event| matches!(event, Event::Act(_, DjAction::Start, _)))
+            .count(),
+        SELECTED.len()
+    );
+    for zone in SELECTED {
+        assert!(surface.dj_status(&Client::Cli, zone).unwrap().running);
+        assert_eq!(
+            soap::get_volume(&house.sim.lan(), house.target(zone).player.ip).unwrap(),
+            CAP
+        );
+    }
 }
 
 #[test]

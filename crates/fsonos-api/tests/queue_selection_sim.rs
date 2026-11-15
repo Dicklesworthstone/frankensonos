@@ -14,8 +14,11 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
+
+#[path = "support/topology.rs"]
+mod topology;
 
 const ROOM: &str = "Queue Room";
 const OTHER: &str = "Other Room";
@@ -129,6 +132,45 @@ fn fresh_revision_plays_with_caps_and_undo_without_replacing_the_queue() {
         assert_eq!(
             s.queue(&Client::Cli, ROOM, 0, 100).unwrap().revision,
             view.revision
+        );
+    }
+}
+
+#[test]
+fn queue_play_waits_for_coherent_topology_then_uses_the_original_selection() {
+    for generation in [1, 2] {
+        let (sim, houses) = setup(generation);
+        let target = resolve_room(&houses, ROOM).unwrap();
+        let id = target.coordinator.id.clone();
+        let host = target.coordinator.ip;
+        control::play_uri(&sim.lan(), &houses, &id, RADIO, "").unwrap();
+        control::set_volume(&sim.lan(), &houses, &id, 90).unwrap();
+        let enabled = Arc::new(AtomicBool::new(false));
+        let s = surface(
+            houses,
+            topology::IncoherentTopology {
+                inner: sim.lan(),
+                enabled: Arc::clone(&enabled),
+            },
+        );
+        let view = s.queue(&Client::Cli, ROOM, 0, 100).unwrap();
+        let request = request(&view, 2);
+        enabled.store(true, Ordering::SeqCst);
+        let calls = sim.soap_log().len();
+        let failure = s.queue_play(&agent(), &request).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::UpnpFault);
+        assert!(failure.detail.contains("incoherent topology"));
+        reads_only(&sim, calls);
+        assert_eq!(soap::get_media_info(&sim.lan(), host).unwrap().uri, RADIO);
+        assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 90);
+
+        enabled.store(false, Ordering::SeqCst);
+        assert!(s.queue_play(&agent(), &request).unwrap().changed);
+        assert_eq!(soap::get_position_info(&sim.lan(), host).unwrap().track, 2);
+        assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 70);
+        assert_eq!(
+            s.queue(&Client::Cli, ROOM, 0, 100).unwrap().items,
+            view.items
         );
     }
 }

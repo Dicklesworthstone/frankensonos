@@ -341,8 +341,10 @@ impl Surface {
             .find(|house| house.player(coordinator).is_some())
             .ok_or_else(|| Failure::new(ErrorCode::NotReady, "the source household disappeared"))?;
         let host = control::locate(households, coordinator)?.ip;
+        let topology = get_zone_group_state(&*self.transport, host)?;
+        fsonos_core::topology::validate_response(&topology, coordinator)?;
         let mut fresh = household.clone();
-        fresh.apply_topology(&get_zone_group_state(&*self.transport, host)?);
+        fresh.apply_topology(&topology);
         let audience = |house: &HouseholdState| {
             let mut rooms: Vec<_> = house
                 .rooms

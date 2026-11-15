@@ -265,6 +265,7 @@ impl Surface {
             .ok_or_else(changed)?;
         let topology =
             get_zone_group_state(&*self.transport, player.ip).map_err(CoreError::from)?;
+        fsonos_core::topology::validate_response(&topology, coordinator)?;
         let mut current = house.clone();
         current.apply_topology(&topology);
         let after = current

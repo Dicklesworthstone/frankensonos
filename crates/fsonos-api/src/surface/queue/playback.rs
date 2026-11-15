@@ -233,6 +233,7 @@ impl Surface {
         let member = target.player.id.clone();
         let topology = get_zone_group_state(&*self.transport, target.player.ip)
             .map_err(|error| Failure::from(CoreError::from(error)))?;
+        fsonos_core::topology::validate_response(&topology, &member)?;
         let household = households
             .iter_mut()
             .find(|house| house.player(&member).is_some())
@@ -254,6 +255,7 @@ impl Surface {
     ) -> Result<(), Failure> {
         let fresh = get_zone_group_state(&*self.transport, host)
             .map_err(|error| Failure::from(CoreError::from(error)))?;
+        fsonos_core::topology::validate_response(&fresh, &group.coordinator)?;
         if !fresh.groups.contains(group) {
             return Err(
                 Failure::new(ErrorCode::NotCoordinator, "the room's group changed")

@@ -50,6 +50,7 @@ impl LocalState {
     ) -> Result<Self, Failure> {
         let host = control::locate(households, player)?.ip;
         let topology = get_zone_group_state(&*surface.transport, host)?;
+        fsonos_core::topology::validate_response(&topology, player)?;
         let mut matching = topology.groups.iter().flat_map(|group| {
             group.members.iter().filter(move |member| {
                 group.coordinator == *current_coordinator
