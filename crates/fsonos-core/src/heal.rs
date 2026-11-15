@@ -94,6 +94,9 @@ where
             if refreshed.id.is_none() {
                 refreshed.id.clone_from(&households[index].id);
             }
+            if conflicts_with_others(households, index, &refreshed) {
+                return Err(err);
+            }
             households[index] = refreshed;
             let retried = op(households);
             tracing::info!(
@@ -162,19 +165,35 @@ where
     };
     // Any peer can describe this household. A busy or unreachable member
     // must not make its otherwise reachable group impossible to recover.
-    // Stop at the first successful topology, even if it is unchanged.
+    // Stop at the first coherent topology, even if it is unchanged. A parsed
+    // but incomplete or conflicting response must not prevent a healthy peer
+    // from supplying the household, nor authorize a retry elsewhere.
     let mut tried = HashSet::new();
-    let zgs = std::iter::once(host)
-        .chain(current.players.iter().map(|p| p.ip))
-        .filter(|ip| tried.insert(*ip))
-        .find_map(|ip| get_zone_group_state(t, ip).ok());
-    let Some(zgs) = zgs else {
+    let refreshed = std::iter::once((member, host))
+        .chain(current.players.iter().map(|p| (&p.id, p.ip)))
+        .filter(|(_, ip)| tried.insert(*ip))
+        .find_map(|(responder, ip)| {
+            let zgs = get_zone_group_state(t, ip).ok()?;
+            crate::topology::validate_response(&zgs, responder).ok()?;
+            let mut candidate = current.clone();
+            candidate.apply_topology(&zgs);
+            if candidate.player(member).is_none()
+                || conflicts_with_others(households, index, &candidate)
+                || zgs.vanished.iter().any(|missing| {
+                    households.iter().enumerate().any(|(other_index, other)| {
+                        other_index != index && other.player(&missing.uuid).is_some()
+                    })
+                })
+            {
+                return None;
+            }
+            Some(candidate)
+        });
+    let Some(refreshed) = refreshed else {
         return Err(err);
     };
     // Do not replace the original command's failure with UnknownPlayer if
     // the member vanished during recovery, or publish an unusable model.
-    let mut refreshed = current.clone();
-    refreshed.apply_topology(&zgs);
     let Some(to) = refreshed.coordinator_of(member).cloned() else {
         return Err(err);
     };
@@ -201,4 +220,26 @@ where
     );
     let r = retried?;
     Ok((r, Recovery::CoordinatorMoved { from, to }))
+}
+
+/// A command recovery can replace only its original household. Discovery
+/// settles real transfers; one failed command cannot import another house's
+/// player or redirect to a control address it already owns.
+fn conflicts_with_others(
+    households: &[HouseholdState],
+    index: usize,
+    candidate: &HouseholdState,
+) -> bool {
+    households.iter().enumerate().any(|(other_index, other)| {
+        other_index != index
+            && (candidate
+                .id
+                .as_ref()
+                .is_some_and(|id| other.id.as_ref() == Some(id))
+                || candidate.players.iter().any(|player| {
+                    other.player(&player.id).is_some()
+                        || other.coordinator_of(&player.id).is_some()
+                        || other.players.iter().any(|old| old.ip == player.ip)
+                }))
+    })
 }

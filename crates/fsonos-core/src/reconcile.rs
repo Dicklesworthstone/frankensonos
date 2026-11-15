@@ -332,22 +332,23 @@ impl Reconciler {
         surveyed: Result<inventory::Survey, CoreError>,
         now: Instant,
     ) -> Result<RefreshReport, CoreError> {
-        let survey = match surveyed {
-            Ok(s) if !s.households.is_empty() => s,
-            Ok(_) => {
-                let retry = self.retry(now);
-                tracing::warn!(retry_in_s = retry.as_secs(), "survey found no players");
-                return Err(CoreError::Proto(ProtoError::Network {
-                    target: "survey".into(),
-                    detail: "no players answered".into(),
-                }));
-            }
+        let mut survey = match surveyed {
+            Ok(s) => s,
             Err(e) => {
                 let retry = self.retry(now);
                 tracing::warn!(retry_in_s = retry.as_secs(), error = %e, "survey failed");
                 return Err(e);
             }
         };
+        let retained = self.retain_rejected_households(&mut survey);
+        if survey.households.is_empty() {
+            let retry = self.retry(now);
+            tracing::warn!(retry_in_s = retry.as_secs(), "survey found no players");
+            return Err(CoreError::Proto(ProtoError::Network {
+                target: "survey".into(),
+                detail: "no players answered".into(),
+            }));
+        }
         self.invalidate_inventory();
         // A player that rebooted since last seen has forgotten its
         // subscriptions; drop them so the next sync subscribes afresh.
@@ -387,7 +388,8 @@ impl Reconciler {
                 .find(|(addr, _)| addr.parse::<IpAddr>().ok() == Some(p.ip))
             {
                 Some((_, error)) => self.health.failed(&p.id, error.clone()),
-                None => self.health.ok(&p.id, now),
+                None if !retained.contains(&p.id) => self.health.ok(&p.id, now),
+                None => {}
             }
         }
         let mut forgotten = 0;
@@ -416,6 +418,9 @@ impl Reconciler {
         }
         report.events.dropped = forgotten;
         self.schedule.succeeded(now);
+        if !retained.is_empty() {
+            self.schedule.retry_within(now, events::RETRY);
+        }
         Ok(report)
     }
 

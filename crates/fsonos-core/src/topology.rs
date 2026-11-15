@@ -7,9 +7,85 @@
 //! coordinator. Zone bridges cannot render audio and are left out entirely.
 
 use crate::{HouseholdState, inventory};
+use fsonos_proto::ProtoError;
 use fsonos_proto::topology::{ZoneGroupState, ZoneMember};
 use fsonos_types::{Generation, Player, PlayerId, ZoneGroup};
+use std::collections::HashSet;
 use std::iter;
+
+fn invalid(detail: &str) -> ProtoError {
+    ProtoError::Malformed(format!("incoherent topology: {detail}"))
+}
+
+/// Check a complete topology before using it as current household evidence.
+/// Parsing XML alone does not establish unique players, addresses or owners.
+/// Bridges and bonded satellites participate in these checks even though a
+/// bridge is later omitted from the playable inventory.
+pub fn validate(topology: &ZoneGroupState) -> Result<(), ProtoError> {
+    let mut coordinators = HashSet::new();
+    let mut players = HashSet::new();
+    let mut addresses = HashSet::new();
+    for group in &topology.groups {
+        if group.coordinator.0.trim().is_empty()
+            || !coordinators.insert(&group.coordinator)
+            || !group
+                .members
+                .iter()
+                .any(|member| member.uuid == group.coordinator)
+        {
+            return Err(invalid("a group has no unique present coordinator"));
+        }
+        for member in group
+            .members
+            .iter()
+            .flat_map(|member| iter::once(member).chain(&member.satellites))
+        {
+            if member.uuid.0.trim().is_empty() || !players.insert(&member.uuid) {
+                return Err(invalid(
+                    "a physical player has an empty or repeated identity",
+                ));
+            }
+            let Some(address) = member.ip() else {
+                return Err(invalid("a present player has no usable address"));
+            };
+            if !addresses.insert(address) {
+                return Err(invalid("different players share one control address"));
+            }
+        }
+    }
+    let mut vanished = HashSet::new();
+    for missing in &topology.vanished {
+        if missing.uuid.0.trim().is_empty()
+            || !vanished.insert(&missing.uuid)
+            || players.contains(&missing.uuid)
+        {
+            return Err(invalid(
+                "vanished-player evidence conflicts with the live players",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a topology reported by an identified physical player. A response
+/// which omits its own responder is not evidence that the household vanished.
+/// Invisible pair members, satellites and bridges may all answer topology.
+pub fn validate_response(
+    topology: &ZoneGroupState,
+    responder: &PlayerId,
+) -> Result<(), ProtoError> {
+    validate(topology)?;
+    if !topology
+        .groups
+        .iter()
+        .flat_map(|group| &group.members)
+        .flat_map(|member| iter::once(member).chain(&member.satellites))
+        .any(|member| member.uuid == *responder)
+    {
+        return Err(invalid("the responding player is absent"));
+    }
+    Ok(())
+}
 
 /// A logical room ("zone" in the Sonos apps), addressed by name.
 #[derive(Debug, Clone, PartialEq, Eq)]

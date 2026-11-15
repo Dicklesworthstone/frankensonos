@@ -8,7 +8,7 @@
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::description::{DeviceDescription, parse_device_description};
 use fsonos_proto::topology::{VanishedDevice, get_zone_group_state, host_of_location};
-use fsonos_proto::{Discovered, Transport, ssdp};
+use fsonos_proto::{Discovered, ProtoError, Transport, ssdp};
 use fsonos_types::{Generation, HouseholdId, Player, PlayerId};
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -24,6 +24,12 @@ pub struct Survey {
     pub households: Vec<HouseholdState>,
     /// Players that were found but could not be read, with the reason.
     pub unreachable: Vec<(String, String)>,
+    /// Identified responders whose topology was malformed or conflicted with
+    /// other observations, with their advertised household hint when present.
+    /// These are not evidence that a previously live household disappeared.
+    /// Diagnostics remain in `unreachable`; no rejected boot or vanished-player
+    /// evidence is published.
+    pub rejected_topology: Vec<(PlayerId, Option<HouseholdId>)>,
     /// Set when SSDP itself failed and the survey continued anyway: the
     /// seeds were tried, or mDNS found the players.
     pub ssdp_error: Option<String>,
@@ -33,6 +39,23 @@ pub struct Survey {
     /// Players each household's topology lists as vanished (powered off, or
     /// out of reach of the household), with their room names.
     pub vanished: Vec<VanishedDevice>,
+}
+
+impl Survey {
+    fn reject_topology(
+        &mut self,
+        host: IpAddr,
+        responder: &PlayerId,
+        hint: Option<&str>,
+        detail: impl ToString,
+    ) {
+        self.rejected_topology.push((
+            responder.clone(),
+            hint.map(|id| HouseholdId(id.to_string())),
+        ));
+        self.unreachable
+            .push((host.to_string(), detail.to_string()));
+    }
 }
 
 /// Find every household on the LAN. SSDP (plus any direct `seeds`, for
@@ -141,10 +164,18 @@ fn read_players<T: Transport + ?Sized>(
         {
             continue;
         }
-        let zgs = match get_zone_group_state(t, *ip) {
+        let zgs = match get_zone_group_state(t, *ip).and_then(|zgs| {
+            crate::topology::validate_response(&zgs, &desc.udn)?;
+            Ok(zgs)
+        }) {
             Ok(zgs) => zgs,
             Err(e) => {
-                out.report.unreachable.push((ip.to_string(), e.to_string()));
+                if matches!(&e, ProtoError::Malformed(_)) {
+                    out.report
+                        .reject_topology(*ip, &desc.udn, hint.as_deref(), e);
+                } else {
+                    out.report.unreachable.push((ip.to_string(), e.to_string()));
+                }
                 continue;
             }
         };
@@ -177,8 +208,8 @@ fn read_players<T: Transport + ?Sized>(
             );
         }
         if hints.len() > 1 {
-            out.report.unreachable.push((ip.to_string(),
-                "player answered, but its topology conflicts with household identity hints; this response was not adopted".into()));
+            out.report.reject_topology(*ip, &desc.udn, hint.as_deref(),
+                "player answered, but its topology conflicts with household identity hints; this response was not adopted");
             continue;
         }
         let mut state = HouseholdState::default();
@@ -189,6 +220,11 @@ fn read_players<T: Transport + ?Sized>(
                 state.apply_description(member, *member_ip);
             }
         }
+        if !addresses_match(&state, &out.described) {
+            out.report.reject_topology(*ip, &desc.udn, hint.as_deref(),
+                "player answered, but its topology conflicts with freshly described control addresses; this response was not adopted");
+            continue;
+        }
         state.players.sort_by(|a, b| a.room_name.cmp(&b.room_name));
         let observed = Observation {
             state,
@@ -198,10 +234,27 @@ fn read_players<T: Transport + ?Sized>(
             vanished: zgs.vanished,
         };
         if let Err(detail) = adopt_observation(&mut out.entries, observed) {
-            out.report.unreachable.push((ip.to_string(), detail.into()));
+            out.report
+                .reject_topology(*ip, &desc.udn, hint.as_deref(), detail);
         }
     }
     out
+}
+
+/// Fresh descriptions may repair stale topology addresses, but must not turn
+/// them into two identities at one endpoint or borrow an address which just
+/// described a different player.
+fn addresses_match(
+    state: &HouseholdState,
+    described: &[(IpAddr, DeviceDescription, Option<String>)],
+) -> bool {
+    let mut addresses = HashSet::new();
+    state.players.iter().all(|player| {
+        addresses.insert(player.ip)
+            && described
+                .iter()
+                .all(|(host, description, _)| *host != player.ip || description.udn == player.id)
+    })
 }
 
 /// Retain per-response evidence until all discovery and fallback reads are
@@ -290,6 +343,18 @@ fn adopt_observation(
     }
     fresh.state.id = identity;
     fresh.identity_advertised = advertised;
+    if observations.iter().enumerate().any(|(index, other)| {
+        !overlaps.contains(&index)
+            && fresh
+                .state
+                .players
+                .iter()
+                .any(|player| other.state.players.iter().any(|old| old.ip == player.ip))
+    }) {
+        return Err(
+            "player answered, but its topology shares control addresses with another household; this conflicting response was not adopted",
+        );
+    }
     let insert_at = overlaps.first().copied().unwrap_or(observations.len());
     let mut index = 0;
     observations.retain(|_| {
@@ -362,12 +427,12 @@ pub fn survey_known<T: Transport + ?Sized>(
     Ok(out.finish())
 }
 
-fn same_household(a: &HouseholdState, b: &HouseholdState) -> bool {
+pub(crate) fn same_household(a: &HouseholdState, b: &HouseholdState) -> bool {
     a.id.as_ref().is_some_and(|id| b.id.as_ref() == Some(id))
         || a.players.iter().any(|p| b.player(&p.id).is_some())
 }
 
-fn sort_households(households: &mut [HouseholdState]) {
+pub(crate) fn sort_households(households: &mut [HouseholdState]) {
     households.sort_by_key(|h| match h.generation() {
         Some(Generation::S1) => 0,
         Some(Generation::S2) => 1,

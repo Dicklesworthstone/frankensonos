@@ -220,3 +220,35 @@ fn failed_background_surveys_preserve_state_and_retain_exponential_backoff() {
     }
     sim.shutdown();
 }
+
+#[test]
+fn a_rejected_household_with_newer_events_does_not_block_other_inventory_updates() {
+    let (mut sim, mut rec) = fixture();
+    let previous = rec.households[0].clone();
+    let player = previous.players[0].clone();
+    let plan = rec.inventory_plan(&[]);
+    let new_address = sim.change_address("Modern").unwrap();
+    let mut survey = plan.read(&sim.lan()).unwrap();
+    survey
+        .households
+        .retain(|house| house.player(&player.id).is_none());
+    survey
+        .rejected_topology
+        .push((player.id.clone(), previous.id.clone()));
+    survey
+        .unreachable
+        .push((player.ip.to_string(), "incoherent topology".into()));
+    let now = Instant::now();
+    rec.health.ok(&player.id, now);
+    let health = rec.health.of(&player.id).cloned();
+    let report = rec
+        .finish_inventory(&plan, Ok(survey), now + Duration::from_secs(1))
+        .unwrap()
+        .expect("the independent healthy household still advances");
+    assert_eq!(rec.households[0], previous);
+    assert_eq!(rec.households[1].players[0].ip, new_address);
+    assert!(report.missing.is_empty());
+    assert_eq!(rec.health.of(&player.id), health.as_ref());
+    assert!(rec.schedule.next_at() <= now + Duration::from_secs(1) + crate::events::RETRY);
+    sim.shutdown();
+}
