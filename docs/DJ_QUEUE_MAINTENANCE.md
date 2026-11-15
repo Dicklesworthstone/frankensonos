@@ -186,15 +186,61 @@ This bounds the number of deletion batches, not total elapsed time: individual
 network calls still have their existing timeouts. The DJ's queue threshold,
 lookahead, work selection, feedback and play-history policy are unchanged.
 
+## Duplicate tracks retain only proved ownership
+
+Resynchronization now compares the complete ordered sequence of played and
+queued movements with the live queue. A movement keeps its queue position only
+when every maximum ordered matching gives it that same occurrence. This lets
+legitimate repeated DJ rotations constrain each other while refusing to adopt
+an owner's identical track or complete work. An intact duplicate is not
+preferred over a DJ work split by an inserted owner item.
+
+An ambiguous movement retires its whole work, so Skip cannot start halfway
+through an owner's copy. A movement that has definitely disappeared may leave
+the uniquely proved remainder of its work in place. Retired and never-added
+movements cannot reclaim a later identical track. Recorded listening evidence
+moves only with a proved surviving occurrence.
+
+Complete ordered matches use indexed earliest/latest embeddings. Reordered or
+partially missing sequences use an exact longest-common-subsequence proof with
+a maximum of four million forward-score cells, about 16 MiB; reverse scores use
+two rows. When that bound is exceeded, the feed gives up its claims without
+editing the queue.
+
+Losing all claims releases automatic ownership. A dry retry also stops when
+only played history survives, rather than refilling from that history. A
+discarded stale observation invalidates the old queue-position cache, and
+renderer-error recovery proves ownership again before choosing a target.
+Explicit `dj start` can establish a new set after release. The existing failed
+recording exclusions and recovery checkpoint rules remain in force.
+
+Focused coverage includes S1 and S2 simulator cases for inserted duplicates,
+split and repeated works, restored owner prefixes, retired movements, bounded
+proof failure, dry retries, stale events and renderer recovery:
+
+```sh
+cargo test --locked -p fsonos-spotify --lib feed::reconcile
+cargo test --locked -p fsonos-spotify --lib feed::tests::ownership
+cargo test --locked -p fsonos-spotify --lib feed::tests::navigation
+cargo test --locked -p fsonos-spotify --lib feed::tests::recovery
+```
+
+An independent JavaScript translation of the matching algorithm agreed with an
+exhaustive oracle for 13,482 cases and 5,000 deterministic randomized cases.
+That validates the matching logic, not Rust integration. The new Rust and
+simulator tests remain unexecuted: dependency compilation was killed before
+reaching the changed crates, and the execution environment later disconnected.
+
 ## Boundaries and verification
 
 This does not make cleanup transactional with other controllers. Queue
 revisions protect the queue edit, not a concurrent source/seek change after
 preflight. Saved claims identify URI/position occurrences, not permanent queue
 item identities; identical replacements before observation cannot always be
-distinguished. A played work whose tracks resynchronization finds more than
-once at or before its saved position (the owner queued the same song) loses its
-claim rather than guessing which copy is the DJ's, so cleanup leaves both.
+distinguished. Repeated tracks are compared against the complete retained
+sequence. An occurrence that is still ambiguous across maximum ordered
+matchings loses its whole-work claim, leaving every candidate copy untouched.
+Played movements cannot migrate later than their previously saved positions.
 Cleanup never gains permission to search another coordinator's queue for the
 same songs.
 

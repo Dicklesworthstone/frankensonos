@@ -451,6 +451,17 @@ pub(super) fn recover<T: Transport + ?Sized>(
     {
         return Ok(());
     }
+    // A real renderer error can arrive after a discarded stale event or
+    // before a queue edit's notification. Re-prove occurrence ownership now;
+    // exact old slots alone cannot distinguish an owner's identical copies.
+    feed.queue_len = None;
+    feed.resync(at)?;
+    if !feed.is_active() {
+        return Ok(());
+    }
+    if feed.queue_len != Some(length) {
+        return Ok(());
+    }
     let target = Target::choose(feed, position, uri).map_err(|detail| halt(feed, detail))?;
     let queue = target.read(at)?;
     if !target.matches(&queue) {

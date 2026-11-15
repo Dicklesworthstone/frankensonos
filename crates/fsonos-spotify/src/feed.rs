@@ -59,6 +59,7 @@ use crate::steer::Steer;
 mod enqueue;
 mod mode;
 mod readiness;
+mod reconcile;
 mod recovery;
 mod stop;
 pub use recovery::{RecoveryBudget, RecoveryNotice};
@@ -133,8 +134,14 @@ mod navigation {
         let host = host_of(at)?;
         let own_queue = format!("x-rincon-queue:{}#0", at.coordinator.0);
         let before = browse_range_snapshot(at.transport, host, QUEUE, 0, 1)?;
+        // A rejected later observation must still leave the old cache invalid.
+        feed.queue_len = None;
         let mut reconciled = feed.clone();
         let queue = reconciled.resync(at)?;
+        if !reconciled.is_active() {
+            feed.release();
+            return Err(FeedError::Inactive);
+        }
         if get_media_info(at.transport, host)?.uri != own_queue {
             // Preserve a temporary announcement's retained queue. If clearing
             // the queue also cleared its source, still relinquish the session.
@@ -586,8 +593,10 @@ impl QueueFeed {
             self.resync(at)?;
         } else {
             self.release();
-            self.active = true;
         }
+        // An explicit start authorizes a new set even if reconciliation
+        // relinquished every old occurrence. Automatic callers stay released.
+        self.active = true;
         self.finish_partial(at, store, plan.now)?;
         let want = 1 + self.lookahead();
         if self.queued.len() < want {
@@ -684,10 +693,15 @@ impl QueueFeed {
         let backwards = self.moves_back_to(position);
         if moved || resized || backwards {
             let had = !self.queued.is_empty();
-            // Keep read-back provisional: a buffered backward event or a
-            // failed confirmation must not change the feed's ownership.
+            // Keep cursor changes provisional, but never let a rejected or
+            // failed later observation make stale queue positions usable.
+            self.queue_len = None;
             let mut reconciled = self.clone();
             let queue = reconciled.resync(at)?;
+            if !reconciled.is_active() {
+                self.release();
+                return Ok(0);
+            }
             // Queue trims can renumber a still-playing track while its
             // events are on their way. Match its observed occurrence first.
             position = position.and_then(|p| placed(&queue, p, uri.as_deref()));
@@ -859,6 +873,12 @@ impl QueueFeed {
         if self.queue_len.is_none() {
             self.resync(at)?;
         }
+        if self.queued.is_empty() {
+            // Old played history cannot authorize continuation after the
+            // current and waiting works lose their ownership proof.
+            self.release();
+            return Ok(0);
+        }
         let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) = std::mem::take(&mut self.queued)
             .into_iter()
             .partition(|w| w.is_whole() && w.last().is_none_or(|last| last <= end));
@@ -1029,15 +1049,11 @@ impl QueueFeed {
         }
     }
 
-    /// Re-place every queued movement by reading the queue: each work's
-    /// movements are found in order after the previous work's — back to
-    /// back where they still are, so a copy of a movement the owner queued
-    /// ahead can't capture it; a movement no longer there (removed by the
-    /// owner) loses its position, and a work with nothing left on the queue
-    /// is dropped. A played work found more than once at or before its place
-    /// lets its claim go: the other copy may be the owner's. The recorded
-    /// play moves with its track. Returns the queue as read: each item's
-    /// Spotify track, if it is one.
+    /// Re-place retained movements by reading the complete queue. An occurrence
+    /// must be identical in every maximum ordered matching of the retained DJ
+    /// sequence. Legitimate repetitions constrain each other; ambiguous works
+    /// and definitely removed movements are retired without touching music.
+    /// Returns the queue as read: each item's Spotify track, if it is one.
     fn resync<T: Transport + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
@@ -1051,93 +1067,48 @@ impl QueueFeed {
                     .and_then(|r| spotify_uri_from_renderer_uri(&r.uri))
             })
             .collect();
-        let recorded = self.recorded.as_ref().and_then(|(position, uri)| {
-            self.queued.iter().enumerate().find_map(|(w, work)| {
-                work.movements
-                    .iter()
-                    .position(|m| m.position == Some(*position) && m.uri == *uri)
-                    .map(|m| (w, m))
-            })
+        let positions = reconcile::positions(&self.played, &self.queued, &queue).unwrap_or_else(|| {
+            tracing::warn!(
+                "DJ queue ownership exceeds the bounded reconciliation proof; retiring claims"
+            );
+            self.played
+                .iter()
+                .chain(&self.queued)
+                .map(|work| vec![None; work.movements.len()])
+                .collect()
         });
-        let place = |i: usize| u32::try_from(i + 1).unwrap_or(u32::MAX);
-        let played_works = self.played.len();
-        let mut cursor = 0;
-        for (w, work) in self
+        let recorded = self.recorded.as_ref().and_then(|(position, uri)| {
+            self.played
+                .iter()
+                .chain(&self.queued)
+                .enumerate()
+                .find_map(|(w, work)| {
+                    work.movements
+                        .iter()
+                        .position(|m| m.position == Some(*position) && m.uri == *uri)
+                        .map(|m| (w, m, uri.clone()))
+                })
+        });
+        for (work, positions) in self
             .played
             .iter_mut()
-            .chain(self.queued.iter_mut())
-            .enumerate()
+            .chain(&mut self.queued)
+            .zip(&positions)
         {
-            // A played work only ever moves up the queue (tracks taken off
-            // ahead of it), never down: the same tracks further on are the
-            // owner's own copy, and a played work placed there would have the
-            // next trim take the owner's tracks off. One that isn't at or
-            // before where it was is gone.
-            let played = w < played_works;
-            let by = |old: Option<u32>| {
-                if played {
-                    old.map_or(0, |p| usize::try_from(p).unwrap_or(usize::MAX))
-                } else {
-                    usize::MAX
-                }
-            };
-            let latest = by(work.first());
-            let added: Vec<String> = work
-                .movements
-                .iter()
-                .filter(|m| m.added)
-                .map(|m| m.uri.clone())
-                .collect();
-            let mut runs = (cursor..queue.len()).filter(|&start| {
-                start < latest
-                    && added.iter().enumerate().all(|(k, uri)| {
-                        queue.get(start + k).and_then(Option::as_deref) == Some(uri.as_str())
-                    })
-            });
-            let run = runs.next();
-            // A played work found twice at or before its place may be sitting
-            // on the owner's own copy, queued earlier (or queued later, with
-            // tracks taken off ahead since). The queue can't tell which is
-            // the DJ's, so the claim is let go and no trim takes either.
-            if played && run.is_some() && runs.next().is_some() {
-                for m in &mut work.movements {
-                    m.position = None;
-                }
-                continue;
-            }
-            if let Some(start) = run {
-                for (k, m) in work.movements.iter_mut().filter(|m| m.added).enumerate() {
-                    m.position = Some(place(start + k));
-                }
-                cursor = start + added.len();
-                continue;
-            }
-            // Not back to back any more (a movement removed, an item
-            // inserted mid-work): each where it is next found.
-            for m in work.movements.iter_mut().filter(|m| m.added) {
-                let end = by(m.position).min(queue.len());
-                let mut copies = queue
-                    .get(cursor..end)
-                    .unwrap_or_default()
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, q)| q.as_deref() == Some(m.uri.as_str()))
-                    .map(|(i, _)| cursor + i);
-                // A played movement found twice is ambiguous the same way.
-                let found = copies.next().filter(|_| !played || copies.next().is_none());
-                m.position = found.map(place);
-                if let Some(i) = found {
-                    cursor = i + 1;
-                }
+            for (movement, &position) in work.movements.iter_mut().zip(positions) {
+                movement.position = position;
             }
         }
-        if let Some((w, m)) = recorded {
-            let moved = &self.queued[w].movements[m];
-            self.recorded = moved.position.map(|p| (p, moved.uri.clone()));
-        }
+        self.recorded = recorded.and_then(|(w, m, uri)| positions[w][m].map(|p| (p, uri)));
         self.queued.retain(|w| w.first().is_some());
         self.played.retain(|w| w.first().is_some());
-        self.queue_len = Some(u32::try_from(queue.len()).unwrap_or(u32::MAX));
+        if self.queued.is_empty() && self.played.is_empty() {
+            // Every automatic caller must stop when fresh evidence cannot
+            // identify anything we still own, including dry-queue retries.
+            self.release();
+        } else {
+            self.queue_len = Some(u32::try_from(queue.len()).unwrap_or(u32::MAX));
+        }
         Ok(queue)
     }
 
@@ -1636,6 +1607,7 @@ mod tests {
     mod history;
     mod invalidation;
     mod navigation;
+    mod ownership;
     mod recovery;
     mod source;
     mod stop;
@@ -2851,6 +2823,7 @@ mod tests {
         let pool = multi_movement_pool();
         let mut store = MemStore::default();
         let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 9);
+        feed.lookahead = 2;
         let started = feed
             .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
             .unwrap()
@@ -2866,29 +2839,18 @@ mod tests {
         }
         let waiting = &started[1];
         rig.owner_adds(&waiting.movements[0].uri, true);
-        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
-            .unwrap();
-        let placed = feed
-            .queued()
-            .iter()
-            .find(|w| w.work_key == waiting.work_key)
-            .unwrap()
-            .clone();
-        assert_eq!(
-            placed.first(),
-            waiting.first().map(|p| p + 1),
-            "the work itself, not the owner's copy ahead of it"
-        );
+        // Either identical opening movement fits the retained sequence.
+        // Contiguity cannot prove which copy is ours, so retire that whole
+        // work and skip to its uniquely identified successor.
         let queue = rig.queue();
-        for m in &placed.movements {
-            assert_eq!(queue[m.position.unwrap() as usize - 1], m.uri);
-        }
         let next = feed
             .skip(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
             .unwrap()
             .clone();
-        assert_eq!(next.work_key, waiting.work_key);
-        assert_eq!(rig.position(), placed.first().unwrap());
+        assert_eq!(next.work_key, started[2].work_key);
+        assert_eq!(rig.position(), started[2].first().unwrap() + 1);
+        assert_eq!(rig.queue(), queue, "both identical copies stay untouched");
+        assert!(!feed.queued().iter().any(|w| w.work_key == waiting.work_key));
     }
 
     #[test]

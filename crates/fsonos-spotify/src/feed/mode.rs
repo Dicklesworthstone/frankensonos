@@ -73,8 +73,14 @@ pub(super) fn maintain<T: Transport + ?Sized>(
     let had = !feed.queued.is_empty() || !feed.played.is_empty();
     // Do not publish a partial reconciliation if a later read fails or an
     // independent queue edit changes the evidence while these reads run.
+    // A discarded clone must not leave the old positions trusted.
+    feed.queue_len = None;
     let mut reconciled = feed.clone();
     let queue = reconciled.resync(at)?;
+    if !reconciled.is_active() {
+        feed.release();
+        return Ok(false);
+    }
     let current = get_position_info(at.transport, host)?;
     let topology = get_zone_group_state(at.transport, host)?;
     let after = browse_range_snapshot(at.transport, host, QUEUE, 0, 1)?;

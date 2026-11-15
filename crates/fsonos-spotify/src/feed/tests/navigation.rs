@@ -176,7 +176,6 @@ fn delayed_backward_events_do_not_rewind_the_model_or_publish_read_back() {
     let mut run = Running::classical();
     let stale = run.delayed_first_movement();
     let snapshot = run.feed.snapshot();
-    let queue_len = run.feed.queue_len;
     let before = run.rig.queue();
     let history = plays(&run.store);
     assert_eq!(
@@ -191,7 +190,10 @@ fn delayed_backward_events_do_not_rewind_the_model_or_publish_read_back() {
         0
     );
     assert_eq!(run.feed.snapshot(), snapshot);
-    assert_eq!(run.feed.queue_len, queue_len);
+    assert_eq!(
+        run.feed.queue_len, None,
+        "discarded observations require fresh queue evidence"
+    );
     assert_eq!(run.rig.queue(), before);
     assert_eq!(plays(&run.store), history);
 }
@@ -226,7 +228,6 @@ fn a_failed_rewind_read_keeps_the_old_model_and_can_be_retried() {
     run.seek(run.started[0].first().unwrap());
     let sample = run.sample();
     let snapshot = run.feed.snapshot();
-    let queue_len = run.feed.queue_len;
     let heard = plays(&run.store);
     run.rig
         .sim
@@ -243,7 +244,10 @@ fn a_failed_rewind_read_keeps_the_old_model_and_can_be_retried() {
         Err(FeedError::Proto(ProtoError::SoapFault { code: 701, .. }))
     ));
     assert_eq!(run.feed.snapshot(), snapshot);
-    assert_eq!(run.feed.queue_len, queue_len);
+    assert_eq!(
+        run.feed.queue_len, None,
+        "discarded observations require fresh queue evidence"
+    );
     assert_eq!(plays(&run.store), heard);
     run.rig.sim.clear_faults(ROOM).unwrap();
     run.observe(MIDNIGHT + 901);
@@ -787,7 +791,6 @@ fn a_failed_skip_read_does_not_publish_resync_or_write_to_the_player() {
     let mut run = Running::classical();
     run.rig.owner_adds(OWNER, true);
     let snapshot = run.feed.snapshot();
-    let queue_len = run.feed.queue_len;
     let queue = run.rig.queue();
     run.rig
         .sim
@@ -798,7 +801,10 @@ fn a_failed_skip_read_does_not_publish_resync_or_write_to_the_player() {
         Err(FeedError::Proto(ProtoError::SoapFault { code: 701, .. }))
     ));
     assert_eq!(run.feed.snapshot(), snapshot);
-    assert_eq!(run.feed.queue_len, queue_len);
+    assert_eq!(
+        run.feed.queue_len, None,
+        "discarded observations require fresh queue evidence"
+    );
     assert_eq!(run.rig.queue(), queue);
     run.rig.sim.clear_faults(ROOM).unwrap();
     assert_eq!(run.skip().unwrap().work_key, run.started[3].work_key);
