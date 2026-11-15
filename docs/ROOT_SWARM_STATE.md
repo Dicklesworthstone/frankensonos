@@ -5623,3 +5623,13 @@ purely about *content*: whether the unwrap buffer at `r31` really holds the AES 
 offset 0, and whether `r30+12` is the IV (r30 does begin with the ENV magic `0x886499ca`, so
 it is the record; the question is only the offset, and whether the record's own layout puts
 the IV there for this 0x1000000-length header form).
+
+Buffer dump settled the framing question: **`r30` is a builder-format ENV header**
+(`0x886499ca`, `0x13a`, `0x10000`, then zeros) — i.e. the device parses a *converted*
+record, not the raw file bytes (the file begins `0x497f1635`). `r31` holds 16 random bytes
+and is the RSA-unwrapped AES key.
+
+So the IV must be computed from the ENV structure rather than guessed:
+body = `+0x13A`, then `00 01 00 00 | 00 00 00 00 | 01 | <I len> | 03 | recipient`, then
+`<I 1><I 0x100>` + 256-byte wrapped key, then `<I 1><I 16+ct>` and **then** the IV.
+Next run computes that offset arithmetically from the recipient length in the buffer.
