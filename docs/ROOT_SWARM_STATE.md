@@ -5633,3 +5633,13 @@ So the IV must be computed from the ENV structure rather than guessed:
 body = `+0x13A`, then `00 01 00 00 | 00 00 00 00 | 01 | <I len> | 03 | recipient`, then
 `<I 1><I 0x100>` + 256-byte wrapped key, then `<I 1><I 16+ct>` and **then** the IV.
 Next run computes that offset arithmetically from the recipient length in the buffer.
+
+Body dump at `r30+0x13A` is **all zeros** at the time of `0x1000716c`, and the recipient
+length reads 0. So the ENV record at `r30` is an *output* buffer being filled by the
+unwrap, not a complete input at that instant — the header area beyond the first 12 bytes
+is not yet populated when the loop head is reached.
+
+Consequence: the IV must be taken **later**, after the records are materialised, or read
+from the source side (`r19`/`r22` = `0x4085c000`) rather than from `r30`. That also explains
+why every offset-based IV guess produced zeros and why init "succeeds" but final fails —
+it is being initialised with a zero IV.
