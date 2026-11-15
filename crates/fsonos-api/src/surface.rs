@@ -1519,10 +1519,32 @@ impl Surface {
             .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))
     }
 
-    /// Add a play that went through to the history, under the group's
-    /// coordinator (as the DJ records its own), so the DJ hears about it.
+    /// Add an observed play to history under the addressed coordinator. A
+    /// successful write alone is not listening evidence; failed or buffering
+    /// playback can be recorded later by the live follower when it starts.
     fn remember_play(&self, households: &[HouseholdState], command: &Command) {
         if self.log.is_none() {
+            return;
+        }
+        let coordinator = match command {
+            Command::Play { coordinator, .. }
+            | Command::PlayTracks { coordinator, .. }
+            | Command::PlaySelection { coordinator, .. }
+            | Command::PlayNativeSelection { coordinator, .. }
+            | Command::PlayLineIn { coordinator, .. }
+            | Command::PlayFavorite { coordinator, .. } => coordinator,
+            _ => return,
+        };
+        // One bounded read-back, without polling or replaying a command.
+        // Unknown status preserves the existing PLAYING contract; only an
+        // explicit renderer error defeats it. Failure here changes history,
+        // never the outcome of the already acknowledged speaker command.
+        let Ok(now) = control::playback(&*self.transport, households, coordinator) else {
+            return;
+        };
+        if now.transport.state != TransportState::Playing
+            || now.transport.status.trim() == "ERROR_OCCURRED"
+        {
             return;
         }
         let input_uri = match command {
@@ -1531,19 +1553,9 @@ impl Surface {
             }
             _ => None,
         };
-        let (coordinator, uri) = match command {
-            Command::Play {
-                coordinator,
-                source_uri,
-                ..
-            } => (coordinator, Some(source_uri.as_str())),
+        let uri = match command {
+            Command::Play { source_uri, .. } => Some(source_uri.as_str()),
             Command::PlayLineIn { coordinator, .. } => {
-                let Ok(now) = control::playback(&*self.transport, households, coordinator) else {
-                    return;
-                };
-                if now.transport.state != TransportState::Playing {
-                    return;
-                }
                 let Ok(player) = control::locate(households, coordinator) else {
                     return;
                 };
@@ -1553,45 +1565,23 @@ impl Surface {
                 {
                     return;
                 }
-                (coordinator, input_uri.as_deref())
+                input_uri.as_deref()
             }
             Command::PlayTracks {
-                coordinator,
                 selection: crate::source::SourceSelection { tracks, .. },
                 ..
             }
-            | Command::PlaySelection {
-                coordinator,
-                tracks,
-                ..
-            } => {
+            | Command::PlaySelection { tracks, .. } => {
                 let Some((uri, _)) = tracks.first() else {
                     return;
                 };
-                // A successful SOAP acknowledgement is not evidence that the
-                // selected first track is playing. Only an observed match
-                // contributes to the DJ's listening and anti-repeat history.
-                let Ok(now) = control::playback(&*self.transport, households, coordinator) else {
-                    return;
-                };
-                if now.transport.state != TransportState::Playing
-                    || now.position.track != 1
-                    || played_uri(&now.position.uri) != *uri
-                {
+                if now.position.track != 1 || played_uri(&now.position.uri) != *uri {
                     return;
                 }
-                (coordinator, Some(uri.as_str()))
+                Some(uri.as_str())
             }
-            Command::PlayFavorite {
-                coordinator,
-                favorite,
-                ..
-            } => (coordinator, favorite.uri.as_deref()),
-            Command::PlayNativeSelection {
-                coordinator,
-                selection,
-                ..
-            } => {
+            Command::PlayFavorite { favorite, .. } => favorite.uri.as_deref(),
+            Command::PlayNativeSelection { selection, .. } => {
                 let Some(uri) = selection
                     .tracks
                     .first()
@@ -1599,16 +1589,10 @@ impl Surface {
                 else {
                     return;
                 };
-                let Ok(now) = control::playback(&*self.transport, households, coordinator) else {
-                    return;
-                };
-                if now.transport.state != TransportState::Playing
-                    || now.position.track != 1
-                    || played_uri(&now.position.uri) != played_uri(uri)
-                {
+                if now.position.track != 1 || played_uri(&now.position.uri) != played_uri(uri) {
                     return;
                 }
-                (coordinator, Some(uri))
+                Some(uri)
             }
             _ => return,
         };

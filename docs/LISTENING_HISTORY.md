@@ -28,6 +28,22 @@ started and finished entirely during downtime or an event gap. Likewise, a
 restart cannot prove whether the same source was restarted while the daemon
 was away; matching the latest stored source preserves continuity.
 
+## Renderer failures
+
+A reported `ERROR_OCCURRED` prevents a listening record even when a separate
+state notification still leaves the live model at `PLAYING`. Failed playback
+does not acknowledge a new queue occurrence or consume group-handover
+evidence. Once a healthy observation arrives, the follower can record the
+first real play; a renderer error and retry of an already recorded occurrence
+do not invent another listen.
+
+Commands that start playback use one playback read-back before adding to
+history. A renderer error, buffering state, or failed read leaves history
+unchanged without changing the already acknowledged command result or
+replaying the command. The live follower can record playback when it actually
+starts. Missing, empty, and unrecognized status values retain the existing
+observed-`PLAYING` behavior; they are not presented as an explicit `OK`.
+
 ## Repeats and groups
 
 A known queue-position change distinguishes consecutive occurrences of the
@@ -62,15 +78,25 @@ perform no discovery or playback reads against the speakers.
 The focused unit tests in
 `crates/fsonos-api/src/surface/heard/tests.rs` cover snapshot recovery, lost
 events, repeats, independent groups, coordinator lineage, and retry after
-failed store access. `crates/fsonos-api/tests/history_heard_sim.rs` exercises
+failed store access. Its `tests/status.rs` module covers renderer errors,
+status-only recovery, repeated tracks, and coordinator handover.
+`crates/fsonos-api/tests/history_heard_sim.rs` exercises
 the follower with virtual players over real localhost sockets, including
 startup with music already playing, duplicate queue occurrences, Spotify
 Connect tracks, pause/resume, restart continuity, and group handover.
+`crates/fsonos-api/tests/history_playback_status_sim.rs` checks acknowledged
+direct and favorite playback on both generations, including renderer errors,
+unknown status, buffering, and failed observations without replaying commands.
 
 ```sh
 cargo test -p fsonos-api --lib surface::heard::tests
 cargo test -p fsonos-api --test history_heard_sim
+cargo test -p fsonos-api --test history_playback_status_sim
 ```
+
+The renderer-status regressions were not executed in the implementation
+environment: compilation of the unchanged `asupersync` dependency was
+terminated by `SIGKILL`, then the executor became unavailable.
 
 These are software regressions; they do not substitute for live checks on the
 owner's physical speakers.

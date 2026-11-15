@@ -211,6 +211,13 @@ fn record(
     playback: &PlayerPlayback,
     members: &[PlayerId],
 ) {
+    if playback.transport_status.as_deref() == Some("ERROR_OCCURRED") {
+        // Status can arrive separately from state, leaving cached PLAYING
+        // beside a renderer failure. Neither that nor its failed STOPPED
+        // transition establishes a listen or ends an already recorded one.
+        // Keep occurrence and handover evidence for a later healthy event.
+        return;
+    }
     let raw = playback.track_uri.as_deref().filter(|u| !u.is_empty());
     let no_music = |u: &str| u.starts_with("x-rincon:") || u.starts_with("x-sonos-htastream:");
     if playback.transport == Some(TransportState::Stopped) || raw.is_some_and(no_music) {

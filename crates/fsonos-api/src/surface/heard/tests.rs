@@ -9,6 +9,8 @@ use fsonos_proto::{ProtoError, Transport};
 use std::net::IpAddr;
 use std::sync::mpsc;
 
+mod status;
+
 struct NoIo;
 
 impl Transport for NoIo {
