@@ -63,6 +63,16 @@ Independent controller actions cannot be made atomic with these reads.
 Direct streams and single-source URIs continue to use their existing loading
 path. Native same-household handoff does not rebuild the queue.
 
+When native handoff is unavailable, the copied move also waits for every
+original companion room to join the destination before stopping the source.
+The confirmation includes stereo-pair halves and satellites, not just visible
+room names. A delayed join can complete within the move's settle window; an
+ignored or unconfirmed join leaves the original source playing and reports an
+incomplete transfer. The copied source, exact queue revision, ordering mode and
+playback state are checked again after regrouping. A listener takeover or
+renderer failure during that wait cannot stop the old source. Paused transfers
+remain silent throughout.
+
 ## Regression coverage
 
 The moving_queue_staging_sim suite exercises S1-to-S2 and S2-to-S1 transfers
@@ -85,5 +95,6 @@ Run:
 
     cargo test -p fsonos-core --test moving_queue_staging_sim
     cargo test -p fsonos-core --test moving_spotify_sim
+    cargo test -p fsonos-core --test move_delegation_sim
     cargo test -p fsonos-core --test move_play_mode_sim --test moving_sim
     cargo test -p fsonos-core moving::replay

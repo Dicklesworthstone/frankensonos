@@ -189,8 +189,13 @@ pub fn move_playback_within<T: Transport + ?Sized>(
                 if handed {
                     report.method = MoveMethod::Delegated;
                     report.new_coordinator = to.player.id.clone();
-                } else if replay_instead_of_delegating(t, households, &coordinator, &to.player.id)?
-                {
+                } else if replay_instead_of_delegating(
+                    t,
+                    households,
+                    &coordinator,
+                    &to.player.id,
+                    join_deadline,
+                )? {
                     report.method = MoveMethod::Copied;
                     report.new_coordinator = to.player.id.clone();
                 } else {
@@ -246,14 +251,20 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
     target: &PlayerId,
+    join_deadline: Duration,
 ) -> Result<bool, MoveError> {
+    let source_host = ip(households, coordinator)?;
+    let target_host = ip(households, target)?;
+    let layout =
+        delegation::Layout::capture(&get_zone_group_state(t, source_host)?, coordinator, target)?;
     let snap = snapshot::capture(t, households, coordinator, 0)?;
     let prepared = replay::Prepared::new(t, households, &snap, target)?;
-    control::leave(t, households, target)?;
     if prepared.is_empty() {
         return Ok(false);
     }
-    prepared.apply(t, ip(households, target)?, target)?;
+    layout.require_unchanged(&get_zone_group_state(t, source_host)?)?;
+    control::leave(t, households, target)?;
+    let revision = prepared.apply(t, target_host, target)?;
     for member in snap
         .members
         .iter()
@@ -261,6 +272,9 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
     {
         soap::join_group(t, ip(households, member)?, target)?;
     }
+    layout.confirm_replay(t, source_host, target_host, join_deadline)?;
+    prepared.confirm_destination(t, target_host, target, revision)?;
+    layout.confirm_replay(t, source_host, target_host, Duration::ZERO)?;
     prepared.release_origin(t, households, &snap)?;
     Ok(true)
 }
@@ -291,7 +305,7 @@ pub fn copy_playback<T: Transport + ?Sized>(
     if prepared.is_empty() {
         return Ok(report);
     }
-    prepared.apply(t, to.coordinator.ip, &to.coordinator.id)?;
+    let _revision = prepared.apply(t, to.coordinator.ip, &to.coordinator.id)?;
     prepared.release_origin(t, households, &snap)?;
     report.method = MoveMethod::Copied;
     report.new_coordinator.clone_from(&to.coordinator.id);

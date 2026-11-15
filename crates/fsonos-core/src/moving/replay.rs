@@ -266,16 +266,65 @@ impl Prepared {
         t: &T,
         host: IpAddr,
         target: &PlayerId,
-    ) -> Result<(), MoveError> {
+    ) -> Result<Option<u32>, MoveError> {
         match &self.source {
-            Source::Nothing => Ok(()),
-            Source::Uri { .. } => direct::apply(t, host, target, self),
+            Source::Nothing => Ok(None),
+            Source::Uri { .. } => direct::apply(t, host, target, self).map(|()| None),
             Source::Queue { items, .. } => {
                 let (revision, owner) =
                     staging::replace(t, host, target, items, self.play_mode.is_some())?;
-                staging::finish(t, host, target, self, revision, owner)
+                staging::finish(t, host, target, self, revision, owner)?;
+                Ok(Some(revision))
             }
         }
+    }
+
+    /// Group joins can settle after playback was started. Recheck the exact
+    /// copied source and queue before allowing that wait to release the origin.
+    pub(super) fn confirm_destination<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        host: IpAddr,
+        target: &PlayerId,
+        revision: Option<u32>,
+    ) -> Result<(), MoveError> {
+        verify::playback(
+            t,
+            host,
+            target,
+            self,
+            revision,
+            self.origin_verified_at.elapsed(),
+        )?;
+        let transport = soap::get_transport_info(t, host)?;
+        let expected = if self.transport == TransportState::Playing {
+            TransportState::Playing
+        } else {
+            TransportState::Stopped
+        };
+        if expected == TransportState::Playing && transport.status == "ERROR_OCCURRED" {
+            return Err(verify::renderer_error().into());
+        }
+        if transport.state != expected {
+            return Err(MoveError::SourceChanged(
+                "the copied playback state changed while moving the other rooms".into(),
+            ));
+        }
+        if let Some(expected) = self.play_mode
+            && fsonos_proto::play_mode::get_play_mode(t, host)? != expected
+        {
+            return Err(MoveError::SourceChanged(
+                "the copied queue's play mode changed while moving the other rooms".into(),
+            ));
+        }
+        verify::playback(
+            t,
+            host,
+            target,
+            self,
+            revision,
+            self.origin_verified_at.elapsed(),
+        )
     }
 
     /// Finish relocation only after the original playback is still proven

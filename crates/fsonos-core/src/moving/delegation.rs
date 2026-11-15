@@ -29,7 +29,7 @@ fn group<'a>(state: &'a ZoneGroupState, leader: &PlayerId) -> Option<&'a ZoneGro
     groups.next().is_none().then_some(found)
 }
 
-struct Layout {
+pub(super) struct Layout {
     source: PlayerId,
     target: PlayerId,
     original: Members,
@@ -45,11 +45,12 @@ enum Observed {
 }
 
 impl Layout {
-    fn capture(
+    pub(super) fn capture(
         state: &ZoneGroupState,
         source: &PlayerId,
         target: &PlayerId,
     ) -> Result<Self, MoveError> {
+        crate::topology::validate(state)?;
         let original_group = group(state, source).ok_or_else(changed)?;
         let original = members(original_group);
         let leader = original_group
@@ -78,6 +79,9 @@ impl Layout {
     }
 
     fn observe(&self, state: &ZoneGroupState) -> Observed {
+        if crate::topology::validate(state).is_err() {
+            return Observed::Changed;
+        }
         let source = group(state, &self.source).map(members);
         let target = group(state, &self.target).map(members);
         if source.as_ref() == Some(&self.retained) && target.as_ref() == Some(&self.moved) {
@@ -86,6 +90,40 @@ impl Layout {
             Observed::Unchanged
         } else {
             Observed::Changed
+        }
+    }
+
+    pub(super) fn require_unchanged(&self, state: &ZoneGroupState) -> Result<(), MoveError> {
+        if self.observe(state) != Observed::Unchanged {
+            return Err(changed());
+        }
+        Ok(())
+    }
+
+    /// Copied playback must carry every original room, including its bonded
+    /// players, before the old coordinator can be stopped. A join reply can
+    /// precede the topology change or acknowledge a no-op; only reads repeat.
+    pub(super) fn confirm_replay<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        source_host: IpAddr,
+        target_host: IpAddr,
+        deadline: Duration,
+    ) -> Result<(), MoveError> {
+        let started = Instant::now();
+        loop {
+            let observed = read(t, source_host, target_host)?;
+            if self.observe(&observed) == Observed::Transferred {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(MoveError::SourceChanged(
+                    "not every room reached the copied playback group; the original source was not stopped"
+                        .into(),
+                ));
+            }
+            std::thread::sleep(JOIN_POLL.min(remaining));
         }
     }
 }

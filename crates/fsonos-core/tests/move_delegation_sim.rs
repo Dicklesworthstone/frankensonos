@@ -139,6 +139,8 @@ enum Fault {
     Ignored,
     Refused,
     RefusedNewSource,
+    RefusedDestinationChanged,
+    RefusedDestinationRacing,
     PreflightChanged,
 }
 
@@ -153,6 +155,7 @@ struct Replies {
     topology_reads: Cell<usize>,
     before: RefCell<Option<String>>,
     injected: Cell<bool>,
+    companions_joined: Cell<bool>,
 }
 
 impl Replies {
@@ -168,6 +171,7 @@ impl Replies {
             topology_reads: Cell::new(0),
             before: RefCell::new(None),
             injected: Cell::new(false),
+            companions_joined: Cell::new(false),
         }
     }
 
@@ -213,6 +217,28 @@ impl Transport for Replies {
         }
         if name != "DelegateGroupCoordinationTo" {
             let response = self.inner.soap_post(host, path, action, body)?;
+            if sent
+                && name == "SetAVTransportURI"
+                && host != self.source_host
+                && host != self.target_host
+            {
+                self.companions_joined.set(true);
+                if matches!(self.fault, Fault::RefusedDestinationChanged) {
+                    soap::set_av_transport_uri(&self.inner, self.target_host, RADIO, "")?;
+                    soap::play(&self.inner, self.target_host)?;
+                } else if matches!(self.fault, Fault::RefusedDestinationRacing) {
+                    soap::pause(&self.inner, self.target_host)?;
+                }
+            }
+            if self.companions_joined.get()
+                && host == self.target_host
+                && name == "GetTransportInfo"
+                && matches!(self.fault, Fault::RefusedDestinationRacing)
+                && !self.injected.replace(true)
+            {
+                soap::set_av_transport_uri(&self.inner, self.target_host, RADIO, "")?;
+                soap::play(&self.inner, self.target_host)?;
+            }
             if !sent && name == "GetZoneGroupState" {
                 *self.before.borrow_mut() = Some(response.clone());
             }
@@ -229,7 +255,13 @@ impl Transport for Replies {
         if matches!(self.fault, Fault::NotSent) {
             return Err(Self::lost(host));
         }
-        if matches!(self.fault, Fault::Refused | Fault::RefusedNewSource) {
+        if matches!(
+            self.fault,
+            Fault::Refused
+                | Fault::RefusedNewSource
+                | Fault::RefusedDestinationChanged
+                | Fault::RefusedDestinationRacing
+        ) {
             if matches!(self.fault, Fault::RefusedNewSource) {
                 soap::set_av_transport_uri(&self.inner, host, RADIO, "")?;
                 soap::play(&self.inner, host)?;
@@ -375,6 +407,128 @@ fn confirmed_refusal_and_acknowledged_noop_keep_the_working_copy_fallback() {
             assert_eq!(
                 get_play_mode(&f.sim.lan(), f.target_host).unwrap(),
                 PlayMode::ShuffleNoRepeat
+            );
+        }
+    }
+}
+
+#[test]
+fn fallback_waits_for_every_room_before_stopping_the_source() {
+    for generation in [1, 2] {
+        for paired in [false, true] {
+            let f = Fixture::new(generation, paired);
+            f.sim
+                .join_lag("Companion", Duration::from_millis(200))
+                .unwrap();
+            let t = Replies::new(&f, Fault::Refused);
+            let report = f.handoff(&t, Duration::from_secs(1)).unwrap();
+            assert_eq!(report.method, MoveMethod::Copied);
+            let topology = get_zone_group_state(&f.sim.lan(), f.target_host).unwrap();
+            let target = topology
+                .groups
+                .iter()
+                .find(|g| g.coordinator == f.target)
+                .unwrap();
+            assert_eq!(target.members.len(), if paired { 4 } else { 2 });
+            assert_eq!(
+                soap::get_transport_info(&f.sim.lan(), f.source_host)
+                    .unwrap()
+                    .state,
+                TransportState::Stopped
+            );
+        }
+    }
+}
+
+#[test]
+fn an_ignored_fallback_join_keeps_the_original_group_playing() {
+    for generation in [1, 2] {
+        for paired in [false, true] {
+            let f = Fixture::new(generation, paired);
+            f.sim
+                .ignore_action("Companion", "SetAVTransportURI")
+                .unwrap();
+            let t = Replies::new(&f, Fault::Refused);
+            let since = f.sim.soap_log().len();
+            assert!(f.handoff(&t, Duration::ZERO).is_err());
+            assert_eq!(
+                soap::get_transport_info(&f.sim.lan(), f.source_host)
+                    .unwrap()
+                    .state,
+                TransportState::Playing
+            );
+            assert!(
+                f.sim.soap_log()[since..]
+                    .iter()
+                    .all(|entry| { entry.player != f.source.0 || entry.action != "Stop" })
+            );
+        }
+    }
+}
+
+#[test]
+fn paused_fallback_moves_every_room_without_starting_music() {
+    for generation in [1, 2] {
+        for direct in [false, true] {
+            let f = Fixture::new(generation, true);
+            let lan = f.sim.lan();
+            if direct {
+                soap::set_av_transport_uri(&lan, f.source_host, RADIO, "").unwrap();
+                soap::play(&lan, f.source_host).unwrap();
+            }
+            soap::pause(&lan, f.source_host).unwrap();
+            let t = Replies::new(&f, Fault::Refused);
+            let since = f.sim.soap_log().len();
+            let report = f.handoff(&t, Duration::ZERO).unwrap();
+            assert_eq!(report.method, MoveMethod::Copied);
+            assert_eq!(
+                soap::get_transport_info(&lan, f.target_host).unwrap().state,
+                TransportState::Stopped
+            );
+            assert!(
+                f.sim.soap_log()[since..]
+                    .iter()
+                    .all(|entry| entry.action != "Play")
+            );
+            let topology = get_zone_group_state(&lan, f.target_host).unwrap();
+            assert_eq!(
+                topology
+                    .groups
+                    .iter()
+                    .find(|g| g.coordinator == f.target)
+                    .unwrap()
+                    .members
+                    .len(),
+                4
+            );
+        }
+    }
+}
+
+#[test]
+fn a_listener_taking_over_the_destination_during_regrouping_keeps_the_source() {
+    for generation in [1, 2] {
+        for fault in [
+            Fault::RefusedDestinationChanged,
+            Fault::RefusedDestinationRacing,
+        ] {
+            let f = Fixture::new(generation, true);
+            let t = Replies::new(&f, fault);
+            let since = f.sim.soap_log().len();
+            assert!(f.handoff(&t, Duration::ZERO).is_err());
+            let lan = f.sim.lan();
+            assert_eq!(
+                soap::get_media_info(&lan, f.target_host).unwrap().uri,
+                RADIO
+            );
+            assert_eq!(
+                soap::get_transport_info(&lan, f.source_host).unwrap().state,
+                TransportState::Playing
+            );
+            assert!(
+                f.sim.soap_log()[since..]
+                    .iter()
+                    .all(|entry| { entry.player != f.source.0 || entry.action != "Stop" })
             );
         }
     }
