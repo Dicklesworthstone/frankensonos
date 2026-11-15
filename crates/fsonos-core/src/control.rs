@@ -28,6 +28,7 @@ mod navigation;
 mod queue_insert;
 pub mod queue_removal;
 mod queue_start;
+mod seek_absolute;
 mod seek_relative;
 mod source_start;
 mod spotify_source;
@@ -158,8 +159,9 @@ pub enum Seek {
 
 /// Move the group `coordinator` leads to `to` in its current track. A
 /// relative move requires a reported position and stays within the track.
-/// An uncertain relative-seek reply is read back against that same track,
-/// never retried as another offset. Absolute seeks keep their existing path.
+/// An uncertain reply is read back against the retained track occurrence,
+/// never retried. Absolute seeks retain optional source and queue evidence;
+/// unavailable evidence does not prevent the original one-shot request.
 /// Returns the requested absolute position, in seconds from the start.
 pub fn seek<T: Transport + ?Sized>(
     t: &T,
@@ -168,12 +170,10 @@ pub fn seek<T: Transport + ?Sized>(
     to: Seek,
 ) -> Result<u32, CoreError> {
     let host = addr(households, coordinator)?;
-    let secs = match to {
-        Seek::At(secs) => secs,
-        Seek::By(by) => return Ok(seek_relative::seek(t, host, coordinator, by)?),
-    };
-    soap::seek_position(t, host, secs)?;
-    Ok(secs)
+    Ok(match to {
+        Seek::At(secs) => seek_absolute::seek(t, host, coordinator, secs)?,
+        Seek::By(by) => seek_relative::seek(t, host, coordinator, by)?,
+    })
 }
 
 /// Point the group `coordinator` leads at a renderer-ready `uri` (with its

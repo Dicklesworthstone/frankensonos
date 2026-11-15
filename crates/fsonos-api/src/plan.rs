@@ -197,13 +197,10 @@ impl Command {
             | Self::Join { .. }
             | Self::Leave { .. }
             | Self::Party { .. } => true,
+            // Even an absolute time is relative to the selected occurrence.
+            // Readdressing after a lost reply could seek a different track.
             Self::Transport { action, .. } => {
-                matches!(
-                    action,
-                    TransportAction::Pause
-                        | TransportAction::Resume
-                        | TransportAction::Seek(Seek::At(_))
-                )
+                matches!(action, TransportAction::Pause | TransportAction::Resume)
             }
             Self::Volume { change, .. } => matches!(change, VolumeChange::Set(_)),
             // Steering sets the stored session; starting queues more works.

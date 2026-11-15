@@ -862,7 +862,7 @@ mod tests {
         };
         let t = Canned::ok("");
         let out = execute(&t, &houses, &seek(Seek::At(90))).unwrap();
-        assert_eq!(t.actions(), ["Seek"]);
+        assert_eq!(t.actions(), ["GetPositionInfo", "Seek"]);
         assert_eq!(out, OutcomeDto::sent("moved to 1:30 in Den's group".into()));
         // From where it is (1:00 of 3:00), and never past the last second.
         // A player on a track names it; a relative seek needs one.
@@ -878,7 +878,7 @@ mod tests {
             assert_eq!(t.actions(), ["GetPositionInfo", "Seek"]);
             assert_eq!(out, OutcomeDto::sent(format!("{verb} in Den's group")));
         }
-        assert!(seek(Seek::At(5)).repeat_safe());
+        assert!(!seek(Seek::At(5)).repeat_safe());
         assert!(!seek(Seek::By(5)).repeat_safe());
     }
 

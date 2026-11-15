@@ -11,13 +11,13 @@ Use an absolute `to_secs` when the current position cannot be obtained.
 Known durations still bound the target to the last whole second before track
 end; an unknown duration is not invented. Negative and extreme offsets saturate
 without overflow. Successful acknowledgements retain the existing one-read,
-one-write path. Absolute seeking is unchanged by this relative-seek change.
+one-write path.
 
 If the seek acknowledgement is lost or malformed, a single bounded read-back
 batch may establish the result without repeating the offset. Both position
 observations must retain the original renderer URI, queue slot and duration,
-and the player must still be a coordinator. A paused or stopped track must be
-at the target; a playing track may have advanced within the elapsed request
+and the endpoint must still identify the original coordinator. A paused or
+stopped track must be at the target; a playing track may have advanced within the elapsed request
 time plus one second of integer-clock rounding. Observations older than 30
 seconds, unknown/transitioning states, a changed track, missing clocks, and
 failed reads do not confirm success. The original write failure is retained.
@@ -38,6 +38,37 @@ cargo test --locked -p fsonos-core --test relative_seek_recovery_sim
 The simulator cases use real S1/S2 loopback sockets, discarding a reply only
 after the simulated renderer accepts it. They are separate from physical-Sonos
 acceptance. Rust execution was unavailable in the editing environment.
+
+## Absolute seeking
+
+An absolute seek also sends its native request once. Optional preparation
+retains the current track occurrence, duration, source, coordinator address,
+physical group and boot identity. Queue playback additionally retains one
+native queue entry and its revision, independent of the full queue's length.
+Unavailable preparation leaves ordinary absolute seeking available, including
+when the current clock is unknown, but cannot authorize lost-reply recovery.
+
+An ambiguous acknowledgement can be confirmed only against that retained
+observation and the same bounded position-clock rules as relative seeking.
+Source changes, queue edits, adjacent identical tracks, renderer errors and
+failed reads preserve the original write failure. Definite SOAP refusals are
+never turned into success by an unrelated matching clock. Preparation admits
+reads for at most 750 ms, confirmation for three seconds; an in-flight request
+keeps its transport timeout, and evidence older than 30 seconds is rejected.
+
+Absolute seeks are no longer treated as safe address-recovery retries: a time
+is relative to the selected track, and replaying it after rediscovery could
+seek a later occurrence. The shared CLI/HTTP/MCP command path returns the
+uncertain failure instead. An explicit initial coordinator refusal retains
+the existing single coordinator-recovery allowance.
+
+The S1/S2 cases in `relative_seek_recovery_sim` cover accepted and lost replies,
+playing and paused clocks, duplicate occurrences, source/queue changes,
+unavailable preparation and definite refusals. `fsonos-api`'s
+`seek_recovery_sim` checks that an unconfirmed absolute seek never enters
+address rediscovery or sends another seek. These added tests have not executed:
+the workspace dependency build was killed, and the execution host subsequently
+became unavailable.
 
 ## Pause, resume and stop
 

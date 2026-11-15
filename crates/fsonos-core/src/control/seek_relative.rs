@@ -73,7 +73,7 @@ fn same_track(before: &PositionInfo, after: &PositionInfo) -> bool {
         && before.duration_secs == after.duration_secs
 }
 
-fn reached(
+pub(super) fn reached(
     before: &PositionInfo,
     after: &PositionInfo,
     target: u32,
@@ -122,11 +122,7 @@ fn confirmed<T: Transport + ?Sized>(
     if !reached(before, &first, target, state, started.elapsed()) {
         return Ok(false);
     }
-    if !get_zone_group_state(t, host)?
-        .groups
-        .iter()
-        .any(|group| group.coordinator == *coordinator)
-    {
+    if !crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)? {
         return Ok(false);
     }
     let last = soap::get_position_info(t, host)?;
