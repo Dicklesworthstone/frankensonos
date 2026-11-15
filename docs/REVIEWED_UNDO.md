@@ -22,6 +22,16 @@ absent from the current inventory still reports a skipped restore while the
 surviving zones can be restored. The owner's CLI can explicitly force an undo,
 but current volume caps and per-step policy checks still apply.
 
+New equalizer actions retain the original room player and the bass, treble or
+loudness fields they reached. Undoing bass preserves later treble, loudness,
+volume, source, grouping and playback changes. Normal undo checks only those
+touched tone fields against their observed post-action values; missing proof,
+a later edit or an unreadable field refuses the whole undo before a write.
+The owner's explicit forced undo still restores only the retained fields and
+cannot substitute a different room player. A failed multi-field request retains
+accepted or uncertain writes, excluding a definite refusal and fields never
+sent. Older tone action rows keep their original whole-tone behavior.
+
 The daemon serializes selection and restoration with all other undo calls.
 It selects once, checks the id before restoration, and keeps the selected row;
 a newer action cannot silently replace it. A missing, already consumed,
@@ -52,3 +62,10 @@ inventory rooms. These new simulator cases have not run: the workspace build
 was killed with exit 137 while compiling the existing `asupersync` dependency,
 before it reached project checks. Formatting and source review do not substitute
 for running these cases.
+
+`crates/fsonos-api/tests/eq_sim.rs` adds tone-scope regressions for later
+unrelated edits and playback, changed or unreadable touched settings, forced
+restoration, and a partial request that never reaches its last field.
+Execution remains blocked before project code by the unchanged asupersync
+dependency build, followed by an unavailable execution environment. No
+simulator or physical-speaker pass is claimed for these additions.

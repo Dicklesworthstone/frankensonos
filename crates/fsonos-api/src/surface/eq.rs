@@ -143,13 +143,19 @@ impl Surface {
             .map_err(Failure::from)
             .inspect_err(|f| self.notice(f))?;
         let intent = format!("{WRITE}: {room} {}", asked(change));
+        let mut touched = ToneChange::default();
+        let result =
+            control::set_tone_tracked(&*self.transport, &households, &player, change, &mut touched);
+        let after = actions::capture_tone_after(&*self.transport, &households, &player, touched);
         let undo = actions::before_state_tones(&[ToneBefore {
             player: player.clone(),
             tone: before,
+            scope: Some(touched),
+            after: Some(after),
         }]);
         // A change that fails part-way is logged too, so undo can put back
         // what it did change.
-        if let Err(e) = control::set_tone(&*self.transport, &households, &player, change) {
+        if let Err(e) = result {
             let failure = Failure::from(e);
             self.notice(&failure);
             self.record(

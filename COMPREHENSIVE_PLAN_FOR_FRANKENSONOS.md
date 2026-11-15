@@ -1014,6 +1014,15 @@ media or queue read; unreadable or subsequently changed levels require a new
 read before normal undo. Existing action rows retain their previous full-zone
 restoration behavior.
 
+New tone actions likewise retain their original room player and only fields
+whose writes were accepted or may have taken effect. Normal undo verifies the
+observed post-action values without reading playback or unrelated tone fields.
+A later bass change blocks bass undo, while later treble or loudness changes
+remain intact. Partial writes exclude definitely refused and unsent fields;
+forced undo keeps that scope. Older tone rows keep their whole-tone behavior.
+Simulator regressions cover scope, later changes, partial writes and failed
+reads; execution remains blocked at the unchanged asupersync dependency.
+
 Eligible direct queue-replacing playback now retains a durable content backup,
 using the same restoration machinery as native removal and reordering. Spotify
 albums/playlists, resolved artist/show selections, native Sonos playlists and

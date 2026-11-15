@@ -38,6 +38,7 @@ use std::time::Instant;
 mod house_config;
 mod levels;
 mod queue;
+mod tones;
 pub use house_config::{
     SceneBefore, SceneRow, ScheduleBefore, ScheduleRow, before_state_config, scene_row,
     schedule_row,
@@ -48,6 +49,7 @@ pub use queue::{
     capture_scene_queue_undo, finish_queue_replacement, finish_queue_undo,
     finish_scene_queue_replacement, finish_scene_queue_restoration, with_queue_undo,
 };
+pub use tones::capture_tone_after;
 
 /// Retention: the newest this many actions are kept…
 pub const KEEP_ACTIONS: usize = 10_000;
@@ -99,6 +101,14 @@ pub struct SessionBefore {
 pub struct ToneBefore {
     pub player: PlayerId,
     pub tone: Tone,
+    /// Fields accepted or possibly changed by a new action. Older rows have
+    /// no scope and retain their original whole-tone restoration behavior.
+    /// Values retain the requested settings for post-action verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ToneChange>,
+    /// Observed scoped values after the write; missing fields are unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<ToneChange>,
 }
 
 /// Tracks an action added to a group's queue (by coordinator): undo takes
@@ -737,6 +747,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     // A scope is never permission to invent a missing prior level, including
     // on a forced undo. Validate the whole restore before any writes.
     levels::validate(households, &before)?;
+    tones::validate(t, households, &target, &before.tones, force)?;
     let level_state = before
         .level_scope
         .as_ref()
@@ -875,7 +886,7 @@ fn put_back_tones<T: Transport + ?Sized>(
 ) -> Outcomes {
     let (mut done, mut failed) = (Vec::new(), Vec::new());
     for was in tones {
-        match control::set_tone(t, households, &was.player, ToneChange::all(was.tone)) {
+        match control::set_tone(t, households, &was.player, tones::restore_change(was)) {
             Ok(()) => done.push(was.player.clone()),
             Err(e) => failed.push((was.player.clone(), e.to_string())),
         }
@@ -1375,6 +1386,8 @@ mod tests {
                 treble: 3,
                 loudness: true,
             },
+            scope: None,
+            after: None,
         };
         let json = before_state_tones(std::slice::from_ref(&was)).unwrap();
         assert_eq!(

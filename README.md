@@ -480,6 +480,12 @@ in other rooms remain intact; changed or unreadable settings in the actual undo
 scope require another review. Current volume caps still apply. Actions recorded
 by older versions keep their original full-zone undo behavior.
 
+Tone undo also keeps its original scope: undoing a bass adjustment restores
+only bass, preserving later treble, loudness and playback changes. Normal undo
+requires the touched settings to remain as the action left them. Even a forced
+undo restores only fields the action reached; a refused or unsent later setting
+is left alone. See [Reviewed undo](docs/REVIEWED_UNDO.md).
+
 ```toml
 # policy.toml in the data directory. A missing file falls back to the
 # [defaults] below only (no quiet hours, room caps or client tables until you

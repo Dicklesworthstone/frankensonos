@@ -74,7 +74,7 @@ pub fn with_level_after(before: Option<String>, after: &[LevelAfter]) -> Option<
 
 /// A physical identity must remain unique. Never resolve a saved room name or
 /// follow its current coordinator to another player during a level restore.
-fn player<'a>(households: &'a [HouseholdState], id: &PlayerId) -> Option<&'a Player> {
+pub(super) fn player<'a>(households: &'a [HouseholdState], id: &PlayerId) -> Option<&'a Player> {
     let mut matches = households.iter().filter_map(|h| h.player(id));
     let found = matches.next()?;
     if matches.next().is_some() {

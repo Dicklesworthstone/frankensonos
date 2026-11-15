@@ -6,7 +6,8 @@ use fsonos_api::ErrorCode;
 use fsonos_api::surface::eq::EqRequest;
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_core::clock::SystemClock;
-use fsonos_core::control::{self, Tone};
+use fsonos_core::actions::BeforeState;
+use fsonos_core::control::{self, Tone, ToneChange};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{ActionFilter, MemStore};
 use fsonos_core::{HouseholdState, resolve_room};
@@ -111,5 +112,170 @@ fn a_level_out_of_range_or_nothing_to_change_is_refused() {
         .recent_actions(&Client::Cli, &ActionFilter::default())
         .unwrap();
     assert!(log.is_empty(), "{log:?}");
+    sim.shutdown();
+}
+
+#[test]
+fn bass_undo_preserves_later_treble_loudness_and_playback_changes() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let lan = sim.lan();
+    let h = house(&sim);
+    let target = resolve_room(&h, "Kitchen").unwrap();
+    let player = target.player.id.clone();
+    let coordinator = target.coordinator.id.clone();
+    let s = surface(&sim);
+    s.set_eq(&Client::McpStdio, &ask(Some(4), None, None))
+        .unwrap();
+
+    // Another controller changes unrelated tone fields and starts new music.
+    control::set_tone(
+        &lan,
+        &h,
+        &player,
+        ToneChange {
+            bass: None,
+            treble: Some(-3),
+            loudness: Some(false),
+        },
+    )
+    .unwrap();
+    control::play_uri(
+        &lan,
+        &h,
+        &coordinator,
+        "http://example.invalid/later.mp3",
+        "",
+    )
+    .unwrap();
+    control::set_volume(&lan, &h, &player, 29).unwrap();
+
+    let result = s.undo(&Client::McpStdio, true).unwrap().unwrap();
+    assert_eq!(result.tones, [player.clone()]);
+    assert!(result.tone_failures.is_empty());
+    assert_eq!(
+        control::tone(&lan, &h, &player).unwrap(),
+        Tone {
+            bass: 0,
+            treble: -3,
+            loudness: false,
+        }
+    );
+    assert_eq!(
+        fsonos_proto::control::get_volume(&lan, target.player.ip).unwrap(),
+        29
+    );
+    let media = fsonos_proto::control::get_media_info(&lan, target.coordinator.ip).unwrap();
+    assert_eq!(media.uri, "http://example.invalid/later.mp3");
+    assert_eq!(
+        fsonos_proto::control::get_transport_info(&lan, target.coordinator.ip)
+            .unwrap()
+            .state,
+        fsonos_types::TransportState::Playing
+    );
+    sim.shutdown();
+}
+
+#[test]
+fn a_changed_touched_field_refuses_normal_undo_and_force_keeps_its_scope() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let lan = sim.lan();
+    let h = house(&sim);
+    let player = resolve_room(&h, "Kitchen").unwrap().player.id.clone();
+    let s = surface(&sim);
+    s.set_eq(&Client::Cli, &ask(Some(4), None, None)).unwrap();
+    let later = Tone {
+        bass: 7,
+        treble: -3,
+        loudness: false,
+    };
+    control::set_tone(&lan, &h, &player, ToneChange::all(later)).unwrap();
+    let failure = s.undo(&Client::Cli, true).unwrap_err();
+    assert_eq!(failure.code, ErrorCode::InvalidArgument);
+    assert!(failure.detail.contains("bass"), "{failure:?}");
+    assert_eq!(control::tone(&lan, &h, &player).unwrap(), later);
+
+    s.undo_forced(&Client::Cli, true, true).unwrap().unwrap();
+    assert_eq!(
+        control::tone(&lan, &h, &player).unwrap(),
+        Tone { bass: 0, ..later }
+    );
+    sim.shutdown();
+}
+
+#[test]
+fn a_partial_tone_change_undo_never_touches_refused_or_unsent_fields() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let lan = sim.lan();
+    let h = house(&sim);
+    let player = resolve_room(&h, "Kitchen").unwrap().player.id.clone();
+    let s = surface(&sim);
+    sim.upnp_fault("Kitchen", "SetTreble", 501).unwrap();
+    assert!(
+        s.set_eq(&Client::McpStdio, &ask(Some(4), Some(3), Some(false)))
+            .is_err()
+    );
+    sim.clear_faults("Kitchen").unwrap();
+    let logs = s
+        .recent_actions(&Client::McpStdio, &ActionFilter::default())
+        .unwrap();
+    let before = BeforeState::parse(logs[0].action.before_state.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        before.tones[0].scope,
+        Some(ToneChange {
+            bass: Some(4),
+            ..ToneChange::default()
+        })
+    );
+
+    control::set_tone(
+        &lan,
+        &h,
+        &player,
+        ToneChange {
+            bass: None,
+            treble: Some(-5),
+            loudness: Some(false),
+        },
+    )
+    .unwrap();
+    s.undo(&Client::McpStdio, true).unwrap().unwrap();
+    assert_eq!(
+        control::tone(&lan, &h, &player).unwrap(),
+        Tone {
+            bass: 0,
+            treble: -5,
+            loudness: false,
+        }
+    );
+    sim.shutdown();
+}
+
+#[test]
+fn tone_undo_reads_only_its_touched_field_and_refuses_an_unreadable_one() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let lan = sim.lan();
+    let h = house(&sim);
+    let player = resolve_room(&h, "Kitchen").unwrap().player.id.clone();
+    let s = surface(&sim);
+    s.set_eq(&Client::McpStdio, &ask(Some(4), None, None))
+        .unwrap();
+    sim.upnp_fault("Kitchen", "GetBass", 501).unwrap();
+    assert_eq!(
+        s.undo(&Client::McpStdio, true).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    sim.clear_faults("Kitchen").unwrap();
+    for action in [
+        "GetTreble",
+        "GetLoudness",
+        "GetPositionInfo",
+        "GetMediaInfo",
+        "GetTransportInfo",
+    ] {
+        sim.upnp_fault("Kitchen", action, 501).unwrap();
+    }
+    s.undo(&Client::McpStdio, true).unwrap().unwrap();
+    sim.clear_faults("Kitchen").unwrap();
+    assert_eq!(control::tone(&lan, &h, &player).unwrap().bass, 0);
     sim.shutdown();
 }

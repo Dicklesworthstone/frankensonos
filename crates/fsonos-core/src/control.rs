@@ -629,15 +629,18 @@ pub struct Tone {
 }
 
 /// What to change of a room's tone; `None` leaves that part as it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ToneChange {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bass: Option<i8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub treble: Option<i8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loudness: Option<bool>,
 }
 
 impl ToneChange {
-    /// Every part, as `tone` has it (an undo puts a tone back whole).
+    /// Every part, as `tone` has it.
     #[must_use]
     pub fn all(tone: Tone) -> Self {
         Self {
@@ -676,21 +679,48 @@ pub fn set_tone<T: Transport + ?Sized>(
     player: &PlayerId,
     change: ToneChange,
 ) -> Result<(), CoreError> {
+    set_tone_tracked(t, households, player, change, &mut ToneChange::default())
+}
+
+/// Apply a tone change, retaining only fields whose writes were accepted or
+/// may have taken effect. A definite refusal and fields not yet sent are left
+/// out, so partial-action undo cannot restore settings it never changed.
+pub fn set_tone_tracked<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    player: &PlayerId,
+    change: ToneChange,
+    touched: &mut ToneChange,
+) -> Result<(), CoreError> {
+    *touched = ToneChange::default();
     let host = addr(households, player)?;
     if let Some(bass) = change.bass {
-        confirm_tone_change("SetBass", soap::set_bass(t, host, bass), || {
+        let result = confirm_tone_change("SetBass", soap::set_bass(t, host, bass), || {
             Ok(soap::get_bass(t, host)? == bass.clamp(-10, 10))
-        })?;
+        });
+        if !matches!(&result, Err(ProtoError::SoapFault { .. })) {
+            touched.bass = Some(bass.clamp(-10, 10));
+        }
+        result?;
     }
     if let Some(treble) = change.treble {
-        confirm_tone_change("SetTreble", soap::set_treble(t, host, treble), || {
+        let result = confirm_tone_change("SetTreble", soap::set_treble(t, host, treble), || {
             Ok(soap::get_treble(t, host)? == treble.clamp(-10, 10))
-        })?;
+        });
+        if !matches!(&result, Err(ProtoError::SoapFault { .. })) {
+            touched.treble = Some(treble.clamp(-10, 10));
+        }
+        result?;
     }
     if let Some(loudness) = change.loudness {
-        confirm_tone_change("SetLoudness", soap::set_loudness(t, host, loudness), || {
-            Ok(soap::get_loudness(t, host)? == loudness)
-        })?;
+        let result =
+            confirm_tone_change("SetLoudness", soap::set_loudness(t, host, loudness), || {
+                Ok(soap::get_loudness(t, host)? == loudness)
+            });
+        if !matches!(&result, Err(ProtoError::SoapFault { .. })) {
+            touched.loudness = Some(loudness);
+        }
+        result?;
     }
     Ok(())
 }
