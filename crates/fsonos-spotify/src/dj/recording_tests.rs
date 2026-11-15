@@ -3,7 +3,9 @@
 
 use std::collections::HashSet;
 
-use super::{DjConfig, Factor, PickContext, PlayRecord, Rng, WorkPool, pick_next, plan};
+use super::{
+    DjConfig, Factor, PickContext, PlayRecord, Rng, UnavailableTrack, WorkPool, pick_next, plan,
+};
 use crate::library::{LibraryItem, Origin};
 use crate::test_shelf::{item, works_of};
 
@@ -50,6 +52,142 @@ fn without_artist_spacing() -> DjConfig {
         artist_cooldown_works: 0,
         ..DjConfig::default()
     }
+}
+
+#[test]
+fn a_failed_movement_excludes_its_whole_recording_without_excluding_another_performance() {
+    let all = shelf();
+    let pool = WorkPool::from_works(all.works()[..2].to_vec());
+    let failed = &pool.works()[0];
+    let healthy = &pool.works()[1];
+    let unavailable = [UnavailableTrack {
+        source_uri: failed.movements[1].track.source_uri.clone(),
+        retry_at: 2_000,
+    }];
+    let history = [PlayRecord::at(
+        &healthy.movements[0].track.source_uri,
+        1_000,
+    )];
+    let context = PickContext {
+        history: &history,
+        unavailable: &unavailable,
+        now: Some(1_001),
+        ..PickContext::default()
+    };
+    for seed in 0..32 {
+        let selected = pick_next(&pool, &context, &DjConfig::default(), &mut Rng::new(seed))
+            .expect("another complete recording can still rotate");
+        assert_eq!(selected.work.album_key, healthy.album_key);
+        assert_eq!(selected.movements, healthy.movements.as_slice());
+        assert!(selected.reason.has(Factor::Rotation));
+    }
+}
+
+#[test]
+fn soft_avoids_relax_only_over_healthy_recordings_and_hard_bans_remain() {
+    let all = shelf();
+    let mut works = all.works()[..2].to_vec();
+    for movement in &mut works[1].movements {
+        movement.genres = vec!["test-fallback".into()];
+    }
+    let preferences = crate::prefs::Preferences {
+        avoid: crate::prefs::Taste {
+            genres: vec!["test-fallback".into()],
+            ..crate::prefs::Taste::default()
+        },
+        ..crate::prefs::Preferences::default()
+    };
+    let unavailable = [UnavailableTrack {
+        source_uri: works[0].movements[0].track.source_uri.clone(),
+        retry_at: 2_000,
+    }];
+    let context = PickContext {
+        unavailable: &unavailable,
+        now: Some(1_000),
+        ..PickContext::default()
+    };
+    let moods = crate::steer::Moods::builtin();
+    let pool = WorkPool::from_works(works.clone()).with_preferences(preferences.clone(), &moods);
+    let selected = pick_next(&pool, &context, &DjConfig::default(), &mut Rng::new(7))
+        .expect("the existing adaptive avoid policy still has healthy music");
+    assert_eq!(selected.work.album_key, works[1].album_key);
+    assert!(selected.reason.has(Factor::Avoided));
+
+    let mut banned = preferences.clone();
+    banned.ban.albums.push(works[1].album_uri.clone().unwrap());
+    let pool = WorkPool::from_works(works.clone()).with_preferences(banned, &moods);
+    assert!(pick_next(&pool, &context, &DjConfig::default(), &mut Rng::new(7)).is_none());
+
+    works[1].movements[0].explicit = true;
+    let pool = WorkPool::from_works(works).with_preferences(preferences, &moods);
+    assert!(pick_next(&pool, &context, &DjConfig::default(), &mut Rng::new(7)).is_none());
+}
+
+#[test]
+fn unavailable_music_never_returns_through_filter_relaxation_or_an_unknown_clock() {
+    let all = shelf();
+    let pool = WorkPool::from_works(all.works()[..1].to_vec());
+    let unavailable = [UnavailableTrack {
+        source_uri: pool.works()[0].movements[0].track.source_uri.clone(),
+        retry_at: 2_000,
+    }];
+    for strict in [false, true] {
+        let steer = crate::steer::Steer {
+            mood: None,
+            constraints: crate::steer::DjConstraints {
+                keywords: vec!["sonata".into()],
+                strict,
+                ..crate::steer::DjConstraints::default()
+            },
+        };
+        for now in [None, Some(0), Some(1_999)] {
+            let context = PickContext {
+                unavailable: &unavailable,
+                now,
+                steer: Some(&steer),
+                ..PickContext::default()
+            };
+            assert!(pick_next(&pool, &context, &DjConfig::default(), &mut Rng::new(7)).is_none());
+        }
+    }
+    let context = PickContext {
+        unavailable: &unavailable,
+        now: Some(2_000),
+        ..PickContext::default()
+    };
+    assert!(pick_next(&pool, &context, &DjConfig::default(), &mut Rng::new(7)).is_some());
+}
+
+#[test]
+fn rehearsals_apply_renderer_exclusions_until_each_picks_own_time() {
+    let all = shelf();
+    let pool = WorkPool::from_works(vec![all.works()[0].clone(), all.works()[2].clone()]);
+    let failed = &pool.works()[0];
+    let healthy = &pool.works()[1];
+    let start = chrono::DateTime::from_timestamp(1_000, 0)
+        .unwrap()
+        .fixed_offset();
+    let unavailable = [UnavailableTrack {
+        source_uri: failed.movements[1].track.source_uri.clone(),
+        retry_at: 1_000 + i64::from(healthy.total_secs),
+    }];
+    let context = PickContext {
+        unavailable: &unavailable,
+        ..PickContext::default()
+    };
+    let set = crate::rehearse::rehearse(
+        &pool,
+        &context,
+        &DjConfig::default(),
+        start,
+        crate::rehearse::Span::Works(2),
+        &|_| None,
+        &mut Rng::new(7),
+    );
+    assert_eq!(set.len(), 2);
+    assert_eq!(set[0].planned.work.work_key, healthy.work_key);
+    assert_eq!(set[1].planned.work.work_key, failed.work_key);
+    assert_eq!(set[1].at.timestamp(), unavailable[0].retry_at);
 }
 
 #[test]

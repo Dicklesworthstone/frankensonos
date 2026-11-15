@@ -243,6 +243,11 @@ pub enum FeedError {
     #[error("the DJ may play nothing in the library: {0}")]
     NothingAllowed(String),
     #[error(
+        "the remaining matching recordings recently failed on this speaker; \
+         new selections wait for a renderer retry in {retry_after_secs} s"
+    )]
+    TemporarilyUnavailable { retry_after_secs: u64 },
+    #[error(
         "this household can't play Spotify yet: add any Spotify track to its Sonos \
          favorites so FrankenSonos can learn how this household plays Spotify"
     )]
@@ -941,7 +946,7 @@ impl QueueFeed {
         mode::start(at, first)?;
         self.playing = Some(first);
         self.jumped = true;
-        self.recovery = RecoveryBudget::default();
+        self.recovery.reset_attempts();
         Ok(&self.queued[next])
     }
 
@@ -1275,18 +1280,15 @@ impl QueueFeed {
             let ctx = PickContext {
                 history: &history,
                 elsewhere: &elsewhere,
+                unavailable: self.recovery.unavailable(),
                 now: Some(plan.now),
                 local_hour: plan.local_hour,
                 energy_target: None,
                 steer: plan.steer,
                 feedback: plan.feedback,
             };
-            let pick =
-                pick_next(plan.pool, &ctx, &self.config, &mut self.rng).ok_or_else(|| {
-                    plan.pool
-                        .why_nothing_plays(plan.steer, Some(plan.now))
-                        .map_or(FeedError::EmptyPool, FeedError::NothingAllowed)
-                })?;
+            let pick = pick_next(plan.pool, &ctx, &self.config, &mut self.rng)
+                .ok_or_else(|| self.selection_error(plan.pool, plan.steer, plan.now))?;
             let mut work = QueuedWork {
                 title: pick.work.title.clone(),
                 composer: pick.work.composer.clone(),
@@ -1315,6 +1317,18 @@ impl QueueFeed {
             added.map_err(|e| render_refused(at, e))?;
         }
         Ok(())
+    }
+
+    fn selection_error(&self, pool: &WorkPool, steer: Option<&Steer>, now: i64) -> FeedError {
+        if let Some(reason) = pool.why_nothing_plays(steer, Some(now)) {
+            return FeedError::NothingAllowed(reason);
+        }
+        self.recovery
+            .retry_after(now)
+            .filter(|_| !pool.is_empty())
+            .map_or(FeedError::EmptyPool, |retry_after_secs| {
+                FeedError::TemporarilyUnavailable { retry_after_secs }
+            })
     }
 
     /// Append a work's unadded movements to the end of the queue, in order,
@@ -1420,6 +1434,7 @@ impl QueueFeed {
         let ctx = PickContext {
             history: &history,
             elsewhere: &elsewhere,
+            unavailable: self.recovery.unavailable(),
             now: Some(plan.now),
             local_hour: plan.local_hour,
             energy_target: None,
@@ -1437,10 +1452,7 @@ impl QueueFeed {
         );
         if set.is_empty() {
             let steer = steering(start);
-            return Err(plan
-                .pool
-                .why_nothing_plays(steer.as_ref(), Some(start.timestamp()))
-                .map_or(FeedError::EmptyPool, FeedError::NothingAllowed));
+            return Err(self.selection_error(plan.pool, steer.as_ref(), start.timestamp()));
         }
         Ok(set)
     }

@@ -696,6 +696,13 @@ fn failure(err: FeedError) -> Failure {
              fsonos dj steer ROOM --clear. fsonos dj prefs show lists the standing bans and \
              explicit setting, which can also keep works out.",
         ),
+        FeedError::TemporarilyUnavailable { .. } => {
+            Failure::new(ErrorCode::NotReady, detail).with_hint(
+                "The DJ keeps queued music and retries after its temporary renderer cooldown. \
+                 Start the DJ explicitly to clear these playback-failure exclusions; \
+                 your taste and listening history are unchanged.",
+            )
+        }
         FeedError::NoRenderParams => Failure::new(ErrorCode::RenderParamsMissing, detail),
         FeedError::Inactive => Failure::new(ErrorCode::NoDjSession, detail),
         FeedError::UncertainEnqueue(_) => Failure::new(ErrorCode::OutcomeUncertain, detail).with_hint(

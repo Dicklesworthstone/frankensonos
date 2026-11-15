@@ -48,6 +48,8 @@ impl QueueFeed {
                 let context = PickContext {
                     history: &history,
                     elsewhere: &elsewhere,
+                    // An explicit start clears transient renderer exclusions.
+                    unavailable: &[],
                     now: Some(plan.now),
                     local_hour: plan.local_hour,
                     energy_target: None,

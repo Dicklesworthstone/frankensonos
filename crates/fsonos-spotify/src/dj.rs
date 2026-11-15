@@ -145,6 +145,16 @@ impl PlayRecord {
     }
 }
 
+/// A track a renderer recently failed to play. Every recording containing it
+/// waits until `retry_at`; this is availability evidence, never taste feedback
+/// or a synthetic listen. Other recordings of the same work remain eligible.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnavailableTrack {
+    pub source_uri: String,
+    /// Unix seconds. An unknown or backwards clock cannot end the exclusion.
+    pub retry_at: i64,
+}
+
 /// Tuning for [`pick_next`] and [`plan`]. Plays and spacings count *work*
 /// plays: a work's movements heard back to back count once. The track-based
 /// cooldown this replaced (150 track plays) converts at the ~3.7 movements per
@@ -224,6 +234,9 @@ pub struct PickContext<'h> {
     /// two rooms do not repeat each other's music. Only the cooldown reads
     /// it; energy, spacing and runs follow this room's `history`.
     pub elsewhere: &'h [PlayRecord],
+    /// Transient renderer failures in this group. Active entries exclude whole
+    /// recordings before steering and rotation; neither can relax them.
+    pub unavailable: &'h [UnavailableTrack],
     /// Current Unix time (enables the time-based cooldown).
     pub now: Option<i64>,
     /// Local hour 0–23 (enables the time-of-day energy target).
@@ -424,12 +437,17 @@ impl WorkPool {
     /// ones unless allowed, nothing banned or avoided, except what an active
     /// steer asks for by name. Avoids relax (the flag) only when they would
     /// leave nothing.
-    fn allowed(&self, steer: Option<&Steer>) -> (Vec<usize>, bool) {
+    fn allowed(&self, steer: Option<&Steer>, unavailable: &HashSet<&str>) -> (Vec<usize>, bool) {
         let named = |w: usize| steer.is_some_and(|s| names(&self.works[w], &s.constraints));
         let playable: Vec<usize> = (0..self.len())
             .filter(|&w| {
                 let v = self.verdicts[w];
-                (self.preferences.explicit || !v.explicit) && (!v.banned || named(w))
+                (self.preferences.explicit || !v.explicit)
+                    && (!v.banned || named(w))
+                    && (unavailable.is_empty()
+                        || self.works[w].movements.iter().all(|movement| {
+                            !unavailable.contains(movement.track.source_uri.as_str())
+                        }))
             })
             .collect();
         let kept: Vec<usize> = playable
@@ -454,7 +472,7 @@ impl WorkPool {
         if self.is_empty() {
             return None;
         }
-        let allowed = self.allowed(steer).0;
+        let allowed = self.allowed(steer, &HashSet::new()).0;
         if !allowed.is_empty() {
             let constraints = &steer.filter(|s| s.constraints.strict)?.constraints;
             if allowed
@@ -530,7 +548,13 @@ pub fn pick_next<'p>(
     }
     let recency = Recency::scan(pool, ctx.history, config).heard_elsewhere(pool, ctx.elsewhere);
     let steer = ctx.steer.filter(|s| s.constraints.is_active(ctx.now));
-    let (allowed, avoids_relaxed) = pool.allowed(steer);
+    let unavailable: HashSet<&str> = ctx
+        .unavailable
+        .iter()
+        .filter(|track| ctx.now.is_none_or(|now| now < track.retry_at))
+        .map(|track| track.source_uri.as_str())
+        .collect();
+    let (allowed, avoids_relaxed) = pool.allowed(steer, &unavailable);
     let (admitted, relaxed) = match steer {
         Some(s) => admit_among(
             &pool.works,
@@ -1431,7 +1455,7 @@ mod tests {
             // An unheard tail can contain only recently heard artists or one
             // genre. Space them whenever compatible alternatives remain,
             // without admitting a work the cooldown or rotation passed over.
-            let (admitted, _) = pool.allowed(None);
+            let (admitted, _) = pool.allowed(None, &HashSet::new());
             let mut history = Vec::new();
             let mut now = MIDNIGHT;
             let mut genre_run = 0;
@@ -2150,6 +2174,7 @@ mod tests {
         let ctx = PickContext {
             history: &history,
             elsewhere: &[],
+            unavailable: &[],
             now: Some(now),
             local_hour: Some(19),
             energy_target: None,
@@ -2182,6 +2207,7 @@ mod tests {
         let ctx = PickContext {
             history: &untimed,
             elsewhere: &[],
+            unavailable: &[],
             now: None,
             local_hour: None,
             energy_target: Some(80),
@@ -2317,6 +2343,7 @@ mod tests {
         let ctx = PickContext {
             history: &history,
             elsewhere: &[],
+            unavailable: &[],
             now: Some(MIDNIGHT),
             local_hour: Some(20),
             energy_target: None,

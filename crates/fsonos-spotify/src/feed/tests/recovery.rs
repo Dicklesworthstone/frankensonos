@@ -48,6 +48,181 @@ fn started(s2: bool, lookahead: usize) -> (Rig, WorkPool, MemStore, QueueFeed) {
     (rig, pool, store, feed)
 }
 
+#[test]
+fn a_failed_recording_does_not_cycle_back_into_the_next_refill() {
+    for s2 in [false, true] {
+        for restart in [false, true] {
+            let rig = Rig::generation(s2);
+            let pool = WorkPool::from_works(multi_movement_pool().works()[..2].to_vec());
+            let mut store = MemStore::default();
+            let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+            feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+            let failed = feed.queued()[0].clone();
+            let successor = feed.queued()[1].clone();
+            assert_ne!(failed.work_key, successor.work_key);
+            // The first recording fails before any successful listening event.
+            // Treating it as fresh music used to select it again immediately.
+            rig.sim.playback_error(ROOM).unwrap();
+            let error = sample(&rig);
+            deliver(
+                &rig,
+                &mut feed,
+                &pool,
+                &mut store,
+                &rig.lan,
+                &error,
+                MIDNIGHT + 1,
+            )
+            .unwrap();
+            assert!(plays(&store).is_empty());
+            if restart {
+                feed = reread(&feed, 7);
+            }
+            let playing = sample(&rig);
+            assert_eq!(playing.transport, Some(TransportState::Playing));
+            assert_eq!(
+                deliver(
+                    &rig,
+                    &mut feed,
+                    &pool,
+                    &mut store,
+                    &rig.lan,
+                    &playing,
+                    MIDNIGHT + 2,
+                )
+                .unwrap(),
+                1
+            );
+            assert!(feed.is_active());
+            assert_eq!(feed.current().unwrap().work_key, successor.work_key);
+            assert_eq!(feed.queued().last().unwrap().tracks(), successor.tracks());
+            assert_eq!(rig.position(), successor.first().unwrap());
+            assert!(
+                store
+                    .recent_plays(None, 10)
+                    .unwrap()
+                    .iter()
+                    .all(|play| !failed.tracks().contains(&play.source_uri.as_str())),
+                "renderer failures must not manufacture listening history"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_healthy_recording_waits_until_expiry_without_stopping_current_playback() {
+    let rig = Rig::new();
+    let pool = WorkPool::from_works(multi_movement_pool().works()[..1].to_vec());
+    let mut store = MemStore::default();
+    let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+    feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+        .unwrap();
+    rig.sim.playback_error(ROOM).unwrap();
+    let error = sample(&rig);
+    deliver(
+        &rig,
+        &mut feed,
+        &pool,
+        &mut store,
+        &rig.lan,
+        &error,
+        MIDNIGHT + 1,
+    )
+    .unwrap();
+    assert!(plays(&store).is_empty());
+    let playing = sample(&rig);
+    let observed = Observed::new(&rig.lan);
+    let before = rig.queue();
+    let result = deliver(
+        &rig,
+        &mut feed,
+        &pool,
+        &mut store,
+        &observed,
+        &playing,
+        MIDNIGHT + 2,
+    );
+    assert!(matches!(
+        result,
+        Err(FeedError::TemporarilyUnavailable {
+            retry_after_secs: 1_799
+        })
+    ));
+    assert!(observed.writes().is_empty());
+    assert_eq!(rig.queue(), before);
+    assert_eq!(sample(&rig).transport, Some(TransportState::Playing));
+    assert!(feed.is_active());
+    assert_eq!(
+        plays(&store).len(),
+        1,
+        "only the successful occurrence is heard"
+    );
+
+    assert_eq!(
+        deliver(
+            &rig,
+            &mut feed,
+            &pool,
+            &mut store,
+            &observed,
+            &playing,
+            MIDNIGHT + 1_801,
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(plays(&store).len(), 1, "retrying selection is not a listen");
+    assert_eq!(feed.queued().len(), 2);
+    assert!(
+        observed
+            .writes()
+            .iter()
+            .all(|write| write == "AddURIToQueue")
+    );
+}
+
+#[test]
+fn explicit_skip_keeps_renderer_exclusions_and_explicit_start_retries_them() {
+    let rig = Rig::new();
+    let pool = WorkPool::from_works(multi_movement_pool().works()[..2].to_vec());
+    let mut store = MemStore::default();
+    let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+    feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+        .unwrap();
+    let failed = feed.queued()[0].work_key.clone();
+    rig.sim.playback_error(ROOM).unwrap();
+    let event = sample(&rig);
+    deliver(
+        &rig,
+        &mut feed,
+        &pool,
+        &mut store,
+        &rig.lan,
+        &event,
+        MIDNIGHT + 1,
+    )
+    .unwrap();
+    let unavailable = feed.recovery.unavailable().to_vec();
+    assert_eq!(unavailable.len(), 1);
+    let skipped = feed
+        .skip(
+            &rig.speakers(&rig.lan),
+            plan(&pool, MIDNIGHT + 2),
+            &mut store,
+        )
+        .unwrap();
+    assert_ne!(skipped.work_key, failed);
+    assert_eq!(feed.recovery.unavailable(), unavailable);
+    feed.start(
+        &rig.speakers(&rig.lan),
+        plan(&pool, MIDNIGHT + 3),
+        &mut store,
+    )
+    .unwrap();
+    assert!(feed.recovery.unavailable().is_empty());
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Failure {
     Rejected,
@@ -692,6 +867,7 @@ fn failed_recovery_checkpoint_sends_no_writes_and_consumes_no_attempt() {
             &mut |snapshot| {
                 checkpoints += 1;
                 assert!(snapshot.recovery.in_flight());
+                assert_eq!(snapshot.recovery.unavailable().len(), 1);
                 assert!(observed.writes().is_empty());
                 Err("synthetic durable checkpoint failure".into())
             },

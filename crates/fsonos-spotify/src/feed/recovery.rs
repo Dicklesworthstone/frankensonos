@@ -13,9 +13,12 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 use super::{FeedError, FeedSnapshot, QueueFeed, QueuedWork, Speakers, host_of};
+use crate::dj::UnavailableTrack;
 
 const MAX_ATTEMPTS: u8 = 3;
 const WINDOW_SECS: i64 = 300;
+const TRACK_RETRY_SECS: i64 = 30 * 60;
+const MAX_UNAVAILABLE_TRACKS: usize = 64;
 
 /// A durable recovery budget. Old snapshots default to unused.
 /// A backwards wall clock cannot replenish attempts in the current window.
@@ -26,11 +29,55 @@ pub struct RecoveryBudget {
     /// A restored marker relinquishes feeding instead of replaying a command.
     #[serde(default)]
     in_flight: bool,
+    /// Keep playback failures out of new picks without changing the library,
+    /// repeat history or the owner's preferences. Legacy snapshots are empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unavailable: Vec<UnavailableTrack>,
 }
 
 impl RecoveryBudget {
     pub(super) fn in_flight(&self) -> bool {
         self.in_flight
+    }
+
+    pub(super) fn unavailable(&self) -> &[UnavailableTrack] {
+        &self.unavailable
+    }
+
+    pub(super) fn retry_after(&self, now: i64) -> Option<u64> {
+        self.unavailable
+            .iter()
+            .filter(|track| now < track.retry_at)
+            .map(|track| track.retry_at.abs_diff(now))
+            .min()
+    }
+
+    /// An explicit skip may try another healthy work without reopening failed
+    /// recordings. An explicit start still resets the complete recovery state.
+    pub(super) fn reset_attempts(&mut self) {
+        self.attempts.clear();
+        self.in_flight = false;
+    }
+
+    fn exclude(&mut self, source_uri: &str, now: i64) {
+        self.unavailable.retain(|track| now < track.retry_at);
+        let retry_at = now.saturating_add(TRACK_RETRY_SECS);
+        if let Some(track) = self
+            .unavailable
+            .iter_mut()
+            .find(|track| track.source_uri == source_uri)
+        {
+            track.retry_at = track.retry_at.max(retry_at);
+            return;
+        }
+        if self.unavailable.len() >= MAX_UNAVAILABLE_TRACKS {
+            let remove = self.unavailable.len() - MAX_UNAVAILABLE_TRACKS + 1;
+            drop(self.unavailable.drain(..remove));
+        }
+        self.unavailable.push(UnavailableTrack {
+            source_uri: source_uri.to_owned(),
+            retry_at,
+        });
     }
 
     fn reserve(&mut self, now: i64) -> Option<u8> {
@@ -126,6 +173,7 @@ struct Target {
     next: u32,
     next_uri: String,
     failed_title: String,
+    failed_uri: String,
     next_title: String,
 }
 
@@ -159,6 +207,10 @@ impl Target {
             next: next_position,
             next_uri: next.movements[0].uri.clone(),
             failed_title: current.title.clone(),
+            failed_uri: current
+                .track_at(position)
+                .expect("the failed occurrence belongs to this work")
+                .to_owned(),
             next_title: next.title.clone(),
         })
     }
@@ -432,6 +484,7 @@ pub(super) fn recover<T: Transport + ?Sized>(
         ));
     };
     feed.recovery.in_flight = true;
+    feed.recovery.exclude(&target.failed_uri, now);
     let snapshot = feed.snapshot().expect("recovery belongs to an active feed");
     if let Err(detail) = checkpoint(&snapshot) {
         // A failed fsync may have published the marker, but no speaker write
@@ -528,6 +581,39 @@ mod tests {
         });
         let snapshot: super::super::FeedSnapshot = serde_json::from_value(legacy).unwrap();
         assert_eq!(snapshot.recovery, RecoveryBudget::default());
+    }
+
+    #[test]
+    fn renderer_exclusions_are_bounded_deduplicated_and_expire_without_taste_changes() {
+        let mut budget = RecoveryBudget::default();
+        for index in 0..=MAX_UNAVAILABLE_TRACKS {
+            budget.exclude(&format!("spotify:track:Failed{index}"), 1_000);
+        }
+        assert_eq!(budget.unavailable().len(), MAX_UNAVAILABLE_TRACKS);
+        assert_eq!(budget.unavailable()[0].source_uri, "spotify:track:Failed1");
+        budget.exclude("spotify:track:Failed1", 1_001);
+        assert_eq!(budget.unavailable().len(), MAX_UNAVAILABLE_TRACKS);
+        let deadline = 1_001 + TRACK_RETRY_SECS;
+        assert_eq!(budget.unavailable()[0].retry_at, deadline);
+        budget.exclude("spotify:track:Failed1", 900);
+        assert_eq!(budget.unavailable()[0].retry_at, deadline);
+        assert_eq!(
+            budget.retry_after(1_000),
+            Some(u64::try_from(TRACK_RETRY_SECS).unwrap())
+        );
+        assert_eq!(budget.retry_after(deadline), None);
+
+        let serialized = serde_json::to_string(&budget).unwrap();
+        let mut restored: RecoveryBudget = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(restored, budget);
+        restored.exclude("spotify:track:NewFailure", deadline);
+        assert_eq!(restored.unavailable().len(), 1, "expired entries retire");
+        assert_eq!(restored.reserve(deadline), Some(1));
+        restored.in_flight = true;
+        restored.reset_attempts();
+        assert!(!restored.in_flight());
+        assert_eq!(restored.reserve(deadline), Some(1));
+        assert_eq!(restored.unavailable().len(), 1, "skip retains availability");
     }
 
     #[test]

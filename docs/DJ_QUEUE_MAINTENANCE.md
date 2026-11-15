@@ -71,6 +71,44 @@ cargo test --locked -p fsonos-cli --bin fsonos dj::feedback::tests
 cargo test --locked -p fsonos-api --lib surface::dj_follow
 ```
 
+## Renderer failures do not cycle back into new picks
+
+When a confirmed `ERROR_OCCURRED` advances the DJ to the next queued work,
+the failed track waits 30 minutes before it can enter a new selection. Every
+recording containing that track waits as a whole; another recording of the same
+piece remains available. This prevents a track that failed before its first
+successful listening event from looking fresh and being queued again immediately.
+A small shelf can keep rotating through its remaining playable recordings.
+Steering relaxation, repeat avoidance and rotation never bypass this wait.
+
+These exclusions belong to the feed, with at most 64 track identities retained.
+They survive a daemon restart and follow the feed when playback moves. The
+existing recovery checkpoint saves them with the attempt budget before any
+recovery command; a failed checkpoint sends no command and leaves the live feed
+unchanged. They do not change the library, preferences, feedback or play history,
+and do not remove or reorder music already on the speaker.
+
+If no matching recording remains available, new selections return `NotReady`
+with the next exclusion deadline while existing playback continues. Automatic
+refill uses its normal bounded retry schedule, and expired tracks may be selected
+again. `dj skip` preserves the exclusions while resetting the recovery attempt
+budget; an explicit `dj start` clears them to allow a deliberate retry. Rehearsals
+use the same exclusions and evaluate expiry at each projected pick's time.
+
+Regressions cover immediate refills on S1 and S2, snapshot restart, retained
+playback when the pool is temporarily unavailable, expiry, skip/start behavior,
+alternate recordings, strict/adaptive selection and rehearsal time. Run:
+
+```sh
+cargo test --locked -p fsonos-spotify --lib feed::tests::recovery
+cargo test --locked -p fsonos-spotify --lib feed::recovery::tests
+cargo test --locked -p fsonos-spotify --lib dj::recording_tests
+```
+
+The pinned formatter passes for these additions. Their Rust execution remains
+unverified: the workspace dependency build was killed in `asupersync` before
+reaching the changed crates. Physical-speaker acceptance remains separate.
+
 ## Current preferences and library
 
 An uninterrupted DJ picks up edits to `preferences.toml` and `moods.toml`

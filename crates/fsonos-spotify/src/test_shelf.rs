@@ -369,6 +369,7 @@ pub(crate) fn simulate_with<'p>(
         let ctx = PickContext {
             history: &history,
             elsewhere: &[],
+            unavailable: &[],
             now: Some(now),
             local_hour: Some(hour.unwrap_or(clock_hour)),
             energy_target: None,
