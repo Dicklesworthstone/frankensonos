@@ -2,7 +2,7 @@
 
 use super::{
     CoreError, Fader, HouseholdState, PlayerId, SleepCheckpoint, SleepFade, SleepOutcome,
-    SleepRecovery, SleepTimer, SleepTimers, Transport, ip, soap,
+    SleepRecovery, SleepTimer, SleepTimers, Transport, backstop, ip, soap,
 };
 use crate::fade::FadeOutcome;
 use std::collections::HashMap;
@@ -184,11 +184,7 @@ impl Run {
         t: &T,
         households: &[HouseholdState],
     ) -> Result<(), CoreError> {
-        Ok(soap::configure_sleep_timer(
-            t,
-            ip(households, &self.coordinator)?,
-            None,
-        )?)
+        backstop::clear(t, ip(households, &self.coordinator)?, &self.coordinator)
     }
 
     fn restore<T: Transport + ?Sized>(

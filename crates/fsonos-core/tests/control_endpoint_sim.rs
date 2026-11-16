@@ -108,9 +108,7 @@ impl Command {
         match self {
             Self::Source => control::play_uri(transport, houses, target, NEW, ""),
             Self::Queue => control::play_queue_from(transport, houses, target, 2),
-            Self::OrderedQueue => {
-                control::play_queue_from_in_order(transport, houses, target, 2)
-            }
+            Self::OrderedQueue => control::play_queue_from_in_order(transport, houses, target, 2),
             Self::Resume => control::resume(transport, houses, target),
             Self::Pause => control::pause_confirmed(transport, houses, target),
             Self::LoadSource => control::load_uri(transport, houses, target, NEW, ""),
@@ -210,14 +208,11 @@ fn a_local_refusal_can_readdress_the_same_player_without_writing_to_its_peer() {
         let lan = f.sim.lan();
         let mut stale = f.stale();
         let before = f.sim.soap_log().len();
-        let (_, recovery) = heal::readdressing(
-            &lan,
-            &[f.host, f.peer],
-            &mut stale,
-            &f.target,
-            |houses| control::play_uri(&lan, houses, &f.target, NEW, ""),
-        )
-        .unwrap();
+        let (_, recovery) =
+            heal::readdressing(&lan, &[f.host, f.peer], &mut stale, &f.target, |houses| {
+                control::play_uri(&lan, houses, &f.target, NEW, "")
+            })
+            .unwrap();
         assert_eq!(
             recovery,
             heal::Recovery::Readdressed {

@@ -1223,6 +1223,12 @@ impl Surface {
         self.authorize_write(client, "set_sleep_timer")?;
         let change = req.change()?;
         let (households, zone) = self.zone_of(client, req.zone()?)?;
+        // A household-wide reply does not prove this endpoint still owns the
+        // selected coordinator. Check before superseding saved recovery or
+        // reading/changing a native timer on an unrelated room.
+        fsonos_core::control::require_coordinator(&*self.transport, zone.ip, &zone.coordinator)
+            .map_err(Failure::from)
+            .inspect_err(|failure| self.notice(failure))?;
         let now = self.clock.now();
         let result = match &self.sleep {
             Some(sleep) => self.sleep_in_daemon(sleep, &households, &zone, change, now),
@@ -2169,8 +2175,7 @@ mod announcement_cancel_tests;
 mod tests {
     use super::*;
     use crate::surface::Survey;
-    use crate::surface::testing::Canned;
-    use crate::zones::fixtures::households;
+    use crate::surface::testing::{Canned, households};
     use fsonos_core::clock::FakeClock;
     use fsonos_core::policy::Policy;
     use fsonos_core::store::MemStore;
@@ -2492,7 +2497,7 @@ mod tests {
             "{}",
             set.done
         );
-        assert_eq!(sent(&log), ["ConfigureSleepTimer"]);
+        assert_eq!(sent(&log), ["GetZoneGroupState", "ConfigureSleepTimer"]);
 
         // Extending reads what the speaker has left (10 minutes here).
         let extended = s
@@ -2501,7 +2506,11 @@ mod tests {
         assert_eq!(extended.remaining_secs, Some(25 * 60));
         assert_eq!(
             sent(&log),
-            ["GetRemainingSleepTimerDuration", "ConfigureSleepTimer"]
+            [
+                "GetZoneGroupState",
+                "GetRemainingSleepTimerDuration",
+                "ConfigureSleepTimer"
+            ]
         );
 
         let cancelled = s
@@ -2625,7 +2634,9 @@ mod tests {
         assert_eq!(
             sent(&log),
             [
+                "GetZoneGroupState",
                 "GetRemainingSleepTimerDuration",
+                "GetZoneGroupState",
                 "GetRemainingSleepTimerDuration"
             ]
         );

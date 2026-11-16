@@ -26,7 +26,7 @@ fn assert_partial(outcome: &OutcomeDto) {
             "Living Room" => {
                 assert_eq!(result.household, "S2");
                 assert!(matches!(&result.result, ControlResultDto::Failed { error }
-                    if error.code == ErrorCode::UpnpFault && error.upnp_code == Some(701)));
+                    if error.code == ErrorCode::UpnpFault && error.upnp_code == Some(702)));
             }
             other => panic!("unselected target {other}"),
         }
@@ -78,9 +78,11 @@ fn partial_commands(via_daemon: bool) {
         .unwrap();
         soap::play(&s.lan(), s.ip(room)).unwrap();
     }
+    // A stream refusing Pause with 701 may successfully fall back to Stop.
+    // Use a definite refusal that the transport must report as a failure.
     s.sim_handle()
         .unwrap()
-        .upnp_fault("Living Room", "Pause", 701)
+        .upnp_fault("Living Room", "Pause", 702)
         .unwrap();
     let mut daemon = via_daemon.then(|| {
         let mut daemon = s.spawn(

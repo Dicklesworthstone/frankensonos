@@ -2,7 +2,7 @@
 
 use super::{
     Armed, CoreError, DateTime, Fader, HouseholdState, PlayerId, SleepTimer, SleepTimers,
-    Transport, Utc, delta, ip, room_name, soap,
+    Transport, Utc, backstop, delta, ip, room_name,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -150,7 +150,7 @@ impl SleepTimers {
         if let Err(error) = Self::backstop(t, households, coordinator, ends, now) {
             self.resumes.finish(receipt);
             if let Ok(host) = ip(households, coordinator) {
-                let _ = soap::configure_sleep_timer(t, host, None);
+                let _ = backstop::clear(t, host, coordinator);
             }
             return Err(error);
         }
@@ -162,7 +162,7 @@ impl SleepTimers {
                 .is_err()
             {
                 drop(armed);
-                soap::configure_sleep_timer(t, ip(households, coordinator)?, None)?;
+                backstop::clear(t, ip(households, coordinator)?, coordinator)?;
                 return Ok(None);
             }
             self.resumes.finish(receipt);

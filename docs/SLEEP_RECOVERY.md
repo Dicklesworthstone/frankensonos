@@ -40,14 +40,22 @@ newly armed timer retains its own native backstop.
 
 ## Changing a daemon timer
 
+Timer edits first verify that the addressed endpoint is still the intended
+group coordinator. A known address or coordinator mismatch is a target-change
+refusal; unavailable or incoherent topology keeps its original protocol error.
+Neither case sends a native timer write or retires an existing armed timer.
+Native backstop cleanup also verifies the endpoint before clearing it, including
+announcement cleanup after a failed rearm. An old address now occupied by another
+coordinator never grants permission to clear that coordinator's timer.
+
 Starting, extending or cancelling sends each native timer change once. A lost
 or malformed reply can be confirmed through bounded reads only when the native
 timer generation advances by exactly one, the requested countdown or cancellation
 is observed, and the original physical group, address and known boot identity
 still agree. An intervening replacement, even with the same countdown, cannot
 supply that proof. Missing or malformed duration data never means cancellation.
-Unavailable optional preflight evidence does not prevent an ordinary acknowledged
-timer change.
+Unavailable optional timer-generation evidence does not prevent an ordinary
+acknowledged timer change once endpoint identity has been verified.
 
 A definite native refusal leaves an existing timer and fade intact, so an
 explicit retry can still cancel or extend it. An unconfirmed change returns an
@@ -103,3 +111,8 @@ read-back, changed generations, regrouping, reboot, running-fade retirement and
 stale dispatch expiry. `cargo test -p fsonos-proto --lib control::tests` checks
 strict timer evidence and overflow-safe duration parsing. The new cases have
 passed the pinned formatter; their Rust execution remains pending.
+
+`cargo test -p fsonos-core --test sleep_endpoint_sim` covers S1/S2 stale bindings,
+actual address reuse, an unreachable old address, acknowledged changes without
+native generation evidence, and announcement error cleanup at a changed endpoint.
+Execution of these endpoint regressions remains pending.

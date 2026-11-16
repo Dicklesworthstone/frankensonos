@@ -154,7 +154,9 @@ fn silent_loaders_reject_another_rooms_endpoint_before_any_write() {
                 "operation {operation} wrote to another room"
             );
             assert_eq!(
-                soap::get_transport_info(&f.sim.lan(), f.peer).unwrap().state,
+                soap::get_transport_info(&f.sim.lan(), f.peer)
+                    .unwrap()
+                    .state,
                 TransportState::Playing,
             );
             f.requested_untouched();
@@ -175,7 +177,9 @@ fn a_matching_source_on_another_endpoint_cannot_authorize_selection_or_play() {
         assert!(!replies.lost.get(), "the stale endpoint receives no write");
         assert_eq!(soap::get_media_info(&f.sim.lan(), f.peer).unwrap().uri, NEW);
         assert_eq!(
-            soap::get_transport_info(&f.sim.lan(), f.peer).unwrap().state,
+            soap::get_transport_info(&f.sim.lan(), f.peer)
+                .unwrap()
+                .state,
             TransportState::Playing,
             "the unrelated room keeps playing its original matching source",
         );
@@ -216,7 +220,10 @@ fn another_rooms_playing_state_cannot_authorize_the_requested_resume() {
         let replies = Replies::new(&f.sim, Some("Play"));
         let error = control::resume(&replies, &f.stale(), &f.player).unwrap_err();
         assert!(matches!(error, CoreError::TargetChanged(_)));
-        assert!(replies.writes().is_empty(), "Play is refused before dispatch");
+        assert!(
+            replies.writes().is_empty(),
+            "Play is refused before dispatch"
+        );
         assert!(!replies.lost.get(), "the stale endpoint receives no write");
         f.requested_untouched();
     }
@@ -244,7 +251,9 @@ fn snapshot_source_restoration_cannot_rewrite_another_rooms_queue() {
         );
         assert!(replies.writes().is_empty(), "{report:?}");
         assert_eq!(
-            soap::get_transport_info(&f.sim.lan(), f.peer).unwrap().state,
+            soap::get_transport_info(&f.sim.lan(), f.peer)
+                .unwrap()
+                .state,
             TransportState::Playing,
         );
         f.requested_untouched();

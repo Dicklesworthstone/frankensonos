@@ -36,7 +36,7 @@ fn a_partial_scheduled_pause_or_volume_reports_failure_without_reopening_the_occ
                 .unwrap();
                 soap::play(&h.sim.lan(), ip).unwrap();
             }
-            h.sim.upnp_fault("Room1", verb, 701).unwrap();
+            h.sim.upnp_fault("Room1", verb, 702).unwrap();
             let schedule = h.surface.load_schedules().unwrap().remove(0);
             let prepared = ready(&h.surface, &schedule).unwrap();
             assert_eq!(

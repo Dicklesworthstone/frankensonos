@@ -276,7 +276,12 @@ fn coordinator_recovery_caps_new_members_and_records_the_actual_playing_group() 
         assert!(outcome.notes.iter().any(|note| {
             note.code == NoteCode::VolumeClamped && note.detail.contains("Bedroom")
         }));
-        assert!(outcome.notes.iter().any(|note| note.code == NoteCode::Healed));
+        assert!(
+            outcome
+                .notes
+                .iter()
+                .any(|note| note.code == NoteCode::Healed)
+        );
         assert_recovered_play(&sim, &surface, mark);
     }
 }
@@ -368,8 +373,7 @@ fn playback_recovers_from_an_address_reassigned_to_an_unrelated_speaker() {
             let kitchen = sim.player("Kitchen").unwrap().ip;
             let den_source = "x-rincon-mp3radio://stream.example.invalid/den.mp3";
             set_av_transport_uri(&lan, kitchen, STREAM, "").unwrap();
-            set_av_transport_uri(&lan, sim.player("Den").unwrap().ip, den_source, "")
-                .unwrap();
+            set_av_transport_uri(&lan, sim.player("Den").unwrap().ip, den_source, "").unwrap();
             surface.households().unwrap();
             let new_address = sim.change_address("Kitchen").unwrap();
             let IpAddr::V4(reused) = kitchen else {
@@ -400,13 +404,16 @@ fn playback_recovers_from_an_address_reassigned_to_an_unrelated_speaker() {
                     }
                 })
                 .unwrap();
-            assert!(outcome.notes.iter().any(|note| note.code == NoteCode::Healed));
+            assert!(
+                outcome
+                    .notes
+                    .iter()
+                    .any(|note| note.code == NoteCode::Healed)
+            );
             let log = sim.soap_log();
             let writes: Vec<_> = log[mark..]
                 .iter()
-                .filter(|entry| {
-                    matches!(entry.action.as_str(), "SetAVTransportURI" | "Play")
-                })
+                .filter(|entry| matches!(entry.action.as_str(), "SetAVTransportURI" | "Play"))
                 .map(|entry| (entry.room.as_str(), entry.action.as_str()))
                 .collect();
             if resume {

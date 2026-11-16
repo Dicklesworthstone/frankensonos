@@ -76,10 +76,12 @@ fn addr(households: &[HouseholdState], id: &PlayerId) -> Result<IpAddr, CoreErro
     locate(households, id).map(|p| p.ip)
 }
 
-/// A household-wide topology is not proof that its responding endpoint owns
-/// the requested group. Check the current coordinator's physical address
-/// before a source start can change or ungroup an unrelated room.
-fn require_coordinator<T: Transport + ?Sized>(
+/// Verify that the addressed endpoint still belongs to the requested group
+/// coordinator before a coordinator-addressed mutation. A household-wide
+/// topology merely naming the player is not proof that it owns this address.
+/// A known mismatch returns [`CoreError::TargetChanged`]; unavailable or
+/// incoherent topology retains its protocol error. This function sends no writes.
+pub fn require_coordinator<T: Transport + ?Sized>(
     transport: &T,
     host: IpAddr,
     coordinator: &PlayerId,

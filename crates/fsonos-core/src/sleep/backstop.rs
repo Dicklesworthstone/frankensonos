@@ -41,6 +41,10 @@ pub(super) fn configure<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     after: Option<u32>,
 ) -> Result<(), CoreError> {
+    // Endpoint identity is mandatory even when optional timer-generation
+    // evidence is unavailable. A refusal here precedes every native write,
+    // so callers keep their existing armed timer and restoration ownership.
+    crate::control::require_coordinator(t, host, coordinator)?;
     let preparation = Reads {
         inner: t,
         until: Instant::now() + PREPARE_BUDGET,
@@ -49,6 +53,9 @@ pub(super) fn configure<T: Transport + ?Sized>(
         .ok()
         .flatten()
         .filter(|_| Instant::now() < preparation.until);
+    // Preparation can itself observe a changed endpoint. Optional evidence
+    // must never turn that refusal into permission to write at the old address.
+    crate::control::require_coordinator(t, host, coordinator)?;
     let sent = Instant::now();
     let Err(error) = soap::configure_sleep_timer(t, host, after) else {
         return Ok(());
@@ -79,6 +86,17 @@ pub(super) fn configure<T: Transport + ?Sized>(
              the request was not replayed; read the current timer before trying again"
         )))
     }
+}
+
+/// Clear a fallback once, preserving the cleanup caller's original reply
+/// semantics. A changed or unreadable endpoint never authorizes the clear.
+pub(super) fn clear<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+) -> Result<(), CoreError> {
+    crate::control::require_coordinator(t, host, coordinator)?;
+    Ok(soap::configure_sleep_timer(t, host, None)?)
 }
 
 struct Observation {

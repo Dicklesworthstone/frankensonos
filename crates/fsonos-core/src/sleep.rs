@@ -477,7 +477,7 @@ impl SleepTimers {
             && (TimeDelta::seconds(i64::from(left)) - (end - now)).abs() <= TimeDelta::minutes(1)
             && checkpoint.current(fade)
         {
-            soap::configure_sleep_timer(t, host, None)?;
+            backstop::clear(t, host, coordinator)?;
         }
         Ok(())
     }
@@ -597,7 +597,7 @@ impl SleepTimers {
                 armed.remove(coordinator);
                 drop(armed);
                 if !joined {
-                    soap::configure_sleep_timer(t, ip(households, coordinator)?, None)?;
+                    backstop::clear(t, ip(households, coordinator)?, coordinator)?;
                 }
                 return Ok(SleepOutcome::Interrupted);
             }
@@ -669,8 +669,7 @@ fn own_timer<T: Transport + ?Sized>(
 ) {
     let _ = match ends {
         Some(ends) => SleepTimers::backstop(t, households, player, ends, now),
-        None => ip(households, player)
-            .and_then(|host| soap::configure_sleep_timer(t, host, None).map_err(CoreError::from)),
+        None => ip(households, player).and_then(|host| backstop::clear(t, host, player)),
     };
 }
 

@@ -173,11 +173,8 @@ fn confirmed<T: Transport + ?Sized>(
     if soap::get_media_info(transport, host)?.uri != own_queue {
         return Ok(false);
     }
-    if !crate::topology::coordinator_at(
-        &get_zone_group_state(transport, host)?,
-        host,
-        coordinator,
-    )? {
+    if !crate::topology::coordinator_at(&get_zone_group_state(transport, host)?, host, coordinator)?
+    {
         return Ok(false);
     }
     if stage == Stage::Source {
@@ -249,14 +246,15 @@ fn mode_confirmed<T: Transport + ?Sized>(
         return Ok(false);
     }
     let own_queue = format!("x-rincon-queue:{}#0", coordinator.0);
-    Ok(crate::topology::coordinator_at(
-        &get_zone_group_state(transport, host)?,
-        host,
-        coordinator,
-    )?
-        && soap::get_media_info(transport, host)?.uri == own_queue
-        && fsonos_proto::play_mode::get_play_mode(transport, host)? == PlayMode::Normal
-        && soap::get_transport_info(transport, host)?.state == TransportState::Stopped)
+    Ok(
+        crate::topology::coordinator_at(
+            &get_zone_group_state(transport, host)?,
+            host,
+            coordinator,
+        )? && soap::get_media_info(transport, host)?.uri == own_queue
+            && fsonos_proto::play_mode::get_play_mode(transport, host)? == PlayMode::Normal
+            && soap::get_transport_info(transport, host)?.state == TransportState::Stopped,
+    )
 }
 
 fn same_track(actual: &str, expected: &str) -> bool {
