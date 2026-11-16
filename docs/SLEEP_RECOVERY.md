@@ -48,6 +48,18 @@ Native backstop cleanup also verifies the endpoint before clearing it, including
 announcement cleanup after a failed rearm. An old address now occupied by another
 coordinator never grants permission to clear that coordinator's timer.
 
+After a sleep fade successfully makes a joined room leave, cleanup can use the
+same household's witnesses when the leaving player still reports its old group.
+Its coherent self-report must still bind the intended player to the original
+address. A witness must then bind both its own physical identity and the intended
+coordinator to their exact addressed endpoints. Candidates from the retained
+household are read once each within the leave observation budget; another
+household, an explicit address change, or unreadable self-evidence cannot
+authorize cleanup. Only this confirmed-leave cleanup has that exception. The
+native clear is still sent once, and a failed clear never starts another proof
+or write attempt. The budget limits starting and accepting fallback observations;
+an in-flight SOAP read remains bounded by the transport's own timeout.
+
 Starting, extending or cancelling sends each native timer change once. A lost
 or malformed reply can be confirmed through bounded reads only when the native
 timer generation advances by exactly one, the requested countdown or cancellation
@@ -116,3 +128,9 @@ passed the pinned formatter; their Rust execution remains pending.
 actual address reuse, an unreachable old address, acknowledged changes without
 native generation evidence, and announcement error cleanup at a changed endpoint.
 Execution of these endpoint regressions remains pending.
+
+`cargo test -p fsonos-core --test sleep_leave_cleanup_sim` covers S1/S2 stale
+self-membership after a confirmed leave, an unavailable first witness, moved or
+reused target and witness addresses, foreign-household exclusion, strict
+self-read errors, and a lost native-clear reply without replay. Execution of
+these regressions remains pending.

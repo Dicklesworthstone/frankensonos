@@ -15,7 +15,7 @@ use fsonos_proto::didl::{
     SpotifyBare, SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_bare_didl,
     spotify_bare_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
 };
-use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::topology::{ZoneGroupState, get_zone_group_state};
 use fsonos_types::{Player, PlayerId};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -90,10 +90,87 @@ pub fn require_coordinator<T: Transport + ?Sized>(
     if crate::topology::coordinator_at(&topology, host, coordinator)? {
         Ok(())
     } else {
-        Err(CoreError::TargetChanged(
-            "the requested coordinator no longer leads its group at this address".into(),
-        ))
+        Err(coordinator_changed())
     }
+}
+
+fn coordinator_changed() -> CoreError {
+    CoreError::TargetChanged(
+        "the requested coordinator no longer leads its group at this address".into(),
+    )
+}
+
+fn topology_player_at(topology: &ZoneGroupState, host: IpAddr, player: &PlayerId) -> bool {
+    topology
+        .groups
+        .iter()
+        .flat_map(|group| &group.members)
+        .flat_map(|member| std::iter::once(member).chain(&member.satellites))
+        .any(|member| member.uuid == *player && member.ip() == Some(host))
+}
+
+/// Cleanup immediately after a confirmed leave may use a household witness
+/// when the player's own coherent topology still shows its old membership.
+/// Address movement, missing players and unreadable self evidence stay strict.
+/// Every candidate is read once within the leave budget; no writes occur here.
+pub(crate) fn require_coordinator_after_leave<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    host: IpAddr,
+    coordinator: &PlayerId,
+) -> Result<(), CoreError> {
+    let until = Instant::now() + LEAVE_WAIT;
+    let topology = get_zone_group_state(transport, host)?;
+    if crate::topology::coordinator_at(&topology, host, coordinator)? {
+        return Ok(());
+    }
+    let original = coordinator_changed();
+    if !topology_player_at(&topology, host, coordinator) {
+        return Err(original);
+    }
+    let mut matches = households
+        .iter()
+        .filter(|house| house.player(coordinator).is_some());
+    let Some(household) = matches.next() else {
+        return Err(original);
+    };
+    if matches.next().is_some() {
+        return Err(original);
+    }
+    let mut read = vec![host];
+    for witness in household_witnesses(household, coordinator) {
+        if read.contains(&witness.ip) {
+            continue;
+        }
+        if Instant::now() >= until {
+            break;
+        }
+        read.push(witness.ip);
+        if let Ok(topology) = get_zone_group_state(transport, witness.ip)
+            && crate::topology::coordinator_at(&topology, host, coordinator).unwrap_or(false)
+            && topology_player_at(&topology, witness.ip, &witness.id)
+            && Instant::now() < until
+        {
+            return Ok(());
+        }
+    }
+    Err(original)
+}
+
+/// Prefer another room's view; a bonded player's view can share the same lag.
+fn household_witnesses<'a>(household: &'a HouseholdState, member: &PlayerId) -> Vec<&'a Player> {
+    let mut players: Vec<_> = household
+        .players
+        .iter()
+        .filter(|p| &p.id != member)
+        .collect();
+    players.sort_by_key(|player| {
+        household
+            .rooms
+            .iter()
+            .any(|room| room.players.contains(&player.id) && room.players.contains(member))
+    });
+    players
 }
 
 /// Resume (or start) playback on the group `coordinator` leads. A lost
@@ -866,20 +943,12 @@ fn wait_until_alone<T: Transport + ?Sized>(
         .iter()
         .find(|h| h.player(member).is_some())
         .unwrap_or_else(|| households.first().expect("addr() found the household"));
-    let same_room = |id: &PlayerId| {
-        household
-            .rooms
-            .iter()
-            .any(|r| r.players.contains(id) && r.players.contains(member))
-    };
     // A witness in another room of the same household: a player of the
     // member's own room (a stereo pair's other half) shares its view, and a
     // player of another household never lists this one's groups at all.
-    let mut witness = household
-        .players
-        .iter()
-        .find(|p| &p.id != member && !same_room(&p.id))
-        .or_else(|| household.players.iter().find(|p| &p.id != member))
+    let mut witness = household_witnesses(household, member)
+        .into_iter()
+        .next()
         .map(|p| p.ip);
     let leads_own = |groups: &[fsonos_proto::topology::ZoneGroupInfo]| {
         groups.iter().any(|g| {

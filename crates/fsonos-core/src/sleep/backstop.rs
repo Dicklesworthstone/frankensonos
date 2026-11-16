@@ -99,6 +99,19 @@ pub(super) fn clear<T: Transport + ?Sized>(
     Ok(soap::configure_sleep_timer(t, host, None)?)
 }
 
+/// A successful leave can be witnessed while the player's own membership
+/// remains stale. Verify that narrow case before the one cleanup write;
+/// a failed native clear never enters another observation or write attempt.
+pub(super) fn clear_after_leave<T: Transport + ?Sized>(
+    t: &T,
+    households: &[crate::HouseholdState],
+    coordinator: &PlayerId,
+) -> Result<(), CoreError> {
+    let host = super::ip(households, coordinator)?;
+    crate::control::require_coordinator_after_leave(t, households, host, coordinator)?;
+    Ok(soap::configure_sleep_timer(t, host, None)?)
+}
+
 struct Observation {
     destination: SourceDestination,
     next_generation: u32,

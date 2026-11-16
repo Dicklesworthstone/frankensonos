@@ -268,7 +268,9 @@ impl Run {
             // recorded before retiring this run takes precedence over it.
             let restored = self.restore(t, households, fader, checkpoint);
             let interrupted = timers.forget(&self.coordinator, self.generation);
-            let cleared = if stopped.is_ok() || (interrupted && !self.joined) {
+            let cleared = if stopped.is_ok() && self.joined {
+                backstop::clear_after_leave(t, households, &self.coordinator)
+            } else if stopped.is_ok() || (interrupted && !self.joined) {
                 self.clear(t, households)
             } else {
                 Ok(())
