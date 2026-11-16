@@ -32,6 +32,9 @@ use crate::classical::{Period, normalize};
 use crate::steer::{DjConstraints, Moods, admits, artist_matches, credited, genre_matches};
 use crate::works::Work;
 
+mod file;
+pub use file::PreferenceWriteError;
+
 /// The file in the data directory.
 pub const PREFERENCES_FILE: &str = "preferences.toml";
 
@@ -183,14 +186,23 @@ impl Preferences {
         }
     }
 
-    /// Write `path` (through a temporary file beside it, so a crash never
-    /// leaves half a file).
-    pub fn save(&self, path: &Path) -> Result<(), SpotifyError> {
-        let text = self.to_toml()?;
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
+    /// Replace `path` atomically, serializing with other application writers.
+    /// Use [`Self::edit`] for a field change based on the current preferences;
+    /// saving an older complete snapshot deliberately replaces newer values.
+    pub fn save(&self, path: &Path) -> Result<(), PreferenceWriteError> {
+        file::save(self, path)
+    }
+
+    /// Read, change and validate the current file under one cross-process lock.
+    /// Concurrent field edits see each other's accepted values. A semantic
+    /// no-op preserves the original bytes, including comments or an absent file.
+    /// Returns the accepted preferences and the edit's own result.
+    pub fn edit<R>(
+        path: &Path,
+        moods: &Moods,
+        change: impl FnOnce(&mut Self) -> Result<R, String>,
+    ) -> Result<(Self, R), PreferenceWriteError> {
+        file::edit(path, moods, change)
     }
 
     /// As `preferences.toml` text.

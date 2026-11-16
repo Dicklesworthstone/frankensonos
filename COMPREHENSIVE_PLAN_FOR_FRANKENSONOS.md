@@ -636,6 +636,14 @@ from a genre the DJ was built around.
   apply to every session. Agents turn language into these arguments through
   MCP `dj_steer`; the daemon never parses natural language.
 
+Standing preference field edits serialize across the daemon and direct CLI
+processes using a stable sibling file lock. The entire read/change/validate/write
+operation holds that lock, so concurrent edits retain unrelated bans, favors and
+energy settings. Unique private staging files are synced and atomically renamed;
+no-op edits preserve the original document. A failed publication is distinct from
+a completed rename whose directory sync failed. The latter reports an uncertain
+outcome and invalidates the daemon's cached planning inputs for a fresh read.
+
 Reusable moods and automatic daily programs are also editable through
 `dj configuration`, HTTP `GET`/`POST /dj/configuration`, MCP
 `dj_configuration`/`dj_configure`, and the shared phone/dashboard editor.

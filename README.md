@@ -249,6 +249,14 @@ standing preferences, active steering, saved scenes, and schedules first.
 See [DJ configuration](docs/DJ_CONFIGURATION.md) for examples, program ordering,
 concurrent edits, and defaults.
 
+Standing preference edits from separate CLI processes and the daemon preserve
+one another's accepted changes. A field edit reads the latest file while holding
+the shared writer lock and publishes a complete replacement atomically. No-op
+edits preserve comments and formatting; invalid existing content is reported
+without replacing it. If publication succeeds but durability cannot be confirmed,
+the caller receives an uncertain outcome and must read the preferences before
+another edit.
+
 ### Live computer audio (experimental)
 
 On the computer connected to the speaker LAN, install FFmpeg with the

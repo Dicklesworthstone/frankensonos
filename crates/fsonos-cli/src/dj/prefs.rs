@@ -9,7 +9,8 @@ use clap::Subcommand;
 use fsonos_api::surface::dj_prefs::{DjPreferRequest, PrefChange, PreferencesDto, PreferredDto};
 use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::policy::Client;
-use fsonos_spotify::prefs::{PREFERENCES_FILE, Preferences};
+use fsonos_spotify::SpotifyError;
+use fsonos_spotify::prefs::{PREFERENCES_FILE, PreferenceWriteError, Preferences};
 use fsonos_spotify::steer::Moods;
 use std::path::{Path, PathBuf};
 
@@ -82,41 +83,30 @@ pub(super) fn change(
 ) -> Result<PreferredDto, Failure> {
     let moods = read_moods(moods_file)?;
     let path = file(moods_file).ok_or_else(no_data_dir)?;
-    let mut prefs = load(&path, &moods)?;
-    let (changed, done) = match change {
-        PrefChange::Set { key, value } => {
-            let before = prefs.clone();
-            prefs.add(key, value, &moods).map_err(Failure::invalid)?;
-            if prefs == before {
-                (false, format!("{key} already holds {value}"))
-            } else {
-                (true, format!("{key}: {value}"))
+    let (prefs, (changed, done)) = Preferences::edit(&path, &moods, |prefs| {
+        Ok(match change {
+            PrefChange::Set { key, value } => {
+                let before = prefs.clone();
+                prefs.add(key, value, &moods)?;
+                if *prefs == before {
+                    (false, format!("{key} already holds {value}"))
+                } else {
+                    (true, format!("{key}: {value}"))
+                }
             }
-        }
-        PrefChange::Unset { key, value } => {
-            let what = value
-                .as_deref()
-                .map_or_else(|| key.clone(), |v| format!("{v} from {key}"));
-            if prefs
-                .remove(key, value.as_deref())
-                .map_err(Failure::invalid)?
-            {
-                (true, format!("removed {what}"))
-            } else {
-                (false, format!("nothing to remove: {what}"))
+            PrefChange::Unset { key, value } => {
+                let what = value
+                    .as_deref()
+                    .map_or_else(|| key.clone(), |v| format!("{v} from {key}"));
+                if prefs.remove(key, value.as_deref())? {
+                    (true, format!("removed {what}"))
+                } else {
+                    (false, format!("nothing to remove: {what}"))
+                }
             }
-        }
-    };
-    if changed {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| {
-                Failure::new(ErrorCode::Internal, format!("the data directory: {e}"))
-            })?;
-        }
-        prefs
-            .save(&path)
-            .map_err(|e| Failure::new(ErrorCode::Internal, format!("preferences.toml: {e}")))?;
-    }
+        })
+    })
+    .map_err(|error| write_failure(state, error))?;
     state.pool = std::mem::take(&mut state.pool).with_preferences(prefs.clone(), &moods);
     state.moods = moods;
     Ok(PreferredDto {
@@ -128,6 +118,25 @@ pub(super) fn change(
         changed,
         preferences: dto(&prefs),
     })
+}
+
+fn write_failure(state: &mut State, error: PreferenceWriteError) -> Failure {
+    match error {
+        PreferenceWriteError::Spotify(SpotifyError::Config(detail)) => Failure::invalid(detail)
+            .with_hint("Check the preference value and preferences.toml in the data directory."),
+        error @ PreferenceWriteError::Publish { published: true, .. } => {
+            state.planned = false;
+            state.plan_inputs = None;
+            state.plan_check_at = None;
+            state.plan_retry_at = None;
+            state.refill_retries.clear();
+            Failure::new(ErrorCode::OutcomeUncertain, error.to_string()).with_hint(
+                "The preferences were published but their durability could not be confirmed. Read /dj/preferences before deciding on another edit; do not replay this write.",
+            )
+        }
+        error => Failure::new(ErrorCode::Internal, error.to_string())
+            .with_hint("Check access to the data directory, then read /dj/preferences before editing again."),
+    }
 }
 
 /// `fsonos dj prefs show|set|unset`, through the same surface the daemon's
@@ -360,5 +369,71 @@ mod tests {
         assert!(state.listening.contains_key(&id));
         assert_eq!(state.saved, "saved-feed-sentinel");
         assert!(state.planned);
+    }
+
+    #[test]
+    fn independent_engines_keep_unrelated_preference_edits() {
+        use std::collections::BTreeSet;
+        use std::sync::{Arc, Barrier};
+
+        let (_, moods_file) = fresh("concurrent-edits");
+        let path = moods_file.with_file_name(PREFERENCES_FILE);
+        std::fs::write(
+            &path,
+            "energy = 25\n[ban]\nartists = ['Fixture Blocked']\n",
+        )
+        .unwrap();
+        let ready = Arc::new(Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|index| {
+                let moods_file = moods_file.clone();
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    let mut state = State {
+                        moods: Moods::builtin(),
+                        ..State::default()
+                    };
+                    let value = format!("Fixture Artist {index}");
+                    ready.wait();
+                    let saved =
+                        change(&mut state, Some(&moods_file), &set("favor.artists", &value))
+                            .unwrap();
+                    assert!(saved.changed);
+                    assert!(saved.preferences.favor.artists.contains(&value));
+                    assert_eq!(saved.preferences.ban.artists, ["Fixture Blocked"]);
+                    assert_eq!(state.pool.preferences().ban.artists, ["Fixture Blocked"]);
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let accepted = show(Some(&moods_file)).unwrap();
+        assert_eq!(accepted.energy, Some(25));
+        assert_eq!(accepted.ban.artists, ["Fixture Blocked"]);
+        assert_eq!(
+            accepted.favor.artists.into_iter().collect::<BTreeSet<_>>(),
+            (0..4)
+                .map(|index| format!("Fixture Artist {index}"))
+                .collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn a_no_op_through_the_surface_keeps_the_authored_document() {
+        let (mut state, moods_file) = fresh("authored-no-op");
+        let path = moods_file.with_file_name(PREFERENCES_FILE);
+        let text = "# Owner's note\nenergy = 30 # quiet\n[favor]\ngenres = ['jazz']\n";
+        std::fs::write(&path, text).unwrap();
+        let saved = change(
+            &mut state,
+            Some(&moods_file),
+            &set("favor.genres", "JAZZ"),
+        )
+        .unwrap();
+        assert!(!saved.changed);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(state.pool.preferences().energy, Some(30));
+        assert_eq!(state.pool.preferences().favor.genres, ["jazz"]);
     }
 }
