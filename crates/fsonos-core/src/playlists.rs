@@ -24,11 +24,16 @@ use std::net::IpAddr;
 mod contents;
 mod management;
 mod selection;
+mod tracks;
 
 pub use contents::{MAX_CONTENTS_PAGE, PlaylistContents, contents};
 pub use management::{PlaylistChange, remove, rename};
 pub(crate) use selection::validate_native_track;
 pub use selection::{select_track, select_tracks};
+pub use tracks::{
+    MAX_PLAYLIST_EDIT_BYTES, MAX_PLAYLIST_EDIT_TRACKS, PlaylistTrackChange, move_tracks,
+    remove_tracks,
+};
 
 /// The native `SaveQueue` Title argument holds at most 1023 UTF-8 bytes.
 /// The S1 handler has a 1024-byte argument buffer (docs/RE_COPY_AUDIT.md).

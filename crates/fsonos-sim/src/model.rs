@@ -15,6 +15,7 @@ use crate::{SimClock, SimModel, SoapLogEntry};
 use fsonos_proto::didl::{SpotifyRenderParams, parse_didl};
 
 mod catalog;
+mod playlist_tracks;
 
 /// A UPnP error code returned in a SOAP fault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -783,6 +784,7 @@ impl State {
             "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo" | "GetTransportSettings" => {
                 self.av_reads(p, action, now)
             }
+            "ReorderTracksInSavedQueue" => self.reorder_saved_tracks(p, args),
             _ => Err(INVALID_ACTION),
         }
     }

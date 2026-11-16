@@ -2,7 +2,7 @@
 //! metadata and the requested children are checked again before publication;
 //! a continuation must still belong to the same player and native revision.
 
-use super::{GroupProof, native_id, playlist};
+use super::{GroupProof, MAX_PLAYLIST_EDIT_BYTES, MAX_PLAYLIST_EDIT_TRACKS, native_id, playlist};
 use crate::favorites::Favorite;
 use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::content::{self, BrowseFlag, BrowsePage};
@@ -10,6 +10,101 @@ use fsonos_proto::didl::DidlObject;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
+
+/// Complete evidence retained for one native playlist edit. Both passes use
+/// the same metadata, group, boot and content counters as paged contents.
+pub(super) struct CompletePlaylist {
+    pub host: IpAddr,
+    pub group: GroupProof,
+    pub playlist: Favorite,
+    pub revision: String,
+    pub update_id: u32,
+    pub total: u32,
+    pub items: Vec<DidlObject>,
+}
+
+pub(super) fn complete<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    playlist_id: &str,
+    expected_revision: Option<&str>,
+) -> Result<CompletePlaylist, CoreError> {
+    validate_request(playlist_id, 0, MAX_CONTENTS_PAGE, expected_revision)?;
+    let observation = Observation::read(transport, households, coordinator, playlist_id)?;
+    let mut pages = Vec::new();
+    let mut items = Vec::new();
+    let mut bytes = 0_usize;
+    let mut offset = 0;
+    let mut revision = None;
+    let (update_id, total) = loop {
+        let before = page(
+            transport,
+            observation.host,
+            playlist_id,
+            offset,
+            MAX_CONTENTS_PAGE,
+        )?;
+        if before.total_matches > MAX_PLAYLIST_EDIT_TRACKS {
+            return Err(invalid(
+                "editing a saved playlist requires at most 1000 tracks",
+            ));
+        }
+        let current = observation.revision(&before);
+        if expected_revision.is_some_and(|expected| expected != current)
+            || revision
+                .as_ref()
+                .is_some_and(|expected| *expected != current)
+        {
+            return Err(changed("the saved playlist changed before its edit"));
+        }
+        revision = Some(current);
+        for item in &before.objects {
+            // Account for every retained string, including unavailable native
+            // items: removal must not require their resources to be playable.
+            let size = fsonos_proto::didl::item_metadata(item).len()
+                + item.res_md.as_ref().map_or(0, String::len)
+                + item.favorite_type.as_ref().map_or(0, String::len)
+                + item.favorite_description.as_ref().map_or(0, String::len);
+            bytes = bytes.saturating_add(size);
+            if bytes > MAX_PLAYLIST_EDIT_BYTES {
+                return Err(invalid("saved playlist edit evidence exceeds 4 MiB"));
+            }
+        }
+        offset += before.number_returned;
+        let done = offset == before.total_matches;
+        let signature = (before.update_id, before.total_matches);
+        items.extend(before.objects.iter().cloned());
+        pages.push((offset - before.number_returned, before));
+        if done {
+            break signature;
+        }
+    };
+    for (offset, before) in pages {
+        let after = page(
+            transport,
+            observation.host,
+            playlist_id,
+            offset,
+            MAX_CONTENTS_PAGE,
+        )?;
+        if before != after {
+            return Err(changed(
+                "saved playlist contents changed while preparing the edit",
+            ));
+        }
+    }
+    observation.confirm(transport, playlist_id)?;
+    Ok(CompletePlaylist {
+        host: observation.host,
+        group: observation.group,
+        playlist: observation.playlist,
+        revision: revision.expect("even an empty playlist supplies a page"),
+        update_id,
+        total,
+        items,
+    })
+}
 
 /// At most one Sonos page is requested at a time. A short page is continued
 /// from the next observed occurrence, without silently skipping entries.

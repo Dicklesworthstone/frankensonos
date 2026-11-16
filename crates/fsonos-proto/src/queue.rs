@@ -8,6 +8,9 @@
 use crate::{ProtoError, Transport, soap};
 use std::net::IpAddr;
 
+mod saved;
+pub use saved::{MAX_SAVED_QUEUE_EDIT_TRACKS, SavedQueueChange, reorder_saved_tracks};
+
 /// The UPnP fault a Sonos player answers `ReorderTracksInQueue` or
 /// `RemoveTrackRangeFromQueue` with when the `UpdateID` it carries is not the
 /// queue's current Browse `UpdateID`: the queue changed, and nothing was done.
