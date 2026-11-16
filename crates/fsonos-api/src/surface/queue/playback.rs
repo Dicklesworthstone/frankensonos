@@ -194,6 +194,7 @@ impl Surface {
             }
             control::play_queue_from(&*self.transport, &households, &coordinator, req.position)?;
             Ok(OutcomeDto {
+                batch: None,
                 done: format!(
                     "playing queue position {} in {zone}'s group: {title}",
                     req.position

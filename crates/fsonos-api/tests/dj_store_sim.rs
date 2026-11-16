@@ -46,6 +46,7 @@ impl DjEngine for Slow {
             .record_play(&at.coordinator.0, PLAYED, 1)
             .map_err(backend)?;
         Ok(OutcomeDto {
+            batch: None,
             done: "the DJ runs".into(),
             changed: true,
             volume: None,

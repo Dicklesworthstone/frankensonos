@@ -1074,6 +1074,7 @@ impl Surface {
             .collect();
         if commands.is_empty() {
             return Ok(OutcomeDto {
+                batch: None,
                 done: "already so; nothing to do".to_string(),
                 changed: false,
                 volume: None,
@@ -1124,18 +1125,7 @@ impl Surface {
             self.notice(f);
         }
         let before = level_undo::scope(before, households, &guard, &attempted, &snaps);
-        let (decision, mut text, before) = log_entry(&result, before, missed.len());
-        if incomplete_dj && let Ok(outcome) = &result {
-            // Keep the complete DJ receipt in the one batch action, including
-            // groups whose engine could not complete its command.
-            for skipped in outcome
-                .notes
-                .iter()
-                .filter(|note| note.code == NoteCode::Skipped)
-            {
-                let _ = write!(text, " (skipped: {})", skipped.detail);
-            }
-        }
+        let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = recovery::protect(before, unsafe_undo);
         let before = if incomplete_dj {
             Some(actions::before_state_not_undoable(
@@ -1201,9 +1191,9 @@ impl Surface {
     /// noted as SKIPPED and the rest go ahead: one offline or idle group
     /// does not stop `pause everywhere`, and a room at its cap does not turn
     /// another room's change into a "denied" call that undo cannot reach.
-    /// The call fails when none went ahead, or at the first failure of any
-    /// other kind. Groups that share no zone run at once
-    /// ([`Surface::run_set`]): by such a failure, the others have run too.
+    /// The call fails when none went ahead. Once any target succeeds, every
+    /// result is retained in the batch receipt, including terminal failures
+    /// and sequential commands not attempted. Disjoint groups run at once.
     fn execute_set(
         &self,
         households: &[HouseholdState],
@@ -2166,7 +2156,8 @@ fn log_entry(
             let clamps = noted(NoteCode::VolumeClamped);
             // A read-only no-op must not become an undo that can overwrite
             // later playback. Policy volume changes still keep their snapshot.
-            let before = before.filter(|_| outcome.changed || !clamps.is_empty());
+            let before =
+                before.filter(|_| outcome.changed || !clamps.is_empty() || !outcome.complete());
             let decision = if clamps.is_empty() {
                 "allow".to_string()
             } else {
@@ -2175,6 +2166,9 @@ fn log_entry(
             let mut text = outcome.done.clone();
             for healed in noted(NoteCode::Healed) {
                 let _ = write!(text, " (healed: {healed})");
+            }
+            for skipped in noted(NoteCode::Skipped) {
+                let _ = write!(text, " (skipped: {skipped})");
             }
             (decision, text, before)
         }
@@ -2422,6 +2416,7 @@ mod tests {
 
     fn outcome(changed: bool) -> OutcomeDto {
         OutcomeDto {
+            batch: None,
             done: "did it".to_owned(),
             changed,
             volume: None,

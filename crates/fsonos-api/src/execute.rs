@@ -20,6 +20,9 @@ use crate::plan::{Command, DjAction, TransportAction, VolumeScope};
 use crate::request::VolumeChange;
 use crate::source::validate_playable_source;
 
+mod batch;
+pub use batch::{ControlBatchDto, ControlResultDto, ControlTargetDto};
+
 /// The result of a command, for every surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OutcomeDto {
@@ -34,6 +37,10 @@ pub struct OutcomeDto {
     /// policy (`VOLUME_CLAMPED`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    /// Per-target results when one request dispatches multiple commands.
+    /// Single-target responses and older daemons omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<ControlBatchDto>,
 }
 
 impl OutcomeDto {
@@ -43,6 +50,7 @@ impl OutcomeDto {
             changed: true,
             volume: None,
             notes: Vec::new(),
+            batch: None,
         }
     }
 }

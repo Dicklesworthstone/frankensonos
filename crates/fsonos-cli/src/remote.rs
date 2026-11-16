@@ -794,8 +794,6 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         return Ok(false);
     };
     let json = global.json;
-    // Its notes too: a clamped volume, a room skipped, a command healed.
-    let done = crate::outcome_text;
     match command {
         Command::Search { query, zone, limit } => crate::search(
             global,
@@ -862,7 +860,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
                 favorite: favorite.clone(),
             };
             let outcome: OutcomeDto = daemon.post("/play/favorite", &req)?;
-            emit(json, &outcome, done)?;
+            crate::emit_control_outcome(json, &outcome)?;
         }
         Command::Play {
             zone,
@@ -877,7 +875,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             };
             req.validate()?;
             let outcome: OutcomeDto = daemon.post("/sonos/playlists/play", &req)?;
-            emit(json, &outcome, done)?;
+            crate::emit_control_outcome(json, &outcome)?;
         }
         command => {
             if let Some(req) = crate::queue_request(command) {
@@ -887,11 +885,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             }
             let (path, body) = control_request(&daemon, command)?;
             let outcome: OutcomeDto = daemon.post(path, &body)?;
-            if matches!(command, Command::Dj { .. }) {
-                crate::emit_dj_outcome(json, &outcome)?;
-            } else {
-                emit(json, &outcome, done)?;
-            }
+            crate::emit_control_outcome(json, &outcome)?;
         }
     }
     Ok(true)

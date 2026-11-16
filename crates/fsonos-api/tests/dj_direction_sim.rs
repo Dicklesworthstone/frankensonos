@@ -57,6 +57,7 @@ impl Probe {
 
 fn outcome() -> OutcomeDto {
     OutcomeDto {
+        batch: None,
         done: "recorded DJ operation".into(),
         changed: true,
         volume: None,

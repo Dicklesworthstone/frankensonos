@@ -122,6 +122,50 @@ fn ordinary_controls_forward_exact_requests_and_preserve_cap_notes() {
 }
 
 #[test]
+fn ordinary_partial_controls_preserve_the_complete_receipt_and_signal_a_tool_error() {
+    let answer = json!({
+        "done": "one target completed", "changed": true,
+        "batch": {"complete": false, "results": [
+            {"household": "S1", "target": "RINCON_TEST_A", "zone": "Study",
+             "result": {"status": "succeeded", "done": "command accepted", "changed": true}},
+            {"household": "S2", "target": "RINCON_TEST_B", "zone": "Den",
+             "result": {"status": "failed", "error": Failure::new(ErrorCode::OutcomeUncertain, "reply lost").body()}}
+        ]}
+    });
+    for (path, body) in writes() {
+        let (backend, reply) = fixture(Some(Ok(answer.clone())));
+        let result = control(&backend, path, body.clone()).unwrap();
+        assert!(
+            result.is_error,
+            "{path}: partial completion must reach tool consumers"
+        );
+        assert_eq!(result.structured_content, Some(answer.clone()));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", path, body])],
+            "never replay a partially completed request"
+        );
+    }
+}
+
+#[test]
+fn older_daemon_partial_controls_keep_their_typed_failure_signal() {
+    let answer = json!({
+        "done": "one group paused", "changed": true,
+        "notes": [{"code": "SKIPPED", "detail": "another room could not finish"}]
+    });
+    let (backend, reply) = fixture(Some(Ok(answer.clone())));
+    let request = json!({"zone":"everywhere"});
+    let result = control(&backend, "/pause", request.clone()).unwrap();
+    assert!(result.is_error);
+    assert_eq!(result.structured_content, Some(answer));
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["POST", "/pause", request])]
+    );
+}
+
+#[test]
 fn sync_tools_preserve_genre_progress_cooldowns_and_completion_from_the_daemon() {
     use fsonos_api::surface::dj_sync::{GenreEnrichmentDto, LibrarySyncDto, SyncedDto};
 

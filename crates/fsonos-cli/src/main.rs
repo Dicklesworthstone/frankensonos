@@ -709,7 +709,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let req = PlayFavoriteRequest { zone, favorite };
             let outcome = Direct::survey(global)?.play_favorite(&req)?;
-            emit(global.json, &outcome, outcome_text)
+            emit_control_outcome(global.json, &outcome)
         }
         Command::Play {
             zone,
@@ -721,7 +721,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let req =
                 fsonos_api::surface::sonos_playlists::PlaySonosPlaylistRequest { zone, playlist };
             let outcome = Direct::survey(global)?.play_sonos_playlist(&req)?;
-            emit(global.json, &outcome, outcome_text)
+            emit_control_outcome(global.json, &outcome)
         }
         Command::Play {
             zone,
@@ -731,7 +731,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let request = PlayLineInRequest { zone, source };
             request.validate()?;
             let outcome = Direct::survey(global)?.play_line_in(&request)?;
-            emit(global.json, &outcome, outcome_text)
+            emit_control_outcome(global.json, &outcome)
         }
         Command::Say(args) => {
             announce_cmd::run_and_emit(global, &args.request(), args.at.background)
@@ -819,11 +819,7 @@ fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result
         }
         _ => direct.run(tool, |households| plan_for(control, households))?,
     };
-    if matches!(control, Command::Dj { .. }) {
-        emit_dj_outcome(global.json, &outcome)
-    } else {
-        emit(global.json, &outcome, outcome_text)
-    }
+    emit_control_outcome(global.json, &outcome)
 }
 
 /// A control's outcome as the CLI prints it, directly or through the daemon:
@@ -1017,18 +1013,14 @@ fn emit_queue_outcome(json: bool, outcome: &QueueAddOutcome) -> anyhow::Result<(
     Ok(())
 }
 
-/// Print the full per-group result before an incomplete DJ batch exits
+/// Print the full receipt before an incomplete multi-room command exits
 /// nonzero. Successful or uncertain members must never be replayed together.
-fn emit_dj_outcome(json: bool, outcome: &OutcomeDto) -> anyhow::Result<()> {
+fn emit_control_outcome(json: bool, outcome: &OutcomeDto) -> anyhow::Result<()> {
     emit(json, outcome, outcome_text)?;
-    let failed = outcome
-        .notes
-        .iter()
-        .filter(|note| note.code == fsonos_api::NoteCode::Skipped)
-        .count();
+    let failed = outcome.incomplete_targets();
     if failed > 0 {
         anyhow::bail!(
-            "DJ command incomplete for {failed} group(s); inspect their state and action log before another command; do not replay the batch"
+            "command incomplete for {failed} target(s); inspect their state and action log before another command; do not replay the batch"
         );
     }
     Ok(())
@@ -1466,6 +1458,7 @@ mod tests {
     #[test]
     fn an_outcome_prints_what_was_done_then_its_notes() {
         let outcome = OutcomeDto {
+            batch: None,
             done: "Kitchen joined the party".into(),
             changed: true,
             volume: None,
@@ -1571,19 +1564,22 @@ mod tests {
     #[test]
     fn incomplete_dj_output_is_a_failure_after_printing_its_receipt() {
         let mut outcome = OutcomeDto {
+            batch: None,
             done: "Den@S2: the DJ stopped".into(),
             changed: true,
             volume: None,
             notes: Vec::new(),
         };
-        assert!(emit_dj_outcome(true, &outcome).is_ok());
+        assert!(emit_control_outcome(true, &outcome).is_ok());
         outcome.notes.push(fsonos_api::Note {
             code: fsonos_api::NoteCode::Skipped,
             detail: "Kitchen@S1 failed: no DJ is running".into(),
         });
-        let error = emit_dj_outcome(true, &outcome).unwrap_err().to_string();
+        let error = emit_control_outcome(true, &outcome)
+            .unwrap_err()
+            .to_string();
         assert!(
-            error.contains("1 group(s)") && error.contains("do not replay"),
+            error.contains("1 target(s)") && error.contains("do not replay"),
             "{error}"
         );
     }

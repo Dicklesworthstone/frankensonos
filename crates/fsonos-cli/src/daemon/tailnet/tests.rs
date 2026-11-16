@@ -391,7 +391,11 @@ fn mcp_late_login_rename_and_logout_follow_their_own_port() {
     );
     assert_eq!(listeners.held.len(), 1);
     assert_eq!(listeners.held[0].0, address("100.64.0.11:8098"));
-    assert!(listeners.names.contains(&"new.example-tailnet.ts.net".into()));
+    assert!(
+        listeners
+            .names
+            .contains(&"new.example-tailnet.ts.net".into())
+    );
     assert!(!listeners.names.contains(&NAME.into()));
     assert_eq!(
         &events.borrow()[..2],
@@ -444,7 +448,11 @@ fn an_mcp_bind_failure_does_not_disturb_healthy_http_listeners() {
         |addr, names| Ok(Listener::bind(addr, names, &events)),
     );
     assert_eq!(mcp.held.len(), 2);
-    assert_eq!(events.borrow().len(), 2, "only new MCP listeners were bound");
+    assert_eq!(
+        events.borrow().len(),
+        2,
+        "only new MCP listeners were bound"
+    );
 }
 
 #[test]

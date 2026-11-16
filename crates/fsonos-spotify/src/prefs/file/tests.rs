@@ -25,9 +25,10 @@ fn no_op_edits_preserve_comments_and_an_absent_file() {
     let text = "# Keep this note\nenergy = 30 # quiet\n[favor]\ngenres = ['jazz']\n";
     fs::write(&path, text).unwrap();
     let before = Preferences::load(&path, &moods).unwrap();
-    let (after, ()) =
-        Preferences::edit(&path, &moods, |prefs| prefs.add("favor.genres", "JAZZ", &moods))
-            .unwrap();
+    let (after, ()) = Preferences::edit(&path, &moods, |prefs| {
+        prefs.add("favor.genres", "JAZZ", &moods)
+    })
+    .unwrap();
     assert_eq!(after, before);
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
 }
@@ -58,7 +59,10 @@ fn invalid_edits_and_unreadable_preferences_never_replace_existing_values() {
         })
         .is_err()
     );
-    assert!(!attempted, "a bad file is not replaced by default preferences");
+    assert!(
+        !attempted,
+        "a bad file is not replaced by default preferences"
+    );
     assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
 }
 
@@ -168,7 +172,10 @@ fn snapshot_publication_does_not_reuse_an_unfinished_legacy_staging_file() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
 

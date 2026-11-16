@@ -303,6 +303,14 @@ fn uri_alias_deduplicates_grouped_rooms_caps_only_its_audience_and_undoes_togeth
         })
         .unwrap();
     assert!(result.changed);
+    assert!(result.complete());
+    let batch = result.batch.as_ref().unwrap();
+    assert!(batch.complete);
+    assert_eq!(
+        batch.results.len(),
+        2,
+        "already grouped members remain deduplicated"
+    );
     let writes = house.writes_since(start);
     for action in ["SetAVTransportURI", "Play"] {
         let calls: Vec<_> = writes.iter().filter(|call| call.action == action).collect();
@@ -809,6 +817,21 @@ fn a_late_speaker_refusal_reports_partial_delivery_and_keeps_one_reversible_acti
         })
         .unwrap();
     assert!(result.changed);
+    assert_eq!(result.incomplete_targets(), 1);
+    let batch = result.batch.as_ref().unwrap();
+    assert!(!batch.complete);
+    assert_eq!(batch.results.len(), GROUPS.len());
+    let failed = batch
+        .results
+        .iter()
+        .find(|target| target.target == refused.0)
+        .unwrap();
+    assert_eq!(failed.household, "S2");
+    assert_eq!(failed.zone, "Guest");
+    assert!(
+        matches!(&failed.result, fsonos_api::ControlResultDto::Failed { error }
+        if error.code == ErrorCode::UpnpFault && error.upnp_code == Some(701))
+    );
     assert_eq!(
         result
             .notes
@@ -838,7 +861,8 @@ fn a_late_speaker_refusal_reports_partial_delivery_and_keeps_one_reversible_acti
             assert_eq!(media.uri, STREAM);
         }
     }
-    one_action(&surface);
+    let action = one_action(&surface);
+    assert!(action.action.result.contains("Guest@S2") && action.action.result.contains("skipped"));
     house.sim.clear_faults(&refused.0).unwrap();
     undo(&surface, &house, &ROOMS);
     for zone in GROUPS {

@@ -124,7 +124,9 @@ fn write_failure(state: &mut State, error: PreferenceWriteError) -> Failure {
     match error {
         PreferenceWriteError::Spotify(SpotifyError::Config(detail)) => Failure::invalid(detail)
             .with_hint("Check the preference value and preferences.toml in the data directory."),
-        error @ PreferenceWriteError::Publish { published: true, .. } => {
+        error @ PreferenceWriteError::Publish {
+            published: true, ..
+        } => {
             state.planned = false;
             state.plan_inputs = None;
             state.plan_check_at = None;
@@ -134,8 +136,9 @@ fn write_failure(state: &mut State, error: PreferenceWriteError) -> Failure {
                 "The preferences were published but their durability could not be confirmed. Read /dj/preferences before deciding on another edit; do not replay this write.",
             )
         }
-        error => Failure::new(ErrorCode::Internal, error.to_string())
-            .with_hint("Check access to the data directory, then read /dj/preferences before editing again."),
+        error => Failure::new(ErrorCode::Internal, error.to_string()).with_hint(
+            "Check access to the data directory, then read /dj/preferences before editing again.",
+        ),
     }
 }
 
@@ -378,11 +381,7 @@ mod tests {
 
         let (_, moods_file) = fresh("concurrent-edits");
         let path = moods_file.with_file_name(PREFERENCES_FILE);
-        std::fs::write(
-            &path,
-            "energy = 25\n[ban]\nartists = ['Fixture Blocked']\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "energy = 25\n[ban]\nartists = ['Fixture Blocked']\n").unwrap();
         let ready = Arc::new(Barrier::new(4));
         let workers: Vec<_> = (0..4)
             .map(|index| {
@@ -425,12 +424,7 @@ mod tests {
         let path = moods_file.with_file_name(PREFERENCES_FILE);
         let text = "# Owner's note\nenergy = 30 # quiet\n[favor]\ngenres = ['jazz']\n";
         std::fs::write(&path, text).unwrap();
-        let saved = change(
-            &mut state,
-            Some(&moods_file),
-            &set("favor.genres", "JAZZ"),
-        )
-        .unwrap();
+        let saved = change(&mut state, Some(&moods_file), &set("favor.genres", "JAZZ")).unwrap();
         assert!(!saved.changed);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         assert_eq!(state.pool.preferences().energy, Some(30));

@@ -50,6 +50,7 @@ impl DjEngine for Picking {
         let start = action == DjAction::Start;
         let changed = self.running.swap(start, Ordering::SeqCst) != start;
         Ok(OutcomeDto {
+            batch: None,
             done: format!("the DJ {}", if start { "runs" } else { "stopped" }),
             changed,
             volume: None,

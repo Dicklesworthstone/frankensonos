@@ -56,6 +56,7 @@ struct Probe {
 
 fn done(action: &str) -> OutcomeDto {
     OutcomeDto {
+        batch: None,
         done: action.into(),
         changed: true,
         volume: None,

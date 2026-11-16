@@ -238,6 +238,7 @@ impl Backend {
             .map_err(|error| tool_error(&Failure::new(ErrorCode::Internal, error.to_string())))?;
         self.on_daemon::<OutcomeDto>("POST", path, Some(&body), sentence)
             .unwrap_or_else(here)
+            .map(control_outcome)
     }
 
     /// The `dj_start` tool: on the daemon when one runs (its DJ keeps the
@@ -248,7 +249,7 @@ impl Backend {
         self.write("/dj/start", req, || {
             self.control_set("dj_start", |h| plan::plan_dj_start_set(h, req))
         })
-        .map(dj_outcome)
+        .map(control_outcome)
     }
 
     /// The `dj_steer` tool, on the daemon when one runs.
@@ -256,7 +257,7 @@ impl Backend {
         let body = serde_json::to_value(req).ok();
         self.on_daemon("POST", "/dj/steer", body.as_ref(), sentence)
             .unwrap_or_else(|| self.control_set("dj_steer", |h| plan::plan_dj_steer_set(h, req)))
-            .map(dj_outcome)
+            .map(control_outcome)
     }
 
     /// `dj_skip` / `dj_stop`, on the daemon's DJ when one runs.
@@ -275,7 +276,7 @@ impl Backend {
         let body = serde_json::to_value(&req).ok();
         path.and_then(|path| self.on_daemon("POST", path, body.as_ref(), sentence))
             .unwrap_or_else(|| self.control_set(tool, |h| plan::plan_dj_set(h, &req, action)))
-            .map(dj_outcome)
+            .map(control_outcome)
     }
 
     /// The `move_playback` tool: on the daemon when one runs, so its DJ and
@@ -284,6 +285,7 @@ impl Backend {
         let body = serde_json::to_value(req).ok();
         self.on_daemon("POST", "/move", body.as_ref(), sentence)
             .unwrap_or_else(|| self.control("move_playback", |h| plan::plan_move(h, req)))
+            .map(control_outcome)
     }
 
     /// Run a control tool: authorize `tool`, plan, execute under the policy.
@@ -292,7 +294,7 @@ impl Backend {
         tool: &str,
         plan: impl FnOnce(&fsonos_api::plan::Rooms<'_>) -> Result<fsonos_api::Command, Failure>,
     ) -> McpResult<FinalCallToolResult> {
-        respond(|| Ok(said(self.surface.control(&self.client, tool, plan)?)))
+        respond(|| Ok(said(self.surface.control(&self.client, tool, plan)?))).map(control_outcome)
     }
 
     /// [`Self::control`] for the tools that accept a set of rooms (`all`,
@@ -304,6 +306,7 @@ impl Backend {
         plan: impl FnOnce(&fsonos_api::plan::Rooms<'_>) -> Result<Vec<fsonos_api::Command>, Failure>,
     ) -> McpResult<FinalCallToolResult> {
         respond(|| Ok(said(self.surface.control_set(&self.client, tool, plan)?)))
+            .map(control_outcome)
     }
 
     /// The `dj_status` tool.
@@ -702,13 +705,12 @@ fn said(outcome: OutcomeDto) -> (String, OutcomeDto) {
 
 /// Keep a partial batch's complete receipt while making its incomplete
 /// outcome visible to tool consumers. Never turn it into a replay request.
-fn dj_outcome(mut result: FinalCallToolResult) -> FinalCallToolResult {
+fn control_outcome(mut result: FinalCallToolResult) -> FinalCallToolResult {
     if result
         .structured_content
         .as_ref()
-        .and_then(|value| value.get("notes"))
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|notes| notes.iter().any(|note| note["code"] == "SKIPPED"))
+        .and_then(|value| serde_json::from_value::<OutcomeDto>(value.clone()).ok())
+        .is_some_and(|outcome| !outcome.complete())
     {
         result.is_error = true;
     }

@@ -50,7 +50,9 @@ pub use dj::{
     DjFactorDto, DjMoodDto, DjMoodsDto, DjProgramDto, DjReasonDto, DjStatusDto, DjSteer,
     DjSteeringDto, DjWorkDto, SteerConstraints,
 };
-pub use execute::{OutcomeDto, execute, execute_guarded};
+pub use execute::{
+    ControlBatchDto, ControlResultDto, ControlTargetDto, OutcomeDto, execute, execute_guarded,
+};
 pub use failure::{ErrorCode, Failure, NoteCode};
 pub use guard::{Guard, Note};
 pub use http::app;

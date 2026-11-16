@@ -30,8 +30,9 @@ to group one household before playback when that is the intended arrangement.
 | Saved Sonos playlist | `play <target> --playlist <query>` | `POST /sonos/playlists/play` | `play_sonos_playlist` |
 | Add a source next or at the end | `play <target> <source> --next` / `--queue` (also `--favorite` / `--playlist`) | `POST /queue` | `add_to_queue` |
 
-Playback request and response shapes are unchanged: the target remains
-`zone`, and the outcome contains `done`, `changed` and `notes`. Direct CLI,
+The target remains `zone`, and the outcome retains `done`, `changed` and
+`notes`. A request that plans several control commands also returns a `batch`
+receipt; single-group playback retains its existing response shape. Direct CLI,
 daemon CLI, standalone MCP and daemon MCP use the shared planner and executor.
 The phone remote and desktop dashboard also send these same source requests.
 
@@ -93,11 +94,54 @@ Existing policy caps apply to every affected group and its actual audience.
 Disjoint playback groups use the existing bounded concurrent executor, so a
 slow player does not serialize all starts.
 
-One speaker-side failure can leave other groups successfully playing. Inspect
-`notes` for `SKIPPED` entries and read the affected groups before taking a new
-action. When every group fails, the request returns an error. The system does
-not automatically roll back successful groups or replay an uncertain queue
-replacement.
+One speaker-side failure can leave other groups successfully playing. Multi-target
+control responses include `batch.complete` and an ordered `batch.results` entry
+for every planned command. These receipts also cover ordinary transport, volume,
+mute and grouping controls, with the target identity captured before execution:
+
+| Field | Meaning |
+|---|---|
+| `batch.complete` | Every planned command completed successfully. |
+| `batch.results[].household` | The household label, such as `S1` or `S2`. |
+| `batch.results[].target` | The originally addressed player UUID; any recovered destination is described in notes. |
+| `batch.results[].zone` | That player's room name when the command was planned. |
+| `batch.results[].result` | A tagged result: `succeeded` retains `done`, `changed`, optional `volume` and notes; `failed` retains the structured `error`; `not_attempted` means an earlier failure ended sequential dispatch. |
+
+For example, a partial pause can return this receipt (identities are synthetic):
+
+```json
+{
+  "done": "paused Kitchen",
+  "changed": true,
+  "notes": [{"code": "SKIPPED", "detail": "Study@S2 skipped: speaker refused; do not replay the batch"}],
+  "batch": {
+    "complete": false,
+    "results": [
+      {"household": "S1", "target": "RINCON_EXAMPLE_KITCHEN", "zone": "Kitchen", "result": {"status": "succeeded", "done": "paused Kitchen", "changed": true}},
+      {"household": "S2", "target": "RINCON_EXAMPLE_STUDY", "zone": "Study", "result": {"status": "failed", "error": {
+        "code": "UPNP_FAULT", "detail": "speaker refused", "upnp_code": 701,
+        "hint": "Inspect this target before another command.", "suggestions": [], "retryable": false
+      }}}
+    ]
+  }
+}
+```
+
+**An HTTP 200 with `batch.complete: false` is partial delivery.** Successful
+targets remain in the receipt even when another target has a terminal or
+uncertain failure. The CLI prints that receipt (`--json` preserves its full
+structure) and exits nonzero. MCP retains the same structured content and sets
+`isError: true`. Both direct and daemon-backed modes behave this way; neither
+falls back to a second execution. Scheduled controls record an incomplete run
+and consume that occurrence without retrying it. Benign clamp, recovery and
+logging notes do not turn a successful command into a failure.
+
+The top-level `SKIPPED` notes remain for older clients; clients connected to an
+older daemon can use those typed notes when `batch` is absent. A single-target
+failure, or a batch in which every attempted command fails, keeps the existing
+error response. Read each failed or unattempted target before a new targeted
+action. Never replay the whole batch: successful groups are not automatically
+rolled back, and an uncertain write may already have taken effect.
 
 The set is recorded as one action. A successful stream change can restore all
 captured groups with one undo. Queue replacements require complete before/after
@@ -163,12 +207,16 @@ deduplication, household-local catalogs, shared artist lookup, failed source
 preparation, partial speaker failure and restoration. Queue regressions cover
 distinct insertion ranges, quiet next/append, native catalogs, uncertain writes
 and the retained destination during internal preparation. Actual CLI and MCP
-process scenarios are in `crates/fsonos-cli/tests/e2e_source_targets.rs`.
+process scenarios are in `crates/fsonos-cli/tests/e2e_source_targets.rs` and
+`crates/fsonos-cli/tests/e2e_control_batches.rs`; the latter checks partial
+pause delivery, one dispatch per target, nonzero CLI status and MCP error
+signaling in direct and daemon-backed modes.
 
 ```bash
 cargo test --locked -p fsonos-api --test source_targets_sim
 cargo test --locked -p fsonos-api --test queue_targets_sim
 cargo test --locked -p fsonos-cli --test e2e_source_targets
+cargo test --locked -p fsonos-cli --test e2e_control_batches
 cargo check --locked --workspace --all-targets
 ```
 

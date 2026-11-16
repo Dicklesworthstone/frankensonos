@@ -72,6 +72,7 @@ impl DjEngine for Restarting {
             }
         }
         Ok(OutcomeDto {
+            batch: None,
             done: format!("the DJ: {action:?}"),
             changed: true,
             volume: None,

@@ -575,6 +575,7 @@ fn room(at: DjSpeakers<'_>) -> String {
 
 fn sent(done: String) -> OutcomeDto {
     OutcomeDto {
+        batch: None,
         done,
         changed: true,
         volume: None,

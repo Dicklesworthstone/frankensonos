@@ -1789,6 +1789,7 @@ impl Surface {
             }
             superseded = left;
             Ok(OutcomeDto {
+                batch: None,
                 done,
                 changed: true,
                 volume: None,
@@ -1835,6 +1836,7 @@ impl Surface {
             .fade_out_and_pause(&watch, &households, &zone.coordinator, over)
             .map_err(Failure::from)
             .map(|outcome| OutcomeDto {
+                batch: None,
                 done: match outcome {
                     FadeOutcome::Reached => format!(
                         "faded {}'s group out over {} and paused it",
@@ -1888,6 +1890,36 @@ impl Surface {
     }
 }
 
+/// An accepted request may still contain failed targets. Keep the control
+/// action's evidence and report the consumed occurrence as incomplete.
+fn scheduled_control_result(outcome: OutcomeDto) -> Result<String, Failure> {
+    if outcome.complete() {
+        return Ok(outcome.done);
+    }
+    let failed: Vec<_> = outcome
+        .notes
+        .iter()
+        .filter(|note| note.code == NoteCode::Skipped)
+        .map(|note| note.detail.as_str())
+        .collect();
+    Err(Failure::new(
+        ErrorCode::OutcomeUncertain,
+        format!(
+            "{}; incomplete for {} target(s){}",
+            outcome.done,
+            outcome.incomplete_targets(),
+            if failed.is_empty() {
+                String::new()
+            } else {
+                format!("; {}", failed.join("; "))
+            }
+        ),
+    )
+    .with_hint(
+        "This occurrence was consumed and will not be retried. Inspect the targets and action log before another command.",
+    ))
+}
+
 /// Carry `schedule` out as its creator, through the surface's one control
 /// path; answers what was done.
 fn fire(
@@ -1911,33 +1943,13 @@ fn fire(
             })?;
             surface
                 .control_prepared_dj(&client, "dj_start", prepared)
-                .and_then(|outcome| {
-                    let failed: Vec<_> = outcome
-                        .notes
-                        .iter()
-                        .filter(|note| note.code == NoteCode::Skipped)
-                        .map(|note| note.detail.as_str())
-                        .collect();
-                    if failed.is_empty() {
-                        return Ok(outcome.done);
-                    }
-                    // The control path already recorded the one batch action.
-                    // Keep failures in the scheduler warning as well, without
-                    // reopening an occurrence that may have changed speakers.
-                    Err(Failure::new(
-                        ErrorCode::OutcomeUncertain,
-                        format!("{}; {}", outcome.done, failed.join("; ")),
-                    )
-                    .with_hint(
-                        "This occurrence was consumed and will not be retried. Inspect the groups and action log before another DJ command.",
-                    ))
-                })
+                .and_then(scheduled_control_result)
         }
         ScheduleAction::Pause { room, fade_secs: 0 } => surface
             .control_set(&client, "pause", |rooms| {
                 plan::plan_transport_set(rooms, &zone(room), TransportAction::Pause)
             })
-            .map(|o| o.done),
+            .and_then(scheduled_control_result),
         ScheduleAction::Pause { room, fade_secs } => surface
             .fade_and_pause(
                 &client,
@@ -1945,12 +1957,12 @@ fn fire(
                 room,
                 Duration::from_secs(u64::from(*fade_secs)),
             )
-            .map(|o| o.done),
+            .and_then(scheduled_control_result),
         ScheduleAction::Volume { room, level } if surface.policy().defaults.fade_secs > 0 => {
             let over = Duration::from_secs(u64::from(surface.policy().defaults.fade_secs));
             surface
                 .fade_volume(&client, "set_volume", room, *level, Some(over))
-                .map(|o| o.done)
+                .and_then(scheduled_control_result)
         }
         ScheduleAction::Volume { room, level } => {
             let req = VolumeRequest {
@@ -1963,7 +1975,7 @@ fn fire(
                 .control_set(&client, "set_volume", |rooms| {
                     plan::plan_volume_set(rooms, &req)
                 })
-                .map(|o| o.done)
+                .and_then(scheduled_control_result)
         }
         ScheduleAction::Announce {
             source,

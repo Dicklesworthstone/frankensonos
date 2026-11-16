@@ -28,6 +28,7 @@ struct Probe {
 
 fn done() -> OutcomeDto {
     OutcomeDto {
+        batch: None,
         done: "synthetic DJ started".into(),
         changed: true,
         volume: None,

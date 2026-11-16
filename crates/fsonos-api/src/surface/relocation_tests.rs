@@ -285,6 +285,7 @@ fn verified_copy_transfers_the_feed_and_steering_only_after_playback() {
 #[test]
 fn unchanged_results_have_no_undo_but_clamps_and_failures_keep_it() {
     let mut outcome = OutcomeDto {
+        batch: None,
         done: "unchanged".into(),
         changed: false,
         volume: None,

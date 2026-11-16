@@ -276,8 +276,12 @@ pub(super) fn watch(
                 if let Some(listeners) = &mut mcp {
                     listeners.retire_finished("MCP server", |listener| &mut listener.0.0.thread);
                 }
-                let listening = http.as_ref().is_some_and(|listeners| !listeners.held.is_empty())
-                    || mcp.as_ref().is_some_and(|listeners| !listeners.held.is_empty());
+                let listening = http
+                    .as_ref()
+                    .is_some_and(|listeners| !listeners.held.is_empty())
+                    || mcp
+                        .as_ref()
+                        .is_some_and(|listeners| !listeners.held.is_empty());
                 if accept(&status, listening, &mut unanswered) {
                     let names = super::tailnet_names(&status);
                     if let Some(listeners) = &mut http {

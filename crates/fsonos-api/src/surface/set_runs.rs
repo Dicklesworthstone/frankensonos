@@ -12,7 +12,7 @@ use fsonos_types::PlayerId;
 use std::thread;
 
 use super::{Surface, affected, dj_targets, recovery, speaker_side};
-use crate::execute::OutcomeDto;
+use crate::execute::{ControlBatchDto, ControlResultDto, ControlTargetDto, OutcomeDto};
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::Command;
@@ -191,9 +191,9 @@ fn ends_set(commands: usize, failure: &Failure) -> bool {
     commands < 2 || !(speaker_side(failure) || failure.code == ErrorCode::PolicyDenied)
 }
 
-/// A set's answer from its `outcomes` ([`SetRun`]): what each group did,
-/// with the groups skipped as notes; the failure that ended it; or, when no
-/// group went, the first skip's failure.
+/// Keep every actual result after a batch has run. An error from one worker
+/// cannot erase another worker's successful command. A single command and an
+/// entirely failed batch retain their existing error responses.
 pub(super) fn merged(
     households: &[HouseholdState],
     commands: &[Command],
@@ -205,34 +205,53 @@ pub(super) fn merged(
         changed: false,
         volume: None,
         notes: Vec::new(),
+        batch: None,
     };
-    let (mut skipped, mut went) = (None, false);
-    for (command, outcome) in commands.iter().zip(outcomes) {
-        let outcome = match outcome {
-            Ok(outcome) => outcome,
-            Err(failure) if dj_set || !ends_set(commands.len(), &failure) => {
-                let room = command
-                    .addressed()
-                    .and_then(|id| households.iter().find_map(|h| h.player(id)))
-                    .map_or("a room", |p| p.room_name.as_str());
-                let detail = if dj_set {
-                    format!(
-                        "{} failed: {} ({}). Inspect this group before another command; do not replay the batch",
-                        dj_targets::label(households, command),
-                        failure.detail,
-                        failure.code.as_str(),
-                    )
-                } else {
-                    format!("{room} skipped: {}", failure.detail)
-                };
+    let (mut skipped, mut terminal, mut went) = (None, None, false);
+    let mut results = Vec::with_capacity(commands.len());
+    let mut outcomes = outcomes.into_iter();
+    for command in commands {
+        let (household, target, zone) = target_identity(households, command);
+        let mut receipt = ControlTargetDto {
+            household,
+            target,
+            zone,
+            result: ControlResultDto::NotAttempted,
+        };
+        let outcome = match outcomes.next() {
+            Some(Ok(outcome)) => outcome,
+            Some(Err(failure)) => {
+                let detail = format!(
+                    "{} skipped: {} ({}). Inspect this target before another command; do not replay the batch",
+                    dj_targets::label(households, command),
+                    failure.detail,
+                    failure.code.as_str(),
+                );
                 combined.notes.push(Note {
                     code: NoteCode::Skipped,
                     detail,
                 });
+                receipt.result = ControlResultDto::Failed {
+                    error: failure.body(),
+                };
+                results.push(receipt);
+                if !dj_set && ends_set(commands.len(), &failure) {
+                    terminal.get_or_insert_with(|| failure.clone());
+                }
                 skipped.get_or_insert(failure);
                 continue;
             }
-            Err(failure) => return Err(failure),
+            None => {
+                combined.notes.push(Note {
+                    code: NoteCode::Skipped,
+                    detail: format!(
+                        "{} was not attempted after an earlier failure; do not replay the batch",
+                        dj_targets::label(households, command),
+                    ),
+                });
+                results.push(receipt);
+                continue;
+            }
         };
         went = true;
         if !combined.done.is_empty() && (dj_set || !outcome.done.is_empty()) {
@@ -247,7 +266,20 @@ pub(super) fn merged(
         combined.done.push_str(&outcome.done);
         combined.changed |= outcome.changed;
         combined.volume = combined.volume.or(outcome.volume);
+        receipt.result = ControlResultDto::Succeeded {
+            done: outcome.done,
+            changed: outcome.changed,
+            volume: outcome.volume,
+            notes: outcome.notes.clone(),
+        };
+        results.push(receipt);
         combined.notes.extend(outcome.notes);
+    }
+    if commands.len() > 1 {
+        combined.batch = Some(ControlBatchDto {
+            complete: results.iter().all(|target| target.result.complete()),
+            results,
+        });
     }
     match skipped {
         Some(_) if !went && dj_set => Err(Failure::new(
@@ -255,9 +287,29 @@ pub(super) fn merged(
             combined.notes.iter().map(|note| note.detail.as_str()).collect::<Vec<_>>().join("; "),
         )
         .with_hint("No group returned a successful DJ result. Read the groups and action log; do not replay the batch.")),
-        Some(failure) if !went => Err(failure),
+        Some(failure) if !went => Err(terminal.unwrap_or(failure)),
         _ => Ok(combined),
     }
+}
+
+fn target_identity(households: &[HouseholdState], command: &Command) -> (String, String, String) {
+    let Some(target) = command.addressed() else {
+        return (String::new(), String::new(), String::new());
+    };
+    let labels = fsonos_core::rooms::household_labels(households);
+    households
+        .iter()
+        .enumerate()
+        .find_map(|(index, house)| {
+            house.player(target).map(|player| {
+                (
+                    labels[index].clone(),
+                    target.0.clone(),
+                    player.room_name.clone(),
+                )
+            })
+        })
+        .unwrap_or_else(|| (String::new(), target.0.clone(), target.0.clone()))
 }
 
 #[cfg(test)]
@@ -275,5 +327,103 @@ mod tests {
         assert!(!ends_set(3, &dead), "a dead speaker is skipped");
         assert!(ends_set(1, &dead), "alone, its failure is the answer");
         assert!(ends_set(3, &refused));
+    }
+
+    fn pause(id: &str) -> Command {
+        Command::Transport {
+            member: PlayerId(id.into()),
+            coordinator: PlayerId(id.into()),
+            action: crate::plan::TransportAction::Pause,
+        }
+    }
+
+    fn accepted() -> Result<OutcomeDto, Failure> {
+        Ok(OutcomeDto {
+            done: "paused the group".into(),
+            changed: true,
+            volume: None,
+            notes: Vec::new(),
+            batch: None,
+        })
+    }
+
+    #[test]
+    fn a_terminal_failure_cannot_discard_other_workers_successful_results() {
+        let result = merged(
+            &[],
+            &[pause("first"), pause("changed"), pause("last")],
+            vec![
+                accepted(),
+                Err(Failure::new(
+                    ErrorCode::QueueChanged,
+                    "queue changed before dispatch",
+                )),
+                accepted(),
+            ],
+        )
+        .unwrap();
+        assert!(result.changed);
+        assert!(!result.complete());
+        let batch = result.batch.unwrap();
+        assert!(!batch.complete);
+        assert_eq!(batch.results.len(), 3);
+        assert_eq!(batch.results[0].target, "first");
+        assert_eq!(batch.results[2].target, "last");
+        assert!(matches!(
+            batch.results[0].result,
+            ControlResultDto::Succeeded { .. }
+        ));
+        assert!(matches!(
+            batch.results[2].result,
+            ControlResultDto::Succeeded { .. }
+        ));
+        assert!(
+            matches!(&batch.results[1].result, ControlResultDto::Failed { error } if error.code == ErrorCode::QueueChanged)
+        );
+    }
+
+    #[test]
+    fn an_ended_sequential_batch_distinguishes_unattempted_targets() {
+        let failure = Failure::new(ErrorCode::Internal, "the command could not finish");
+        let result = merged(
+            &[],
+            &[pause("first"), pause("failed"), pause("unattempted")],
+            vec![accepted(), Err(failure)],
+        )
+        .unwrap();
+        assert_eq!(result.incomplete_targets(), 2);
+        let batch = result.batch.unwrap();
+        assert!(matches!(
+            batch.results[2].result,
+            ControlResultDto::NotAttempted
+        ));
+    }
+
+    #[test]
+    fn single_target_and_all_failed_batches_keep_their_error_contract() {
+        let failure = Failure::new(ErrorCode::UpnpFault, "the speaker refused");
+        assert_eq!(
+            merged(&[], &[pause("one")], vec![Err(failure.clone())]),
+            Err(failure.clone())
+        );
+        assert_eq!(
+            merged(
+                &[],
+                &[pause("one"), pause("two")],
+                vec![Err(failure.clone()), Err(failure.clone())]
+            ),
+            Err(failure),
+        );
+        let one = merged(&[], &[pause("one")], vec![accepted()]).unwrap();
+        assert!(one.complete());
+        assert!(one.batch.is_none());
+        let all = merged(
+            &[],
+            &[pause("one"), pause("two")],
+            vec![accepted(), accepted()],
+        )
+        .unwrap();
+        assert!(all.complete());
+        assert!(all.batch.unwrap().complete);
     }
 }

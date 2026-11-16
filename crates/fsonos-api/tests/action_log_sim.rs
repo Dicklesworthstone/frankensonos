@@ -534,8 +534,21 @@ fn a_set_skips_a_room_the_policy_refuses_and_the_rest_stays_undoable() {
         outcome
             .notes
             .iter()
-            .any(|n| n.code == NoteCode::Skipped && n.detail.starts_with("Office skipped")),
+            .any(|n| n.code == NoteCode::Skipped && n.detail.starts_with("Office@S1 skipped")),
         "{outcome:?}"
+    );
+    assert_eq!(outcome.incomplete_targets(), 1);
+    let refused = outcome
+        .batch
+        .as_ref()
+        .unwrap()
+        .results
+        .iter()
+        .find(|target| target.target == office.0)
+        .unwrap();
+    assert!(
+        matches!(&refused.result, fsonos_api::ControlResultDto::Failed { error }
+        if error.code == ErrorCode::PolicyDenied)
     );
     let log = s
         .recent_actions(&Client::Cli, &ActionFilter::default())
