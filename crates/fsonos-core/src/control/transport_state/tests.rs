@@ -92,10 +92,10 @@ fn acknowledged_play_checks_ownership_once_before_writing() {
     play(&t, host(), &player()).unwrap();
     t.done();
     let t = Script::new(vec![("Pause", Ok(reply("Pause", "")))]);
-    pause(&t, host()).unwrap();
+    pause(&t, host(), None).unwrap();
     t.done();
     let t = Script::new(vec![("Stop", Ok(reply("Stop", "")))]);
-    stop(&t, host()).unwrap();
+    stop(&t, host(), None).unwrap();
     t.done();
 }
 
@@ -103,7 +103,7 @@ fn acknowledged_play_checks_ownership_once_before_writing() {
 fn uncertain_pause_accepts_inactive_states_without_stop_or_replay() {
     for state in ["PAUSED_PLAYBACK", "STOPPED"] {
         let t = Script::new(vec![("Pause", Err(lost())), status(state)]);
-        pause(&t, host()).unwrap();
+        pause(&t, host(), None).unwrap();
         t.done();
     }
 }
@@ -112,7 +112,7 @@ fn uncertain_pause_accepts_inactive_states_without_stop_or_replay() {
 fn uncertain_active_or_unknown_pause_is_never_escalated_to_stop() {
     for state in ["PLAYING", "TRANSITIONING", "UNKNOWN"] {
         let t = Script::new(vec![("Pause", Err(lost())), status(state)]);
-        assert!(matches!(pause(&t, host()), Err(ProtoError::Network { .. })));
+        assert!(matches!(pause(&t, host(), None), Err(ProtoError::Network { .. })));
         t.done();
     }
 }
@@ -121,7 +121,7 @@ fn uncertain_active_or_unknown_pause_is_never_escalated_to_stop() {
 fn definite_701_preserves_inactive_playback_and_only_stops_active_streams() {
     for state in ["PAUSED_PLAYBACK", "STOPPED"] {
         let t = Script::new(vec![("Pause", Err(refused())), status(state)]);
-        pause(&t, host()).unwrap();
+        pause(&t, host(), None).unwrap();
         t.done();
     }
     for state in ["PLAYING", "TRANSITIONING"] {
@@ -130,7 +130,7 @@ fn definite_701_preserves_inactive_playback_and_only_stops_active_streams() {
             status(state),
             ("Stop", Ok(reply("Stop", ""))),
         ]);
-        pause(&t, host()).unwrap();
+        pause(&t, host(), None).unwrap();
         t.done();
     }
 }
@@ -143,7 +143,7 @@ fn stream_stop_with_a_lost_reply_can_confirm_silence() {
         ("Stop", Err(lost())),
         status("STOPPED"),
     ]);
-    pause(&t, host()).unwrap();
+    pause(&t, host(), None).unwrap();
     t.done();
 }
 
@@ -151,7 +151,7 @@ fn stream_stop_with_a_lost_reply_can_confirm_silence() {
 fn a_stop_requires_stopped_not_merely_paused() {
     for (state, success) in [("STOPPED", true), ("PAUSED_PLAYBACK", false)] {
         let t = Script::new(vec![("Stop", Err(lost())), status(state)]);
-        assert_eq!(stop(&t, host()).is_ok(), success);
+        assert_eq!(stop(&t, host(), None).is_ok(), success);
         t.done();
     }
 }
@@ -162,7 +162,7 @@ fn malformed_pause_response_uses_the_same_readback_path() {
         ("Pause", Ok("not an acknowledgement".into())),
         status("PAUSED_PLAYBACK"),
     ]);
-    pause(&t, host()).unwrap();
+    pause(&t, host(), None).unwrap();
     t.done();
 }
 
@@ -237,4 +237,103 @@ fn explicit_faults_skip_observation_and_read_failures_preserve_the_write_cause()
     });
     assert!(matches!(result, Err(ProtoError::Network { detail, .. })
             if detail == "write reply lost"));
+}
+
+#[test]
+fn named_pause_and_stop_confirm_lost_replies_only_for_the_same_endpoint() {
+    for (action, state) in [("Pause", "PAUSED_PLAYBACK"), ("Stop", "STOPPED")] {
+        let t = Script::new(vec![
+            (action, Err(lost())),
+            topology("synthetic-player"),
+            status(state),
+            topology("synthetic-player"),
+        ]);
+        match action {
+            "Pause" => pause(&t, host(), Some(&player())),
+            _ => stop(&t, host(), Some(&player())),
+        }
+        .unwrap();
+        t.done();
+    }
+}
+
+#[test]
+fn named_pause_and_stop_retain_the_lost_reply_when_ownership_changes() {
+    for (action, state) in [("Pause", "PAUSED_PLAYBACK"), ("Stop", "STOPPED")] {
+        for late in [false, true] {
+            let mut steps = vec![(action, Err(lost()))];
+            if late {
+                steps.extend([topology("synthetic-player"), status(state)]);
+            }
+            let (read, response) = topology("synthetic-player");
+            steps.push((
+                read,
+                Ok(response.unwrap().replace("127.0.0.1", "192.0.2.10")),
+            ));
+            let t = Script::new(steps);
+            let result = match action {
+                "Pause" => pause(&t, host(), Some(&player())),
+                _ => stop(&t, host(), Some(&player())),
+            };
+            assert!(matches!(result, Err(ProtoError::Network { detail, .. })
+                if detail == "write reply lost"));
+            t.done();
+        }
+    }
+}
+
+#[test]
+fn a_named_pause_never_stops_an_endpoint_that_changed_after_refusing_pause() {
+    for late in [false, true] {
+        let mut steps = vec![("Pause", Err(refused()))];
+        if late {
+            steps.extend([topology("synthetic-player"), status("PLAYING")]);
+        }
+        steps.push(topology("another-player"));
+        let t = Script::new(steps);
+        assert!(matches!(
+            pause(&t, host(), Some(&player())),
+            Err(ProtoError::SoapFault { code: 701, .. })
+        ));
+        t.done();
+    }
+    let t = Script::new(vec![
+        ("Pause", Err(refused())),
+        ("GetZoneGroupState", Err(lost())),
+    ]);
+    assert!(matches!(
+        pause(&t, host(), Some(&player())),
+        Err(ProtoError::SoapFault { code: 701, .. })
+    ));
+    t.done();
+}
+
+#[test]
+fn a_named_pause_still_stops_an_unpausable_stream_at_the_verified_endpoint() {
+    let t = Script::new(vec![
+        ("Pause", Err(refused())),
+        topology("synthetic-player"),
+        status("PLAYING"),
+        topology("synthetic-player"),
+        ("Stop", Ok(reply("Stop", ""))),
+    ]);
+    pause(&t, host(), Some(&player())).unwrap();
+    t.done();
+}
+
+#[test]
+fn a_fallback_stop_cannot_be_confirmed_by_another_endpoints_silence() {
+    let t = Script::new(vec![
+        ("Pause", Err(refused())),
+        topology("synthetic-player"),
+        status("PLAYING"),
+        topology("synthetic-player"),
+        ("Stop", Err(lost())),
+        topology("another-player"),
+    ]);
+    assert!(matches!(
+        pause(&t, host(), Some(&player())),
+        Err(ProtoError::Network { detail, .. }) if detail == "write reply lost"
+    ));
+    t.done();
 }

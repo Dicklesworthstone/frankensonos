@@ -279,18 +279,56 @@ fn a_single_repeat_safe_write_still_recovers_at_the_players_new_address() {
 
 #[test]
 fn a_relative_step_with_a_lost_reply_does_not_start_address_recovery() {
-    let (mut sim, houses, kitchen) = grouped();
-    sim.change_address("Kitchen").unwrap();
+    let (sim, houses, kitchen) = grouped();
+    let host = sim.player("Kitchen").unwrap().ip;
+    for uri in [
+        "x-file-cifs://example.invalid/first.flac",
+        "x-file-cifs://example.invalid/second.flac",
+        "x-file-cifs://example.invalid/third.flac",
+    ] {
+        fsonos_proto::control::add_uri_to_queue(&sim.lan(), host, uri, "", false).unwrap();
+    }
+    control::play_queue_from(&sim.lan(), &houses, &kitchen, 1).unwrap();
+    // Shuffle cannot provide deterministic adjacent-occurrence read-back.
+    // The actual accepted write is therefore uncertain, not a failed preflight.
+    fsonos_proto::play_mode::set_play_mode(
+        &sim.lan(),
+        host,
+        fsonos_types::PlayMode::ShuffleNoRepeat,
+    )
+    .unwrap();
+    let transport = LostAcknowledgement {
+        lan: sim.lan(),
+        lose: "Next",
+        lost: Cell::new(false),
+        calls: RefCell::new(Vec::new()),
+    };
     let command = Command::Transport {
         member: kitchen.clone(),
         coordinator: kitchen,
         action: TransportAction::Next,
     };
-    let failure = execute_healing(&sim.lan(), &houses, &guard(), &command, || {
+    let failure = execute_healing(&transport, &houses, &guard(), &command, || {
         panic!("Next must never be retried after a lost reply")
     })
     .unwrap_err();
     assert_eq!(failure.code, ErrorCode::PlayerUnreachable);
+    assert!(failure.hint.contains("not repeated"), "{failure:?}");
+    assert_eq!(
+        transport
+            .calls
+            .borrow()
+            .iter()
+            .filter(|action| *action == "Next")
+            .count(),
+        1
+    );
+    assert_eq!(
+        fsonos_proto::control::get_position_info(&sim.lan(), host)
+            .unwrap()
+            .track,
+        2
+    );
 }
 
 struct LostAcknowledgement {

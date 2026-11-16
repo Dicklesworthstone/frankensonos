@@ -3,6 +3,7 @@
 //! when a player cannot provide enough evidence to recover a lost reply.
 
 use super::{SourceDestination, seek_relative::reached};
+use crate::CoreError;
 use fsonos_proto::content::{self, BrowseFlag, BrowsePage, QUEUE};
 use fsonos_proto::control::{self as soap, PositionInfo};
 use fsonos_proto::didl::{DidlKind, spotify_uri_from_renderer_uri};
@@ -40,7 +41,7 @@ pub(super) fn seek<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
     target: u32,
-) -> Result<u32, ProtoError> {
+) -> Result<u32, CoreError> {
     let preparation = Reads {
         inner: t,
         until: Instant::now() + PREPARE_BUDGET,
@@ -49,6 +50,7 @@ pub(super) fn seek<T: Transport + ?Sized>(
         .ok()
         .flatten()
         .filter(|_| Instant::now() < preparation.until);
+    super::require_coordinator(t, host, coordinator)?;
     let sent = Instant::now();
     let Err(error) = soap::seek_position(t, host, target) else {
         return Ok(target);
@@ -70,7 +72,7 @@ pub(super) fn seek<T: Transport + ?Sized>(
         Ok(target)
     } else {
         // A refusal or unavailable read-back must retain the original error.
-        Err(error)
+        Err(error.into())
     }
 }
 

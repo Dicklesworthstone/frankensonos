@@ -419,3 +419,177 @@ fn an_acknowledged_pause_losing_ownership_is_uncertain_and_cannot_authorize_retr
         assert_eq!(*t.writes.borrow(), ["Pause"]);
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+enum TransportCommand {
+    Pause,
+    Stop,
+    Next,
+    Previous,
+    AbsoluteSeek,
+    RelativeSeek,
+}
+
+const TRANSPORT_COMMANDS: [TransportCommand; 6] = [
+    TransportCommand::Pause,
+    TransportCommand::Stop,
+    TransportCommand::Next,
+    TransportCommand::Previous,
+    TransportCommand::AbsoluteSeek,
+    TransportCommand::RelativeSeek,
+];
+
+impl TransportCommand {
+    fn run(
+        self,
+        transport: &impl Transport,
+        houses: &[HouseholdState],
+        target: &PlayerId,
+    ) -> Result<(), CoreError> {
+        match self {
+            Self::Pause => control::pause(transport, houses, target),
+            Self::Stop => control::stop(transport, houses, target),
+            Self::Next => control::next(transport, houses, target),
+            Self::Previous => control::previous(transport, houses, target),
+            Self::AbsoluteSeek => {
+                control::seek(transport, houses, target, control::Seek::At(60)).map(|_| ())
+            }
+            Self::RelativeSeek => {
+                control::seek(transport, houses, target, control::Seek::By(15)).map(|_| ())
+            }
+        }
+    }
+
+    fn action(self) -> &'static str {
+        match self {
+            Self::Pause => "Pause",
+            Self::Stop => "Stop",
+            Self::Next => "Next",
+            Self::Previous => "Previous",
+            Self::AbsoluteSeek | Self::RelativeSeek => "Seek",
+        }
+    }
+
+    fn prepare(self, fixture: &Fixture) {
+        let lan = fixture.sim.lan();
+        let peer = PlayerId(fixture.sim.player("Peer").unwrap().uuid.clone());
+        for (id, host) in [(&fixture.target, fixture.host), (&peer, fixture.peer)] {
+            let selected = if matches!(self, Self::Previous) { 2 } else { 1 };
+            control::play_queue_from(&lan, &fixture.houses, id, selected).unwrap();
+            soap::seek_position(&lan, host, 30).unwrap();
+            if !matches!(self, Self::Pause) {
+                soap::pause(&lan, host).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn ordinary_transport_controls_never_mutate_a_reused_cached_address() {
+    for generation in [1, 2] {
+        for command in TRANSPORT_COMMANDS {
+            let f = Fixture::new(generation);
+            command.prepare(&f);
+            let before = f.sim.soap_log().len();
+            let error = command.run(&f.sim.lan(), &f.stale(), &f.target).unwrap_err();
+            assert!(
+                matches!(error, CoreError::TargetChanged(_)),
+                "S{generation} {command:?}: {error}"
+            );
+            assert!(
+                f.sim.soap_log()[before..]
+                    .iter()
+                    .all(|entry| !is_write(&entry.action)),
+                "S{generation} {command:?}: a stale address must receive no mutation"
+            );
+        }
+    }
+}
+
+#[test]
+fn ordinary_transport_controls_still_change_the_verified_group_once() {
+    for generation in [1, 2] {
+        for command in TRANSPORT_COMMANDS {
+            let f = Fixture::new(generation);
+            command.prepare(&f);
+            let lan = f.sim.lan();
+            let peer = soap::get_position_info(&lan, f.peer).unwrap();
+            let before = f.sim.soap_log().len();
+            command.run(&lan, &f.houses, &f.target).unwrap();
+            let writes: Vec<_> = f.sim.soap_log()[before..]
+                .iter()
+                .filter(|entry| is_write(&entry.action))
+                .map(|entry| (entry.room.clone(), entry.action.clone()))
+                .collect();
+            assert_eq!(writes, [("Target".to_string(), command.action().to_string())]);
+            assert_eq!(soap::get_position_info(&lan, f.peer).unwrap(), peer);
+            let state = soap::get_transport_info(&lan, f.host).unwrap().state;
+            assert_eq!(
+                state,
+                if matches!(command, TransportCommand::Stop) {
+                    TransportState::Stopped
+                } else {
+                    TransportState::Paused
+                }
+            );
+            let position = soap::get_position_info(&lan, f.host).unwrap();
+            match command {
+                TransportCommand::Next => assert_eq!(position.track, 2),
+                TransportCommand::Previous => assert_eq!(position.track, 1),
+                TransportCommand::AbsoluteSeek => assert_eq!(position.position_secs, Some(60)),
+                TransportCommand::RelativeSeek => assert_eq!(position.position_secs, Some(45)),
+                TransportCommand::Pause | TransportCommand::Stop => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn navigation_and_seek_recheck_ownership_after_preparatory_reads() {
+    for generation in [1, 2] {
+        for command in [
+            TransportCommand::Next,
+            TransportCommand::Previous,
+            TransportCommand::AbsoluteSeek,
+            TransportCommand::RelativeSeek,
+        ] {
+            let f = Fixture::new(generation);
+            command.prepare(&f);
+            let t = ReusedAddress::new(f.sim, "GetPositionInfo").acknowledged();
+            let error = command.run(&t, &f.houses, &f.target).unwrap_err();
+            assert!(t.moved.get(), "S{generation} {command:?}");
+            assert!(
+                matches!(error, CoreError::TargetChanged(_)),
+                "S{generation} {command:?}: {error}"
+            );
+            assert!(
+                t.writes.borrow().is_empty(),
+                "the optional observation cannot authorize a later foreign endpoint"
+            );
+        }
+    }
+}
+
+#[test]
+fn ordinary_pause_and_stop_do_not_confirm_silence_on_a_foreign_endpoint() {
+    for generation in [1, 2] {
+        for command in [TransportCommand::Pause, TransportCommand::Stop] {
+            let f = Fixture::new(generation);
+            let lan = f.sim.lan();
+            match command {
+                TransportCommand::Pause => soap::pause(&lan, f.peer).unwrap(),
+                TransportCommand::Stop => soap::stop(&lan, f.peer).unwrap(),
+                _ => unreachable!(),
+            }
+            let t = ReusedAddress::new(f.sim, command.action());
+            let error = command.run(&t, &f.houses, &f.target).unwrap_err();
+            assert!(t.moved.get());
+            assert!(matches!(
+                error,
+                CoreError::Proto(ProtoError::Network { detail, .. })
+                    if detail == "injected lost reply after address reuse"
+            ));
+            assert_eq!(*t.writes.borrow(), [command.action()]);
+        }
+    }
+}

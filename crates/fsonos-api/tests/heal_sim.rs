@@ -5,7 +5,7 @@
 //!   (UPnP 800) is retried on the new coordinator;
 //! * a command that is safe to repeat, sent to a player that moved to a new
 //!   address (a DHCP lease change), is retried there;
-//! * a command that is not safe to repeat (`next`) is not retried;
+//! * a relative step whose preflight failed follows its moved player before being sent;
 //! * a group command the new coordinator refuses too answers NOT_COORDINATOR.
 //!
 //! The surface's cached survey is what makes each change "under" the
@@ -230,31 +230,43 @@ fn a_capped_command_reads_a_moved_players_level_at_its_new_address() {
 }
 
 #[test]
-fn a_step_is_never_repeated_at_a_new_address() {
+fn a_step_follows_a_moved_player_before_any_write_is_sent() {
     let mut sim = sim();
     let surface = surface(&sim);
-    let _ = surface.households().unwrap();
+    let houses = surface.households().unwrap();
+    let office = id(&houses, "Office");
+    let host = sim.player("Office").unwrap().ip;
+    for uri in [
+        "x-file-cifs://example.invalid/first.flac",
+        "x-file-cifs://example.invalid/second.flac",
+        "x-file-cifs://example.invalid/third.flac",
+    ] {
+        fsonos_proto::control::add_uri_to_queue(&sim.lan(), host, uri, "", false).unwrap();
+    }
+    control::play_queue_from(&sim.lan(), &houses, &office, 1).unwrap();
     let to = sim.change_address("Office").unwrap();
-
+    let mark = sim.soap_log().len();
     let req = ZoneRequest {
         zone: "Office".into(),
     };
-    let err = surface
-        .control(&Client::Cli, "next", |h| {
-            plan_transport(h, &req, fsonos_api::plan::TransportAction::Next)
-        })
-        .unwrap_err();
-    assert_eq!(err.code, ErrorCode::PlayerUnreachable, "{err:?}");
-    let sent_next = sim.soap_log().iter().any(|e| e.action == "Next");
-    assert!(!sent_next, "Next must not be resent to {to}");
-    // The failure made the surface look again: a retry by the caller works.
     let out = surface
         .control(&Client::Cli, "next", |h| {
             plan_transport(h, &req, fsonos_api::plan::TransportAction::Next)
         })
-        .map(|o| o.changed);
-    assert!(
-        !matches!(&out, Err(e) if e.code == ErrorCode::PlayerUnreachable),
-        "{out:?}"
+        .unwrap();
+    let note = healed(&out.notes).expect("a HEALED note");
+    assert!(note.contains(&to.to_string()), "{note}");
+    assert_eq!(
+        fsonos_proto::control::get_position_info(&sim.lan(), to)
+            .unwrap()
+            .track,
+        2
     );
+    let log = sim.soap_log();
+    let sent: Vec<_> = log[mark..]
+        .iter()
+        .filter(|entry| entry.action == "Next")
+        .map(|entry| entry.room.as_str())
+        .collect();
+    assert_eq!(sent, ["Office"], "one step, at the confirmed new address");
 }

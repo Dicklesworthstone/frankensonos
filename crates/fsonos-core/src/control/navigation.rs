@@ -4,6 +4,7 @@
 //! an unavailable proof never prevents the original one-shot command.
 
 use super::SourceDestination;
+use crate::CoreError;
 use fsonos_proto::content::{self, BrowseFlag, BrowsePage, QUEUE};
 use fsonos_proto::control::{self as soap, PositionInfo};
 use fsonos_proto::didl::{DidlKind, DidlObject, spotify_uri_from_renderer_uri};
@@ -72,7 +73,7 @@ pub(super) fn step<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
     step: Step,
-) -> Result<(), ProtoError> {
+) -> Result<(), CoreError> {
     let preparation = Reads {
         inner: t,
         until: Instant::now() + PREPARE_BUDGET,
@@ -81,6 +82,7 @@ pub(super) fn step<T: Transport + ?Sized>(
         .ok()
         .flatten()
         .filter(|_| Instant::now() < preparation.until);
+    super::require_coordinator(t, host, coordinator)?;
     let sent = Instant::now();
     let result = match step {
         Step::Next => soap::next(t, host),
@@ -111,7 +113,7 @@ pub(super) fn step<T: Transport + ?Sized>(
     } else {
         // A refusal, an unchanged or different occurrence, and unavailable
         // read-back all retain the original write error, without any replay.
-        Err(error)
+        Err(error.into())
     }
 }
 

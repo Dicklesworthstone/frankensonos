@@ -112,10 +112,12 @@ fn group_commands_reach_the_coordinator_address() {
     assert_eq!(
         t.actions(),
         [
+            (ip("192.0.2.13"), "GetZoneGroupState".into()),
             (ip("192.0.2.13"), "Pause".into()),
             (ip("192.0.2.13"), "GetZoneGroupState".into()),
             (ip("192.0.2.13"), "Play".into()),
             (ip("192.0.2.13"), "GetPositionInfo".into()),
+            (ip("192.0.2.13"), "GetZoneGroupState".into()),
             (ip("192.0.2.13"), "Next".into()),
         ]
     );
@@ -133,11 +135,30 @@ fn a_refused_pause_is_read_back_and_a_playing_stream_stops() {
     // Still playing: a stream that cannot pause, so it stops.
     let t = refusing("<CurrentTransportState>PLAYING</CurrentTransportState>");
     control::pause(&t, &h, &pid(2)).unwrap();
-    assert_eq!(names(&t), ["Pause", "GetTransportInfo", "Stop"]);
+    assert_eq!(
+        names(&t),
+        [
+            "GetZoneGroupState",
+            "Pause",
+            "GetZoneGroupState",
+            "GetTransportInfo",
+            "GetZoneGroupState",
+            "Stop"
+        ]
+    );
     // Already paused (or stopped): nothing more to do.
     let t = refusing("<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>");
     control::pause(&t, &h, &pid(2)).unwrap();
-    assert_eq!(names(&t), ["Pause", "GetTransportInfo"]);
+    assert_eq!(
+        names(&t),
+        [
+            "GetZoneGroupState",
+            "Pause",
+            "GetZoneGroupState",
+            "GetTransportInfo",
+            "GetZoneGroupState"
+        ]
+    );
     // Any other fault stands, unread.
     let t = Recorder {
         refuse: Some(("Pause", 800)),
@@ -147,7 +168,7 @@ fn a_refused_pause_is_read_back_and_a_playing_stream_stops() {
         control::pause(&t, &h, &pid(2)),
         Err(CoreError::Proto(ProtoError::SoapFault { code: 800, .. }))
     ));
-    assert_eq!(names(&t), ["Pause"]);
+    assert_eq!(names(&t), ["GetZoneGroupState", "Pause"]);
 }
 
 #[test]

@@ -189,7 +189,9 @@ pub fn pause<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    pause_at(t, addr(households, coordinator)?)
+    let host = addr(households, coordinator)?;
+    require_coordinator(t, host, coordinator)?;
+    Ok(transport_state::pause(t, host, Some(coordinator))?)
 }
 
 /// Pause the group whose coordinator answers at `host`. A player refuses
@@ -200,7 +202,7 @@ pub fn pause<T: Transport + ?Sized>(
 /// Lost or malformed replies are observed rather than replayed or treated as
 /// a 701 refusal. A confirmed inactive state satisfies the pause request.
 pub fn pause_at<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<(), CoreError> {
-    Ok(transport_state::pause(t, host)?)
+    Ok(transport_state::pause(t, host, None)?)
 }
 
 pub fn stop<T: Transport + ?Sized>(
@@ -208,7 +210,9 @@ pub fn stop<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(transport_state::stop(t, addr(households, coordinator)?)?)
+    let host = addr(households, coordinator)?;
+    require_coordinator(t, host, coordinator)?;
+    Ok(transport_state::stop(t, host, Some(coordinator))?)
 }
 
 /// Advance once. An uncertain reply can be confirmed only against the exact
@@ -218,12 +222,12 @@ pub fn next<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(navigation::step(
+    navigation::step(
         t,
         addr(households, coordinator)?,
         coordinator,
         navigation::Step::Next,
-    )?)
+    )
 }
 
 /// Go back once, retaining the renderer's native Previous behavior. A lost
@@ -233,12 +237,12 @@ pub fn previous<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(navigation::step(
+    navigation::step(
         t,
         addr(households, coordinator)?,
         coordinator,
         navigation::Step::Previous,
-    )?)
+    )
 }
 
 /// Where [`seek`] goes in the current track.
@@ -263,10 +267,10 @@ pub fn seek<T: Transport + ?Sized>(
     to: Seek,
 ) -> Result<u32, CoreError> {
     let host = addr(households, coordinator)?;
-    Ok(match to {
-        Seek::At(secs) => seek_absolute::seek(t, host, coordinator, secs)?,
-        Seek::By(by) => seek_relative::seek(t, host, coordinator, by)?,
-    })
+    match to {
+        Seek::At(secs) => seek_absolute::seek(t, host, coordinator, secs),
+        Seek::By(by) => seek_relative::seek(t, host, coordinator, by),
+    }
 }
 
 /// Point the group `coordinator` leads at a renderer-ready `uri` (with its

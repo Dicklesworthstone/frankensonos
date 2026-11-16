@@ -2463,7 +2463,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(out.done, "paused Den's group");
-        assert_eq!(*sent.lock().unwrap(), ["Pause"]);
+        assert_eq!(*sent.lock().unwrap(), ["GetZoneGroupState", "Pause"]);
         let denied = s
             .control(&Client::Unknown, "pause", |_| unreachable!())
             .unwrap_err();

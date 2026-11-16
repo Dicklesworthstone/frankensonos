@@ -1308,8 +1308,15 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Answers every SOAP action with success and `out_args`, and records the
-    /// action names.
+    const GROUPED_HOUSE: &str = r#"<ZoneGroups><ZoneGroup Coordinator="RINCON_DEN" ID="g">
+      <ZoneGroupMember UUID="RINCON_DEN" ZoneName="Den" SWGen="2"
+        Location="http://192.0.2.10:1400/xml/device_description.xml"/>
+      <ZoneGroupMember UUID="RINCON_KIT" ZoneName="Kitchen" SWGen="2"
+        Location="http://192.0.2.11:1400/xml/device_description.xml"/>
+    </ZoneGroup></ZoneGroups>"#;
+
+    /// Answers topology with the household layout and other actions with
+    /// success and `out_args`; records action names.
     #[derive(Default)]
     struct Canned {
         out_args: &'static str,
@@ -1331,10 +1338,15 @@ mod tests {
                 .unwrap_or_default()
                 .to_string();
             self.sent.lock().unwrap().push(action.clone());
+            let out_args = if action == "GetZoneGroupState" {
+                fsonos_proto::soap::args_xml(&[("ZoneGroupState", GROUPED_HOUSE)])
+            } else {
+                self.out_args.to_string()
+            };
             Ok(format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
                  <u:{action}Response xmlns:u=\"urn:x\">{}</u:{action}Response></s:Body></s:Envelope>",
-                self.out_args
+                out_args
             ))
         }
     }
@@ -1345,7 +1357,13 @@ mod tests {
         let player = |pid: &str, room: &str| Player {
             id: id(pid),
             room_name: room.into(),
-            ip: "192.0.2.10".parse().unwrap(),
+            ip: if pid == "RINCON_DEN" {
+                "192.0.2.10"
+            } else {
+                "192.0.2.11"
+            }
+            .parse()
+            .unwrap(),
             model: String::new(),
             generation: Generation::S2,
         };
@@ -1847,7 +1865,7 @@ mod tests {
         assert!(!r.is_error, "{}", text(&r));
         assert_eq!(text(&r), "paused Den's group");
         assert_eq!(r.structured_content.as_ref().unwrap()["changed"], true);
-        assert_eq!(*sent.lock().unwrap(), ["Pause"]);
+        assert_eq!(*sent.lock().unwrap(), ["GetZoneGroupState", "Pause"]);
         // A second call within the refresh interval reuses the survey.
         b.control("resume", |h| {
             plan::plan_transport(
@@ -1902,7 +1920,7 @@ mod tests {
             .unwrap();
         assert!(!r.is_error, "{}", text(&r));
         assert_eq!(text(&r), "paused Den's group");
-        assert_eq!(*sent.lock().unwrap(), ["Pause"]);
+        assert_eq!(*sent.lock().unwrap(), ["GetZoneGroupState", "Pause"]);
         // Muting all mutes each room's own player.
         sent.lock().unwrap().clear();
         b.control_set("mute", |h| {

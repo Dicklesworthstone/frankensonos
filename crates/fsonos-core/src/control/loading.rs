@@ -2,7 +2,7 @@
 //! loading share renderer account selection and the same bounded recovery.
 
 use super::{
-    addr, is_render_800, pause_at, play_uri, queue_start, source_start, spotify_params,
+    addr, is_render_800, pause, play_uri, queue_start, source_start, spotify_params,
     spotify_source, spotify_track_source,
 };
 use crate::{CoreError, HouseholdState};
@@ -31,7 +31,7 @@ pub fn pause_confirmed<T: Transport + ?Sized>(
             );
         }
     }
-    let written = pause_at(t, host);
+    let written = pause(t, households, coordinator);
     if let Err(error) = &written
         && !matches!(
             error,

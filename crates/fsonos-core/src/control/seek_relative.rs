@@ -1,5 +1,6 @@
 //! A relative seek uses a real clock sample and never repeats its offset.
 
+use crate::CoreError;
 use fsonos_proto::control::{self as soap, PositionInfo};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
@@ -14,9 +15,10 @@ pub(super) fn seek<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
     by: i64,
-) -> Result<u32, ProtoError> {
+) -> Result<u32, CoreError> {
     let before = soap::get_position_info(t, host)?;
     let target = destination(&before, by)?;
+    super::require_coordinator(t, host, coordinator)?;
     let started = Instant::now();
     match soap::seek_position(t, host, target) {
         Ok(()) => Ok(target),
@@ -35,7 +37,7 @@ pub(super) fn seek<T: Transport + ?Sized>(
                 Ok(target)
             } else {
                 // The read-back error must not hide the original write failure.
-                Err(error)
+                Err(error.into())
             }
         }
     }

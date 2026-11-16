@@ -491,7 +491,12 @@ fn control_routes_address_the_coordinator() {
     assert_eq!(status, 200, "{out}");
     assert_eq!(
         api.actions(),
-        ["Pause", "GetZoneGroupState", "SetAVTransportURI"],
+        [
+            "GetZoneGroupState",
+            "Pause",
+            "GetZoneGroupState",
+            "SetAVTransportURI",
+        ],
         "ungroup: the room joins itself (docs/PROTOCOL.md §6)"
     );
 }
@@ -503,7 +508,7 @@ fn control_routes_accept_a_set_of_rooms() {
     let (status, out) = api.post("/pause", &json!({ "zone": "everywhere" }));
     assert_eq!(status, 200, "{out}");
     assert_eq!(out["done"], "paused Living Room's group");
-    assert_eq!(api.actions(), ["Pause"]);
+    assert_eq!(api.actions(), ["GetZoneGroupState", "Pause"]);
     // Ungrouping everywhere takes the member out; Living Room plays on.
     let api = Api::start("", &Client::LoopbackHttp);
     let (status, out) = api.post("/ungroup", &json!({ "zone": "everywhere" }));
@@ -769,7 +774,7 @@ fn only_the_daemons_own_origins_may_call() {
         r#"{"zone":"Kitchen"}"#,
     );
     assert_eq!(status, 200, "the daemon's own origin may call: {body}");
-    assert_eq!(api.actions(), ["Pause"]);
+    assert_eq!(api.actions(), ["GetZoneGroupState", "Pause"]);
 }
 
 #[test]
@@ -1223,5 +1228,8 @@ fn behind_serve_the_login_header_is_the_caller() {
         200,
         "an unlisted login gets the defaults"
     );
-    assert_eq!(api.actions(), ["Pause", "Pause"]);
+    assert_eq!(
+        api.actions(),
+        ["GetZoneGroupState", "Pause", "GetZoneGroupState", "Pause"]
+    );
 }

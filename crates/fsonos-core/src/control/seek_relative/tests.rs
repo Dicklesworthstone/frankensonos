@@ -146,7 +146,7 @@ impl Script {
         Self(RefCell::new(replies.into()))
     }
 
-    fn seek(&self) -> Result<u32, ProtoError> {
+    fn seek(&self) -> Result<u32, CoreError> {
         let result = seek(
             self,
             Ipv4Addr::LOCALHOST.into(),
@@ -184,6 +184,22 @@ impl Transport for Script {
     }
 }
 
+fn topology(coordinator: &str) -> Step {
+    (
+        "GetZoneGroupState",
+        Ok(reply(
+            "GetZoneGroupState",
+            &format!(
+                "<ZoneGroupState>&lt;ZoneGroups&gt;\
+                 &lt;ZoneGroup Coordinator=\"{coordinator}\" ID=\"group\"&gt;\
+                 &lt;ZoneGroupMember UUID=\"{coordinator}\" ZoneName=\"Test\" \
+                 Location=\"http://127.0.0.1:1400/xml/device_description.xml\"/&gt;\
+                 &lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;</ZoneGroupState>"
+            ),
+        )),
+    )
+}
+
 fn recovery(last: String) -> Vec<Step> {
     vec![
         ("GetPositionInfo", Ok(clock("00:01:40", 2))),
@@ -194,25 +210,16 @@ fn recovery(last: String) -> Vec<Step> {
                 "<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>",
             )),
         ),
-        (
-            "GetZoneGroupState",
-            Ok(reply(
-                "GetZoneGroupState",
-                "<ZoneGroupState>&lt;ZoneGroups&gt;\
-                 &lt;ZoneGroup Coordinator=\"synthetic-player\" ID=\"group\"&gt;\
-                 &lt;ZoneGroupMember UUID=\"synthetic-player\" ZoneName=\"Test\" \
-                 Location=\"http://127.0.0.1:1400/xml/device_description.xml\"/&gt;\
-                 &lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;</ZoneGroupState>",
-            )),
-        ),
+        topology("synthetic-player"),
         ("GetPositionInfo", Ok(last)),
     ]
 }
 
 #[test]
-fn normal_success_keeps_the_existing_one_read_one_write_path() {
+fn normal_success_checks_the_endpoint_between_position_and_seek() {
     let script = Script::new(vec![
         ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        topology("synthetic-player"),
         ("Seek", Ok(reply("Seek", ""))),
     ]);
     assert_eq!(script.seek().unwrap(), 100);
@@ -221,8 +228,11 @@ fn normal_success_keeps_the_existing_one_read_one_write_path() {
 #[test]
 fn unreported_clock_prevents_the_write() {
     let script = Script::new(vec![("GetPositionInfo", Ok(clock("NOT_IMPLEMENTED", 2)))]);
-    assert!(matches!(script.seek(), Err(ProtoError::Malformed(reason))
-            if reason.contains("reported playback position")));
+    assert!(matches!(
+        script.seek(),
+        Err(CoreError::Proto(ProtoError::Malformed(reason)))
+            if reason.contains("reported playback position")
+    ));
 }
 
 #[test]
@@ -230,6 +240,7 @@ fn lost_and_malformed_acknowledgements_can_complete_without_a_second_seek() {
     for answer in [Err(lost()), Ok("unreadable reply".into())] {
         let mut replies = vec![
             ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+            topology("synthetic-player"),
             ("Seek", answer),
         ];
         replies.extend(recovery(clock("00:01:40", 2)));
@@ -241,6 +252,7 @@ fn lost_and_malformed_acknowledgements_can_complete_without_a_second_seek() {
 fn a_definite_fault_is_not_disguised_by_the_current_position() {
     let script = Script::new(vec![
         ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        topology("synthetic-player"),
         (
             "Seek",
             Err(ProtoError::SoapFault {
@@ -251,7 +263,7 @@ fn a_definite_fault_is_not_disguised_by_the_current_position() {
     ]);
     assert!(matches!(
         script.seek(),
-        Err(ProtoError::SoapFault { code: 711, .. })
+        Err(CoreError::Proto(ProtoError::SoapFault { code: 711, .. }))
     ));
 }
 
@@ -259,27 +271,58 @@ fn a_definite_fault_is_not_disguised_by_the_current_position() {
 fn failed_readback_keeps_the_original_write_failure_without_replay() {
     let script = Script::new(vec![
         ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        topology("synthetic-player"),
         ("Seek", Err(lost())),
         (
             "GetPositionInfo",
             Err(ProtoError::Malformed("read unavailable".into())),
         ),
     ]);
-    assert!(
-        matches!(script.seek(), Err(ProtoError::Network { detail, .. })
-            if detail == "seek reply lost")
-    );
+    assert!(matches!(
+        script.seek(),
+        Err(CoreError::Proto(ProtoError::Network { detail, .. }))
+            if detail == "seek reply lost"
+    ));
 }
 
 #[test]
 fn a_track_changing_during_readback_is_not_confirmed() {
     let mut replies = vec![
         ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        topology("synthetic-player"),
         ("Seek", Err(lost())),
     ];
     replies.extend(recovery(clock("00:01:40", 3)));
     assert!(matches!(
         Script::new(replies).seek(),
-        Err(ProtoError::Network { .. })
+        Err(CoreError::Proto(ProtoError::Network { .. }))
+    ));
+}
+
+#[test]
+fn an_endpoint_change_after_the_position_read_prevents_the_relative_write() {
+    let script = Script::new(vec![
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        topology("another-player"),
+    ]);
+    assert!(matches!(script.seek(), Err(CoreError::TargetChanged(_))));
+}
+
+#[test]
+fn unavailable_ownership_prevents_the_relative_write() {
+    let script = Script::new(vec![
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        (
+            "GetZoneGroupState",
+            Err(ProtoError::Network {
+                target: "synthetic player".into(),
+                detail: "ownership unavailable".into(),
+            }),
+        ),
+    ]);
+    assert!(matches!(
+        script.seek(),
+        Err(CoreError::Proto(ProtoError::Network { detail, .. }))
+            if detail == "ownership unavailable"
     ));
 }

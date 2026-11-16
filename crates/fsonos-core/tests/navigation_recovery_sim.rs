@@ -195,7 +195,7 @@ impl<'a> Replies<'a> {
             .collect();
         assert_eq!(writes, [action]);
         assert!(
-            calls.len() <= 15,
+            calls.len() <= 16,
             "bounded two-entry observation only: {calls:?}"
         );
     }
@@ -213,10 +213,12 @@ impl Transport for Replies<'_> {
         self.calls.borrow_mut().push(action.into());
         let navigation = action == if self.forward { "Next" } else { "Previous" };
         if !navigation {
-            if self.fail_reads.is_some_and(|when| match when {
-                ReadFailure::Before => !self.sent.get(),
-                ReadFailure::After => self.sent.get(),
-            }) {
+            if action != "GetZoneGroupState"
+                && self.fail_reads.is_some_and(|when| match when {
+                    ReadFailure::Before => !self.sent.get(),
+                    ReadFailure::After => self.sent.get(),
+                })
+            {
                 return Err(ProtoError::Network {
                     target: "simulator read".into(),
                     detail: "optional navigation observation unavailable".into(),
@@ -281,7 +283,7 @@ fn accepted_lost_and_malformed_replies_confirm_one_exact_adjacent_occurrence() {
                     let t = Replies::new(&rig, forward, reply);
                     rig.step(&t, forward).unwrap();
                     t.one_step_only();
-                    assert_eq!(t.calls.borrow().len(), 15);
+                    assert_eq!(t.calls.borrow().len(), 16);
                     let position = soap::get_position_info(&rig.lan, rig.host).unwrap();
                     assert_eq!(position.track, if forward { 3 } else { 2 });
                     assert_eq!(position.position_secs, Some(0));
@@ -311,7 +313,7 @@ fn acknowledged_steps_return_without_readback_even_when_optional_reads_fail() {
                 t.fail_reads = fail_before.then_some(ReadFailure::Before);
                 rig.step(&t, forward).unwrap();
                 t.one_step_only();
-                assert_eq!(t.calls.borrow().len(), if fail_before { 2 } else { 8 });
+                assert_eq!(t.calls.borrow().len(), if fail_before { 3 } else { 9 });
                 assert_eq!(
                     t.calls.borrow().last().map(String::as_str),
                     Some(if forward { "Next" } else { "Previous" })
@@ -331,9 +333,9 @@ fn unchanged_occurrences_and_failed_evidence_preserve_the_original_lost_reply() 
         let rig = Rig::new(s2);
         for forward in [true, false] {
             for (reply, fail_reads, calls) in [
-                (Reply::Unapplied, None, 9),
-                (Reply::Lost, Some(ReadFailure::Before), 2),
-                (Reply::Lost, Some(ReadFailure::After), 9),
+                (Reply::Unapplied, None, 10),
+                (Reply::Lost, Some(ReadFailure::Before), 3),
+                (Reply::Lost, Some(ReadFailure::After), 10),
             ] {
                 let start = if forward { 1 } else { 4 };
                 rig.prepare(start, TransportState::Playing);
@@ -375,7 +377,7 @@ fn definite_faults_stand_even_when_another_controller_reaches_the_expected_slot(
                     "{error}"
                 );
                 t.one_step_only();
-                assert_eq!(t.calls.borrow().len(), 8);
+                assert_eq!(t.calls.borrow().len(), 9);
                 assert_eq!(
                     soap::get_position_info(&rig.lan, rig.host).unwrap().track,
                     if forward { 2 } else { 3 }
@@ -426,7 +428,7 @@ fn shuffle_repeat_and_missing_boot_identity_keep_navigation_one_shot() {
                 let t = Replies::new(&rig, forward, Reply::Lost);
                 original_network(&rig.step(&t, forward).unwrap_err());
                 t.one_step_only();
-                assert_eq!(t.calls.borrow().len(), 3);
+                assert_eq!(t.calls.borrow().len(), 4);
                 assert_eq!(
                     soap::get_position_info(&rig.lan, rig.host).unwrap().track,
                     if forward { 2 } else { 3 }
@@ -437,7 +439,7 @@ fn shuffle_repeat_and_missing_boot_identity_keep_navigation_one_shot() {
             t.missing_boot = true;
             original_network(&rig.step(&t, forward).unwrap_err());
             t.one_step_only();
-            assert_eq!(t.calls.borrow().len(), 5);
+            assert_eq!(t.calls.borrow().len(), 6);
             assert_eq!(
                 soap::get_position_info(&rig.lan, rig.host).unwrap().track,
                 if forward { 2 } else { 3 }
@@ -455,7 +457,7 @@ fn next_near_the_natural_end_cannot_claim_the_automatic_transition() {
         let t = Replies::new(&rig, true, Reply::Lost);
         original_network(&rig.step(&t, true).unwrap_err());
         t.one_step_only();
-        assert_eq!(t.calls.borrow().len(), 9);
+        assert_eq!(t.calls.borrow().len(), 10);
         assert_eq!(
             soap::get_position_info(&rig.lan, rig.host).unwrap().track,
             2
@@ -480,7 +482,7 @@ fn queue_boundaries_and_direct_sources_preserve_the_renderer_refusal() {
                 "{error}"
             );
             t.one_step_only();
-            assert_eq!(t.calls.borrow().len(), if forward { 6 } else { 2 });
+            assert_eq!(t.calls.borrow().len(), if forward { 7 } else { 3 });
             assert_eq!(
                 soap::get_position_info(&rig.lan, rig.host).unwrap().track,
                 start
@@ -498,7 +500,7 @@ fn queue_boundaries_and_direct_sources_preserve_the_renderer_refusal() {
                 "{error}"
             );
             t.one_step_only();
-            assert_eq!(t.calls.borrow().len(), 2);
+            assert_eq!(t.calls.borrow().len(), 3);
             assert_eq!(
                 soap::get_media_info(&rig.lan, rig.host).unwrap().uri,
                 TRACKS[0]

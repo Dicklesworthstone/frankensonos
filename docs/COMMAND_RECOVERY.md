@@ -67,13 +67,16 @@ make the initial request and concurrent topology changes atomic.
 
 ## The addressed player must own the requested group
 
-Direct-source starts, queue starts and resume verify the requested coordinator
-at the addressed endpoint before their first playback write. Silent loads and
-their prerequisite pause use the same check. A household-wide topology listing
-the coordinator somewhere else is insufficient: the coordinator's own advertised
-address must match the endpoint, and the topology must be coherent. An address
-now belonging to another group therefore cannot receive a command intended for
-the old player, even when it already has the same source or queue track.
+Named transport commands verify the requested coordinator at the addressed
+endpoint before their first playback write: direct-source and queue starts,
+resume, pause, stop, next, previous, and both absolute and relative seeks.
+Silent loads and their prerequisite pause use the same check. Navigation and
+seek verify ownership after their preparatory reads, immediately before the
+write. A household-wide topology listing the coordinator somewhere else is
+insufficient: the coordinator's own advertised address must match the endpoint,
+and the topology must be coherent. An address now belonging to another group
+therefore cannot receive a command intended for the old player, even when it
+already has the same source or queue track.
 
 A failed initial ownership check reports `NOT_COORDINATOR` without inventing a
 speaker SOAP fault. The surface can use its existing single recovery budget to
@@ -82,10 +85,25 @@ policy, actual-audience and progress checks still apply. A mismatch detected
 after a write is an uncertain result; it cannot authorize restarting completed
 stages. Lost-reply confirmation also requires this exact endpoint ownership.
 
+Pause and stop confirm a lost reply only when the expected coordinator still
+owns the endpoint before and after the state observation. A stopped or paused
+unrelated player cannot confirm success. A definite Pause/701 refusal can fall
+back to Stop only after the same ownership checks around an active-state read;
+an unverifiable destination preserves the original refusal without another
+write. The anonymous `pause_at` helper has no player identity to assert.
+
 These are bounded observations, not an atomic lock on another controller or on
 address assignment. A change after the last check remains possible. Simulator
 regressions exercise stale addresses in both S1 and S2, acknowledged and lost
-replies, silent loading, and successful recovery to the intended room.
+replies, silent loading, and successful recovery to the intended room. The
+navigation recovery matrix covers moved and reused addresses, next/previous,
+and absolute/relative seeks. A recovered relative seek reads the intended
+player's current position again; it does not reuse the other player's clock.
+
+Focused regressions: `cargo test --locked -p fsonos-core --test control
+--test control_endpoint_sim --test navigation_recovery_sim` and
+`cargo test --locked -p fsonos-api --test preflight_recovery_sim
+--test navigation_preflight_sim --test command_recovery_sim --test heal_sim`.
 
 ## A lost daemon reply does not authorize another write
 
