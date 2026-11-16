@@ -186,8 +186,9 @@ impl Command {
     /// Whether sending this again is harmless even if the first request ran
     /// and only its reply was lost: it sets a state (play this, pause, this
     /// volume, mute, join, leave) rather than stepping (next, previous, a
-    /// relative volume) or adding. Only these are retried at a player's new
-    /// address (`fsonos_core::heal`).
+    /// relative volume) or adding. After a possible write, only these may be
+    /// retried at a player's new address. Read-only preflight failures can
+    /// recover before any command is dispatched (`crate::heal`).
     #[must_use]
     pub fn repeat_safe(&self) -> bool {
         match self {

@@ -11,6 +11,13 @@ recover at a player's newly discovered address. Coordinator and address
 recovery share one retry budget: a failed coordinator retry cannot dispatch a
 third command to the original player.
 
+A failed read-only preflight can also recover the player's address for a
+relative command, such as next, previous, seek or a volume adjustment. The
+per-attempt observer must establish that no mutation may have taken effect;
+the same one-retry budget and original-room checks still apply. Once an
+uncertain relative write has been dispatched, it is never repeated at a new
+address, even when its optional read-back evidence is unavailable.
+
 Group recovery retains the UUID of the room the caller requested, separately
 from the coordinator that first received the command. If that former leader
 joins another group, recovery follows the requested room's current coordinator.

@@ -98,7 +98,8 @@ impl Running {
             .map_or(Ok(()), SchedulerWorker::shutdown);
         stop_http(&self.http);
         stop_http(&self.bridge);
-        stop_mcp(std::mem::take(&mut self.mcp));
+        let mut mcp = std::mem::take(&mut self.mcp);
+        stop_mcp(&mut mcp);
         background.and(result)
     }
 }

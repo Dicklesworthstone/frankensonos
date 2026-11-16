@@ -2,8 +2,9 @@
 //! [`fsonos_core::heal`]: at most one recovery, without replaying prior steps.
 //!
 //! An initial stale-target preflight or UPnP 800 refusal can recover on a
-//! confirmed new coordinator. A repeat-safe command can recover at a player's
-//! new address, including when another speaker now answers the old one.
+//! confirmed new coordinator. A command that has sent no effective mutation,
+//! or one repeat-safe write, can recover at a player's new address, including
+//! when another speaker now answers the old one.
 //! Neither path restarts a command after earlier speaker writes may have
 //! taken effect: a fault from a later step does not roll the earlier ones back.
 //! Coordinator recovery and address recovery share one retry budget.
@@ -73,7 +74,6 @@ pub(crate) fn execute_healing_with<T: Transport + ?Sized>(
     };
     if !can_readdress.get()
         || !(failure.code == ErrorCode::PlayerUnreachable || target_changed(failure))
-        || !command.repeat_safe()
     {
         return result;
     }
@@ -159,8 +159,9 @@ pub(crate) fn current_command(
 
 /// Observe below orchestration, including its read-back paths. A network or
 /// malformed reply may follow a real effect, so it also counts as a write.
-/// A final unconfirmed operation is excluded: an initial refusal can still heal,
-/// as can a single repeat-safe write whose player moved before answering.
+/// A read-only failure can recover before any command reaches a speaker.
+/// A final unconfirmed repeat-safe operation can also recover at a new address;
+/// an uncertain relative operation can never be sent a second time.
 fn observed_execute<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -168,18 +169,25 @@ fn observed_execute<T: Transport + ?Sized>(
     command: Command,
     volume: &RefCell<volume::RetryVolume>,
 ) -> (Result<Executed, Failure>, bool) {
+    let repeat_safe = command.repeat_safe();
     let observed = attempt::Observed::new(transport);
     let result = volume
         .borrow_mut()
         .execute(&observed, households, guard, command);
     let prior = observed.preceding_writes();
-    let blocked = result.is_err() && prior > 0;
+    let unrepeatable = !repeat_safe && observed.wrote();
+    let blocked = result.is_err() && (prior > 0 || unrepeatable);
     let result = result.map_err(|failure| {
-        if blocked {
+        if prior > 0 {
             failure.with_hint(format!(
                 "{prior} earlier speaker step(s) may have taken effect; this command was not \
                  repeated. Inspect playback and the action log before issuing a new command."
             ))
+        } else if unrepeatable {
+            failure.with_hint(
+                "The speaker may have applied this command, so it was not repeated. \
+                 Inspect playback and the action log before issuing a new command.",
+            )
         } else {
             failure
         }

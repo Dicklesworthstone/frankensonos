@@ -85,7 +85,7 @@ impl OutcomeDto {
 // The pinned schema derive does not honor serde's tag on data enums.
 impl fastapi_openapi::JsonSchema for ControlResultDto {
     fn schema() -> fastapi_openapi::Schema {
-        use fastapi_openapi::{JsonSchema, ObjectSchema, Schema};
+        use fastapi_openapi::{ObjectSchema, Schema};
 
         let variant = |status: &str, required: &[&str], fields: Vec<(&str, Schema)>| {
             let mut properties: std::collections::HashMap<_, _> = fields

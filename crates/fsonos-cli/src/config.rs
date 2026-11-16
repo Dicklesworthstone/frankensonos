@@ -734,14 +734,14 @@ mod tests {
         ])
         .unwrap();
         found.ipv4.extend([
-            "100.70.1.2".parse().unwrap(),
+            "100.70.1.2".parse::<Ipv4Addr>().unwrap(),
             "127.0.0.2".parse().unwrap(),
             "192.168.1.10".parse().unwrap(),
             "0.0.0.0".parse().unwrap(),
             "203.0.113.10".parse().unwrap(),
         ]);
         found.ipv6.extend([
-            "::1".parse().unwrap(),
+            "::1".parse::<Ipv6Addr>().unwrap(),
             "::".parse().unwrap(),
             "2001:db8::10".parse().unwrap(),
         ]);
