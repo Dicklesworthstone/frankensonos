@@ -1,6 +1,6 @@
 //! The native saved-playlist catalog mutates independently of playback.
 
-use super::{Args, Favorite, Fault, INVALID_ARGS, Out, State, TRANSITION_NOT_AVAILABLE};
+use super::{Args, Fault, Favorite, INVALID_ARGS, Out, State, TRANSITION_NOT_AVAILABLE};
 use fsonos_proto::didl::{DidlKind, parse_didl};
 
 impl State {

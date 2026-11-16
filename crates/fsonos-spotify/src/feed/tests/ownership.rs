@@ -292,7 +292,6 @@ fn a_retired_movement_cannot_reclaim_a_later_owner_copy() {
     }
 }
 
-
 #[test]
 fn a_dry_retry_cannot_refill_after_its_current_and_waiting_claims_are_lost() {
     for s2 in [false, true] {
@@ -466,7 +465,6 @@ fn an_explicit_start_reactivates_after_reconciling_an_ambiguous_saved_set() {
     }
 }
 
-
 #[test]
 fn an_all_ambiguous_queue_is_released_even_when_the_triggering_event_is_stale() {
     for s2 in [false, true] {
@@ -548,8 +546,15 @@ fn renderer_recovery_cannot_reuse_claims_from_a_discarded_stale_observation() {
             &stale,
         )
         .unwrap();
-        assert_eq!(feed.snapshot(), before, "a stale event cannot move the cursor");
-        assert_eq!(feed.queue_len, None, "its discarded proof invalidates the old cache");
+        assert_eq!(
+            feed.snapshot(),
+            before,
+            "a stale event cannot move the cursor"
+        );
+        assert_eq!(
+            feed.queue_len, None,
+            "its discarded proof invalidates the old cache"
+        );
 
         rig.sim.playback_error(ROOM).unwrap();
         let live = control::playback(&rig.lan, &rig.houses, &rig.coordinator).unwrap();

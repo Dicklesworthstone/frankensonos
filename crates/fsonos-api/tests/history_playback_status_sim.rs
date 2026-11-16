@@ -116,15 +116,11 @@ impl Rig {
         let mut house = HouseholdState::default();
         house.apply_topology(&get_zone_group_state(&sim.lan(), player.ip).unwrap());
         let households = vec![house];
-        let favorite = favorites::list(
-            &sim.lan(),
-            &households,
-            &PlayerId(player.uuid.clone()),
-        )
-        .unwrap()
-        .into_iter()
-        .find(|favorite| favorite.kind == FavoriteKind::Stream)
-        .unwrap();
+        let favorite = favorites::list(&sim.lan(), &households, &PlayerId(player.uuid.clone()))
+            .unwrap()
+            .into_iter()
+            .find(|favorite| favorite.kind == FavoriteKind::Stream)
+            .unwrap();
         Self {
             sim,
             households,
@@ -216,7 +212,10 @@ fn acknowledged_renderer_errors_are_not_counted_as_plays() {
                 rig.start(&surface, kind);
                 assert!(replies.reads.load(Ordering::SeqCst) > 0);
                 assert!(
-                    surface.recent_plays(&Client::Cli, None, 10).unwrap().is_empty(),
+                    surface
+                        .recent_plays(&Client::Cli, None, 10)
+                        .unwrap()
+                        .is_empty(),
                     "{generation}: {kind:?}: {status}"
                 );
                 rig.assert_one_play(since);
@@ -273,7 +272,10 @@ fn failed_reads_and_buffering_do_not_fail_or_replay_accepted_commands() {
                 rig.start(&surface, kind);
                 assert!(replies.reads.load(Ordering::SeqCst) > 0);
                 assert!(
-                    surface.recent_plays(&Client::Cli, None, 10).unwrap().is_empty(),
+                    surface
+                        .recent_plays(&Client::Cli, None, 10)
+                        .unwrap()
+                        .is_empty(),
                     "{generation}: {kind:?}: {state}: failed read {failed_read}"
                 );
                 rig.assert_one_play(since);

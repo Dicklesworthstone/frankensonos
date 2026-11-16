@@ -48,7 +48,10 @@ fn a_failed_renderer_creates_no_listening_evidence_until_status_only_recovery() 
         }),
     ] {
         reconcile(&surface, &snapshot, event);
-        assert!(plays(&surface).is_empty(), "failed playback is not a listen");
+        assert!(
+            plays(&surface).is_empty(),
+            "failed playback is not a listen"
+        );
     }
     {
         let heard = surface.heard.lock().unwrap();
@@ -102,23 +105,53 @@ fn a_renderer_error_and_retry_preserve_the_already_recorded_occurrence() {
     let surface = surface(MemStore::default());
     let player = id("RINCON_DEN");
     let mut snapshot = snapshot();
-    set(&mut snapshot, &player, "test:recovering", Some(1), "PLAYING");
+    set(
+        &mut snapshot,
+        &player,
+        "test:recovering",
+        Some(1),
+        "PLAYING",
+    );
     reconcile(&surface, &snapshot, None);
     let before = plays(&surface);
 
     let failed = status(&mut snapshot, &player, "ERROR_OCCURRED");
     reconcile(&surface, &snapshot, Some(&failed));
-    set(&mut snapshot, &player, "test:recovering", Some(1), "STOPPED");
+    set(
+        &mut snapshot,
+        &player,
+        "test:recovering",
+        Some(1),
+        "STOPPED",
+    );
     reconcile(&surface, &snapshot, None);
-    set(&mut snapshot, &player, "test:recovering", Some(1), "PLAYING");
+    set(
+        &mut snapshot,
+        &player,
+        "test:recovering",
+        Some(1),
+        "PLAYING",
+    );
     let recovered = status(&mut snapshot, &player, "OK");
     reconcile(&surface, &snapshot, Some(&recovered));
     assert_eq!(plays(&surface), before, "a retry is not an invented repeat");
 
     // A later ordinary stop still ends this play, as before.
-    set(&mut snapshot, &player, "test:recovering", Some(1), "STOPPED");
+    set(
+        &mut snapshot,
+        &player,
+        "test:recovering",
+        Some(1),
+        "STOPPED",
+    );
     reconcile(&surface, &snapshot, None);
-    set(&mut snapshot, &player, "test:recovering", Some(1), "PLAYING");
+    set(
+        &mut snapshot,
+        &player,
+        "test:recovering",
+        Some(1),
+        "PLAYING",
+    );
     reconcile(&surface, &snapshot, None);
     assert_eq!(plays(&surface).len(), 2);
 }
@@ -135,7 +168,13 @@ fn absent_and_non_error_statuses_keep_the_observed_playback_contract() {
         let surface = surface(MemStore::default());
         let player = id("RINCON_DEN");
         let mut snapshot = snapshot();
-        set(&mut snapshot, &player, "test:compatible", Some(1), "PLAYING");
+        set(
+            &mut snapshot,
+            &player,
+            "test:compatible",
+            Some(1),
+            "PLAYING",
+        );
         if let Some(wire) = wire {
             status(&mut snapshot, &player, wire);
         }
@@ -167,7 +206,11 @@ fn a_failed_new_coordinator_keeps_the_handover_until_healthy_playback() {
     let recovered = status(&mut snapshot, &new, "OK");
     reconcile(&surface, &snapshot, Some(&recovered));
     reconcile(&surface, &snapshot, None);
-    assert_eq!(plays(&surface).len(), 1, "the moved music is still one play");
+    assert_eq!(
+        plays(&surface).len(),
+        1,
+        "the moved music is still one play"
+    );
     assert!(!surface.heard.lock().unwrap().acquired.contains(&new));
 
     set(&mut snapshot, &new, "test:next", Some(3), "PLAYING");

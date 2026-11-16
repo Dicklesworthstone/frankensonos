@@ -105,7 +105,9 @@ fn favorite_failures_and_malformed_acknowledgements_never_fall_back_or_replay() 
         Err(Failure::new(ErrorCode::PolicyDenied, "denied")),
         Err(Failure::new(ErrorCode::UpnpFault, "favorite full")),
         Ok(json!({"done":"missing required native receipt"})),
-        Ok(json!({"done":"unknown operation","zone":"Den","favorite":{"id":"FV:2/7","title":"Song","kind":"track"},"operation":"overwrite","changed":true,"logged":true})),
+        Ok(
+            json!({"done":"unknown operation","zone":"Den","favorite":{"id":"FV:2/7","title":"Song","kind":"track"},"operation":"overwrite","changed":true,"logged":true}),
+        ),
     ] {
         for operation in ["save", "rename", "remove"] {
             let reply = Arc::new(Reply {
@@ -142,10 +144,7 @@ fn favorite_reads_forward_the_observed_household_and_native_id() {
             )
         };
         assert_eq!(result.unwrap().structured_content, Some(observed));
-        assert_eq!(
-            *reply.calls.lock().unwrap(),
-            [json!(["GET", path, null])]
-        );
+        assert_eq!(*reply.calls.lock().unwrap(), [json!(["GET", path, null])]);
     }
 }
 

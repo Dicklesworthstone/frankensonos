@@ -83,8 +83,8 @@ pub(super) fn positions(
     let matches = complete(&claims, queue.len()).or_else(|| partial(&claims, queue))?;
     let mut ambiguous = vec![false; works.len()];
     for (index, claim) in claims.iter().enumerate() {
-        result[claim.work][claim.movement] = matches.positions[index]
-            .and_then(|position| u32::try_from(position + 1).ok());
+        result[claim.work][claim.movement] =
+            matches.positions[index].and_then(|position| u32::try_from(position + 1).ok());
         ambiguous[claim.work] |= matches.ambiguous[index];
     }
     for (positions, ambiguous) in result.iter_mut().zip(ambiguous) {
@@ -147,7 +147,11 @@ fn partial(claims: &[Claim<'_>], queue: &[Option<String>]) -> Option<Matches> {
         return None;
     }
     let matches = |claim: &Claim<'_>, position: usize, uri: &str| {
-        claim.uri == uri && claim.occurrences.last().is_some_and(|&last| position <= last)
+        claim.uri == uri
+            && claim
+                .occurrences
+                .last()
+                .is_some_and(|&last| position <= last)
     };
     let mut forward = vec![0_u32; cells];
     for (i, claim) in claims.iter().enumerate() {
@@ -187,9 +191,7 @@ fn partial(claims: &[Claim<'_>], queue: &[Option<String>]) -> Option<Matches> {
     }
     let mut positions = vec![None; claims.len()];
     for (pair, multiple) in ranks.into_iter().zip(multiple) {
-        if !multiple
-            && let Some((claim, position)) = pair
-        {
+        if !multiple && let Some((claim, position)) = pair {
             positions[claim] = Some(position);
         }
     }

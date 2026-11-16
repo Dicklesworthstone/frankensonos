@@ -1067,16 +1067,17 @@ impl QueueFeed {
                     .and_then(|r| spotify_uri_from_renderer_uri(&r.uri))
             })
             .collect();
-        let positions = reconcile::positions(&self.played, &self.queued, &queue).unwrap_or_else(|| {
-            tracing::warn!(
-                "DJ queue ownership exceeds the bounded reconciliation proof; retiring claims"
-            );
-            self.played
-                .iter()
-                .chain(&self.queued)
-                .map(|work| vec![None; work.movements.len()])
-                .collect()
-        });
+        let positions =
+            reconcile::positions(&self.played, &self.queued, &queue).unwrap_or_else(|| {
+                tracing::warn!(
+                    "DJ queue ownership exceeds the bounded reconciliation proof; retiring claims"
+                );
+                self.played
+                    .iter()
+                    .chain(&self.queued)
+                    .map(|work| vec![None; work.movements.len()])
+                    .collect()
+            });
         let recorded = self.recorded.as_ref().and_then(|(position, uri)| {
             self.played
                 .iter()

@@ -91,7 +91,9 @@ pub fn favorite_metadata(metadata: &str) -> Result<String, ProtoError> {
     }
     let mut ranges: Vec<_> = document
         .descendants()
-        .filter(|node| node.has_tag_name(("urn:schemas-upnp-org:metadata-1-0/upnp/", "albumArtURI")))
+        .filter(|node| {
+            node.has_tag_name(("urn:schemas-upnp-org:metadata-1-0/upnp/", "albumArtURI"))
+        })
         .filter(|node| {
             !node.ancestors().skip(1).any(|parent| {
                 parent.has_tag_name(("urn:schemas-upnp-org:metadata-1-0/upnp/", "albumArtURI"))
@@ -625,7 +627,9 @@ mod tests {
         let metadata = "<DIDL-Lite xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" xmlns:r=\"urn:example\"><item id=\"track\"><upnp:albumArtURI>https://example.invalid/art?a=1&amp;b=2</upnp:albumArtURI><r:service native=\"keep\">unchanged &amp; literal</r:service><upnp:albumArtURI><upnp:albumArtURI>nested</upnp:albumArtURI></upnp:albumArtURI></item></DIDL-Lite>";
         let stripped = favorite_metadata(metadata).unwrap();
         assert!(!stripped.contains("albumArtURI"));
-        assert!(stripped.contains("<r:service native=\"keep\">unchanged &amp; literal</r:service>"));
+        assert!(
+            stripped.contains("<r:service native=\"keep\">unchanged &amp; literal</r:service>")
+        );
         assert_eq!(favorite_metadata(&stripped).unwrap(), stripped);
         assert!(favorite_metadata("not XML").is_err());
     }

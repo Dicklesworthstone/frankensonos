@@ -135,7 +135,7 @@ fn unavailable_music_never_returns_through_filter_relaxation_or_an_unknown_clock
         let steer = crate::steer::Steer {
             mood: None,
             constraints: crate::steer::DjConstraints {
-                keywords: vec!["sonata".into()],
+                include_keywords: vec!["sonata".into()],
                 strict,
                 ..crate::steer::DjConstraints::default()
             },

@@ -186,13 +186,8 @@ mod tests {
     fn creation_preserves_the_complete_nested_document_as_one_soap_argument() {
         let transport = replies(0);
         let elements = "<DIDL-Lite><item id=\"\" parentID=\"FV:2\"><title>A &amp; B</title><resMD>&lt;DIDL-Lite&gt;&amp;amp;&lt;/DIDL-Lite&gt;</resMD></item></DIDL-Lite>";
-        let id = create_object(
-            &transport,
-            "192.0.2.10".parse().unwrap(),
-            "FV:2",
-            elements,
-        )
-        .unwrap();
+        let id =
+            create_object(&transport, "192.0.2.10".parse().unwrap(), "FV:2", elements).unwrap();
         assert_eq!(id, "FV:2/7");
         let calls = transport.calls.borrow();
         assert_eq!(calls.len(), 1);

@@ -145,8 +145,11 @@ fn favorite_save_rename_and_remove_are_household_local_and_leave_playback_runnin
             .recent_actions(&Client::Cli, &ActionFilter::default())
             .unwrap();
         assert_eq!(actions.len(), 4);
-        assert!(actions.iter().all(|row| row.action.client == "mcp-stdio"
-            && row.action.before_state.is_none()));
+        assert!(
+            actions
+                .iter()
+                .all(|row| row.action.client == "mcp-stdio" && row.action.before_state.is_none())
+        );
     }
 }
 
@@ -302,7 +305,9 @@ fn house_config_denial_and_current_source_read_permissions_precede_native_io() {
         Policy::from_toml("[clients.\"mcp-stdio\"]\nallow = ['list_favorites']").unwrap(),
     );
     assert_eq!(
-        s.current_favorite(&Client::McpStdio, "Den").unwrap_err().code,
+        s.current_favorite(&Client::McpStdio, "Den")
+            .unwrap_err()
+            .code,
         ErrorCode::PolicyDenied
     );
 }

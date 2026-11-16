@@ -145,7 +145,13 @@ impl Observation {
         let first = soap::get_position_info(t, host)?;
         let transport = soap::get_transport_info(t, host)?;
         if transport.status == "ERROR_OCCURRED"
-            || !reached(&self.position, &first, target, transport.state, sent.elapsed())
+            || !reached(
+                &self.position,
+                &first,
+                target,
+                transport.state,
+                sent.elapsed(),
+            )
         {
             return Ok(false);
         }
@@ -165,7 +171,13 @@ impl Observation {
         }
         let last = soap::get_position_info(t, host)?;
         Ok(self.observed.elapsed() <= MAX_OBSERVATION_AGE
-            && reached(&self.position, &last, target, transport.state, sent.elapsed()))
+            && reached(
+                &self.position,
+                &last,
+                target,
+                transport.state,
+                sent.elapsed(),
+            ))
     }
 }
 

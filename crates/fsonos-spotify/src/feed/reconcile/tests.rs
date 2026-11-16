@@ -69,11 +69,7 @@ fn a_missing_or_retired_movement_does_not_retire_unique_neighbors() {
         Some(vec![vec![Some(1), None, Some(4), None]]),
     );
     assert_eq!(
-        positions(
-            &[],
-            &[work(&["a", "b", "c"], 1)],
-            &queue(&["a", "c"]),
-        ),
+        positions(&[], &[work(&["a", "b", "c"], 1)], &queue(&["a", "c"]),),
         Some(vec![vec![Some(1), None, Some(2)]]),
     );
 }
@@ -100,11 +96,7 @@ fn sequences(length: usize) -> Vec<Vec<&'static str>> {
 // Independently enumerate every ordered partial alignment, including omitted
 // claims, then intersect all alignments with the largest number of matches.
 // This catches optional claims that forward/reverse greedy passes both place.
-fn oracle(
-    played: &[QueuedWork],
-    queued: &[QueuedWork],
-    actual: &[&str],
-) -> Vec<Vec<Option<u32>>> {
+fn oracle(played: &[QueuedWork], queued: &[QueuedWork], actual: &[&str]) -> Vec<Vec<Option<u32>>> {
     let works: Vec<_> = played.iter().chain(queued).collect();
     let claims: Vec<_> = works
         .iter()

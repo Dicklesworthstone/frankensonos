@@ -232,6 +232,7 @@ fn two_rooms_djs_never_queue_the_same_work() {
     );
     for room in ["Kitchen", "Living%20Room"] {
         let status = http(&api, "GET", &format!("/zones/{room}/dj"), &[], "")
+            .ok()
             .and_then(|(_, _, body)| serde_json::from_str::<Value>(&body).ok())
             .unwrap_or(Value::Null);
         s.check(
@@ -317,6 +318,7 @@ fn two_rooms_djs_never_queue_the_same_work() {
     );
     for room in ["Kitchen", "Living%20Room"] {
         let status = http(&api, "GET", &format!("/zones/{room}/dj"), &[], "")
+            .ok()
             .and_then(|(_, _, body)| serde_json::from_str::<Value>(&body).ok())
             .unwrap_or(Value::Null);
         s.check(

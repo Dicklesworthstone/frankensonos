@@ -5,8 +5,8 @@
 use fsonos_api::ErrorCode;
 use fsonos_api::surface::eq::EqRequest;
 use fsonos_api::surface::{Surface, Survey};
-use fsonos_core::clock::SystemClock;
 use fsonos_core::actions::BeforeState;
+use fsonos_core::clock::SystemClock;
 use fsonos_core::control::{self, Tone, ToneChange};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{ActionFilter, MemStore};

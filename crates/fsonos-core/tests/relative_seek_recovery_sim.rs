@@ -190,13 +190,8 @@ fn absolute_seek_cannot_be_confirmed_by_a_different_occurrence_source_or_queue()
                 mode,
                 writes: Cell::new(0),
             };
-            let error = control::seek(
-                &t,
-                &houses,
-                &target.coordinator.id,
-                control::Seek::At(100),
-            )
-            .unwrap_err();
+            let error = control::seek(&t, &houses, &target.coordinator.id, control::Seek::At(100))
+                .unwrap_err();
             assert!(matches!(
                 error,
                 fsonos_core::CoreError::Proto(ProtoError::Network { .. })
@@ -261,16 +256,14 @@ fn absolute_seek_remains_available_without_optional_observation_and_preserves_re
                 writes: Cell::new(0),
                 reads_after_write: Cell::new(0),
             };
-            let result = control::seek(
-                &t,
-                &houses,
-                &target.coordinator.id,
-                control::Seek::At(100),
-            );
+            let result = control::seek(&t, &houses, &target.coordinator.id, control::Seek::At(100));
             if refused {
                 assert!(matches!(
                     result,
-                    Err(fsonos_core::CoreError::Proto(ProtoError::SoapFault { code: 711, .. }))
+                    Err(fsonos_core::CoreError::Proto(ProtoError::SoapFault {
+                        code: 711,
+                        ..
+                    }))
                 ));
             } else {
                 assert_eq!(result.unwrap(), 100);

@@ -159,7 +159,28 @@ test('the served asset order installs heartbeat delivery and recovery before pag
   assert.match(rust,/const SLEEP: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-sleep\.js"\);/);
   assert.match(rust,/const VOLUME: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-volume\.js"\);/);
   assert.match(rust,/const SCENES: &str = include_str!\("\.\.\/\.\.\/remote\/dashboard-scenes\.js"\);/);
-  assert.ok(rust.includes('{WORKSPACE}\\n{PLAY_MODE}\\n{GROUPS}\\n{TIMERS}\\n{SLEEP}\\n{VOLUME}\\n{SCENES}\\n{SCHEDULES}\\n{ROUTINES}\\n{ANNOUNCEMENTS}\\n{ANNOUNCEMENTS_PANEL}\\n{STEERING}\\n{DIRECTION}\\n{DJ_PREFERENCES}\\n{PREFERENCES}\\n{DJ_SESSION}\\n{REHEARSAL}\\n{ROOM_SETS}\\n{ROOM_CONFIGURATION}\\n{ROOM_CONFIGURATION_PANEL}\\n{SOURCE_TARGETS}\\n{SOURCE_PLAYER}\\n{DJ_TARGETS}\\n{DJ_TARGETS_PANEL}\\n{SOURCE}\\n{PLAYLIST_SAVE}\\n{PLAYLIST_SAVE_PANEL}\\n{SPOTIFY_CONNECT}\\n{LIBRARY_SYNC}\\n{MUSIC}\\n{SCRIPT}'));
+  const bundle=rust.match(/"(\{EVENTS\}[^"\n]+\{SCRIPT\})"/);
+  assert.ok(bundle,'the page must serve its complete script bundle');
+  const assets=Array.from(bundle[1].matchAll(/\{([A-Z_]+)\}/g),match=>match[1]);
+  // Check dependency order without rejecting unrelated modules inserted in
+  // between (for example the favorite-management panels).
+  for(const ordered of [
+    ['EVENTS','CORE','SEEK','LIVE','SCRIPT'],
+    ['WORKSPACE','PLAY_MODE','GROUPS','TIMERS','SLEEP','VOLUME','SCENES','SCRIPT'],
+    ['SCHEDULES','ROUTINES','SCRIPT'],
+    ['ANNOUNCEMENTS','ANNOUNCEMENTS_PANEL','SCRIPT'],
+    ['STEERING','DIRECTION','DJ_PREFERENCES','PREFERENCES','DJ_SESSION','REHEARSAL','SCRIPT'],
+    ['ROOM_SETS','ROOM_CONFIGURATION','ROOM_CONFIGURATION_PANEL','SOURCE_TARGETS','SOURCE_PLAYER','SCRIPT'],
+    ['DJ_TARGETS','DJ_TARGETS_PANEL','SOURCE','PLAYLIST_SAVE','PLAYLIST_SAVE_PANEL','SCRIPT'],
+    ['SPOTIFY_CONNECT','LIBRARY_SYNC','MUSIC','SCRIPT'],
+  ]){
+    let previous=-1;
+    for(const name of ordered){
+      const index=assets.indexOf(name);
+      assert.ok(index>previous,`${name} must load after its dependencies and before page startup`);
+      previous=index;
+    }
+  }
   assert.match(script,/live\.suspend\(\); request\.cancelReads\(\);/);
   assert.match(script,/live\.resume\(\)/);
   assert.doesNotMatch(script,/schedule\(changedDuringRead \? 500 : wait\)/);

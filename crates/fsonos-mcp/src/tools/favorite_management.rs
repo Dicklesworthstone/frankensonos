@@ -24,8 +24,7 @@ impl Backend {
     pub fn inspect_favorite(&self, req: &InspectFavoriteRequest) -> McpResult<FinalCallToolResult> {
         respond(|| {
             let path = req.path()?;
-            let observed =
-                self.read(&path, || self.surface.inspect_favorite(&self.client, req))?;
+            let observed = self.read(&path, || self.surface.inspect_favorite(&self.client, req))?;
             Ok((observed.text(), observed))
         })
     }
