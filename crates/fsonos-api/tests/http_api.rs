@@ -34,7 +34,7 @@ const GROUPED_HOUSE: &str = r#"<ZoneGroups><ZoneGroup Coordinator="RINCON_LIV" I
   <ZoneGroupMember UUID="RINCON_LIV" ZoneName="Living Room" SWGen="2"
     Location="http://192.0.2.10:1400/xml/device_description.xml"/>
   <ZoneGroupMember UUID="RINCON_KIT" ZoneName="Kitchen" SWGen="2"
-    Location="http://192.0.2.10:1400/xml/device_description.xml"/>
+    Location="http://192.0.2.11:1400/xml/device_description.xml"/>
 </ZoneGroup></ZoneGroups>"#;
 
 /// Answers topology with [`house`]'s layout and other actions with success
@@ -91,7 +91,13 @@ fn house() -> Vec<HouseholdState> {
     let player = |pid: &str, room: &str| Player {
         id: id(pid),
         room_name: room.into(),
-        ip: "192.0.2.10".parse().unwrap(),
+        ip: if pid == "RINCON_LIV" {
+            "192.0.2.10"
+        } else {
+            "192.0.2.11"
+        }
+        .parse()
+        .unwrap(),
         model: String::new(),
         generation: Generation::S2,
     };

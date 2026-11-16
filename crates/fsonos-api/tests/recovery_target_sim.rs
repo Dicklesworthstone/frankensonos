@@ -2,18 +2,22 @@
 //! joins an unrelated group. Exercise both generations over real loopback
 //! SOAP, including the caps and history of the recovered playback audience.
 
-use fsonos_api::plan::{plan_play, plan_volume};
+use fsonos_api::plan::{TransportAction, plan_play, plan_transport, plan_volume};
 use fsonos_api::surface::{Surface, Survey};
-use fsonos_api::{ErrorCode, NoteCode, PlayRequest, VolumeRequest};
+use fsonos_api::{ErrorCode, NoteCode, PlayRequest, VolumeRequest, ZoneRequest};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::MemStore;
 use fsonos_core::{HouseholdState, control, resolve_room};
-use fsonos_proto::control::{get_group_volume, get_volume, set_volume};
+use fsonos_proto::control::{
+    get_group_volume, get_media_info, get_transport_info, get_volume, set_av_transport_uri,
+    set_volume,
+};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
-use std::net::IpAddr;
+use fsonos_types::TransportState;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 const STREAM: &str = "x-rincon-mp3radio://stream.example.invalid/recovered.mp3";
 
@@ -234,7 +238,7 @@ fn assert_recovered_play(sim: &SimHandle, surface: &Surface, mark: usize) {
     );
     assert!(
         !calls.iter().any(|entry| {
-            entry.room == "Den"
+            matches!(entry.room.as_str(), "Kitchen" | "Den")
                 && matches!(
                     entry.action.as_str(),
                     "SetVolume" | "SetAVTransportURI" | "Play"
@@ -263,9 +267,8 @@ fn coordinator_recovery_caps_new_members_and_records_the_actual_playing_group() 
         let surface = surface(&sim);
         prepare(&sim, &surface);
         loud_new_audience(&sim);
-        // SetAVTransportURI can itself ungroup a member. This scenario is
-        // specifically the initial 800 recovery path, not an accepted write.
-        sim.upnp_fault("Kitchen", "SetAVTransportURI", 800).unwrap();
+        // The old coordinator still answers SOAP. The local preflight must
+        // refuse it before SetAVTransportURI could pull it out of Den's group.
         let mark = sim.soap_log().len();
         let outcome = surface
             .control(&Client::McpStdio, "play", |h| plan_play(h, &play()))
@@ -273,6 +276,7 @@ fn coordinator_recovery_caps_new_members_and_records_the_actual_playing_group() 
         assert!(outcome.notes.iter().any(|note| {
             note.code == NoteCode::VolumeClamped && note.detail.contains("Bedroom")
         }));
+        assert!(outcome.notes.iter().any(|note| note.code == NoteCode::Healed));
         assert_recovered_play(&sim, &surface, mark);
     }
 }
@@ -328,7 +332,6 @@ fn an_unreadable_new_member_prevents_recovered_playback() {
     );
     prepare(&sim, &surface);
     loud_new_audience(&sim);
-    sim.upnp_fault("Kitchen", "SetAVTransportURI", 800).unwrap();
     let mark = sim.soap_log().len();
     let failure = surface
         .control(&Client::McpStdio, "play", |h| plan_play(h, &play()))
@@ -353,4 +356,78 @@ fn an_unreadable_new_member_prevents_recovered_playback() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn playback_recovers_from_an_address_reassigned_to_an_unrelated_speaker() {
+    for s2 in [false, true] {
+        for resume in [false, true] {
+            let mut sim = house(s2);
+            let surface = surface(&sim);
+            let lan = sim.lan();
+            let kitchen = sim.player("Kitchen").unwrap().ip;
+            let den_source = "x-rincon-mp3radio://stream.example.invalid/den.mp3";
+            set_av_transport_uri(&lan, kitchen, STREAM, "").unwrap();
+            set_av_transport_uri(&lan, sim.player("Den").unwrap().ip, den_source, "")
+                .unwrap();
+            surface.households().unwrap();
+            let new_address = sim.change_address("Kitchen").unwrap();
+            let IpAddr::V4(reused) = kitchen else {
+                panic!("the simulator uses IPv4");
+            };
+            sim.move_to("Den", reused, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                .unwrap();
+            let mark = sim.soap_log().len();
+            let outcome = surface
+                .control(&Client::Cli, if resume { "resume" } else { "play" }, |h| {
+                    if resume {
+                        plan_transport(
+                            h,
+                            &ZoneRequest {
+                                zone: "Kitchen".into(),
+                            },
+                            TransportAction::Resume,
+                        )
+                    } else {
+                        plan_play(
+                            h,
+                            &PlayRequest {
+                                zone: "Kitchen".into(),
+                                source_uri: STREAM.into(),
+                                title: None,
+                            },
+                        )
+                    }
+                })
+                .unwrap();
+            assert!(outcome.notes.iter().any(|note| note.code == NoteCode::Healed));
+            let log = sim.soap_log();
+            let writes: Vec<_> = log[mark..]
+                .iter()
+                .filter(|entry| {
+                    matches!(entry.action.as_str(), "SetAVTransportURI" | "Play")
+                })
+                .map(|entry| (entry.room.as_str(), entry.action.as_str()))
+                .collect();
+            if resume {
+                assert_eq!(writes, [("Kitchen", "Play")], "{log:?}");
+            } else {
+                assert_eq!(
+                    writes,
+                    [("Kitchen", "SetAVTransportURI"), ("Kitchen", "Play")],
+                    "{log:?}"
+                );
+            }
+            assert_eq!(get_media_info(&lan, new_address).unwrap().uri, STREAM);
+            assert_eq!(
+                get_transport_info(&lan, new_address).unwrap().state,
+                TransportState::Playing
+            );
+            assert_eq!(get_media_info(&lan, kitchen).unwrap().uri, den_source);
+            assert_eq!(
+                get_transport_info(&lan, kitchen).unwrap().state,
+                TransportState::Stopped
+            );
+        }
+    }
 }

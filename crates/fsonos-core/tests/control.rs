@@ -68,7 +68,16 @@ impl Transport for Recorder {
             });
         }
         if action == "GetZoneGroupState" {
-            return Ok(ZGS_S1.to_string());
+            let topology = if household(ZGS_S2)
+                .players
+                .iter()
+                .any(|player| player.ip == host)
+            {
+                ZGS_S2
+            } else {
+                ZGS_S1
+            };
+            return Ok(topology.to_string());
         }
         Ok(format!(
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
@@ -104,6 +113,7 @@ fn group_commands_reach_the_coordinator_address() {
         t.actions(),
         [
             (ip("192.0.2.13"), "Pause".into()),
+            (ip("192.0.2.13"), "GetZoneGroupState".into()),
             (ip("192.0.2.13"), "Play".into()),
             (ip("192.0.2.13"), "GetPositionInfo".into()),
             (ip("192.0.2.13"), "Next".into()),
@@ -153,15 +163,16 @@ fn play_uri_sets_the_uri_then_plays() {
     )
     .unwrap();
     let sent = t.sent.borrow();
-    assert_eq!(sent.len(), 2);
-    assert_eq!(sent[0].0, ip("192.0.2.19"));
-    assert_eq!(sent[0].1, "SetAVTransportURI");
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[0].1, "GetZoneGroupState");
+    assert_eq!(sent[1].0, ip("192.0.2.19"));
+    assert_eq!(sent[1].1, "SetAVTransportURI");
     assert!(
-        sent[0]
+        sent[1]
             .2
             .contains("x-rincon-mp3radio://example.invalid/stream")
     );
-    assert_eq!(sent[1].1, "Play");
+    assert_eq!(sent[2].1, "Play");
 }
 
 #[test]
@@ -313,7 +324,16 @@ impl Transport for QueueLan {
             .borrow_mut()
             .push((host, action.clone(), body.into()));
         if action == "GetZoneGroupState" {
-            return Ok(ZGS_S1.to_string());
+            let topology = if household(ZGS_S2)
+                .players
+                .iter()
+                .any(|player| player.ip == host)
+            {
+                ZGS_S2
+            } else {
+                ZGS_S1
+            };
+            return Ok(topology.to_string());
         }
         if action == "Browse" {
             return Ok(if body.contains("<ObjectID>Q:0</ObjectID>") {
@@ -362,6 +382,7 @@ fn spotify_tracks_queue_in_order_and_play_continues_through_the_queue() {
             "Browse",
             "AddURIToQueue",
             "AddURIToQueue",
+            "GetZoneGroupState",
             "SetAVTransportURI",
             "Seek",
             "Play"
@@ -384,12 +405,12 @@ fn spotify_tracks_queue_in_order_and_play_continues_through_the_queue() {
     );
     assert!(sent[1].2.contains("SA_RINCON"), "{}", sent[1].2);
     assert!(
-        sent[3]
+        sent[4]
             .2
             .contains("x-rincon-queue:RINCON_000E58A0000201400#0")
     );
     assert!(
-        sent[4]
+        sent[5]
             .2
             .contains("<Unit>TRACK_NR</Unit><Target>5</Target>")
     );
@@ -476,6 +497,7 @@ impl Transport for DriftLan {
             .unwrap()
             .to_string();
         match name.as_str() {
+            "GetZoneGroupState" => Ok(ZGS_S1.to_string()),
             "Browse" => {
                 assert_eq!(path, "/MediaServer/ContentDirectory/Control");
                 let stale = self.browses.get() == 0;

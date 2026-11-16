@@ -709,7 +709,7 @@ mod tests {
         &lt;ZoneGroupMember UUID=&quot;RINCON_DEN&quot; \
         Location=&quot;http://192.0.2.10:1400/xml/device_description.xml&quot; ZoneName=&quot;Den&quot;/&gt;\
         &lt;ZoneGroupMember UUID=&quot;RINCON_KIT1&quot; \
-        Location=&quot;http://192.0.2.10:1400/xml/device_description.xml&quot; ZoneName=&quot;Kitchen&quot;/&gt;\
+        Location=&quot;http://192.0.2.11:1400/xml/device_description.xml&quot; ZoneName=&quot;Kitchen&quot;/&gt;\
         &lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;&lt;/ZoneGroupState&gt;";
 
     /// A one-page Browse of the queue holding `uris`, at `update_id`.
@@ -800,7 +800,7 @@ mod tests {
                 return Ok(self.browse.to_string());
             }
             let out_args = match action.as_str() {
-                "GetZoneGroupState" if self.destination => {
+                "GetZoneGroupState" => {
                     format!("<ZoneGroupState>{DEN_GROUP}</ZoneGroupState>")
                 }
                 "GetMediaInfo" if self.destination => {
@@ -839,10 +839,10 @@ mod tests {
                 action,
             };
             let out = execute(&t, &houses, &cmd).unwrap();
-            let expected = if matches!(action, TransportAction::Next | TransportAction::Previous) {
-                vec!["GetPositionInfo", soap]
-            } else {
-                vec![soap]
+            let expected = match action {
+                TransportAction::Next | TransportAction::Previous => vec!["GetPositionInfo", soap],
+                TransportAction::Resume => vec!["GetZoneGroupState", soap],
+                _ => vec![soap],
             };
             assert_eq!(t.actions(), expected);
             let coordinator = control::locate(&houses, &id("RINCON_DEN")).unwrap().ip;
@@ -952,6 +952,7 @@ mod tests {
                 "GetZoneGroupState",
                 "SetAVTransportURI",
                 "SetMute",
+                "GetZoneGroupState",
                 "SetAVTransportURI",
                 "Play"
             ]
@@ -1018,7 +1019,10 @@ mod tests {
         )
         .unwrap();
         assert!(out.changed);
-        assert_eq!(t.actions(), ["Browse", "SetAVTransportURI", "Play"]);
+        assert_eq!(
+            t.actions(),
+            ["Browse", "GetZoneGroupState", "SetAVTransportURI", "Play"]
+        );
     }
 
     #[test]

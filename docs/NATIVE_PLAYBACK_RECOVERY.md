@@ -273,28 +273,34 @@ The `fsonos-core` `queue_source::ownership` simulator cases cover S1 and S2
 with independent groups, identical queue revisions, reassigned addresses,
 malformed topology, and an address change after an accepted insertion.
 
-## Playback continuation and silent restoration retain the endpoint
+## Playback starts, continuation and silent restoration retain the endpoint
 
-Direct-source and queue starts now bind their lost-reply confirmation to the
-original coordinator at the exact control address. Resume applies the same
-check before and after its playing-state observation. Finding that coordinator
-somewhere in a household-wide topology document cannot authorize a subsequent
-Play, mode change or Seek on a different player's endpoint.
+Direct-source starts, queue starts and resume validate the requested
+coordinator at the exact control address before their first write. A stale
+address that now belongs to another room cannot pass merely because every
+speaker reports the original coordinator elsewhere in the household topology.
+An initial refusal retains the original room for the existing bounded
+coordinator or address recovery. The API reports `NOT_COORDINATOR` without
+inventing a speaker's UPnP fault.
 
-Silent source and queue loaders validate that binding before their writes.
+Lost-reply confirmation retains the same address binding before any follow-on
+Play, mode change or Seek, and across resume's playing-state observation.
+An ownership mismatch discovered after a write cannot authorize replay.
+These observations do not lock out a later address or group change.
+
+Silent source and queue loaders validate the binding before writes.
 Snapshot source restoration, queue-bookmark scenes and saved-playlist scene
-proofs also reject a different endpoint or incoherent topology. These checks
-reuse the topology reads those operations already perform. Acknowledged direct
-starts and resume retain their existing first-write fast paths; this is not a
-new universal preflight or a lock against concurrent regrouping.
+proofs also reject a different endpoint or incoherent topology.
 
-`playback_destination_sim` adds five real-socket regressions across S1 and S2,
-and the transport-state unit tests cover ownership changing at either Resume
-confirmation read. They assert that unrelated groups cannot authorize follow-on
-writes or a false success. Rust execution remains pending after the editing
-host's toolchain installation failed and the host became unavailable.
+`control_endpoint_sim` and `playback_destination_sim` exercise S1 and S2
+with stale cached addresses, healthy unrelated endpoints, matching source
+and playback states, real address reuse after accepted writes, and snapshot
+restoration. Transport-state unit tests cover changes during either resume
+confirmation read. API recovery tests retain the originally requested room,
+recheck the recovered audience, and enforce one shared retry budget.
 
 ```sh
-cargo test --locked -p fsonos-core --test playback_destination_sim
+cargo test --locked -p fsonos-core --test control_endpoint_sim --test playback_destination_sim
 cargo test --locked -p fsonos-core --lib control::transport_state
+cargo test --locked -p fsonos-api --test recovery_target_sim
 ```

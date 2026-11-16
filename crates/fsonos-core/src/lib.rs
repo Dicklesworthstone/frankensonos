@@ -74,6 +74,11 @@ use thiserror::Error;
 pub enum CoreError {
     #[error(transparent)]
     Proto(#[from] fsonos_proto::ProtoError),
+    /// A preflight observation no longer binds the requested coordinator to
+    /// its control address. No operation was sent by the refusing helper;
+    /// recovery must retain the original room and its household.
+    #[error("{0}")]
+    TargetChanged(String),
     #[error("unknown player: {0}")]
     UnknownPlayer(String),
     #[error("unknown household: {0}")]

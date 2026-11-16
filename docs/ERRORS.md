@@ -48,7 +48,7 @@ retains uncertainty when it cannot establish that a call was read-only.
 | `CROSS_HOUSEHOLD_GROUP` | 422 | 2 | no | The rooms are in different households, which can never share a group. | Group rooms within one household; S1 and S2 players can never share a group. |
 | `NOT_READY` | 503 | 4 | yes | Nothing has been discovered yet. | Discovery is still running; retry in a few seconds. |
 | `PLAYER_UNREACHABLE` | 503 | 4 | yes | A speaker did not answer. | Check the speaker is powered and on the network, then retry. |
-| `NOT_COORDINATOR` | 409 | 4 | yes | The group changed under the command; its coordinator moved. | The group changed while the command ran; retry it. |
+| `NOT_COORDINATOR` | 409 | 4 | yes | The group changed, or an initial ownership check found that the addressed endpoint no longer belongs to its intended coordinator. A local check carries no invented UPnP code. | The group changed while the command ran; retry it. |
 | `UPNP_FAULT` | 502 | 1 | no | A speaker answered with a UPnP fault (`upnp_code`) or an unreadable response. | The speaker refused the command in its current state; check it and retry. |
 | `SPOTIFY_NOT_LINKED` | 409 | 1 | no | The household's Sonos app has no linked Spotify account. | Link Spotify in that household's Sonos app once, then retry. |
 | `RENDER_PARAMS_MISSING` | 409 | 1 | no | The household's Spotify render parameters have not been learned. | Add any Spotify track to My Sonos in that household's app, then retry. |

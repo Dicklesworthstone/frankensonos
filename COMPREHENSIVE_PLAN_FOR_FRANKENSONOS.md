@@ -1656,6 +1656,15 @@ an undo boundary; a coordinator-only handover remains undoable. Coordinator
 and address recovery still share one retry budget, and partially completed
 operations are not restarted. See [`docs/COMMAND_RECOVERY.md`](docs/COMMAND_RECOVERY.md).
 
+Playback source/queue starts and resume verify that the addressed endpoint
+belongs to the retained coordinator before the first write. Silent loading and
+its prerequisite pause share the same coherent-topology check. The coordinator's
+presence elsewhere in a household is insufficient, including during lost-reply
+confirmation. A stale initial target reports `NOT_COORDINATOR` without a fabricated
+SOAP code and enters the existing one-budget, original-room recovery path. A late
+ownership mismatch cannot replay a partially completed operation. S1/S2 simulator
+regressions cover wrong-endpoint rejection and successful intended-room recovery.
+
 The daemon supervises its live inventory/event worker, DJ queue follower,
 listening-history follower and configured Spotify refresh watcher alongside
 required HTTP/MCP listeners and the scheduler. An unexpected worker return or

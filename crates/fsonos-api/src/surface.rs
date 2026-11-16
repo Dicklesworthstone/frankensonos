@@ -2300,8 +2300,56 @@ pub(crate) mod testing {
     use super::*;
     use fsonos_core::clock::SystemClock;
     use fsonos_proto::ProtoError;
-    use std::net::IpAddr;
+    use std::fmt::Write as _;
+    use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
+
+    /// Control fixtures need a separate endpoint for every physical player.
+    /// Keep the first fixture's address stable and derive the others from it.
+    pub fn households() -> Vec<HouseholdState> {
+        let mut houses = crate::zones::fixtures::households();
+        for (index, player) in houses.iter_mut().flat_map(|h| &mut h.players).enumerate() {
+            let last = u8::try_from(index + 10).expect("fixture address range");
+            player.ip = Ipv4Addr::new(192, 0, 2, last).into();
+        }
+        houses
+    }
+
+    /// Return coherent topology for the same addressed fixture the survey uses.
+    pub(super) fn topology(host: IpAddr) -> String {
+        let houses = households();
+        let house = houses
+            .iter()
+            .find(|house| house.players.iter().any(|player| player.ip == host))
+            .expect("addressed fixture household");
+        let mut document = String::from("<ZoneGroupState><ZoneGroups>");
+        for group in &house.groups {
+            write!(
+                document,
+                "<ZoneGroup Coordinator=\"{}\" ID=\"{}:1\">",
+                group.coordinator, group.coordinator
+            )
+            .unwrap();
+            for member in &group.members {
+                let player = house.player(member).expect("fixture group member");
+                let name = player
+                    .room_name
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('"', "&quot;");
+                write!(
+                    document,
+                    "<ZoneGroupMember UUID=\"{}\" ZoneName=\"{name}\" \
+                     Location=\"http://{}:1400/xml/device_description.xml\"/>",
+                    player.id, player.ip
+                )
+                .unwrap();
+            }
+            document.push_str("</ZoneGroup>");
+        }
+        document.push_str("</ZoneGroups></ZoneGroupState>");
+        fsonos_proto::soap::args_xml(&[("ZoneGroupState", &document)])
+    }
 
     /// Answers every SOAP action with success and `out_args`, recording the
     /// action names.
@@ -2313,7 +2361,7 @@ pub(crate) mod testing {
     impl Transport for Canned {
         fn soap_post(
             &self,
-            _: IpAddr,
+            host: IpAddr,
             _: &str,
             action: &str,
             _: &str,
@@ -2325,10 +2373,14 @@ pub(crate) mod testing {
                 .unwrap_or_default()
                 .to_string();
             self.sent.lock().unwrap().push(action.clone());
+            let out_args = if action == "GetZoneGroupState" {
+                topology(host)
+            } else {
+                self.out_args.to_string()
+            };
             Ok(format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
-                 <u:{action}Response xmlns:u=\"urn:x\">{}</u:{action}Response></s:Body></s:Envelope>",
-                self.out_args
+                 <u:{action}Response xmlns:u=\"urn:x\">{out_args}</u:{action}Response></s:Body></s:Envelope>"
             ))
         }
     }
@@ -2336,8 +2388,14 @@ pub(crate) mod testing {
     /// A surface over `households`; returns the SOAP action log too.
     pub fn surface(
         out_args: &'static str,
-        households: Vec<HouseholdState>,
+        mut households: Vec<HouseholdState>,
     ) -> (Surface, Arc<Mutex<Vec<String>>>) {
+        let fixtures = self::households();
+        for player in households.iter_mut().flat_map(|house| &mut house.players) {
+            if let Some(fixture) = fixtures.iter().find_map(|house| house.player(&player.id)) {
+                player.ip = fixture.ip;
+            }
+        }
         let sent = Arc::new(Mutex::new(Vec::new()));
         let canned = Canned {
             out_args,
@@ -2356,12 +2414,11 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::surface;
+    use super::testing::{households, surface};
     use super::*;
     use crate::guard::Note;
     use crate::plan::{TransportAction, plan_transport};
     use crate::request::ZoneRequest;
-    use crate::zones::fixtures::households;
 
     fn outcome(changed: bool) -> OutcomeDto {
         OutcomeDto {
@@ -2453,9 +2510,9 @@ mod tests {
             "{:?}",
             clamped[0]
         );
-        // The CLI runs uncapped: nothing is read or lowered.
+        // The CLI runs uncapped: only endpoint ownership is read.
         let (out, sent) = resume(&Client::Cli);
-        assert_eq!(sent, ["Play"]);
+        assert_eq!(sent, ["GetZoneGroupState", "Play"]);
         assert!(out.notes.is_empty(), "{:?}", out.notes);
     }
 
@@ -2495,7 +2552,7 @@ mod tests {
     impl Transport for Refusing {
         fn soap_post(
             &self,
-            _: std::net::IpAddr,
+            host: std::net::IpAddr,
             _: &str,
             action: &str,
             _: &str,
@@ -2516,9 +2573,14 @@ mod tests {
                     });
                 }
             }
+            let out_args = if action == "GetZoneGroupState" {
+                super::testing::topology(host)
+            } else {
+                String::new()
+            };
             Ok(format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
-                 <u:{action}Response xmlns:u=\"urn:x\"></u:{action}Response></s:Body></s:Envelope>"
+                 <u:{action}Response xmlns:u=\"urn:x\">{out_args}</u:{action}Response></s:Body></s:Envelope>"
             ))
         }
     }

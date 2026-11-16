@@ -2,7 +2,7 @@
 //! in that document does not make a different room's endpoint authoritative.
 
 use fsonos_core::snapshot::{self, Aspect};
-use fsonos_core::{HouseholdState, control};
+use fsonos_core::{CoreError, HouseholdState, control};
 use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
@@ -163,22 +163,21 @@ fn silent_loaders_reject_another_rooms_endpoint_before_any_write() {
 }
 
 #[test]
-fn a_matching_source_on_another_endpoint_cannot_authorize_play() {
+fn a_matching_source_on_another_endpoint_cannot_authorize_selection_or_play() {
     for generation in [1, 2] {
         let f = Fixture::new(generation);
+        soap::set_av_transport_uri(&f.sim.lan(), f.peer, NEW, "").unwrap();
+        soap::play(&f.sim.lan(), f.peer).unwrap();
         let replies = Replies::new(&f.sim, Some("SetAVTransportURI"));
         let error = control::play_uri(&replies, &f.stale(), &f.player, NEW, "").unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("injected missing destination acknowledgement")
-        );
-        assert_eq!(replies.writes(), ["SetAVTransportURI"]);
+        assert!(matches!(error, CoreError::TargetChanged(_)));
+        assert!(replies.writes().is_empty());
+        assert!(!replies.lost.get(), "the stale endpoint receives no write");
         assert_eq!(soap::get_media_info(&f.sim.lan(), f.peer).unwrap().uri, NEW);
         assert_eq!(
             soap::get_transport_info(&f.sim.lan(), f.peer).unwrap().state,
-            TransportState::Stopped,
-            "the ambiguous selection must not advance to Play on another room",
+            TransportState::Playing,
+            "the unrelated room keeps playing its original matching source",
         );
         f.requested_untouched();
     }
@@ -189,35 +188,36 @@ fn a_matching_queue_uri_on_another_endpoint_cannot_authorize_mode_or_seek() {
     for generation in [1, 2] {
         for ordered in [false, true] {
             let f = Fixture::new(generation);
+            let own_queue = format!("x-rincon-queue:{}#0", f.player.0);
+            soap::set_av_transport_uri(&f.sim.lan(), f.peer, &own_queue, "").unwrap();
             let replies = Replies::new(&f.sim, Some("SetAVTransportURI"));
-            let result = if ordered {
+            let error = if ordered {
                 control::play_queue_from_in_order(&replies, &f.stale(), &f.player, 1)
             } else {
                 control::play_queue_from(&replies, &f.stale(), &f.player, 1)
-            };
-            assert!(result.is_err());
-            assert_eq!(replies.writes(), ["SetAVTransportURI"]);
+            }
+            .unwrap_err();
+            assert!(matches!(error, CoreError::TargetChanged(_)));
+            assert!(replies.writes().is_empty());
+            assert!(!replies.lost.get(), "the stale endpoint receives no write");
+            assert_eq!(
+                soap::get_media_info(&f.sim.lan(), f.peer).unwrap().uri,
+                own_queue
+            );
             f.requested_untouched();
         }
     }
 }
 
 #[test]
-fn another_rooms_playing_state_cannot_confirm_the_requested_resume() {
+fn another_rooms_playing_state_cannot_authorize_the_requested_resume() {
     for generation in [1, 2] {
         let f = Fixture::new(generation);
         let replies = Replies::new(&f.sim, Some("Play"));
         let error = control::resume(&replies, &f.stale(), &f.player).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("injected missing destination acknowledgement")
-        );
-        assert_eq!(
-            replies.writes(),
-            ["Play"],
-            "the uncertain resume is never replayed"
-        );
+        assert!(matches!(error, CoreError::TargetChanged(_)));
+        assert!(replies.writes().is_empty(), "Play is refused before dispatch");
+        assert!(!replies.lost.get(), "the stale endpoint receives no write");
         f.requested_untouched();
     }
 }

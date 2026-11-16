@@ -131,6 +131,14 @@ listener failure on one network leaves the others running. Health and doctor
 report partial failures while the daemon retries the unavailable listener.
 See [Callback routing and recovery](docs/CALLBACK_RECOVERY.md).
 
+Before starting a source or queue, resuming, or silently loading music, the
+controller verifies that the addressed speaker is the intended group coordinator.
+An old address reassigned to another room cannot pass merely because the intended
+player still appears elsewhere in the house topology. A stale initial target can
+use the existing bounded recovery to the originally requested room; a later
+mismatch never restarts completed playback changes. See
+[Command recovery](docs/COMMAND_RECOVERY.md).
+
 ### Playback errors and DJ recovery
 
 `fsonos status ROOM`, API state, MCP and live events expose the speaker's

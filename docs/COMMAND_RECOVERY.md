@@ -58,6 +58,28 @@ and undo boundaries after membership changes. Physical-speaker acceptance is
 separate. Recovery only starts after an eligible failure; these checks do not
 make the initial request and concurrent topology changes atomic.
 
+## The addressed player must own the requested group
+
+Direct-source starts, queue starts and resume verify the requested coordinator
+at the addressed endpoint before their first playback write. Silent loads and
+their prerequisite pause use the same check. A household-wide topology listing
+the coordinator somewhere else is insufficient: the coordinator's own advertised
+address must match the endpoint, and the topology must be coherent. An address
+now belonging to another group therefore cannot receive a command intended for
+the old player, even when it already has the same source or queue track.
+
+A failed initial ownership check reports `NOT_COORDINATOR` without inventing a
+speaker SOAP fault. The surface can use its existing single recovery budget to
+refresh topology and resolve the originally requested room again. Its existing
+policy, actual-audience and progress checks still apply. A mismatch detected
+after a write is an uncertain result; it cannot authorize restarting completed
+stages. Lost-reply confirmation also requires this exact endpoint ownership.
+
+These are bounded observations, not an atomic lock on another controller or on
+address assignment. A change after the last check remains possible. Simulator
+regressions exercise stale addresses in both S1 and S2, acknowledged and lost
+replies, silent loading, and successful recovery to the intended room.
+
 ## A lost daemon reply does not authorize another write
 
 The CLI and its forwarded stdio MCP tools report `OUTCOME_UNCERTAIN` when a

@@ -86,6 +86,7 @@ fn start<T: Transport + ?Sized>(
         let detail = "cannot start an empty source URI";
         return Err(ProtoError::Malformed(detail.into()).into());
     }
+    super::require_coordinator(transport, host, coordinator)?;
     let source = Source { uri, metadata };
     for stage in [Stage::Source, Stage::Play] {
         if matches!(stage, Stage::Play) && !autoplay {

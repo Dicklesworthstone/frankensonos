@@ -556,6 +556,9 @@ impl From<CoreError> for Failure {
             CoreError::NoSpotifyFavorite => Self::new(ErrorCode::RenderParamsMissing, detail),
             CoreError::RenderParamsStale => Self::new(ErrorCode::RenderParamsStale, detail),
             CoreError::Uncertain(_) => Self::new(ErrorCode::OutcomeUncertain, detail),
+            CoreError::TargetChanged(_) => Self::new(ErrorCode::NotCoordinator, detail).with_hint(
+                "Reread the rooms, then issue the command for the intended room.",
+            ),
             CoreError::LineInUnavailable(_) => Self::new(ErrorCode::NotReady, detail).with_hint(
                 "Read line-in sources for the destination room and choose a supported input in the same household.",
             ),
@@ -679,6 +682,22 @@ mod tests {
                 assert_eq!(body["upnp_code"], code);
             }
         }
+    }
+
+    #[test]
+    fn a_local_target_refusal_does_not_invent_a_speaker_fault() {
+        let failure = Failure::from(CoreError::TargetChanged(
+            "the requested coordinator no longer leads its group at this address".into(),
+        ));
+        assert_eq!(
+            (failure.code, failure.status(), failure.retryable()),
+            (ErrorCode::NotCoordinator, 409, true)
+        );
+        assert_eq!(failure.upnp_code, None);
+        assert!(failure.hint.contains("intended room"));
+        let body = serde_json::to_value(failure.body()).unwrap();
+        assert_eq!(body["code"], "NOT_COORDINATOR");
+        assert!(body.get("upnp_code").is_none());
     }
 
     #[test]

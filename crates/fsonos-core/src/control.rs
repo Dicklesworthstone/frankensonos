@@ -76,6 +76,24 @@ fn addr(households: &[HouseholdState], id: &PlayerId) -> Result<IpAddr, CoreErro
     locate(households, id).map(|p| p.ip)
 }
 
+/// A household-wide topology is not proof that its responding endpoint owns
+/// the requested group. Check the current coordinator's physical address
+/// before a source start can change or ungroup an unrelated room.
+fn require_coordinator<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+) -> Result<(), CoreError> {
+    let topology = get_zone_group_state(transport, host)?;
+    if crate::topology::coordinator_at(&topology, host, coordinator)? {
+        Ok(())
+    } else {
+        Err(CoreError::TargetChanged(
+            "the requested coordinator no longer leads its group at this address".into(),
+        ))
+    }
+}
+
 /// Resume (or start) playback on the group `coordinator` leads. A lost
 /// acknowledgement is confirmed by read-back, not another Play.
 pub fn resume<T: Transport + ?Sized>(
@@ -83,11 +101,7 @@ pub fn resume<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(transport_state::play(
-        t,
-        addr(households, coordinator)?,
-        coordinator,
-    )?)
+    transport_state::play(t, addr(households, coordinator)?, coordinator)
 }
 
 /// Pause the group `coordinator` leads (see [`pause_at`]).
@@ -387,12 +401,7 @@ pub fn play_queue_from<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), CoreError> {
-    Ok(queue_start::play(
-        t,
-        addr(households, coordinator)?,
-        coordinator,
-        position,
-    )?)
+    queue_start::play(t, addr(households, coordinator)?, coordinator, position)
 }
 
 /// Start the queue in insertion order, with shuffle and repeat disabled.
@@ -405,12 +414,7 @@ pub fn play_queue_from_in_order<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), CoreError> {
-    Ok(queue_start::play_in_order(
-        t,
-        addr(households, coordinator)?,
-        coordinator,
-        position,
-    )?)
+    queue_start::play_in_order(t, addr(households, coordinator)?, coordinator, position)
 }
 
 /// Tracks [`enqueue_spotify`] added to a group's queue.

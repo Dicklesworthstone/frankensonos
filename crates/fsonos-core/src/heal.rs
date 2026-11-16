@@ -42,7 +42,8 @@ pub fn is_unreachable(e: &CoreError) -> bool {
     matches!(e, CoreError::Proto(ProtoError::Network { .. }))
 }
 
-/// Run `op` against `player`. If the player does not answer, survey again
+/// Run `op` against `player`. If the player does not answer or a preflight
+/// observes a stale target binding, survey again
 /// (SSDP plus `seeds`), and if it now answers at a different address,
 /// refresh only that player's household and retry `op` once. A partial
 /// survey cannot erase the other households. Otherwise the original error
@@ -60,7 +61,7 @@ where
     let first = op(households);
     let err = match first {
         Ok(r) => return Ok((r, Recovery::None)),
-        Err(e) if is_unreachable(&e) => e,
+        Err(e) if is_unreachable(&e) || matches!(&e, CoreError::TargetChanged(_)) => e,
         Err(e) => return Err(e),
     };
     let Some(index) = households.iter().position(|h| h.player(player).is_some()) else {
@@ -133,7 +134,8 @@ where
 
 /// Run a group command addressed to the coordinator of `member`'s group.
 /// UPnP fault 800 is generic (a wrong Spotify DIDL also causes it), so on
-/// 800 the household's topology is refreshed and the command retried once
+/// 800, or a local stale-target refusal before dispatch, the household's
+/// topology is refreshed and the command retried once
 /// only if the coordinator really moved; otherwise the fault stands. If the
 /// member cannot answer topology, try its household peers, never another
 /// household. Each address is read at most once; only a confirmed new
@@ -154,6 +156,7 @@ where
     let err = match op(households, &from) {
         Ok(r) => return Ok((r, Recovery::None)),
         Err(e @ CoreError::Proto(ProtoError::SoapFault { code: 800, .. })) => e,
+        Err(e @ CoreError::TargetChanged(_)) => e,
         Err(e) => return Err(e),
     };
     let Some(index) = households.iter().position(|h| h.player(member).is_some()) else {

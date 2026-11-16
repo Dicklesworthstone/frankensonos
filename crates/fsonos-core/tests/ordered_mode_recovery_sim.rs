@@ -213,12 +213,17 @@ impl Transport for Intercept<'_> {
 }
 
 #[test]
-fn ordinary_success_keeps_the_four_call_ordered_start_path() {
+fn ordinary_success_checks_ownership_before_the_four_ordered_writes() {
     for s2 in [false, true] {
         let rig = Rig::new(s2);
         let t = Intercept::new(&rig, Reply::Acknowledged, Change::None);
         rig.start(&t, 2).unwrap();
-        assert_eq!(*t.calls.borrow(), START);
+        assert_eq!(
+            *t.calls.borrow(),
+            std::iter::once("GetZoneGroupState")
+                .chain(START)
+                .collect::<Vec<_>>()
+        );
         rig.playing_second();
     }
 }

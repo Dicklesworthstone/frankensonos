@@ -223,11 +223,14 @@ fn lost_and_malformed_source_and_play_replies_complete_in_both_generations() {
 }
 
 #[test]
-fn successful_replies_keep_the_two_write_path_without_extra_reads() {
+fn successful_replies_confirm_ownership_then_keep_the_two_write_path() {
     let f = Fixture::new(2);
     let replies = Replies::new(&f.sim, Fault::None, None);
     f.start(&replies, NEW, "").unwrap();
-    assert_eq!(*replies.calls.borrow(), WRITES);
+    assert_eq!(
+        *replies.calls.borrow(),
+        ["GetZoneGroupState", "SetAVTransportURI", "Play"]
+    );
 }
 
 #[test]
@@ -249,14 +252,24 @@ fn unapplied_requests_and_definite_refusals_never_advance_or_repeat() {
                 };
                 assert!(detail.contains(cause), "{detail}");
                 if matches!(fault, Fault::Rejected) {
-                    assert_eq!(*replies.calls.borrow(), WRITES[..=index]);
+                    assert_eq!(
+                        *replies.calls.borrow(),
+                        std::iter::once("GetZoneGroupState")
+                            .chain(WRITES[..=index].iter().copied())
+                            .collect::<Vec<_>>()
+                    );
                 }
             } else if matches!(fault, Fault::Rejected) {
                 assert!(matches!(
                     error,
                     CoreError::Proto(ProtoError::SoapFault { code: 701, .. })
                 ));
-                assert_eq!(*replies.calls.borrow(), WRITES[..=index]);
+                assert_eq!(
+                    *replies.calls.borrow(),
+                    std::iter::once("GetZoneGroupState")
+                        .chain(WRITES[..=index].iter().copied())
+                        .collect::<Vec<_>>()
+                );
             } else {
                 assert!(matches!(
                     error,

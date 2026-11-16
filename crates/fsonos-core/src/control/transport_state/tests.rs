@@ -84,8 +84,11 @@ fn refused() -> ProtoError {
 }
 
 #[test]
-fn acknowledged_commands_do_not_add_reads() {
-    let t = Script::new(vec![("Play", Ok(reply("Play", "")))]);
+fn acknowledged_play_checks_ownership_once_before_writing() {
+    let t = Script::new(vec![
+        topology("synthetic-player"),
+        ("Play", Ok(reply("Play", ""))),
+    ]);
     play(&t, host(), &player()).unwrap();
     t.done();
     let t = Script::new(vec![("Pause", Ok(reply("Pause", "")))]);
@@ -166,6 +169,7 @@ fn malformed_pause_response_uses_the_same_readback_path() {
 #[test]
 fn a_lost_play_reply_checks_coordinator_before_and_after_observing_playing() {
     let t = Script::new(vec![
+        topology("synthetic-player"),
         ("Play", Err(lost())),
         topology("synthetic-player"),
         status("PLAYING"),
@@ -177,11 +181,16 @@ fn a_lost_play_reply_checks_coordinator_before_and_after_observing_playing() {
 
 #[test]
 fn changed_coordinator_and_nonplaying_states_do_not_confirm_play() {
-    let t = Script::new(vec![("Play", Err(lost())), topology("another-player")]);
+    let t = Script::new(vec![
+        topology("synthetic-player"),
+        ("Play", Err(lost())),
+        topology("another-player"),
+    ]);
     assert!(play(&t, host(), &player()).is_err());
     t.done();
     for state in ["PAUSED_PLAYBACK", "STOPPED", "UNKNOWN"] {
         let t = Script::new(vec![
+            topology("synthetic-player"),
             ("Play", Err(lost())),
             topology("synthetic-player"),
             status(state),
@@ -194,7 +203,7 @@ fn changed_coordinator_and_nonplaying_states_do_not_confirm_play() {
 #[test]
 fn a_coordinator_at_another_address_cannot_confirm_play_even_after_a_matching_read() {
     for late in [false, true] {
-        let mut steps = vec![("Play", Err(lost()))];
+        let mut steps = vec![topology("synthetic-player"), ("Play", Err(lost()))];
         if late {
             steps.extend([topology("synthetic-player"), status("PLAYING")]);
         }
@@ -204,7 +213,8 @@ fn a_coordinator_at_another_address_cannot_confirm_play_even_after_a_matching_re
         let t = Script::new(steps);
         assert!(matches!(
             play(&t, host(), &player()),
-            Err(ProtoError::Network { detail, .. }) if detail == "write reply lost"
+            Err(CoreError::Proto(ProtoError::Network { detail, .. }))
+                if detail == "write reply lost"
         ));
         t.done();
     }

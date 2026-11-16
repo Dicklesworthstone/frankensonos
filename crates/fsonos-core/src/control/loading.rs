@@ -9,22 +9,8 @@ use crate::{CoreError, HouseholdState};
 use fsonos_proto::content;
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::{SpotifyContainer, spotify_bare_didl, spotify_bare_uri};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
-use std::net::IpAddr;
-
-fn coordinator_at<T: Transport + ?Sized>(
-    t: &T,
-    host: IpAddr,
-    coordinator: &PlayerId,
-) -> Result<(), CoreError> {
-    if crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)? {
-        Ok(())
-    } else {
-        Err(ProtoError::Malformed("the source target no longer leads its group".into()).into())
-    }
-}
 
 /// Pause (or stop an unpausable stream) and confirm the group is inactive.
 /// An uncertain reply is observed, not repeated. Unknown state never permits
@@ -35,7 +21,7 @@ pub fn pause_confirmed<T: Transport + ?Sized>(
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
     let host = addr(households, coordinator)?;
-    coordinator_at(t, host, coordinator)?;
+    super::require_coordinator(t, host, coordinator)?;
     match soap::get_transport_info(t, host)?.state {
         TransportState::Paused | TransportState::Stopped => return Ok(()),
         TransportState::Playing | TransportState::Transitioning => {}
@@ -55,7 +41,10 @@ pub fn pause_confirmed<T: Transport + ?Sized>(
         return written;
     }
     let confirmed = (|| -> Result<(), CoreError> {
-        coordinator_at(t, host, coordinator)?;
+        super::require_coordinator(t, host, coordinator).map_err(|error| match error {
+            CoreError::TargetChanged(detail) => CoreError::Uncertain(detail),
+            other => other,
+        })?;
         if !matches!(
             soap::get_transport_info(t, host)?.state,
             TransportState::Paused | TransportState::Stopped
@@ -95,7 +84,6 @@ pub fn load_uri<T: Transport + ?Sized>(
         .into());
     }
     let host = addr(households, coordinator)?;
-    coordinator_at(t, host, coordinator)?;
     source_start::load(t, host, coordinator, uri, metadata)
 }
 
@@ -131,8 +119,8 @@ fn load_queue<T: Transport + ?Sized>(
         return Err(ProtoError::Malformed("queue positions start at one".into()).into());
     }
     let host = addr(households, coordinator)?;
-    coordinator_at(t, host, coordinator)?;
-    Ok(queue_start::load(t, host, coordinator, position, in_order)?)
+    super::require_coordinator(t, host, coordinator)?;
+    queue_start::load(t, host, coordinator, position, in_order)
 }
 
 /// Load a Spotify track through the household's own account, without Play.

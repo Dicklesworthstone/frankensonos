@@ -1,8 +1,9 @@
 //! Carrying a command out when the speakers changed under it, through
 //! [`fsonos_core::heal`]: at most one recovery, without replaying prior steps.
 //!
-//! A group's initial UPnP 800 refusal can recover on a confirmed new
-//! coordinator. A repeat-safe command can recover at a player's new address.
+//! An initial stale-target preflight or UPnP 800 refusal can recover on a
+//! confirmed new coordinator. A repeat-safe command can recover at a player's
+//! new address, including when another speaker now answers the old one.
 //! Neither path restarts a command after earlier speaker writes may have
 //! taken effect: a fault from a later step does not roll the earlier ones back.
 //! Coordinator recovery and address recovery share one retry budget.
@@ -71,7 +72,7 @@ pub(crate) fn execute_healing_with<T: Transport + ?Sized>(
         return result;
     };
     if !can_readdress.get()
-        || failure.code != ErrorCode::PlayerUnreachable
+        || !(failure.code == ErrorCode::PlayerUnreachable || target_changed(failure))
         || !command.repeat_safe()
     {
         return result;
@@ -186,8 +187,14 @@ fn observed_execute<T: Transport + ?Sized>(
     (result, blocked)
 }
 
-/// Retry an initial 800 on a genuinely new coordinator. A late 800 stays a
-/// command failure, not a request to restart all of its successful stages.
+/// A local preflight refusal has no UPnP fault code. Keep this separate from
+/// an unreachable speaker: a healthy unrelated player may own the old address.
+fn target_changed(failure: &Failure) -> bool {
+    failure.code == ErrorCode::NotCoordinator && failure.upnp_code.is_none()
+}
+
+/// Retry an initial coordinator refusal on a confirmed new coordinator.
+/// A refusal after a prior write never restarts its successful stages.
 fn on_new_coordinator<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -240,12 +247,16 @@ fn on_new_coordinator<T: Transport + ?Sized>(
             return Ok(result);
         }
         match result {
-            Err(f) if f.upnp_code == Some(800) => {
+            Err(f) if f.upnp_code == Some(800) || target_changed(&f) => {
                 tried.set(tried.get() + 1);
-                let e = CoreError::Proto(ProtoError::SoapFault {
-                    code: 800,
-                    reason: f.detail.clone(),
-                });
+                let e = if target_changed(&f) {
+                    CoreError::TargetChanged(f.detail.clone())
+                } else {
+                    CoreError::Proto(ProtoError::SoapFault {
+                        code: 800,
+                        reason: f.detail.clone(),
+                    })
+                };
                 *refused.borrow_mut() = Some(f);
                 Err(e)
             }

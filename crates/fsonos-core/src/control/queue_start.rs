@@ -1,12 +1,13 @@
 //! Finish an explicit queue start when a stage's reply, not its effect, was
 //! lost. Source selection, ordered mode, track selection and Play are sent once.
-//! Ordinary starts keep the three-call path; ordered starts set NORMAL after
+//! Starts confirm endpoint ownership before writing; ordered starts set NORMAL after
 //! selecting the queue and before seeking or playing. Ambiguous failures
 //! permit read-back only; a confirmed stage advances to the next one rather
 //! than resetting the source or seeking again. Definite SOAP refusals retain
 //! their original meaning (including render-parameter recovery upstream).
 
 use super::source_start::wait_for_playing;
+use crate::CoreError;
 use fsonos_proto::content::{BrowseSnapshot, QUEUE, browse_range_snapshot};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
@@ -39,7 +40,7 @@ pub(super) fn play<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
     position: u32,
-) -> Result<(), ProtoError> {
+) -> Result<(), CoreError> {
     start(transport, host, coordinator, position, false, true)
 }
 
@@ -48,7 +49,7 @@ pub(super) fn play_in_order<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
     position: u32,
-) -> Result<(), ProtoError> {
+) -> Result<(), CoreError> {
     start(transport, host, coordinator, position, true, true)
 }
 
@@ -60,24 +61,20 @@ pub(super) fn load<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
     in_order: bool,
-) -> Result<(), ProtoError> {
+) -> Result<(), CoreError> {
     let offset = position
         .checked_sub(1)
         .ok_or_else(|| ProtoError::Malformed("queue positions start at one".into()))?;
     let before = browse_range_snapshot(transport, host, QUEUE, offset, 1)?;
     let [item] = before.objects.as_slice() else {
-        return Err(ProtoError::Malformed(
-            "the requested queue slot is absent".into(),
-        ));
+        return Err(ProtoError::Malformed("the requested queue slot is absent".into()).into());
     };
     if item
         .res
         .as_ref()
         .is_none_or(|res| res.uri.trim().is_empty() || res.uri == "NOT_IMPLEMENTED")
     {
-        return Err(ProtoError::Malformed(
-            "the queue slot has no identity".into(),
-        ));
+        return Err(ProtoError::Malformed("the queue slot has no identity".into()).into());
     }
     start(transport, host, coordinator, position, in_order, false)?;
     if !confirmed(transport, host, coordinator, position, Stage::Track)?
@@ -89,7 +86,8 @@ pub(super) fn load<T: Transport + ?Sized>(
     {
         return Err(ProtoError::Malformed(
             "the requested queue slot was not confirmed loaded without playback".into(),
-        ));
+        )
+        .into());
     }
     Ok(())
 }
@@ -101,10 +99,11 @@ fn start<T: Transport + ?Sized>(
     position: u32,
     in_order: bool,
     autoplay: bool,
-) -> Result<(), ProtoError> {
+) -> Result<(), CoreError> {
     if position == 0 {
-        return Err(ProtoError::Malformed("queue positions start at one".into()));
+        return Err(ProtoError::Malformed("queue positions start at one".into()).into());
     }
+    super::require_coordinator(transport, host, coordinator)?;
     for stage in [Stage::Source, Stage::Mode, Stage::Track, Stage::Play] {
         if (stage == Stage::Mode && !in_order) || (stage == Stage::Play && !autoplay) {
             continue;
@@ -133,7 +132,7 @@ fn start<T: Transport + ?Sized>(
                 // Preserve the original failure and never execute a later
                 // stage without proof. A read failure is not permission to
                 // retry a mutation or roll playback back.
-                return Err(error);
+                return Err(error.into());
             }
         }
         if !autoplay {
@@ -152,7 +151,8 @@ fn start<T: Transport + ?Sized>(
                 return Err(ProtoError::Malformed(format!(
                     "{} did not establish the requested inactive queue state",
                     stage.name()
-                )));
+                ))
+                .into());
             }
         }
     }

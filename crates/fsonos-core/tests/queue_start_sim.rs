@@ -165,11 +165,14 @@ fn lost_and_malformed_replies_at_every_stage_complete_on_both_generations() {
 }
 
 #[test]
-fn successful_replies_keep_the_three_command_path_without_extra_reads() {
+fn successful_replies_confirm_ownership_then_keep_the_three_write_path() {
     let (sim, houses, id, _) = fixture(2);
     let replies = Replies::new(&sim, Fault::None, None);
     control::play_queue_from(&replies, &houses, &id, 2).unwrap();
-    assert_eq!(*replies.calls.borrow(), WRITES);
+    assert_eq!(
+        *replies.calls.borrow(),
+        ["GetZoneGroupState", "SetAVTransportURI", "Seek", "Play"]
+    );
 }
 
 #[test]
@@ -202,8 +205,8 @@ fn definite_refusals_keep_their_error_without_recovery_or_retry() {
     ));
     assert_eq!(
         *replies.calls.borrow(),
-        WRITES,
-        "no recovery reads for a refusal"
+        ["GetZoneGroupState", "SetAVTransportURI", "Seek", "Play"],
+        "the ownership preflight is not followed by refusal recovery reads"
     );
 }
 

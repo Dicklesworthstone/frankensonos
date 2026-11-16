@@ -92,11 +92,16 @@ fn a_room_in_a_group_plays_through_its_coordinator() {
         TransportState::Stopped
     );
 
-    // Sending the transport verb to the member instead is refused, which is
-    // why commands are coordinator-addressed.
-    assert_eq!(
-        fault(control::resume(&lan, &houses, &target.player.id)),
-        800
+    // A member is refused locally before a Play can reach the wrong room.
+    let before = sim.soap_log().len();
+    assert!(matches!(
+        control::resume(&lan, &houses, &target.player.id),
+        Err(CoreError::TargetChanged(_))
+    ));
+    assert!(
+        sim.soap_log()[before..]
+            .iter()
+            .all(|entry| entry.action == "GetZoneGroupState")
     );
 }
 

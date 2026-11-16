@@ -348,3 +348,56 @@ fn verified_lost_acknowledgements_still_complete_without_replaying_either_stage(
         assert!(calls.iter().any(|a| a == "GetMediaInfo"));
     }
 }
+
+/// The first attempt is refused locally; the new coordinator's preflight
+/// then fails without a write. This still consumes the shared recovery budget.
+struct UnreadableNewCoordinator {
+    lan: SimLan,
+    new: IpAddr,
+    preflights: Cell<usize>,
+}
+
+impl Transport for UnreadableNewCoordinator {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        header: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if host == self.new && header.ends_with("#GetZoneGroupState\"") {
+            self.preflights.set(self.preflights.get() + 1);
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "new coordinator's topology is unreadable".into(),
+            });
+        }
+        self.lan.soap_post(host, path, header, body)
+    }
+}
+
+#[test]
+fn a_local_refusal_and_failed_new_preflight_cannot_start_address_recovery() {
+    let (sim, houses, kitchen) = grouped();
+    sim.reelect_coordinator("Kitchen").unwrap();
+    let transport = UnreadableNewCoordinator {
+        lan: sim.lan(),
+        new: sim.player("Office").unwrap().ip,
+        preflights: Cell::new(0),
+    };
+    let mark = sim.soap_log().len();
+    let failure = execute_healing(&transport, &houses, &guard(), &play(&kitchen), || {
+        panic!("the new coordinator's attempt consumed the shared recovery budget")
+    })
+    .unwrap_err();
+    assert_eq!(failure.code, ErrorCode::PlayerUnreachable);
+    assert_eq!(failure.upnp_code, None);
+    assert_eq!(transport.preflights.get(), 1);
+    let log = sim.soap_log();
+    assert!(
+        !log[mark..]
+            .iter()
+            .any(|entry| matches!(entry.action.as_str(), "SetAVTransportURI" | "Play")),
+        "neither unconfirmed coordinator may receive a playback write: {log:?}"
+    );
+}

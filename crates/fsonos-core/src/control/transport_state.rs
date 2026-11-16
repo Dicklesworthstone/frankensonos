@@ -2,6 +2,7 @@
 //! write. Definite refusals keep their existing meaning and recovery path.
 
 use super::source_start;
+use crate::CoreError;
 use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
@@ -14,12 +15,13 @@ pub(super) fn play<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
     coordinator: &PlayerId,
-) -> Result<(), ProtoError> {
-    complete("Play", soap::play(t, host), || {
+) -> Result<(), CoreError> {
+    super::require_coordinator(t, host, coordinator)?;
+    Ok(complete("Play", soap::play(t, host), || {
         source_start::wait_for_playing(t, host, || {
             crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)
         })
-    })
+    })?)
 }
 
 pub(super) fn stop<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<(), ProtoError> {
