@@ -25,8 +25,13 @@
 //!   same artist, composer or album is strongly de-weighted for a few works
 //!   and recovers quadratically; same-genre and same-period runs are damped
 //!   and genres or periods missing from the last few works are favored;
-//!   prolific artists and composers are damped (weight ∝ 1/√works) so a
-//!   shelf of Bach cantatas doesn't drown out three Fauré pieces.
+//!   prolific artists and composers are damped (weight ∝ 1/√distinct
+//!   permitted works) so a shelf of Bach cantatas doesn't drown out three
+//!   Fauré pieces. Each distinct work draws with the mean score of its
+//!   strongest admitted manual preference tier (pinned, favored, or neutral);
+//!   its recording then draws from every eligible edition with the original
+//!   scores. Additional neutral editions cannot dilute a pin or favor, and
+//!   preferences stay soft without joining different recordings' movements.
 //! * **Energy.** A work's energy is its first movement's. Prefer works near
 //!   the time-of-day target (closely for a tempo marking, loosely for a
 //!   song's genre, which only guesses; where nothing says, as well as the
@@ -70,6 +75,9 @@ use crate::feedback::FeedbackModel;
 use crate::prefs::{Preferences, Verdict};
 use crate::steer::{Moods, Relaxation, Steer, admit_among, admits, haystack, names};
 use crate::works::{Completeness, Work, group_works};
+
+mod balance;
+use balance::{RecordingLottery, composer_counts};
 
 /// A seedable, dependency-free pseudo-random generator (xorshift64*, seeded
 /// through splitmix64 so nearby seeds diverge immediately). Keeping randomness
@@ -273,7 +281,7 @@ pub fn energy_target_for_hour(hour: u8) -> u8 {
 /// A weight factor that moved a work's odds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Factor {
-    /// 1/√(the composer's works in the pool).
+    /// 1/√(the composer's distinct permitted works).
     ComposerBalance,
     /// The composer was heard a few works ago.
     ComposerSpacing,
@@ -304,8 +312,8 @@ pub enum Factor {
     /// The owner's other Spotify signals favor it: top tracks, their own
     /// playlists, recent plays, followed and top artists.
     Taste,
-    /// 1/√(the artist's songs in the pool): [`Self::ComposerBalance`] for a
-    /// song's lead artist.
+    /// 1/√(the artist's distinct permitted songs): [`Self::ComposerBalance`]
+    /// for a song's lead artist.
     ArtistBalance,
     /// The artist was heard a few works ago (a song's lead artist).
     ArtistSpacing,
@@ -354,7 +362,6 @@ pub struct WorkPool {
     works: Vec<Work>,
     /// Track URI → (work, movement).
     by_track: HashMap<String, (usize, usize)>,
-    composer_works: HashMap<String, usize>,
     /// Per work, the normalized text steering keywords match against.
     haystacks: Vec<String>,
     /// Whether the works span more than one genre (else genre balance is
@@ -375,11 +382,7 @@ impl WorkPool {
     #[must_use]
     pub fn from_works(works: Vec<Work>) -> Self {
         let mut by_track = HashMap::new();
-        let mut composer_works: HashMap<String, usize> = HashMap::new();
         for (w, work) in works.iter().enumerate() {
-            *composer_works
-                .entry(work.composer_key().to_owned())
-                .or_default() += 1;
             for (m, movement) in work.movements.iter().enumerate() {
                 by_track.insert(movement.track.source_uri.clone(), (w, m));
             }
@@ -400,7 +403,6 @@ impl WorkPool {
         Self {
             works,
             by_track,
-            composer_works,
             haystacks,
             mixed_genres,
             preferences: Preferences::default(),
@@ -574,23 +576,25 @@ pub fn pick_next<'p>(
     let target = energy_target(pool, ctx);
     let eligible = eligible(pool, admitted, allow_long, &recency, ctx, config);
     let aim = target.map(|energy| Aim::over(pool, &eligible.works, energy));
+    let scoring = Scoring {
+        pool,
+        recency: &recency,
+        aim,
+        config,
+        feedback: ctx.feedback,
+        composers: &eligible.composers,
+    };
     let weights: Vec<u64> = eligible
         .works
         .iter()
-        .map(|&w| weigh(pool, w, &recency, aim, config, ctx.feedback, None))
+        .map(|&w| scoring.weight(w, None))
         .collect();
-    let chosen = eligible.works[draw(&weights, rng)];
+    let lottery = RecordingLottery::new(pool, &eligible.works, &weights);
+    let (chosen, recordings) = lottery.draw(&weights, rng);
+    let chosen = eligible.works[chosen];
 
     let mut factors = Vec::new();
-    weigh(
-        pool,
-        chosen,
-        &recency,
-        aim,
-        config,
-        ctx.feedback,
-        Some(&mut factors),
-    );
+    scoring.weight(chosen, Some(&mut factors));
     let work = &pool.works[chosen];
     if eligible.rotation {
         factors.push((Factor::Rotation, 1000));
@@ -601,7 +605,7 @@ pub fn pick_next<'p>(
     if is_long(work, config) {
         factors.push((Factor::LongWork, 1000));
     }
-    let summary = summarize(
+    let mut summary = summarize(
         work,
         &recency,
         ctx,
@@ -613,6 +617,10 @@ pub fn pick_next<'p>(
         &factors,
         &relaxed,
     );
+    if recordings > 1 {
+        use std::fmt::Write as _;
+        let _ = write!(summary, "; one of {recordings} eligible recordings");
+    }
     Some(PlannedWork {
         work,
         movements: &work.movements,
@@ -787,8 +795,11 @@ impl<'p> Recency<'p> {
     }
 }
 
-struct Eligible {
+struct Eligible<'p> {
     works: Vec<usize>,
+    /// Count before recency/rotation, so ordinary play does not change an
+    /// artist's catalogue share. Unplayable or excluded music cannot dilute it.
+    composers: HashMap<&'p str, usize>,
     /// Chosen from the stalest slice because the cooldown left too few.
     rotation: bool,
 }
@@ -802,14 +813,14 @@ fn is_long(work: &Work, config: &DjConfig) -> bool {
 /// operas still plays), out of cooldown — or, when that leaves fewer than a
 /// tenth of them, the least-recently-played quarter, so a small pool rotates
 /// rather than repeats.
-fn eligible(
-    pool: &WorkPool,
+fn eligible<'p>(
+    pool: &'p WorkPool,
     admitted: Vec<usize>,
     allow_long: bool,
     recency: &Recency<'_>,
     ctx: &PickContext<'_>,
     config: &DjConfig,
-) -> Eligible {
+) -> Eligible<'p> {
     let mut allowed: Vec<usize> = admitted
         .iter()
         .copied()
@@ -830,6 +841,7 @@ fn eligible(
             allowed = kept;
         }
     }
+    let composers = composer_counts(pool, &allowed);
     let lately = |at: Option<&i64>| {
         at.is_some_and(|&at| {
             ctx.now
@@ -852,6 +864,7 @@ fn eligible(
     let mut eligible = if distinct(&fresh) >= (distinct_allowed / 10).max(1) {
         Eligible {
             works: fresh,
+            composers,
             rotation: false,
         }
     } else {
@@ -873,6 +886,7 @@ fn eligible(
         });
         Eligible {
             works: allowed,
+            composers,
             rotation: true,
         }
     };
@@ -915,99 +929,105 @@ const _: () = assert!(
     "a favor must outweigh the most feedback and account taste together"
 );
 
-/// A work's weight; with `factors`, also record every non-neutral factor.
-fn weigh(
-    pool: &WorkPool,
-    w: usize,
-    recency: &Recency<'_>,
+/// Shared inputs for one selection's recording scores.
+struct Scoring<'a, 'p> {
+    pool: &'p WorkPool,
+    recency: &'a Recency<'p>,
     aim: Option<Aim>,
-    config: &DjConfig,
-    feedback: Option<&FeedbackModel>,
-    mut factors: Option<&mut Vec<(Factor, i32)>>,
-) -> u64 {
-    let work = &pool.works[w];
-    let mut weight = SCALE;
-    let mut apply = |factor: Factor, per_mille: u64| {
-        if per_mille != 1000 {
-            weight = weight.saturating_mul(per_mille) / 1000;
-            if let Some(factors) = factors.as_mut() {
-                factors.push((factor, i32::try_from(per_mille).unwrap_or(i32::MAX)));
+    config: &'a DjConfig,
+    feedback: Option<&'a FeedbackModel>,
+    composers: &'a HashMap<&'p str, usize>,
+}
+
+impl Scoring<'_, '_> {
+    /// A recording's score; with `factors`, also record every non-neutral factor.
+    fn weight(&self, w: usize, mut factors: Option<&mut Vec<(Factor, i32)>>) -> u64 {
+        let Self {
+            pool,
+            recency,
+            aim,
+            config,
+            feedback,
+            composers,
+        } = *self;
+        let work = &pool.works[w];
+        let mut weight = SCALE;
+        let mut apply = |factor: Factor, per_mille: u64| {
+            if per_mille != 1000 {
+                weight = weight.saturating_mul(per_mille) / 1000;
+                if let Some(factors) = factors.as_mut() {
+                    factors.push((factor, i32::try_from(per_mille).unwrap_or(i32::MAX)));
+                }
             }
-        }
-    };
-    let composer = work.composer_key();
-    // 1/√(composer's works): a composer's share grows with √works.
-    let works = as_u64(
-        pool.composer_works
-            .get(composer)
-            .copied()
-            .unwrap_or(1)
-            .max(1),
-    );
-    // A song's composer key is its lead artist: name the factors so.
-    let (balance, spacing) = if work.is_classical() {
-        (Factor::ComposerBalance, Factor::ComposerSpacing)
-    } else {
-        (Factor::ArtistBalance, Factor::ArtistSpacing)
-    };
-    apply(balance, 1_000_000 / (works * 1_000_000).isqrt());
-    apply(
-        spacing,
-        spacing_pm(
-            recency.composer_ago.get(composer).copied(),
-            config.composer_spacing,
-        ),
-    );
-    apply(
-        Factor::AlbumSpacing,
-        spacing_pm(
-            recency.album_ago.get(work.album_key.as_str()).copied(),
-            config.album_spacing,
-        ),
-    );
-    if let Some(&ago) = recency.work_ago.get(work.work_key.as_str()) {
-        apply(
-            Factor::Recency,
-            staleness_pm(ago, config.work_cooldown_plays),
-        );
-    }
-    let (period_factor, period) = period_pm(work.period, recency);
-    apply(period_factor, period);
-    if pool.mixed_genres {
-        let (genre_factor, genre) = genre_pm(work.genre(), recency);
-        apply(genre_factor, genre);
-    }
-    if let Some(aim) = aim {
-        apply(
-            Factor::EnergyFit,
-            known_fit(work, aim.energy).unwrap_or(aim.unknown_pm),
-        );
-    }
-    if let Some(last) = recency.last_energy
-        && work.energy_basis() != EnergyBasis::Unknown
-    {
-        apply(Factor::EnergyJump, energy_jump_pm(work.energy(), last));
-    }
-    let (liked, taste) = account_pm(work, config);
-    apply(Factor::Liked, liked);
-    apply(Factor::Taste, taste);
-    if work.completeness != Completeness::Complete {
-        apply(Factor::Incomplete, config.incomplete_pm);
-    }
-    // Preferences outrank feedback: a favored or pinned work's feedback can
-    // lift it further but never below neutral.
-    let verdict = pool.verdicts[w];
-    apply(Factor::Preference, verdict.weight_pm());
-    if let Some(model) = feedback {
-        let pm = model.multiplier_pm(work);
-        let pm = if verdict.shields_feedback() {
-            pm.max(1000)
-        } else {
-            pm
         };
-        apply(Factor::Feedback, pm);
+        let composer = work.composer_key();
+        // 1/√(distinct permitted works): recordings share one work's vote below.
+        let works = as_u64(composers.get(composer).copied().unwrap_or(1).max(1));
+        // A song's composer key is its lead artist: name the factors so.
+        let (balance, spacing) = if work.is_classical() {
+            (Factor::ComposerBalance, Factor::ComposerSpacing)
+        } else {
+            (Factor::ArtistBalance, Factor::ArtistSpacing)
+        };
+        apply(balance, 1_000_000 / (works * 1_000_000).isqrt());
+        apply(
+            spacing,
+            spacing_pm(
+                recency.composer_ago.get(composer).copied(),
+                config.composer_spacing,
+            ),
+        );
+        apply(
+            Factor::AlbumSpacing,
+            spacing_pm(
+                recency.album_ago.get(work.album_key.as_str()).copied(),
+                config.album_spacing,
+            ),
+        );
+        if let Some(&ago) = recency.work_ago.get(work.work_key.as_str()) {
+            apply(
+                Factor::Recency,
+                staleness_pm(ago, config.work_cooldown_plays),
+            );
+        }
+        let (period_factor, period) = period_pm(work.period, recency);
+        apply(period_factor, period);
+        if pool.mixed_genres {
+            let (genre_factor, genre) = genre_pm(work.genre(), recency);
+            apply(genre_factor, genre);
+        }
+        if let Some(aim) = aim {
+            apply(
+                Factor::EnergyFit,
+                known_fit(work, aim.energy).unwrap_or(aim.unknown_pm),
+            );
+        }
+        if let Some(last) = recency.last_energy
+            && work.energy_basis() != EnergyBasis::Unknown
+        {
+            apply(Factor::EnergyJump, energy_jump_pm(work.energy(), last));
+        }
+        let (liked, taste) = account_pm(work, config);
+        apply(Factor::Liked, liked);
+        apply(Factor::Taste, taste);
+        if work.completeness != Completeness::Complete {
+            apply(Factor::Incomplete, config.incomplete_pm);
+        }
+        // Preferences outrank feedback: a favored or pinned work's feedback can
+        // lift it further but never below neutral.
+        let verdict = pool.verdicts[w];
+        apply(Factor::Preference, verdict.weight_pm());
+        if let Some(model) = feedback {
+            let pm = model.multiplier_pm(work);
+            let pm = if verdict.shields_feedback() {
+                pm.max(1000)
+            } else {
+                pm
+            };
+            apply(Factor::Feedback, pm);
+        }
+        weight
     }
-    weight
 }
 
 /// The account's signals for `work`, per mille: its like boost and its
@@ -1086,22 +1106,32 @@ fn genre_pm(genre: Option<&str>, recency: &Recency<'_>) -> (Factor, u64) {
 #[derive(Clone, Copy)]
 struct Aim {
     energy: u8,
-    /// The mean fit of the candidates whose energy is known: a work nothing
-    /// says the energy of fits as well as the others do on average, neither
-    /// as if it were mid-energy nor as if it fit perfectly.
+    /// The mean fit of distinct works whose energy is known, averaging their
+    /// eligible recordings first. A work with unknown energy fits as well as
+    /// other music on average, without extra editions biasing that estimate.
     unknown_pm: u64,
 }
 
 impl Aim {
     /// Aim at `energy` among `candidates`.
     fn over(pool: &WorkPool, candidates: &[usize], energy: u8) -> Self {
-        let fits: Vec<u64> = candidates
-            .iter()
-            .filter_map(|&w| known_fit(&pool.works[w], energy))
-            .collect();
+        let mut fits: HashMap<&str, (u64, u64)> = HashMap::new();
+        for &w in candidates {
+            let work = &pool.works[w];
+            if let Some(fit) = known_fit(work, energy) {
+                let (total, count) = fits.entry(&work.work_key).or_default();
+                *total += fit;
+                *count += 1;
+            }
+        }
         let unknown_pm = match as_u64(fits.len()) {
             0 => 1000,
-            n => fits.iter().sum::<u64>() / n,
+            n => {
+                fits.values()
+                    .map(|(total, count)| total / count)
+                    .sum::<u64>()
+                    / n
+            }
         };
         Self { energy, unknown_pm }
     }
@@ -1333,6 +1363,30 @@ mod ladder_tests;
 
 #[cfg(test)]
 mod recording_tests;
+
+/// Direct factor/precedence tests score an unfiltered catalogue. Production
+/// uses the distinct counts after admission, passed through `Scoring` above.
+#[cfg(test)]
+fn weigh(
+    pool: &WorkPool,
+    w: usize,
+    recency: &Recency<'_>,
+    aim: Option<Aim>,
+    config: &DjConfig,
+    feedback: Option<&FeedbackModel>,
+    factors: Option<&mut Vec<(Factor, i32)>>,
+) -> u64 {
+    let composers = composer_counts(pool, &(0..pool.len()).collect::<Vec<_>>());
+    Scoring {
+        pool,
+        recency,
+        aim,
+        config,
+        feedback,
+        composers: &composers,
+    }
+    .weight(w, factors)
+}
 
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
@@ -1671,7 +1725,7 @@ mod tests {
     }
 
     /// sp4f.3: a song nothing says the energy of fits as well as the
-    /// other candidates do on average (not as a mid-energy song, nor as a
+    /// other distinct works do on average (not as a mid-energy song, nor as a
     /// perfect fit); a genre's guess still follows the time of day.
     #[test]
     fn an_unknown_energy_fits_as_well_as_the_others_do() {
@@ -1724,13 +1778,15 @@ mod tests {
         );
         for hour in [1, 10, 23] {
             let target = energy_target_for_hour(hour);
-            let known: Vec<u64> = pool
-                .works()
-                .iter()
-                .filter(|w| w.energy_basis() != EnergyBasis::Unknown)
-                .map(|w| rough_energy_fit_pm(w.energy(), target))
-                .collect();
-            let mean = known.iter().sum::<u64>() / as_u64(known.len());
+            // This fixture has 19 distinct known-energy songs. Harbor Lights
+            // contributes one vote: its studio (pop) and acoustic takes' mean.
+            // The rest are two pop, seven jazz, six hip-hop and three soundtrack
+            // songs; the extra edition must not overweight its work's energy.
+            let rough = |energy| rough_energy_fit_pm(energy, target);
+            let harbor_lights = (rough(60) + rough(34)) / 2;
+            let mean =
+                (harbor_lights + 2 * rough(60) + 7 * rough(44) + 6 * rough(66) + 3 * rough(45))
+                    / 19;
             assert_eq!(fit(untagged, hour), mean, "{hour}:00");
         }
         assert!(fit(hip_hop, 23) < fit(hip_hop, 10));

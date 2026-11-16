@@ -796,8 +796,16 @@ their standing preferences on every surface and in the daemon. What is on
   Alternate recordings and remasters with the same recognized work key share
   repeat avoidance, including recent or queued music in another room. A small
   shelf rotates by distinct works while retaining each permitted recording as
-  an intact selection; multiple editions cannot force an early repeat. This
-  uses the existing metadata identity, not acoustic matching.
+  an intact selection; multiple editions cannot force an early repeat.
+  Selection also gives each distinct work one weighted share, then chooses
+  among its eligible recordings using their original scores. The work share
+  averages its strongest admitted manual tier (pinned, favored, or neutral),
+  so additional neutral editions cannot dilute an explicit preference or its
+  feedback protection. Artist/composer balance counts distinct works after
+  availability, hard preferences, steering, length and feedback admission;
+  excluded catalogue entries no longer distort the playable shelf. Unknown
+  energy uses the average of distinct works rather than individual editions.
+  These rules use the existing metadata identity, not acoustic matching.
 - Steering: include and exclude artists, genres and decades on the CLI, HTTP
   and MCP (`--genre`/`--not-genre`/`--decade`, and the dj_steer args), with
   keywords, length and energy bias, and for classical music composers and
@@ -1201,7 +1209,21 @@ cannot lock Sonos against another controller between the last read and write.
 Renaming does not rewrite scene definitions: existing captured scene titles
 must be re-saved, and removing a referenced playlist causes those scene sources
 to refuse playback. Simulator coverage is separate from physical-device
-acceptance. Saved track-order editing remains outside these operations.
+acceptance.
+
+Native saved occurrences now support contiguous removal and block reordering
+through CLI `playlist-remove-tracks` / `playlist-move-tracks`, HTTP and MCP,
+and the shared phone/dashboard playlist editor. Exact native ids and current
+contents revisions bind the request to a complete bounded observation (1,000
+entries / 4 MiB). One native revision-guarded operation is confirmed against
+the complete resulting order; duplicate occurrences and block order survive.
+Positions and move insertion slots refer to the original playlist. Empty
+playlists retain their identity; no-op moves still validate freshness. The
+saved title and id, loaded queues, playback, volume and DJ ownership remain
+intact. Future scene recalls use edited contents. Lost or unconfirmed replies
+are never replayed. Browser review names the exact occurrences and destination,
+rechecks them before dispatch, and retains uncertain results in their original
+household. See [Saved Sonos playlists](docs/SONOS_PLAYLISTS.md).
 
 The phone and Listening room source editors expose these catalog edits through
 a shared **Manage saved playlist** review. Both read the exact saved contents
