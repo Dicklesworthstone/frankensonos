@@ -93,6 +93,8 @@ fn command_timeout(path: &str) -> Duration {
         || path == "/play/tracks"
         || path == "/sonos/playlists/play"
         || path == "/sonos/playlists/tracks"
+        || path == "/sonos/playlists/remove-tracks"
+        || path == "/sonos/playlists/move-tracks"
         || path.starts_with("/dj/")
         || scene_apply
     {
@@ -1201,6 +1203,10 @@ mod tests {
             "/sonos/playlists/play?trace=1",
             "/sonos/playlists/tracks",
             "/sonos/playlists/tracks?trace=1",
+            "/sonos/playlists/remove-tracks",
+            "/sonos/playlists/remove-tracks?trace=1",
+            "/sonos/playlists/move-tracks",
+            "/sonos/playlists/move-tracks?trace=1",
             "/play/tracks",
             "/play/tracks?trace=1",
             "/dj/start",

@@ -5,7 +5,8 @@ use fastapi::{JsonSchema, Request, fastapi_openapi};
 
 use super::{Ctx, Op, answer, body, query_param, whole_number};
 use crate::surface::sonos_playlists::{
-    ManagedSonosPlaylistDto, PlaySonosPlaylistRequest, RemoveSonosPlaylistRequest,
+    EditedSonosPlaylistDto, ManagedSonosPlaylistDto, MoveSonosPlaylistTracksRequest,
+    PlaySonosPlaylistRequest, RemoveSonosPlaylistRequest, RemoveSonosPlaylistTracksRequest,
     RenameSonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto,
     SonosPlaylistContentsDto, SonosPlaylistContentsRequest, SonosPlaylistDto,
     SonosPlaylistTrackDto, SonosPlaylistTrackRequest, SonosPlaylistTracksDto,
@@ -16,7 +17,7 @@ use crate::{Failure, OutcomeDto};
 const TAG: &str = "sonos-playlists";
 
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
-    vec![
+    let mut routes = vec![
         cx.route(
             &Op::get(
                 "/sonos/playlists", "list_sonos_playlists", TAG,
@@ -95,6 +96,33 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<RemoveSonosPlaylistRequest>(true)
         .response_schema::<ManagedSonosPlaylistDto>(200, "The native playlist was confirmed removed"),
+    ];
+    routes.extend(edit_routes(cx));
+    routes
+}
+
+fn edit_routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    vec![
+        cx.route(
+            &Op::post(
+                "/sonos/playlists/remove-tracks", "remove_sonos_playlist_tracks", TAG,
+                "Remove a revision-bound contiguous saved-playlist block without changing playback (house-config permission)",
+            ),
+            |s, c, req| answer(body::<RemoveSonosPlaylistTracksRequest>(req)
+                .and_then(|r| s.remove_sonos_playlist_tracks(c, &r))),
+        )
+        .request_schema::<RemoveSonosPlaylistTracksRequest>(true)
+        .response_schema::<EditedSonosPlaylistDto>(200, "The complete saved playlist was confirmed after removal"),
+        cx.route(
+            &Op::post(
+                "/sonos/playlists/move-tracks", "move_sonos_playlist_tracks", TAG,
+                "Move a revision-bound contiguous saved-playlist block before an original position without changing playback (house-config permission)",
+            ),
+            |s, c, req| answer(body::<MoveSonosPlaylistTracksRequest>(req)
+                .and_then(|r| s.move_sonos_playlist_tracks(c, &r))),
+        )
+        .request_schema::<MoveSonosPlaylistTracksRequest>(true)
+        .response_schema::<EditedSonosPlaylistDto>(200, "The complete saved playlist was confirmed in the requested order"),
     ]
 }
 

@@ -23,6 +23,76 @@ use std::time::Duration;
 const CONTENTS: &str = "/sonos/playlists/contents?zone=Room&playlist=SQ%3A7";
 const RENAME: &str = "/sonos/playlists/rename";
 const REMOVE: &str = "/sonos/playlists/remove";
+const REMOVE_TRACKS: &str = "/sonos/playlists/remove-tracks";
+const MOVE_TRACKS: &str = "/sonos/playlists/move-tracks";
+
+#[test]
+fn http_saved_occurrence_edits_confirm_new_revisions_and_reject_stale_or_unbound_requests() {
+    for s2 in [false, true] {
+        let sim = sim(s2);
+        let api = Api::start(&sim, Client::LoopbackHttp);
+        let before = api.get(CONTENTS);
+        let total = before["total"].as_u64().unwrap();
+        let queue = api.get("/zones/Room/queue");
+        let request = json!({
+            "zone":"Room", "playlist":"SQ:7", "expected_revision":before["revision"],
+            "position":1, "count":1, "insert_before":total + 1,
+        });
+        let (status, moved) = api.call(MOVE_TRACKS, Some(&request));
+        assert_eq!(status, 200, "{moved}");
+        assert_eq!(moved["operation"], "move_tracks");
+        assert_eq!(moved["previous_total"], total);
+        assert_eq!(moved["total"], total);
+        assert_eq!(moved["insert_before"], total + 1);
+        assert_eq!(moved["changed"], true);
+        let after = api.get(CONTENTS);
+        assert_eq!(after["revision"], moved["revision"]);
+        let names = |page: &Value| {
+            page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["title"].clone())
+                .collect::<Vec<_>>()
+        };
+        let mut wanted = names(&before);
+        wanted.rotate_left(1);
+        assert_eq!(names(&after), wanted);
+        let stale = json!({
+            "zone":"Room", "playlist":"SQ:7", "expected_revision":before["revision"], "position":1, "count":1,
+        });
+        let (status, error) = api.call(REMOVE_TRACKS, Some(&stale));
+        assert_eq!(status, 409, "{error}");
+        assert_eq!(error["code"], "QUEUE_CHANGED");
+        let mut remove = stale;
+        remove["expected_revision"] = after["revision"].clone();
+        let (status, removed) = api.call(REMOVE_TRACKS, Some(&remove));
+        assert_eq!(status, 200, "{removed}");
+        assert_eq!(removed["operation"], "remove_tracks");
+        assert_eq!(removed["total"], total - 1);
+        assert!(removed.get("insert_before").is_none());
+        assert_eq!(api.get(CONTENTS)["revision"], removed["revision"]);
+        assert_eq!(api.get("/zones/Room/queue"), queue);
+        let start = sim.soap_log().len();
+        for body in [
+            json!({"zone":"Room", "playlist":"SQ:7", "position":1, "count":1}),
+            json!({"zone":"Room", "playlist":"SQ:7", "expected_revision":removed["revision"], "position":0, "count":1}),
+            json!({"zone":"Room", "playlist":"SQ:7", "expected_revision":removed["revision"], "position":1, "count":1, "force":true}),
+        ] {
+            let (status, error) = api.call(REMOVE_TRACKS, Some(&body));
+            assert_eq!(status, 422, "{error}");
+        }
+        assert_eq!(sim.soap_log().len(), start);
+        let spec = api.get("/openapi.json");
+        for path in [REMOVE_TRACKS, MOVE_TRACKS] {
+            let schema = &spec["paths"][path]["post"]["requestBody"];
+            assert_eq!(schema["required"], true, "{schema}");
+        }
+        let denied = Api::start(&sim, Client::Unknown);
+        let (status, error) = denied.call(REMOVE_TRACKS, Some(&remove));
+        assert_eq!(status, 403, "{error}");
+    }
+}
 
 #[test]
 fn http_native_occurrence_batches_retain_order_and_distinguish_queue_and_playlist_proofs() {

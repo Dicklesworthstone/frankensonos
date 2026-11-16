@@ -9,7 +9,9 @@ const SourcePlayerRemote = (() => {
     sourcePlaylists: ['GET', '/sonos/playlists'], sourcePlaylistPlay: ['POST', '/sonos/playlists/play'],
     sourcePlaylistContents: ['GET', '/sonos/playlists/contents'], sourcePlaylistTrack: ['POST', '/sonos/playlists/track'],
     sourcePlaylistTracks: ['POST', '/sonos/playlists/tracks'],
-    sourcePlaylistRename: ['POST', '/sonos/playlists/rename'], sourcePlaylistRemove: ['POST', '/sonos/playlists/remove'] };
+    sourcePlaylistRename: ['POST', '/sonos/playlists/rename'], sourcePlaylistRemove: ['POST', '/sonos/playlists/remove'],
+    sourcePlaylistRemoveTracks: ['POST', '/sonos/playlists/remove-tracks'],
+    sourcePlaylistMoveTracks: ['POST', '/sonos/playlists/move-tracks'] };
   const modes = Object.freeze({ play: 'Play now', next: 'Queue next', end: 'Queue at end' });
   const MAX_BYTES = 2048, MAX_TITLE = 256, MAX_PLAYLIST_TRACKS = 10;
   const catalogKinds = Object.freeze({ track: 'Tracks', album: 'Albums', artist: 'Artists',
@@ -423,7 +425,7 @@ const SourcePlayerRemote = (() => {
     return mode === 'play' ? detail : [queued(value, reviewed.group), ...(value.notes || []).map(note => note.detail)].join(' ');
   }
 
-  function renderContents(list, page, doc, { review, select, selected = [], disabled = false } = {}) {
+  function renderContents(list, page, doc, { review, select, edit, selected = [], disabled = false } = {}) {
     const focused = list.contains?.(doc.activeElement) ? doc.activeElement?.getAttribute('data-playlist-select') : null;
     const scroll = list.scrollTop;
     let focus;
@@ -457,6 +459,13 @@ const SourcePlayerRemote = (() => {
           actions.append(button);
         }
         row.append(actions);
+      }
+      if (edit) {
+        const button = doc.createElement('button'); button.type = 'button'; button.textContent = 'Edit saved track';
+        button.disabled = disabled;
+        button.setAttribute('aria-label', `Edit saved track ${item.position}, ${item.title || 'Untitled track'}`);
+        button.addEventListener('click', () => { if (!button.disabled) edit(item.position, page); });
+        row.append(button);
       }
       list.append(row);
     }
@@ -527,12 +536,36 @@ const SourcePlayerRemote = (() => {
     return title;
   }
 
+  const editsTracks = operation => ['remove_tracks', 'move_tracks'].includes(operation);
+  function playlistTrackEdit(operation, fields, total = 1000) {
+    const integer = (value, max) => /^\d+$/.test(String(value)) && Number.isSafeInteger(Number(value))
+      && Number(value) >= 1 && Number(value) <= max;
+    if (!integer(fields.position, 1000) || !integer(fields.count, 1000)
+        || total > 1000 || Number(fields.position) + Number(fields.count) - 1 > total
+        || (operation === 'move_tracks' && !integer(fields.insert_before, total + 1))) {
+      throw new Error('Choose a valid saved-track range in a playlist of at most 1,000 tracks. Move before an existing position, or use the track count plus one for the end.');
+    }
+    return Object.freeze({ position: Number(fields.position), count: Number(fields.count),
+      ...(operation === 'move_tracks' ? { insert_before: Number(fields.insert_before) } : {}) });
+  }
+  const editChanges = reviewed => reviewed.operation === 'remove_tracks'
+    || reviewed.edit.insert_before < reviewed.edit.position
+    || reviewed.edit.insert_before > reviewed.edit.position + reviewed.edit.count;
+  const editSignature = observed => JSON.stringify([observed.tracks, observed.anchor]);
+
   function managedPlaylist(value, reviewed) {
     const item = playlists([value?.playlist])[0];
+    const trackEdit = editsTracks(reviewed.operation);
     if (!value || value.zone !== reviewed.group.coordinator || item.id !== reviewed.item.id
         || value.operation !== reviewed.operation || typeof value.changed !== 'boolean' || typeof value.logged !== 'boolean'
         || !text(value.done) || item.title !== (reviewed.operation === 'rename' ? reviewed.title : reviewed.item.title)
-        || value.changed !== (reviewed.operation === 'remove' || reviewed.title !== reviewed.item.title)) {
+        || value.changed !== (trackEdit ? editChanges(reviewed) : reviewed.operation === 'remove' || reviewed.title !== reviewed.item.title)
+        || (trackEdit && (value.position !== reviewed.edit.position || value.count !== reviewed.edit.count
+          || (value.insert_before ?? null) !== (reviewed.edit.insert_before ?? null)
+          || value.previous_total !== reviewed.total
+          || value.total !== reviewed.total - (reviewed.operation === 'remove_tracks' ? reviewed.edit.count : 0)
+          || !text(value.revision) || value.revision.length > 4096 || /[\p{Cc}]/u.test(value.revision)
+          || (value.changed ? value.revision === reviewed.revision : value.revision !== reviewed.revision)))) {
       throw new Error('The saved-playlist command response was incomplete.');
     }
     return Object.freeze({ ...value, playlist: item, detail: value.done + (value.logged ? ''
@@ -546,7 +579,8 @@ const SourcePlayerRemote = (() => {
     commit = (_, work) => work({ check() {}, send: (route, body) => call(route, { body }) }),
     readCatalog = (target, decode) => call('sourcePlaylists', { query: { zone: target } }).then(decode) }) {
     let epoch = 0;
-    const state = { title: '', pending: null, reading: false, writing: false, result: null, recovery: null, message: '' };
+    const state = { title: '', position: '1', count: '1', insert_before: '1', basis: null,
+      pending: null, reading: false, writing: false, result: null, recovery: null, message: '' };
     const publish = () => { try { changed(state); } catch (_) { /* Presentation only. */ } };
     const busy = () => state.reading || state.writing;
     const same = reviewed => {
@@ -554,7 +588,7 @@ const SourcePlayerRemote = (() => {
       return current && current.group.target === reviewed.group.target && current.group.signature === reviewed.group.signature
         && current.item.id === reviewed.item.id && current.item.title === reviewed.item.title;
     };
-    const invalidate = () => { ++epoch; state.pending = null; state.reading = false; };
+    const invalidate = () => { ++epoch; state.pending = null; state.reading = false; state.basis = null; };
     async function inspect(reviewed, valid, revision) {
       valid();
       const fresh = groups(await call('zones')); valid();
@@ -568,22 +602,55 @@ const SourcePlayerRemote = (() => {
       if (revision && page.revision !== revision) throw new Error('The saved playlist changed. Read it and review again.');
       return page;
     }
+    async function inspectTracks(reviewed, valid) {
+      const read = async (offset, limit) => {
+        valid();
+        const query = { zone: reviewed.group.target, playlist: reviewed.item.id, offset, limit,
+          expected_revision: reviewed.revision };
+        const page = playlistContents(await call('sourcePlaylistContents', { query }), query, reviewed.item, reviewed.group);
+        valid();
+        if (page.total !== reviewed.total || !page.items.length) throw new Error('The saved track range changed. Read tracks again.');
+        return page;
+      };
+      const tracks = [], end = reviewed.edit.position + reviewed.edit.count - 1;
+      let offset = reviewed.edit.position - 1;
+      while (offset < end) {
+        const page = await read(offset, Math.min(100, end - offset));
+        tracks.push(...page.items); offset += page.items.length;
+      }
+      let anchor = null;
+      if (reviewed.operation === 'move_tracks' && reviewed.edit.insert_before <= reviewed.total) {
+        anchor = tracks.find(item => item.position === reviewed.edit.insert_before)
+          || (await read(reviewed.edit.insert_before - 1, 1)).items[0];
+      }
+      return Object.freeze({ tracks: Object.freeze(tracks), anchor });
+    }
     async function review(operation) {
-      if (!live() || !available() || busy() || state.recovery || !['rename', 'remove'].includes(operation)) return null;
+      if (!live() || !available() || busy() || state.recovery || !['rename', 'remove', 'remove_tracks', 'move_tracks'].includes(operation)) return null;
       const selected = selection();
       if (!selected) return null;
+      const basis = state.basis;
       invalidate(); const version = epoch;
-      let title;
-      try { title = operation === 'rename' ? nativePlaylistTitle(state.title) : selected.item.title; }
+      let title, edit;
+      try {
+        title = operation === 'rename' ? nativePlaylistTitle(state.title) : selected.item.title;
+        if (editsTracks(operation)) edit = playlistTrackEdit(operation, state);
+      }
       catch (error) { state.message = problem(error); publish(); return null; }
       const reviewed = { ...selected, operation, title };
       const valid = () => { if (!live() || version !== epoch || !same(reviewed)) throw new Error('This playlist review is no longer current. Review it again.'); };
       state.reading = true; state.message = 'Reading the selected playlist in its original household…'; publish();
       try {
-        const page = await inspect(reviewed, valid); valid();
-        state.pending = Object.freeze({ ...reviewed, revision: page.revision, total: page.total,
+        const page = await inspect(reviewed, valid, edit ? basis?.revision : undefined); valid();
+        const observed = { ...reviewed, revision: page.revision, total: page.total };
+        let tracks;
+        if (edit) {
+          observed.edit = playlistTrackEdit(operation, edit, page.total);
+          tracks = await inspectTracks(observed, valid); valid();
+        }
+        state.pending = Object.freeze({ ...observed, ...(tracks || {}),
           body: Object.freeze({ zone: reviewed.group.target, playlist: reviewed.item.id, expected_revision: page.revision,
-            ...(operation === 'rename' ? { title } : {}) }) });
+            ...(operation === 'rename' ? { title } : edit || {}) }) });
         state.message = ''; return state.pending;
       } catch (error) { if (version === epoch) state.message = problem(error); return null; }
       finally { if (version === epoch) { state.reading = false; publish(); } }
@@ -598,9 +665,15 @@ const SourcePlayerRemote = (() => {
           const valid = () => { check(); if (!live() || version !== epoch || !same(reviewed)) throw new Error('This playlist review closed or changed before sending.'); };
           const page = await inspect(reviewed, valid, reviewed.revision); valid();
           if (page.total !== reviewed.total) throw new Error('The saved playlist changed. Review it again.');
+          if (editsTracks(reviewed.operation) && editSignature(await inspectTracks(reviewed, valid)) !== editSignature(reviewed)) {
+            throw new Error('The reviewed saved tracks changed. Read tracks and review again.');
+          }
+          valid();
           if (sent) throw new Error('The playlist command was already dispatched.');
           sent = true;
-          receipt = managedPlaylist(await send(reviewed.operation === 'rename' ? 'sourcePlaylistRename' : 'sourcePlaylistRemove', reviewed.body), reviewed);
+          const route = { rename: 'sourcePlaylistRename', remove: 'sourcePlaylistRemove',
+            remove_tracks: 'sourcePlaylistRemoveTracks', move_tracks: 'sourcePlaylistMoveTracks' }[reviewed.operation];
+          receipt = managedPlaylist(await send(route, reviewed.body), reviewed);
           return receipt;
         });
         if (!receipt) throw new Error('The playlist command was not sent. Review it again.');
@@ -649,6 +722,22 @@ const SourcePlayerRemote = (() => {
         if (!live() || !available() || busy() || typeof value !== 'string' || value.length > 8192) return false;
         invalidate(); state.title = value; state.message = ''; publish(); return true;
       },
+      editTracks(field, value) {
+        if (!live() || !available() || busy() || !['position', 'count', 'insert_before'].includes(field)
+            || typeof value !== 'string' || value.length > 10) return false;
+        const basis = state.basis; invalidate(); state.basis = basis;
+        state[field] = value; state.message = ''; publish(); return true;
+      },
+      chooseTrack(position, page) {
+        const current = selection();
+        if (!live() || !available() || busy() || state.recovery || !current || !page
+            || page.playlist.id !== current.item.id || page.playlist.title !== current.item.title
+            || page.zone !== current.group.coordinator || !page.items.some(item => item.position === position)) return false;
+        invalidate(); state.position = String(position); state.count = '1'; state.insert_before = String(position);
+        state.basis = Object.freeze({ revision: page.revision });
+        state.message = `Saved track ${position} selected. Choose removal, or set its new position and review the move.`;
+        publish(); return true;
+      },
       cancel() { if (!state.writing) { invalidate(); state.message = ''; publish(); } },
     };
   }
@@ -664,13 +753,27 @@ const SourcePlayerRemote = (() => {
     const rename = el('button', 'Review rename'), remove = el('button', 'Review deletion');
     const actions = el('div', null, 'row'); actions.append(rename, remove);
     fields.append(el('h3', 'Manage saved playlist'), label, actions);
+    const trackFields = el('div', null, 'source-playlist-track-edit'), inputs = {};
+    trackFields.append(el('h4', 'Edit saved tracks'), el('p', 'Use the numbered saved tracks above, or choose Edit saved track beside an occurrence. A range keeps its order and includes repeated tracks.'));
+    for (const [key, caption] of [['position', 'First saved track'], ['count', 'Number of tracks'], ['insert_before', 'Move before track']]) {
+      const input = el('input'), label = el('label', caption + ' ');
+      input.type = 'number'; input.min = '1'; input.max = key === 'insert_before' ? '1001' : '1000'; input.step = '1';
+      input.setAttribute('aria-label', caption); label.append(input); trackFields.append(label); inputs[key] = input;
+      input.addEventListener('input', () => manager.editTracks(key, input.value));
+    }
+    trackFields.append(el('p', 'Move before uses the original track numbers. To move to the end, enter the playlist’s track count plus one. Playlists up to 1,000 tracks can be edited here.'));
+    const removeTracks = el('button', 'Review track removal'), moveTracks = el('button', 'Review track move');
+    const trackActions = el('div', null, 'row'); trackActions.append(removeTracks, moveTracks); trackFields.append(trackActions);
+    fields.append(trackFields);
     const message = el('p'), consent = el('div', null, 'source-review'), result = el('p'), recovery = el('button', 'Read original household catalog');
     for (const item of [message, result]) { item.setAttribute('role', 'status'); item.setAttribute('aria-live', 'polite'); }
-    for (const button of [rename, remove, recovery]) button.type = 'button';
+    for (const button of [rename, remove, removeTracks, moveTracks, recovery]) button.type = 'button';
     node.append(fields, message, consent, result, recovery);
     title.addEventListener('input', () => manager.editTitle(title.value));
     rename.addEventListener('click', () => { void manager.review('rename'); });
     remove.addEventListener('click', () => { void manager.review('remove'); });
+    removeTracks.addEventListener('click', () => { void manager.review('remove_tracks'); });
+    moveTracks.addEventListener('click', () => { void manager.review('move_tracks'); });
     recovery.addEventListener('click', () => { void manager.recover(); });
     let shown = null, confirm = null;
     return { node, render(selected) {
@@ -679,6 +782,11 @@ const SourcePlayerRemote = (() => {
       fields.hidden = !selected;
       if (title.value !== s.title) title.value = s.title;
       title.disabled = !manager.canReview(); rename.disabled = !manager.canReview() || !s.title.trim(); remove.disabled = !manager.canReview();
+      for (const [key, input] of Object.entries(inputs)) {
+        if (input.value !== s[key]) input.value = s[key];
+        input.disabled = !manager.canReview();
+      }
+      removeTracks.disabled = moveTracks.disabled = !manager.canReview();
       message.textContent = s.message; result.textContent = s.result ? `${s.result.group.target}: ${s.result.detail}` : '';
       recovery.hidden = !s.recovery; recovery.disabled = manager.busy();
       consent.hidden = !s.pending;
@@ -686,7 +794,23 @@ const SourcePlayerRemote = (() => {
         shown = s.pending; consent.replaceChildren(); confirm = null;
         if (shown) {
           const pending = shown;
-          consent.append(el('p', `${pending.operation === 'remove' ? 'Delete' : 'Rename'} “${pending.item.title}” (${pending.item.id}) in ${pending.group.label}?`),
+          if (editsTracks(pending.operation)) {
+            const edit = pending.edit, removing = pending.operation === 'remove_tracks', list = el('ol', null, 'source-playlist-edit-preview');
+            consent.append(el('p', `${removing ? 'Remove' : 'Move'} ${edit.count} saved track(s) in “${pending.item.title}” (${pending.item.id}) in ${pending.group.label}?`));
+            for (const track of pending.tracks) {
+              const row = el('li'); row.value = track.position;
+              row.textContent = `Track ${track.position}: ${track.title || 'Untitled track'}${track.creator ? ' · ' + track.creator : ''}`;
+              list.append(row);
+            }
+            consent.append(list, el('p', removing
+              ? `${pending.total - edit.count} of ${pending.total} tracks will remain. This removes only these saved occurrences; other copies stay in the playlist.`
+              : !editChanges(pending) ? 'The range is already in that position. Confirming checks the saved playlist without moving any track.'
+                : pending.anchor ? `Move this range before original track ${pending.anchor.position}: ${pending.anchor.title || 'Untitled track'}.`
+                  : `Move this range to the end, after the other ${pending.total - edit.count} tracks.`),
+            el('p', 'The saved playlist changes for future playback and scene recalls. Current playback, loaded queues and the DJ continue unchanged. This edit cannot be undone here.'));
+            confirm = el('button', removing ? 'Remove saved tracks' : 'Move saved tracks');
+          } else {
+            consent.append(el('p', `${pending.operation === 'remove' ? 'Delete' : 'Rename'} “${pending.item.title}” (${pending.item.id}) in ${pending.group.label}?`),
             el('p', pending.operation === 'remove'
               ? `Permanently remove this saved playlist of ${pending.total} track(s) from this household. This cannot be undone here. Current playback and queues stay unchanged.`
               : `New title: “${pending.title}”. The ${pending.total} saved track(s), current playback and queues stay unchanged.`),
@@ -694,6 +818,7 @@ const SourcePlayerRemote = (() => {
               ? 'Saved scenes and routines using this playlist will refuse playback until you update them.'
               : 'Saved scenes using this playlist must be saved again with its new title before those scenes or their routines can play it.'));
           confirm = el('button', pending.operation === 'remove' ? 'Delete saved playlist' : 'Rename saved playlist');
+          }
           const back = el('button', 'Cancel catalog edit'); confirm.type = back.type = 'button';
           confirm.addEventListener('click', () => { void manager.confirm(pending); }); back.addEventListener('click', () => manager.cancel());
           consent.append(confirm, back);
@@ -1248,6 +1373,7 @@ const SourcePlayerRemote = (() => {
       if (shownContents !== state.contents || shownContentsBusy !== busy || shownContentsSelection !== state.contentsSelection) {
         shownContents = state.contents; shownContentsBusy = busy; shownContentsSelection = state.contentsSelection;
         renderContents(contentsList, state.contents, doc, { review: control.reviewTrack, select: control.selectTrack,
+          edit: (position, page) => { if (page === state.contents) control.manager.chooseTrack(position, page); },
           selected: state.contentsSelection, disabled: busy });
       }
       review.textContent = state.contentsSelection.length ? state.mode === 'play' ? 'Review selected playback' : 'Review selected queue addition'
@@ -1399,7 +1525,7 @@ const SourcePlayerRemote = (() => {
   }
 
   return { source, prepare, playlists, preparePlaylist, verifyPlaylist, contentsRequest, playlistContents, contentsSummary, renderContents,
-    nativePlaylistTitle, managedPlaylist, playlistManager, playlistManagerPanel,
+    nativePlaylistTitle, playlistTrackEdit, managedPlaylist, playlistManager, playlistManagerPanel,
     lineInSources, lineInLabel, lineInHelp, prepareLineIn, verifyLineIn,
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
     preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,

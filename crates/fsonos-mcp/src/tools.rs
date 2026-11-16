@@ -65,8 +65,9 @@ pub use favorite_management::{
     CurrentFavorite, InspectFavorite, RemoveFavorite, RenameFavorite, SaveFavorite,
 };
 pub use sonos_playlists::{
-    ListSonosPlaylists, PlaySonosPlaylist, RemoveSonosPlaylist, RenameSonosPlaylist,
-    SaveSonosPlaylist, SonosPlaylistContents, SonosPlaylistTrack, SonosPlaylistTracks,
+    ListSonosPlaylists, MoveSonosPlaylistTracks, PlaySonosPlaylist, RemoveSonosPlaylist,
+    RemoveSonosPlaylistTracks, RenameSonosPlaylist, SaveSonosPlaylist, SonosPlaylistContents,
+    SonosPlaylistTrack, SonosPlaylistTracks,
 };
 
 mod spotify_search;
@@ -1966,7 +1967,12 @@ mod tests {
         assert_eq!(structured["notes"][0]["code"], "VOLUME_CLAMPED");
         assert_eq!(
             *sent.lock().unwrap(),
-            ["GetZoneGroupState", "GetVolume", "GetZoneGroupState", "SetVolume"]
+            [
+                "GetZoneGroupState",
+                "GetVolume",
+                "GetZoneGroupState",
+                "SetVolume"
+            ]
         );
     }
 

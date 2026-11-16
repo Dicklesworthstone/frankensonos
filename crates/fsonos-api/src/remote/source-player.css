@@ -41,3 +41,6 @@
 .source-playlist-manage { border-top: 1px solid var(--line); padding-top: .75rem; }
 .source-playlist-manage h3 { margin: 0; font-size: 1rem; }
 .source-playlist-manage .row { display: flex; flex-wrap: wrap; }
+.source-playlist-track-edit { display: grid; gap: .65rem; border-top: 1px solid var(--line); padding-top: .75rem; }
+.source-playlist-track-edit h4, .source-playlist-track-edit p { margin: 0; }
+.source-playlist-edit-preview { max-height: 18rem; overflow: auto; padding-left: 1.5rem; }

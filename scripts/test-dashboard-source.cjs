@@ -436,7 +436,8 @@ test('dashboard playlist catalog uses an explicit encoded group over real HTTP',
 });
 
 
-for(const route of ['/sonos/playlists/play','/sonos/playlists/tracks'])test(route+' gets the long command deadline without a retry',async()=>{
+for(const route of ['/sonos/playlists/play','/sonos/playlists/tracks','/sonos/playlists/remove-tracks','/sonos/playlists/move-tracks',
+  '/sonos/playlists/remove-tracks?scope=current','/sonos/playlists/move-tracks?scope=current'])test(route+' gets the long command deadline without a retry',async()=>{
   let expire,budget,calls=0,cancelled=false;
   const request=C.request({fetcher:async()=>{calls++;return{ok:true,text:()=>new Promise(()=>{})};},
     schedule:(fn,ms)=>{expire=fn;budget=ms;return 1;},cancel:()=>{cancelled=true;}});

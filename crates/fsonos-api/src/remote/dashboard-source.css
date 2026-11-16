@@ -25,6 +25,9 @@
 .source-playlist-manage button:disabled{opacity:.5;cursor:default}
 .source-playlist-manage .row{display:flex;flex-wrap:wrap;gap:10px}
 .source-playlist-manage .source-review{border-top:1px solid var(--line-strong);padding-top:12px}
+.source-playlist-track-edit{display:grid;gap:10px;border-top:1px solid var(--line-strong);padding-top:12px}
+.source-playlist-track-edit h4{margin:0;font-size:13px}
+.source-playlist-edit-preview{max-height:18rem;overflow:auto;padding-left:24px}
 .source-playlist-manage[hidden],.source-playlist-manage [hidden],.source-playlist-manage [role=status]:empty{display:none}
 @media(max-width:480px){.source-dialog .source-fields{grid-template-columns:minmax(0,1fr)}.source-fields .source-address,.source-fields>p{grid-column:auto}.source-preview dl{grid-template-columns:minmax(0,1fr);gap:3px}.source-preview dd{margin-bottom:8px}.source-actions{align-items:stretch}.source-actions .outline-button{flex:1}.source-trigger{white-space:nowrap}}
 

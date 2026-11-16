@@ -169,6 +169,12 @@ enum Command {
     /// Permanently remove an exact saved Sonos playlist. Does not change playback;
     /// requires its contents revision and cannot be undone through action history.
     PlaylistRemove(playlist_cmd::PlaylistRemoveArgs),
+    /// Remove reviewed consecutive occurrences from a saved Sonos playlist.
+    /// The playing queue is unchanged; the saved edit has no action-history undo.
+    PlaylistRemoveTracks(playlist_cmd::PlaylistRemoveTracksArgs),
+    /// Move a reviewed contiguous saved-playlist block before an original position.
+    /// Does not change any loaded playing queue or interrupt playback.
+    PlaylistMoveTracks(playlist_cmd::PlaylistMoveTracksArgs),
     /// What played lately, newest first: when, the room whose group played
     /// it, and what.
     History {
@@ -620,6 +626,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::FavoriteRemove(args) => favorite_cmd::remove(global, &args),
         Command::PlaylistRename(args) => playlist_cmd::rename(global, &args),
         Command::PlaylistRemove(args) => playlist_cmd::remove(global, &args),
+        Command::PlaylistRemoveTracks(args) => playlist_cmd::remove_tracks(global, &args),
+        Command::PlaylistMoveTracks(args) => playlist_cmd::move_tracks(global, &args),
         Command::PlaylistContents(args) => playlist_cmd::contents(global, &args),
         Command::PlaylistTrack(args) => playlist_cmd::track(global, &args),
         Command::PlaylistTracks(args) => playlist_cmd::tracks(global, &args),
@@ -1099,6 +1107,8 @@ fn plan_for<'a>(
         | Command::PlaylistSave(_)
         | Command::PlaylistRename(_)
         | Command::PlaylistRemove(_)
+        | Command::PlaylistRemoveTracks(_)
+        | Command::PlaylistMoveTracks(_)
         | Command::PlaylistContents(_)
         | Command::PlaylistTrack(_)
         | Command::PlaylistTracks(_)

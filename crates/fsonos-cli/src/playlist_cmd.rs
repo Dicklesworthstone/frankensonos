@@ -3,6 +3,9 @@
 mod manage;
 pub use manage::{PlaylistRemoveArgs, PlaylistRenameArgs, remove, rename};
 
+mod edit;
+pub use edit::{PlaylistMoveTracksArgs, PlaylistRemoveTracksArgs, move_tracks, remove_tracks};
+
 use clap::Args;
 use fsonos_api::Failure;
 use fsonos_api::surface::sonos_playlists::{

@@ -3,6 +3,9 @@
 mod manage;
 pub use manage::{RemoveSonosPlaylist, RenameSonosPlaylist};
 
+mod edit;
+pub use edit::{MoveSonosPlaylistTracks, RemoveSonosPlaylistTracks};
+
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::sonos_playlists::{

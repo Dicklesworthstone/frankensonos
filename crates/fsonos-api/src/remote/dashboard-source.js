@@ -559,6 +559,7 @@ const DashboardSource = (() => {
       if (shownContents !== s.contents || shownContentsReady !== control.canReview() || shownContentsSelection !== s.contentsSelection) {
         shownContents = s.contents; shownContentsReady = control.canReview(); shownContentsSelection = s.contentsSelection;
         P.renderContents($('source-contents-items'), s.contents, doc, { review: control.reviewTrack, select: control.selectTrack,
+          edit: (position, page) => { if (page === s.contents) control.manager.chooseTrack(position, page); },
           selected: s.contentsSelection, disabled: !shownContentsReady });
       }
       $('source-context').textContent = set ? 'Resolve a room, alias, here, all@S1, all@S2, or everywhere before sending one request.' : s.group ? 'Destination: ' + s.group.label

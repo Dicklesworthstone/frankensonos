@@ -1,6 +1,6 @@
 # Saved Sonos playlists
 
-FrankenSonos can list, inspect, play, create, rename and remove playlists saved on the Sonos household, including
+FrankenSonos can list, inspect, play, create, rename, edit and remove playlists saved on the Sonos household, including
 ones that are not in My Sonos favorites. These are the native `SQ:` saved queues,
 separate from the Spotify account's cached playlists.
 
@@ -202,7 +202,8 @@ may contain at most **1023 UTF-8 bytes** after trimming. Saving the same title
 again creates a distinct `SQ:` id. Existing playlists are never overwritten;
 use the returned id to distinguish equal titles. Creating a saved playlist is
 not an action-history undo operation. Renaming and removal use the separate,
-revision-bound operations below; editing its saved track order is not exposed.
+revision-bound operations below. Saved occurrences can also be removed or moved
+within an existing playlist without loading it into the playing queue.
 
 The native save has no queue-revision compare-and-set argument. Sonos copies
 the queue when it handles the request; a prior queue read does not lock out
@@ -266,6 +267,59 @@ well as the id. After renaming, re-save scenes that reference that playlist.
 Removing a referenced playlist causes those scenes and their routines to refuse
 playback until the source is replaced; catalog edits do not silently rewrite
 scene definitions. See [native playlists in scenes](SONOS_PLAYLIST_SCENES.md).
+
+## Remove or reorder saved tracks
+
+Read the playlist first, then use its exact household-local `SQ:` id and the
+returned revision for one edit:
+
+```sh
+fsonos playlist-contents 'Kitchen@S1' SQ:7 --json
+
+# Move original tracks 2–4 before original track 1, keeping their internal order.
+fsonos playlist-move-tracks 'Kitchen@S1' SQ:7 2 --count 3 --before 1 \
+  --expected-revision '<revision from the contents read>'
+
+# Read again after an edit; positions and the revision have changed.
+fsonos playlist-contents 'Kitchen@S1' SQ:7 --json
+fsonos playlist-remove-tracks 'Kitchen@S1' SQ:7 5 --count 2 \
+  --expected-revision '<fresh revision>'
+```
+
+`position` is the first one-based occurrence, and `count` is the number of
+consecutive occurrences. CLI `--count` defaults to one. Move `--before` refers
+to the **original** playlist: its track count plus one moves the block to the
+end. A position inside the block or immediately after it is a validated no-op.
+Repeated tracks remain separate occurrences. Removing all tracks retains the
+empty named playlist.
+
+These operations edit the saved playlist in place. Its id and title stay the
+same; future recalls, including scenes, use its edited contents. Loaded queues,
+current music, volume and DJ ownership continue unchanged. Saved-track edits
+have no playback undo and do not displace an earlier playback undo.
+
+An edit requires a complete observation of at most **1,000 saved entries and
+4 MiB of retained metadata**. Both observations check metadata, native content
+counter, household, coordinator, group and available boot evidence. One native
+`ReorderTracksInSavedQueue` carries the observed nonzero update counter. A
+complete read-back must confirm the resulting order, count and revision.
+Unavailable tracks can be removed; they need no playable resource.
+
+The success receipt includes the original `position`, `count`, move
+`insert_before` when applicable, `previous_total`, `total`, the new `revision`,
+`changed` and `logged`. A stale observation sends no edit. Lost, malformed or
+contradictory acknowledgements and failed confirmation return
+`OUTCOME_UNCERTAIN`; the edit is never automatically replayed. Read the original
+saved playlist before deciding on a new operation. Native update counters and
+the read-back checks do not lock out another controller after confirmation.
+
+Both web remotes offer **Edit saved track** beside each inspected occurrence
+and range fields under **Manage saved playlist → Edit saved tracks**. Review
+shows every selected occurrence and the original destination track, then
+rechecks them inside the shared command lane before one request. Changing
+the range, playlist, household or catalog invalidates the review. Pending and
+uncertain results retain their original household through navigation; recovery
+observes that catalog and requires a new review rather than repeating the edit.
 
 ## Phone remote and desktop dashboard
 
@@ -337,6 +391,8 @@ read and review.
 | Save the current queue as a new playlist | `POST /sonos/playlists/save` with `{"zone":"Kitchen","title":"Evening Mix"}` | `save_sonos_playlist(zone="Kitchen", title="Evening Mix")` |
 | Rename an exact observed playlist | `POST /sonos/playlists/rename` with `zone`, exact `playlist`, `expected_revision`, and `title` | `rename_sonos_playlist` with the same fields |
 | Permanently remove an exact observed playlist | `POST /sonos/playlists/remove` with `zone`, exact `playlist`, and `expected_revision` | `remove_sonos_playlist` with the same fields |
+| Remove consecutive saved occurrences | `POST /sonos/playlists/remove-tracks` with `zone`, exact `playlist`, `expected_revision`, `position`, and `count` | `remove_sonos_playlist_tracks` with the same fields |
+| Reorder a saved block | `POST /sonos/playlists/move-tracks` with the same fields plus original `insert_before` | `move_sonos_playlist_tracks` with the same fields |
 | Replace the queue and play | `POST /sonos/playlists/play` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `play_sonos_playlist(zone="Kitchen", playlist="SQ:7")` |
 | Append | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `add_to_queue(zone="Kitchen", playlist="SQ:7")` |
 | Play next in the queue | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7","next":true}` | `add_to_queue(zone="Kitchen", playlist="SQ:7", next=true)` |
@@ -354,8 +410,10 @@ favorites. This keeps existing client allowlists effective. Saving requires
 without a DJ handoff, volume changes or a playback undo record. The save body
 accepts only `zone` and `title`, never an existing playlist id or overwrite flag.
 Rename and removal require their own `rename_sonos_playlist` and
-`remove_sonos_playlist` permissions, also in `house-config`. A read-only catalog
-allowlist cannot perform these writes. All three catalog operations are in the
+`remove_sonos_playlist` permissions, also in `house-config`. Saved-track edits
+require `remove_sonos_playlist_tracks` or `move_sonos_playlist_tracks`, likewise
+in `house-config`. A read-only catalog
+allowlist cannot perform these writes. All five catalog mutation operations are in the
 MCP Full profile. Request bodies reject unknown fields, including overwrite or
 force flags.
 
@@ -455,3 +513,15 @@ once-only daemon delegation and typed receipts. These Rust additions have not
 run: the baseline workspace check was killed during dependency compilation,
 and the focused core check stalled in `syn` before reaching project code.
 Physical-speaker batch acceptance remains unverified.
+
+Saved-track edit regressions extend the same management suites and
+`fsonos-core/tests/sonos_playlist_tracks_sim.rs`. They cover exact duplicate
+occurrences, forward/backward block moves, unchanged-position moves, removing
+all entries, stale or paged observations, native refusals and uncertain replies,
+with live queues and playback retained. The focused browser management suite
+passes all 52 cases; the final management, source and request-deadline run passes
+all 166 cases. A temporary harness of the actual protocol source, omitting only
+the runtime transport module, passes 127 protocol tests. The three exact-source
+simulator ordering tests also pass. These partial checks do not establish full
+daemon, storage or physical-speaker acceptance: the full workspace build was
+killed while compiling the existing `asupersync` dependency.

@@ -240,6 +240,8 @@ fn configured_server(
             .tool(tools::SaveSonosPlaylist)
             .tool(tools::RenameSonosPlaylist)
             .tool(tools::RemoveSonosPlaylist)
+            .tool(tools::RemoveSonosPlaylistTracks)
+            .tool(tools::MoveSonosPlaylistTracks)
             .tool(tools::CurrentFavorite)
             .tool(tools::InspectFavorite)
             .tool(tools::SaveFavorite)
