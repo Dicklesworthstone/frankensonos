@@ -67,13 +67,13 @@ fn a_late_tailnet_binds_both_families_and_retries_only_failed_binds() {
     let mut listeners = Listeners::new(Vec::new(), Vec::new());
     let unavailable = TailnetStatus::Unavailable(Unavailable::NotInstalled);
     listeners.reconcile(
-        &addresses(&unavailable),
+        &addresses(&unavailable, config::HTTP_PORT),
         Vec::new(),
         || false,
         |_, _| panic!("no tailnet must not bind"),
     );
     let status = up();
-    let desired = addresses(&status);
+    let desired = addresses(&status, config::HTTP_PORT);
     let names = super::super::tailnet_names(&status);
     let attempts = RefCell::new(Vec::new());
     let fail_v6 = Cell::new(true);
@@ -176,7 +176,7 @@ fn an_answered_disconnect_retires_tailnet_listeners_and_reconnect_restores_them(
     let mut observe = |status: &TailnetStatus| {
         if accept(status, !listeners.held.is_empty(), &mut unanswered) {
             listeners.reconcile(
-                &addresses(status),
+                &addresses(status, config::HTTP_PORT),
                 super::super::tailnet_names(status),
                 || false,
                 |addr, names| Ok(Listener::bind(addr, names, &events)),
@@ -207,7 +207,7 @@ fn a_brief_cli_failure_keeps_names_but_persistent_failure_expires_them() {
     let mut observe = |status: &TailnetStatus| {
         if accept(status, !listeners.held.is_empty(), &mut unanswered) {
             listeners.reconcile(
-                &addresses(status),
+                &addresses(status, config::HTTP_PORT),
                 super::super::tailnet_names(status),
                 || false,
                 |addr, names| Ok(Listener::bind(addr, names, &events)),
@@ -247,7 +247,10 @@ fn a_brief_cli_failure_keeps_names_but_persistent_failure_expires_them() {
 fn interface_fallback_can_start_a_listener_without_waiting_for_the_cli() {
     let mut unanswered = 0;
     assert!(accept(&interfaces(), false, &mut unanswered));
-    assert_eq!(addresses(&interfaces()), [address(V4), address(V6)]);
+    assert_eq!(
+        addresses(&interfaces(), config::HTTP_PORT),
+        [address(V4), address(V6)]
+    );
     assert!(!accept(&interfaces(), true, &mut unanswered));
     let missing = TailnetStatus::Unavailable(Unavailable::TimedOut);
     while unanswered < UNANSWERED_LIMIT - 1 {
@@ -255,7 +258,7 @@ fn interface_fallback_can_start_a_listener_without_waiting_for_the_cli() {
     }
     assert!(accept(&missing, true, &mut unanswered));
     assert!(
-        addresses(&missing).is_empty(),
+        addresses(&missing, config::HTTP_PORT).is_empty(),
         "unobserved addresses expire"
     );
 }
@@ -303,13 +306,13 @@ fn automatic_addresses_never_include_loopback_lan_wildcard_or_public_ips() {
         "2001:db8::10".parse().unwrap(),
     ]);
     assert_eq!(
-        addresses(&TailnetStatus::Available(status)),
+        addresses(&TailnetStatus::Available(status), config::HTTP_PORT),
         [address(V4), address(V6)]
     );
 }
 
 #[test]
-fn fixed_http_keeps_owner_watching_without_managing_its_listeners() {
+fn fixed_binds_keep_owner_watching_without_managing_their_listeners() {
     let mut args = ServeArgs {
         http: None,
         mcp_http: None,
@@ -323,9 +326,11 @@ fn fixed_http_keeps_owner_watching_without_managing_its_listeners() {
     };
     assert!(enabled(&args));
     assert!(automatic_http(&args));
+    assert!(automatic_mcp(&args));
     args.tailscale = TailscaleMode::Off;
     assert!(!enabled(&args));
     assert!(!automatic_http(&args));
+    assert!(!automatic_mcp(&args));
     args.tailscale = TailscaleMode::Auto;
     for configured in ["127.0.0.1:8099", V4, "0.0.0.0:8099"] {
         args.http = Some(address(configured));
@@ -334,6 +339,7 @@ fn fixed_http_keeps_owner_watching_without_managing_its_listeners() {
             !automatic_http(&args),
             "an explicit bind stays as configured"
         );
+        assert!(automatic_mcp(&args), "HTTP configuration does not fix MCP");
     }
     args.tailscale_serve = true;
     assert!(enabled(&args), "Serve's callers need current owner rights");
@@ -344,6 +350,125 @@ fn fixed_http_keeps_owner_watching_without_managing_its_listeners() {
         automatic_http(&args),
         "MCP configuration does not change HTTP policy"
     );
+    assert!(!automatic_mcp(&args));
+    args.http = Some(address("127.0.0.1:8099"));
+    args.mcp_http = Some(address("127.0.0.1:8098"));
+    assert!(enabled(&args));
+    assert!(!automatic_http(&args));
+    assert!(!automatic_mcp(&args));
+}
+
+#[test]
+fn mcp_late_login_rename_and_logout_follow_their_own_port() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let mut listeners = Listeners::new(Vec::new(), Vec::new());
+    let status = up();
+    let original = [
+        address("100.64.0.10:8098"),
+        address("[fd7a:115c:a1e0::10]:8098"),
+    ];
+    assert_eq!(addresses(&status, config::MCP_PORT), original);
+    listeners.reconcile(
+        &addresses(&status, config::MCP_PORT),
+        super::super::tailnet_names(&status),
+        || false,
+        |addr, names| Ok(Listener::bind(addr, names, &events)),
+    );
+    assert_eq!(listeners.held.len(), 2);
+    let TailnetStatus::Available(mut changed) = status else {
+        unreachable!()
+    };
+    changed.ipv4 = vec!["100.64.0.11".parse().unwrap()];
+    changed.ipv6.clear();
+    changed.magic_dns_name = Some("new.example-tailnet.ts.net".into());
+    let status = TailnetStatus::Available(changed.clone());
+    events.borrow_mut().clear();
+    listeners.reconcile(
+        &addresses(&status, config::MCP_PORT),
+        super::super::tailnet_names(&status),
+        || false,
+        |addr, names| Ok(Listener::bind(addr, names, &events)),
+    );
+    assert_eq!(listeners.held.len(), 1);
+    assert_eq!(listeners.held[0].0, address("100.64.0.11:8098"));
+    assert!(listeners.names.contains(&"new.example-tailnet.ts.net".into()));
+    assert!(!listeners.names.contains(&NAME.into()));
+    assert_eq!(
+        &events.borrow()[..2],
+        &[Event::Dropped(original[0]), Event::Dropped(original[1])]
+    );
+    changed.logged_in = false;
+    changed.running = false;
+    let status = TailnetStatus::Available(changed);
+    listeners.reconcile(
+        &addresses(&status, config::MCP_PORT),
+        super::super::tailnet_names(&status),
+        || false,
+        |_, _| panic!("logout must only retire listeners"),
+    );
+    assert!(listeners.held.is_empty());
+}
+
+#[test]
+fn an_mcp_bind_failure_does_not_disturb_healthy_http_listeners() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let mut http = Listeners::new(Vec::new(), Vec::new());
+    let mut mcp = Listeners::new(Vec::new(), Vec::new());
+    let status = up();
+    let names = super::super::tailnet_names(&status);
+    http.reconcile(
+        &addresses(&status, config::HTTP_PORT),
+        names.clone(),
+        || false,
+        |addr, names| Ok(Listener::bind(addr, names, &events)),
+    );
+    events.borrow_mut().clear();
+    mcp.reconcile(
+        &addresses(&status, config::MCP_PORT),
+        names.clone(),
+        || false,
+        |_, _| anyhow::bail!("the MCP port is temporarily occupied"),
+    );
+    assert!(mcp.held.is_empty());
+    assert_eq!(http.held.len(), 2);
+    http.reconcile(
+        &addresses(&status, config::HTTP_PORT),
+        names.clone(),
+        || false,
+        |_, _| panic!("MCP failure must not restart HTTP"),
+    );
+    mcp.reconcile(
+        &addresses(&status, config::MCP_PORT),
+        names,
+        || false,
+        |addr, names| Ok(Listener::bind(addr, names, &events)),
+    );
+    assert_eq!(mcp.held.len(), 2);
+    assert_eq!(events.borrow().len(), 2, "only new MCP listeners were bound");
+}
+
+#[test]
+fn retiring_an_owned_mcp_server_releases_its_socket_and_keeps_a_fixed_one() {
+    let fixed = super::super::start_mcp("127.0.0.1:0".parse().unwrap(), &[], false)
+        .expect("the fixed MCP listener binds");
+    let automatic = super::super::start_mcp("127.0.0.1:0".parse().unwrap(), &[], false)
+        .expect("the automatic MCP listener binds");
+    let automatic_address = automatic.1;
+    let mut listeners = Listeners::new(vec![(automatic_address, Mcp(automatic))], Vec::new());
+    listeners.reconcile(
+        &[],
+        Vec::new(),
+        || false,
+        |_, _| panic!("a disconnected tailnet does not bind"),
+    );
+    let rebound = std::net::TcpListener::bind(automatic_address)
+        .expect("retirement waits for the owned MCP socket to close");
+    let connected = std::net::TcpStream::connect_timeout(&fixed.1, Duration::from_secs(1))
+        .expect("the independent fixed listener still accepts connections");
+    assert_eq!(connected.peer_addr().unwrap(), fixed.1);
+    drop(connected);
+    drop(rebound);
+    super::super::stop_mcp(&mut [fixed]);
 }
 
 #[test]
@@ -412,7 +537,10 @@ fn an_owner_only_watch_stops_without_retiring_configured_sockets() {
     let fixed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let stop = Arc::new(AtomicBool::new(true));
     let watcher = watch(
-        None,
+        InitialListeners {
+            http: None,
+            mcp: None,
+        },
         up(),
         Arc::clone(&surface),
         "synthetic-token".into(),

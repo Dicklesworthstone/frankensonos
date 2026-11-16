@@ -820,9 +820,15 @@ mod tests {
         );
         let urls = r.detail.as_deref().unwrap();
         assert!(urls.contains(&format!("http://{V4}:8099")), "{urls}");
-        // MCP stays on loopback by default; the block says how to reach it.
+        // Both default listeners offer direct tailnet URLs.
         assert!(urls.contains("MCP server"), "{urls}");
-        assert!(urls.contains("tailscale serve"), "{urls}");
+        assert!(urls.contains(&format!("http://{V4}:8098/mcp")), "{urls}");
+        assert!(
+            urls.contains(&format!(
+                "claude mcp add --transport http fsonos http://{NAME}:8098/mcp"
+            )),
+            "{urls}"
+        );
 
         // A host may not reach its own tailnet IPv6 address: IPv4 is probed,
         // and the detail says what was not.

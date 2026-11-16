@@ -33,8 +33,10 @@ Six rules hold the design together:
 
 1. **Reachability is control.** The HTTP API and the MCP server have no
    authentication of their own: anyone who can reach them can play, pause and
-   regroup your speakers. They bind **loopback**, and Tailscale Serve plus your
-   tailnet policy decide who else gets in.
+   regroup your speakers subject to the house policy. Their defaults bind
+   **loopback and this host's verified tailnet addresses**. Tailscale's network
+   policy controls remote reachability; WhoIs identifies direct tailnet callers.
+   Explicit loopback binds restrict access to local processes and Tailscale Serve.
 2. **Tailscale fronts the daemon, never the speakers.** Do not advertise the
    speaker LAN as a subnet route (`tailscale set --advertise-routes=…`). That
    would put every speaker's unauthenticated port 1400 on the tailnet.
@@ -66,7 +68,7 @@ variables. The environment form is what launchd uses.
 | Setting | Env var | Default | Notes |
 |---|---|---|---|
 | HTTP API address | `FSONOS_HTTP_ADDR` | unset: `127.0.0.1:8099` plus this host's tailnet addresses when Tailscale is up | Set it to bind exactly one address, e.g. loopback behind Tailscale Serve. |
-| MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | unset: `127.0.0.1:8098` | Endpoint path `/mcp`. Loopback unless set: reach it from the tailnet through Serve. |
+| MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | unset: `127.0.0.1:8098` plus this host's tailnet addresses when Tailscale is up | Endpoint path `/mcp`. Set it to bind exactly one address, e.g. loopback behind Serve. |
 | Tailscale detection | `FSONOS_TAILSCALE` | `auto` | `off` (or `--tailscale off`) stops `fsonos` looking for Tailscale: unconfigured listeners bind loopback only, and `fsonos doctor` skips its `tailscale.*` checks. |
 | Tailscale Serve at startup | `FSONOS_TAILSCALE_SERVE` | off | `true` (or `--tailscale-serve`) runs `fsonos tailscale setup` when the daemon starts (§ "Recommended: Tailscale Serve"); a refusal or failure is logged and the daemon serves on. |
 | Events port | `FSONOS_EVENTS_PORT` | `8097` | Where the speakers deliver state-change events (GENA), on each local address used to reach them. Allow it inbound on those interfaces (§4). `0` picks a free port independently for each listener. |
@@ -357,7 +359,7 @@ curl -s https://<mac>.<tailnet>.ts.net:8443/mcp \
 stdio (`fsonos mcp`), which still negotiates `2024-11-05` normally and is what
 `claude mcp add ... fsonos -- ... mcp` uses.
 - `--bg` configurations persist across reboots; `tailscaled` holds them.
-- The daemon only ever binds loopback, so there is no boot-time race with
+- The daemon keeps loopback available, so there is no boot-time race with
   Tailscale coming up: its loopback listeners answer any `*.ts.net` Host, the
   name Serve forwards, even if Tailscale was down when the daemon started.
 - The HTTPS certificate is issued for the Mac's MagicDNS name, and issued
@@ -377,12 +379,14 @@ stdio (`fsonos mcp`), which still negotiates `2024-11-05` normally and is what
 
 ### Alternative: listen on the tailnet directly
 
-Leave `FSONOS_HTTP_ADDR` unset and `fsonos serve` listens on loopback **and**
-on every tailnet address of the Mac whenever Tailscale is up. The daemon
-checks again every 30 seconds, so a later login, reconnect, or address
-change takes effect without a daemon restart. The startup log prints the
-URLs (MagicDNS first); new listeners are logged as they come up. Traffic is
-plain HTTP inside WireGuard. Two things to know:
+Leave `FSONOS_HTTP_ADDR` and `FSONOS_MCP_HTTP_ADDR` unset and `fsonos serve`
+listens on loopback **and** the Mac's verified tailnet IPv4 and IPv6 addresses:
+HTTP on port 8099 and MCP at `/mcp` on port 8098. The daemon checks again every
+30 seconds, so a later login, reconnect, address change or logout takes effect
+without a restart. The startup log prints both sets of URLs (MagicDNS first);
+new listeners are logged as they come up. Traffic is plain HTTP inside WireGuard.
+For a direct agent connection, use `http://<mac>.<tailnet>.ts.net:8098/mcp`.
+Two things to know:
 
 - On a direct tailnet listener, Tailscale names each caller by its address
   (WhoIs: the user's login, or a tagged device's tag such as `tag:agent`),
@@ -402,8 +406,11 @@ plain HTTP inside WireGuard. Two things to know:
   the Tailscale CLI keep working listeners and their names; after four
   unanswered checks (about two minutes), only addresses still found on the
   host's interfaces remain, without a stale MagicDNS name. An explicitly
-  configured HTTP address keeps its configured startup behavior, and
-  `FSONOS_TAILSCALE=off` disables automatic tailnet listeners.
+  configured HTTP or MCP address keeps its configured startup behavior, and
+  `FSONOS_TAILSCALE=off` disables automatic tailnet listeners. HTTP and MCP
+  bindings retry independently; an occupied MCP port does not retire a healthy
+  HTTP listener. Automatic address selection excludes wildcard, public and
+  private-LAN addresses even if a malformed status observation includes them.
   CLI probes, caller identification and Serve setup bound both command
   execution and output collection. On macOS and Linux, a completed or timed
   out CLI command also cleans up its helper processes, so inherited output
@@ -415,9 +422,8 @@ plain HTTP inside WireGuard. Two things to know:
   daemon names Serve's callers (`FSONOS_TAILSCALE_SERVE`); it reads Serve's
   config and sends nothing through it.
 
-The MCP server stays on loopback unless `FSONOS_MCP_HTTP_ADDR` is set.
-An explicitly configured direct tailnet MCP listener resolves each connection's
-peer through the same WhoIs rules as the HTTP API. Multiple MCP listeners share
+Automatic and explicitly configured direct tailnet MCP listeners resolve each
+connection's peer through the same WhoIs rules as the HTTP API. Multiple MCP listeners share
 the live house state, while each request uses its own caller identity and MCP
 sessions remain bound to that identity. A CLI token never grants native MCP
 requests the local CLI or stdio caller's rights.

@@ -214,8 +214,8 @@ pub struct ServeArgs {
     pub http: Option<SocketAddr>,
 
     /// MCP streamable-HTTP bind address, endpoint path `/mcp` [default:
-    /// 127.0.0.1:8098]. Loopback unless set: reach it from the tailnet
-    /// through Tailscale Serve.
+    /// loopback + this host's Tailscale addresses on port 8098]. Setting
+    /// it binds exactly this address, including loopback behind Serve.
     #[arg(long, env = "FSONOS_MCP_HTTP_ADDR")]
     pub mcp_http: Option<SocketAddr>,
 
@@ -334,33 +334,45 @@ impl ServeArgs {
         &self,
         tailnet: &fsonos_tailscale::TailnetStatus,
     ) -> fsonos_tailscale::BindPlan {
-        fsonos_tailscale::bind_plan(tailnet, HTTP_PORT, self.http)
+        control_plan(tailnet, HTTP_PORT, self.http)
     }
 
-    /// Where the MCP server binds: the configured address, else loopback.
-    /// Not the tailnet automatically: one MCP backend serves every MCP
-    /// listener with a single caller identity, so a tailnet listener would
-    /// share loopback's (full) rights. Tailscale Serve, or a configured
-    /// tailnet address (whose callers are `unknown`), reaches it from the
-    /// tailnet instead.
+    /// Where the MCP server binds: the configured address, or loopback plus
+    /// the tailnet. Each request has its own transport-authenticated caller;
+    /// the daemon follows the same automatic listener lifecycle as HTTP.
     #[must_use]
     pub fn mcp_plan(
         &self,
         tailnet: &fsonos_tailscale::TailnetStatus,
     ) -> fsonos_tailscale::BindPlan {
-        if self.mcp_http.is_some() {
-            return fsonos_tailscale::bind_plan(tailnet, MCP_PORT, self.mcp_http);
-        }
-        let loopback = self.mcp_local();
-        fsonos_tailscale::BindPlan {
-            addrs: vec![loopback],
-            reason: fsonos_tailscale::BindReason::LoopbackOnly,
-            note: format!(
-                "MCP on loopback only ({loopback}); front it with `tailscale serve` to reach it \
-                 from the tailnet"
-            ),
-        }
+        control_plan(tailnet, MCP_PORT, self.mcp_http)
     }
+}
+
+/// Automatic discovery may offer only this host's validated tailnet addresses.
+/// Explicit binds retain the separate bind guard and its deliberate overrides.
+fn control_plan(
+    tailnet: &fsonos_tailscale::TailnetStatus,
+    port: u16,
+    configured: Option<SocketAddr>,
+) -> fsonos_tailscale::BindPlan {
+    if configured.is_some() {
+        return fsonos_tailscale::bind_plan(tailnet, port, configured);
+    }
+    let mut validated = tailnet.clone();
+    if let fsonos_tailscale::TailnetStatus::Available(tailnet) = &mut validated {
+        tailnet
+            .ipv4
+            .retain(|ip| fsonos_tailscale::is_tailnet_ip(IpAddr::V4(*ip)));
+        tailnet.ipv4.sort_unstable();
+        tailnet.ipv4.dedup();
+        tailnet
+            .ipv6
+            .retain(|ip| fsonos_tailscale::is_tailnet_ip(IpAddr::V6(*ip)));
+        tailnet.ipv6.sort_unstable();
+        tailnet.ipv6.dedup();
+    }
+    fsonos_tailscale::bind_plan(&validated, port, None)
 }
 
 /// Who can reach a listener bound to an address.
@@ -662,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_loopback() {
+    fn both_defaults_add_the_tailnet_without_losing_loopback() {
         let h = Harness::try_parse_from(["fsonos"]).unwrap();
         assert_eq!((h.serve.http, h.serve.mcp_http), (None, None));
         assert_eq!(h.serve.http_local(), "127.0.0.1:8099".parse().unwrap());
@@ -686,10 +698,16 @@ mod tests {
                 "100.70.1.2:8099".parse().unwrap()
             ]
         );
-        // MCP never joins the tailnet on its own (one shared caller identity).
+        assert_eq!(
+            h.serve.mcp_plan(&off).addrs,
+            ["127.0.0.1:8098".parse::<SocketAddr>().unwrap()]
+        );
         assert_eq!(
             h.serve.mcp_plan(&on).addrs,
-            ["127.0.0.1:8098".parse::<SocketAddr>().unwrap()]
+            [
+                "127.0.0.1:8098".parse::<SocketAddr>().unwrap(),
+                "100.70.1.2:8098".parse().unwrap()
+            ]
         );
         let h = Harness::try_parse_from(["fsonos", "--http", "100.70.1.2:9000"]).unwrap();
         assert_eq!(h.serve.http, Some("100.70.1.2:9000".parse().unwrap()));
@@ -698,7 +716,50 @@ mod tests {
             h.serve.http_plan(&on).addrs,
             ["100.70.1.2:9000".parse::<SocketAddr>().unwrap()]
         );
+        let h = Harness::try_parse_from(["fsonos", "--mcp-http", "127.0.0.1:9001"]).unwrap();
+        assert_eq!(
+            h.serve.mcp_plan(&on).addrs,
+            ["127.0.0.1:9001".parse::<SocketAddr>().unwrap()]
+        );
+        assert_eq!(h.serve.http_plan(&on).addrs.len(), 2);
         assert!(Harness::try_parse_from(["fsonos", "--http", "not-an-addr"]).is_err());
+    }
+
+    #[test]
+    fn automatic_plans_never_widen_to_non_tailnet_addresses() {
+        let h = Harness::try_parse_from(["fsonos"]).unwrap();
+        let mut found = fsonos_tailscale::from_addresses([
+            "100.70.1.2".parse().unwrap(),
+            "fd7a:115c:a1e0::10".parse().unwrap(),
+        ])
+        .unwrap();
+        found.ipv4.extend([
+            "100.70.1.2".parse().unwrap(),
+            "127.0.0.2".parse().unwrap(),
+            "192.168.1.10".parse().unwrap(),
+            "0.0.0.0".parse().unwrap(),
+            "203.0.113.10".parse().unwrap(),
+        ]);
+        found.ipv6.extend([
+            "::1".parse().unwrap(),
+            "::".parse().unwrap(),
+            "2001:db8::10".parse().unwrap(),
+        ]);
+        let status = fsonos_tailscale::TailnetStatus::Available(found);
+        for (port, plan) in [
+            (HTTP_PORT, h.serve.http_plan(&status)),
+            (MCP_PORT, h.serve.mcp_plan(&status)),
+        ] {
+            assert_eq!(
+                plan.addrs,
+                [
+                    SocketAddr::new("127.0.0.1".parse().unwrap(), port),
+                    SocketAddr::new("100.70.1.2".parse().unwrap(), port),
+                    SocketAddr::new("fd7a:115c:a1e0::10".parse().unwrap(), port),
+                ]
+            );
+            assert!(!plan.note.contains("192.168.1.10"));
+        }
     }
 
     #[test]
@@ -714,6 +775,10 @@ mod tests {
         );
         let plan = h.serve.http_plan(&status);
         assert_eq!(plan.reason, fsonos_tailscale::BindReason::LoopbackOnly);
+        assert!(plan.note.contains("FSONOS_TAILSCALE=off"), "{}", plan.note);
+        let plan = h.serve.mcp_plan(&status);
+        assert_eq!(plan.reason, fsonos_tailscale::BindReason::LoopbackOnly);
+        assert_eq!(plan.addrs, [h.serve.mcp_local()]);
         assert!(plan.note.contains("FSONOS_TAILSCALE=off"), "{}", plan.note);
         assert!(Harness::try_parse_from(["fsonos", "--tailscale", "maybe"]).is_err());
     }

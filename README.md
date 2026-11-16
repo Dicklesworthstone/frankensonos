@@ -42,7 +42,7 @@ the whole house, both generations at once, into something you and your agents
 can drive:
 
 - **From anywhere on your tailnet.** `fsonos serve` serves its HTTP API on
-  loopback and your Tailscale addresses (MCP on loopback), and `fsonos tailscale
+  loopback and your Tailscale addresses for both HTTP and MCP, and `fsonos tailscale
   setup` puts HTTPS in front of both with Tailscale Serve. Your phone in another city, an agent on a cloud VM,
   a laptop at work: if it is on your tailnet, it runs your house (the CLI
   there too: `FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos pause
@@ -219,7 +219,7 @@ fsonos say "Dinner is ready" --rooms Kitchen,Office
 fsonos announce --file clip.wav --rooms Kitchen   # an existing 16-bit PCM WAV
 fsonos stream Kitchen --input alsa_output.example.monitor  # Linux desktop audio (Ctrl-C stops)
 fsonos undo                                       # put the newest action back
-fsonos serve                                      # the daemon: HTTP API on loopback + tailnet, MCP on loopback
+fsonos serve                                      # the daemon: HTTP API and MCP on loopback + tailnet
 fsonos tailscale setup                            # HTTPS for the tailnet via Tailscale Serve (never Funnel)
 fsonos service install --tailscale-serve --load   # serve as a login service that survives restarts
 fsonos doctor                                     # what is wrong, and how to fix it
@@ -363,7 +363,7 @@ HTTP/MCP contract, permissions, and process-local retention.
 The daemon is the only thing that leaves your LAN, and only onto your tailnet:
 
 ```bash
-fsonos serve            # API on loopback + every tailnet address, MCP on loopback; prints the URLs
+fsonos serve            # HTTP API + MCP on loopback and every tailnet address; prints the URLs
 fsonos tailscale setup  # Serve: https://<mac>.<tailnet>.ts.net/ (API), :8443/mcp (MCP)
 FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos --json events  # live changes anywhere on the tailnet
 FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos doctor --only lan  # diagnose the daemon's LAN
@@ -405,6 +405,12 @@ or retry backoff.
   history and undo ownership. Multiple MCP listeners share the same live
   house. Native MCP never accepts the HTTP API's local CLI token as an
   uncapped CLI or stdio identity.
+- Both default listeners follow Tailscale after startup: HTTP on port 8099 and
+  MCP at `/mcp` on port 8098. A late login, reconnect, address change or logout
+  adds or retires the corresponding listeners without a daemon restart.
+  Loopback remains available, and a failed automatic MCP bind retries without
+  interrupting HTTP. Explicit `--http` / `--mcp-http` binds stay fixed;
+  `--tailscale off` keeps the unconfigured listeners on loopback.
 - The daemon follows its host's owner login after startup too. A late Tailscale
   login gains owner rights without a restart; logout, account changes and
   tagged nodes retire the old owner. This works with explicit loopback binds

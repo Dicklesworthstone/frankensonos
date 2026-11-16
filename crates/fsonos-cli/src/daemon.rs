@@ -18,8 +18,8 @@
 //! where events arrive. Stopping the daemon withdraws local subscriptions
 //! and starts best-effort network cleanup.
 //!
-//! Unconfigured, the HTTP API listens on loopback plus this host's tailnet
-//! addresses (ts-autobind) and MCP on loopback; a third line,
+//! Unconfigured, HTTP and MCP listen on loopback plus this host's tailnet
+//! addresses (ts-autobind); a third line,
 //! `fsonos serve: listening (...)`, and the connect URLs follow the ready
 //! line.
 //!
@@ -409,7 +409,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             &serve,
         )
     })?;
-    let mut mcp = start_all("MCP server", &mcp_plan, |addr| {
+    let mcp = start_all("MCP server", &mcp_plan, |addr| {
         start_mcp(addr, &names, args.tailscale_serve)
     })?;
     let mut bridge = bridge_compat::start(&surface, args.bridge_compat)?;
@@ -425,10 +425,10 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     }
     announce_tailnet(&tailnet, &http_plan, &http, &mcp, args.tailscale_serve);
     follow_serve(args, &tailnet, &serve, &stop);
-    // Ownership follows Tailscale even with fixed HTTP or Serve binds.
-    // Only automatic HTTP listeners move with it; loopback, configured
-    // HTTP and every MCP listener retain their startup lifecycle.
-    let (mut http, automatic) = if tailnet::automatic_http(args) {
+    // Ownership follows Tailscale even with fixed or Serve binds. Automatic
+    // HTTP and MCP listeners move with it; loopback and configured listeners
+    // retain their startup lifecycle.
+    let (mut http, automatic_http) = if tailnet::automatic_http(args) {
         let (local, automatic) = http
             .into_iter()
             .partition(|(_, addr)| addr.ip().is_loopback());
@@ -436,9 +436,20 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     } else {
         (http, None)
     };
+    let (mut mcp, automatic_mcp) = if tailnet::automatic_mcp(args) {
+        let (local, automatic) = mcp
+            .into_iter()
+            .partition(|(_, addr)| addr.ip().is_loopback());
+        (local, Some(automatic))
+    } else {
+        (mcp, None)
+    };
     let tailnet_watch = if tailnet::enabled(args) {
         tailnet::watch(
-            automatic,
+            tailnet::InitialListeners {
+                http: automatic_http,
+                mcp: automatic_mcp,
+            },
             tailnet,
             Arc::clone(&surface),
             cli_token,
@@ -487,7 +498,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     {
         tracing::warn!("the Tailscale ownership/listener watcher stopped with a panic");
     }
-    stop_mcp(mcp);
+    stop_mcp(&mut mcp);
     // Announcements in flight put the music back before the process ends.
     drain_announcements(|| surface.announcements_pending(), ANNOUNCE_DRAIN);
     // The surfaces hold the model weakly: this ends every subscription.
@@ -497,7 +508,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
 }
 
 /// Required listeners and the essential state workers stop the daemon on
-/// failure. Automatic tailnet HTTP listeners are owned and retried by their
+/// failure. Automatic tailnet listeners are owned and retried by their
 /// watcher instead.
 fn worker_failure(
     http: &mut [(HttpStop, SocketAddr)],
@@ -629,8 +640,8 @@ const MCP_STOP: Duration = Duration::from_secs(5);
 /// Shut the MCP server's listeners down: cancel each one's context, which
 /// its accept loop checks between accepts, and wait up to [`MCP_STOP`] for
 /// them to close.
-fn stop_mcp(mcp: Vec<(McpStop, SocketAddr)>) {
-    for (listener, _) in &mcp {
+fn stop_mcp(mcp: &mut [(McpStop, SocketAddr)]) {
+    for (listener, _) in &*mcp {
         listener.cx.cancel_with(
             asupersync::types::CancelKind::Shutdown,
             Some("fsonos serve is stopping"),
@@ -638,7 +649,7 @@ fn stop_mcp(mcp: Vec<(McpStop, SocketAddr)>) {
     }
     let deadline = Instant::now() + MCP_STOP;
     for (listener, addr) in mcp {
-        let Some(thread) = listener.thread else {
+        let Some(thread) = listener.thread.take() else {
             continue;
         };
         while !thread.is_finished() && Instant::now() < deadline {
@@ -898,7 +909,9 @@ fn start_mcp(
 ) -> anyhow::Result<(McpStop, SocketAddr)> {
     let hosts = WebPolicy::for_listener(addr, names).hosts().to_vec();
     let identity = listener_identity(addr, names, behind_serve);
-    let (bound_tx, bound_rx) = mpsc::channel();
+    // A rendezvous hands ownership to the waiting caller. If startup times
+    // out, a late bind cannot leave an unowned server holding the port.
+    let (bound_tx, bound_rx) = mpsc::sync_channel(0);
     let thread = thread::Builder::new()
         .name("fsonos-mcp".into())
         .spawn(move || {
@@ -915,7 +928,9 @@ fn start_mcp(
                     let local = bound
                         .local_addr()
                         .map_err(|e| anyhow::anyhow!("MCP address: {e}"))?;
-                    let _ = ready_tx.send(Ok((local, cx.clone())));
+                    if ready_tx.send(Ok((local, cx.clone()))).is_err() {
+                        return Ok(());
+                    }
                     bound
                         .serve(&cx)
                         .await
@@ -1029,7 +1044,7 @@ mod tests {
             .expect("a second listener does not reinstall the shared backend");
         assert_ne!(first.1, second.1);
         let addresses = [first.1, second.1];
-        stop_mcp(vec![first, second]);
+        stop_mcp(&mut [first, second]);
         for addr in addresses {
             std::net::TcpListener::bind(addr).expect("the stopped MCP listener releases its port");
         }

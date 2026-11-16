@@ -314,7 +314,13 @@ failures. See [Callback recovery](docs/CALLBACK_RECOVERY.md).
   `resume`, `next`, `set_volume`, `group`, `ungroup`, `dj_start`, `dj_skip`,
   `dj_stop`. Served over stdio (for a local agent) and streamable HTTP (for
   tailnet agents). Room-name matching normalizes curly apostrophes (helper
-  exists) and is case-insensitive.
+  exists) and is case-insensitive. Like HTTP, an unconfigured MCP listener
+  binds loopback and the host's validated tailnet addresses. The shared watcher
+  adds and retires both surfaces after login, reconnect, name/address changes
+  and logout; failed automatic binds retry independently. Explicit binds stay
+  fixed, and `--tailscale off` keeps defaults on loopback. Every MCP request
+  retains its own admitted caller and policy; the shared backend grants no
+  fallback caller rights. See `docs/DEPLOY.md`.
 - **CLI + `serve` daemon.** `fsonos` subcommands are shipped; the
   `serve` command wires: discovery → GENA sink → store → HTTP API → MCP server
   → DJ, under one asupersync runtime, with graceful shutdown. `fsonos service
@@ -962,9 +968,9 @@ the house to agents they can bound and reverse. The guardrails live in
   address (`ts-identity`), which can't be forged. The HTTP API's handlers get
   the peer address from a vendored fastapi-http patch (`vendor/README.md`); a
   process on the daemon host calling the host's own tailnet address is
-  `loopback-http`, never the owner WhoIs would name. The MCP listener names no
-  tailnet caller: on loopback (the default, reached from the tailnet through
-  Serve) its callers are `loopback-http`. Behind Tailscale Serve, the
+  `loopback-http`, never the owner WhoIs would name. Direct tailnet MCP
+  listeners use the same WhoIs rules, while local MCP requests use
+  `loopback-http`. With Serve-header trust explicitly enabled, the
   `Tailscale-User-Login` header names a user caller, while a header-less
   request (such as a tagged agent device) on the loopback listener is
   `loopback-http` (full control, subject to safety caps, as `docs/DEPLOY.md`
