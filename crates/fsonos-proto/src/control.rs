@@ -507,13 +507,30 @@ pub fn set_group_volume<T: Transport + ?Sized>(
     host: IpAddr,
     level: u8,
 ) -> Result<(), ProtoError> {
+    snapshot_group_volume(t, host)?;
+    set_group_volume_from_snapshot(t, host, level)
+}
+
+/// Record the members' relative levels before a group volume change.
+/// This does not change their audible volume.
+pub fn snapshot_group_volume<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<(), ProtoError> {
     call(
         t,
         host,
         &GROUP_RENDERING_CONTROL,
         "SnapshotGroupVolume",
         &[INSTANCE],
-    )?;
+    )
+    .map(drop)
+}
+
+/// Apply an absolute group level after [`snapshot_group_volume`]. Keeping
+/// these steps separate lets callers recheck the coordinator before the write.
+pub fn set_group_volume_from_snapshot<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    level: u8,
+) -> Result<(), ProtoError> {
     let level = level.min(100).to_string();
     call(
         t,
@@ -531,13 +548,17 @@ pub fn set_relative_group_volume<T: Transport + ?Sized>(
     host: IpAddr,
     delta: i32,
 ) -> Result<u8, ProtoError> {
-    call(
-        t,
-        host,
-        &GROUP_RENDERING_CONTROL,
-        "SnapshotGroupVolume",
-        &[INSTANCE],
-    )?;
+    snapshot_group_volume(t, host)?;
+    set_relative_group_volume_from_snapshot(t, host, delta)
+}
+
+/// Apply a relative group change after [`snapshot_group_volume`], without
+/// repeating the snapshot or the volume mutation.
+pub fn set_relative_group_volume_from_snapshot<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    delta: i32,
+) -> Result<u8, ProtoError> {
     let adjustment = delta.to_string();
     let r = call(
         t,
@@ -1205,6 +1226,15 @@ mod tests {
         assert!(sent[0].1.ends_with("#SnapshotGroupVolume\""));
         assert_eq!(sent[1].0, "/MediaRenderer/GroupRenderingControl/Control");
         assert!(sent[1].1.ends_with("#SetRelativeGroupVolume\""));
+        drop(sent);
+
+        let t = Canned::new("");
+        set_group_volume(&t, host(), 130).unwrap();
+        let sent = t.sent.borrow();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].1.ends_with("#SnapshotGroupVolume\""));
+        assert!(sent[1].1.ends_with("#SetGroupVolume\""));
+        assert!(sent[1].2.contains("<DesiredVolume>100</DesiredVolume>"));
     }
 
     #[test]

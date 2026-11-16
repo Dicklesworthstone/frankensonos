@@ -173,9 +173,8 @@ fn source_success_then_lost_play_and_readback_does_not_restart_at_a_new_address(
     );
 }
 
-/// Counts group volume attempts by the SnapshotGroupVolume each one opens
-/// with: the old coordinator refuses that with 800, so its attempt never
-/// reaches SetGroupVolume. The new coordinator's SetGroupVolume is lost.
+/// Count snapshots after the identity preflight: the old coordinator is
+/// refused before snapshotting. The new coordinator's SetGroupVolume is lost.
 struct LostOnNewCoordinator {
     lan: SimLan,
     new: IpAddr,
@@ -225,7 +224,7 @@ fn coordinator_retry_cannot_chain_into_a_third_attempt_at_the_original_player() 
     })
     .unwrap_err();
     assert_eq!(failure.code, ErrorCode::PlayerUnreachable);
-    assert_eq!(t.attempts.get(), 2, "no third attempt");
+    assert_eq!(t.attempts.get(), 1, "only the recovered coordinator snapshots");
     assert_eq!(surveys.get(), 0);
 }
 

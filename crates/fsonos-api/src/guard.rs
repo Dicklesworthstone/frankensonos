@@ -236,6 +236,10 @@ fn levels<T: Transport + ?Sized>(
         .iter()
         .find(|h| h.player(target).is_some())
         .ok_or_else(|| Failure::from(fsonos_core::CoreError::UnknownPlayer(target.0.clone())))?;
+    if scope == VolumeScope::Group {
+        let host = control::locate(households, target)?.ip;
+        control::require_coordinator(transport, host, target)?;
+    }
     let rooms: Vec<(&str, &PlayerId)> = household
         .rooms
         .iter()
@@ -248,6 +252,10 @@ fn levels<T: Transport + ?Sized>(
     rooms
         .into_iter()
         .map(|(room, player)| {
+            // Policy belongs to the requested room, not a new owner of its
+            // cached address. The actual setter checks again after these reads.
+            let host = control::locate(households, player)?.ip;
+            control::require_player(transport, host, player)?;
             Ok(RoomLevel {
                 room: room.to_string(),
                 volume: control::volume(transport, households, player)?,
@@ -280,7 +288,8 @@ fn describe(change: PolicyChange) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zones::fixtures::{households, id};
+    use crate::surface::testing::{households, topology};
+    use crate::zones::fixtures::id;
     use fsonos_core::clock::SystemClock;
     use fsonos_proto::ProtoError;
     use std::net::IpAddr;
@@ -291,17 +300,21 @@ mod tests {
     impl Transport for AtLevel {
         fn soap_post(
             &self,
-            _: IpAddr,
+            host: IpAddr,
             _: &str,
             action: &str,
             _: &str,
         ) -> Result<String, ProtoError> {
-            assert!(action.ends_with("#GetVolume\""), "only reads: {action}");
+            let action = action.trim_matches('"').rsplit('#').next().unwrap();
+            let out_args = match action {
+                "GetZoneGroupState" => topology(host),
+                "GetVolume" => format!("<CurrentVolume>{}</CurrentVolume>", self.0),
+                _ => panic!("only policy reads: {action}"),
+            };
             Ok(format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
-                 <u:GetVolumeResponse xmlns:u=\"urn:x\"><CurrentVolume>{}</CurrentVolume>\
-                 </u:GetVolumeResponse></s:Body></s:Envelope>",
-                self.0
+                 <u:{action}Response xmlns:u=\"urn:x\">{out_args}</u:{action}Response>\
+                 </s:Body></s:Envelope>"
             ))
         }
     }

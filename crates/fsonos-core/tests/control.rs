@@ -212,9 +212,13 @@ fn room_volume_goes_to_the_room_player_and_group_volume_to_the_coordinator() {
     assert_eq!(
         t.actions(),
         [
+            (ip("192.0.2.12"), "GetZoneGroupState".into()),
             (ip("192.0.2.12"), "SetVolume".into()),
+            (ip("192.0.2.12"), "GetZoneGroupState".into()),
             (ip("192.0.2.12"), "SetRelativeVolume".into()),
+            (ip("192.0.2.13"), "GetZoneGroupState".into()),
             (ip("192.0.2.13"), "SnapshotGroupVolume".into()),
+            (ip("192.0.2.13"), "GetZoneGroupState".into()),
             (ip("192.0.2.13"), "SetRelativeGroupVolume".into()),
         ]
     );

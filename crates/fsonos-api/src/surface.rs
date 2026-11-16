@@ -2310,7 +2310,7 @@ pub(crate) mod testing {
     }
 
     /// Return coherent topology for the same addressed fixture the survey uses.
-    pub(super) fn topology(host: IpAddr) -> String {
+    pub(crate) fn topology(host: IpAddr) -> String {
         let houses = households();
         let house = houses
             .iter()

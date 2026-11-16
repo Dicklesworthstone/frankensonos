@@ -1345,8 +1345,7 @@ mod tests {
             };
             Ok(format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
-                 <u:{action}Response xmlns:u=\"urn:x\">{}</u:{action}Response></s:Body></s:Envelope>",
-                out_args
+                 <u:{action}Response xmlns:u=\"urn:x\">{out_args}</u:{action}Response></s:Body></s:Envelope>"
             ))
         }
     }
@@ -1965,7 +1964,10 @@ mod tests {
         );
         let structured = r.structured_content.unwrap();
         assert_eq!(structured["notes"][0]["code"], "VOLUME_CLAMPED");
-        assert_eq!(*sent.lock().unwrap(), ["GetVolume", "SetVolume"]);
+        assert_eq!(
+            *sent.lock().unwrap(),
+            ["GetZoneGroupState", "GetVolume", "GetZoneGroupState", "SetVolume"]
+        );
     }
 
     #[test]

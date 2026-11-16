@@ -172,8 +172,8 @@ impl Transport for DjCaps<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::surface::testing::surface;
-    use crate::zones::fixtures::{households, id};
+    use crate::surface::testing::{households, surface};
+    use crate::zones::fixtures::id;
 
     const PLAY: &str = "\"urn:schemas-upnp-org:service:AVTransport:1#Play\"";
     const ADD: &str = "\"urn:schemas-upnp-org:service:AVTransport:1#AddURIToQueue\"";

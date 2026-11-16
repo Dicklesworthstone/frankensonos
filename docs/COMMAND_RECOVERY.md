@@ -127,6 +127,31 @@ malformed JSON, incomplete length/chunk framing, proxy errors, typed refusals,
 and a single dispatched request. `fsonos-mcp`'s daemon forwarding tests cover
 malformed mutation results and preserve authoritative daemon failures.
 
+## Volume and mute target verified room endpoints
+
+Ordinary room volume and mute commands verify that the requested physical
+player still owns the addressed endpoint. A room remains independently
+controllable when another room coordinates its group; the identity check does
+not redirect it to that coordinator. Policy level reads verify the same room
+before using its volume as evidence, and the setter checks again before writing.
+Automatic playback-cap reductions use these guarded room setters as well.
+
+Group volume verifies the requested coordinator before `SnapshotGroupVolume`
+and again before the actual absolute or relative volume write. The snapshot
+prepares the room balance without changing the audible volume. An ownership
+change during that preparation stops the write and remains eligible for the
+existing bounded recovery. A dispatched relative volume write with an uncertain
+reply is still never repeated.
+
+The `volume_endpoint_sim` tests in `fsonos-core` cover room identity, grouped
+noncoordinators, stale addresses and changes during group-volume preparation.
+The API's `volume_endpoint_recovery_sim` regressions cover moved/reused
+addresses, policy evidence, capped unmute and accepted relative writes whose
+acknowledgements are lost. Run them with
+`cargo test --locked -p fsonos-core --test volume_endpoint_sim` and
+`cargo test --locked -p fsonos-api --test volume_endpoint_recovery_sim
+--test recovery_volume_sim --test preflight_recovery_sim`.
+
 ## A volume retry keeps its first allowance
 
 For absolute room and group volumes, the shared recovery path remembers the

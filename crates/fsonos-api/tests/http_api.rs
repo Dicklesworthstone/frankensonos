@@ -579,7 +579,10 @@ fn agents_over_http_are_volume_capped_with_a_note() {
     assert_eq!(status, 200, "{out}");
     assert_eq!(out["volume"], 70);
     assert_eq!(out["notes"][0]["code"], "VOLUME_CLAMPED");
-    assert_eq!(api.actions(), ["GetVolume", "SetVolume"]);
+    assert_eq!(
+        api.actions(),
+        ["GetZoneGroupState", "GetVolume", "GetZoneGroupState", "SetVolume"]
+    );
 }
 
 #[test]

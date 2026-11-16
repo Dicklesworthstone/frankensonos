@@ -106,7 +106,12 @@ impl Surface {
         room: &Room,
         cap: u8,
     ) -> Result<Option<u8>, Failure> {
-        let level = control::volume(transport, households, &room.primary).map_err(|e| {
+        let level = (|| {
+            let host = control::locate(households, &room.primary)?.ip;
+            control::require_player(transport, host, &room.primary)?;
+            control::volume(transport, households, &room.primary)
+        })()
+        .map_err(|e| {
             Failure::new(
                 ErrorCode::PlayerUnreachable,
                 format!(

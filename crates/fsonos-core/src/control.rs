@@ -76,6 +76,34 @@ fn addr(households: &[HouseholdState], id: &PlayerId) -> Result<IpAddr, CoreErro
     locate(households, id).map(|p| p.ip)
 }
 
+/// Verify that the addressed endpoint still belongs to the requested player
+/// before a room-addressed read or mutation. Group members and bonded
+/// satellites remain valid targets; bridges cannot render audio. Unavailable
+/// or incoherent topology retains its protocol error. This sends no writes.
+pub fn require_player<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    player: &PlayerId,
+) -> Result<(), CoreError> {
+    let topology = get_zone_group_state(transport, host)?;
+    crate::topology::validate(&topology)?;
+    if topology
+        .groups
+        .iter()
+        .flat_map(|group| &group.members)
+        .flat_map(|member| std::iter::once(member).chain(&member.satellites))
+        .any(|member| {
+            member.uuid == *player && member.ip() == Some(host) && !member.is_zone_bridge
+        })
+    {
+        Ok(())
+    } else {
+        Err(CoreError::TargetChanged(
+            "the requested player no longer owns this address".into(),
+        ))
+    }
+}
+
 /// Verify that the addressed endpoint still belongs to the requested group
 /// coordinator before a coordinator-addressed mutation. A household-wide
 /// topology merely naming the player is not proof that it owns this address.
@@ -652,7 +680,9 @@ pub fn set_volume<T: Transport + ?Sized>(
     level: u8,
 ) -> Result<u8, CoreError> {
     let level = level.min(100);
-    soap::set_volume(t, addr(households, player)?, level)?;
+    let host = addr(households, player)?;
+    require_player(t, host, player)?;
+    soap::set_volume(t, host, level)?;
     Ok(level)
 }
 
@@ -663,11 +693,9 @@ pub fn adjust_volume<T: Transport + ?Sized>(
     player: &PlayerId,
     delta: i32,
 ) -> Result<u8, CoreError> {
-    Ok(soap::set_relative_volume(
-        t,
-        addr(households, player)?,
-        delta,
-    )?)
+    let host = addr(households, player)?;
+    require_player(t, host, player)?;
+    Ok(soap::set_relative_volume(t, host, delta)?)
 }
 
 /// Set the group volume of the group `coordinator` leads; members keep their
@@ -679,7 +707,11 @@ pub fn set_group_volume<T: Transport + ?Sized>(
     level: u8,
 ) -> Result<u8, CoreError> {
     let level = level.min(100);
-    soap::set_group_volume(t, addr(households, coordinator)?, level)?;
+    let host = addr(households, coordinator)?;
+    require_coordinator(t, host, coordinator)?;
+    soap::snapshot_group_volume(t, host)?;
+    require_coordinator(t, host, coordinator)?;
+    soap::set_group_volume_from_snapshot(t, host, level)?;
     Ok(level)
 }
 
@@ -690,11 +722,11 @@ pub fn adjust_group_volume<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     delta: i32,
 ) -> Result<u8, CoreError> {
-    Ok(soap::set_relative_group_volume(
-        t,
-        addr(households, coordinator)?,
-        delta,
-    )?)
+    let host = addr(households, coordinator)?;
+    require_coordinator(t, host, coordinator)?;
+    soap::snapshot_group_volume(t, host)?;
+    require_coordinator(t, host, coordinator)?;
+    Ok(soap::set_relative_group_volume_from_snapshot(t, host, delta)?)
 }
 
 pub fn set_mute<T: Transport + ?Sized>(
@@ -703,7 +735,9 @@ pub fn set_mute<T: Transport + ?Sized>(
     player: &PlayerId,
     mute: bool,
 ) -> Result<(), CoreError> {
-    Ok(soap::set_mute(t, addr(households, player)?, mute)?)
+    let host = addr(households, player)?;
+    require_player(t, host, player)?;
+    Ok(soap::set_mute(t, host, mute)?)
 }
 
 /// A room's tone: bass and treble from -10 to 10 (0 is flat), and whether

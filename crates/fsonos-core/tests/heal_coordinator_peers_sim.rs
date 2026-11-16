@@ -6,6 +6,7 @@ use fsonos_core::inventory::survey;
 use fsonos_core::{CoreError, HouseholdState, control, grouping, resolve_room};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
+use fsonos_types::PlayerId;
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 use std::time::Duration;
@@ -58,6 +59,20 @@ fn grouped() -> (SimHandle, SimLan, Vec<HouseholdState>) {
     (sim, lan, houses)
 }
 
+/// Exercise protocol-fault recovery directly: the old coordinator must return
+/// its real 800 even when its topology reads fail. Named control preflights
+/// are covered separately by the endpoint tests.
+fn group_volume(
+    transport: &impl Transport,
+    houses: &[HouseholdState],
+    coordinator: &PlayerId,
+    level: u8,
+) -> Result<u8, CoreError> {
+    let host = control::locate(houses, coordinator)?.ip;
+    fsonos_proto::control::set_group_volume(transport, host, level)?;
+    Ok(level)
+}
+
 #[test]
 fn a_peer_confirms_the_new_coordinator_when_the_member_cannot_answer_topology() {
     let (sim, lan, mut houses) = grouped();
@@ -71,7 +86,7 @@ fn a_peer_confirms_the_new_coordinator_when_the_member_cannot_answer_topology() 
 
     let (level, recovery) = heal::on_coordinator(&observed, &mut houses, &member, |hs, to| {
         attempts.set(attempts.get() + 1);
-        control::set_group_volume(&observed, hs, to, 21)
+        group_volume(&observed, hs, to, 21)
     })
     .unwrap();
 
@@ -131,7 +146,7 @@ fn unavailable_topology_never_falls_back_to_another_household() {
 
     let error = heal::on_coordinator(&observed, &mut houses, &member, |hs, to| {
         attempts.set(attempts.get() + 1);
-        control::set_group_volume(&observed, hs, to, 21)
+        group_volume(&observed, hs, to, 21)
     })
     .unwrap_err();
 
@@ -195,7 +210,7 @@ fn a_refused_retry_does_not_start_another_recovery_or_hide_the_new_coordinator()
                 reason: "retry refused".into(),
             }));
         }
-        control::set_group_volume(&observed, hs, to, 21)
+        group_volume(&observed, hs, to, 21)
     })
     .unwrap_err();
 

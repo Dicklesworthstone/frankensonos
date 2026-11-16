@@ -689,7 +689,8 @@ fn run_volume<T: Transport + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zones::fixtures::{households, id};
+    use crate::surface::testing::households;
+    use crate::zones::fixtures::id;
     use fsonos_proto::ProtoError;
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -902,7 +903,7 @@ mod tests {
             change: VolumeChange::Adjust(-3),
         };
         let out = execute(&t, &houses, &cmd).unwrap();
-        assert_eq!(t.actions(), ["SetRelativeVolume"]);
+        assert_eq!(t.actions(), ["GetZoneGroupState", "SetRelativeVolume"]);
         assert_eq!(
             (out.volume, out.done.as_str()),
             (Some(27), "Kitchen volume is 27")
@@ -916,7 +917,15 @@ mod tests {
             change: VolumeChange::Set(40),
         };
         let out = execute(&t, &houses, &cmd).unwrap();
-        assert_eq!(t.actions(), ["SnapshotGroupVolume", "SetGroupVolume"]);
+        assert_eq!(
+            t.actions(),
+            [
+                "GetZoneGroupState",
+                "SnapshotGroupVolume",
+                "GetZoneGroupState",
+                "SetGroupVolume",
+            ]
+        );
         assert_eq!(out.done, "Den's group volume is 40");
     }
 
@@ -960,6 +969,7 @@ mod tests {
                 "SetAVTransportURI",
                 "GetZoneGroupState",
                 "SetAVTransportURI",
+                "GetZoneGroupState",
                 "SetMute",
                 "GetZoneGroupState",
                 "SetAVTransportURI",
@@ -987,7 +997,10 @@ mod tests {
             change: VolumeChange::Set(95),
         };
         let out = execute_guarded(&t, &households(), &guard, loud).unwrap();
-        assert_eq!(t.actions(), ["GetVolume", "SetVolume"]);
+        assert_eq!(
+            t.actions(),
+            ["GetZoneGroupState", "GetVolume", "GetZoneGroupState", "SetVolume"]
+        );
         assert_eq!(out.volume, Some(70));
         assert_eq!(out.notes.len(), 1);
         assert_eq!(out.notes[0].code, NoteCode::VolumeClamped);
