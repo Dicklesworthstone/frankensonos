@@ -57,6 +57,7 @@ use crate::rehearse::{Rehearsed, Span, rehearse};
 use crate::steer::Steer;
 
 mod enqueue;
+mod history;
 mod mode;
 mod readiness;
 mod reconcile;
@@ -211,11 +212,6 @@ mod navigation {
     }
 }
 mod trim;
-
-/// How far apart a play recorded here and the owner's Spotify history's
-/// record of it can be (Spotify notes a play when it ends; a movement can
-/// run long).
-const SAME_PLAY_SECS: u64 = 60 * 60;
 
 /// Where the feed plays: the transport, the households' state, and the group
 /// coordinator it feeds.
@@ -1342,16 +1338,7 @@ impl QueueFeed {
         }
         // What the owner played on Spotify lately, on any device, counts as
         // heard too; a play recorded here as well counts once.
-        for (uri, at) in store.spotify_heard()? {
-            let here = history.iter().any(|p| {
-                p.source_uri == uri
-                    && p.played_at
-                        .is_some_and(|t| t.abs_diff(at) <= SAME_PLAY_SECS)
-            });
-            if !here {
-                history.push(PlayRecord::at(uri, at));
-            }
-        }
+        history::merge_spotify(&mut history, store.spotify_heard()?);
         // Oldest first, the earlier zones' first in a tie.
         history.sort_by_key(|p| p.played_at);
         history.extend(self.queued_from(now, false));

@@ -45,6 +45,14 @@ This evidence participates in the DJ's existing repeat-avoidance rules. Those
 rules still depend on the available music and current selection constraints.
 Previously queued works are not removed or reordered when a new window arrives.
 
+Before each new selection, the DJ merges this evidence with local plays from
+its current and earlier coordinator identities. A Spotify observation within
+one hour of a matching recorded track counts as the same play, including the
+boundary. Timestamp lookup is indexed by track, so a retained 10,000-track
+window no longer scans every local history row for each observation. Existing
+history rows, unknown timestamps, accepted-observation order and the final
+chronological ordering retain their previous meaning.
+
 ## Full-library refreshes
 
 The optional history read during a full saved-library refresh now uses the same
