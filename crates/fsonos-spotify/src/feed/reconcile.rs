@@ -4,7 +4,52 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::QueuedWork;
+use super::{FeedSnapshot, QueuedWork};
+
+impl FeedSnapshot {
+    /// Confirm an inherited queue without moving claims onto another copy of
+    /// the same music. Every waiting claim and the selected retained work must
+    /// remain at its exact, uniquely proved positions. The selected occurrence
+    /// may be in `played`: a listener can rewind before a coordinator changes.
+    /// Source, group and boot observations still belong to the caller.
+    #[must_use]
+    pub fn owns_inherited_occurrence(
+        &self,
+        queue: &[Option<String>],
+        position: u32,
+        uri: &str,
+    ) -> bool {
+        if position == 0 {
+            return false;
+        }
+        let works: Vec<_> = self.played.iter().chain(&self.queued).collect();
+        let Some(current) = works.iter().position(|work| {
+            work.movements.iter().any(|movement| {
+                movement.added && movement.position == Some(position) && movement.uri == uri
+            })
+        }) else {
+            return false;
+        };
+        let Some(proved) = positions(&self.played, &self.queued, queue) else {
+            return false;
+        };
+        let mut occupied = HashSet::new();
+        works.iter().enumerate().all(|(index, work)| {
+            if index < self.played.len() && index != current {
+                return true;
+            }
+            work.movements
+                .iter()
+                .zip(&proved[index])
+                .all(|(movement, found)| {
+                    let Some(expected) = movement.position else {
+                        return true;
+                    };
+                    movement.added && occupied.insert(expected) && *found == Some(expected)
+                })
+        })
+    }
+}
 
 // Normal queues use the indexed complete-sequence path. Owner edits that
 // require partial matching may use at most 16 MiB for the forward scores;

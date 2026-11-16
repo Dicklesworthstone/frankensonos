@@ -17,6 +17,7 @@ use fsonos_spotify::feed::{FeedSnapshot, QueueFeed};
 use fsonos_types::{HouseholdId, PlayerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 const RETRY: Duration = Duration::from_secs(30);
@@ -251,7 +252,7 @@ impl SpotifyDj {
 }
 
 /// Read-only proof: the target leads, renders its own queue, still holds
-/// every located DJ movement, and is currently on one of those movements.
+/// every waiting DJ movement, and is currently on a uniquely held movement.
 fn inherited(
     transport: &dyn Transport,
     snapshot: &Snapshot,
@@ -262,10 +263,9 @@ fn inherited(
         return Ok(false);
     };
     let host = player.ip;
-    let topology = get_zone_group_state(transport, host)?;
-    if !topology.groups.iter().any(|g| g.coordinator == *to) {
+    let Some(group) = inherited_group(transport, snapshot, to, host)? else {
         return Ok(false);
-    }
+    };
     let queue = browse_snapshot(transport, host, QUEUE)?;
     let tracks: Vec<Option<String>> = queue
         .objects
@@ -280,14 +280,94 @@ fn inherited(
     let position = get_position_info(transport, host)?;
     let media = get_media_info(transport, host)?;
     if media.uri != format!("x-rincon-queue:{}#0", to.0)
+        || usize::try_from(media.tracks).ok() != Some(tracks.len())
         || !matches_queue(expected, &tracks, position.track, &position.uri)
     {
         return Ok(false);
     }
     // Do not adopt a queue edited while position and source were being read.
     let check = browse(transport, host, QUEUE, BrowseFlag::DirectChildren, 0, 1)?;
-    Ok(check.update_id == queue.update_id
-        && usize::try_from(check.total_matches).ok() == Some(tracks.len()))
+    if check.update_id != queue.update_id
+        || usize::try_from(check.total_matches).ok() != Some(tracks.len())
+    {
+        return Ok(false);
+    }
+    // A seek, source change, reboot or regroup need not alter the queue's
+    // revision. Confirm them after the final browse before transferring the
+    // feed, its steering and the initiating policy to this player.
+    let current = get_position_info(transport, host)?;
+    let current_media = get_media_info(transport, host)?;
+    Ok(current.track == position.track
+        && spotify_uri_from_renderer_uri(&current.uri)
+            == spotify_uri_from_renderer_uri(&position.uri)
+        && current_media.uri == media.uri
+        && current_media.tracks == media.tracks
+        && inherited_group(transport, snapshot, to, host)?.as_ref() == Some(&group))
+}
+
+/// Only the selected group's identity matters: changes elsewhere in the
+/// household cannot interrupt a valid handover. Retain every physical member's
+/// incarnation, including bonded satellites, through the queue reads.
+#[derive(Debug, PartialEq, Eq)]
+struct InheritedGroup {
+    id: String,
+    members: Vec<(PlayerId, IpAddr, Option<u32>, Option<u8>)>,
+}
+
+fn inherited_group(
+    transport: &dyn Transport,
+    snapshot: &Snapshot,
+    to: &PlayerId,
+    host: IpAddr,
+) -> Result<Option<InheritedGroup>, ProtoError> {
+    let topology = get_zone_group_state(transport, host)?;
+    fsonos_core::topology::validate_response(&topology, to)?;
+    let Some(group) = topology
+        .groups
+        .iter()
+        .find(|group| group.coordinator == *to)
+    else {
+        return Ok(None);
+    };
+    if !group
+        .members
+        .iter()
+        .any(|member| member.uuid == *to && member.ip() == Some(host) && !member.is_zone_bridge)
+    {
+        return Ok(None);
+    }
+    let mut members: Vec<_> = group
+        .members
+        .iter()
+        .filter(|member| !member.is_zone_bridge)
+        .flat_map(|member| std::iter::once(member).chain(&member.satellites))
+        .map(|member| {
+            (
+                member.uuid.clone(),
+                member.ip().expect("validated member address"),
+                member.boot_seq,
+                member.sw_gen,
+            )
+        })
+        .collect();
+    members.sort_by(|left, right| left.0.0.cmp(&right.0.0));
+    let mut known = snapshot
+        .households
+        .iter()
+        .flat_map(|household| &household.groups)
+        .filter(|group| group.coordinator == *to);
+    let Some(expected) = known.next() else {
+        return Ok(None);
+    };
+    let mut expected = expected.members.clone();
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
+    if known.next().is_some() || !expected.iter().eq(members.iter().map(|member| &member.0)) {
+        return Ok(None);
+    }
+    Ok(Some(InheritedGroup {
+        id: group.id.clone(),
+        members,
+    }))
 }
 
 fn matches_queue(
@@ -299,43 +379,25 @@ fn matches_queue(
     let Some(uri) = spotify_uri_from_renderer_uri(uri) else {
         return false;
     };
-    let mut positions = HashSet::new();
-    let mut playing = false;
-    for movement in expected.queued.iter().flat_map(|work| &work.movements) {
-        let Some(position) = movement.position.filter(|_| movement.added) else {
-            continue;
-        };
-        let Some(index) = position
-            .checked_sub(1)
-            .and_then(|p| usize::try_from(p).ok())
-        else {
-            return false;
-        };
-        if !positions.insert(position)
-            || tracks.get(index).and_then(Option::as_deref) != Some(movement.uri.as_str())
-        {
-            return false;
-        }
-        playing |= position == current && movement.uri == uri;
-    }
-    playing
+    expected.owns_inherited_occurrence(tracks, current, &uri)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use fsonos_api::dj::{DjEngine, DjStarter};
-    use fsonos_core::playback::EventSource;
+    use fsonos_core::playback::{EventSource, PlayerPlayback};
     use fsonos_core::policy::Client;
     use fsonos_core::store::MemStore;
     use fsonos_proto::control;
     use fsonos_proto::didl::{spotify_queue_uri, spotify_track_didl};
     use fsonos_proto::gena::Notify;
-    use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
-    use fsonos_spotify::dj::{DjConfig, PickReason};
-    use fsonos_spotify::feed::{Movement, QueuedWork};
+    use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
+    use fsonos_spotify::dj::{DjConfig, PickReason, WorkPool};
+    use fsonos_spotify::feed::{Movement, Planning, QueuedWork, Speakers};
     use fsonos_spotify::steer::{DjConstraints, DjSession};
-    use fsonos_types::ZoneGroup;
+    use fsonos_types::{TransportState, ZoneGroup};
+    use std::cell::{Cell, RefCell};
 
     const TRACKS: [&str; 2] = [
         "spotify:track:0000000000000000000001",
@@ -373,6 +435,18 @@ mod tests {
             dry_end: None,
             recovery: Default::default(),
         }
+    }
+
+    fn retained(from: &PlayerId) -> FeedSnapshot {
+        let mut feed = saved(from);
+        let mut first = feed.queued[0].clone();
+        first.work_key = "earlier-work".into();
+        first.movements.truncate(1);
+        feed.played.push(first);
+        feed.queued[0].movements.remove(0);
+        feed.playing = Some(2);
+        feed.recorded = Some((2, TRACKS[1].into()));
+        feed
     }
 
     fn snapshot(sim: &SimHandle) -> Snapshot {
@@ -499,6 +573,185 @@ mod tests {
                 "settled ownership needs no reads"
             );
             assert!(dj.take_handovers().is_empty(), "nothing moved again");
+        }
+    }
+
+    #[test]
+    fn rewound_retained_work_follows_reelection_and_continues_the_existing_set() {
+        for generation in [1, 2] {
+            let (sim, dj, mut store, from, to) = fixture(generation);
+            let lan = sim.lan();
+            let host = sim.player("Den").unwrap().ip;
+            control::seek_track(&lan, host, 2).unwrap();
+            dj.state().feeds.insert(
+                from.clone(),
+                QueueFeed::restore(retained(&from), DjConfig::default(), 1),
+            );
+            dj.state()
+                .starters
+                .insert(from.clone(), vec![Client::McpStdio]);
+            // The listener rewinds before the DJ has consumed that event.
+            control::seek_track(&lan, host, 1).unwrap();
+            sim.reelect_coordinator("Den").unwrap();
+            let after = snapshot(&sim);
+            let marker = sim.soap_log().len();
+            dj.on_topology(&lan, &after, &mut store);
+            assert!(!dj.feeds(&from));
+            assert!(dj.feeds(&to));
+            assert_eq!(dj.starter(&to), DjStarter::Known(vec![Client::McpStdio]));
+            assert!(store.dj_session(&from.0).unwrap().is_none());
+            assert!(store.dj_session(&to.0).unwrap().is_some());
+
+            let host = sim.player("Office").unwrap().ip;
+            let position = control::get_position_info(&lan, host).unwrap();
+            let mut event = PlayerPlayback::default();
+            event.transport = Some(TransportState::Playing);
+            event.media_uri = Some(format!("x-rincon-queue:{}#0", to.0));
+            event.track_uri = Some(position.uri);
+            event.queue_position = Some(position.track);
+            event.queue_length = Some(2);
+            let pool = WorkPool::default();
+            let mut state = dj.state();
+            let feed = state.feeds.get_mut(&to).unwrap();
+            let added = feed
+                .on_playback(
+                    &Speakers {
+                        transport: &lan,
+                        households: &after.households,
+                        coordinator: &to,
+                    },
+                    Planning {
+                        pool: &pool,
+                        steer: None,
+                        feedback: None,
+                        now: 100,
+                        local_hour: Some(12),
+                        queued_elsewhere: &[],
+                    },
+                    &mut store,
+                    &event,
+                )
+                .unwrap();
+            assert_eq!(
+                added, 0,
+                "the retained successor already supplies lookahead"
+            );
+            assert_eq!(feed.current().unwrap().work_key, "earlier-work");
+            assert_eq!(feed.queued().len(), 2);
+            assert!(
+                sim.soap_log()[marker..]
+                    .iter()
+                    .all(|entry| { entry.action == "Browse" || entry.action.starts_with("Get") })
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrelated_duplicate_copy_cannot_authorize_queue_inheritance() {
+        for generation in [1, 2] {
+            let (sim, dj, mut store, from, to) = fixture(generation);
+            let before = snapshot(&sim);
+            let tracks: Vec<_> = TRACKS
+                .iter()
+                .map(|uri| (*uri, "Duplicate movement"))
+                .collect();
+            fsonos_core::control::queue_spotify_tracks(
+                &sim.lan(),
+                &before.households,
+                &from,
+                &tracks,
+            )
+            .unwrap();
+            sim.reelect_coordinator("Den").unwrap();
+            let after = snapshot(&sim);
+            let marker = sim.soap_log().len();
+            dj.on_topology(&sim.lan(), &after, &mut store);
+            assert!(dj.feeds(&from));
+            assert!(!dj.feeds(&to));
+            assert!(store.dj_session(&from.0).unwrap().is_some());
+            assert!(store.dj_session(&to.0).unwrap().is_none());
+            assert!(
+                sim.soap_log()[marker..]
+                    .iter()
+                    .all(|entry| { entry.action == "Browse" || entry.action.starts_with("Get") })
+            );
+        }
+    }
+
+    /// Inject a real simulator change after the final queue response was
+    /// formed. These changes do not need to advance its update counter.
+    struct AfterBrowse<'a> {
+        inner: &'a SimLan,
+        after: &'a dyn Fn(),
+        browses: Cell<usize>,
+        writes: RefCell<Vec<String>>,
+    }
+
+    impl Transport for AfterBrowse<'_> {
+        fn soap_post(
+            &self,
+            host: IpAddr,
+            path: &str,
+            action: &str,
+            body: &str,
+        ) -> Result<String, ProtoError> {
+            let name = action.trim_matches('"').rsplit('#').next().unwrap();
+            if name != "Browse" && !name.starts_with("Get") {
+                self.writes.borrow_mut().push(name.into());
+            }
+            let response = self.inner.soap_post(host, path, action, body)?;
+            if name == "Browse" {
+                let seen = self.browses.get() + 1;
+                self.browses.set(seen);
+                if seen == 2 {
+                    (self.after)();
+                }
+            }
+            Ok(response)
+        }
+    }
+
+    #[test]
+    fn late_regroup_reboot_seek_or_source_change_defers_inheritance_without_writes() {
+        for generation in [1, 2] {
+            for change in ["regroup", "reboot", "member-reboot", "seek", "source"] {
+                let (sim, dj, mut store, from, to) = fixture(generation);
+                sim.reelect_coordinator("Den").unwrap();
+                let after = snapshot(&sim);
+                let lan = sim.lan();
+                let mutate = || match change {
+                    "regroup" => {
+                        control::leave_group(&lan, sim.player("Den").unwrap().ip, &from).unwrap();
+                    }
+                    "reboot" => sim.reboot("Office", Duration::ZERO).unwrap(),
+                    "member-reboot" => sim.reboot("Den", Duration::ZERO).unwrap(),
+                    "seek" => {
+                        control::seek_track(&lan, sim.player("Office").unwrap().ip, 2).unwrap();
+                    }
+                    _ => {
+                        control::set_av_transport_uri(
+                            &lan,
+                            sim.player("Office").unwrap().ip,
+                            "http://example.invalid/listener-radio",
+                            "",
+                        )
+                        .unwrap();
+                    }
+                };
+                let changing = AfterBrowse {
+                    inner: &lan,
+                    after: &mutate,
+                    browses: Cell::new(0),
+                    writes: RefCell::new(Vec::new()),
+                };
+                dj.on_topology(&changing, &after, &mut store);
+                assert_eq!(changing.browses.get(), 2, "{generation}/{change}");
+                assert!(changing.writes.borrow().is_empty());
+                assert!(dj.feeds(&from), "{generation}/{change}");
+                assert!(!dj.feeds(&to), "{generation}/{change}");
+                assert!(store.dj_session(&from.0).unwrap().is_some());
+                assert!(store.dj_session(&to.0).unwrap().is_none());
+            }
         }
     }
 

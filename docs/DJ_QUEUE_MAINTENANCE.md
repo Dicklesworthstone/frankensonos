@@ -36,6 +36,33 @@ household snapshot used to apply caps. After that snapshot catches up, recovery
 can continue. A group or player boot change during observation or refill
 invalidates that attempt without replaying accepted queue additions.
 
+## Coordinator handover retains a replayed work
+
+When Sonos elects another coordinator, the DJ can follow playback that has
+rewound into one of its retained, previously played works, including a rewind
+whose event had not reached the daemon before the election. Its steering and
+initiating policy move with the feed. The next accepted observation restores
+that work ahead of its still-queued successors without enqueuing or restarting
+the music merely to complete the handover.
+
+Inheritance uses the same bounded ordered-occurrence proof as ordinary queue
+reconciliation. Every waiting claim and the selected retained work must still
+occupy their exact, uniquely proved positions; an extra identical copy cannot
+authorize adoption. It also confirms the responding coordinator's address,
+the current physical group and every member's reported boot and generation
+around the queue reads, then checks the selected occurrence and source again.
+A regroup, reboot, source replacement or seek observed during that proof leaves
+the old feed and steering intact for a later bounded retry. Handover sends only
+reads; these observations are not an atomic lock against other controllers.
+
+Focused regressions cover retained-work replay, ambiguous duplicates and late
+group, boot, source and occurrence changes, with S1 and S2 simulator cases:
+
+```sh
+cargo test --locked -p fsonos-spotify --lib feed::reconcile
+cargo test --locked -p fsonos-cli --bin fsonos dj::handover::tests
+```
+
 ## Listening evidence stops at observation gaps
 
 Degraded or offline player health interrupts that coordinator's implicit

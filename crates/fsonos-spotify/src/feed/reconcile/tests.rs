@@ -1,5 +1,5 @@
 use super::super::{Movement, PickReason, QueuedWork};
-use super::positions;
+use super::{FeedSnapshot, positions};
 
 fn work(uris: &[&str], first: u32) -> QueuedWork {
     QueuedWork {
@@ -26,6 +26,53 @@ fn work(uris: &[&str], first: u32) -> QueuedWork {
 
 fn queue(uris: &[&str]) -> Vec<Option<String>> {
     uris.iter().map(|uri| Some((*uri).into())).collect()
+}
+
+fn snapshot(played: Vec<QueuedWork>, queued: Vec<QueuedWork>) -> FeedSnapshot {
+    FeedSnapshot {
+        zone: "SyntheticCoordinator".into(),
+        earlier: Vec::new(),
+        lookahead: 1,
+        queued,
+        playing: None,
+        recorded: None,
+        played,
+        recovery: Default::default(),
+        dry_end: None,
+    }
+}
+
+#[test]
+fn inheritance_accepts_rewound_work_and_proved_repetitions_at_their_exact_slots() {
+    let feed = snapshot(vec![work(&["a", "b"], 1)], vec![work(&["a", "b"], 3)]);
+    let actual = queue(&["a", "b", "a", "b"]);
+    for (position, uri) in [(1, "a"), (2, "b"), (3, "a"), (4, "b")] {
+        assert!(feed.owns_inherited_occurrence(&actual, position, uri));
+    }
+    assert!(!feed.owns_inherited_occurrence(&actual, 2, "a"));
+    assert!(!feed.owns_inherited_occurrence(&actual, 0, "a"));
+}
+
+#[test]
+fn inheritance_rejects_duplicate_alternatives_and_missing_waiting_claims() {
+    let feed = snapshot(Vec::new(), vec![work(&["a", "b"], 1)]);
+    assert!(!feed.owns_inherited_occurrence(&queue(&["a", "b", "a", "b"]), 1, "a"));
+    let feed = snapshot(vec![work(&["a"], 1)], vec![work(&["b"], 2)]);
+    assert!(!feed.owns_inherited_occurrence(&queue(&["a"]), 1, "a"));
+    assert!(!feed.owns_inherited_occurrence(&queue(&["a", "owner", "b"]), 1, "a"));
+    assert!(!feed.owns_inherited_occurrence(&queue(&["a", "b", "a"]), 3, "a"));
+}
+
+#[test]
+fn inheritance_does_not_reclaim_retired_or_unadded_movements() {
+    let mut held = work(&["a", "b"], 1);
+    held.movements[0].position = None;
+    let feed = snapshot(Vec::new(), vec![held.clone()]);
+    assert!(!feed.owns_inherited_occurrence(&queue(&["a", "b"]), 1, "a"));
+    assert!(feed.owns_inherited_occurrence(&queue(&["a", "b"]), 2, "b"));
+    held.movements[1].added = false;
+    let feed = snapshot(Vec::new(), vec![held]);
+    assert!(!feed.owns_inherited_occurrence(&queue(&["a", "b"]), 2, "b"));
 }
 
 #[test]
