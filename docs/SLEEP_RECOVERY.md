@@ -38,6 +38,31 @@ the timer definition. A replacement fade waits until its predecessor's cleanup
 settles, so it cannot capture an attenuated level as its starting volume. A
 newly armed timer retains its own native backstop.
 
+## Changing a daemon timer
+
+Starting, extending or cancelling sends each native timer change once. A lost
+or malformed reply can be confirmed through bounded reads only when the native
+timer generation advances by exactly one, the requested countdown or cancellation
+is observed, and the original physical group, address and known boot identity
+still agree. An intervening replacement, even with the same countdown, cannot
+supply that proof. Missing or malformed duration data never means cancellation.
+Unavailable optional preflight evidence does not prevent an ordinary acknowledged
+timer change.
+
+A definite native refusal leaves an existing timer and fade intact, so an
+explicit retry can still cancel or extend it. An unconfirmed change returns an
+uncertain result and retires the old local timer and fade; it cannot later pause
+at a deadline the speaker may already have replaced. A running fade restores
+only its still-owned levels, and no second native timer write is sent. Read the
+speaker's current timer before choosing another action. An expired old dispatch
+cannot remove a subsequently accepted extension.
+
+Timer edits keep the existing saved-snapshot publication and retry behavior.
+If publication fails and the process exits before retry succeeds, an older saved
+timer can remain; restart still requires its matching native backstop before
+adoption. This change does not make uncertain timer retirement durable across
+that combined storage failure and process exit.
+
 Accepted local volume and playback changes fence recovery reads already in
 flight. That includes a change while the first fade snapshot is still being
 read: the obsolete due timer is retired from the saved file before the newer
@@ -71,3 +96,10 @@ files, S1/S2 restart recovery, unreadable speakers, cancellation/replacement,
 failed publication, worker ownership handoff, and manual changes during both
 initial capture and restart verification. These use synthetic loopback devices;
 physical-speaker and tailnet acceptance remain separate.
+
+`cargo test -p fsonos-core --test sleep_ownership_sim` includes S1/S2 timer
+mutation cases for definite refusals, lost and malformed replies, unavailable
+read-back, changed generations, regrouping, reboot, running-fade retirement and
+stale dispatch expiry. `cargo test -p fsonos-proto --lib control::tests` checks
+strict timer evidence and overflow-safe duration parsing. The new cases have
+passed the pinned formatter; their Rust execution remains pending.

@@ -736,12 +736,20 @@ pub fn configure_sleep_timer<T: Transport + ?Sized>(
     .map(drop)
 }
 
-/// `GetRemainingSleepTimerDuration`: seconds left, `None` when no sleep
-/// timer runs.
-pub fn get_remaining_sleep_timer<T: Transport + ?Sized>(
+/// A native sleep timer observation. The generation, when supplied, changes
+/// when the player replaces, clears or expires its timer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SleepTimerInfo {
+    pub remaining_secs: Option<u32>,
+    pub generation: Option<u32>,
+}
+
+/// Read the timer and its optional generation together. Only an explicitly
+/// empty duration means no timer; missing or malformed evidence is an error.
+pub fn get_sleep_timer_info<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
-) -> Result<Option<u32>, ProtoError> {
+) -> Result<SleepTimerInfo, ProtoError> {
     let r = call(
         t,
         host,
@@ -749,7 +757,34 @@ pub fn get_remaining_sleep_timer<T: Transport + ?Sized>(
         "GetRemainingSleepTimerDuration",
         &[INSTANCE],
     )?;
-    Ok(r.get("RemainingSleepTimerDuration").and_then(parse_hms))
+    let duration = r.require("RemainingSleepTimerDuration")?.trim();
+    let remaining_secs = if duration.is_empty() {
+        None
+    } else {
+        Some(parse_hms(duration).ok_or_else(|| {
+            ProtoError::Malformed(
+                "the remaining sleep timer duration is unavailable or invalid".into(),
+            )
+        })?)
+    };
+    let generation = r
+        .get("CurrentSleepTimerGeneration")
+        .filter(|value| !value.trim().is_empty() && value.trim() != "NOT_IMPLEMENTED")
+        .map(|_| r.require_u32("CurrentSleepTimerGeneration"))
+        .transpose()?;
+    Ok(SleepTimerInfo {
+        remaining_secs,
+        generation,
+    })
+}
+
+/// `GetRemainingSleepTimerDuration`: seconds left, `None` for an explicitly
+/// empty timer. Unavailable or malformed duration evidence remains an error.
+pub fn get_remaining_sleep_timer<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+) -> Result<Option<u32>, ProtoError> {
+    Ok(get_sleep_timer_info(t, host)?.remaining_secs)
 }
 
 /// Parse an `H:MM:SS` (or `HH:MM:SS`, optionally with a fraction) duration.
@@ -761,9 +796,20 @@ pub fn parse_hms(value: &str) -> Option<u32> {
     if parts.next().is_some() {
         return None;
     }
-    let s = s.split('.').next()?;
+    let s = match s.split_once('.') {
+        Some((seconds, fraction))
+            if !fraction.is_empty() && fraction.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            seconds
+        }
+        Some(_) => return None,
+        None => s,
+    };
     let (h, m, s): (u32, u32, u32) = (h.parse().ok()?, m.parse().ok()?, s.parse().ok()?);
-    (m < 60 && s < 60).then_some(h * 3600 + m * 60 + s)
+    if m >= 60 || s >= 60 {
+        return None;
+    }
+    h.checked_mul(3600)?.checked_add(m * 60)?.checked_add(s)
 }
 
 fn hms(secs: u32) -> String {
@@ -1017,11 +1063,48 @@ mod tests {
              <CurrentSleepTimerGeneration>3</CurrentSleepTimerGeneration>",
         );
         assert_eq!(get_remaining_sleep_timer(&t, host()).unwrap(), Some(898));
+        assert_eq!(
+            get_sleep_timer_info(&t, host()).unwrap(),
+            SleepTimerInfo {
+                remaining_secs: Some(898),
+                generation: Some(3),
+            }
+        );
         let t = Canned::new(
             "<RemainingSleepTimerDuration></RemainingSleepTimerDuration>\
              <CurrentSleepTimerGeneration>4</CurrentSleepTimerGeneration>",
         );
         assert_eq!(get_remaining_sleep_timer(&t, host()).unwrap(), None);
+    }
+
+    #[test]
+    fn unreadable_sleep_timer_evidence_is_not_a_cancelled_timer() {
+        for args in [
+            "",
+            "<RemainingSleepTimerDuration>NOT_IMPLEMENTED</RemainingSleepTimerDuration>",
+            "<RemainingSleepTimerDuration>invalid</RemainingSleepTimerDuration>",
+            "<RemainingSleepTimerDuration>4294967295:00:00</RemainingSleepTimerDuration>",
+            "<RemainingSleepTimerDuration>00:00:00.invalid</RemainingSleepTimerDuration>",
+            "<RemainingSleepTimerDuration></RemainingSleepTimerDuration>\
+             <CurrentSleepTimerGeneration>invalid</CurrentSleepTimerGeneration>",
+        ] {
+            assert!(
+                matches!(
+                    get_sleep_timer_info(&Canned::new(args), host()),
+                    Err(ProtoError::Malformed(_))
+                ),
+                "{args}"
+            );
+        }
+        let zero =
+            Canned::new("<RemainingSleepTimerDuration>00:00:00.000</RemainingSleepTimerDuration>");
+        assert_eq!(
+            get_sleep_timer_info(&zero, host()).unwrap(),
+            SleepTimerInfo {
+                remaining_secs: Some(0),
+                generation: None,
+            }
+        );
     }
 
     #[test]
@@ -1243,6 +1326,11 @@ mod tests {
         assert_eq!(parse_hms("00:00:07.250"), Some(7));
         assert_eq!(parse_hms("0:61:00"), None);
         assert_eq!(parse_hms("NOT_IMPLEMENTED"), None);
+        assert_eq!(parse_hms("1193046:28:15"), Some(u32::MAX));
+        assert_eq!(parse_hms("1193046:28:16"), None);
+        assert_eq!(parse_hms("4294967295:00:00"), None);
+        assert_eq!(parse_hms("00:00:07."), None);
+        assert_eq!(parse_hms("00:00:07.250.1"), None);
         assert_eq!(hms(3723), "1:02:03");
         let t = Canned::new("");
         seek_position(&t, host(), 75).unwrap();

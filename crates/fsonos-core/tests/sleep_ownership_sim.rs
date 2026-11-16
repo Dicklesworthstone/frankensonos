@@ -3,13 +3,14 @@
 use chrono::{DateTime, Utc};
 use fsonos_core::fade::Fader;
 use fsonos_core::sleep::{SleepOutcome, SleepTimers};
-use fsonos_core::{HouseholdState, control, resolve_room};
+use fsonos_core::{CoreError, HouseholdState, control, resolve_room};
 use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
@@ -181,6 +182,436 @@ impl Transport for Gate<'_> {
             });
         }
         read.unwrap_or_else(|| self.lan.soap_post(host, path, action, body))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TimerFault {
+    Refused,
+    Lost,
+    Malformed,
+    NotApplied,
+    NotWiredApplied,
+    NotWiredNotApplied,
+    Unreadable,
+    MissingDuration,
+    MissingGeneration,
+    Replaced,
+    Regrouped,
+    Rebooted,
+}
+
+/// Preserve real speaker effects while varying the timer acknowledgement or
+/// its subsequent evidence. A replacement is an independent controller write.
+struct TimerReplies<'a> {
+    house: &'a House,
+    fault: TimerFault,
+    writes: AtomicUsize,
+}
+
+impl<'a> TimerReplies<'a> {
+    fn new(house: &'a House, fault: TimerFault) -> Self {
+        Self {
+            house,
+            fault,
+            writes: AtomicUsize::new(0),
+        }
+    }
+
+    fn lost(host: IpAddr) -> ProtoError {
+        ProtoError::Network {
+            target: host.to_string(),
+            detail: "injected missing timer reply".into(),
+        }
+    }
+}
+
+impl Transport for TimerReplies<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        if name == "ConfigureSleepTimer" {
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            if matches!(self.fault, TimerFault::Refused) {
+                return Err(ProtoError::SoapFault {
+                    code: 701,
+                    reason: "timer change refused".into(),
+                });
+            }
+            if matches!(self.fault, TimerFault::NotApplied) {
+                return Err(Self::lost(host));
+            }
+            if matches!(self.fault, TimerFault::NotWiredNotApplied) {
+                return Err(ProtoError::NotWired("injected timer worker cancellation"));
+            }
+            self.house.lan.soap_post(host, path, action, body)?;
+            match self.fault {
+                TimerFault::Malformed => return Ok("invalid acknowledgement".into()),
+                TimerFault::NotWiredApplied => {
+                    return Err(ProtoError::NotWired("injected timer worker cancellation"));
+                }
+                TimerFault::Replaced => {
+                    // Same countdown, different generation: duration alone
+                    // must not adopt this owner's intervening timer.
+                    self.house.lan.soap_post(host, path, action, body)?;
+                }
+                TimerFault::Regrouped => {
+                    let office = PlayerId(self.house.sim.player("Office").unwrap().uuid.clone());
+                    assert!(matches!(
+                        soap::join_group(&self.house.lan, self.house.office_host, &office),
+                        Err(ProtoError::SoapFault { code: 402, .. })
+                    ));
+                }
+                TimerFault::Rebooted => self.house.sim.reboot("Kitchen", Duration::ZERO).unwrap(),
+                _ => {}
+            }
+            return Err(Self::lost(host));
+        }
+        if name == "GetRemainingSleepTimerDuration"
+            && self.writes.load(Ordering::SeqCst) > 0
+            && matches!(self.fault, TimerFault::Unreadable)
+        {
+            return Err(Self::lost(host));
+        }
+        let response = self.house.lan.soap_post(host, path, action, body)?;
+        if name == "GetRemainingSleepTimerDuration" {
+            if self.writes.load(Ordering::SeqCst) > 0
+                && matches!(self.fault, TimerFault::MissingDuration)
+            {
+                return Ok(response
+                    .replace("<RemainingSleepTimerDuration>", "<AbsentDuration>")
+                    .replace("</RemainingSleepTimerDuration>", "</AbsentDuration>"));
+            }
+            if matches!(self.fault, TimerFault::MissingGeneration) {
+                return Ok(response.replace("CurrentSleepTimerGeneration", "AbsentGeneration"));
+            }
+        }
+        Ok(response)
+    }
+}
+
+fn change_timer(
+    h: &House,
+    timers: &SleepTimers,
+    fader: &Fader,
+    replies: &TimerReplies<'_>,
+    cancel: bool,
+) -> Result<(), CoreError> {
+    if cancel {
+        timers
+            .cancel(replies, &h.houses, fader, &h.kitchen)
+            .map(|had| assert!(had))
+    } else {
+        timers
+            .extend(
+                replies,
+                &h.houses,
+                fader,
+                &h.kitchen,
+                Duration::from_mins(10),
+                now(),
+            )
+            .map(|timer| assert!(timer.is_some()))
+    }
+}
+
+#[test]
+fn refused_timer_changes_preserve_the_deadline_and_allow_an_explicit_retry() {
+    for s2 in [false, true] {
+        for cancel in [false, true] {
+            let h = House::new(s2);
+            let timers = SleepTimers::new();
+            let fader = Fader::default();
+            h.arm(&timers, &fader);
+            let original = timers.get(&h.kitchen).unwrap();
+            let replies = TimerReplies::new(&h, TimerFault::Refused);
+            assert!(matches!(
+                change_timer(&h, &timers, &fader, &replies, cancel),
+                Err(CoreError::Proto(ProtoError::SoapFault { code: 701, .. }))
+            ));
+            assert_eq!(timers.all(), [original.clone()]);
+            assert_eq!(h.backstop(), Some(5 * 60));
+            assert_eq!(replies.writes.load(Ordering::SeqCst), 1);
+            if cancel {
+                assert!(
+                    timers
+                        .cancel(&h.lan, &h.houses, &fader, &h.kitchen)
+                        .unwrap()
+                );
+                assert_eq!(h.backstop(), None);
+                assert!(timers.all().is_empty());
+            } else {
+                let longer = timers
+                    .extend(
+                        &h.lan,
+                        &h.houses,
+                        &fader,
+                        &h.kitchen,
+                        Duration::from_mins(10),
+                        now(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(longer.ends, original.ends + chrono::TimeDelta::minutes(10));
+                assert!(!longer.fading);
+                assert_eq!(h.backstop(), Some(15 * 60));
+            }
+            assert_eq!(h.transport(), TransportState::Playing);
+            assert_eq!(h.levels(), (30, 20));
+        }
+    }
+}
+
+#[test]
+fn lost_timer_replies_are_confirmed_once_with_the_native_generation() {
+    for s2 in [false, true] {
+        for cancel in [false, true] {
+            for fault in [
+                TimerFault::Lost,
+                TimerFault::Malformed,
+                TimerFault::NotWiredApplied,
+            ] {
+                let h = House::new(s2);
+                let timers = SleepTimers::new();
+                let fader = Fader::default();
+                h.arm(&timers, &fader);
+                let replies = TimerReplies::new(&h, fault);
+                change_timer(&h, &timers, &fader, &replies, cancel).unwrap();
+                assert_eq!(replies.writes.load(Ordering::SeqCst), 1);
+                assert_eq!(h.backstop(), (!cancel).then_some(15 * 60));
+                assert_eq!(timers.all().len(), usize::from(!cancel));
+                assert_eq!(
+                    timers.run(&h.lan, &h.houses, &fader, &h.kitchen).unwrap(),
+                    SleepOutcome::Gone,
+                    "the old due fade cannot run after the confirmed change"
+                );
+                assert_eq!(h.transport(), TransportState::Playing);
+                assert_eq!(h.levels(), (30, 20));
+            }
+        }
+    }
+}
+
+#[test]
+fn uncertain_timer_changes_retire_local_automation_without_repeating_the_write() {
+    for s2 in [false, true] {
+        for cancel in [false, true] {
+            for fault in [
+                TimerFault::NotApplied,
+                TimerFault::NotWiredNotApplied,
+                TimerFault::Unreadable,
+                TimerFault::MissingDuration,
+                TimerFault::MissingGeneration,
+                TimerFault::Replaced,
+                TimerFault::Regrouped,
+                TimerFault::Rebooted,
+            ] {
+                let h = House::new(s2);
+                let timers = SleepTimers::new();
+                let fader = Fader::default();
+                h.arm(&timers, &fader);
+                let replies = TimerReplies::new(&h, fault);
+                assert!(
+                    matches!(
+                        change_timer(&h, &timers, &fader, &replies, cancel),
+                        Err(CoreError::Uncertain(_))
+                    ),
+                    "{fault:?}"
+                );
+                assert_eq!(replies.writes.load(Ordering::SeqCst), 1, "{fault:?}");
+                assert_eq!(serde_json::to_string(&timers.all()).unwrap(), "[]");
+                assert!(timers.due(now() + chrono::TimeDelta::days(1)).is_empty());
+                let before = h.sim.soap_log().len();
+                assert_eq!(
+                    timers.run(&h.lan, &h.houses, &fader, &h.kitchen).unwrap(),
+                    SleepOutcome::Gone
+                );
+                assert_eq!(
+                    h.sim.soap_log().len(),
+                    before,
+                    "no old fade or timer rewrite"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_running_fade_survives_definite_refusal_but_retires_after_an_uncertain_change() {
+    for s2 in [false, true] {
+        for cancel in [false, true] {
+            for fault in [
+                TimerFault::Refused,
+                TimerFault::NotApplied,
+                TimerFault::NotWiredNotApplied,
+            ] {
+                let refused = matches!(fault, TimerFault::Refused);
+                let h = House::new(s2);
+                let timers = SleepTimers::new();
+                let fader = Fader::default();
+                h.arm(&timers, &fader);
+                let (mut gate, entered, release) =
+                    Gate::new(&h.lan, h.kitchen_host, "GetVolume", "");
+                gate.after_read = true;
+                let replies = TimerReplies::new(&h, fault);
+                let outcome = std::thread::scope(|scope| {
+                    let run = scope.spawn(|| timers.run(&gate, &h.houses, &fader, &h.kitchen));
+                    entered.recv_timeout(WAIT).unwrap();
+                    assert!(change_timer(&h, &timers, &fader, &replies, cancel).is_err());
+                    release.send(()).unwrap();
+                    run.join().unwrap().unwrap()
+                });
+                assert_eq!(
+                    outcome,
+                    if refused {
+                        SleepOutcome::Paused
+                    } else {
+                        SleepOutcome::Cancelled
+                    }
+                );
+                assert_eq!(
+                    h.transport(),
+                    if refused {
+                        TransportState::Paused
+                    } else {
+                        TransportState::Playing
+                    }
+                );
+                assert_eq!(h.levels(), (30, 20));
+                assert!(timers.all().is_empty());
+                assert_eq!(h.backstop(), (!refused).then_some(5 * 60));
+            }
+        }
+    }
+}
+
+#[test]
+fn a_lost_initial_backstop_reply_still_arms_the_confirmed_daemon_timer() {
+    for s2 in [false, true] {
+        for fault in [
+            TimerFault::Lost,
+            TimerFault::Malformed,
+            TimerFault::NotWiredApplied,
+        ] {
+            let h = House::new(s2);
+            let timers = SleepTimers::new();
+            let fader = Fader::default();
+            let replies = TimerReplies::new(&h, fault);
+            let timer = timers
+                .start(
+                    &replies,
+                    &h.houses,
+                    &fader,
+                    &h.kitchen,
+                    Duration::from_mins(10),
+                    now(),
+                )
+                .unwrap();
+            assert_eq!(timer.ends, now() + chrono::TimeDelta::minutes(10));
+            assert_eq!(timers.all(), [timer]);
+            assert_eq!(h.backstop(), Some(15 * 60));
+            assert_eq!(replies.writes.load(Ordering::SeqCst), 1);
+        }
+    }
+}
+
+#[test]
+fn replacing_a_timer_preserves_refusals_but_retires_an_uncertain_old_deadline() {
+    for s2 in [false, true] {
+        for fault in [
+            TimerFault::Refused,
+            TimerFault::NotApplied,
+            TimerFault::NotWiredNotApplied,
+            TimerFault::Unreadable,
+        ] {
+            let h = House::new(s2);
+            let timers = SleepTimers::new();
+            let fader = Fader::default();
+            h.arm(&timers, &fader);
+            let original = timers.all();
+            let replies = TimerReplies::new(&h, fault);
+            let result = timers.start(
+                &replies,
+                &h.houses,
+                &fader,
+                &h.kitchen,
+                Duration::from_mins(10),
+                now(),
+            );
+            assert_eq!(replies.writes.load(Ordering::SeqCst), 1);
+            if matches!(fault, TimerFault::Refused) {
+                assert!(matches!(
+                    result,
+                    Err(CoreError::Proto(ProtoError::SoapFault { code: 701, .. }))
+                ));
+                assert_eq!(timers.all(), original);
+            } else {
+                assert!(matches!(result, Err(CoreError::Uncertain(_))));
+                assert!(timers.all().is_empty());
+                let from = h.sim.soap_log().len();
+                assert_eq!(
+                    timers.run(&h.lan, &h.houses, &fader, &h.kitchen).unwrap(),
+                    SleepOutcome::Gone
+                );
+                assert_eq!(h.sim.soap_log().len(), from);
+            }
+            assert_eq!(
+                h.backstop(),
+                Some(if matches!(fault, TimerFault::Unreadable) {
+                    15 * 60
+                } else {
+                    5 * 60
+                })
+            );
+            assert_eq!(h.transport(), TransportState::Playing);
+            assert_eq!(h.levels(), (30, 20));
+        }
+    }
+}
+
+#[test]
+fn an_expired_old_dispatch_cannot_erase_an_accepted_extension() {
+    for s2 in [false, true] {
+        let h = House::new(s2);
+        let timers = SleepTimers::new();
+        let fader = Fader::default();
+        timers
+            .start(&h.lan, &h.houses, &fader, &h.kitchen, Duration::ZERO, now())
+            .unwrap();
+        let old = timers.due_runs(now(), 1).pop().unwrap();
+        let later = now() + chrono::TimeDelta::minutes(6);
+        let (gate, entered, release) = Gate::new(&h.lan, h.kitchen_host, "ConfigureSleepTimer", "");
+        let timer = std::thread::scope(|scope| {
+            let extending = scope.spawn(|| {
+                timers.extend(
+                    &gate,
+                    &h.houses,
+                    &fader,
+                    &h.kitchen,
+                    Duration::from_mins(10),
+                    later,
+                )
+            });
+            entered.recv_timeout(WAIT).unwrap();
+            assert!(timers.expire_run(&old, later));
+            release.send(()).unwrap();
+            extending.join().unwrap().unwrap().unwrap()
+        });
+        assert_eq!(timer.ends, later + chrono::TimeDelta::minutes(10));
+        assert_eq!(timers.all(), [timer]);
+        assert!(!timers.release_run(&old));
+        assert!(!timers.expire_run(&old, later + chrono::TimeDelta::days(1)));
+        assert_eq!(
+            timers.run_due(&h.lan, &h.houses, &fader, &old).unwrap(),
+            SleepOutcome::Gone
+        );
+        assert_eq!(h.backstop(), Some(15 * 60));
+        assert_eq!(h.transport(), TransportState::Playing);
     }
 }
 

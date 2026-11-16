@@ -29,6 +29,7 @@ use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 mod announcement;
+mod backstop;
 mod dispatch;
 mod ownership;
 mod recovery;
@@ -160,6 +161,20 @@ impl SleepTimers {
         }
     }
 
+    /// Caller holds the coordinator's operation lock. An uncertain replacement
+    /// or cancellation must not leave the old fade able to pause newer music.
+    /// Keep its restoration claims alive until its worker puts owned levels back.
+    fn retire(&self, fader: &Fader, coordinator: &PlayerId) {
+        let old = {
+            let mut armed = self.lock();
+            self.resumes.supersede(coordinator);
+            armed.remove(coordinator)
+        };
+        if let Some(old) = old {
+            Self::stop_fade(&old, fader);
+        }
+    }
+
     /// Point the player's own timer `BACKSTOP` past `ends`.
     fn backstop<T: Transport + ?Sized>(
         t: &T,
@@ -169,11 +184,7 @@ impl SleepTimers {
         now: DateTime<Utc>,
     ) -> Result<(), CoreError> {
         let after = secs(ends - now + delta(BACKSTOP));
-        Ok(soap::configure_sleep_timer(
-            t,
-            ip(households, coordinator)?,
-            Some(after),
-        )?)
+        backstop::configure(t, ip(households, coordinator)?, coordinator, Some(after))
     }
 
     /// Pause the group `coordinator` leads `after` from `now` (replacing
@@ -191,7 +202,12 @@ impl SleepTimers {
         let mut active = operation.lock().unwrap_or_else(PoisonError::into_inner);
         let predecessors = active.remaining();
         let ends = now + delta(after);
-        Self::backstop(t, households, coordinator, ends, now)?;
+        if let Err(error) = Self::backstop(t, households, coordinator, ends, now) {
+            if matches!(&error, CoreError::Uncertain(_)) {
+                self.retire(fader, coordinator);
+            }
+            return Err(error);
+        }
         let timer = SleepTimer {
             coordinator: coordinator.clone(),
             room: room_name(households, coordinator),
@@ -223,7 +239,9 @@ impl SleepTimers {
     }
 
     /// Push `coordinator`'s timer `by` later (stopping its fade, if one
-    /// has started). `None` if it has no timer.
+    /// has started). `None` if it has no timer. A definite native refusal
+    /// preserves the original timer. An unconfirmed write retires its local
+    /// fade rather than allowing it to pause at a possibly obsolete deadline.
     pub fn extend<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -235,34 +253,55 @@ impl SleepTimers {
     ) -> Result<Option<SleepTimer>, CoreError> {
         let operation = self.operations.get(coordinator);
         let mut active = operation.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(mut timer) = self
+            .lock()
+            .get(coordinator)
+            .map(|entry| entry.timer.clone())
+        else {
+            return Ok(None);
+        };
+        timer.ends = timer.ends.max(now) + delta(by);
+        timer.fading = false;
+        // The running fade can finish its steps but cannot enter its final
+        // Pause while this operation lock is held. Do not stop or reschedule it
+        // until the speaker accepts the new backstop or its outcome is unknown.
+        if let Err(error) = Self::backstop(t, households, coordinator, timer.ends, now) {
+            if matches!(&error, CoreError::Uncertain(_)) {
+                self.retire(fader, coordinator);
+            }
+            return Err(error);
+        }
         let predecessors = active.remaining();
         let generation = self.generation();
-        let (timer, claims) = {
+        let old = {
             let mut armed = self.lock();
             self.resumes.supersede(coordinator);
-            let Some(entry) = armed.get_mut(coordinator) else {
-                return Ok(None);
-            };
-            let claims = entry.fade_claims.take();
-            entry.predecessors = predecessors;
-            entry.timer.ends = entry.timer.ends.max(now) + delta(by);
-            entry.timer.fading = false;
-            entry.generation = generation;
-            entry.running = false;
-            entry.interrupted = false;
-            entry.fade_deadline = None;
-            entry.recovery = None;
-            (entry.timer.clone(), claims)
+            // An unstarted dispatch can expire during the native read/write.
+            // Its old ticket cannot erase this accepted, newly armed deadline.
+            armed.insert(
+                coordinator.clone(),
+                Armed {
+                    timer: timer.clone(),
+                    recovery: None,
+                    generation,
+                    running: false,
+                    fade_claims: None,
+                    predecessors,
+                    fade_deadline: None,
+                    interrupted: false,
+                },
+            )
         };
-        if let Some(claims) = claims {
-            claims.stop(fader, true);
+        if let Some(old) = old {
+            Self::stop_fade(&old, fader);
         }
-        Self::backstop(t, households, coordinator, timer.ends, now)?;
         Ok(Some(timer))
     }
 
     /// Cancel `coordinator`'s timer (stopping its fade, if one has started)
-    /// and the player's own. Whether there was one.
+    /// and the player's own. Whether there was one. A definite refusal leaves
+    /// the original timer available to retry. An unconfirmed cancellation stops
+    /// local automation and returns an explicit uncertain outcome.
     pub fn cancel<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -272,17 +311,15 @@ impl SleepTimers {
     ) -> Result<bool, CoreError> {
         let operation = self.operations.get(coordinator);
         let _operation = operation.lock().unwrap_or_else(PoisonError::into_inner);
-        let old = {
-            let mut armed = self.lock();
-            self.resumes.supersede(coordinator);
-            armed.remove(coordinator)
-        };
-        let Some(old) = old else {
+        if !self.lock().contains_key(coordinator) {
+            self.retire(fader, coordinator);
             return Ok(false);
-        };
-        Self::stop_fade(&old, fader);
-        soap::configure_sleep_timer(t, ip(households, coordinator)?, None)?;
-        Ok(true)
+        }
+        let result = backstop::configure(t, ip(households, coordinator)?, coordinator, None);
+        if result.is_ok() || matches!(&result, Err(CoreError::Uncertain(_))) {
+            self.retire(fader, coordinator);
+        }
+        result.map(|()| true)
     }
 
     /// The music `old` led plays under `new` now (a move): its timer follows
