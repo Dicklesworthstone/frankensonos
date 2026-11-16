@@ -108,6 +108,11 @@ fn group<T: Transport + ?Sized>(
     coordinator: &PlayerId,
 ) -> Result<Vec<PlayerId>, CoreError> {
     let topology = get_zone_group_state(t, host)?;
+    if !crate::topology::coordinator_at(&topology, host, coordinator)? {
+        return Err(unproven(
+            "the snapshot player no longer owns its control address",
+        ));
+    }
     let group = topology
         .groups
         .iter()

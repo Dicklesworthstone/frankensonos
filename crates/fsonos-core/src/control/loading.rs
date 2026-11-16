@@ -19,11 +19,7 @@ fn coordinator_at<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    if get_zone_group_state(t, host)?
-        .groups
-        .iter()
-        .any(|group| group.coordinator == *coordinator)
-    {
+    if crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)? {
         Ok(())
     } else {
         Err(ProtoError::Malformed("the source target no longer leads its group".into()).into())

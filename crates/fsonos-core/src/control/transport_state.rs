@@ -17,10 +17,7 @@ pub(super) fn play<T: Transport + ?Sized>(
 ) -> Result<(), ProtoError> {
     complete("Play", soap::play(t, host), || {
         source_start::wait_for_playing(t, host, || {
-            Ok(get_zone_group_state(t, host)?
-                .groups
-                .iter()
-                .any(|group| group.coordinator == *coordinator))
+            crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)
         })
     })
 }

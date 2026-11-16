@@ -140,10 +140,7 @@ fn confirmed<T: Transport + ?Sized>(
             return Ok(false);
         }
         let topology = get_zone_group_state(transport, host)?;
-        Ok(topology
-            .groups
-            .iter()
-            .any(|group| group.coordinator == *coordinator))
+        crate::topology::coordinator_at(&topology, host, coordinator)
     };
     match stage {
         Stage::Source => {

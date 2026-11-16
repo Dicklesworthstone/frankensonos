@@ -272,3 +272,29 @@ they do not lock out another controller between the final read and write.
 The `fsonos-core` `queue_source::ownership` simulator cases cover S1 and S2
 with independent groups, identical queue revisions, reassigned addresses,
 malformed topology, and an address change after an accepted insertion.
+
+## Playback continuation and silent restoration retain the endpoint
+
+Direct-source and queue starts now bind their lost-reply confirmation to the
+original coordinator at the exact control address. Resume applies the same
+check before and after its playing-state observation. Finding that coordinator
+somewhere in a household-wide topology document cannot authorize a subsequent
+Play, mode change or Seek on a different player's endpoint.
+
+Silent source and queue loaders validate that binding before their writes.
+Snapshot source restoration, queue-bookmark scenes and saved-playlist scene
+proofs also reject a different endpoint or incoherent topology. These checks
+reuse the topology reads those operations already perform. Acknowledged direct
+starts and resume retain their existing first-write fast paths; this is not a
+new universal preflight or a lock against concurrent regrouping.
+
+`playback_destination_sim` adds five real-socket regressions across S1 and S2,
+and the transport-state unit tests cover ownership changing at either Resume
+confirmation read. They assert that unrelated groups cannot authorize follow-on
+writes or a false success. Rust execution remains pending after the editing
+host's toolchain installation failed and the host became unavailable.
+
+```sh
+cargo test --locked -p fsonos-core --test playback_destination_sim
+cargo test --locked -p fsonos-core --lib control::transport_state
+```

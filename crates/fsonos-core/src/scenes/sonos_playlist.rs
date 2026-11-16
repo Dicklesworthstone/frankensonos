@@ -206,6 +206,11 @@ fn confirm_audience<T: Transport + ?Sized>(
 ) -> Result<(), CoreError> {
     let host = control::locate(households, coordinator)?.ip;
     let topology = get_zone_group_state(t, host)?;
+    if !crate::topology::coordinator_at(&topology, host, coordinator)? {
+        return Err(invalid(
+            "the selected room no longer owns its control address; refresh and apply again",
+        ));
+    }
     let mut live = HouseholdState::default();
     live.apply_topology(&topology);
     if audience(households, coordinator)? != audience(&[live], coordinator)? {

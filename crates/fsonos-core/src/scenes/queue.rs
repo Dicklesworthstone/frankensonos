@@ -69,6 +69,11 @@ pub(super) fn group<T: Transport + ?Sized>(
     coordinator: &PlayerId,
 ) -> Result<Group, ProtoError> {
     let topology = get_zone_group_state(t, host)?;
+    if !crate::topology::coordinator_at(&topology, host, coordinator)? {
+        return Err(invalid(
+            "the original player no longer owns its control address",
+        ));
+    }
     let mut groups = topology
         .groups
         .iter()

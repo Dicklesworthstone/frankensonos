@@ -192,6 +192,25 @@ fn changed_coordinator_and_nonplaying_states_do_not_confirm_play() {
 }
 
 #[test]
+fn a_coordinator_at_another_address_cannot_confirm_play_even_after_a_matching_read() {
+    for late in [false, true] {
+        let mut steps = vec![("Play", Err(lost()))];
+        if late {
+            steps.extend([topology("synthetic-player"), status("PLAYING")]);
+        }
+        let (action, answer) = topology("synthetic-player");
+        let displaced = answer.unwrap().replace("127.0.0.1", "192.0.2.10");
+        steps.push((action, Ok(displaced)));
+        let t = Script::new(steps);
+        assert!(matches!(
+            play(&t, host(), &player()),
+            Err(ProtoError::Network { detail, .. }) if detail == "write reply lost"
+        ));
+        t.done();
+    }
+}
+
+#[test]
 fn explicit_faults_skip_observation_and_read_failures_preserve_the_write_cause() {
     let reads = Cell::new(0);
     let result = complete("Play", Err(refused()), || {
