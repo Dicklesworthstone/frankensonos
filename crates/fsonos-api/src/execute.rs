@@ -712,15 +712,6 @@ mod tests {
         destination: bool,
     }
 
-    /// Den coordinating Den and Kitchen, as `households()` has it.
-    const DEN_GROUP: &str = "&lt;ZoneGroupState&gt;&lt;ZoneGroups&gt;\
-        &lt;ZoneGroup Coordinator=&quot;RINCON_DEN&quot; ID=&quot;RINCON_DEN:1&quot;&gt;\
-        &lt;ZoneGroupMember UUID=&quot;RINCON_DEN&quot; \
-        Location=&quot;http://192.0.2.10:1400/xml/device_description.xml&quot; ZoneName=&quot;Den&quot;/&gt;\
-        &lt;ZoneGroupMember UUID=&quot;RINCON_KIT1&quot; \
-        Location=&quot;http://192.0.2.11:1400/xml/device_description.xml&quot; ZoneName=&quot;Kitchen&quot;/&gt;\
-        &lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;&lt;/ZoneGroupState&gt;";
-
     /// A one-page Browse of the queue holding `uris`, at `update_id`.
     fn queue_page(uris: &[&str], update_id: u32) -> String {
         let escape = |s: &str| {
@@ -809,9 +800,7 @@ mod tests {
                 return Ok(self.browse.to_string());
             }
             let out_args = match action.as_str() {
-                "GetZoneGroupState" => {
-                    format!("<ZoneGroupState>{DEN_GROUP}</ZoneGroupState>")
-                }
+                "GetZoneGroupState" => crate::surface::testing::topology(host),
                 "GetMediaInfo" if self.destination => {
                     "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into()
                 }
@@ -872,7 +861,10 @@ mod tests {
         };
         let t = Canned::ok("");
         let out = execute(&t, &houses, &seek(Seek::At(90))).unwrap();
-        assert_eq!(t.actions(), ["GetPositionInfo", "GetZoneGroupState", "Seek"]);
+        assert_eq!(
+            t.actions(),
+            ["GetPositionInfo", "GetZoneGroupState", "Seek"]
+        );
         assert_eq!(out, OutcomeDto::sent("moved to 1:30 in Den's group".into()));
         // From where it is (1:00 of 3:00), and never past the last second.
         // A player on a track names it; a relative seek needs one.
@@ -885,7 +877,10 @@ mod tests {
         ] {
             let t = Canned::ok(at);
             let out = execute(&t, &houses, &seek(Seek::By(by))).unwrap();
-            assert_eq!(t.actions(), ["GetPositionInfo", "GetZoneGroupState", "Seek"]);
+            assert_eq!(
+                t.actions(),
+                ["GetPositionInfo", "GetZoneGroupState", "Seek"]
+            );
             assert_eq!(out, OutcomeDto::sent(format!("{verb} in Den's group")));
         }
         assert!(!seek(Seek::At(5)).repeat_safe());
@@ -966,6 +961,8 @@ mod tests {
         assert_eq!(
             t.actions(),
             [
+                "GetZoneGroupState",
+                "GetZoneGroupState",
                 "SetAVTransportURI",
                 "GetZoneGroupState",
                 "SetAVTransportURI",
@@ -999,7 +996,12 @@ mod tests {
         let out = execute_guarded(&t, &households(), &guard, loud).unwrap();
         assert_eq!(
             t.actions(),
-            ["GetZoneGroupState", "GetVolume", "GetZoneGroupState", "SetVolume"]
+            [
+                "GetZoneGroupState",
+                "GetVolume",
+                "GetZoneGroupState",
+                "SetVolume"
+            ]
         );
         assert_eq!(out.volume, Some(70));
         assert_eq!(out.notes.len(), 1);

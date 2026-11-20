@@ -1,15 +1,143 @@
-//! Recover an uncertain grouping reply from fresh household topology. Only
-//! reads repeat; a different layout never authorizes another group write.
+//! Bind grouping to coherent household endpoints, then recover an uncertain
+//! reply from fresh topology. Only reads repeat after an ambiguous write.
 
 use super::{LEAVE_POLL, LEAVE_WAIT};
-use crate::HouseholdState;
+use crate::{CoreError, HouseholdState};
 use fsonos_proto::topology::{ZoneGroupInfo, ZoneGroupState, get_zone_group_state};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 type Members = HashSet<PlayerId>;
+
+fn changed(detail: &str) -> CoreError {
+    CoreError::TargetChanged(format!("grouping target changed: {detail}"))
+}
+
+fn household<'a>(
+    households: &'a [HouseholdState],
+    player: &PlayerId,
+) -> Result<(usize, &'a HouseholdState), CoreError> {
+    let mut owners = households
+        .iter()
+        .enumerate()
+        .filter(|(_, house)| house.player(player).is_some());
+    let selected = owners
+        .next()
+        .ok_or_else(|| CoreError::UnknownPlayer(player.0.clone()))?;
+    if owners.next().is_some() {
+        return Err(changed("the player belongs to more than one household"));
+    }
+    Ok(selected)
+}
+
+fn player_at(state: &ZoneGroupState, player: &PlayerId, host: IpAddr) -> bool {
+    state
+        .groups
+        .iter()
+        .flat_map(|group| &group.members)
+        .flat_map(|member| std::iter::once(member).chain(&member.satellites))
+        .any(|member| member.uuid == *player && member.ip() == Some(host) && !member.is_zone_bridge)
+}
+
+/// A topology is household-wide: finding the requested player somewhere in
+/// it does not establish who answered at the cached control address.
+fn validate(
+    households: &[HouseholdState],
+    index: usize,
+    state: &ZoneGroupState,
+    player: &PlayerId,
+    host: IpAddr,
+) -> Result<(), CoreError> {
+    crate::topology::validate(state)?;
+    if !player_at(state, player, host) {
+        return Err(changed("the requested player no longer owns this address"));
+    }
+    for (other_index, other) in households.iter().enumerate() {
+        if index == other_index {
+            continue;
+        }
+        let foreign =
+            |id: &PlayerId| other.player(id).is_some() || other.coordinator_of(id).is_some();
+        if state
+            .groups
+            .iter()
+            .flat_map(|group| &group.members)
+            .flat_map(|member| std::iter::once(member).chain(&member.satellites))
+            .any(|member| {
+                foreign(&member.uuid)
+                    || other
+                        .players
+                        .iter()
+                        .any(|known| Some(known.ip) == member.ip())
+            })
+            || state.vanished.iter().any(|member| foreign(&member.uuid))
+        {
+            return Err(ProtoError::Malformed(
+                "grouping topology conflicts with another known household".into(),
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Both endpoints must still belong to the requested players, and both
+/// views must name the intended destination as a coordinator. Read the
+/// moving room last, immediately before its one-shot join. Retain this
+/// current household for any uncertain-reply observation.
+pub(super) fn prepare_join<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+    coordinator: &PlayerId,
+) -> Result<HouseholdState, CoreError> {
+    let (index, known) = household(households, member)?;
+    let (destination_index, _) = household(households, coordinator)?;
+    if index != destination_index {
+        return Err(changed("the rooms belong to different households"));
+    }
+    let host = known.player(member).expect("household found the player").ip;
+    let destination = known
+        .player(coordinator)
+        .expect("the destination belongs to this household")
+        .ip;
+    let target = get_zone_group_state(t, destination)?;
+    validate(households, index, &target, coordinator, destination)?;
+    if !crate::topology::coordinator_at(&target, destination, coordinator)?
+        || !player_at(&target, member, host)
+    {
+        return Err(changed(
+            "the requested rooms no longer share this destination",
+        ));
+    }
+    let current = get_zone_group_state(t, host)?;
+    validate(households, index, &current, member, host)?;
+    if !crate::topology::coordinator_at(&current, destination, coordinator)? {
+        return Err(changed("the destination no longer leads its group"));
+    }
+    let mut household = known.clone();
+    household.apply_topology(&current);
+    Ok(household)
+}
+
+/// Select a leaving room's heir from coherent current topology, without
+/// adopting a new endpoint from the stale address's response.
+pub(super) fn prepare_leave<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+) -> Result<HouseholdState, CoreError> {
+    let (index, known) = household(households, member)?;
+    let host = known.player(member).expect("household found the player").ip;
+    let current = get_zone_group_state(t, host)?;
+    validate(households, index, &current, member, host)?;
+    let mut household = known.clone();
+    household.apply_topology(&current);
+    Ok(household)
+}
 
 pub(super) fn uncertain(error: &ProtoError) -> bool {
     matches!(error, ProtoError::Network { .. } | ProtoError::Malformed(_))
@@ -77,16 +205,16 @@ fn observe<T: Transport + ?Sized>(
         .chain(household.players.iter().map(|p| &p.id))
     {
         if let Some(player) = household.player(id)
-            && !hosts.contains(&player.ip)
+            && !hosts.iter().any(|(_, host)| *host == player.ip)
         {
-            hosts.push(player.ip);
+            hosts.push((player.id.clone(), player.ip));
         }
     }
     let started = Instant::now();
     let mut read_any = false;
     loop {
         let mut failed = Vec::new();
-        for host in &hosts {
+        for (responder, host) in &hosts {
             // A blocking SOAP call can exhaust this whole budget. Do not
             // multiply its timeout by every offline player in the household.
             if read_any && started.elapsed() >= wait {
@@ -94,12 +222,19 @@ fn observe<T: Transport + ?Sized>(
             }
             read_any = true;
             match get_zone_group_state(t, *host) {
-                Ok(state) if matches(&state) => return true,
-                Ok(_) => {}
+                Ok(state) => {
+                    if crate::topology::validate(&state).is_err()
+                        || !player_at(&state, responder, *host)
+                    {
+                        failed.push(*host);
+                    } else if matches(&state) {
+                        return true;
+                    }
+                }
                 Err(_) => failed.push(*host),
             }
         }
-        hosts.retain(|host| !failed.contains(host));
+        hosts.retain(|(_, host)| !failed.contains(host));
         let left = wait.saturating_sub(started.elapsed());
         if hosts.is_empty() || left.is_zero() {
             return false;

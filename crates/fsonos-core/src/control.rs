@@ -92,9 +92,7 @@ pub fn require_player<T: Transport + ?Sized>(
         .iter()
         .flat_map(|group| &group.members)
         .flat_map(|member| std::iter::once(member).chain(&member.satellites))
-        .any(|member| {
-            member.uuid == *player && member.ip() == Some(host) && !member.is_zone_bridge
-        })
+        .any(|member| member.uuid == *player && member.ip() == Some(host) && !member.is_zone_bridge)
     {
         Ok(())
     } else {
@@ -726,7 +724,9 @@ pub fn adjust_group_volume<T: Transport + ?Sized>(
     require_coordinator(t, host, coordinator)?;
     soap::snapshot_group_volume(t, host)?;
     require_coordinator(t, host, coordinator)?;
-    Ok(soap::set_relative_group_volume_from_snapshot(t, host, delta)?)
+    Ok(soap::set_relative_group_volume_from_snapshot(
+        t, host, delta,
+    )?)
 }
 
 pub fn set_mute<T: Transport + ?Sized>(
@@ -784,11 +784,14 @@ pub fn tone<T: Transport + ?Sized>(
     player: &PlayerId,
 ) -> Result<Tone, CoreError> {
     let host = addr(households, player)?;
-    Ok(Tone {
+    require_player(t, host, player)?;
+    let tone = Tone {
         bass: soap::get_bass(t, host)?,
         treble: soap::get_treble(t, host)?,
         loudness: soap::get_loudness(t, host)?,
-    })
+    };
+    require_player(t, host, player)?;
+    Ok(tone)
 }
 
 /// Change what `change` names of `player`'s tone. A lost acknowledgement is
@@ -816,8 +819,12 @@ pub fn set_tone_tracked<T: Transport + ?Sized>(
     *touched = ToneChange::default();
     let host = addr(households, player)?;
     if let Some(bass) = change.bass {
+        require_player(t, host, player)?;
         let result = confirm_tone_change("SetBass", soap::set_bass(t, host, bass), || {
-            Ok(soap::get_bass(t, host)? == bass.clamp(-10, 10))
+            require_player(t, host, player)?;
+            let matches = soap::get_bass(t, host)? == bass.clamp(-10, 10);
+            require_player(t, host, player)?;
+            Ok(matches)
         });
         if !matches!(&result, Err(ProtoError::SoapFault { .. })) {
             touched.bass = Some(bass.clamp(-10, 10));
@@ -825,8 +832,12 @@ pub fn set_tone_tracked<T: Transport + ?Sized>(
         result?;
     }
     if let Some(treble) = change.treble {
+        require_player(t, host, player)?;
         let result = confirm_tone_change("SetTreble", soap::set_treble(t, host, treble), || {
-            Ok(soap::get_treble(t, host)? == treble.clamp(-10, 10))
+            require_player(t, host, player)?;
+            let matches = soap::get_treble(t, host)? == treble.clamp(-10, 10);
+            require_player(t, host, player)?;
+            Ok(matches)
         });
         if !matches!(&result, Err(ProtoError::SoapFault { .. })) {
             touched.treble = Some(treble.clamp(-10, 10));
@@ -834,9 +845,13 @@ pub fn set_tone_tracked<T: Transport + ?Sized>(
         result?;
     }
     if let Some(loudness) = change.loudness {
+        require_player(t, host, player)?;
         let result =
             confirm_tone_change("SetLoudness", soap::set_loudness(t, host, loudness), || {
-                Ok(soap::get_loudness(t, host)? == loudness)
+                require_player(t, host, player)?;
+                let matches = soap::get_loudness(t, host)? == loudness;
+                require_player(t, host, player)?;
+                Ok(matches)
             });
         if !matches!(&result, Err(ProtoError::SoapFault { .. })) {
             touched.loudness = Some(loudness);
@@ -849,7 +864,7 @@ pub fn set_tone_tracked<T: Transport + ?Sized>(
 fn confirm_tone_change(
     operation: &'static str,
     result: Result<(), ProtoError>,
-    observe: impl FnOnce() -> Result<bool, ProtoError>,
+    observe: impl FnOnce() -> Result<bool, CoreError>,
 ) -> Result<(), ProtoError> {
     let Err(error) = result else {
         return Ok(());
@@ -870,15 +885,16 @@ fn confirm_tone_change(
 
 /// Move `member` into the group `coordinator` leads. A lost or malformed
 /// acknowledgement is confirmed by fresh topology for the whole bonded room;
-/// the join is never repeated to recover its reply.
+/// the join is never repeated to recover its reply. Both endpoints and the
+/// destination's coordination are checked before the moving room is changed.
 pub fn join<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     member: &PlayerId,
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    // Both must be known: a join across households can never work.
-    locate(households, coordinator)?;
+    let current = grouping_state::prepare_join(t, households, member, coordinator)?;
+    let households = std::slice::from_ref(&current);
     let result = soap::join_group(t, addr(households, member)?, coordinator);
     match result {
         Err(cause)
@@ -914,13 +930,7 @@ pub fn leave<T: Transport + ?Sized>(
     households: &[HouseholdState],
     member: &PlayerId,
 ) -> Result<(), CoreError> {
-    let host = addr(households, member)?;
-    let mut current = households
-        .iter()
-        .find(|h| h.player(member).is_some())
-        .expect("addr() found the household")
-        .clone();
-    current.apply_topology(&get_zone_group_state(t, host)?);
+    let current = grouping_state::prepare_leave(t, households, member)?;
     let households = std::slice::from_ref(&current);
     let host = addr(households, member)?;
     let mut lost_delegation = None;
@@ -984,20 +994,30 @@ fn wait_until_alone<T: Transport + ?Sized>(
     // A witness in another room of the same household: a player of the
     // member's own room (a stereo pair's other half) shares its view, and a
     // player of another household never lists this one's groups at all.
-    let mut witness = household_witnesses(household, member)
-        .into_iter()
-        .next()
-        .map(|p| p.ip);
-    let leads_own = |groups: &[fsonos_proto::topology::ZoneGroupInfo]| {
-        groups.iter().any(|g| {
-            g.coordinator == *member && g.members.iter().all(|m| m.uuid == *member || m.invisible)
-        })
+    let mut witness = household_witnesses(household, member).into_iter().next();
+    let own = household.rooms.iter().find(|room| room.primary == *member);
+    let leads_own = |state: &ZoneGroupState| {
+        crate::topology::coordinator_at(state, host, member).unwrap_or(false)
+            && own.is_some_and(|room| {
+                state.groups.iter().any(|g| {
+                    g.coordinator == *member
+                        && g.members
+                            .iter()
+                            .flat_map(|m| std::iter::once(m).chain(&m.satellites))
+                            .all(|m| room.players.contains(&m.uuid))
+                })
+            })
     };
     let started = Instant::now();
     loop {
         // Alone: it leads its group, with nobody visible but itself (a
         // stereo pair's other half and a sub are invisible members).
-        if leads_own(&get_zone_group_state(t, host)?.groups) {
+        let current = get_zone_group_state(t, host)?;
+        crate::topology::validate(&current)?;
+        if !topology_player_at(&current, host, member) {
+            return Err(coordinator_changed());
+        }
+        if leads_own(&current) {
             return Ok(());
         }
         // Its own read may be stale; a witness player's is not. The witness
@@ -1006,10 +1026,16 @@ fn wait_until_alone<T: Transport + ?Sized>(
         // worker a whole SOAP timeout, p9f's review note), and the member's
         // own view still decides.
         if let Some(other) = witness {
-            match get_zone_group_state(t, other) {
-                Ok(groups) if leads_own(&groups.groups) => return Ok(()),
-                Ok(_) => {}
-                Err(_) => witness = None,
+            match get_zone_group_state(t, other.ip) {
+                Ok(state)
+                    if crate::topology::validate(&state).is_ok()
+                        && topology_player_at(&state, other.ip, &other.id) =>
+                {
+                    if leads_own(&state) {
+                        return Ok(());
+                    }
+                }
+                Ok(_) | Err(_) => witness = None,
             }
         }
         let left = LEAVE_WAIT.saturating_sub(started.elapsed());
@@ -1044,13 +1070,23 @@ fn reunite_room<T: Transport + ?Sized>(
     let Ok(now) = get_zone_group_state(t, host) else {
         return;
     };
+    if crate::topology::validate(&now).is_err() || !topology_player_at(&now, host, member) {
+        return;
+    }
     let own = now.groups.iter().find(|g| g.coordinator == *member);
     for p in room.players.iter().filter(|p| *p != member) {
-        if own.is_some_and(|g| g.members.iter().any(|m| m.uuid == *p)) {
+        if own.is_some_and(|g| {
+            g.members
+                .iter()
+                .flat_map(|m| std::iter::once(m).chain(&m.satellites))
+                .any(|m| m.uuid == *p)
+        }) {
             continue;
         }
         if let Ok(ip) = addr(households, p)
-            && let Err(e) = soap::join_group(t, ip, member)
+            && let Err(e) = require_player(t, ip, p)
+                .and_then(|()| require_coordinator_after_leave(t, households, host, member))
+                .and_then(|()| soap::join_group(t, ip, member).map_err(CoreError::from))
         {
             tracing::warn!(
                 player = p.0.as_str(),

@@ -1,7 +1,7 @@
 //! Tone undo owns only the fields changed on the original room player.
 
 use super::{LoggedAction, ToneBefore, levels, room_name};
-use crate::control::ToneChange;
+use crate::control::{self, ToneChange};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::{Transport, control as soap};
 use fsonos_types::PlayerId;
@@ -14,10 +14,16 @@ pub fn capture_tone_after<T: Transport + ?Sized>(
     player: &PlayerId,
     scope: ToneChange,
 ) -> ToneChange {
+    if scope.is_empty() {
+        return ToneChange::default();
+    }
     let Some(player) = levels::player(households, player) else {
         return ToneChange::default();
     };
-    ToneChange {
+    if control::require_player(t, player.ip, &player.id).is_err() {
+        return ToneChange::default();
+    }
+    let observed = ToneChange {
         bass: scope.bass.and_then(|_| soap::get_bass(t, player.ip).ok()),
         treble: scope
             .treble
@@ -25,7 +31,11 @@ pub fn capture_tone_after<T: Transport + ?Sized>(
         loudness: scope
             .loudness
             .and_then(|_| soap::get_loudness(t, player.ip).ok()),
+    };
+    if control::require_player(t, player.ip, &player.id).is_err() {
+        return ToneChange::default();
     }
+    observed
 }
 
 pub(super) fn restore_change(was: &ToneBefore) -> ToneChange {

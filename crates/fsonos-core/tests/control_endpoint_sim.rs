@@ -491,7 +491,9 @@ fn ordinary_transport_controls_never_mutate_a_reused_cached_address() {
             let f = Fixture::new(generation);
             command.prepare(&f);
             let before = f.sim.soap_log().len();
-            let error = command.run(&f.sim.lan(), &f.stale(), &f.target).unwrap_err();
+            let error = command
+                .run(&f.sim.lan(), &f.stale(), &f.target)
+                .unwrap_err();
             assert!(
                 matches!(error, CoreError::TargetChanged(_)),
                 "S{generation} {command:?}: {error}"
@@ -521,7 +523,10 @@ fn ordinary_transport_controls_still_change_the_verified_group_once() {
                 .filter(|entry| is_write(&entry.action))
                 .map(|entry| (entry.room.clone(), entry.action.clone()))
                 .collect();
-            assert_eq!(writes, [("Target".to_string(), command.action().to_string())]);
+            assert_eq!(
+                writes,
+                [("Target".to_string(), command.action().to_string())]
+            );
             assert_eq!(soap::get_position_info(&lan, f.peer).unwrap(), peer);
             let state = soap::get_transport_info(&lan, f.host).unwrap().state;
             assert_eq!(

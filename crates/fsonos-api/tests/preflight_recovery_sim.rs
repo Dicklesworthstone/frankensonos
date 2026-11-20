@@ -38,9 +38,8 @@ fn house(s2: bool) -> SimHandle {
 
 fn snapshot(sim: &SimHandle) -> Vec<HouseholdState> {
     let mut house = HouseholdState::default();
-    house.apply_topology(
-        &get_zone_group_state(&sim.lan(), sim.player("Peer").unwrap().ip).unwrap(),
-    );
+    house
+        .apply_topology(&get_zone_group_state(&sim.lan(), sim.player("Peer").unwrap().ip).unwrap());
     vec![house]
 }
 

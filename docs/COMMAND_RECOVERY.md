@@ -105,6 +105,29 @@ Focused regressions: `cargo test --locked -p fsonos-core --test control
 `cargo test --locked -p fsonos-api --test preflight_recovery_sim
 --test navigation_preflight_sim --test command_recovery_sim --test heal_sim`.
 
+## Grouping keeps both physical destinations
+
+A join verifies the moving room's endpoint and the destination coordinator's
+endpoint before changing either room. Both fresh household views must still
+identify the requested destination as a coordinator. Cross-household joins,
+reassigned addresses, incoherent topology and evidence belonging to another
+known household cannot authorize a grouping write. Leaving likewise chooses
+its handoff from validated current topology without adopting a replacement
+player from the old address's reply.
+
+An uncertain join or leave is observed through the existing bounded household
+witness path, without repeating its write. Each witness must identify itself
+at the address contacted. Stereo-room cleanup retains the original bonded
+players, and checks their endpoints before reuniting them. S1's stale self-view
+can still be confirmed by another player in the household.
+
+Pre-write identity failures retain the existing bounded address recovery.
+Regressions in `grouping_endpoint_sim` cover both S1 and S2, real address reuse
+followed by successful recovery, malformed and foreign topology, lost replies,
+and successful stereo joins and handoffs preserving queue position. Run
+`cargo test --locked -p fsonos-core --test grouping_endpoint_sim
+--test grouping_sim --test grouping_recovery_sim --test sleep_leave_cleanup_sim`.
+
 ## A lost daemon reply does not authorize another write
 
 The CLI and its forwarded stdio MCP tools report `OUTCOME_UNCERTAIN` when a

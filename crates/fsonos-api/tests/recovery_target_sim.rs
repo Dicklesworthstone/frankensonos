@@ -156,7 +156,11 @@ fn coordinator_recovery_stays_with_the_requested_room_when_the_old_leader_leaves
             .filter(|entry| entry.action == "SnapshotGroupVolume")
             .map(|entry| (entry.room.as_str(), entry.result.is_ok()))
             .collect();
-        assert_eq!(attempts, [("Office", true)], "stale leaders cannot snapshot");
+        assert_eq!(
+            attempts,
+            [("Office", true)],
+            "stale leaders cannot snapshot"
+        );
         assert!(outcome.notes.iter().any(|note| {
             note.code == NoteCode::Healed && note.detail.contains("Office's group")
         }));

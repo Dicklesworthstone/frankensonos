@@ -230,15 +230,27 @@ fn join_targets_the_member_and_names_the_coordinator() {
     let t = Recorder::default();
     control::join(&t, &h, &pid(3), &pid(2)).unwrap();
     let sent = t.sent.borrow();
-    assert_eq!(sent[0].0, ip("192.0.2.15"));
-    assert!(sent[0].2.contains("x-rincon:RINCON_000E58A0000201400"));
+    assert_eq!(sent.len(), 3);
+    assert_eq!(
+        (&sent[0].0, sent[0].1.as_str()),
+        (&ip("192.0.2.13"), "GetZoneGroupState")
+    );
+    assert_eq!(
+        (&sent[1].0, sent[1].1.as_str()),
+        (&ip("192.0.2.15"), "GetZoneGroupState")
+    );
+    assert_eq!(
+        (&sent[2].0, sent[2].1.as_str()),
+        (&ip("192.0.2.15"), "SetAVTransportURI")
+    );
+    assert!(sent[2].2.contains("x-rincon:RINCON_000E58A0000201400"));
     drop(sent);
     // A member leaves by joining itself (docs/PROTOCOL.md §6).
     control::leave(&t, &h, &pid(8)).unwrap();
     let sent = t.sent.borrow();
-    assert_eq!(sent[1].1, "GetZoneGroupState");
-    assert_eq!(sent[2].1, "SetAVTransportURI");
-    assert!(sent[2].2.contains(&format!("x-rincon:{}", pid(8).0)));
+    assert_eq!(sent[3].1, "GetZoneGroupState");
+    assert_eq!(sent[4].1, "SetAVTransportURI");
+    assert!(sent[4].2.contains(&format!("x-rincon:{}", pid(8).0)));
 }
 
 #[test]

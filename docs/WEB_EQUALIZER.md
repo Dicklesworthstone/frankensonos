@@ -42,6 +42,18 @@ replay it on reopening. Closed panels do not poll.
 
 ## Verification
 
+The shared server path verifies the physical room player before and after a
+tone snapshot and before each changed field. Lost-reply confirmation checks
+the same identity around its field read. An address reassigned between bass,
+treble and loudness stops the remaining writes; action history retains only
+the fields already sent. Tone undo observations also remain unknown if the
+endpoint changes, so a replacement speaker's matching values cannot supply
+restoration evidence. Group members remain independently controllable.
+
+Rust simulator coverage for these cases is in `tone_endpoint_sim`, alongside
+`tone_recovery_sim` and the API's `eq_sim`. Physical-speaker acceptance remains
+separate from simulator execution.
+
 `node --test scripts/test-remote-equalizer.cjs` exercises the shipped controller:
 27 regressions cover grouped members, duplicate room names across households,
 strict response and input validation, changed fields only, stale preflight,

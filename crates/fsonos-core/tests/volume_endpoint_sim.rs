@@ -325,13 +325,20 @@ fn a_group_snapshot_never_authorizes_a_write_to_a_changed_or_unreadable_endpoint
                 assert!(t.changed.get(), "S{generation} {command:?} {change:?}");
                 match change {
                     SnapshotChange::Unreadable => {
-                        assert!(matches!(error, CoreError::Proto(ProtoError::Network { .. })));
+                        assert!(matches!(
+                            error,
+                            CoreError::Proto(ProtoError::Network { .. })
+                        ));
                     }
                     _ => assert!(matches!(error, CoreError::TargetChanged(_))),
                 }
                 assert_eq!(
                     *t.actions.borrow(),
-                    ["GetZoneGroupState", "SnapshotGroupVolume", "GetZoneGroupState"]
+                    [
+                        "GetZoneGroupState",
+                        "SnapshotGroupVolume",
+                        "GetZoneGroupState"
+                    ]
                 );
                 // A snapshot has no audible effect and remains safe to redo
                 // after address recovery. Neither room received a volume Set.

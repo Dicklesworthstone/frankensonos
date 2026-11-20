@@ -67,6 +67,15 @@ daemon response never authorizes MCP to send a second local write.
 
 ## Policy, undo and boundaries
 
+The DJ's automatic order repair also checks its physical coordinator, group
+membership and boot identity around fresh queue and selected-track reads.
+An intervening regroup, reboot, source change or seek defers repair until a
+fresh observation; it does not restart playback or discard a surviving feed.
+The live mode is read before dispatch, so a successful `SetPlayMode` whose
+acknowledgement was lost is observed as NORMAL without sending the command
+again. These S1/S2 cases are covered by
+`cargo test --locked -p fsonos-spotify feed::mode`.
+
 The policy actions are `get_play_mode` (read-only) and `set_play_mode` (write).
 Unknown callers may read but cannot set. Existing per-client allowlists and
 HTTP Host, Origin and JSON guards apply. No volume or playback-start operation

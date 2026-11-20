@@ -101,10 +101,20 @@ fn each_eq_stage_recovers_lost_and_malformed_replies_on_both_generations() {
                 assert_eq!(writes, ACTIONS, "each requested field is written once");
                 let reads: Vec<_> = exchanges[before..]
                     .iter()
-                    .filter(|entry| entry.action.starts_with("Get"))
+                    .filter(|entry| {
+                        entry.action.starts_with("Get") && entry.action != "GetZoneGroupState"
+                    })
                     .map(|entry| entry.action.as_str())
                     .collect();
                 assert_eq!(reads, [action.replacen("Set", "Get", 1)]);
+                assert_eq!(
+                    exchanges[before..]
+                        .iter()
+                        .filter(|entry| entry.action == "GetZoneGroupState")
+                        .count(),
+                    5,
+                    "each write and both sides of uncertain read-back verify identity"
+                );
                 assert_eq!(transport.attempts.get(), 1, "no replay after a lost reply");
                 assert_eq!(control::tone(&sim.lan(), &houses, &player).unwrap(), wanted);
             }
@@ -128,6 +138,7 @@ fn a_definite_refusal_stops_even_when_the_requested_tone_already_matches() {
         let exchanges = sim.soap_log();
         let actions: Vec<_> = exchanges[before..]
             .iter()
+            .filter(|entry| entry.action != "GetZoneGroupState")
             .map(|entry| entry.action.as_str())
             .collect();
         assert_eq!(actions, ACTIONS[..=index], "no read-back or later writes");

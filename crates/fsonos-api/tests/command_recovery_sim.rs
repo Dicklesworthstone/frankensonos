@@ -224,7 +224,11 @@ fn coordinator_retry_cannot_chain_into_a_third_attempt_at_the_original_player() 
     })
     .unwrap_err();
     assert_eq!(failure.code, ErrorCode::PlayerUnreachable);
-    assert_eq!(t.attempts.get(), 1, "only the recovered coordinator snapshots");
+    assert_eq!(
+        t.attempts.get(),
+        1,
+        "only the recovered coordinator snapshots"
+    );
     assert_eq!(surveys.get(), 0);
 }
 

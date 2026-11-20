@@ -112,7 +112,10 @@ fn uncertain_pause_accepts_inactive_states_without_stop_or_replay() {
 fn uncertain_active_or_unknown_pause_is_never_escalated_to_stop() {
     for state in ["PLAYING", "TRANSITIONING", "UNKNOWN"] {
         let t = Script::new(vec![("Pause", Err(lost())), status(state)]);
-        assert!(matches!(pause(&t, host(), None), Err(ProtoError::Network { .. })));
+        assert!(matches!(
+            pause(&t, host(), None),
+            Err(ProtoError::Network { .. })
+        ));
         t.done();
     }
 }

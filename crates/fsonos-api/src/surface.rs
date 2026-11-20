@@ -2294,7 +2294,6 @@ pub(crate) mod testing {
     use super::*;
     use fsonos_core::clock::SystemClock;
     use fsonos_proto::ProtoError;
-    use std::fmt::Write as _;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
 
@@ -2321,7 +2320,7 @@ pub(crate) mod testing {
             write!(
                 document,
                 "<ZoneGroup Coordinator=\"{}\" ID=\"{}:1\">",
-                group.coordinator, group.coordinator
+                group.coordinator.0, group.coordinator.0
             )
             .unwrap();
             for member in &group.members {
@@ -2335,7 +2334,7 @@ pub(crate) mod testing {
                     document,
                     "<ZoneGroupMember UUID=\"{}\" ZoneName=\"{name}\" \
                      Location=\"http://{}:1400/xml/device_description.xml\"/>",
-                    player.id, player.ip
+                    player.id.0, player.ip
                 )
                 .unwrap();
             }

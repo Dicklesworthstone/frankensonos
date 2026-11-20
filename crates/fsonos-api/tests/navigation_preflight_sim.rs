@@ -41,9 +41,8 @@ fn house(s2: bool) -> SimHandle {
 
 fn snapshot(sim: &SimHandle) -> Vec<HouseholdState> {
     let mut house = HouseholdState::default();
-    house.apply_topology(
-        &get_zone_group_state(&sim.lan(), sim.player("Peer").unwrap().ip).unwrap(),
-    );
+    house
+        .apply_topology(&get_zone_group_state(&sim.lan(), sim.player("Peer").unwrap().ip).unwrap());
     vec![house]
 }
 
@@ -123,7 +122,10 @@ fn unsent_navigation_follows_the_original_player_on_s1_and_s2() {
                 assert_eq!(position.position_secs, Some(seconds));
                 let other = sim.player("Other").unwrap().ip;
                 let unchanged = soap::get_position_info(&sim.lan(), other).unwrap();
-                assert_eq!(unchanged.track, 4, "the unrelated player's queue is untouched");
+                assert_eq!(
+                    unchanged.track, 4,
+                    "the unrelated player's queue is untouched"
+                );
                 assert_eq!(unchanged.position_secs, Some(45));
                 assert_eq!(
                     soap::get_transport_info(&sim.lan(), other).unwrap().state,
@@ -132,9 +134,7 @@ fn unsent_navigation_follows_the_original_player_on_s1_and_s2() {
                 let log = sim.soap_log();
                 let writes: Vec<_> = log[mark..]
                     .iter()
-                    .filter(|entry| {
-                        !entry.action.starts_with("Get") && entry.action != "Browse"
-                    })
+                    .filter(|entry| !entry.action.starts_with("Get") && entry.action != "Browse")
                     .map(|entry| (entry.room.as_str(), entry.action.as_str()))
                     .collect();
                 assert_eq!(
