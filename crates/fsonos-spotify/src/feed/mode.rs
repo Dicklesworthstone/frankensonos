@@ -5,8 +5,10 @@ use fsonos_proto::Transport;
 use fsonos_proto::content::{QUEUE, browse_range_snapshot};
 use fsonos_proto::control::{get_media_info, get_position_info, set_normal_play_mode};
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
-use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::play_mode::get_play_mode;
+use fsonos_types::PlayMode;
 
+use super::recovery::Group;
 use super::{FeedError, QueueFeed, QueuedWork, Speakers, host_of, placed};
 
 mod exhaustion;
@@ -53,7 +55,7 @@ pub(super) fn maintain<T: Transport + ?Sized>(
     at: &Speakers<'_, T>,
     playback: &PlayerPlayback,
 ) -> Result<bool, FeedError> {
-    if !feed.is_active() {
+    if !feed.is_active() || feed.coordinator() != *at.coordinator {
         return Ok(false);
     }
     if !exhaustion::permits(feed, at, playback)? {
@@ -64,6 +66,10 @@ pub(super) fn maintain<T: Transport + ?Sized>(
     }
     let host = host_of(at)?;
     let own_queue = format!("x-rincon-queue:{}#0", at.coordinator.0);
+    let Some(group) = Group::read(at)? else {
+        feed.queue_len = None;
+        return Ok(false);
+    };
     if get_media_info(at.transport, host)?.uri != own_queue {
         // An announcement or other source can temporarily use this player.
         // Suspend this event, without stopping it or forgetting the DJ set.
@@ -82,16 +88,13 @@ pub(super) fn maintain<T: Transport + ?Sized>(
         return Ok(false);
     }
     let current = get_position_info(at.transport, host)?;
-    let topology = get_zone_group_state(at.transport, host)?;
+    let mode = get_play_mode(at.transport, host)?;
     let after = browse_range_snapshot(at.transport, host, QUEUE, 0, 1)?;
     if before != after {
         feed.queue_len = None;
         return Ok(false);
     }
-    if !topology
-        .groups
-        .iter()
-        .any(|group| group.coordinator == *at.coordinator)
+    if Group::read(at)?.as_ref() != Some(&group)
         || get_media_info(at.transport, host)?.uri != own_queue
     {
         feed.queue_len = None;
@@ -116,6 +119,12 @@ pub(super) fn maintain<T: Transport + ?Sized>(
         feed.queue_len = None;
         return Ok(false);
     }
+    let latest = get_position_info(at.transport, host)?;
+    if latest.track != current.track || !event_matches(playback, latest.track, &latest.uri, &queue)
+    {
+        feed.queue_len = None;
+        return Ok(false);
+    }
     // A rewind can return to a retained work after every newer pick was
     // removed. Restore it before deciding that the DJ no longer owns a set.
     reconciled.restore_played_from(current.track);
@@ -124,6 +133,12 @@ pub(super) fn maintain<T: Transport + ?Sized>(
         return Ok(false);
     }
     *feed = reconciled;
+    // A successful repair whose reply/event was lost must not be replayed.
+    // Keep the ownership checks even for NORMAL: a stale notification cannot
+    // authorize reconciliation against a different player or occurrence.
+    if mode == PlayMode::Normal {
+        return Ok(true);
+    }
     // No source reset, seek, or Play is needed to restore order. A refused
     // write retains the feed and goes through its existing retry backoff.
     // These are read-before-write checks, not an atomic device transaction.
@@ -290,6 +305,7 @@ mod replay {
     use fsonos_core::HouseholdState;
     use fsonos_proto::control as soap;
     use fsonos_proto::soap::{AV_TRANSPORT, args_xml, call};
+    use fsonos_proto::topology::get_zone_group_state;
     use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
     use fsonos_types::PlayerId;
     use std::net::IpAddr;

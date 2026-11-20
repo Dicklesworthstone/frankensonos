@@ -45,8 +45,8 @@ impl Rig {
         } else {
             SimModel::Play5Gen1
         };
-        let players = ["Target", "Leader", "Peer", "Other"]
-            .map(|room| SimPlayerSpec::new(room, model));
+        let players =
+            ["Target", "Leader", "Peer", "Other"].map(|room| SimPlayerSpec::new(room, model));
         let builder = SimHousehold::builder();
         let sim = if s2 {
             builder.s2(players)
@@ -151,13 +151,24 @@ fn room_controls_recover_the_noncoordinator_uuid_without_changing_the_new_owner(
                 )
                 .unwrap();
                 assert_eq!(surveys.get(), 1, "{write}, reused={reused}");
-                assert!(outcome.notes.iter().any(|note| note.code == NoteCode::Healed));
+                assert!(
+                    outcome
+                        .notes
+                        .iter()
+                        .any(|note| note.code == NoteCode::Healed)
+                );
                 let log = rig.sim.soap_log();
                 assert_eq!(changes(&log[mark..]), [("Target", write)], "{log:?}");
                 assert_eq!(soap::get_volume(&rig.sim.lan(), new).unwrap(), expected);
-                assert_eq!(soap::get_mute(&rig.sim.lan(), new).unwrap(), write == "SetMute");
+                assert_eq!(
+                    soap::get_mute(&rig.sim.lan(), new).unwrap(),
+                    write == "SetMute"
+                );
                 for (room, level) in [("Leader", 10), ("Other", 60)] {
-                    assert_eq!(soap::get_volume(&rig.sim.lan(), rig.host(room)).unwrap(), level);
+                    assert_eq!(
+                        soap::get_volume(&rig.sim.lan(), rig.host(room)).unwrap(),
+                        level
+                    );
                     assert!(!soap::get_mute(&rig.sim.lan(), rig.host(room)).unwrap());
                 }
             }
@@ -204,7 +215,12 @@ fn group_controls_guard_both_the_snapshot_and_the_final_write_after_recovery() {
                     .collect();
                 assert_eq!(
                     leader_actions,
-                    ["GetZoneGroupState", "SnapshotGroupVolume", "GetZoneGroupState", write]
+                    [
+                        "GetZoneGroupState",
+                        "SnapshotGroupVolume",
+                        "GetZoneGroupState",
+                        write
+                    ]
                 );
                 for room in ["Target", "Leader"] {
                     assert_eq!(
@@ -212,7 +228,10 @@ fn group_controls_guard_both_the_snapshot_and_the_final_write_after_recovery() {
                         expected
                     );
                 }
-                assert_eq!(soap::get_volume(&rig.sim.lan(), rig.host("Other")).unwrap(), 60);
+                assert_eq!(
+                    soap::get_volume(&rig.sim.lan(), rig.host("Other")).unwrap(),
+                    60
+                );
             }
         }
     }
@@ -250,7 +269,10 @@ fn capped_volume_reads_the_requested_room_before_spending_its_step_allowance() {
         );
         assert_eq!(changes(&log[mark..]), [("Target", "SetVolume")]);
         assert_eq!(soap::get_volume(&rig.sim.lan(), new).unwrap(), 15);
-        assert_eq!(soap::get_volume(&rig.sim.lan(), rig.host("Other")).unwrap(), 60);
+        assert_eq!(
+            soap::get_volume(&rig.sim.lan(), rig.host("Other")).unwrap(),
+            60
+        );
     }
 }
 
@@ -266,15 +288,10 @@ fn a_capped_unmute_lowers_the_original_room_before_unmuting_it() {
         let counted = Arc::clone(&surveys);
         let read: Survey = Box::new(move |transport| {
             counted.fetch_add(1, Ordering::SeqCst);
-            survey(transport, peer)
+            Ok(survey(transport, peer)?)
         });
         let policy = Policy::from_toml("[defaults]\nmax_volume = 30\n").unwrap();
-        let surface = Surface::new(
-            Box::new(rig.sim.lan()),
-            read,
-            policy,
-            Box::new(SystemClock),
-        );
+        let surface = Surface::new(Box::new(rig.sim.lan()), read, policy, Box::new(SystemClock));
         surface.households().unwrap();
         let new = rig.moved("Target", true);
         let mark = rig.sim.soap_log().len();
@@ -283,7 +300,9 @@ fn a_capped_unmute_lowers_the_original_room_before_unmuting_it() {
             mute: false,
         };
         let outcome = surface
-            .control(&Client::McpStdio, "mute", |rooms| plan_mute(rooms, &request))
+            .control(&Client::McpStdio, "mute", |rooms| {
+                plan_mute(rooms, &request)
+            })
             .unwrap();
         assert_eq!(surveys.load(Ordering::SeqCst), 2);
         assert!(
@@ -305,8 +324,14 @@ fn a_capped_unmute_lowers_the_original_room_before_unmuting_it() {
         );
         assert_eq!(soap::get_volume(&rig.sim.lan(), new).unwrap(), 30);
         assert!(!soap::get_mute(&rig.sim.lan(), new).unwrap());
-        assert_eq!(soap::get_volume(&rig.sim.lan(), rig.host("Other")).unwrap(), 90);
-        assert_eq!(soap::get_volume(&rig.sim.lan(), rig.host("Leader")).unwrap(), 10);
+        assert_eq!(
+            soap::get_volume(&rig.sim.lan(), rig.host("Other")).unwrap(),
+            90
+        );
+        assert_eq!(
+            soap::get_volume(&rig.sim.lan(), rig.host("Leader")).unwrap(),
+            10
+        );
     }
 }
 
@@ -364,10 +389,19 @@ fn accepted_room_and_group_steps_never_repeat_after_a_lost_acknowledgement() {
             assert_eq!(failure.code, ErrorCode::PlayerUnreachable);
             assert!(failure.hint.contains("not repeated"), "{failure:?}");
             assert_eq!(transport.writes.get(), 1);
-            assert_eq!(soap::get_volume(&rig.sim.lan(), rig.host("Target")).unwrap(), 15);
+            assert_eq!(
+                soap::get_volume(&rig.sim.lan(), rig.host("Target")).unwrap(),
+                15
+            );
             let leader = if scope == VolumeScope::Group { 15 } else { 10 };
-            assert_eq!(soap::get_volume(&rig.sim.lan(), rig.host("Leader")).unwrap(), leader);
-            assert_eq!(soap::get_volume(&rig.sim.lan(), rig.host("Other")).unwrap(), 60);
+            assert_eq!(
+                soap::get_volume(&rig.sim.lan(), rig.host("Leader")).unwrap(),
+                leader
+            );
+            assert_eq!(
+                soap::get_volume(&rig.sim.lan(), rig.host("Other")).unwrap(),
+                60
+            );
         }
     }
 }

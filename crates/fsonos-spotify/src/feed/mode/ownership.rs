@@ -1,10 +1,13 @@
 //! Mode recovery for an already-running, restored DJ queue over loopback.
 
 use fsonos_core::HouseholdState;
+use fsonos_proto::ProtoError;
 use fsonos_proto::control as soap;
 use fsonos_proto::soap::{AV_TRANSPORT, args_xml, call};
-use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_proto::topology::get_zone_group_state;
+use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
+use std::cell::Cell;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -29,9 +32,15 @@ impl RunningQueue {
     fn new(generation: u8) -> Self {
         let builder = SimHousehold::builder();
         let builder = if generation == 1 {
-            builder.s1([SimPlayerSpec::new("Mode Room", SimModel::Play5Gen1)])
+            builder.s1([
+                SimPlayerSpec::new("Mode Room", SimModel::Play5Gen1),
+                SimPlayerSpec::new("Other Room", SimModel::Play5Gen1),
+            ])
         } else {
-            builder.s2([SimPlayerSpec::new("Mode Room", SimModel::One)])
+            builder.s2([
+                SimPlayerSpec::new("Mode Room", SimModel::One),
+                SimPlayerSpec::new("Other Room", SimModel::One),
+            ])
         };
         let sim = builder.spawn().unwrap();
         let player = sim.player("Mode Room").unwrap();
@@ -122,10 +131,19 @@ impl RunningQueue {
 
     fn repair(&self, feed: &mut QueueFeed, event: &PlayerPlayback) -> Result<bool, FeedError> {
         let lan = self.sim.lan();
+        self.repair_with(&lan, feed, event)
+    }
+
+    fn repair_with<T: Transport + ?Sized>(
+        &self,
+        transport: &T,
+        feed: &mut QueueFeed,
+        event: &PlayerPlayback,
+    ) -> Result<bool, FeedError> {
         maintain(
             feed,
             &Speakers {
-                transport: &lan,
+                transport,
                 households: &self.houses,
                 coordinator: &self.id,
             },
@@ -229,6 +247,7 @@ fn failed_observations_keep_the_original_feed_and_allow_a_later_repair() {
             "GetMediaInfo",
             "Browse",
             "GetPositionInfo",
+            "GetTransportSettings",
             "GetZoneGroupState",
         ] {
             rig.sim.upnp_fault("Mode Room", action, 501).unwrap();
@@ -241,6 +260,198 @@ fn failed_observations_keep_the_original_feed_and_allow_a_later_repair() {
         let marker = rig.sim.soap_log().len();
         assert!(rig.repair(&mut feed, &event).unwrap());
         assert_eq!(rig.writes_since(marker), ["SetPlayMode"]);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Change {
+    Join,
+    Reboot,
+    Seek,
+    Source,
+}
+
+struct DuringObservation<'a> {
+    rig: &'a RunningQueue,
+    change: Change,
+    changed: Cell<bool>,
+}
+
+impl Transport for DuringObservation<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let lan = self.rig.sim.lan();
+        let response = lan.soap_post(host, path, action, body)?;
+        if action.contains("#GetPositionInfo") && !self.changed.replace(true) {
+            match self.change {
+                Change::Join => {
+                    let other = self.rig.sim.player("Other Room").unwrap().ip;
+                    soap::join_group(&lan, other, &self.rig.id)?;
+                }
+                Change::Reboot => self.rig.sim.reboot("Mode Room", Duration::ZERO).unwrap(),
+                Change::Seek => soap::seek_track(&lan, self.rig.host, 2)?,
+                Change::Source => soap::set_av_transport_uri(&lan, self.rig.host, RADIO, "")?,
+            }
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn group_boot_source_and_seek_changes_during_repair_wait_for_fresh_observations() {
+    for generation in [1, 2] {
+        for change in [Change::Join, Change::Reboot, Change::Seek, Change::Source] {
+            let mut rig = RunningQueue::new(generation);
+            let mut feed = rig.restored();
+            rig.mode("SHUFFLE");
+            let event = rig.observation("SHUFFLE");
+            let before = feed.snapshot();
+            let observer = DuringObservation {
+                rig: &rig,
+                change,
+                changed: Cell::new(false),
+            };
+            let marker = rig.sim.soap_log().len();
+            assert!(
+                !rig.repair_with(&observer, &mut feed, &event).unwrap(),
+                "{change:?}"
+            );
+            assert!(observer.changed.get(), "{change:?}");
+            let writes = rig.writes_since(marker);
+            let expected: &[&str] = match change {
+                Change::Join | Change::Source => &["SetAVTransportURI"],
+                Change::Seek => &["Seek"],
+                Change::Reboot => &[],
+            };
+            assert_eq!(
+                writes, expected,
+                "only the injected owner change: {change:?}"
+            );
+            assert_eq!(feed.snapshot(), before, "{change:?}");
+            assert!(feed.is_active());
+
+            // A new event/snapshot can repair the surviving queue without
+            // replaying the old source or rewinding the selected occurrence.
+            rig.houses[0].apply_topology(&get_zone_group_state(&rig.sim.lan(), rig.host).unwrap());
+            if matches!(change, Change::Source) {
+                control::play_queue_from(&rig.sim.lan(), &rig.houses, &rig.id, 1).unwrap();
+            }
+            let current = rig.observation("SHUFFLE");
+            let marker = rig.sim.soap_log().len();
+            assert!(rig.repair(&mut feed, &current).unwrap(), "{change:?}");
+            assert_eq!(rig.writes_since(marker), ["SetPlayMode"], "{change:?}");
+            assert_eq!(
+                soap::get_position_info(&rig.sim.lan(), rig.host)
+                    .unwrap()
+                    .track,
+                current.queue_position.unwrap(),
+            );
+        }
+    }
+}
+
+struct ChangedAddress {
+    lan: SimLan,
+    from: IpAddr,
+    to: IpAddr,
+}
+
+impl Transport for ChangedAddress {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        // Keep the old route answering while the actual player advertises
+        // its new address. Household topology still names the same coordinator.
+        self.lan.soap_post(
+            if host == self.from { self.to } else { host },
+            path,
+            action,
+            body,
+        )
+    }
+}
+
+#[test]
+fn a_changed_endpoint_must_reach_inventory_before_automatic_mode_repair() {
+    for generation in [1, 2] {
+        let mut rig = RunningQueue::new(generation);
+        let mut feed = rig.restored();
+        rig.mode("REPEAT_ONE");
+        let event = rig.observation("REPEAT_ONE");
+        let before = feed.snapshot();
+        let to = rig.sim.change_address("Mode Room").unwrap();
+        let changed = ChangedAddress {
+            lan: rig.sim.lan(),
+            from: rig.host,
+            to,
+        };
+        let marker = rig.sim.soap_log().len();
+        assert!(!rig.repair_with(&changed, &mut feed, &event).unwrap());
+        assert!(rig.writes_since(marker).is_empty());
+        assert_eq!(feed.snapshot(), before);
+        assert!(feed.is_active());
+
+        rig.host = to;
+        rig.houses[0].apply_topology(&get_zone_group_state(&rig.sim.lan(), to).unwrap());
+        let marker = rig.sim.soap_log().len();
+        assert!(rig.repair(&mut feed, &event).unwrap());
+        assert_eq!(rig.writes_since(marker), ["SetPlayMode"]);
+    }
+}
+
+struct LostModeReply {
+    lan: SimLan,
+}
+
+impl Transport for LostModeReply {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let response = self.lan.soap_post(host, path, action, body)?;
+        if action.contains("#SetPlayMode") {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "test lost the reply after applying the mode".into(),
+            });
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_lost_successful_mode_reply_is_observed_without_replaying_the_write() {
+    for generation in [1, 2] {
+        let rig = RunningQueue::new(generation);
+        let mut feed = rig.restored();
+        rig.mode("SHUFFLE");
+        let event = rig.observation("SHUFFLE");
+        let lost = LostModeReply { lan: rig.sim.lan() };
+        let marker = rig.sim.soap_log().len();
+        assert!(rig.repair_with(&lost, &mut feed, &event).is_err());
+        assert_eq!(rig.writes_since(marker), ["SetPlayMode"]);
+        assert!(feed.is_active());
+        assert_eq!(
+            get_play_mode(&rig.sim.lan(), rig.host).unwrap(),
+            PlayMode::Normal
+        );
+
+        let marker = rig.sim.soap_log().len();
+        assert!(rig.repair(&mut feed, &event).unwrap());
+        assert!(rig.writes_since(marker).is_empty());
+        assert!(feed.is_active());
     }
 }
 
