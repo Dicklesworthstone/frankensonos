@@ -7,8 +7,8 @@ use fsonos_proto::soap::{AV_TRANSPORT, args_xml, call};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
-use std::cell::Cell;
-use std::net::IpAddr;
+use std::cell::{Cell, RefCell};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use super::*;
@@ -232,6 +232,122 @@ fn a_replaced_queue_releases_the_feed_without_overriding_the_owners_mode() {
         assert!(!feed.is_active());
         assert!(feed.snapshot().is_none());
         assert_eq!(soap::get_position_info(&lan, rig.host).unwrap().uri, RADIO);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum QueueReadChange {
+    Clear,
+    ReuseAddress,
+}
+
+struct DuringQueueRead<'a> {
+    sim: RefCell<&'a mut SimHandle>,
+    lan: SimLan,
+    change: QueueReadChange,
+    changed: Cell<bool>,
+}
+
+impl Transport for DuringQueueRead<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let response = self.lan.soap_post(host, path, action, body)?;
+        if action.contains("#Browse") && !self.changed.replace(true) {
+            // The initial queue prefix belongs to the original player. The
+            // full resync that follows sees an empty queue at another revision
+            // or on the real peer that has just taken over its address.
+            match self.change {
+                QueueReadChange::Clear => soap::remove_all_tracks_from_queue(&self.lan, host)?,
+                QueueReadChange::ReuseAddress => {
+                    let IpAddr::V4(old) = host else {
+                        panic!("synthetic players use IPv4");
+                    };
+                    let mut sim = self.sim.borrow_mut();
+                    sim.change_address("Mode Room").unwrap();
+                    sim.move_to(
+                        "Other Room",
+                        old,
+                        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn stale_resync_cannot_release_the_live_feed_before_ownership_is_confirmed() {
+    for generation in [1, 2] {
+        for change in [QueueReadChange::Clear, QueueReadChange::ReuseAddress] {
+            let mut rig = RunningQueue::new(generation);
+            let mut feed = rig.restored();
+            rig.mode("SHUFFLE");
+            let event = rig.observation("SHUFFLE");
+            let saved = feed.snapshot();
+            let marker = rig.sim.soap_log().len();
+            let observer = DuringQueueRead {
+                lan: rig.sim.lan(),
+                sim: RefCell::new(&mut rig.sim),
+                change,
+                changed: Cell::new(false),
+            };
+            assert!(
+                !maintain(
+                    &mut feed,
+                    &Speakers {
+                        transport: &observer,
+                        households: &rig.houses,
+                        coordinator: &rig.id,
+                    },
+                    &event,
+                )
+                .unwrap(),
+                "{change:?}"
+            );
+            assert!(observer.changed.get());
+            drop(observer);
+            let expected: &[&str] = match change {
+                QueueReadChange::Clear => &["RemoveAllTracksFromQueue"],
+                QueueReadChange::ReuseAddress => &[],
+            };
+            assert_eq!(rig.writes_since(marker), expected, "{change:?}");
+            assert!(feed.is_active(), "{change:?}");
+            assert_eq!(feed.snapshot(), saved, "{change:?}");
+
+            let marker = rig.sim.soap_log().len();
+            match change {
+                QueueReadChange::Clear => {
+                    // Once a second observation proves the owned queue is
+                    // stably empty, stop managing it without changing its mode.
+                    assert!(!rig.repair(&mut feed, &event).unwrap());
+                    assert!(!feed.is_active());
+                    assert!(feed.snapshot().is_none());
+                    assert!(rig.writes_since(marker).is_empty());
+                }
+                QueueReadChange::ReuseAddress => {
+                    // The original queue survived on its player's new address.
+                    // Refresh inventory and repair it without restarting music.
+                    rig.host = rig.sim.player("Mode Room").unwrap().ip;
+                    rig.houses[0]
+                        .apply_topology(&get_zone_group_state(&rig.sim.lan(), rig.host).unwrap());
+                    let current = rig.observation("SHUFFLE");
+                    assert!(rig.repair(&mut feed, &current).unwrap());
+                    assert_eq!(rig.writes_since(marker), ["SetPlayMode"]);
+                    assert!(feed.is_active());
+                    assert_eq!(
+                        rig.observation("NORMAL").queue_position,
+                        event.queue_position
+                    );
+                }
+            }
+        }
     }
 }
 

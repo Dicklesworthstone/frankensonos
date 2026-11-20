@@ -83,10 +83,6 @@ pub(super) fn maintain<T: Transport + ?Sized>(
     feed.queue_len = None;
     let mut reconciled = feed.clone();
     let queue = reconciled.resync(at)?;
-    if !reconciled.is_active() {
-        feed.release();
-        return Ok(false);
-    }
     let current = get_position_info(at.transport, host)?;
     let mode = get_play_mode(at.transport, host)?;
     let after = browse_range_snapshot(at.transport, host, QUEUE, 0, 1)?;
@@ -98,6 +94,12 @@ pub(super) fn maintain<T: Transport + ?Sized>(
         || get_media_info(at.transport, host)?.uri != own_queue
     {
         feed.queue_len = None;
+        return Ok(false);
+    }
+    // Retiring every claim also needs coherent ownership evidence. A queue
+    // edit or reused endpoint during resync must not discard the live feed.
+    if !reconciled.is_active() {
+        feed.release();
         return Ok(false);
     }
     let owned = reconciled
