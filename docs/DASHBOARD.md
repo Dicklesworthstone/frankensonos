@@ -520,6 +520,30 @@ selection changes, hidden pages and closing the mixer retire pending reviews.
 Unconfirmed writes retain the dashboard's global uncertainty until explicit
 **Refresh**.
 
+### Speaker sound
+
+**Speaker sound** below the room cards opens bass, treble and loudness controls
+for each room in the selected listening group, including rooms that do not lead
+the group. Same-name rooms in S1 and S2 remain distinct. Bass and treble range
+from −10 to +10; loudness compensation boosts low-level listening. **Flat sound**
+prepares bass and treble at zero with loudness off, while **Discard edits** returns
+to the last read settings. Neither sends a command.
+
+Choose settings, use **Review sound**, then **Confirm sound change**. The review
+shows the current and requested sound. Confirmation rereads the group's membership
+and all three current settings, then sends only the fields you changed through
+the existing equalizer API. The shared command lane prevents a second dashboard
+command from overlapping it. Accepted changes reread sound and retain their result;
+a later failed read does not erase the acknowledgement. Playback, grouping and
+volume are left to their own controls, and the existing action history supplies
+undo when available.
+
+Reads run only while requested, with at most four rooms in flight. An unavailable
+room shows its error while healthy rooms remain editable. Group changes, stale
+observations, page hiding and immersive mode retire pending reviews. A lost or
+malformed acknowledgement is never replayed: use the dashboard's **Refresh**,
+then **Read speaker sound** to inspect the actual settings before another edit.
+
 ### Group rooms and move music
 
 **Group rooms** below the room cards can add a room to the selected listening
@@ -608,7 +632,7 @@ Run the local suites:
 
 ```sh
 node --test scripts/test-dashboard-session.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-workspace.cjs
-node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs scripts/test-dashboard-volume.cjs
+node --test scripts/test-dashboard-sleep.cjs scripts/test-remote-timers.cjs scripts/test-dashboard-volume.cjs scripts/test-dashboard-equalizer.cjs
 node --test scripts/test-dashboard-scenes.cjs scripts/test-dashboard-http.cjs
 node --test scripts/test-dashboard-direction.cjs scripts/test-remote-dj-steering.cjs
 node --test scripts/test-dashboard-source.cjs scripts/test-remote-source-player.cjs
@@ -616,6 +640,7 @@ node --test scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-play
 node --test scripts/test-dashboard-preferences.cjs scripts/test-remote-dj-preferences.cjs
 node --test scripts/test-dashboard-rehearsal.cjs scripts/test-remote-dj-rehearsal.cjs
 python3 scripts/test-dashboard-browser.py --browser-executable /path/to/chromium
+python3 scripts/test-dashboard-equalizer-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-preferences-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-rehearsal-browser.py --browser-executable /path/to/chromium
 python3 scripts/test-dashboard-workspace.py --browser-executable /path/to/chromium

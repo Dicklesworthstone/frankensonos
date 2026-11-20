@@ -86,6 +86,7 @@ on:
       - "scripts/test-dashboard-groups.cjs"
       - "scripts/test-dashboard-sleep.cjs"
       - "scripts/test-dashboard-volume.cjs"
+      - "scripts/test-dashboard-equalizer.cjs"
       - "scripts/test-dashboard-scenes.cjs"
       - "scripts/test-dashboard-routines.cjs"
       - "scripts/test-dashboard-announcements.cjs"
@@ -156,7 +157,7 @@ jobs:
         run: node --test scripts/test-sonos-playlist-management.cjs scripts/test-playlist-save-remote.cjs scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-playlist-save-panel.cjs scripts/test-dashboard-playlist-store.cjs scripts/test-favorites-management.cjs scripts/test-favorites-panel.cjs
       - name: Web speaker sound regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-equalizer.cjs scripts/test-remote-fades.cjs scripts/test-remote-sound-copy.cjs
+        run: node --test scripts/test-remote-equalizer.cjs scripts/test-dashboard-equalizer.cjs scripts/test-remote-fades.cjs scripts/test-remote-sound-copy.cjs
       - name: Web library client regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-library.cjs scripts/test-remote-library-browse.cjs scripts/test-playlist-contents.cjs scripts/test-library-track-selection.cjs scripts/test-remote-library-sync.cjs scripts/test-remote-spotify-connect.cjs
