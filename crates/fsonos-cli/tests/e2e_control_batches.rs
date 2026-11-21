@@ -126,26 +126,40 @@ fn partial_commands(via_daemon: bool) {
         format!("{paused:?}"),
     );
 
-    soap::play(&s.lan(), s.ip("Kitchen")).unwrap();
-    let mut mcp = s.mcp();
-    mcp.initialize();
-    let start = s.sim_handle().unwrap().soap_log().len();
-    let paused = mcp.request(
-        "tools/call",
-        &json!({"name":"pause", "arguments":{"zone":"selected"}}),
-    );
-    let receipt: OutcomeDto = serde_json::from_value(paused["result"]["structuredContent"].clone())
-        .expect("MCP retains the typed batch receipt");
-    assert_partial(&receipt);
-    assert_dispatched_once(&s, start);
-    s.check(
-        "partial-pause",
-        "mcp",
-        "partial pause sets isError without losing successful targets",
-        paused["result"]["isError"] == true,
-        &paused,
-    );
-    drop(mcp);
+    for protocol in ["2024-11-05", "2026-07-28"] {
+        soap::play(&s.lan(), s.ip("Kitchen")).unwrap();
+        let mut mcp = s.mcp();
+        let initialized = mcp.initialize_with_protocol(protocol);
+        assert_eq!(initialized["result"]["protocolVersion"], protocol);
+        let start = s.sim_handle().unwrap().soap_log().len();
+        let paused = mcp.request(
+            "tools/call",
+            &json!({"name":"pause", "arguments":{"zone":"selected"}}),
+        );
+        assert!(paused.get("error").is_none(), "{protocol}: {paused}");
+        let text = paused["result"]["content"][0]["text"]
+            .as_str()
+            .expect("partial results remain readable in either era");
+        let receipt: OutcomeDto = if protocol == "2024-11-05" {
+            assert!(paused["result"].get("structuredContent").is_none());
+            serde_json::from_str(text.split_once("\n\nReceipt: ").unwrap().1).unwrap()
+        } else {
+            serde_json::from_value(paused["result"]["structuredContent"].clone())
+                .expect("modern MCP retains the typed batch receipt")
+        };
+        assert_partial(&receipt);
+        assert_dispatched_once(&s, start);
+        s.check(
+            "partial-pause",
+            protocol,
+            "partial pause sets isError without losing successful targets",
+            paused["result"]["isError"] == true
+                && text.contains("Kitchen")
+                && text.contains("Living Room"),
+            &paused,
+        );
+        drop(mcp);
+    }
 
     s.sim_handle().unwrap().clear_faults("Living Room").unwrap();
     let complete = s.cli("complete-pause", &[mode, "--json", "pause", "selected"]);

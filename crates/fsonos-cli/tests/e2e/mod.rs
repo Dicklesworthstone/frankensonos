@@ -880,10 +880,15 @@ impl McpSession {
 
     /// `initialize` (protocol 2024-11-05) plus `notifications/initialized`.
     pub fn initialize(&mut self) -> Value {
+        self.initialize_with_protocol("2024-11-05")
+    }
+
+    /// Initialize the requested protocol era so tests exercise its wire shape.
+    pub fn initialize_with_protocol(&mut self, protocol: &str) -> Value {
         let init = self.request(
             "initialize",
             &json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": protocol,
                 "capabilities": {},
                 "clientInfo": {"name": "fsonos-e2e", "version": "0"}
             }),

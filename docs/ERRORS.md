@@ -23,8 +23,8 @@ are added at the end.
 - **MCP**: a tool error (`isError: true`) whose text reads
   `CODE: detail. Hint: ... Did you mean: a, b?`. Under protocol 2026-07-28 its
   structured content is also the JSON body above, the same one HTTP answers.
-  Successful tool results carry their JSON (including any `notes`) as
-  structured content.
+  Under that protocol, successful tool results also carry their JSON
+  (including any `notes`) as structured content.
 - **CLI**: `error[CODE]: detail`, then the hint and suggestions on stderr, and
   the exit code below. Command-line usage errors also exit 2.
 
@@ -38,6 +38,26 @@ another action. They never replay the command. Known read-only HTTP and MCP
 resource failures remain `INTERNAL`; failure to start a worker is `NOT_READY`
 and explicitly says no command started. MCP's generic tool worker conservatively
 retains uncertainty when it cannot establish that a call was read-only.
+
+## Partial operations
+
+A multi-room command may change one group while another refuses it. An undo
+can likewise restore some fields but report others it could not restore.
+These are completed operations with incomplete results, not a reason to send
+the command again. MCP reports them with `isError: true` and the original
+receipt, including every successful and failed group or restoration step.
+Protocol 2026-07-28 carries that receipt as `structuredContent`.
+Legacy 2024-11-05 clients receive the complete receipt as JSON after
+`Receipt: ` in the error text, without depending on a structured-content
+field that their protocol does not define. Neither path replays the operation
+or substitutes a generic internal-server error.
+
+The real-process `e2e_control_batches` regression exercises both protocol
+versions against S1/S2 simulators, through standalone MCP and the daemon
+bridge, and checks that each selected speaker receives one command.
+`e2e_dj_house` checks the modern structured partial-DJ receipt.
+
+## Code reference
 
 | Code | HTTP | Exit | Retryable | Meaning | Hint |
 |---|---|---|---|---|---|
@@ -80,5 +100,5 @@ A successful response can carry notes about how the request was carried out.
 |---|---|
 | `VOLUME_CLAMPED` | The requested volume exceeded the house policy and was lowered. |
 | `HEALED` | The speakers had changed under the request (a player at a new address, or a new group coordinator) and it was retried once there. Only commands that are safe to repeat are retried at a new address. |
-| `SKIPPED` | A room or group of a set (`everywhere`, `all`, a multi-room alias, or the rooms a party gathers) could not do it: its speaker did not answer, or refused (nothing to resume, say). The rest went ahead; the call fails only when none could. |
+| `SKIPPED` | A room or group of a set (`everywhere`, `all`, a multi-room alias, or the rooms a party gathers) could not do it: its speaker did not answer, or refused (nothing to resume, say). The receipt retains the groups that went ahead and those that failed; the CLI exits nonzero and MCP sets `isError` for an incomplete batch. |
 | `NOT_LOGGED` | The command ran, but its action could not be written to the log (the store was busy or full), so it cannot be undone. The change itself held; only its record and undo did not. |

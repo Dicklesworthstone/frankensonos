@@ -2,7 +2,7 @@
 
 use crate::{tool_error, tools};
 use fastmcp::prelude::*;
-use fastmcp::{CompleteResult, FinalCallToolResult, ResultMeta};
+use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
 
 pub(crate) async fn run(
     ctx: &McpContext,
@@ -11,7 +11,33 @@ pub(crate) async fn run(
     ctx.checkpoint()?;
     let backend = tools::backend_for(ctx).map_err(|failure| tool_error(&failure))?;
     let done = perform(move || call(&backend)).await?;
+    if done.is_error && !ctx.is_final_request_surface() {
+        return Err(legacy_tool_error(done));
+    }
     Ok(CompleteResult::new(done, ResultMeta::empty()))
+}
+
+/// The legacy macro adapter cannot project a final payload's error bit into
+/// its content-only return type. Its tool-error channel retains `isError`;
+/// include the complete receipt as JSON text because 2024-11-05 has no
+/// structured-content field. Modern clients keep their original final result.
+fn legacy_tool_error(result: FinalCallToolResult) -> McpError {
+    let mut message = result
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Some(receipt) = result.structured_content {
+        message.push_str("\n\nReceipt: ");
+        message.push_str(&receipt.to_string());
+        McpError::with_data(fastmcp::McpErrorCode::ToolExecutionError, message, receipt)
+    } else {
+        McpError::tool_error(message)
+    }
 }
 
 async fn perform(
