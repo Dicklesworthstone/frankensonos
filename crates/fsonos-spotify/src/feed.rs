@@ -1320,8 +1320,8 @@ impl QueueFeed {
     }
 
     /// The zone's recorded plays (with those of the zones it fed before the
-    /// music moved), then the selected and waiting movements, as if just
-    /// played: a selection must not repeat while its Playing event is pending.
+    /// music moved), then the unheard selected and waiting movements, as if
+    /// just played. A recorded selection keeps its actual listening timestamp.
     fn history<S: Store + ?Sized>(
         &self,
         store: &S,
@@ -1341,7 +1341,11 @@ impl QueueFeed {
         history::merge_spotify(&mut history, store.spotify_heard()?);
         // Oldest first, the earlier zones' first in a tie.
         history.sort_by_key(|p| p.played_at);
-        history.extend(self.on_or_ahead(now));
+        let recorded_current = self.recorded.as_ref().is_some_and(|(position, uri)| {
+            self.playing == Some(*position)
+                && self.current().and_then(|work| work.track_at(*position)) == Some(uri.as_str())
+        });
+        history.extend(self.queued_from(now, !recorded_current));
         Ok(history)
     }
 
@@ -1351,11 +1355,18 @@ impl QueueFeed {
     /// play is recorded, which waits for the next playback event.
     #[must_use]
     pub fn on_or_ahead(&self, now: i64) -> Vec<PlayRecord> {
+        self.queued_from(now, true)
+    }
+
+    fn queued_from(&self, now: i64, include_current: bool) -> Vec<PlayRecord> {
         let reached = self.playing.unwrap_or(0);
         self.queued
             .iter()
             .flat_map(|work| &work.movements)
-            .filter(|m| m.position.is_none_or(|p| p >= reached))
+            .filter(|m| {
+                m.position
+                    .is_none_or(|p| p > reached || (include_current && p == reached))
+            })
             .map(|m| PlayRecord::at(m.uri.clone(), now))
             .collect()
     }

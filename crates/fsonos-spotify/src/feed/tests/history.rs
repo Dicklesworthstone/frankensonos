@@ -70,6 +70,51 @@ fn a_single_song_still_rotates_without_fabricating_a_listen() {
 }
 
 #[test]
+fn a_recorded_song_keeps_its_play_time_without_hiding_future_occurrences() {
+    for s2 in [false, true] {
+        let mut rig = Rig::generation(s2);
+        let lan = rig.lan.clone();
+        let pool = works_of(&song_items()[..2]);
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let selected = feed.current().unwrap().movements[0].clone();
+        let heard_at = MIDNIGHT + 10;
+        rig.pump(&lan, &mut feed, plan(&pool, heard_at), &mut store)
+            .unwrap();
+        assert_eq!(plays(&store), [selected.uri.clone()]);
+
+        let now = MIDNIGHT + 300;
+        let reserved = feed.on_or_ahead(now);
+        assert_eq!(reserved.len(), 2, "one current song and one waiting song");
+        assert_eq!(reserved[0].source_uri, selected.uri);
+        assert_ne!(reserved[1].source_uri, selected.uri);
+        assert_eq!(
+            feed.history(&store, now).unwrap(),
+            [
+                PlayRecord::at(selected.uri.clone(), heard_at),
+                reserved[1].clone()
+            ],
+            "the current song must not add a synthetic row or refresh its timestamp"
+        );
+
+        // The same URI can be queued again at a different occurrence. The
+        // old recorded cursor must not hide the new selection or future copy.
+        feed.skip(&rig.speakers(&lan), plan(&pool, now), &mut store)
+            .unwrap();
+        feed.top_up(&rig.speakers(&lan), plan(&pool, now), &mut store)
+            .unwrap();
+        let reserved = feed.on_or_ahead(now);
+        assert!(reserved.iter().any(|play| play.source_uri == selected.uri));
+        let mut expected = vec![PlayRecord::at(selected.uri, heard_at)];
+        expected.extend(reserved);
+        assert_eq!(feed.history(&store, now).unwrap(), expected);
+        assert_eq!(plays(&store).len(), 1, "the new selection is still unheard");
+    }
+}
+
+#[test]
 fn a_refused_play_waits_for_playing_before_recording_history() {
     for s2 in [false, true] {
         let mut rig = Rig::generation(s2);
