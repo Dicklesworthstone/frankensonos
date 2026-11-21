@@ -193,7 +193,17 @@ def calibrate(device, lo=0x700000, hi=0x71c000, step=0x400, host=None,
             else:
                 if down >= 3: break
                 down = 0
-        log(f"sweep {S:06x}: outage_polls={down} max={maxd}")
+        # A reboot looks exactly like "still down when the window ends" — and reading BootSeq
+        # while down yields -1, so a naive b1>b0 misses every reboot (the 2026-11-20 lesson).
+        rebooting = (down >= watch * 0.8)
+        if rebooting:
+            for _ in range(120):
+                time.sleep(1)
+                if daemon_up(device) or alive(device, 1):
+                    break
+        log(f"sweep {S:06x}: outage_polls={down} max={maxd}{' REBOOT' if rebooting else ''}")
+        if rebooting:
+            return S
         if maxd >= 3:
             for _ in range(45):
                 time.sleep(2)
