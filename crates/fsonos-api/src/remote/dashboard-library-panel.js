@@ -47,9 +47,12 @@ const DashboardLibraryPanel = (() => {
     const selectedActions = el('div', null, 'dashboard-library-actions');
     selectedActions.setAttribute('role', 'group'); selectedActions.setAttribute('aria-label', 'Selected track actions');
     selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedClear);
-    const selectionHelp = el('p', `Select up to ${L.MAX_TRACKS} tracks on this page to play now or add to the queue. The shown order and repeated occurrences are preserved. Changing the page or filter clears the selection.`, 'small-note');
+    const selectionHelp = el('p', `Select up to ${L.MAX_TRACKS} tracks across pages of this listing. Move, repeat or remove selected tracks below, then review the order before playing or queueing. Changing the filter, collection or category, refreshing, or closing this browser clears the selection.`, 'small-note');
+    const selectionNotice = el('p', '', 'small-note'); selectionNotice.setAttribute('role', 'status');
+    const basket = el('ol', null, 'dashboard-library-selection');
+    basket.setAttribute('aria-label', 'Selected tracks in playback order');
     body.append(el('p', 'Browse the daemon’s saved cache. It may be older or incomplete; browsing does not sync Spotify.', 'small-note'),
-      scope, form, status, selectionHelp, selectedActions, rows, navigation); node.append(body);
+      scope, form, status, selectionHelp, selectionNotice, selectedActions, basket, rows, navigation); node.append(body);
     (doc.getElementById('search-results') || dialog.lastElementChild)?.before(node);
     let disposed = false, timer = null, focusAlbum = false, lastPage = null;
     const visible = () => !disposed && !doc.hidden && dialog.open && node.open && node.isConnected && !node.closest('[hidden], [inert]');
@@ -93,10 +96,36 @@ const DashboardLibraryPanel = (() => {
       back.textContent = state.playlist ? 'Back to playlists' : 'Back to albums';
       const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired;
       selectionHelp.hidden = selectedActions.hidden = state.kind !== 'tracks';
-      selectedCount.textContent = `${state.selected.length} selected`;
-      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !usable || !state.selected.length || !destination
+      selectionNotice.textContent = state.selectionNotice; selectionNotice.hidden = !state.selectionNotice;
+      selectedCount.textContent = `${state.basket.length} selected across this listing`;
+      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !usable || !state.basket.length || !destination
         || !controller.canControl() || !!session.state.pending;
-      selectedClear.disabled = !usable || !state.selected.length;
+      selectedClear.disabled = !visible() || !state.basket.length;
+      const basketFocus = basket.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
+      basket.hidden = !state.basket.length;
+      basket.replaceChildren();
+      for (const [index, selectedRow] of state.basket.entries()) {
+        const item = selectedRow.item, name = item.title || 'Untitled track';
+        const row = el('li'), info = el('div');
+        info.append(el('strong', name));
+        const location = item.position ? `Playlist position ${item.position}`
+          : selectedRow.page.query.album_uri ? `Disc ${item.disc_number ?? '?'}, track ${item.track_number ?? '?'}`
+          : `Listing position ${selectedRow.page.query.offset + selectedRow.index + 1}`;
+        info.append(el('p', [item.subtitle, location,
+          item.explicit_known === false ? 'Explicit-content metadata unavailable' : item.explicit ? 'Explicit' : ''].filter(Boolean).join(' · '), 'small-note'));
+        const actions = el('div', null, 'dashboard-library-actions');
+        for (const [label, operation, disabled] of [
+          ['Move earlier', () => control.moveTrack(selectedRow.id, -1), index === 0],
+          ['Move later', () => control.moveTrack(selectedRow.id, 1), index === state.basket.length - 1],
+          ['Repeat track', () => control.repeatTrack(selectedRow.id), state.basket.length >= L.MAX_TRACKS],
+          ['Remove selection', () => control.removeTrack(selectedRow.id), false],
+        ]) {
+          const edit = button(label, () => { if (visible()) operation(); }, `basket:${selectedRow.id}:${label}`);
+          edit.setAttribute('aria-label', `${label}: selection ${index + 1}, ${name}`);
+          edit.disabled = !usable || disabled; actions.append(edit);
+        }
+        row.append(info, actions); basket.append(row);
+      }
       previous.disabled = !usable || !p || p.query.offset === 0;
       next.disabled = !usable || !p || p.next === null;
       range.textContent = p?.total ? `${p.query.offset + 1}–${p.query.offset + p.items.length} of ${p.total}` : '';
@@ -120,7 +149,7 @@ const DashboardLibraryPanel = (() => {
           const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = state.selected.includes(index);
           checkbox.dataset.catalogKey = `select:${index}`;
           checkbox.setAttribute('aria-label', `Select ${item.position ? `playlist position ${item.position}, ` : ''}${name}`);
-          checkbox.disabled = !usable || (!checkbox.checked && state.selected.length >= L.MAX_TRACKS);
+          checkbox.disabled = !usable || (!checkbox.checked && state.basket.length >= L.MAX_TRACKS);
           checkbox.addEventListener('change', () => { if (visible()) control.selectTrack(item, checkbox.checked); });
           const label = el('label', null, 'dashboard-library-select-track'); label.append(checkbox, doc.createTextNode('Select track'));
           info.append(label);
@@ -149,6 +178,11 @@ const DashboardLibraryPanel = (() => {
       rows.scrollTop = scroll;
       if (focusAlbum && !state.loading) { focusAlbum = false; if (visible()) status.focus({ preventScroll: true }); }
       else if (focus && visible()) [...rows.querySelectorAll('[data-catalog-key]')].find(b => b.dataset.catalogKey === focus)?.focus({ preventScroll: true });
+      else if (basketFocus && visible()) {
+        const replacement = [...basket.querySelectorAll('[data-catalog-key]')].find(b => b.dataset.catalogKey === basketFocus);
+        if (replacement && !replacement.disabled) replacement.focus({ preventScroll: true });
+        else status.focus({ preventScroll: true });
+      }
     }
     const toggle = () => {
       clearTimer();

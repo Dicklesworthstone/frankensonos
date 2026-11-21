@@ -102,6 +102,7 @@ on:
       - "scripts/test-dashboard-session.cjs"
       - "scripts/test-dashboard-library.cjs"
       - "scripts/test-dashboard-library-actions.cjs"
+      - "scripts/test-dashboard-library-basket.cjs"
       - "scripts/test-dashboard-workspace.cjs"
       - "scripts/test-dashboard-recovery.cjs"
       - "scripts/test-dashboard-live-integration.cjs"
@@ -219,7 +220,7 @@ jobs:
         run: node --test scripts/test-dashboard-queue-actions.cjs scripts/test-dashboard-queue-session.cjs
       - name: Listening room cached library regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs
+        run: node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs scripts/test-dashboard-library-basket.cjs
       - name: Listening room live recovery regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-dashboard-recovery.cjs scripts/test-dashboard-live-integration.cjs scripts/test-dashboard-room-recovery.cjs

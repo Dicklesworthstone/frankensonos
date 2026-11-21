@@ -20,7 +20,7 @@ const DashboardLibrary = (() => {
       fail('Choose a library category and a filter of at most 512 characters.');
     }
     if (playlist_uri !== null) P.queryOf({ playlist_uri, q, offset, expected_revision });
-    return Object.freeze({ kind, q: q.trim(), offset, album_uri, playlist_uri, expected_revision });
+    return Object.freeze({ kind, q: q.trim(), offset, limit: LIMIT, album_uri, playlist_uri, expected_revision });
   }
 
   function urlOf(value) {
@@ -110,34 +110,71 @@ const DashboardLibrary = (() => {
   }
 
   function selectionOf(value) {
-    if (!Q || !value || !text(value.revision, 256) || !value.revision.trim()
-        || !Array.isArray(value.rows) || !value.rows.length || value.rows.length > Q.MAX_TRACKS) {
-      fail(`Select 1 to ${Q?.MAX_TRACKS || 10} tracks from a fresh library page.`);
+    if (!Q || !value || !Array.isArray(value.rows) || !value.rows.length || value.rows.length > Q.MAX_TRACKS) {
+      fail(`Select 1 to ${Q?.MAX_TRACKS || 10} tracks from fresh library pages.`);
     }
-    const query = queryOf({ ...value.query, expected_revision: value.query?.playlist_uri ? value.revision : null });
-    if (query.kind !== 'tracks') fail('Select individual cached tracks. Containers are not expanded.');
-    const albumObservation = albumObservationOf(value.albumObservation, query.album_uri);
-    let previous = -1;
+    let listing = null;
     const rows = Object.freeze(value.rows.map(row => {
-      if (!row || !uint(row.index) || row.index >= LIMIT || row.index <= previous) fail('The selected track positions are unreadable.');
-      previous = row.index;
+      if (!row || !uint(row.index) || row.index >= LIMIT) fail('The selected track positions are unreadable.');
+      const source = row.page ?? value;
+      const provenance = Q.basketPage({ ...source, query: { limit: LIMIT, ...source.query } });
+      if (provenance.query.limit !== LIMIT) fail('The selected library page size changed. Refresh the listing.');
+      const query = queryOf({ ...provenance.query,
+        expected_revision: provenance.query.playlist_uri ? provenance.revision : null });
+      const albumObservation = albumObservationOf(provenance.albumObservation, query.album_uri);
+      const identity = JSON.stringify([query.kind, query.q, query.album_uri, query.playlist_uri,
+        provenance.revision, albumObservation]);
+      if (listing !== null && identity !== listing) fail('The selected library pages changed. Refresh the listing.');
+      listing = identity;
       const item = itemOf(row.item, query);
       if (!item.explicit_known && albumObservation?.coverage !== 'complete') fail('Choose this track from a complete album observation.');
-      return Object.freeze({ index: row.index, item });
+      return Object.freeze({ index: row.index, item,
+        page: Object.freeze({ query, revision: provenance.revision, albumObservation }) });
     }));
     Q.tracksOf(rows.map(row => row.item));
-    return Object.freeze({ query, revision: value.revision, albumObservation, rows });
+    return Object.freeze({ ...rows[0].page, rows });
+  }
+
+  async function verifySelection(call, value, check = () => {}) {
+    const selection = selectionOf(value), pages = new Map();
+    for (const row of selection.rows) {
+      const key = Q.pageKey(row.page);
+      if (!pages.has(key)) pages.set(key, { page: row.page, rows: [] });
+      pages.get(key).rows.push(row);
+    }
+    for (const { page: before, rows } of pages.values()) {
+      check();
+      const page = pageOf(await call(urlOf(before.query)), before.query);
+      check();
+      if (page.revision !== before.revision
+          || JSON.stringify(page.albumObservation ?? null) !== JSON.stringify(before.albumObservation)
+          || !rows.every(({ index, item }) => JSON.stringify(page.items[index]) === JSON.stringify(item))) {
+        fail('The cached library selection changed. Refresh its listing and review again.');
+      }
+    }
+    return selection;
   }
 
   function model({ call, changed = () => {} }) {
     const state = { open: false, active: true, kind: 'albums', filter: '', album: null, playlist: null,
-      page: null, loading: false, stale: true, resetRequired: false, error: '', selected: [] };
+      page: null, loading: false, stale: true, resetRequired: false, error: '', selected: [], basket: [], selectionNotice: '' };
+    const basket = Q?.basket();
     let disposed = false, epoch = 0, running = null, queued = null;
     const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const available = () => !disposed && state.active && state.open;
     const ready = () => available() && !state.loading && !state.stale && !state.resetRequired && state.page;
-    function invalidate() {
-      ++epoch; state.stale = true; state.selected = [];
+    function syncSelection() {
+      state.basket = basket?.rows ?? [];
+      state.selected = state.basket.length && state.page?.query.kind === 'tracks'
+        ? basket.indices(state.page) : [];
+    }
+    function invalidate(preserveSelection = false) {
+      ++epoch; state.stale = true;
+      if (!preserveSelection) {
+        if (state.basket.length) state.selectionNotice = 'The track selection was cleared when this listing was refreshed or changed.';
+        basket?.clear();
+      }
+      syncSelection();
       if (queued) { queued.resolve(false); queued = null; }
       state.loading = available() && !!running;
     }
@@ -153,12 +190,34 @@ const DashboardLibrary = (() => {
         const page = pageOf(await call(urlOf(task.query)), task.query);
         if (!current()) return;
         if (task.revision !== null && page.revision !== task.revision) {
+          basket?.clear(); syncSelection();
+          state.selectionNotice = 'The cached listing changed, so the track selection was cleared.';
           state.resetRequired = true;
           fail('The library changed between pages. Refresh to start at the first page.');
         }
-        state.page = page; state.stale = false; state.resetRequired = false; ok = true;
+        if (state.basket.length && JSON.stringify(page.albumObservation ?? null)
+            !== JSON.stringify(state.basket[0].page.albumObservation)) {
+          basket.clear(); syncSelection(); state.resetRequired = true;
+          state.selectionNotice = 'The cached album changed, so the track selection was cleared.';
+          fail('The cached album observation changed. Refresh to start at the first page.');
+        }
+        if (state.basket.some(row => Q.pageKey(row.page) === Q.pageKey(page)
+            && JSON.stringify(row.item) !== JSON.stringify(page.items[row.index]))) {
+          basket.clear(); syncSelection(); state.resetRequired = true;
+          state.selectionNotice = 'The selected cached music changed, so the track selection was cleared.';
+          fail('The selected cached occurrences changed. Refresh the listing and choose them again.');
+        }
+        state.page = page; syncSelection(); state.stale = false; state.resetRequired = false; ok = true;
       } catch (error) {
-        if (current()) state.error = [error?.message || 'The library could not be read.', error?.hint].filter(Boolean).join(' ');
+        if (current()) {
+          state.error = [error?.message || 'The library could not be read.', error?.hint].filter(Boolean).join(' ');
+          if (state.basket.length) {
+            basket.clear(); syncSelection();
+            state.selectionNotice = 'The track selection was cleared after the listing could not be verified.';
+            state.error += ' The track selection was cleared; refresh the listing to choose again.';
+          }
+          if (task.revision !== null) state.resetRequired = true;
+        }
       } finally {
         running = null;
         state.loading = available() && !!queued;
@@ -167,9 +226,9 @@ const DashboardLibrary = (() => {
         void pump();
       }
     }
-    function request(offset = 0, revision = null) {
+    function request(offset = 0, revision = null, preserveSelection = false) {
       if (!available()) return Promise.resolve(false);
-      invalidate(); state.error = '';
+      invalidate(preserveSelection); state.error = '';
       let query;
       try { query = queryOf({ kind: state.kind, q: state.filter, offset, album_uri: state.album?.uri ?? null,
         playlist_uri: state.playlist?.uri ?? null, expected_revision: state.playlist ? revision : null }); }
@@ -190,7 +249,7 @@ const DashboardLibrary = (() => {
     function turn(forward, expected = state.page) {
       if (!ready() || expected !== state.page) return Promise.resolve(false);
       const offset = forward ? expected.next : expected.query.offset > 0 ? Math.max(0, expected.query.offset - LIMIT) : null;
-      return offset === null ? Promise.resolve(false) : request(offset, expected.revision);
+      return offset === null ? Promise.resolve(false) : request(offset, expected.revision, true);
     }
     function choose(item) {
       if (!ready() || !state.page.items.includes(item)) return null;
@@ -200,19 +259,22 @@ const DashboardLibrary = (() => {
       const index = state.page?.items.indexOf(item) ?? -1;
       if (!Q || !ready() || state.kind !== 'tracks' || index < 0 || !Q.supported(item.source_uri)
           || typeof checked !== 'boolean') return false;
-      const selected = state.selected.filter(position => position !== index);
-      if (checked) {
-        if (selected.length >= Q.MAX_TRACKS) { state.error = `Select at most ${Q.MAX_TRACKS} tracks from this page.`; emit(); return false; }
-        selected.push(index);
-      }
-      state.selected = selected.sort((a, b) => a - b); state.error = ''; emit(); return true;
+      try {
+        if (checked) basket.add(state.page, index, item); else basket.unselect(state.page, index);
+        syncSelection(); state.error = ''; state.selectionNotice = ''; emit(); return true;
+      } catch (error) { state.error = error.message; emit(); return false; }
     }
-    function clearSelection() { state.selected = []; emit(); }
+    function editSelection(operation, id, direction) {
+      if (!basket || !ready()) return false;
+      try {
+        const changed = basket[operation](id, direction);
+        syncSelection(); state.error = ''; state.selectionNotice = ''; emit(); return changed;
+      } catch (error) { state.error = error.message; emit(); return false; }
+    }
+    function clearSelection() { basket?.clear(); syncSelection(); state.selectionNotice = 'Track selection cleared.'; emit(); }
     function chooseTracks() {
-      if (!Q || !ready() || !state.selected.length || state.kind !== 'tracks') return null;
-      return selectionOf({ query: state.page.query, revision: state.page.revision,
-        albumObservation: state.page.albumObservation,
-        rows: state.selected.map(index => ({ index, item: state.page.items[index] })) });
+      if (!Q || !ready() || !state.basket.length || state.kind !== 'tracks') return null;
+      return selectionOf({ rows: state.basket });
     }
     function album(item) {
       if (!choose(item) || item.kind !== 'album') return Promise.resolve(false);
@@ -228,6 +290,8 @@ const DashboardLibrary = (() => {
       return refresh();
     }
     return { state, refresh, browse, edit, choose, selectTrack, clearSelection, chooseTracks, album, playlist,
+      removeTrack: id => editSelection('remove', id), repeatTrack: id => editSelection('repeat', id),
+      moveTrack: (id, direction) => editSelection('move', id, direction),
       next: (page) => turn(true, page), previous: (page) => turn(false, page),
       open() { if (disposed || !state.active) return Promise.resolve(false); state.open = true; return refresh(); },
       close() { state.open = false; invalidate(); emit(); },
@@ -236,7 +300,7 @@ const DashboardLibrary = (() => {
       dispose() { disposed = true; state.open = false; invalidate(); },
     };
   }
-  return { LIMIT, KINDS, MAX_TRACKS: Q?.MAX_TRACKS || 10, queryOf, urlOf, pageOf, choiceOf, selectionOf, model, albumCoverage,
+  return { LIMIT, KINDS, MAX_TRACKS: Q?.MAX_TRACKS || 10, queryOf, urlOf, pageOf, choiceOf, selectionOf, verifySelection, model, albumCoverage,
     playlistCoverage: (page) => P.describe(page) };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardLibrary;

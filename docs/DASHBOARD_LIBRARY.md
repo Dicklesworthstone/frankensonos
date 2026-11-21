@@ -21,11 +21,15 @@ command review, naming the exact group, source and effect. Play now replaces
 the current source, and album/playlist playback replaces the group's queue.
 The two queue actions add music without starting paused playback.
 
-For several individual tracks, use the row checkboxes, then **Queue selected
-next** or **Add selected to end**. The review lists up to ten exact occurrences
-in their catalog order, including repeated URIs, before one `POST /queue/tracks`.
-The action preserves playback and has one undo record. Selection stays within
-the current page and clears on navigation or filtering. See
+For several individual tracks, use the row checkboxes across pages of the same
+listing. The selection above the results offers move, repeat and removal controls.
+It begins in catalog order and retains your custom order after you rearrange it.
+Then choose **Play selected now**, **Queue selected next** or **Add selected to
+end**. Review lists up to ten exact occurrences, including repeated URIs, before
+one batch request. Play replaces the queue and starts the first selected track;
+queueing preserves playback and has one undo record. Each distinct selected
+source page is reread during preparation and confirmation. Changing the filter
+or collection, refreshing, or closing the chooser clears the selection. See
 [Ordered track selections](QUEUE_TRACK_SELECTIONS.md) for the destination queue
 check, partial-failure behavior and equivalent CLI/MCP calls.
 
@@ -59,7 +63,7 @@ allows normal refresh again. Same-title items keep distinct source identities.
 ## Checks
 
 ```sh
-node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs scripts/test-dashboard-session.cjs scripts/test-library-track-selection.cjs
+node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs scripts/test-dashboard-library-basket.cjs scripts/test-dashboard-session.cjs scripts/test-library-track-selection.cjs
 python3 scripts/test-dashboard-library-browser.py --chromium /path/to/chromium
 ```
 

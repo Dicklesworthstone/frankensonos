@@ -1087,9 +1087,12 @@ outside the music library and DJ selection pool.
 Explicit ordered selections now share `POST /queue/tracks`, CLI `queue-tracks`
 and MCP `add_tracks_to_queue`. One request inserts 1–10 concrete Spotify tracks
 or episodes next or at the end, retaining intentional duplicates and current
-playback. The phone and dashboard select exact entries from one cached page,
-review the ordered list and destination, then recheck catalog, group, playback
-and queue before submission. The optional destination revision is separate from
+playback. The phone and dashboard retain exact entries across pages of one
+cached listing, with explicit move, repeat and removal controls. Every distinct
+selected page is rechecked before review and again at confirmation; the final
+command retains the chosen order and intentional duplicates. Changed listing
+evidence, filters, collections or explicit refreshes retire the selection.
+Group, playback and queue are also checked before submission. The optional destination revision is separate from
 the library revision. One successful batch has one inserted-range undo record;
 an uncertain partial batch is not replayed and leaves an undo barrier. The
 existing `add_to_queue` policy and bounded insertion engine apply throughout.

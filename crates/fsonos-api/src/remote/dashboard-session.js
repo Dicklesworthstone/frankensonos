@@ -231,6 +231,11 @@ const DashboardSession = (() => {
       const target = C.key(item.zone), playback = playbackIdentity(item), id = ++intent;
       try {
         const catalog = L.selectionOf(value), tracks = Q.tracksOf(catalog.rows.map(row => row.item));
+        const check = () => {
+          if (!ready() || id !== intent || state.pending || target !== controller.state.selected
+              || playbackIdentity(selection()) !== playback) fail('The destination or selection review changed. Choose the tracks again.');
+        };
+        await L.verifySelection(call, catalog, check);
         const queue = Q.queueOf(await call(`/zones/${encodeURIComponent(target)}/queue?offset=0&limit=1`), target);
         if (!ready() || id !== intent || state.pending || target !== controller.state.selected
             || playbackIdentity(selection()) !== playback) return null;
@@ -241,7 +246,7 @@ const DashboardSession = (() => {
           title: `${label}: ${tracks.length} track(s)`,
           detail: action === 'play'
             ? `Replaces this group’s ${queue.total} existing queue entries with only the tracks below, then starts from the first track in this order. Repeated occurrences are preserved. Shuffle and repeat are turned off. This changes current playback.`
-            : `Adds the exact selection below in listing order, preserving repeated occurrences. Playback stays as it is. One successful selection has one undo record.${action === 'next' && queue.playing === null ? ' This group is not playing its queue, so the selection is added at the end.' : ''}`,
+            : `Adds the exact selection below in your chosen order, preserving repeated occurrences. Playback stays as it is. One successful selection has one undo record.${action === 'next' && queue.playing === null ? ' This group is not playing its queue, so the selection is added at the end.' : ''}`,
           trackSelection: entries,
           playback, catalogTracks: catalog, queue, libraryAction: action, url: action === 'play' ? '/play/tracks' : '/queue/tracks',
           body: action === 'play' ? Q.playBody(target, tracks, queue) : Q.body(target, tracks, action === 'next', queue) });
@@ -319,12 +324,7 @@ const DashboardSession = (() => {
           } else if (r.catalogTracks) {
             const L = libraryApi(), Q = queueTracksApi(), catalog = r.catalogTracks;
             if (!L || !Q) fail('The library browser is unavailable. Refresh the page.');
-            const page = L.pageOf(await call(L.urlOf(catalog.query)), catalog.query);
-            valid(check);
-            if (page.revision !== catalog.revision || stable(page.albumObservation ?? null) !== stable(catalog.albumObservation)
-                || !catalog.rows.every(({ index, item: source }) => stable(page.items[index]) === stable(source))) {
-              fail('The cached library selection changed. Refresh its listing and review again.');
-            }
+            await L.verifySelection(call, catalog, () => valid(check));
             const [queueValue, playbackValue] = await Promise.all([
               call(`/zones/${encodeURIComponent(target)}/queue?offset=0&limit=1`),
               call(`/zones/${encodeURIComponent(target)}/state`),

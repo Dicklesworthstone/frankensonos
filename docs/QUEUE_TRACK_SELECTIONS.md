@@ -12,10 +12,15 @@ action history and verified undo boundaries.
 
 Open **Find music** and browse cached tracks, or open an album or playlist with
 **View cached tracks**. Mark **Select track** beside the wanted entries.
-Both clients keep selected entries in their listing order, regardless of the
-order in which you check the boxes. Selecting two occurrences of the same URI
-keeps both; a disc/track position or original playlist position distinguishes
-them in the review.
+Both clients initially keep selected entries in their listing order, regardless
+of the order in which you check the boxes. Selection survives previous/next
+navigation across pages of the same observed listing. The ordered selection
+above the results offers **Earlier/Later** (or **Move earlier/Move later**),
+**Repeat track**, and **Remove selection**. Once you customize the order,
+additional selections append to it. Repeats each count toward the ten-track
+limit; removing one occurrence keeps the others. Unchecking a source row removes
+all its selected copies. A disc/track position or original playlist position
+distinguishes separate source occurrences, even when they share one URI.
 
 Choose an explicit listening group, then **Play selected now**, **Queue selected
 next** or **Add selected to end**. The review shows the complete ordered list,
@@ -26,15 +31,18 @@ the list after the current queue occurrence. When a group is playing another
 source, it appends to the queue without activating it. Paused playback stays
 paused, and queueing does not raise volume.
 
-Selection is limited to the current 50-entry catalog page and at most ten
-entries. Changing its filter, page, category or collection clears selection;
-closing the chooser also clears it. You can browse and mark cached tracks
+Selection is limited to ten entries across any number of 50-entry pages within
+the same listing. Changing its filter, category or collection, explicitly
+refreshing, or closing the chooser clears it, with an explanation. A changed or
+unreadable continuation also retires the selection. You can browse and mark cached tracks
 without online speakers, but review requires a fresh explicit destination and
 readable queue. The phone retains the selected music when you choose another
 group and requires a new review for that group.
 
-At confirmation the clients reread the selected catalog observation, exact
-occurrences, destination group, playback source and destination queue. A changed
+Before showing the review and again at confirmation, the clients reread every
+distinct selected source page and its exact occurrences. Repeated copies share
+one verification read per page; at most ten source pages are read in each pass.
+Confirmation also checks destination group, playback source and destination queue. A changed
 listing, group, source or queue asks for another review. Queue-next also checks
 that the current queue occurrence has not changed. These checks are optimistic
 observations; they do not reserve speakers against another controller. The
@@ -178,7 +186,7 @@ components, ordered review, late-read cancellation, source/group/queue changes,
 offline selection, and lost HTTP response are exercised by:
 
 ```sh
-node --test scripts/test-library-track-selection.cjs
+node --test scripts/test-library-track-selection.cjs scripts/test-library-basket.cjs scripts/test-dashboard-library-basket.cjs
 cargo test --locked -p fsonos-api --lib surface::queue::tracks::tests
 cargo test --locked -p fsonos-api --test queue_tracks_sim
 cargo test --locked -p fsonos-api --test play_tracks_sim
@@ -196,6 +204,8 @@ Ordered playback adds S1/S2 cases for mixed tracks and episodes, duplicate
 occurrences, all-member volume caps, complete replacement undo, direct-source
 and empty-queue starts, changed destination evidence, lost acknowledgements and
 partial staging. Browser Node tests execute the real selection components and
-their request/receipt logic with synthetic observations. The new Rust checks
+their request/receipt logic with synthetic observations, including three-page
+catalogs, custom order, repeats, exact source positions, delayed reads and lost
+HTTP replies. These browser additions use the existing Rust contracts. The new Rust checks
 remain unexecuted behind the local `asupersync` dependency build failure; Node
 coverage does not establish Rust or physical-speaker execution.
