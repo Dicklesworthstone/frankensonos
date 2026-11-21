@@ -14,6 +14,9 @@ pub use updates::{ContentUpdate, MAX_UPDATE_CONTAINERS, parse_update};
 mod manage;
 pub use manage::{create_object, destroy_object, rename_object};
 
+mod native;
+pub use native::{NativeBrowsePage, browse_with_metadata, parse_browse_response_with_metadata};
+
 /// Sonos favorites (the household-wide "My Sonos" list).
 pub const FAVORITES: &str = "FV:2";
 /// The coordinator's play queue.

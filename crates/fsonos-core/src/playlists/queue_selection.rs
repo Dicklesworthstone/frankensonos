@@ -1,13 +1,13 @@
 //! Resolve exact live-queue occurrences into retained native tracks. Reading
 //! the queue does not require it to be selected or change the current source.
 
-use super::contents::evidence_bytes;
+use super::contents::native_evidence_bytes;
 use super::selection::track;
 use super::{GroupProof, MAX_PLAYLIST_EDIT_BYTES, invalid};
 use crate::favorites::Favorite;
 use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::Transport;
-use fsonos_proto::content::{self, BrowseFlag, BrowsePage, QUEUE};
+use fsonos_proto::content::{self, BrowseFlag, BrowsePage, NativeBrowsePage, QUEUE};
 use fsonos_types::PlayerId;
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -16,12 +16,16 @@ use std::net::IpAddr;
 /// It binds the coordinator, native update counter and total, not permission.
 #[must_use]
 pub fn queue_selection_revision(coordinator: &PlayerId, page: &BrowsePage) -> String {
+    revision(coordinator, page.update_id, page.total_matches)
+}
+
+fn revision(coordinator: &PlayerId, update_id: u32, total_matches: u32) -> String {
     format!(
         "q1:{}:{}:{}:{}",
         coordinator.0.len(),
         coordinator.0,
-        page.update_id,
-        page.total_matches
+        update_id,
+        total_matches
     )
 }
 
@@ -69,15 +73,21 @@ pub fn select_queue_tracks<T: Transport + ?Sized>(
             .expect("a nonempty selection includes its first position");
         let offset = first - 1;
         let limit = last - first + 1;
-        let before = page(transport, host, offset, limit)?;
-        if queue_selection_revision(coordinator, &before) != expected_revision {
+        let before = page(
+            transport,
+            host,
+            offset,
+            limit,
+            MAX_PLAYLIST_EDIT_BYTES.saturating_sub(bytes),
+        )?;
+        if revision(coordinator, before.update_id, before.total_matches) != expected_revision {
             return Err(changed("the queue observation is no longer current"));
         }
         if before.objects.is_empty() {
             return Err(invalid("the queue has no track at a selected position"));
         }
         for item in &before.objects {
-            bytes = bytes.saturating_add(evidence_bytes(item));
+            bytes = bytes.saturating_add(native_evidence_bytes(item));
             if bytes > MAX_PLAYLIST_EDIT_BYTES {
                 return Err(invalid("queue selection evidence exceeds 4 MiB"));
             }
@@ -91,7 +101,7 @@ pub fn select_queue_tracks<T: Transport + ?Sized>(
         pages.push((offset, limit, before));
     }
     for (offset, limit, before) in pages {
-        if page(transport, host, offset, limit)? != before {
+        if page(transport, host, offset, limit, MAX_PLAYLIST_EDIT_BYTES)? != before {
             return Err(changed(
                 "selected queue occurrences changed while they were read",
             ));
@@ -100,9 +110,18 @@ pub fn select_queue_tracks<T: Transport + ?Sized>(
     group
         .confirm(transport, host, coordinator)
         .map_err(|error| changed(&error.to_string()))?;
+    let selected_bytes = positions.iter().fold(0_usize, |bytes, position| {
+        bytes.saturating_add(native_evidence_bytes(&selected[position]))
+    });
+    if selected_bytes > MAX_PLAYLIST_EDIT_BYTES {
+        return Err(invalid("repeated queue selections exceed 4 MiB"));
+    }
     positions
         .iter()
-        .map(|position| track(&selected[position]))
+        .map(|position| {
+            let selected = &selected[position];
+            track(&selected.object, &selected.metadata)
+        })
         .collect()
 }
 
@@ -148,14 +167,16 @@ fn page<T: Transport + ?Sized>(
     host: IpAddr,
     offset: u32,
     limit: u32,
-) -> Result<BrowsePage, CoreError> {
-    let page = content::browse(
+    max_bytes: usize,
+) -> Result<NativeBrowsePage, CoreError> {
+    let page = content::browse_with_metadata(
         transport,
         host,
         QUEUE,
         BrowseFlag::DirectChildren,
         offset,
         limit,
+        max_bytes,
     )?;
     let returned = u32::try_from(page.objects.len()).unwrap_or(u32::MAX);
     let available = page.total_matches.saturating_sub(offset);

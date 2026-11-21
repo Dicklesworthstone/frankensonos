@@ -13,6 +13,9 @@ use crate::{ProtoError, xml};
 use fsonos_types::Track;
 use std::fmt::Write as _;
 
+mod native_metadata;
+pub use native_metadata::{NativeDidlObject, parse_didl_with_metadata};
+
 /// Escape a string for inclusion in XML character data / attributes.
 #[must_use]
 pub fn xml_escape(s: &str) -> String {

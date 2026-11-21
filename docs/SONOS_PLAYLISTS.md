@@ -108,6 +108,18 @@ which confirms the inserted occurrence and its neighbors before recording undo.
 Changed saved contents or player identity require a fresh contents read. These
 checks detect changes; they do not lock Sonos against other controllers.
 
+Selected tracks retain the original XML item under its original DIDL root,
+including inherited namespaces, root and resource attributes, additional
+resources and service descriptors, and vendor extensions. Playback, queue
+insertion and copying selected tracks into another saved playlist forward that
+retained metadata instead of rebuilding it from display fields. Both source
+reads compare the complete retained XML, so an extension-only change also
+invalidates the selection. Retained selection evidence is bounded to 4 MiB;
+repeated root wrappers and deliberate repeated occurrences count toward that
+budget before their documents are constructed or copied. These checks preserve
+the source metadata; each speaker and service still decides whether it can play
+or store the resource.
+
 HTTP uses `POST /sonos/playlists/track` with
 `{"zone":"Kitchen","playlist":"SQ:7","position":3,"expected_revision":"…","mode":"next"}`.
 All five fields are required; `mode` is exactly `play`, `next` or `append`.
@@ -530,6 +542,20 @@ uses a native saved-queue or local-library scheme. Explicit radio sources keep
 their direct-stream behavior.
 
 ## Verification
+
+Native metadata retention has exact XML fixtures in `fsonos-proto` and outgoing
+SOAP capture in `fsonos-core/tests/native_track_metadata_sim.rs`. The S1/S2
+simulator cases check individual and batch playback, retained-queue copies,
+duplicate selections, same-counter changes confined to vendor extensions, and
+aggregate metadata limits. They verify the metadata submitted to the speaker;
+physical service playback and how each firmware stores vendor extensions remain
+separate acceptance checks.
+
+```sh
+cargo test --locked -p fsonos-proto --lib native_metadata
+cargo test --locked -p fsonos-proto --lib content::native
+cargo test --locked -p fsonos-core --test native_track_metadata_sim
+```
 
 `fsonos-core/tests/sonos_playlists_sim.rs` exercises real loopback SOAP for both
 S1 and S2: listing without favorites, native metadata variants, replacement,

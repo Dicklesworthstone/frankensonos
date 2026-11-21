@@ -5,9 +5,7 @@ use super::contents;
 use crate::favorites::{Favorite, FavoriteKind};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::content::MAX_BROWSE_OBJECTS;
-use fsonos_proto::didl::{
-    DidlKind, DidlObject, item_metadata, parse_didl, spotify_uri_from_renderer_uri,
-};
+use fsonos_proto::didl::{DidlKind, DidlObject, parse_didl, spotify_uri_from_renderer_uri};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 
@@ -84,7 +82,7 @@ pub fn select_tracks<T: Transport + ?Sized>(
         expected_revision,
     )?
     .iter()
-    .map(track)
+    .map(|selected| track(&selected.object, &selected.metadata))
     .collect()
 }
 
@@ -95,13 +93,16 @@ pub(crate) fn validate_native_track(selected: &Favorite) -> Result<(), CoreError
 }
 
 pub(super) fn native_item(selected: &Favorite) -> Result<DidlObject, CoreError> {
+    if selected.metadata.len() > super::MAX_PLAYLIST_EDIT_BYTES {
+        return Err(invalid("native track metadata exceeds 4 MiB"));
+    }
     let objects = parse_didl(&selected.metadata)?;
     let [item] = objects.as_slice() else {
         return Err(invalid(
             "a native track must retain exactly one metadata item",
         ));
     };
-    if track(item)? != *selected {
+    if track(item, &selected.metadata)? != *selected {
         return Err(invalid(
             "a native track must match its retained resource and metadata",
         ));
@@ -109,7 +110,7 @@ pub(super) fn native_item(selected: &Favorite) -> Result<DidlObject, CoreError> 
     Ok(item.clone())
 }
 
-pub(super) fn track(item: &DidlObject) -> Result<Favorite, CoreError> {
+pub(super) fn track(item: &DidlObject, metadata: &str) -> Result<Favorite, CoreError> {
     const TRACK: &str = "object.item.audioItem.musicTrack";
     if item.kind != DidlKind::Item
         || !(item.class == TRACK
@@ -133,7 +134,7 @@ pub(super) fn track(item: &DidlObject) -> Result<Favorite, CoreError> {
         title: item.title.clone(),
         kind: FavoriteKind::Track,
         uri: Some(uri.into()),
-        metadata: item_metadata(item),
+        metadata: metadata.into(),
         description: item.creator.clone(),
         art_uri: item.album_art_uri.clone(),
     })
@@ -205,7 +206,7 @@ fn invalid(detail: &str) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fsonos_proto::didl::{DidlRes, parse_didl};
+    use fsonos_proto::didl::{DidlRes, item_metadata, parse_didl};
     use std::net::IpAddr;
 
     fn item() -> DidlObject {
@@ -234,7 +235,7 @@ mod tests {
         ] {
             let mut item = item();
             item.res.as_mut().unwrap().uri = uri.into();
-            let selected = track(&item).unwrap();
+            let selected = track(&item, &item_metadata(&item)).unwrap();
             assert_eq!(selected.id, "SQ:7/3");
             assert_eq!(selected.kind, FavoriteKind::Track);
             assert_eq!(selected.uri.as_deref(), Some(uri));
@@ -242,14 +243,14 @@ mod tests {
         }
         let mut subclass = item();
         subclass.class.push_str(".vendor");
-        assert!(track(&subclass).is_ok());
+        assert!(track(&subclass, &item_metadata(&subclass)).is_ok());
     }
 
     #[test]
     fn non_tracks_and_missing_metadata_do_not_become_playable_items() {
         let mut container = item();
         container.kind = DidlKind::Container;
-        assert!(track(&container).is_err());
+        assert!(track(&container, &item_metadata(&container)).is_err());
         for class in [
             "",
             "object.item",
@@ -261,11 +262,51 @@ mod tests {
         ] {
             let mut item = item();
             item.class = class.into();
-            assert!(track(&item).is_err(), "{class}");
+            assert!(track(&item, &item_metadata(&item)).is_err(), "{class}");
         }
         let mut unavailable = item();
         unavailable.res = None;
-        assert!(track(&unavailable).is_err());
+        assert!(track(&unavailable, &item_metadata(&unavailable)).is_err());
+    }
+
+    #[test]
+    fn native_validation_preserves_complete_xml_and_requires_one_matching_occurrence() {
+        let original = include_str!("../../../fsonos-proto/tests/fixtures/didl_native_items.xml");
+        let retained = fsonos_proto::didl::parse_didl_with_metadata(original, 2, 16_384).unwrap();
+        let native = &retained[0];
+        let selected = track(&native.object, &native.metadata).unwrap();
+        assert_eq!(native_item(&selected).unwrap(), native.object);
+        assert_eq!(selected.metadata, native.metadata);
+        assert!(
+            selected
+                .metadata
+                .contains("vendor:license=\"account-token\"")
+        );
+
+        let mut changed = selected.clone();
+        changed.metadata = original.into();
+        assert!(
+            native_item(&changed).is_err(),
+            "two occurrences are not one track"
+        );
+        changed.metadata.clone_from(&retained[1].metadata);
+        assert!(
+            native_item(&changed).is_err(),
+            "metadata cannot substitute another occurrence"
+        );
+        for field in ["id", "title", "uri", "kind", "description", "art"] {
+            let mut changed = selected.clone();
+            match field {
+                "id" => changed.id.push_str("/other"),
+                "title" => changed.title.push_str(" other"),
+                "uri" => changed.uri = Some("https://example.invalid/other.flac".into()),
+                "kind" => changed.kind = FavoriteKind::Stream,
+                "description" => changed.description = Some("Another artist".into()),
+                "art" => changed.art_uri = Some("https://example.invalid/other.jpg".into()),
+                _ => unreachable!(),
+            }
+            assert!(native_item(&changed).is_err(), "substituted {field}");
+        }
     }
 
     #[test]
@@ -305,7 +346,7 @@ mod tests {
                 protocol_info: None,
                 duration: None,
             });
-            assert!(track(&item).is_err(), "{uri:?}");
+            assert!(track(&item, &item_metadata(&item)).is_err(), "{uri:?}");
         }
     }
 
