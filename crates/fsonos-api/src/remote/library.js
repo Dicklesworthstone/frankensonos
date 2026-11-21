@@ -170,19 +170,35 @@ const LibraryRemote = (() => {
   function model({ call, changed = () => {}, played = () => {} }) {
     let epoch = 0;
     let disposed = false;
+    const selection = Q?.basket();
     const state = { open: false, zones: [], target: '', query: '', hits: [], view: 'search',
       loaded: false, loading: false, writing: false, pending: null, message: '',
-      page: null, browseKind: 'tracks', browseAlbum: null, browsePlaylist: null, selected: [] };
+      page: null, browseKind: 'tracks', browseAlbum: null, browsePlaylist: null, selected: [],
+      basket: Object.freeze([]), selectionNotice: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
     const destination = () => state.zones.find((zone) => zone.target === state.target);
-    const invalidate = () => {
+    const observation = (page = state.page) => Q.basketPage({
+      query: { kind: 'tracks', offset: page.offset, limit: LIMIT, q: state.query,
+        album_uri: state.browseAlbum?.uri, playlist_uri: state.browsePlaylist?.uri },
+      revision: page.revision, albumObservation: page.albumObservation });
+    function syncSelection() {
+      state.basket = selection?.rows ?? Object.freeze([]);
+      state.selected = selection?.rows.length && state.page && state.browseKind === 'tracks'
+        ? selection.indices(observation()) : [];
+    }
+    const invalidate = (preserveSelection = false) => {
       ++epoch;
       state.pending = null;
       state.selected = [];
+      if (!preserveSelection) {
+        if (selection?.rows.length) state.selectionNotice = 'The previous track selection was cleared. Choose tracks from this listing.';
+        selection?.clear();
+      }
       state.page = null;
       state.hits = [];
       state.loaded = false;
       state.loading = false;
+      syncSelection();
     };
     const current = (version) => !disposed && state.open && version === epoch;
 
@@ -219,9 +235,8 @@ const LibraryRemote = (() => {
       // Cached browsing is independent of the destination. Keep its observed
       // page, but consume any review and invalidate an outstanding read.
       const cached = state.view === 'browse' && state.loaded ? state.page : null;
-      const selected = state.selected;
-      invalidate();
-      if (cached) { state.page = cached; state.hits = cached.hits; state.loaded = true; state.selected = selected; }
+      invalidate(Boolean(cached));
+      if (cached) { state.page = cached; state.hits = cached.hits; state.loaded = true; syncSelection(); }
       state.target = value;
       state.message = '';
       publish();
@@ -270,11 +285,11 @@ const LibraryRemote = (() => {
       }
     }
 
-    async function browse(kind = state.browseKind, offset = 0, album = null, revision = null, playlist = null) {
+    async function browse(kind = state.browseKind, offset = 0, album = null, revision = null, playlist = null, preserveSelection = false) {
       if (disposed || !state.open || state.writing || !Object.hasOwn(categories, kind)
           || !number(offset) || (album && (kind !== 'tracks' || spotify(album.uri)?.[1] !== 'album'))
           || (playlist && (kind !== 'tracks' || album || !P || spotify(playlist.uri)?.[1] !== 'playlist'))) return false;
-      invalidate();
+      invalidate(preserveSelection);
       state.view = 'browse';
       state.browseKind = kind;
       state.browseAlbum = album;
@@ -298,14 +313,33 @@ const LibraryRemote = (() => {
         if (!current(version)) return false;
         const page = playlist ? playlistPageOf(value, playlistQuery) : pageOf(value, kind, offset, album);
         if (revision !== null && page.revision !== revision) {
+          selection?.clear(); syncSelection();
+          state.selectionNotice = 'The cached listing changed, so the track selection was cleared.';
           throw new Error('The library changed between pages. Refresh the listing to start from the beginning.');
+        }
+        if (selection?.rows.length) {
+          const currentPage = observation(page), firstPage = selection.rows[0].page;
+          const sameListing = Q.pageKey({ ...firstPage, query: { ...firstPage.query, offset } }) === Q.pageKey(currentPage);
+          if (!sameListing || selection.rows.some(row => Q.pageKey(row.page) === Q.pageKey(currentPage)
+              && JSON.stringify(row.item) !== JSON.stringify(page.hits[row.index]))) {
+            selection.clear(); syncSelection();
+            state.selectionNotice = 'The cached listing changed, so the track selection was cleared.';
+            throw new Error('The selected cached occurrences changed. Refresh the listing and choose them again.');
+          }
         }
         state.page = page;
         state.hits = page.hits;
         state.loaded = true;
+        syncSelection();
         return true;
       } catch (error) {
-        if (current(version)) state.message = message(error);
+        if (current(version)) {
+          state.message = message(error);
+          if (selection?.rows.length) {
+            selection.clear(); syncSelection();
+            state.selectionNotice = 'The page could not be verified, so the track selection was cleared. Refresh the listing to choose again.';
+          }
+        }
         return false;
       } finally {
         if (current(version)) { state.loading = false; publish(); }
@@ -315,7 +349,7 @@ const LibraryRemote = (() => {
     function turn(forward, expected = state.page) {
       if (!expected || expected !== state.page || !state.loaded || state.loading || state.writing) return false;
       const offset = forward ? expected.next : expected.offset > 0 ? Math.max(0, expected.offset - LIMIT) : null;
-      return offset === null ? false : browse(state.browseKind, offset, state.browseAlbum, expected.revision, state.browsePlaylist);
+      return offset === null ? false : browse(state.browseKind, offset, state.browseAlbum, expected.revision, state.browsePlaylist, true);
     }
 
     function openAlbum(index, expected = state.hits[index]) {
@@ -345,38 +379,60 @@ const LibraryRemote = (() => {
       if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded
           || state.view !== 'browse' || state.browseKind !== 'tracks' || !state.page
           || !hit || hit !== expected || !Q.supported(hit.source) || typeof checked !== 'boolean') return false;
-      const selected = state.selected.filter(position => position !== index);
-      if (checked) {
-        if (selected.length >= Q.MAX_TRACKS) {
-          state.message = `Select at most ${Q.MAX_TRACKS} tracks from this page.`; publish(); return false;
-        }
-        selected.push(index);
-      }
-      state.selected = selected.sort((a, b) => a - b);
-      state.message = ''; publish(); return true;
+      try {
+        if (checked) selection.add(observation(), index, hit);
+        else selection.unselect(observation(), index);
+        syncSelection(); state.selectionNotice = ''; state.message = ''; publish(); return true;
+      } catch (error) { state.message = message(error); publish(); return false; }
     }
 
     function clearSelection() {
       if (disposed || state.writing || state.loading) return;
-      state.selected = []; state.pending = null; state.message = ''; publish();
+      selection?.clear(); syncSelection(); state.pending = null; state.message = ''; state.selectionNotice = ''; publish();
+    }
+
+    function editSelection(action, id, delta) {
+      if (!selection || disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded) return false;
+      try {
+        const changed = action === 'move' ? selection.move(id, delta) : selection[action](id);
+        syncSelection(); state.message = ''; state.selectionNotice = ''; publish(); return changed;
+      } catch (error) { state.message = message(error); publish(); return false; }
+    }
+
+    async function verifySelection(rows, valid) {
+      const pages = new Map(rows.map(row => [Q.pageKey(row.page), row.page]));
+      for (const [key, observed] of pages) {
+        if (!valid()) return false;
+        const q = observed.query, playlistQuery = q.playlist_uri ? P.queryOf({
+          playlist_uri: q.playlist_uri, offset: q.offset, q: q.q, expected_revision: observed.revision }) : null;
+        const query = { kind: 'tracks', offset: q.offset, limit: LIMIT,
+          ...(q.album_uri ? { album_uri: q.album_uri } : {}), ...(q.q ? { q: q.q } : {}) };
+        const value = await call(playlistQuery ? 'libraryPlaylist' : 'libraryBrowse', {
+          query: playlistQuery ? P.parameters(playlistQuery) : query });
+        if (!valid()) return false;
+        const page = playlistQuery ? playlistPageOf(value, playlistQuery)
+          : pageOf(value, 'tracks', q.offset, q.album_uri ? { uri: q.album_uri } : null);
+        if (page.revision !== observed.revision
+            || JSON.stringify(page.albumObservation ?? null) !== JSON.stringify(observed.albumObservation)
+            || rows.some(row => Q.pageKey(row.page) === key
+              && JSON.stringify(page.hits[row.index]) !== JSON.stringify(row.item))) {
+          throw new Error('The cached library selection changed. Refresh its listing and review again.');
+        }
+      }
+      return true;
     }
 
     async function chooseTracks(action) {
       const zone = destination(), page = state.page;
       if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded
           || state.view !== 'browse' || state.browseKind !== 'tracks' || !page || !zone
-          || !state.selected.length || !['play', 'append', 'next'].includes(action)) return false;
-      const rows = Object.freeze(state.selected.map(index => Object.freeze({ index, hit: state.hits[index] })));
-      const query = Object.freeze({ kind: 'tracks', offset: page.offset, limit: LIMIT,
-        ...(state.browseAlbum ? { album_uri: state.browseAlbum.uri } : {}),
-        ...(state.query.trim() ? { q: state.query.trim() } : {}) });
-      const playlistQuery = state.browsePlaylist ? P.queryOf({ playlist_uri: state.browsePlaylist.uri,
-        offset: page.offset, q: state.query, expected_revision: page.revision }) : null;
-      const catalog = Object.freeze({ rows, query, playlistQuery, album: state.browseAlbum,
-        revision: page.revision, albumObservation: page.albumObservation ?? null });
+          || !state.basket.length || !['play', 'append', 'next'].includes(action)) return false;
+      const rows = Object.freeze(state.basket.map(row => Object.freeze({ ...row, hit: row.item })));
+      const catalog = Object.freeze({ rows });
       const version = ++epoch;
-      state.loading = true; state.message = 'Reading the destination queue for review…'; publish();
+      state.loading = true; state.message = 'Checking selected pages and the destination queue for review…'; publish();
       try {
+        if (!await verifySelection(rows, () => current(version))) return false;
         const tracks = Q.tracksOf(rows.map(({ hit }) => ({ source_uri: hit.source, title: hit.title })));
         const [queueValue, playbackValue] = await Promise.all([
           call('queue', { params: { room: zone.target }, query: { offset: 0, limit: 1 } }),
@@ -468,17 +524,7 @@ const LibraryRemote = (() => {
           }
         }
         if (pending.tracks) {
-          const catalog = pending.tracks;
-          const value = await call(catalog.playlistQuery ? 'libraryPlaylist' : 'libraryBrowse', {
-            query: catalog.playlistQuery ? P.parameters(catalog.playlistQuery) : catalog.query });
-          if (!current(version)) return false;
-          const page = catalog.playlistQuery ? playlistPageOf(value, catalog.playlistQuery)
-            : pageOf(value, 'tracks', catalog.query.offset, catalog.album);
-          if (page.revision !== catalog.revision
-              || JSON.stringify(page.albumObservation ?? null) !== JSON.stringify(catalog.albumObservation)
-              || !catalog.rows.every(({ index, hit }) => JSON.stringify(page.hits[index]) === JSON.stringify(hit))) {
-            throw new Error('The cached library selection changed. Refresh its listing and review again.');
-          }
+          if (!await verifySelection(pending.tracks.rows, () => current(version))) return false;
           const [queueValue, playbackValue] = await Promise.all([
             call('queue', { params: { room: pending.zone.target }, query: { offset: 0, limit: 1 } }),
             call('state', { params: { room: pending.zone.target } }),
@@ -520,12 +566,12 @@ const LibraryRemote = (() => {
           throw new Error('The action returned an unreadable result; its outcome is uncertain.');
         }
         state.message = [result.done, ...(notes || []).map((note) => note.detail)].join(' ');
-        state.selected = [];
+        selection?.clear(); syncSelection();
         return true;
       } catch (error) {
         state.hits = [];
         state.loaded = false;
-        state.selected = [];
+        selection?.clear(); syncSelection();
         state.message = `${message(error)}${sent
           ? ' Read the room and queue before trying again; the request was not repeated.' : ' No playback request was sent.'}`;
         return false;
@@ -544,6 +590,8 @@ const LibraryRemote = (() => {
         invalidate(); state.message = 'The household favorites changed. Search again for current results.'; publish();
       },
       next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, chooseTracks, routine, cancel, confirm,
+      removeTrack: id => editSelection('remove', id), repeatTrack: id => editSelection('repeat', id),
+      moveTrack: (id, delta) => editSelection('move', id, delta),
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; invalidate(); } };
   }
@@ -616,8 +664,38 @@ const LibraryRemote = (() => {
       back.textContent = state.browsePlaylist ? 'Back to playlists' : 'Back to albums';
       recent.setAttribute('aria-pressed', String(state.view === 'history'));
       search.setAttribute('aria-pressed', String(state.view === 'search'));
-      status.textContent = state.message || (state.loading ? 'Reading…' : '');
+      status.textContent = [state.selectionNotice, state.message || (state.loading ? 'Reading…' : '')].filter(Boolean).join(' ');
       results.replaceChildren();
+      if (Q && !state.pending && (state.basket.length || state.loaded && state.view === 'browse' && state.browseKind === 'tracks')) {
+        const choose = action => { reviewFocus = `selected-${action}`; void control.chooseTracks(action); };
+        const locked = busy || !state.loaded || !state.basket.length || !state.target;
+        const basketList = el('ol', { class: 'library-selection', 'aria-label': 'Selected tracks in playback order' });
+        state.basket.forEach((entry, index) => {
+          const hit = entry.item;
+          const edit = (label, action, disabled, name) => {
+            const result = button(label, action, disabled, `basket-${entry.id}-${name}`);
+            result.setAttribute('aria-label', `${label}: selected track ${index + 1}, ${hit.title || 'Untitled track'}`);
+            return result;
+          };
+          basketList.append(el('li', {}, el('p', { text: [hit.title || 'Untitled track', hit.subtitle,
+            hit.position ? `Playlist position ${hit.position}` : hit.disc != null ? `Disc ${hit.disc}, track ${hit.track ?? '?'}` : '',
+            hit.explicitKnown === false ? 'Explicit-content metadata unavailable' : hit.explicit ? 'Explicit' : '',
+            `Listing page ${Math.floor(entry.page.query.offset / LIMIT) + 1}`].filter(Boolean).join(' · ') }),
+          el('div', { class: 'row' },
+            edit('Earlier', () => control.moveTrack(entry.id, -1), busy || !state.loaded || index === 0, 'earlier'),
+            edit('Later', () => control.moveTrack(entry.id, 1), busy || !state.loaded || index === state.basket.length - 1, 'later'),
+            edit('Repeat track', () => control.repeatTrack(entry.id), busy || !state.loaded || state.basket.length >= Q.MAX_TRACKS, 'repeat'),
+            edit('Remove selection', () => control.removeTrack(entry.id), busy || !state.loaded, 'remove'))));
+        });
+        results.append(el('section', { class: 'library-selected-tracks', 'aria-label': 'Build a track selection' },
+          el('strong', { text: `${state.basket.length} selected · ${Q.MAX_TRACKS} track limit` }),
+          el('p', { text: 'Keep selections while turning pages in this cached listing. Tracks begin in listing order; use Earlier, Later or Repeat track to build your order. Changing the filter, collection or refreshing the listing clears the selection.' }),
+          basketList, el('div', { class: 'row', role: 'group', 'aria-label': 'Selected track actions' },
+            button('Play selected now', () => choose('play'), locked, 'selected-play'),
+            button('Queue selected next', () => choose('next'), locked, 'selected-next'),
+            button('Add selected to end', () => choose('append'), locked, 'selected-append'),
+            button('Clear selection', () => control.clearSelection(), busy || !state.basket.length))));
+      }
       if (state.pending?.tracks) {
         const pending = state.pending, label = { play: 'Play selected now', next: 'Queue selected next', append: 'Add selected to end' }[pending.action];
         const list = el('ol');
@@ -665,17 +743,6 @@ const LibraryRemote = (() => {
           : count ? `${count} match(es)${count === LIMIT ? '; refine the search for more specific results' : ''}.`
             : 'No matches. Try different words or sync your Spotify library on the daemon.';
         results.append(el('p', { text: heading }));
-        if (Q && state.view === 'browse' && state.browseKind === 'tracks') {
-          const choose = action => { reviewFocus = `selected-${action}`; void control.chooseTracks(action); };
-          const locked = busy || !state.selected.length || !state.target;
-          results.append(el('p', { text: `Select up to ${Q.MAX_TRACKS} tracks from this page to play now or add to the queue. The shown order and repeated occurrences are preserved. Changing the page or filter clears the selection.` }),
-            el('div', { class: 'row', role: 'group', 'aria-label': 'Selected track actions' },
-              el('span', { text: `${state.selected.length} selected` }),
-              button('Play selected now', () => choose('play'), locked, 'selected-play'),
-              button('Queue selected next', () => choose('next'), locked, 'selected-next'),
-              button('Add selected to end', () => choose('append'), locked, 'selected-append'),
-              button('Clear selection', () => control.clearSelection(), busy || !state.selected.length)));
-        }
         const list = el('ul', { class: 'library-hits' });
         state.hits.forEach((hit, index) => {
           const row = el('li', {}, el('div', { class: 'track' },
@@ -690,7 +757,7 @@ const LibraryRemote = (() => {
             if (Q && state.browseKind === 'tracks' && Q.supported(hit.source)) {
               const checked = state.selected.includes(index);
               const checkbox = el('input', { type: 'checkbox', checked, 'data-library-focus': `select-${index}`,
-                disabled: busy || (!checked && state.selected.length >= Q.MAX_TRACKS),
+                disabled: busy || (!checked && state.basket.length >= Q.MAX_TRACKS),
                 'aria-label': `Select ${hit.position ? `playlist position ${hit.position}, ` : ''}${hit.title || 'Untitled track'}`,
                 onchange: event => control.selectTrack(index, event.target.checked, hit) });
               row.append(el('label', { class: 'library-select-track' }, checkbox, 'Select track'));

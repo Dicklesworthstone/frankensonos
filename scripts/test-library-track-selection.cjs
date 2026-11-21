@@ -374,3 +374,44 @@ for (const surface of ['phone', 'dashboard']) test(`${surface}: cached tracks ca
   else assert.equal(await f.session.reviewLibraryTracks(f.library.chooseTracks(), 'next', null), null);
   assert.equal(f.writes().length, 0);
 });
+
+test('phone basket controls keep pages, reorder and repeat exact occurrences before one reviewed batch', async t => {
+  const f = await phone({ collection: 'tracks' }), doc = documentFixture(), previous = global.document;
+  global.document = doc;
+  let panel;
+  t.after(() => { panel?.dispose(); global.document = previous; });
+  f.hook((name, args) => {
+    if (name !== 'libraryBrowse') return;
+    const offset = Number(args.query.offset || 0), total = 52;
+    return { ...catalog(args.query), total, next_offset: offset === 0 ? 50 : null,
+      items: Array.from({ length: Math.min(50, total - offset) }, (_, index) => ({ kind: 'track',
+        source_uri: uri(offset + index + 1), title: `Track ${offset + index + 1}`, subtitle: 'Synthetic artist', explicit: false })) };
+  });
+  const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const el = vm.runInNewContext(source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer')) + '\nel;', { document: doc });
+  panel = R.panel({ call: f.backend, el }); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => panel.node.querySelectorAll('option').length === 3);
+  const group = panel.node.querySelector('select'); group.value = 'Room@S2'; group.fire('change');
+  findButton(panel.node, 'Browse tracks').fire('click');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 50);
+  checks()[0].checked = true; checks()[0].fire('change');
+  findButton(panel.node, 'Next page').fire('click'); await settled(() => checks().length === 2);
+  checks()[1].checked = true; checks()[1].fire('change');
+  assert.match(panel.node.textContent, /2 selected/);
+  const basket = () => panel.node.querySelectorAll('ol').find(node => node.getAttribute('aria-label') === 'Selected tracks in playback order');
+  const rowButton = (index, label) => findButton(basket().children[index], label);
+  rowButton(0, 'Repeat track').fire('click'); assert.equal(basket().children.length, 3);
+  rowButton(2, 'Earlier').fire('click'); rowButton(1, 'Earlier').fire('click');
+  assert.match(basket().children[0].textContent, /^Track 52/);
+  rowButton(1, 'Remove selection').fire('click'); assert.equal(basket().children.length, 2);
+  assert.match(rowButton(0, 'Repeat track').getAttribute('aria-label'), /selected track 1, Track 52/);
+  findButton(panel.node, 'Previous page').fire('click'); await settled(() => checks().length === 50);
+  assert.equal(checks()[0].checked, true); assert.match(basket().children[0].textContent, /^Track 52/);
+  findButton(panel.node, 'Queue selected next').fire('click');
+  await settled(() => !!findButton(panel.node, 'Confirm queue selected next'));
+  assert.match(panel.node.querySelector('ol').children[0].textContent, /^Track 52/);
+  const confirm = findButton(panel.node, 'Confirm queue selected next'); confirm.fire('click'); confirm.fire('click');
+  await settled(() => f.writes().length === 1 && panel.node.textContent.includes('Current playback was preserved.'));
+  assert.deepEqual(f.writes()[0].args.body.tracks.map(item => item.source_uri), [uri(52), uri(1)]);
+});

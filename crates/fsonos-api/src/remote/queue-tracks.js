@@ -6,6 +6,79 @@ const QueueTracksRemote = (() => {
   const text = (value, max = 4096) => typeof value === 'string' && value.trim() !== '' && value.length <= max;
   const fail = message => { throw new Error(message); };
   const supported = source => typeof source === 'string' && /^spotify:(track|episode):[A-Za-z0-9]{22}$/.test(source);
+  const frozen = value => {
+    if (Array.isArray(value)) return Object.freeze(value.map(frozen));
+    if (value && typeof value === 'object') return Object.freeze(Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, frozen(item)])));
+    return value;
+  };
+  function basketPage(value) {
+    const query = value?.query;
+    if (!query || query.kind !== 'tracks' || !uint(query.offset) || !uint(query.limit)
+        || query.limit < 1 || query.limit > 50 || !text(value.revision, 256)
+        || (query.q != null && (typeof query.q !== 'string' || [...query.q].length > 512))
+        || (query.album_uri != null && !/^spotify:album:[A-Za-z0-9]{22}$/.test(query.album_uri))
+        || (query.playlist_uri != null && !/^spotify:playlist:[A-Za-z0-9]{22}$/.test(query.playlist_uri))
+        || (query.album_uri && query.playlist_uri)) {
+      fail('Choose tracks from a complete cached listing.');
+    }
+    return frozen({ query: { kind: 'tracks', offset: query.offset, limit: query.limit,
+      q: (query.q ?? '').trim(), album_uri: query.album_uri ?? null, playlist_uri: query.playlist_uri ?? null },
+    revision: value.revision, albumObservation: value.albumObservation ?? null });
+  }
+  const listingKey = page => JSON.stringify([page.query.kind, page.query.limit, page.query.q,
+    page.query.album_uri, page.query.playlist_uri, page.revision, page.albumObservation]);
+  const pageKey = value => { const page = basketPage(value); return JSON.stringify([listingKey(page), page.query.offset]); };
+  // Keep observed occurrences, not just URIs or current-page checkbox indices.
+  // A repeated song gets its own stable id; changing page never changes its proof.
+  function basket() {
+    let rows = Object.freeze([]), serial = 0, customOrder = false;
+    const replace = values => { rows = Object.freeze(values); if (!rows.length) customOrder = false; };
+    function add(pageValue, index, item) {
+      const page = basketPage(pageValue), source = item?.source_uri ?? item?.source;
+      if (!uint(index) || index >= page.query.limit || !supported(source) || typeof item?.title !== 'string') {
+        fail('Choose an observed track from this page.');
+      }
+      if (rows.length && listingKey(rows[0].page) !== listingKey(page)) {
+        fail('The cached listing changed. Clear the selection and read it again.');
+      }
+      const old = rows.find(row => pageKey(row.page) === pageKey(page) && row.index === index);
+      if (old) {
+        if (JSON.stringify(old.item) !== JSON.stringify(item)) fail('The selected track changed. Refresh the listing.');
+        return false;
+      }
+      if (rows.length >= MAX_TRACKS) fail(`Select at most ${MAX_TRACKS} tracks, including repeats.`);
+      const next = [...rows, frozen({ id: `selection-${++serial}`, page, index, item })];
+      if (!customOrder) next.sort((a, b) => a.page.query.offset - b.page.query.offset || a.index - b.index);
+      replace(next); return true;
+    }
+    function remove(id) {
+      if (!rows.some(row => row.id === id)) return false;
+      replace(rows.filter(row => row.id !== id)); return true;
+    }
+    function repeat(id) {
+      const index = rows.findIndex(row => row.id === id);
+      if (index < 0) return false;
+      if (rows.length >= MAX_TRACKS) fail(`Select at most ${MAX_TRACKS} tracks, including repeats.`);
+      const next = [...rows];
+      next.splice(index + 1, 0, frozen({ ...rows[index], id: `selection-${++serial}` }));
+      customOrder = true; replace(next); return true;
+    }
+    function move(id, delta) {
+      const index = rows.findIndex(row => row.id === id), to = index + delta;
+      if (![-1, 1].includes(delta) || index < 0 || to < 0 || to >= rows.length) return false;
+      const next = [...rows], [row] = next.splice(index, 1); next.splice(to, 0, row);
+      customOrder = true; replace(next); return true;
+    }
+    function indices(value) {
+      const key = pageKey(value);
+      return [...new Set(rows.filter(row => pageKey(row.page) === key).map(row => row.index))].sort((a, b) => a - b);
+    }
+    return { get rows() { return rows; }, add, remove, repeat, move, indices,
+      clear() { replace([]); },
+      unselect(page, index) { const key = pageKey(page); replace(rows.filter(row => pageKey(row.page) !== key || row.index !== index)); },
+    };
+  }
   function tracksOf(value) {
     if (!Array.isArray(value) || !value.length || value.length > MAX_TRACKS) fail(`Select 1 to ${MAX_TRACKS} cached tracks.`);
     return Object.freeze(value.map(track => {
@@ -73,6 +146,6 @@ const QueueTracksRemote = (() => {
     }
     return { done: result.done, changed: true, notes: result.notes };
   }
-  return { MAX_TRACKS, supported, tracksOf, queueOf, verifyQueue, playbackOf, body, playBody, receipt, playReceipt };
+  return { MAX_TRACKS, supported, basketPage, pageKey, basket, tracksOf, queueOf, verifyQueue, playbackOf, body, playBody, receipt, playReceipt };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = QueueTracksRemote;
