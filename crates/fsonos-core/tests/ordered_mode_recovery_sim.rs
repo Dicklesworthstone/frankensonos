@@ -102,6 +102,7 @@ enum Change {
     FailedRead,
     UnknownMode,
     MissingMode,
+    ActiveContinuation(&'static str),
 }
 
 struct Intercept<'a> {
@@ -141,7 +142,7 @@ impl<'a> Intercept<'a> {
                 soap::play(&self.inner, host)?;
                 soap::pause(&self.inner, host)?;
             }
-            Change::Resume => soap::play(&self.inner, host)?,
+            Change::Resume | Change::ActiveContinuation(_) => soap::play(&self.inner, host)?,
             Change::SeekTrack => soap::seek_track(&self.inner, host, 2)?,
             Change::SeekPosition => soap::seek_position(&self.inner, host, 30)?,
             Change::Queue => {
@@ -176,6 +177,7 @@ impl Transport for Intercept<'_> {
             if !matches!(self.reply, Reply::NotApplied) {
                 let response = self.inner.soap_post(host, path, action, body)?;
                 if matches!(self.reply, Reply::Acknowledged) {
+                    self.owner_changes(host)?;
                     return Ok(response);
                 }
             }
@@ -198,6 +200,14 @@ impl Transport for Intercept<'_> {
             }
         }
         let mut response = self.inner.soap_post(host, path, action, body)?;
+        if name == "GetTransportInfo"
+            && let Change::ActiveContinuation(state) = self.change
+        {
+            response = response.replace(
+                "<CurrentTransportState>PLAYING</CurrentTransportState>",
+                &format!("<CurrentTransportState>{state}</CurrentTransportState>"),
+            );
+        }
         if name == "GetTransportSettings" {
             if self.settings_reads.get() == 1 {
                 self.owner_changes(host)?;
@@ -218,12 +228,17 @@ fn ordinary_success_checks_ownership_before_the_four_ordered_writes() {
         let rig = Rig::new(s2);
         let t = Intercept::new(&rig, Reply::Acknowledged, Change::None);
         rig.start(&t, 2).unwrap();
-        assert_eq!(
-            *t.calls.borrow(),
-            std::iter::once("GetZoneGroupState")
-                .chain(START)
-                .collect::<Vec<_>>()
-        );
+        assert_eq!(t.writes(), START);
+        let calls = t.calls.borrow();
+        for pair in START.windows(2) {
+            let previous = calls.iter().position(|name| name == pair[0]).unwrap();
+            let next = calls.iter().position(|name| name == pair[1]).unwrap();
+            assert!(
+                calls[previous + 1..next]
+                    .iter()
+                    .any(|name| name == "GetZoneGroupState")
+            );
+        }
         rig.playing_second();
     }
 }
@@ -236,7 +251,10 @@ fn confirmation_reads_mode_before_the_requested_track_has_been_selected() {
             let t = Intercept::new(&rig, reply, Change::None);
             rig.start(&t, 2).unwrap();
             assert_eq!(t.writes(), START);
-            assert_eq!(t.settings_reads.get(), 2);
+            assert!(
+                t.settings_reads.get() >= 2,
+                "mode recovery is observed, never replayed"
+            );
             rig.playing_second();
         }
     }
@@ -345,9 +363,49 @@ fn a_missing_target_slot_cannot_be_created_by_recovery() {
         let rig = Rig::new(s2);
         let t = Intercept::new(&rig, Reply::Lost, Change::None);
         let error = rig.start(&t, 3).unwrap_err();
-        assert!(error.to_string().contains("original lost SetPlayMode"));
-        assert_eq!(t.writes(), ["SetAVTransportURI", "SetPlayMode"]);
+        assert!(error.to_string().contains("requested queue slot is absent"));
+        assert!(
+            t.writes().is_empty(),
+            "a missing occurrence fails before source selection"
+        );
         assert_eq!(t.settings_reads.get(), 0);
+    }
+}
+
+#[test]
+fn acknowledged_mode_changes_recheck_source_queue_group_and_order_before_seek() {
+    for s2 in [false, true] {
+        for change in [Change::Source, Change::Queue, Change::Group, Change::Mode] {
+            let rig = Rig::new(s2);
+            let t = Intercept::new(&rig, Reply::Acknowledged, change);
+            assert!(matches!(rig.start(&t, 2), Err(CoreError::Uncertain(_))));
+            assert_eq!(t.writes(), ["SetAVTransportURI", "SetPlayMode"]);
+        }
+    }
+}
+
+#[test]
+fn acknowledged_normal_mode_allows_active_or_transitioning_queue_reselection() {
+    for s2 in [false, true] {
+        for state in ["PLAYING", "TRANSITIONING"] {
+            let rig = Rig::new(s2);
+            let t = Intercept::new(&rig, Reply::Acknowledged, Change::ActiveContinuation(state));
+            rig.start(&t, 2).unwrap();
+            assert_eq!(t.writes(), START);
+            rig.playing_second();
+        }
+    }
+}
+
+#[test]
+fn inactive_queue_preparation_still_rejects_active_acknowledged_mode() {
+    for s2 in [false, true] {
+        for state in ["PLAYING", "TRANSITIONING"] {
+            let rig = Rig::new(s2);
+            let t = Intercept::new(&rig, Reply::Acknowledged, Change::ActiveContinuation(state));
+            assert!(control::load_queue_from_in_order(&t, &rig.houses, &rig.id, 2).is_err());
+            assert_eq!(t.writes(), ["SetAVTransportURI", "SetPlayMode"]);
+        }
     }
 }
 

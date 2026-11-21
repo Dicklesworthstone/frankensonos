@@ -139,6 +139,13 @@ use the existing bounded recovery to the originally requested room; a later
 mismatch never restarts completed playback changes. See
 [Command recovery](docs/COMMAND_RECOVERY.md).
 
+Successful speaker replies also receive these continuation checks. A source
+selected by another controller between source selection and Play is left alone.
+Queue starts retain the original queue revision and requested occurrence through
+their mode, seek and playback stages; a replacement queue or later track
+selection cannot silently become the requested music. Missing queue positions
+are rejected before changing the active source.
+
 ### Playback errors and DJ recovery
 
 `fsonos status ROOM`, API state, MCP and live events expose the speaker's

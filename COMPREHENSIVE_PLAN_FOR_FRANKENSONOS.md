@@ -1725,6 +1725,15 @@ SOAP code and enters the existing one-budget, original-room recovery path. A lat
 ownership mismatch cannot replay a partially completed operation. S1/S2 simulator
 regressions cover wrong-endpoint rejection and successful intended-room recovery.
 
+Acknowledged starts now recheck their completed stages too. Direct sources
+must still match their requested URI and supplied metadata before Play. Queue
+starts retain the original requested occurrence and revision before source
+selection, then check that proof and the preceding stage before each dependent
+write. Ordered starts retain NORMAL through the final Play admission. An absent
+occurrence fails before source interruption; a later takeover or unreadable
+proof leaves an uncertain partial result without restarting completed writes.
+These observations do not lock another controller out between reads and writes.
+
 The daemon supervises its live inventory/event worker, DJ queue follower,
 listening-history follower and configured Spotify refresh watcher alongside
 required HTTP/MCP listeners and the scheduler. An unexpected worker return or

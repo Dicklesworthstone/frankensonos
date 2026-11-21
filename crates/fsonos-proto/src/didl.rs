@@ -23,6 +23,92 @@ pub fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// Compare supplied DIDL metadata without depending on its XML spelling.
+/// Namespace prefixes, attribute order, entity quoting and indentation may
+/// change on read-back. Expanded names, values and element order must still
+/// match, including unknown service extensions and account descriptors.
+/// Missing or malformed documents cannot establish equivalence.
+#[must_use]
+pub fn equivalent_metadata(left: &str, right: &str) -> bool {
+    let (Ok(left), Ok(right)) = (xml::parse(left), xml::parse(right)) else {
+        return false;
+    };
+    let (left, right) = (left.root_element(), right.root_element());
+    if left.tag_name().name() != "DIDL-Lite" || right.tag_name().name() != "DIDL-Lite" {
+        return false;
+    }
+    let mut pending = vec![(left, right)];
+    while let Some((left, right)) = pending.pop() {
+        if left.tag_name() != right.tag_name() {
+            return false;
+        }
+        let mut left_attributes: Vec<_> = left
+            .attributes()
+            .map(|attr| (attr.namespace(), attr.name(), attr.value()))
+            .collect();
+        let mut right_attributes: Vec<_> = right
+            .attributes()
+            .map(|attr| (attr.namespace(), attr.name(), attr.value()))
+            .collect();
+        left_attributes.sort_unstable();
+        right_attributes.sort_unstable();
+        if left_attributes != right_attributes {
+            return false;
+        }
+        let (left, right) = (metadata_children(left), metadata_children(right));
+        if left.len() != right.len() {
+            return false;
+        }
+        for (left, right) in left.into_iter().zip(right) {
+            match (left, right) {
+                (MetadataChild::Element(left), MetadataChild::Element(right)) => {
+                    pending.push((left, right));
+                }
+                (MetadataChild::Text(left), MetadataChild::Text(right)) if left == right => {}
+                _ => return false,
+            }
+        }
+    }
+    true
+}
+
+enum MetadataChild<'a, 'input> {
+    Element(roxmltree::Node<'a, 'input>),
+    Text(String),
+}
+
+fn metadata_children<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+) -> Vec<MetadataChild<'a, 'input>> {
+    let preserve_space = node
+        .ancestors()
+        .find_map(|parent| parent.attribute(("http://www.w3.org/XML/1998/namespace", "space")))
+        == Some("preserve");
+    // Only element-only content has ignorable formatting whitespace. Keep
+    // text-only and mixed content verbatim, including vendor extensions.
+    let indentation = !preserve_space
+        && node.children().any(|child| child.is_element())
+        && node
+            .children()
+            .filter(|child| child.is_text())
+            .all(|child| child.text().is_none_or(|text| text.trim().is_empty()));
+    let mut children = Vec::new();
+    for child in node.children() {
+        if child.is_element() {
+            children.push(MetadataChild::Element(child));
+        } else if child.is_text() && !indentation {
+            let text = child.text().unwrap_or_default();
+            // Comments and CDATA boundaries do not change character data.
+            if let Some(MetadataChild::Text(previous)) = children.last_mut() {
+                previous.push_str(text);
+            } else if !text.is_empty() {
+                children.push(MetadataChild::Text(text.into()));
+            }
+        }
+    }
+    children
+}
+
 /// Serialize the playback metadata represented by one item or container in
 /// the protocol model, including its service descriptor and resource attributes. Queue
 /// IDs remain metadata; callers must not use them as stable track identities.
@@ -616,6 +702,60 @@ fn parse_object(node: roxmltree::Node<'_, '_>, kind: DidlKind) -> Result<DidlObj
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_equivalence_accepts_xml_normalization_without_losing_extensions() {
+        let original = r#"<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
+            xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:r="urn:vendor">
+            <item id="track" parentID="-1" restricted="true">
+                <dc:title>A &amp; B</dc:title>
+                <desc id="cdudn" nameSpace="urn:account">account-1</desc>
+                <r:extra r:token="one &amp; two" enabled="true">preserved</r:extra>
+            </item></DIDL-Lite>"#;
+        let normalized = r#"<d:DIDL-Lite xmlns:d='urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/' xmlns:title='http://purl.org/dc/elements/1.1/' xmlns:vendor='urn:vendor'><d:item restricted='true' parentID='-1' id='track'><title:title>A <!--formatting--><![CDATA[& B]]></title:title><d:desc nameSpace='urn:account' id='cdudn'>account-1</d:desc><vendor:extra enabled='true' vendor:token='one &#38; two'>preserved</vendor:extra></d:item></d:DIDL-Lite>"#;
+        assert!(equivalent_metadata(original, normalized));
+        assert!(equivalent_metadata(normalized, original));
+        for changed in [
+            normalized.replace("account-1", "account-2"),
+            normalized.replace("urn:account", "urn:other-account"),
+            normalized.replace("urn:vendor", "urn:other-vendor"),
+            normalized.replace("one &#38; two", "different token"),
+            normalized.replace("preserved", "different extension"),
+            normalized.replace("enabled='true'", ""),
+        ] {
+            assert!(!equivalent_metadata(original, &changed));
+        }
+    }
+
+    #[test]
+    fn metadata_equivalence_requires_complete_content_and_preserves_significant_space() {
+        let original = "<DIDL-Lite><item><title> A </title><res>track</res></item></DIDL-Lite>";
+        for missing in [
+            "",
+            "NOT_IMPLEMENTED",
+            "<DIDL-Lite",
+            "<DIDL-Lite/>",
+            "<other/>",
+        ] {
+            assert!(!equivalent_metadata(original, missing));
+        }
+        assert!(!equivalent_metadata(
+            original,
+            &original.replace(" A ", "A")
+        ));
+        assert!(!equivalent_metadata(
+            "<DIDL-Lite><extra>before <value/> after</extra></DIDL-Lite>",
+            "<DIDL-Lite><extra>before<value/> after</extra></DIDL-Lite>"
+        ));
+        assert!(!equivalent_metadata(
+            "<DIDL-Lite xml:space='preserve'><item/> <item/></DIDL-Lite>",
+            "<DIDL-Lite xml:space='preserve'><item/><item/></DIDL-Lite>"
+        ));
+        assert!(!equivalent_metadata(
+            original,
+            "<DIDL-Lite><item><res>track</res><title> A </title></item></DIDL-Lite>"
+        ));
+    }
 
     #[test]
     fn escapes_xml() {

@@ -1,7 +1,7 @@
-//! Complete a direct source start when a reply, rather than its effect, is
-//! lost. Each write is sent once. Read-back must establish the requested
-//! source and coordinator before advancing; a Play reply also needs Playing
-//! without an explicitly reported renderer error.
+//! Complete a direct source start without replaying completed writes.
+//! Read-back must establish the requested source and coordinator before
+//! advancing, including after acknowledged source selection. A lost Play
+//! reply also needs Playing without an explicitly reported renderer error.
 //! A definite refusal of source selection retains the caller's existing
 //! recovery. After selection, a failed Play or silent-load read-back
 //! must not replay the already completed source change.
@@ -25,7 +25,7 @@ impl Source<'_> {
         // with another account's metadata is not proof of this request.
         media.uri == self.uri
             && (self.metadata.trim().is_empty()
-                || media.uri_metadata.trim() == self.metadata.trim())
+                || fsonos_proto::didl::equivalent_metadata(&media.uri_metadata, self.metadata))
     }
 }
 
@@ -91,6 +91,21 @@ fn start<T: Transport + ?Sized>(
     for stage in [Stage::Source, Stage::Play] {
         if matches!(stage, Stage::Play) && !autoplay {
             continue;
+        }
+        if matches!(stage, Stage::Play) {
+            // A successful reply acknowledges the earlier write, not continued
+            // ownership of its source. Another controller can replace it or
+            // regroup while that reply is in flight. Do not Play that source,
+            // or return a retryable failure after our selection already landed.
+            match confirmed(transport, host, coordinator, &source, Stage::Source) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(after_selection(
+                        "the source or coordinator changed before Play; Play was not sent",
+                    ));
+                }
+                Err(error) => return Err(after_selection(error)),
+            }
         }
         let result = match stage {
             Stage::Source => soap::set_av_transport_uri(transport, host, uri, metadata),

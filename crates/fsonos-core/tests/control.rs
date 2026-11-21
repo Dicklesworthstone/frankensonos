@@ -6,7 +6,7 @@ use fsonos_core::{CoreError, HouseholdState, control};
 use fsonos_proto::didl::SpotifyContainer;
 use fsonos_proto::{ProtoError, Transport, soap, topology};
 use fsonos_types::PlayerId;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
 #[path = "control/queue_fixture.rs"]
@@ -31,6 +31,16 @@ fn pid(n: u8) -> PlayerId {
 
 fn ip(s: &str) -> IpAddr {
     s.parse().unwrap()
+}
+
+/// Keep request argument text XML-escaped when reflecting it in a response.
+fn argument<'a>(body: &'a str, name: &str) -> &'a str {
+    body.split_once(&format!("<{name}>"))
+        .unwrap()
+        .1
+        .split_once(&format!("</{name}>"))
+        .unwrap()
+        .0
 }
 
 /// Records (host, action, body) and answers every action with `out_args`,
@@ -174,7 +184,10 @@ fn a_refused_pause_is_read_back_and_a_playing_stream_stops() {
 #[test]
 fn play_uri_sets_the_uri_then_plays() {
     let h = house();
-    let t = Recorder::default();
+    let t = Recorder {
+        out_args: "<CurrentURI>x-rincon-mp3radio://example.invalid/stream</CurrentURI>",
+        ..Recorder::default()
+    };
     control::play_uri(
         &t,
         &h,
@@ -184,7 +197,6 @@ fn play_uri_sets_the_uri_then_plays() {
     )
     .unwrap();
     let sent = t.sent.borrow();
-    assert_eq!(sent.len(), 3);
     assert_eq!(sent[0].1, "GetZoneGroupState");
     assert_eq!(sent[1].0, ip("192.0.2.19"));
     assert_eq!(sent[1].1, "SetAVTransportURI");
@@ -193,7 +205,12 @@ fn play_uri_sets_the_uri_then_plays() {
             .2
             .contains("x-rincon-mp3radio://example.invalid/stream")
     );
-    assert_eq!(sent[2].1, "Play");
+    assert_eq!(sent.last().unwrap().1, "Play");
+    assert!(
+        sent[2..sent.len() - 1]
+            .iter()
+            .all(|(_, action, _)| action.starts_with("Get"))
+    );
 }
 
 #[test]
@@ -341,6 +358,9 @@ fn a_household_without_spotify_favorites_has_nothing_to_render_with() {
 struct QueueLan {
     sent: RefCell<Vec<(IpAddr, String, String)>>,
     queue: QueueFixture,
+    uri: RefCell<String>,
+    metadata: RefCell<String>,
+    position: Cell<u32>,
 }
 
 impl Transport for QueueLan {
@@ -374,15 +394,36 @@ impl Transport for QueueLan {
         }
         if action == "Browse" {
             return Ok(if body.contains("<ObjectID>Q:0</ObjectID>") {
-                self.queue.browse()
+                self.queue.browse(body)
             } else {
                 FAV_S1.to_string()
             });
         }
         let out = match action.as_str() {
-            "GetMediaInfo" => {
-                "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into()
+            "GetMediaInfo" => format!(
+                "<CurrentURI>{}</CurrentURI><CurrentURIMetaData>{}</CurrentURIMetaData>",
+                self.uri.borrow(),
+                self.metadata.borrow()
+            ),
+            "SetAVTransportURI" => {
+                *self.uri.borrow_mut() = argument(body, "CurrentURI").into();
+                *self.metadata.borrow_mut() = argument(body, "CurrentURIMetaData").into();
+                self.position.set(1);
+                String::new()
             }
+            "Seek" => {
+                self.position.set(argument(body, "Target").parse().unwrap());
+                String::new()
+            }
+            "GetPositionInfo" => soap::args_xml(&[
+                ("Track", &self.position.get().to_string()),
+                (
+                    "TrackURI",
+                    self.queue.at(self.position.get()).as_deref().unwrap_or(""),
+                ),
+                ("TrackDuration", "0:04:00"),
+                ("RelTime", "0:00:00"),
+            ]),
             "AddURIToQueue" => self.queue.add(),
             "RemoveTrackRangeFromQueue" => self.queue.remove(body),
             _ => String::new(),
@@ -412,14 +453,16 @@ fn spotify_tracks_queue_in_order_and_play_continues_through_the_queue() {
     control::play_queue_from(&t, &h, &pid(2), 5).unwrap();
 
     let sent = t.sent.borrow();
-    let actions: Vec<&str> = sent.iter().map(|(_, a, _)| a.as_str()).collect();
+    let actions: Vec<&str> = sent
+        .iter()
+        .map(|(_, a, _)| a.as_str())
+        .filter(|action| !action.starts_with("Get") && *action != "Browse")
+        .collect();
     assert_eq!(
         actions,
         [
-            "Browse",
             "AddURIToQueue",
             "AddURIToQueue",
-            "GetZoneGroupState",
             "SetAVTransportURI",
             "Seek",
             "Play"
@@ -442,12 +485,16 @@ fn spotify_tracks_queue_in_order_and_play_continues_through_the_queue() {
     );
     assert!(sent[1].2.contains("SA_RINCON"), "{}", sent[1].2);
     assert!(
-        sent[4]
+        sent.iter()
+            .find(|(_, action, _)| action == "SetAVTransportURI")
+            .unwrap()
             .2
             .contains("x-rincon-queue:RINCON_000E58A0000201400#0")
     );
     assert!(
-        sent[5]
+        sent.iter()
+            .find(|(_, action, _)| action == "Seek")
+            .unwrap()
             .2
             .contains("<Unit>TRACK_NR</Unit><Target>5</Target>")
     );
@@ -535,6 +582,19 @@ impl Transport for DriftLan {
             .to_string();
         match name.as_str() {
             "GetZoneGroupState" => Ok(ZGS_S1.to_string()),
+            "GetMediaInfo" => {
+                let renders = self.renders.borrow();
+                let selected = renders.last().unwrap();
+                let out = format!(
+                    "<CurrentURI>{}</CurrentURI><CurrentURIMetaData>{}</CurrentURIMetaData>",
+                    argument(selected, "CurrentURI"),
+                    argument(selected, "CurrentURIMetaData")
+                );
+                Ok(Self::ok("GetMediaInfo").replace(
+                    "</u:GetMediaInfoResponse>",
+                    &format!("{out}</u:GetMediaInfoResponse>"),
+                ))
+            }
             "Browse" => {
                 assert_eq!(path, "/MediaServer/ContentDirectory/Control");
                 let stale = self.browses.get() == 0;
@@ -853,7 +913,7 @@ impl Transport for ContainerDrift {
             }
             "Browse" => {
                 if body.contains("<ObjectID>Q:0</ObjectID>") {
-                    return Ok(self.queue.browse());
+                    return Ok(self.queue.browse(body));
                 }
                 let stale = self.browses.get() == 0;
                 self.browses.set(self.browses.get() + 1);

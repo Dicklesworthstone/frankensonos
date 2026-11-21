@@ -29,24 +29,36 @@ enum Fault {
     Takeover,
     StalePosition,
     QueueChanged,
+    AcknowledgedTakeover,
+    AcknowledgedQueueChange,
+    AcknowledgedRegroup,
+    AcknowledgedPositionChange,
+    AcknowledgedDuringFinalTopology,
+    AcknowledgedPositionDuringFinalTopology,
+    AcknowledgedQueueDuringFinalTopology,
+    RegroupDuringPreparation,
 }
 
 struct Replies {
     inner: SimLan,
+    peer: PlayerId,
     fault: Fault,
     stage: Option<&'static str>,
     calls: RefCell<Vec<String>>,
     failed: Cell<bool>,
+    topology_reads_after_stage: Cell<u32>,
 }
 
 impl Replies {
     fn new(sim: &SimHandle, fault: Fault, stage: Option<&'static str>) -> Self {
         Self {
             inner: sim.lan(),
+            peer: PlayerId(sim.player("Peer").unwrap().uuid.clone()),
             fault,
             stage,
             calls: RefCell::new(Vec::new()),
             failed: Cell::new(false),
+            topology_reads_after_stage: Cell::new(0),
         }
     }
 
@@ -95,6 +107,35 @@ impl Transport for Replies {
             });
         }
         let response = self.inner.soap_post(host, path, action, body)?;
+        if self.failed.get()
+            && name == "GetZoneGroupState"
+            && matches!(
+                self.fault,
+                Fault::AcknowledgedDuringFinalTopology
+                    | Fault::AcknowledgedPositionDuringFinalTopology
+                    | Fault::AcknowledgedQueueDuringFinalTopology
+            )
+        {
+            let reads = self.topology_reads_after_stage.get() + 1;
+            self.topology_reads_after_stage.set(reads);
+            if reads == 2 {
+                // The old topology remains valid while a listener changes
+                // source or occurrence before its response reaches us.
+                if matches!(self.fault, Fault::AcknowledgedDuringFinalTopology) {
+                    soap::set_av_transport_uri(&self.inner, host, OTHER, "")?;
+                } else if matches!(self.fault, Fault::AcknowledgedQueueDuringFinalTopology) {
+                    soap::add_uri_to_queue(&self.inner, host, OTHER, "", false)?;
+                } else {
+                    soap::seek_track(&self.inner, host, 1)?;
+                }
+            }
+        }
+        if name == "Browse"
+            && matches!(self.fault, Fault::RegroupDuringPreparation)
+            && !self.failed.replace(true)
+        {
+            soap::join_group(&self.inner, host, &self.peer)?;
+        }
         if self.failed.get() && name == "GetPositionInfo" {
             if matches!(self.fault, Fault::StalePosition) {
                 assert!(response.contains(TRACKS[1]));
@@ -108,6 +149,28 @@ impl Transport for Replies {
             return Ok(response);
         }
         self.failed.set(true);
+        match self.fault {
+            Fault::AcknowledgedTakeover => {
+                soap::set_av_transport_uri(&self.inner, host, OTHER, "")?;
+                return Ok(response);
+            }
+            Fault::AcknowledgedQueueChange => {
+                soap::add_uri_to_queue(&self.inner, host, OTHER, "", false)?;
+                return Ok(response);
+            }
+            Fault::AcknowledgedRegroup => {
+                soap::join_group(&self.inner, host, &self.peer)?;
+                return Ok(response);
+            }
+            Fault::AcknowledgedPositionChange => {
+                soap::seek_track(&self.inner, host, 1)?;
+                return Ok(response);
+            }
+            Fault::AcknowledgedDuringFinalTopology
+            | Fault::AcknowledgedPositionDuringFinalTopology
+            | Fault::AcknowledgedQueueDuringFinalTopology => return Ok(response),
+            _ => {}
+        }
         if matches!(self.fault, Fault::Malformed) {
             return Ok("<incomplete-reply>".into());
         }
@@ -123,9 +186,15 @@ impl Transport for Replies {
 fn fixture(generation: u8) -> (SimHandle, Vec<HouseholdState>, PlayerId, IpAddr) {
     let builder = SimHousehold::builder();
     let builder = if generation == 1 {
-        builder.s1([SimPlayerSpec::new("Den", SimModel::Play5Gen1)])
+        builder.s1([
+            SimPlayerSpec::new("Den", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Peer", SimModel::Play5Gen1),
+        ])
     } else {
-        builder.s2([SimPlayerSpec::new("Den", SimModel::One)])
+        builder.s2([
+            SimPlayerSpec::new("Den", SimModel::One),
+            SimPlayerSpec::new("Peer", SimModel::One),
+        ])
     };
     let sim = builder.spawn().unwrap();
     let player = sim.player("Den").unwrap();
@@ -169,10 +238,126 @@ fn successful_replies_confirm_ownership_then_keep_the_three_write_path() {
     let (sim, houses, id, _) = fixture(2);
     let replies = Replies::new(&sim, Fault::None, None);
     control::play_queue_from(&replies, &houses, &id, 2).unwrap();
-    assert_eq!(
-        *replies.calls.borrow(),
-        ["GetZoneGroupState", "SetAVTransportURI", "Seek", "Play"]
-    );
+    assert_eq!(replies.writes(), WRITES);
+    let calls = replies.calls.borrow();
+    for pair in WRITES.windows(2) {
+        let previous = calls.iter().position(|name| name == pair[0]).unwrap();
+        let next = calls.iter().position(|name| name == pair[1]).unwrap();
+        let between = &calls[previous + 1..next];
+        assert!(between.iter().any(|name| name == "GetMediaInfo"));
+        assert!(between.iter().any(|name| name == "GetZoneGroupState"));
+        assert!(between.iter().any(|name| name == "Browse"));
+    }
+}
+
+#[test]
+fn acknowledged_queue_stages_cannot_start_a_replacement_source_queue_or_group() {
+    for generation in [1, 2] {
+        for fault in [
+            Fault::AcknowledgedTakeover,
+            Fault::AcknowledgedQueueChange,
+            Fault::AcknowledgedRegroup,
+        ] {
+            for (index, stage) in WRITES[..2].iter().enumerate() {
+                let (sim, houses, id, host) = fixture(generation);
+                let replies = Replies::new(&sim, fault, Some(stage));
+                assert!(matches!(
+                    control::play_queue_from(&replies, &houses, &id, 2),
+                    Err(CoreError::Uncertain(_))
+                ));
+                assert_eq!(replies.writes(), WRITES[..=index]);
+                if matches!(fault, Fault::AcknowledgedTakeover) {
+                    assert_eq!(soap::get_media_info(&sim.lan(), host).unwrap().uri, OTHER);
+                    assert_eq!(
+                        soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                        TransportState::Stopped
+                    );
+                }
+                let expected = if matches!(fault, Fault::AcknowledgedQueueChange) {
+                    vec![TRACKS[0], TRACKS[1], OTHER]
+                } else {
+                    TRACKS.to_vec()
+                };
+                assert_eq!(queue(&sim, host), expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn an_acknowledged_seek_does_not_play_over_a_later_occurrence_selection() {
+    for generation in [1, 2] {
+        let (sim, houses, id, host) = fixture(generation);
+        let replies = Replies::new(&sim, Fault::AcknowledgedPositionChange, Some("Seek"));
+        assert!(matches!(
+            control::play_queue_from(&replies, &houses, &id, 2),
+            Err(CoreError::Uncertain(_))
+        ));
+        assert_eq!(replies.writes(), WRITES[..2]);
+        assert_eq!(soap::get_position_info(&sim.lan(), host).unwrap().track, 1);
+        assert_eq!(
+            soap::get_transport_info(&sim.lan(), host).unwrap().state,
+            TransportState::Stopped
+        );
+    }
+}
+
+#[test]
+fn final_topology_read_cannot_hide_source_occurrence_or_queue_takeover() {
+    for generation in [1, 2] {
+        for fault in [
+            Fault::AcknowledgedDuringFinalTopology,
+            Fault::AcknowledgedPositionDuringFinalTopology,
+            Fault::AcknowledgedQueueDuringFinalTopology,
+        ] {
+            let (sim, houses, id, host) = fixture(generation);
+            let replies = Replies::new(&sim, fault, Some("Seek"));
+            assert!(matches!(
+                control::play_queue_from(&replies, &houses, &id, 2),
+                Err(CoreError::Uncertain(_))
+            ));
+            assert_eq!(replies.topology_reads_after_stage.get(), 2);
+            assert_eq!(replies.writes(), WRITES[..2]);
+            if matches!(fault, Fault::AcknowledgedDuringFinalTopology) {
+                assert_eq!(soap::get_media_info(&sim.lan(), host).unwrap().uri, OTHER);
+            } else if matches!(fault, Fault::AcknowledgedQueueDuringFinalTopology) {
+                assert_eq!(soap::get_position_info(&sim.lan(), host).unwrap().track, 2);
+            } else {
+                assert_eq!(soap::get_position_info(&sim.lan(), host).unwrap().track, 1);
+            }
+            assert_eq!(
+                soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                TransportState::Stopped
+            );
+            let expected = if matches!(fault, Fault::AcknowledgedQueueDuringFinalTopology) {
+                vec![TRACKS[0], TRACKS[1], OTHER]
+            } else {
+                TRACKS.to_vec()
+            };
+            assert_eq!(queue(&sim, host), expected);
+        }
+    }
+}
+
+#[test]
+fn a_coordinator_change_during_the_initial_queue_read_sends_no_playback_write() {
+    for generation in [1, 2] {
+        let (sim, houses, id, host) = fixture(generation);
+        let replies = Replies::new(&sim, Fault::RegroupDuringPreparation, None);
+        assert!(matches!(
+            control::play_queue_from(&replies, &houses, &id, 2),
+            Err(CoreError::TargetChanged(_))
+        ));
+        assert!(replies.writes().is_empty());
+        assert_eq!(queue(&sim, host), TRACKS);
+        assert!(
+            get_zone_group_state(&sim.lan(), host)
+                .unwrap()
+                .groups
+                .iter()
+                .all(|group| group.coordinator != id)
+        );
+    }
 }
 
 #[test]
@@ -203,10 +388,11 @@ fn definite_refusals_keep_their_error_without_recovery_or_retry() {
         error,
         CoreError::Proto(ProtoError::SoapFault { code: 501, .. })
     ));
+    assert_eq!(replies.writes(), WRITES);
     assert_eq!(
-        *replies.calls.borrow(),
-        ["GetZoneGroupState", "SetAVTransportURI", "Seek", "Play"],
-        "the ownership preflight is not followed by refusal recovery reads"
+        replies.calls.borrow().last().map(String::as_str),
+        Some("Play"),
+        "a definite refusal is not followed by recovery reads"
     );
 }
 
