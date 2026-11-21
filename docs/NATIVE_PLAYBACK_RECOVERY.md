@@ -158,8 +158,20 @@ later failure is not a rollback: the queue may already have changed, and the
 original prefix is not automatically restored. Inspect the current queue and
 source before explicitly requesting another start.
 
+Preparation of an optional undo receipt also performs speaker reads. The
+replacement rechecks its original source, group and queue after those reads,
+before pausing an active source or appending the replacement. A takeover or
+queue edit during preparation therefore leaves the listener's selection intact.
+After staging, source and group checks run again after receipt confirmation
+and the removal helper's own coordinator read, immediately before prefix
+removal. A silent load also requires playback to remain inactive. A failed
+check preserves the old prefix; the staged suffix can remain and the result
+requires inspection, with no automatic rollback or replay.
+
 ```sh
 cargo test --locked -p fsonos-core --test spotify_replacement_sim
+cargo test --locked -p fsonos-core --test spotify_track_batch_sim
+cargo test --locked -p fsonos-core --lib queue_source::ownership
 ```
 
 The regression cases exercise S1/S2 simulator transports, normal and receipt

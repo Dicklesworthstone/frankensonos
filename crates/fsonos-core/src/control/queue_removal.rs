@@ -132,6 +132,21 @@ pub fn remove<T: Transport + ?Sized>(
     first: u32,
     count: u32,
 ) -> Result<Removed, RemovalError> {
+    remove_checked(t, host, expected, before, first, count, || Ok(()))
+}
+
+/// A staged replacement also retains its original source and audience. Run
+/// that caller's last check after this helper's own coordinator read, directly
+/// before the one native removal; a changed source cannot authorize deletion.
+pub(crate) fn remove_checked<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    expected: &PlayerId,
+    before: &Snapshot,
+    first: u32,
+    count: u32,
+    before_write: impl FnOnce() -> Result<(), ProtoError>,
+) -> Result<Removed, RemovalError> {
     let selected = range(first, count)?;
     if selected.end > before.uris.len()
         || before.uris.len() > usize::try_from(MAX_BROWSE_OBJECTS).unwrap_or(usize::MAX)
@@ -152,6 +167,7 @@ pub fn remove<T: Transport + ?Sized>(
             "the queue coordinator changed; nothing was removed",
         ));
     }
+    before_write().map_err(RemovalError::Before)?;
     let write_error =
         match soap::remove_track_range_from_queue(t, host, before.revision, first, count) {
             Ok(()) => None,
