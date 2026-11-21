@@ -118,7 +118,8 @@ impl Fixture {
 
     fn join_target(&mut self) {
         soap::join_group(&self.lan, self.ip("Target"), &self.peer).unwrap();
-        self.houses[0].apply_topology(&get_zone_group_state(&self.lan, self.ip("Peer")).unwrap());
+        let topology = get_zone_group_state(&self.lan, self.ip("Peer")).unwrap();
+        self.houses[0].apply_topology(&topology);
         // The leave path's preferred witness must also be the first cleanup
         // candidate, so its injected failure exercises the following peer.
         self.houses[0]
