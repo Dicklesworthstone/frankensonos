@@ -594,9 +594,7 @@ fn write(
         serde_json::to_value(checkpoint).map_err(std::io::Error::other)?,
     );
     let text = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
-    let tmp = data_dir.join(format!("{STAMP}.tmp"));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(tmp, data_dir.join(STAMP))
+    crate::dj::saved::write(&data_dir.join(STAMP), &text)
 }
 
 #[allow(clippy::needless_pass_by_value)] // a map_err adapter
@@ -668,6 +666,14 @@ impl LibrarySync {
             }
             state.running = true;
         }
+        let _directory = match self.try_claim_directory() {
+            Ok(Some(lock)) => lock,
+            Ok(None) => {
+                self.running().running = false;
+                return None;
+            }
+            Err(error) => return Some(self.finish_running(Err(error))),
+        };
         // A manual refresh cannot replace the saved owner or cooldown between
         // this selection and its admission. Preserve the last error if idle.
         let listening = match self.refresh_recent_if_due() {
@@ -690,10 +696,24 @@ impl LibrarySync {
             return listening.then(|| Ok(self.status()));
         };
         self.running().error = None;
-        Some(self.run_pass(pass))
+        Some(self.run_pass_locked(pass))
     }
 
     pub(super) fn run_pass(&self, pass: Pass) -> Result<LibrarySyncDto, Failure> {
+        match self.try_claim_directory() {
+            Ok(Some(_directory)) => self.run_pass_locked(pass),
+            Ok(None) => self.finish_running(Err(Failure::new(
+                ErrorCode::NotReady,
+                "another process is refreshing this Spotify library; no request was sent",
+            )
+            .with_hint(
+                "Wait for the existing refresh, then retry or inspect fsonos dj sync --status.",
+            ))),
+            Err(error) => self.finish_running(Err(error)),
+        }
+    }
+
+    fn run_pass_locked(&self, pass: Pass) -> Result<LibrarySyncDto, Failure> {
         {
             let mut state = self.running();
             state.genres = matches!(pass, Pass::Genres(_));
@@ -702,6 +722,10 @@ impl LibrarySync {
             state.intake = matches!(pass, Pass::Full);
         }
         let result = self.perform_pass(pass);
+        self.finish_running(result)
+    }
+
+    fn finish_running(&self, result: Result<(), Failure>) -> Result<LibrarySyncDto, Failure> {
         {
             let mut state = self.running();
             state.running = false;
