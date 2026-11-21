@@ -140,15 +140,20 @@ pub(super) fn restore<T: Transport + ?Sized>(
     };
     let before = Anchor::read(t, host, &snap.coordinator)?;
     target.queue_unchanged(t, host)?;
+    // These reads can outlive the caller's ownership proof. Recheck the
+    // same approved operation after them, immediately before its write.
+    if !vet(op).is_ok_and(|approved| approved == *op) {
+        return Err(unproven("source restoration authorization changed"));
+    }
     let first = run(t, household, host, &snap.coordinator, op);
     let result = match first {
         Err(error @ CoreError::Proto(ProtoError::SoapFault { code: 402, .. })) => {
             std::thread::sleep(SETTLE);
             // This is a definite refusal, not an indeterminate write. Still,
             // retry only against the context the first attempt observed.
-            let unchanged = vet(op).is_ok_and(|approved| approved == *op)
-                && target.queue_unchanged(t, host).is_ok()
-                && Anchor::read(t, host, &snap.coordinator).is_ok_and(|after| after == before);
+            let unchanged = target.queue_unchanged(t, host).is_ok()
+                && Anchor::read(t, host, &snap.coordinator).is_ok_and(|after| after == before)
+                && vet(op).is_ok_and(|approved| approved == *op);
             if !unchanged {
                 return Err(error);
             }

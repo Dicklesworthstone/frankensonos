@@ -2,6 +2,7 @@
 
 use super::*;
 use std::cell::Cell;
+use std::net::{Ipv4Addr, SocketAddr};
 
 const OWNER: &str = "x-rincon-mp3radio://example.invalid/owner.mp3";
 
@@ -227,6 +228,150 @@ fn policy_is_rechecked_before_a_transient_source_retry() {
     assert_eq!(t.installs.get(), 1);
     t.no_dependent_writes();
     rig.levels_restored();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReadBoundary {
+    InitialBrowse,
+    RetryTopology,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ReadChange {
+    Source,
+    Address,
+}
+
+struct ChangedDuringRead {
+    sim: RefCell<SimHandle>,
+    lan: SimLan,
+    boundary: ReadBoundary,
+    change: ReadChange,
+    armed: Cell<bool>,
+    changed: Cell<bool>,
+    installs: Cell<usize>,
+    calls: RefCell<Vec<String>>,
+}
+
+impl Transport for ChangedDuringRead {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        self.calls.borrow_mut().push(name.into());
+        if name == "SetAVTransportURI" {
+            self.installs.set(self.installs.get() + 1);
+            if matches!(self.boundary, ReadBoundary::RetryTopology) && self.installs.get() == 1 {
+                return Err(Replies::refusal());
+            }
+        }
+        let response = self.lan.soap_post(host, path, action, body)?;
+        let at_boundary = match self.boundary {
+            ReadBoundary::InitialBrowse => self.armed.get() && name == "Browse",
+            ReadBoundary::RetryTopology => self.installs.get() == 1 && name == "GetZoneGroupState",
+        };
+        if at_boundary && !self.changed.replace(true) {
+            // Return the valid response captured before the owner's change.
+            // The first case follows the outer vet; the retry case follows
+            // its last internal context read, just before the pending write.
+            let uri = match self.change {
+                ReadChange::Source => OWNER,
+                ReadChange::Address => {
+                    let IpAddr::V4(old) = host else {
+                        panic!("synthetic players use IPv4");
+                    };
+                    let mut sim = self.sim.borrow_mut();
+                    sim.change_address("Room").unwrap();
+                    sim.move_to("Peer", old, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                        .unwrap();
+                    // The replacement plays the same source. A source-only
+                    // check cannot distinguish it from the intended player.
+                    OTHER
+                }
+            };
+            soap::set_av_transport_uri(&self.lan, host, uri, "")?;
+            soap::play(&self.lan, host)?;
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn changes_during_internal_source_reads_cancel_the_pending_write() {
+    for s2 in [false, true] {
+        for boundary in [ReadBoundary::InitialBrowse, ReadBoundary::RetryTopology] {
+            for change in [ReadChange::Source, ReadChange::Address] {
+                let Rig {
+                    sim,
+                    lan,
+                    host,
+                    snapshot,
+                    houses,
+                    ..
+                } = Rig::new(s2);
+                let t = ChangedDuringRead {
+                    sim: RefCell::new(sim),
+                    lan,
+                    boundary,
+                    change,
+                    armed: Cell::new(false),
+                    changed: Cell::new(false),
+                    installs: Cell::new(0),
+                    calls: RefCell::default(),
+                };
+                let report = snapshot::restore_vetted(
+                    &t,
+                    &houses,
+                    &snapshot,
+                    &[Aspect::Source, Aspect::Position, Aspect::Transport],
+                    &|op| {
+                        if matches!(op, RestoreOp::PlayQueue) {
+                            control::require_coordinator(&t.lan, host, &snapshot.coordinator)
+                                .map_err(|error| error.to_string())?;
+                            let media = soap::get_media_info(&t.lan, host)
+                                .map_err(|error| error.to_string())?;
+                            if media.uri != OTHER {
+                                return Err("the owner changed the source".into());
+                            }
+                            t.armed.set(true);
+                        }
+                        Ok(op.clone())
+                    },
+                )
+                .unwrap();
+                assert!(t.changed.get(), "{boundary:?}/{change:?}: {report:?}");
+                for aspect in [Aspect::Source, Aspect::Position, Aspect::Transport] {
+                    assert!(skipped(&report, aspect), "{report:?}");
+                }
+                let refused = usize::from(matches!(boundary, ReadBoundary::RetryTopology));
+                assert_eq!(t.installs.get(), refused, "{boundary:?}/{change:?}");
+                assert!(
+                    t.calls
+                        .borrow()
+                        .iter()
+                        .all(|call| call != "Seek" && call != "Play")
+                );
+                let expected = match change {
+                    ReadChange::Source => OWNER,
+                    ReadChange::Address => OTHER,
+                };
+                assert_eq!(soap::get_media_info(&t.lan, host).unwrap().uri, expected);
+                assert_eq!(
+                    soap::get_transport_info(&t.lan, host).unwrap().state,
+                    TransportState::Playing
+                );
+                if matches!(change, ReadChange::Address) {
+                    let moved = t.sim.borrow().player("Room").unwrap().ip;
+                    assert_ne!(moved, host);
+                    assert_eq!(soap::get_media_info(&t.lan, moved).unwrap().uri, OTHER);
+                }
+            }
+        }
+    }
 }
 
 #[test]
