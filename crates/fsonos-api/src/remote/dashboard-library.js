@@ -113,7 +113,7 @@ const DashboardLibrary = (() => {
     if (!Q || !value || !Array.isArray(value.rows) || !value.rows.length || value.rows.length > Q.MAX_TRACKS) {
       fail(`Select 1 to ${Q?.MAX_TRACKS || 10} tracks from fresh library pages.`);
     }
-    let listing = null;
+    const listings = new Map();
     const rows = Object.freeze(value.rows.map(row => {
       if (!row || !uint(row.index) || row.index >= LIMIT) fail('The selected track positions are unreadable.');
       const source = row.page ?? value;
@@ -122,14 +122,14 @@ const DashboardLibrary = (() => {
       const query = queryOf({ ...provenance.query,
         expected_revision: provenance.query.playlist_uri ? provenance.revision : null });
       const albumObservation = albumObservationOf(provenance.albumObservation, query.album_uri);
-      const identity = JSON.stringify([query.kind, query.q, query.album_uri, query.playlist_uri,
-        provenance.revision, albumObservation]);
-      if (listing !== null && identity !== listing) fail('The selected library pages changed. Refresh the listing.');
-      listing = identity;
+      const context = Q.contextKey(provenance), identity = JSON.stringify([provenance.revision, albumObservation]);
+      if (listings.has(context) && identity !== listings.get(context)) fail('The selected library pages changed. Refresh the listing.');
+      listings.set(context, identity);
       const item = itemOf(row.item, query);
       if (!item.explicit_known && albumObservation?.coverage !== 'complete') fail('Choose this track from a complete album observation.');
       return Object.freeze({ index: row.index, item,
-        page: Object.freeze({ query, revision: provenance.revision, albumObservation }) });
+        page: Object.freeze({ query, revision: provenance.revision, albumObservation,
+          collectionTitle: provenance.collectionTitle }) });
     }));
     Q.tracksOf(rows.map(row => row.item));
     return Object.freeze({ ...rows[0].page, rows });
@@ -165,7 +165,7 @@ const DashboardLibrary = (() => {
     const ready = () => available() && !state.loading && !state.stale && !state.resetRequired && state.page;
     function syncSelection() {
       state.basket = basket?.rows ?? [];
-      state.selected = state.basket.length && state.page?.query.kind === 'tracks'
+      state.selected = state.basket.length && state.page?.query.kind === 'tracks' && state.page.revision !== null
         ? basket.indices(state.page) : [];
     }
     function invalidate(preserveSelection = false) {
@@ -175,6 +175,7 @@ const DashboardLibrary = (() => {
         basket?.clear();
       }
       syncSelection();
+      state.selected = [];
       if (queued) { queued.resolve(false); queued = null; }
       state.loading = available() && !!running;
     }
@@ -182,6 +183,9 @@ const DashboardLibrary = (() => {
       if (running || !queued || !available()) return;
       const task = queued; queued = null; running = task;
       const current = () => available() && task.epoch === epoch;
+      const retainedContext = task.query.kind === 'tracks' && state.basket.some(row =>
+        row.page.query.q === task.query.q && row.page.query.album_uri === task.query.album_uri
+        && row.page.query.playlist_uri === task.query.playlist_uri);
       let ok = false;
       try {
         // The view can close synchronously during its loading notification.
@@ -190,28 +194,33 @@ const DashboardLibrary = (() => {
         const page = pageOf(await call(urlOf(task.query)), task.query);
         if (!current()) return;
         if (task.revision !== null && page.revision !== task.revision) {
-          basket?.clear(); syncSelection();
-          state.selectionNotice = 'The cached listing changed, so the track selection was cleared.';
+          if (retainedContext) {
+            basket?.clear(); syncSelection();
+            state.selectionNotice = 'The cached listing changed, so the track selection was cleared.';
+          }
           state.resetRequired = true;
           fail('The library changed between pages. Refresh to start at the first page.');
         }
-        if (state.basket.length && JSON.stringify(page.albumObservation ?? null)
-            !== JSON.stringify(state.basket[0].page.albumObservation)) {
-          basket.clear(); syncSelection(); state.resetRequired = true;
-          state.selectionNotice = 'The cached album changed, so the track selection was cleared.';
-          fail('The cached album observation changed. Refresh to start at the first page.');
-        }
-        if (state.basket.some(row => Q.pageKey(row.page) === Q.pageKey(page)
-            && JSON.stringify(row.item) !== JSON.stringify(page.items[row.index]))) {
-          basket.clear(); syncSelection(); state.resetRequired = true;
-          state.selectionNotice = 'The selected cached music changed, so the track selection was cleared.';
-          fail('The selected cached occurrences changed. Refresh the listing and choose them again.');
+        if (state.basket.length && page.query.kind === 'tracks') {
+          if (page.revision === null && retainedContext) {
+            basket.clear(); syncSelection(); state.resetRequired = true;
+            state.selectionNotice = 'Selected playlist contents are no longer cached, so the track selection was cleared.';
+            fail('A selected playlist is no longer available in the cache. Read its current contents before choosing tracks again.');
+          }
+          if (page.revision !== null) basket.observe(page);
+          if (page.revision !== null && state.basket.some(row => Q.pageKey(row.page) === Q.pageKey(page)
+              && JSON.stringify(row.item) !== JSON.stringify(page.items[row.index]))) {
+            basket.clear(); syncSelection(); state.resetRequired = true;
+            state.selectionNotice = 'The selected cached music changed, so the track selection was cleared.';
+            fail('The selected cached occurrences changed. Refresh the listing and choose them again.');
+          }
         }
         state.page = page; syncSelection(); state.stale = false; state.resetRequired = false; ok = true;
       } catch (error) {
         if (current()) {
+          syncSelection();
           state.error = [error?.message || 'The library could not be read.', error?.hint].filter(Boolean).join(' ');
-          if (state.basket.length) {
+          if (state.basket.length && retainedContext) {
             basket.clear(); syncSelection();
             state.selectionNotice = 'The track selection was cleared after the listing could not be verified.';
             state.error += ' The track selection was cleared; refresh the listing to choose again.';
@@ -237,14 +246,15 @@ const DashboardLibrary = (() => {
       state.loading = true; emit(); void pump(); return result;
     }
     function refresh() { return request(); }
+    function applyFilter() { return request(0, null, true); }
     function browse(kind) {
       if (!available() || !Object.hasOwn(KINDS, kind)) return Promise.resolve(false);
       state.kind = kind; state.album = null; state.playlist = null;
-      return refresh();
+      return applyFilter();
     }
     function edit(filter) {
       if (!available() || typeof filter !== 'string') return false;
-      invalidate(); state.filter = filter; state.error = ''; emit(); return true;
+      invalidate(true); state.filter = filter; state.error = ''; emit(); return true;
     }
     function turn(forward, expected = state.page) {
       if (!ready() || expected !== state.page) return Promise.resolve(false);
@@ -260,12 +270,13 @@ const DashboardLibrary = (() => {
       if (!Q || !ready() || state.kind !== 'tracks' || index < 0 || !Q.supported(item.source_uri)
           || typeof checked !== 'boolean') return false;
       try {
-        if (checked) basket.add(state.page, index, item); else basket.unselect(state.page, index);
+        if (checked) basket.add({ ...state.page, collectionTitle: (state.album || state.playlist)?.title }, index, item);
+        else basket.unselect(state.page, index);
         syncSelection(); state.error = ''; state.selectionNotice = ''; emit(); return true;
-      } catch (error) { state.error = error.message; emit(); return false; }
+      } catch (error) { syncSelection(); state.error = error.message; emit(); return false; }
     }
     function editSelection(operation, id, direction) {
-      if (!basket || !ready()) return false;
+      if (!basket || !available() || state.loading) return false;
       try {
         const changed = basket[operation](id, direction);
         syncSelection(); state.error = ''; state.selectionNotice = ''; emit(); return changed;
@@ -273,7 +284,7 @@ const DashboardLibrary = (() => {
     }
     function clearSelection() { basket?.clear(); syncSelection(); state.selectionNotice = 'Track selection cleared.'; emit(); }
     function chooseTracks() {
-      if (!Q || !ready() || !state.basket.length || state.kind !== 'tracks') return null;
+      if (!Q || !available() || state.loading || !state.basket.length) return null;
       return selectionOf({ rows: state.basket });
     }
     function album(item) {
@@ -281,15 +292,15 @@ const DashboardLibrary = (() => {
       state.album = Object.freeze({ uri: item.source_uri, title: item.title });
       state.playlist = null;
       state.kind = 'tracks'; state.filter = '';
-      return refresh();
+      return applyFilter();
     }
     function playlist(item) {
       if (!choose(item) || item.kind !== 'playlist') return Promise.resolve(false);
       state.playlist = Object.freeze({ uri: item.source_uri, title: item.title });
       state.album = null; state.kind = 'tracks'; state.filter = '';
-      return refresh();
+      return applyFilter();
     }
-    return { state, refresh, browse, edit, choose, selectTrack, clearSelection, chooseTracks, album, playlist,
+    return { state, refresh, applyFilter, browse, edit, choose, selectTrack, clearSelection, chooseTracks, album, playlist,
       removeTrack: id => editSelection('remove', id), repeatTrack: id => editSelection('repeat', id),
       moveTrack: (id, direction) => editSelection('move', id, direction),
       next: (page) => turn(true, page), previous: (page) => turn(false, page),
@@ -301,6 +312,7 @@ const DashboardLibrary = (() => {
     };
   }
   return { LIMIT, KINDS, MAX_TRACKS: Q?.MAX_TRACKS || 10, queryOf, urlOf, pageOf, choiceOf, selectionOf, verifySelection, model, albumCoverage,
+    selectionOrigin: page => Q.originLabel(page),
     playlistCoverage: (page) => P.describe(page) };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardLibrary;

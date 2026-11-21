@@ -180,10 +180,11 @@ const LibraryRemote = (() => {
     const observation = (page = state.page) => Q.basketPage({
       query: { kind: 'tracks', offset: page.offset, limit: LIMIT, q: state.query,
         album_uri: state.browseAlbum?.uri, playlist_uri: state.browsePlaylist?.uri },
-      revision: page.revision, albumObservation: page.albumObservation });
+      revision: page.revision, albumObservation: page.albumObservation,
+      collectionTitle: state.browseAlbum?.title || state.browsePlaylist?.title });
     function syncSelection() {
       state.basket = selection?.rows ?? Object.freeze([]);
-      state.selected = selection?.rows.length && state.page && state.browseKind === 'tracks'
+      state.selected = selection?.rows.length && state.page && text(state.page.revision) && state.browseKind === 'tracks'
         ? selection.indices(observation()) : [];
     }
     const invalidate = (preserveSelection = false) => {
@@ -206,7 +207,7 @@ const LibraryRemote = (() => {
       if (disposed || state.writing) return false;
       state.open = true;
       const previous = destination();
-      invalidate();
+      invalidate(true);
       const version = epoch;
       state.loading = true;
       state.message = '';
@@ -235,7 +236,7 @@ const LibraryRemote = (() => {
       // Cached browsing is independent of the destination. Keep its observed
       // page, but consume any review and invalidate an outstanding read.
       const cached = state.view === 'browse' && state.loaded ? state.page : null;
-      invalidate(Boolean(cached));
+      invalidate(true);
       if (cached) { state.page = cached; state.hits = cached.hits; state.loaded = true; syncSelection(); }
       state.target = value;
       state.message = '';
@@ -245,7 +246,7 @@ const LibraryRemote = (() => {
 
     function query(value) {
       if (disposed || state.writing || typeof value !== 'string') return false;
-      invalidate();
+      invalidate(true);
       state.query = value;
       if (state.view !== 'browse') state.view = 'search';
       state.message = '';
@@ -253,11 +254,11 @@ const LibraryRemote = (() => {
       return true;
     }
 
-    async function read(view) {
+    async function read(view, preserveSelection = true) {
       if (disposed || !state.open || state.writing) return false;
       const zone = destination();
       const q = state.query.trim();
-      invalidate();
+      invalidate(preserveSelection);
       state.view = view;
       if (!zone || (view === 'search' && (!q || q.length > MAX_QUERY))) {
         state.message = !zone ? 'Choose the destination group first.'
@@ -285,7 +286,7 @@ const LibraryRemote = (() => {
       }
     }
 
-    async function browse(kind = state.browseKind, offset = 0, album = null, revision = null, playlist = null, preserveSelection = false) {
+    async function browse(kind = state.browseKind, offset = 0, album = null, revision = null, playlist = null, preserveSelection = true) {
       if (disposed || !state.open || state.writing || !Object.hasOwn(categories, kind)
           || !number(offset) || (album && (kind !== 'tracks' || spotify(album.uri)?.[1] !== 'album'))
           || (playlist && (kind !== 'tracks' || album || !P || spotify(playlist.uri)?.[1] !== 'playlist'))) return false;
@@ -295,6 +296,9 @@ const LibraryRemote = (() => {
       state.browseAlbum = album;
       state.browsePlaylist = playlist;
       const q = state.query.trim();
+      const retainedContext = kind === 'tracks' && selection?.rows.some(row => row.page.query.q === q
+        && row.page.query.album_uri === (album?.uri ?? null)
+        && row.page.query.playlist_uri === (playlist?.uri ?? null));
       if ([...q].length > MAX_QUERY) {
         state.message = `Use at most ${MAX_QUERY} characters to filter the listing.`;
         publish();
@@ -313,14 +317,18 @@ const LibraryRemote = (() => {
         if (!current(version)) return false;
         const page = playlist ? playlistPageOf(value, playlistQuery) : pageOf(value, kind, offset, album);
         if (revision !== null && page.revision !== revision) {
-          selection?.clear(); syncSelection();
-          state.selectionNotice = 'The cached listing changed, so the track selection was cleared.';
+          if (retainedContext) {
+            selection?.clear(); syncSelection();
+            state.selectionNotice = 'A selected cached listing changed, so the track selection was cleared.';
+          }
           throw new Error('The library changed between pages. Refresh the listing to start from the beginning.');
         }
-        if (selection?.rows.length) {
-          const currentPage = observation(page), firstPage = selection.rows[0].page;
-          const sameListing = Q.pageKey({ ...firstPage, query: { ...firstPage.query, offset } }) === Q.pageKey(currentPage);
-          if (!sameListing || selection.rows.some(row => Q.pageKey(row.page) === Q.pageKey(currentPage)
+        if (retainedContext && !text(page.revision)) {
+          throw new Error('A selected cached listing is no longer available. Refresh it and choose the tracks again.');
+        }
+        if (selection?.rows.length && kind === 'tracks' && text(page.revision)) {
+          const currentPage = selection.observe(observation(page));
+          if (selection.rows.some(row => Q.pageKey(row.page) === Q.pageKey(currentPage)
               && JSON.stringify(row.item) !== JSON.stringify(page.hits[row.index]))) {
             selection.clear(); syncSelection();
             state.selectionNotice = 'The cached listing changed, so the track selection was cleared.';
@@ -335,9 +343,9 @@ const LibraryRemote = (() => {
       } catch (error) {
         if (current(version)) {
           state.message = message(error);
-          if (selection?.rows.length) {
+          if (retainedContext) {
             selection.clear(); syncSelection();
-            state.selectionNotice = 'The page could not be verified, so the track selection was cleared. Refresh the listing to choose again.';
+            state.selectionNotice = 'A selected listing could not be verified, so the track selection was cleared. Refresh the listing to choose again.';
           }
         }
         return false;
@@ -370,6 +378,8 @@ const LibraryRemote = (() => {
     }
 
     const refresh = () => state.view === 'browse'
+      ? browse(state.browseKind, 0, state.browseAlbum, null, state.browsePlaylist, false) : read('search', false);
+    const filter = () => state.view === 'browse'
       ? browse(state.browseKind, 0, state.browseAlbum, null, state.browsePlaylist) : read('search');
     const search = () => read('search');
     const recent = () => read('history');
@@ -383,7 +393,7 @@ const LibraryRemote = (() => {
         if (checked) selection.add(observation(), index, hit);
         else selection.unselect(observation(), index);
         syncSelection(); state.selectionNotice = ''; state.message = ''; publish(); return true;
-      } catch (error) { state.message = message(error); publish(); return false; }
+      } catch (error) { syncSelection(); state.message = message(error); publish(); return false; }
     }
 
     function clearSelection() {
@@ -392,7 +402,7 @@ const LibraryRemote = (() => {
     }
 
     function editSelection(action, id, delta) {
-      if (!selection || disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded) return false;
+      if (!selection || disposed || !state.open || state.loading || state.writing || state.pending) return false;
       try {
         const changed = action === 'move' ? selection.move(id, delta) : selection[action](id);
         syncSelection(); state.message = ''; state.selectionNotice = ''; publish(); return changed;
@@ -423,9 +433,8 @@ const LibraryRemote = (() => {
     }
 
     async function chooseTracks(action) {
-      const zone = destination(), page = state.page;
-      if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded
-          || state.view !== 'browse' || state.browseKind !== 'tracks' || !page || !zone
+      const zone = destination();
+      if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || !zone
           || !state.basket.length || !['play', 'append', 'next'].includes(action)) return false;
       const rows = Object.freeze(state.basket.map(row => Object.freeze({ ...row, hit: row.item })));
       const catalog = Object.freeze({ rows });
@@ -583,11 +592,11 @@ const LibraryRemote = (() => {
       }
     }
 
-    return { state, refreshRooms, target, query, search, recent, browse, openAlbum, openPlaylist, refresh,
+    return { state, refreshRooms, target, query, search, recent, browse, openAlbum, openPlaylist, refresh, filter,
       catalogChanged(change = null) {
         if (disposed || state.view !== 'search' || change?.favorites === false
             || change?.household && destination()?.household !== change.household) return;
-        invalidate(); state.message = 'The household favorites changed. Search again for current results.'; publish();
+        invalidate(true); state.message = 'The household favorites changed. Search again for current results.'; publish();
       },
       next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, chooseTracks, routine, cancel, confirm,
       removeTrack: id => editSelection('remove', id), repeatTrack: id => editSelection('repeat', id),
@@ -630,7 +639,7 @@ const LibraryRemote = (() => {
     destination.addEventListener('change', () => control.target(destination.value));
     input.addEventListener('input', () => control.query(input.value));
     input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); control.refresh(); }
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); control.filter(); }
     });
     body.append(el('p', { text: 'Browse cached tracks, albums and playlists, or search your library and the chosen household’s Sonos favorites. Choose a group before playing.' }),
       el('label', {}, 'Play in', destination), el('div', { class: 'row' }, rooms),
@@ -668,7 +677,7 @@ const LibraryRemote = (() => {
       results.replaceChildren();
       if (Q && !state.pending && (state.basket.length || state.loaded && state.view === 'browse' && state.browseKind === 'tracks')) {
         const choose = action => { reviewFocus = `selected-${action}`; void control.chooseTracks(action); };
-        const locked = busy || !state.loaded || !state.basket.length || !state.target;
+        const locked = busy || !state.basket.length || !state.target;
         const basketList = el('ol', { class: 'library-selection', 'aria-label': 'Selected tracks in playback order' });
         state.basket.forEach((entry, index) => {
           const hit = entry.item;
@@ -680,16 +689,17 @@ const LibraryRemote = (() => {
           basketList.append(el('li', {}, el('p', { text: [hit.title || 'Untitled track', hit.subtitle,
             hit.position ? `Playlist position ${hit.position}` : hit.disc != null ? `Disc ${hit.disc}, track ${hit.track ?? '?'}` : '',
             hit.explicitKnown === false ? 'Explicit-content metadata unavailable' : hit.explicit ? 'Explicit' : '',
+            Q.originLabel(entry.page),
             `Listing page ${Math.floor(entry.page.query.offset / LIMIT) + 1}`].filter(Boolean).join(' · ') }),
           el('div', { class: 'row' },
-            edit('Earlier', () => control.moveTrack(entry.id, -1), busy || !state.loaded || index === 0, 'earlier'),
-            edit('Later', () => control.moveTrack(entry.id, 1), busy || !state.loaded || index === state.basket.length - 1, 'later'),
-            edit('Repeat track', () => control.repeatTrack(entry.id), busy || !state.loaded || state.basket.length >= Q.MAX_TRACKS, 'repeat'),
-            edit('Remove selection', () => control.removeTrack(entry.id), busy || !state.loaded, 'remove'))));
+            edit('Earlier', () => control.moveTrack(entry.id, -1), busy || index === 0, 'earlier'),
+            edit('Later', () => control.moveTrack(entry.id, 1), busy || index === state.basket.length - 1, 'later'),
+            edit('Repeat track', () => control.repeatTrack(entry.id), busy || state.basket.length >= Q.MAX_TRACKS, 'repeat'),
+            edit('Remove selection', () => control.removeTrack(entry.id), busy, 'remove'))));
         });
         results.append(el('section', { class: 'library-selected-tracks', 'aria-label': 'Build a track selection' },
           el('strong', { text: `${state.basket.length} selected · ${Q.MAX_TRACKS} track limit` }),
-          el('p', { text: 'Keep selections while turning pages in this cached listing. Tracks begin in listing order; use Earlier, Later or Repeat track to build your order. Changing the filter, collection or refreshing the listing clears the selection.' }),
+          el('p', { text: 'Build a selection from different albums, playlists and filtered track listings. Your tracks stay selected as you browse or search. Each collection starts in listing order; use Earlier, Later or Repeat track to choose your order. Refresh listing or closing this music browser clears the selection.' }),
           basketList, el('div', { class: 'row', role: 'group', 'aria-label': 'Selected track actions' },
             button('Play selected now', () => choose('play'), locked, 'selected-play'),
             button('Queue selected next', () => choose('next'), locked, 'selected-next'),
@@ -699,9 +709,10 @@ const LibraryRemote = (() => {
       if (state.pending?.tracks) {
         const pending = state.pending, label = { play: 'Play selected now', next: 'Queue selected next', append: 'Add selected to end' }[pending.action];
         const list = el('ol');
-        for (const { hit } of pending.tracks.rows) list.append(el('li', { text: [hit.title || 'Untitled track', hit.subtitle,
+        for (const { hit, page } of pending.tracks.rows) list.append(el('li', { text: [hit.title || 'Untitled track', hit.subtitle,
           hit.position ? `Playlist position ${hit.position}` : hit.disc != null ? `Disc ${hit.disc}, track ${hit.track ?? '?'}` : '',
           hit.explicitKnown === false ? 'Explicit-content metadata unavailable' : hit.explicit ? 'Explicit' : '',
+          Q.originLabel(page),
           hit.source].filter(Boolean).join(' · ') }));
         results.append(el('div', { class: 'library-review', role: 'group', 'aria-label': 'Review selected tracks' },
           el('strong', { text: `${label}: ${pending.tracks.rows.length} track(s)` }),

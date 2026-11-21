@@ -47,7 +47,7 @@ const DashboardLibraryPanel = (() => {
     const selectedActions = el('div', null, 'dashboard-library-actions');
     selectedActions.setAttribute('role', 'group'); selectedActions.setAttribute('aria-label', 'Selected track actions');
     selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedClear);
-    const selectionHelp = el('p', `Select up to ${L.MAX_TRACKS} tracks across pages of this listing. Move, repeat or remove selected tracks below, then review the order before playing or queueing. Changing the filter, collection or category, refreshing, or closing this browser clears the selection.`, 'small-note');
+    const selectionHelp = el('p', `Build a selection of up to ${L.MAX_TRACKS} tracks from different cached albums, playlists and filters. Keep browsing, then move, repeat or remove tracks below before review. Refresh listing, Clear selection or closing this browser clears it.`, 'small-note');
     const selectionNotice = el('p', '', 'small-note'); selectionNotice.setAttribute('role', 'status');
     const basket = el('ol', null, 'dashboard-library-selection');
     basket.setAttribute('aria-label', 'Selected tracks in playback order');
@@ -95,10 +95,11 @@ const DashboardLibraryPanel = (() => {
       back.hidden = !state.album && !state.playlist;
       back.textContent = state.playlist ? 'Back to playlists' : 'Back to albums';
       const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired;
-      selectionHelp.hidden = selectedActions.hidden = state.kind !== 'tracks';
+      const basketUsable = visible() && !state.loading;
+      selectionHelp.hidden = selectedActions.hidden = state.kind !== 'tracks' && !state.basket.length;
       selectionNotice.textContent = state.selectionNotice; selectionNotice.hidden = !state.selectionNotice;
-      selectedCount.textContent = `${state.basket.length} selected across this listing`;
-      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !usable || !state.basket.length || !destination
+      selectedCount.textContent = `${state.basket.length} selected`;
+      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !basketUsable || !state.basket.length || !destination
         || !controller.canControl() || !!session.state.pending;
       selectedClear.disabled = !visible() || !state.basket.length;
       const basketFocus = basket.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
@@ -111,7 +112,7 @@ const DashboardLibraryPanel = (() => {
         const location = item.position ? `Playlist position ${item.position}`
           : selectedRow.page.query.album_uri ? `Disc ${item.disc_number ?? '?'}, track ${item.track_number ?? '?'}`
           : `Listing position ${selectedRow.page.query.offset + selectedRow.index + 1}`;
-        info.append(el('p', [item.subtitle, location,
+        info.append(el('p', [item.subtitle, L.selectionOrigin(selectedRow.page), location,
           item.explicit_known === false ? 'Explicit-content metadata unavailable' : item.explicit ? 'Explicit' : ''].filter(Boolean).join(' · '), 'small-note'));
         const actions = el('div', null, 'dashboard-library-actions');
         for (const [label, operation, disabled] of [
@@ -122,7 +123,7 @@ const DashboardLibraryPanel = (() => {
         ]) {
           const edit = button(label, () => { if (visible()) operation(); }, `basket:${selectedRow.id}:${label}`);
           edit.setAttribute('aria-label', `${label}: selection ${index + 1}, ${name}`);
-          edit.disabled = !usable || disabled; actions.append(edit);
+          edit.disabled = !basketUsable || disabled; actions.append(edit);
         }
         row.append(info, actions); basket.append(row);
       }
@@ -193,9 +194,9 @@ const DashboardLibraryPanel = (() => {
     filter.addEventListener('input', () => {
       if (!visible()) return;
       clearTimer(); control.edit(filter.value);
-      timer = schedule(() => { timer = null; if (visible()) void control.refresh(); }, 300);
+      timer = schedule(() => { timer = null; if (visible()) void control.applyFilter(); }, 300);
     });
-    form.addEventListener('submit', e => { e.preventDefault(); if (visible()) { clearTimer(); void control.refresh(); } });
+    form.addEventListener('submit', e => { e.preventDefault(); if (visible()) { clearTimer(); void control.applyFilter(); } });
     render(control.state);
     return { node, model: control, open() {
       if (disposed || doc.hidden || !dialog.open) return;

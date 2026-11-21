@@ -19,37 +19,58 @@ const QueueTracksRemote = (() => {
         || (query.q != null && (typeof query.q !== 'string' || [...query.q].length > 512))
         || (query.album_uri != null && !/^spotify:album:[A-Za-z0-9]{22}$/.test(query.album_uri))
         || (query.playlist_uri != null && !/^spotify:playlist:[A-Za-z0-9]{22}$/.test(query.playlist_uri))
+        || (value.collectionTitle != null && (typeof value.collectionTitle !== 'string' || value.collectionTitle.length > 4096))
         || (query.album_uri && query.playlist_uri)) {
       fail('Choose tracks from a complete cached listing.');
     }
     return frozen({ query: { kind: 'tracks', offset: query.offset, limit: query.limit,
       q: (query.q ?? '').trim(), album_uri: query.album_uri ?? null, playlist_uri: query.playlist_uri ?? null },
-    revision: value.revision, albumObservation: value.albumObservation ?? null });
+    revision: value.revision, albumObservation: value.albumObservation ?? null,
+    ...(value.collectionTitle ? { collectionTitle: value.collectionTitle } : {}) });
   }
-  const listingKey = page => JSON.stringify([page.query.kind, page.query.limit, page.query.q,
-    page.query.album_uri, page.query.playlist_uri, page.revision, page.albumObservation]);
+  const contextKey = value => { const { query } = basketPage(value); return JSON.stringify([
+    query.kind, query.limit, query.q, query.album_uri, query.playlist_uri]); };
+  const listingKey = page => JSON.stringify([contextKey(page), page.revision, page.albumObservation]);
   const pageKey = value => { const page = basketPage(value); return JSON.stringify([listingKey(page), page.query.offset]); };
+  function originLabel(value) {
+    const page = basketPage(value), q = page.query;
+    const title = page.collectionTitle?.trim().slice(0, 512);
+    const collection = q.album_uri ? `Album: ${title || q.album_uri}`
+      : q.playlist_uri ? `Playlist: ${title || q.playlist_uri}` : 'Cached tracks';
+    return [collection, q.q ? `Filter: ${q.q}` : ''].filter(Boolean).join(' · ');
+  }
   // Keep observed occurrences, not just URIs or current-page checkbox indices.
   // A repeated song gets its own stable id; changing page never changes its proof.
   function basket() {
     let rows = Object.freeze([]), serial = 0, customOrder = false;
     const replace = values => { rows = Object.freeze(values); if (!rows.length) customOrder = false; };
+    function observe(value) {
+      const page = basketPage(value), key = contextKey(page);
+      if (rows.some(row => contextKey(row.page) === key && listingKey(row.page) !== listingKey(page))) {
+        replace([]);
+        fail('A selected cached listing changed. The selection was cleared; read the music again.');
+      }
+      return page;
+    }
     function add(pageValue, index, item) {
-      const page = basketPage(pageValue), source = item?.source_uri ?? item?.source;
+      const page = observe(pageValue), source = item?.source_uri ?? item?.source;
       if (!uint(index) || index >= page.query.limit || !supported(source) || typeof item?.title !== 'string') {
         fail('Choose an observed track from this page.');
       }
-      if (rows.length && listingKey(rows[0].page) !== listingKey(page)) {
-        fail('The cached listing changed. Clear the selection and read it again.');
-      }
       const old = rows.find(row => pageKey(row.page) === pageKey(page) && row.index === index);
       if (old) {
-        if (JSON.stringify(old.item) !== JSON.stringify(item)) fail('The selected track changed. Refresh the listing.');
+        if (JSON.stringify(old.item) !== JSON.stringify(item)) {
+          replace([]); fail('The selected track changed. The selection was cleared; refresh the listing.');
+        }
         return false;
       }
       if (rows.length >= MAX_TRACKS) fail(`Select at most ${MAX_TRACKS} tracks, including repeats.`);
       const next = [...rows, frozen({ id: `selection-${++serial}`, page, index, item })];
-      if (!customOrder) next.sort((a, b) => a.page.query.offset - b.page.query.offset || a.index - b.index);
+      if (!customOrder) {
+        const contexts = [...new Set(next.map(row => contextKey(row.page)))];
+        next.sort((a, b) => contexts.indexOf(contextKey(a.page)) - contexts.indexOf(contextKey(b.page))
+          || a.page.query.offset - b.page.query.offset || a.index - b.index);
+      }
       replace(next); return true;
     }
     function remove(id) {
@@ -74,7 +95,7 @@ const QueueTracksRemote = (() => {
       const key = pageKey(value);
       return [...new Set(rows.filter(row => pageKey(row.page) === key).map(row => row.index))].sort((a, b) => a - b);
     }
-    return { get rows() { return rows; }, add, remove, repeat, move, indices,
+    return { get rows() { return rows; }, observe, add, remove, repeat, move, indices,
       clear() { replace([]); },
       unselect(page, index) { const key = pageKey(page); replace(rows.filter(row => pageKey(row.page) !== key || row.index !== index)); },
     };
@@ -146,6 +167,6 @@ const QueueTracksRemote = (() => {
     }
     return { done: result.done, changed: true, notes: result.notes };
   }
-  return { MAX_TRACKS, supported, basketPage, pageKey, basket, tracksOf, queueOf, verifyQueue, playbackOf, body, playBody, receipt, playReceipt };
+  return { MAX_TRACKS, supported, basketPage, contextKey, pageKey, originLabel, basket, tracksOf, queueOf, verifyQueue, playbackOf, body, playBody, receipt, playReceipt };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = QueueTracksRemote;

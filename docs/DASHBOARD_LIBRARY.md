@@ -21,15 +21,19 @@ command review, naming the exact group, source and effect. Play now replaces
 the current source, and album/playlist playback replaces the group's queue.
 The two queue actions add music without starting paused playback.
 
-For several individual tracks, use the row checkboxes across pages of the same
-listing. The selection above the results offers move, repeat and removal controls.
-It begins in catalog order and retains your custom order after you rearrange it.
+For several individual tracks, use the row checkboxes across different albums,
+playlists, filters and their pages. The selection above the results names each
+track's origin and offers move, repeat and removal controls. Collections stay in
+first-selected order and initially retain their catalog order within each one;
+your custom order survives further browsing after you rearrange it.
 Then choose **Play selected now**, **Queue selected next** or **Add selected to
 end**. Review lists up to ten exact occurrences, including repeated URIs, before
 one batch request. Play replaces the queue and starts the first selected track;
 queueing preserves playback and has one undo record. Each distinct selected
-source page is reread during preparation and confirmation. Changing the filter
-or collection, refreshing, or closing the chooser clears the selection. See
+source page is reread during preparation and confirmation against that listing's
+own revision. You can also review retained tracks from a collection directory or
+while editing a new filter. Explicit **Refresh listing**, **Clear selection** or
+closing the chooser clears the list. See
 [Ordered track selections](QUEUE_TRACK_SELECTIONS.md) for the destination queue
 check, partial-failure behavior and equivalent CLI/MCP calls.
 
@@ -51,14 +55,18 @@ ten-minute response budget; this is not a guarantee about service completion.
 ## Navigation and recovery
 
 Reads are serialized with only the latest queued navigation intent retained.
-Typing immediately removes the old rows' selection authority; filtering waits
+Typing immediately removes the old displayed rows' selection authority while
+retaining the separate track selection; filtering waits
 300 ms after typing rests, or Enter submits it. Late responses cannot replace
 a newer query or revive a closed/suspended view. Healthy listings do not poll.
 
-Pagination never combines cache revisions. A revision change leaves the old
-page visibly stale with selection/paging disabled; **Refresh listing** restarts
-at page one. A failed read is not an empty library. Correcting an invalid filter
-allows normal refresh again. Same-title items keep distinct source identities.
+Pagination never combines different revisions of one listing. A changed or
+unreadable selected listing clears its retained selection and leaves that page
+stale; **Refresh listing** restarts at page one. Different collections keep
+independent revisions, and an unrelated unread playlist or failed new listing
+does not discard the existing selection. A failed read is not an empty library.
+Correcting an invalid filter allows browsing again. Same-title items keep
+distinct source identities.
 
 ## Checks
 

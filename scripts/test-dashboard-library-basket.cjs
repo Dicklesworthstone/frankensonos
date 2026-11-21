@@ -19,6 +19,10 @@ const deferred = () => {
 };
 const queryOf = url => Object.fromEntries(new URL(url, 'http://localhost').searchParams);
 const catalogRead = call => call.body === undefined && /^\/library\/(browse|playlist)\?/.test(call.url);
+const readSources = calls => calls.filter(catalogRead).map(call => {
+  const query = queryOf(call.url);
+  return [query.album_uri || query.playlist_uri || query.kind, query.q || '', Number(query.offset)];
+}).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
 
 function catalog(query) {
   const kind = query.kind || 'tracks', offset = Number(query.offset || 0);
@@ -39,9 +43,15 @@ function catalog(query) {
     items: all.slice(offset, end) };
   if (playlistUri) return { ...page, playlist_uri: playlistUri, name: 'Large observed playlist',
     q: query.q || '', cached_total: TOTAL, examined: 170, source_total: 170, coverage: 'complete',
-    fetched_at: 100, revision: 'playlist-a' };
-  return { ...page, kind, album_uri: albumUri, coverage: 'cached', revision: 'library-a',
+    fetched_at: 100, revision: `playlist-a${query.q ? `:${query.q}` : ''}` };
+  return { ...page, kind, album_uri: albumUri, coverage: 'cached',
+    revision: `${albumUri ? 'album' : 'library'}-a${query.q ? `:${query.q}` : ''}`,
     ...(albumUri ? { album_observation: { coverage: 'complete', fetched_at: 100, cached_total: TOTAL } } : {}) };
+}
+
+function uncachedPlaylist(query) {
+  return { ...catalog(query), total: 0, cached_total: 0, examined: 0, source_total: null,
+    coverage: 'not_cached', fetched_at: null, revision: null, next_offset: null, items: [] };
 }
 
 async function fixture({ collection = 'album', callWrapper } = {}) {
@@ -94,6 +104,219 @@ async function selectAcrossPages(f) {
   f.select(0);
   assert.deepEqual(f.library.state.basket.map(row => row.page.query.offset), [0, 50, 100]);
 }
+
+async function selectMixedSources(f) {
+  f.select(0);
+  assert.equal(await f.library.browse('albums'), true);
+  assert.equal(await f.library.album(f.library.state.page.items[0]), true);
+  assert.equal(await f.library.next(), true);
+  f.select(0);
+  assert.equal(await f.library.browse('playlists'), true);
+  assert.equal(await f.library.playlist(f.library.state.page.items[0]), true);
+  assert.equal(await f.library.next(), true);
+  assert.equal(await f.library.next(), true);
+  f.select(0);
+  assert.deepEqual(f.library.state.basket.map(row => row.page.revision), ['library-a', 'album-a', 'playlist-a']);
+  assert.deepEqual(f.library.state.basket.map(row => row.item.source_uri), [uri(1), uri(1), uri(1)]);
+  assert.equal(new Set(f.library.state.basket.map(row => row.id)).size, 3,
+    'the same song selected from three source occurrences remains three entries');
+}
+
+const mixedSources = [[album, '', 50], [playlist, '', 100], ['tracks', '', 0]];
+
+for (const action of ['play', 'next', 'append']) {
+  test(`tracks, album and playlist occurrences compose one reordered ${action} command with distinct revisions`, async () => {
+    const f = await fixture({ collection: 'tracks' });
+    await selectMixedSources(f);
+    const [track, albumTrack, playlistTrack] = f.library.state.basket;
+    assert.equal(f.library.repeatTrack(track.id), true);
+    assert.equal(f.library.moveTrack(playlistTrack.id, -1), true);
+    assert.deepEqual(f.library.state.basket.map(row => row.item.title), ['Track 1', 'Track 1', 'Track 101', 'Track 51']);
+    assert.deepEqual(f.library.state.selected, [0]);
+    const expected = f.library.chooseTracks().rows.map(row => ({ source_uri: row.item.source_uri, title: row.item.title }));
+    const preparing = f.calls.length;
+    const review = await f.review(action);
+    assert.ok(review);
+    assert.deepEqual(readSources(f.calls.slice(preparing)), mixedSources,
+      'preparation reads each distinct source page once, including offscreen sources and repeats');
+    assert.deepEqual(review.body.tracks, expected);
+    assert.match(review.trackSelection[0], /Cached tracks/);
+    assert.match(review.trackSelection[2], /Playlist:.*playlist position|playlist position.*Playlist:/);
+    assert.match(review.trackSelection[3], /disc 2, track 11.*Album:/);
+    assert.equal(f.writes().length, 0);
+    const confirming = f.calls.length;
+    assert.equal(await f.session.confirm(review), true);
+    assert.deepEqual(readSources(f.calls.slice(confirming)), mixedSources,
+      'confirmation freshly rechecks all three source pages before sending any mutation');
+    const playlistRead = f.calls.slice(confirming).find(call => catalogRead(call) && queryOf(call.url).playlist_uri);
+    assert.equal(queryOf(playlistRead.url).expected_revision, playlistTrack.page.revision);
+    assert.equal(f.writes().length, 1);
+    assert.equal(f.writes()[0].url, action === 'play' ? '/play/tracks' : '/queue/tracks');
+    assert.deepEqual(f.writes()[0].body.tracks, expected);
+    assert.equal(f.writes()[0].body.next, action === 'play' ? undefined : action === 'next');
+    assert.equal(f.writes()[0].body.expected_revision, 'queue-a');
+    assert.equal(albumTrack.page.query.album_uri, album);
+  });
+}
+
+test('filtered and unfiltered occurrences retain independent revisions and checkbox identities', async () => {
+  const f = await fixture({ collection: 'tracks' });
+  f.select(0);
+  const first = f.library.state.basket[0];
+  assert.equal(f.library.edit('different filter'), true);
+  assert.equal(f.library.chooseTracks().rows[0].page.query.q, '', 'an unapplied draft cannot change retained provenance');
+  assert.equal(await f.library.applyFilter(), true);
+  assert.deepEqual(f.library.state.selected, []);
+  f.select(0);
+  assert.deepEqual(f.library.state.basket.map(row => row.item.source_uri), [uri(1), uri(1)]);
+  assert.deepEqual(f.library.state.basket.map(row => row.page.revision), ['library-a', 'library-a:different filter']);
+  assert.notEqual(f.library.state.basket[1].id, first.id);
+  assert.equal(f.library.edit(''), true);
+  assert.equal(await f.library.applyFilter(), true);
+  assert.deepEqual(f.library.state.selected, [0]);
+  assert.equal(f.library.selectTrack(f.library.state.page.items[0], false), true);
+  assert.equal(f.library.state.basket.length, 1);
+  assert.equal(f.library.state.basket[0].page.query.q, 'different filter');
+  f.select(1);
+  const expectedReads = [['tracks', '', 0], ['tracks', 'different filter', 0]];
+  const preparing = f.calls.length, review = await f.review('append');
+  assert.ok(review);
+  assert.deepEqual(readSources(f.calls.slice(preparing)), expectedReads);
+  assert.match(review.trackSelection[0], /Filter: different filter/);
+  const confirming = f.calls.length;
+  assert.equal(await f.session.confirm(review), true);
+  assert.deepEqual(readSources(f.calls.slice(confirming)), expectedReads);
+  assert.deepEqual(f.writes()[0].body.tracks.map(row => row.source_uri), [uri(1), uri(2)]);
+});
+
+test('mixed source revisions are valid, but conflicting revisions in one source cannot form a review', async () => {
+  const f = await fixture({ collection: 'tracks' });
+  await selectMixedSources(f);
+  const selected = f.library.chooseTracks();
+  assert.equal(L.selectionOf(selected).rows.length, 3);
+  const conflict = copy(selected.rows[0]);
+  conflict.page.query.offset = 50;
+  conflict.page.revision = 'a-newer-track-listing';
+  const invalid = { rows: [...selected.rows, conflict] };
+  assert.throws(() => L.selectionOf(invalid), /selected library pages changed/);
+  const before = f.calls.length;
+  assert.equal(await f.session.reviewLibraryTracks(invalid, 'append', {
+    target: f.controller.state.selected, shape: C.shape(f.controller.selected().zone),
+  }), null);
+  assert.equal(f.session.state.pending, null);
+  assert.equal(f.calls.length, before, 'inconsistent source revisions are refused before any I/O');
+  assert.equal(f.writes().length, 0);
+});
+
+for (const phase of ['preparation', 'confirmation']) for (const source of ['tracks', 'album']) {
+  test(`a changed offscreen ${source} source blocks the whole mixed batch during ${phase}`, async () => {
+    const f = await fixture({ collection: 'tracks' });
+    await selectMixedSources(f);
+    const review = phase === 'confirmation' ? await f.review('next') : null;
+    if (phase === 'confirmation') assert.ok(review);
+    f.hook(url => {
+      if (!catalogRead({ url })) return;
+      const query = queryOf(url), matches = source === 'album' ? !!query.album_uri : !query.album_uri && !query.playlist_uri;
+      if (!matches) return;
+      return { ...catalog(query), revision: 'a-changed-offscreen-observation' };
+    });
+    assert.equal(f.library.state.page.query.playlist_uri, playlist, 'the changed source is no longer onscreen');
+    if (phase === 'confirmation') assert.equal(await f.session.confirm(review), false);
+    else assert.equal(await f.review('next'), null);
+    assert.equal(f.session.state.pending, null);
+    assert.equal(f.writes().length, 0, 'no partial batch may dispatch after another source checked successfully');
+    assert.match(phase === 'confirmation' ? f.controller.state.message : f.session.state.error, /changed/);
+  });
+}
+
+for (const change of ['revision', 'observation', 'metadata']) {
+  test(`returning to an album with changed ${change} retires selections from every source`, async () => {
+    const f = await fixture({ collection: 'tracks' });
+    await selectMixedSources(f);
+    assert.equal(await f.library.browse('albums'), true);
+    f.hook(url => {
+      if (!catalogRead({ url }) || !queryOf(url).album_uri) return;
+      const page = catalog(queryOf(url));
+      if (change === 'revision') page.revision = 'album-b';
+      if (change === 'observation') page.album_observation.fetched_at++;
+      if (change === 'metadata' && page.offset === 50) page.items[0].title = 'A changed selected occurrence';
+      return page;
+    });
+    const opened = await f.library.album(f.library.state.page.items[0]);
+    if (change === 'metadata') {
+      assert.equal(opened, true, 'an unselected album page cannot prove an offscreen row changed');
+      assert.equal(await f.library.next(), false);
+    } else assert.equal(opened, false);
+    assert.deepEqual(f.library.state.basket, []);
+    assert.equal(f.library.chooseTracks(), null);
+    assert.match(f.library.state.error, /changed/);
+    assert.equal(f.writes().length, 0);
+  });
+}
+
+test('an unrelated uncached playlist preserves a reviewable basket and its original source proof', async () => {
+  const f = await fixture({ collection: 'tracks' });
+  f.select(0);
+  const retained = f.library.state.basket;
+  assert.equal(await f.library.browse('playlists'), true);
+  f.hook(url => {
+    if (catalogRead({ url }) && queryOf(url).playlist_uri) return uncachedPlaylist(queryOf(url));
+  });
+  assert.equal(await f.library.playlist(f.library.state.page.items[0]), true);
+  assert.equal(f.library.state.page.coverage, 'not_cached');
+  assert.equal(f.library.state.page.revision, null);
+  assert.match(L.playlistCoverage(f.library.state.page), /have not been cached/);
+  assert.equal(f.library.state.basket, retained);
+  assert.deepEqual(f.library.state.selected, []);
+  assert.equal(f.library.chooseTracks().rows.length, 1);
+  const preparing = f.calls.length, review = await f.review('append');
+  assert.ok(review);
+  assert.deepEqual(readSources(f.calls.slice(preparing)), [['tracks', '', 0]]);
+  const confirming = f.calls.length;
+  assert.equal(await f.session.confirm(review), true);
+  assert.deepEqual(readSources(f.calls.slice(confirming)), [['tracks', '', 0]]);
+  assert.deepEqual(f.writes()[0].body.tracks, [{ source_uri: uri(1), title: 'Track 1' }]);
+});
+
+test('a selected playlist becoming uncached clears the whole mixed-source basket', async () => {
+  const f = await fixture({ collection: 'tracks' });
+  await selectMixedSources(f);
+  assert.equal(await f.library.browse('playlists'), true);
+  f.hook(url => {
+    if (catalogRead({ url }) && queryOf(url).playlist_uri) return uncachedPlaylist(queryOf(url));
+  });
+  assert.equal(await f.library.playlist(f.library.state.page.items[0]), false);
+  assert.deepEqual(f.library.state.basket, []);
+  assert.deepEqual(f.library.state.selected, []);
+  assert.equal(f.library.chooseTracks(), null);
+  assert.equal(f.library.state.resetRequired, true);
+  assert.match(f.library.state.error, /selected playlist.*no longer available/);
+  assert.match(f.library.state.selectionNotice, /no longer cached.*cleared/);
+  assert.equal(f.writes().length, 0);
+});
+
+test('failure to read an unrelated album leaves the observed basket reviewable', async () => {
+  const f = await fixture({ collection: 'tracks' });
+  f.select(0);
+  const retained = f.library.state.basket;
+  assert.equal(await f.library.browse('albums'), true);
+  f.hook(url => {
+    if (catalogRead({ url }) && queryOf(url).album_uri) throw new Error('Unrelated album unavailable');
+  });
+  assert.equal(await f.library.album(f.library.state.page.items[0]), false);
+  assert.equal(f.library.state.basket, retained);
+  assert.equal(f.library.state.stale, true);
+  assert.match(f.library.state.error, /Unrelated album unavailable/);
+  assert.equal(f.library.chooseTracks().rows.length, 1);
+  const preparing = f.calls.length, review = await f.review('next');
+  assert.ok(review);
+  assert.deepEqual(readSources(f.calls.slice(preparing)), [['tracks', '', 0]]);
+  const confirming = f.calls.length;
+  assert.equal(await f.session.confirm(review), true);
+  assert.deepEqual(readSources(f.calls.slice(confirming)), [['tracks', '', 0]]);
+  assert.equal(f.writes().length, 1);
+  assert.deepEqual(f.writes()[0].body.tracks, [{ source_uri: uri(1), title: 'Track 1' }]);
+});
 
 for (const collection of ['tracks', 'album', 'playlist']) for (const action of ['play', 'next', 'append']) {
   test(`${collection}: reordered, repeated selections cross three pages in one ${action} command`, async () => {
@@ -263,13 +486,11 @@ test('a changed selected row on a revisited page retires the basket even with a 
   assert.equal(f.writes().length, 0);
 });
 
-for (const change of ['filter', 'category', 'refresh', 'close', 'suspend']) {
+for (const change of ['refresh', 'close', 'suspend']) {
   test(`${change} clears selections retained from older pages`, async () => {
     const f = await fixture();
     await selectAcrossPages(f);
-    if (change === 'filter') f.library.edit('different filter');
-    else if (change === 'category') await f.library.browse('playlists');
-    else if (change === 'refresh') await f.library.refresh();
+    if (change === 'refresh') await f.library.refresh();
     else f.library[change]();
     assert.deepEqual(f.library.state.basket, []);
     assert.deepEqual(f.library.state.selected, []);
@@ -278,9 +499,54 @@ for (const change of ['filter', 'category', 'refresh', 'close', 'suspend']) {
   });
 }
 
-test('a late page response after a filter change cannot restore an old selection', async () => {
+test('an unapplied filter retains a reviewable basket but cannot select stale displayed rows', async () => {
+  const f = await fixture();
+  await selectAcrossPages(f);
+  const retained = f.library.state.basket, staleItem = f.library.state.page.items[1];
+  assert.equal(f.library.edit('a draft not sent to the cache'), true);
+  assert.equal(f.library.state.basket, retained);
+  assert.deepEqual(f.library.state.selected, []);
+  assert.equal(f.library.selectTrack(staleItem, true), false);
+  assert.equal(f.library.chooseTracks().rows.length, 3);
+  const preparing = f.calls.length, review = await f.review('append');
+  assert.ok(review);
+  const reads = f.calls.slice(preparing).filter(catalogRead);
+  assert.equal(reads.length, 3);
+  assert.ok(reads.every(call => !queryOf(call.url).q), 'only original source filters may be verified or submitted');
+  assert.equal(f.writes().length, 0);
+});
+
+for (const change of ['filter', 'category']) {
+  test(`a pending ${change} read retains earlier pages while blocking basket review until completion`, async () => {
+    const f = await fixture(), entered = deferred(), reply = deferred();
+    await selectAcrossPages(f);
+    const retained = f.library.state.basket;
+    let waitingQuery;
+    f.hook(url => {
+      if (!catalogRead({ url })) return;
+      waitingQuery = queryOf(url); entered.resolve(); return reply.promise;
+    });
+    if (change === 'filter') assert.equal(f.library.edit('different filter'), true);
+    const running = change === 'filter' ? f.library.applyFilter() : f.library.browse('playlists');
+    await entered.promise;
+    assert.equal(f.library.state.basket, retained);
+    assert.deepEqual(f.library.state.selected, []);
+    assert.equal(f.library.chooseTracks(), null);
+    assert.equal(f.library.repeatTrack(retained[0].id), false);
+    assert.equal(await f.review('append'), null);
+    reply.resolve(catalog(waitingQuery));
+    assert.equal(await running, true);
+    assert.equal(f.library.state.basket, retained);
+    assert.deepEqual(f.library.state.selected, []);
+    assert.equal(f.library.chooseTracks().rows.length, 3);
+    assert.equal(f.writes().length, 0);
+  });
+}
+
+test('a late page response after a filter edit cannot adopt that page or rewrite retained sources', async () => {
   const f = await fixture({ collection: 'tracks' }), entered = deferred(), reply = deferred();
   f.select(0);
+  const retained = f.library.state.basket, originalPage = f.library.state.page;
   let waitingQuery;
   f.hook(url => {
     if (!catalogRead({ url }) || Number(queryOf(url).offset) !== 50) return;
@@ -289,10 +555,15 @@ test('a late page response after a filter change cannot restore an old selection
   const running = f.library.next();
   await entered.promise;
   f.library.edit('new filter');
+  assert.equal(f.library.chooseTracks(), null, 'the old outstanding read keeps review blocked');
   reply.resolve(catalog(waitingQuery));
   assert.equal(await running, false);
-  assert.equal(f.library.chooseTracks(), null);
-  assert.deepEqual(f.library.state.basket, []);
+  assert.equal(f.library.state.page, originalPage);
+  assert.equal(f.library.state.filter, 'new filter');
+  assert.equal(f.library.state.basket, retained);
+  assert.equal(f.library.chooseTracks().rows[0].page.query.q, '');
+  assert.equal(f.library.chooseTracks().rows[0].page.query.offset, 0);
+  assert.equal(f.library.selectTrack(originalPage.items[1], true), false);
   await tick();
   assert.equal(f.writes().length, 0);
 });

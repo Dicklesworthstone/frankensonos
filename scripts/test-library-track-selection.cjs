@@ -135,7 +135,7 @@ for (const collection of ['album', 'playlist']) for (const action of ['play', 'a
 }
 
 for (const kind of ['phone', 'dashboard']) {
-  test(`${kind}: page selection is bounded, works offline, and clears on catalog context changes`, async () => {
+  test(`${kind}: selection is bounded, survives a filter draft, and clears on explicit refresh`, async () => {
     const f = await (kind === 'phone' ? phone : dashboard)({ collection: 'tracks' });
     f.select(Array.from({ length: 10 }, (_, i) => 9 - i));
     const model = f.control || f.library;
@@ -143,8 +143,11 @@ for (const kind of ['phone', 'dashboard']) {
     assert.deepEqual(model.state.selected, Array.from({ length: 10 }, (_, i) => i));
     if (kind === 'phone') model.query('different'); else model.edit('different');
     assert.deepEqual(model.state.selected, []);
-    assert.equal(kind === 'phone' ? await model.chooseTracks('next') : model.chooseTracks(), kind === 'phone' ? false : null);
-    await model.refresh(); f.select([0]); model.close(); assert.deepEqual(model.state.selected, []);
+    assert.equal(model.state.basket.length, 10, 'filter edits retain the chosen tracks while the new page is unread');
+    assert.ok(kind === 'phone' ? await model.chooseTracks('next') : model.chooseTracks(),
+      'the basket reviews its retained sources independently of an unfinished filter draft');
+    await model.refresh(); assert.deepEqual(model.state.basket, []);
+    f.select([0]); model.close(); assert.deepEqual(model.state.selected, []);
   });
 }
 
@@ -453,4 +456,63 @@ test('dashboard basket controls keep the chosen order and occurrences through pa
   assert.equal(await f.session.confirm(review), true); assert.equal(await f.session.confirm(review), false);
   assert.equal(f.writes().length, 1);
   assert.deepEqual(f.writes()[0].body.tracks.map(item => item.source_uri), [uri(52), uri(1)]);
+});
+
+test('dashboard music browsing composes album and playlist tracks without discarding either selection', async t => {
+  const f = await dashboard(), doc = documentFixture();
+  const panel = Panel.create({ call: f.call, controller: f.controller, session: f.session, doc });
+  t.after(() => panel.dispose()); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => !!findButton(panel.node, 'View cached tracks'));
+  findButton(panel.node, 'View cached tracks').fire('click');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 3);
+  checks()[0].checked = true; checks()[0].fire('change');
+  findButton(panel.node, 'Back to albums').fire('click');
+  await settled(() => panel.model.state.kind === 'albums' && !panel.model.state.loading);
+  assert.equal(panel.model.state.basket.length, 1);
+  assert.equal(findButton(panel.node, 'Play selected now').disabled, false, 'the basket can be reviewed from a collection directory');
+  const kind = panel.node.querySelector('select'); kind.value = 'playlists'; kind.fire('change');
+  await settled(() => panel.model.state.kind === 'playlists' && !panel.model.state.loading);
+  findButton(panel.node, 'View cached tracks').fire('click'); await settled(() => checks().length === 3);
+  checks()[1].checked = true; checks()[1].fire('change');
+  const basket = panel.node.querySelector('ol');
+  assert.equal(basket.children.length, 2);
+  assert.match(basket.children[0].textContent, /Album:.*Disc 1, track 1/);
+  assert.match(basket.children[1].textContent, /Playlist:.*Playlist position 4/);
+  findButton(basket.children[1], 'Move earlier').fire('click');
+  findButton(panel.node, 'Queue selected next').fire('click'); await settled(() => !!f.session.state.pending);
+  const review = f.session.state.pending;
+  assert.match(review.trackSelection[0], /Playlist:/); assert.match(review.trackSelection[1], /Album:/);
+  assert.equal(await f.session.confirm(review), true); assert.equal(f.writes().length, 1);
+  assert.deepEqual(f.writes()[0].body.tracks.map(item => item.source_uri), [uri(2), uri(1)]);
+});
+
+test('phone music browsing composes album and playlist tracks with visible origins and one confirmation', async t => {
+  const f = await phone(), doc = documentFixture(), previous = global.document; global.document = doc;
+  let panel;
+  t.after(() => { panel?.dispose(); global.document = previous; });
+  const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const el = vm.runInNewContext(source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer')) + '\nel;', { document: doc });
+  panel = R.panel({ call: f.backend, el }); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => panel.node.querySelectorAll('option').length === 3);
+  const group = panel.node.querySelector('select'); group.value = 'Room@S1'; group.fire('change');
+  findButton(panel.node, 'Browse albums').fire('click'); await settled(() => !!findButton(panel.node, 'View cached tracks'));
+  findButton(panel.node, 'View cached tracks').fire('click');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 3); checks()[0].checked = true; checks()[0].fire('change');
+  findButton(panel.node, 'Back to albums').fire('click'); await settled(() => !!findButton(panel.node, 'View cached tracks'));
+  assert.equal(findButton(panel.node, 'Play selected now').disabled, false);
+  findButton(panel.node, 'Browse playlists').fire('click'); await settled(() => panel.node.textContent.includes('Cached playlists:'));
+  findButton(panel.node, 'View cached tracks').fire('click'); await settled(() => checks().length === 3);
+  checks()[1].checked = true; checks()[1].fire('change');
+  const basket = panel.node.querySelector('ol'); assert.equal(basket.children.length, 2);
+  assert.match(basket.children[0].textContent, /Album:/); assert.match(basket.children[1].textContent, /Playlist:/);
+  findButton(basket.children[1], 'Earlier').fire('click');
+  findButton(panel.node, 'Add selected to end').fire('click'); await settled(() => !!findButton(panel.node, 'Confirm add selected to end'));
+  const review = panel.node.querySelector('ol');
+  assert.match(review.children[0].textContent, /Playlist:/); assert.match(review.children[1].textContent, /Album:/);
+  const confirm = findButton(panel.node, 'Confirm add selected to end'); confirm.fire('click'); confirm.fire('click');
+  await settled(() => f.writes().length === 1 && panel.node.textContent.includes('Current playback was preserved.'));
+  assert.equal(f.writes()[0].args.body.zone, 'Room@S1');
+  assert.deepEqual(f.writes()[0].args.body.tracks.map(item => item.source_uri), [uri(2), uri(1)]);
 });

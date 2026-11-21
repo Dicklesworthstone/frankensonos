@@ -240,7 +240,7 @@ const DashboardSession = (() => {
         if (!ready() || id !== intent || state.pending || target !== controller.state.selected
             || playbackIdentity(selection()) !== playback) return null;
         const label = { play: 'Play selected now', next: 'Queue selected next', append: 'Add selected to end' }[action];
-        const entries = catalog.rows.map(({ item: source }) => `${source.title || 'Untitled track'}${source.subtitle ? ` — ${source.subtitle}` : ''}${source.position ? ` (playlist position ${source.position})` : catalog.query.album_uri ? ` (disc ${source.disc_number ?? '?'}, track ${source.track_number ?? '?'})` : ''}${source.explicit_known === false ? ' [explicit metadata unavailable]' : source.explicit ? ' [explicit]' : ''} · ${source.source_uri}`);
+        const entries = catalog.rows.map(({ item: source, page }) => `${source.title || 'Untitled track'}${source.subtitle ? ` — ${source.subtitle}` : ''}${source.position ? ` (playlist position ${source.position})` : page.query.album_uri ? ` (disc ${source.disc_number ?? '?'}, track ${source.track_number ?? '?'})` : ''}${source.explicit_known === false ? ' [explicit metadata unavailable]' : source.explicit ? ' [explicit]' : ''} · ${Q.originLabel(page)} · ${source.source_uri}`);
         state.result = null; state.error = '';
         state.pending = freeze({ kind: 'library_tracks', target, label: item.zone.members.join(' + '),
           title: `${label}: ${tracks.length} track(s)`,

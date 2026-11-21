@@ -12,9 +12,10 @@ action history and verified undo boundaries.
 
 Open **Find music** and browse cached tracks, or open an album or playlist with
 **View cached tracks**. Mark **Select track** beside the wanted entries.
-Both clients initially keep selected entries in their listing order, regardless
-of the order in which you check the boxes. Selection survives previous/next
-navigation across pages of the same observed listing. The ordered selection
+Both clients keep your selection as you browse different albums, playlists,
+filtered track listings and their pages. Collections enter the selection in the
+order you first choose from them; tracks within each listing initially keep
+their catalog order, regardless of checkbox order. The ordered selection
 above the results offers **Earlier/Later** (or **Move earlier/Move later**),
 **Repeat track**, and **Remove selection**. Once you customize the order,
 additional selections append to it. Repeats each count toward the ten-track
@@ -31,17 +32,26 @@ the list after the current queue occurrence. When a group is playing another
 source, it appends to the queue without activating it. Paused playback stays
 paused, and queueing does not raise volume.
 
-Selection is limited to ten entries across any number of 50-entry pages within
-the same listing. Changing its filter, category or collection, explicitly
-refreshing, or closing the chooser clears it, with an explanation. A changed or
-unreadable continuation also retires the selection. You can browse and mark cached tracks
+Selection is limited to ten entries across cached listings, each browsed in
+50-entry pages. The list names each track's original album, playlist or filter.
+The same song chosen from separate listings remains two intentional occurrences.
+You can review the selection while looking at a collection directory or editing
+a new filter; only the retained, observed tracks enter that review. An active
+read must finish first.
+
+**Refresh listing**, **Clear selection**, or closing the chooser clears the list.
+Returning to a selected listing whose revision, contents or coverage changed
+also clears it with an explanation. An unrelated uncached playlist or failed
+listing does not discard music already selected elsewhere. You can browse and mark cached tracks
 without online speakers, but review requires a fresh explicit destination and
 readable queue. The phone retains the selected music when you choose another
 group and requires a new review for that group.
 
 Before showing the review and again at confirmation, the clients reread every
-distinct selected source page and its exact occurrences. Repeated copies share
-one verification read per page; at most ten source pages are read in each pass.
+distinct selected source page and its exact occurrences. Each listing retains
+its own revision and complete/partial cache evidence; different collections do
+not need matching revisions. Repeated copies share one verification read per
+page; at most ten source pages are read in each pass.
 Confirmation also checks destination group, playback source and destination queue. A changed
 listing, group, source or queue asks for another review. Queue-next also checks
 that the current queue occurrence has not changed. These checks are optimistic
@@ -49,7 +59,7 @@ observations; they do not reserve speakers against another controller. The
 server additionally retains and verifies its own destination through insertion
 or staged replacement. Play-now also checks the reviewed current occurrence.
 
-Only the checked cached entries are submitted. This does not fetch missing
+Only the selected cached occurrences are submitted. This does not fetch missing
 album tracks or expand a playlist. The catalog's complete/subset/partial
 coverage and unknown explicit metadata keep their existing meanings. Use a
 container row's existing **Play now** or **Add to end** action when you want the
@@ -205,7 +215,7 @@ occurrences, all-member volume caps, complete replacement undo, direct-source
 and empty-queue starts, changed destination evidence, lost acknowledgements and
 partial staging. Browser Node tests execute the real selection components and
 their request/receipt logic with synthetic observations, including three-page
-catalogs, custom order, repeats, exact source positions, delayed reads and lost
+catalogs, mixed collections and filters, custom order, repeats, exact source positions, delayed reads and lost
 HTTP replies. These browser additions use the existing Rust contracts. The new Rust checks
 remain unexecuted behind the local `asupersync` dependency build failure; Node
 coverage does not establish Rust or physical-speaker execution.
