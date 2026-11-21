@@ -54,7 +54,11 @@ use crate::config::GlobalArgs;
 use crate::dj_cmd::DjAction;
 use crate::{Command, Switch, announce_cmd, direct, emit, schedule_cmd};
 
+mod response;
 mod transport;
+
+#[cfg(test)]
+use response::parse_response;
 
 /// The daemon's address file in the data directory.
 pub const DAEMON_FILE: &str = "daemon.json";
@@ -510,8 +514,7 @@ impl Daemon {
             }
         };
         let request = self.request(method, path, body.unwrap_or_default(), "application/json");
-        let raw = transport::exchange(*addr, request.as_bytes(), timeout, PROBE)?;
-        parse_response(&raw)
+        transport::exchange(*addr, request.as_bytes(), timeout, PROBE)
     }
 
     /// The HTTP/1.1 request: its head, as the CLI (or the stdio MCP
@@ -649,91 +652,6 @@ fn refuse(require: bool, why: &str) -> Result<Option<Daemon>, Failure> {
     } else {
         Ok(None)
     }
-}
-
-/// A response head's status, and whether its body comes chunked.
-fn parse_head(head: &str) -> Option<(u16, bool)> {
-    let mut lines = head.lines();
-    let status = lines
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|c| c.parse().ok())?;
-    let chunked = lines.any(|l| {
-        l.split_once(':').is_some_and(|(k, v)| {
-            k.trim().eq_ignore_ascii_case("transfer-encoding")
-                && v.trim().eq_ignore_ascii_case("chunked")
-        })
-    });
-    Some((status, chunked))
-}
-
-/// Status and body of a raw HTTP/1.1 response (`Content-Length` or chunked).
-fn parse_response(raw: &[u8]) -> io::Result<(u16, String)> {
-    let bad = |why: &str| io::Error::new(io::ErrorKind::InvalidData, why.to_string());
-    let split = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| bad("no end of headers"))?;
-    let head = String::from_utf8_lossy(&raw[..split]);
-    let mut rest = &raw[split + 4..];
-    let (status, chunked) = parse_head(&head).ok_or_else(|| bad("no status line"))?;
-    if !chunked {
-        let mut length = None;
-        for line in head.lines().skip(1) {
-            if let Some((name, value)) = line.split_once(':')
-                && name.trim().eq_ignore_ascii_case("content-length")
-            {
-                let value = value
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|_| bad("invalid Content-Length"))?;
-                if length
-                    .replace(value)
-                    .is_some_and(|previous| previous != value)
-                {
-                    return Err(bad("conflicting Content-Length headers"));
-                }
-            }
-        }
-        if length.is_some_and(|length| length != rest.len()) {
-            return Err(bad("incomplete or overlong response body"));
-        }
-        let body = std::str::from_utf8(rest).map_err(|_| bad("response body is not UTF-8"))?;
-        return Ok((status, body.to_owned()));
-    }
-    let mut body = Vec::new();
-    loop {
-        let end = rest
-            .windows(2)
-            .position(|w| w == b"\r\n")
-            .ok_or_else(|| bad("truncated chunk"))?;
-        let size = usize::from_str_radix(
-            String::from_utf8_lossy(&rest[..end])
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim(),
-            16,
-        )
-        .map_err(|_| bad("bad chunk size"))?;
-        rest = &rest[end + 2..];
-        if size == 0 {
-            // The terminating chunk is followed by trailers and a final
-            // empty line. A lost terminator is not a complete acknowledgement.
-            if rest != b"\r\n" && !rest.ends_with(b"\r\n\r\n") {
-                return Err(bad("truncated chunk trailers"));
-            }
-            break;
-        }
-        let chunk = rest.get(..size).ok_or_else(|| bad("truncated chunk"))?;
-        body.extend_from_slice(chunk);
-        rest = rest
-            .get(size..)
-            .and_then(|after| after.strip_prefix(b"\r\n"))
-            .ok_or_else(|| bad("missing chunk delimiter"))?;
-    }
-    let body = String::from_utf8(body).map_err(|_| bad("response body is not UTF-8"))?;
-    Ok((status, body))
 }
 
 /// Percent-encode a path segment or query value.
@@ -1408,6 +1326,8 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{}".to_vec(),
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n".to_vec(),
             b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n\"\xff\"".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 16777217\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n".to_vec(),
             json_response(200, "{\"incomplete\":"),
             json_response(502, "upstream connection closed"),
         ];

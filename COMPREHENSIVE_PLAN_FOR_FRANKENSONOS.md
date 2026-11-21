@@ -1409,6 +1409,14 @@ answers (`zones` in under 100 ms) and otherwise falls back to direct LAN mode
 with the cached inventory. Every command takes `--json`; shell completions
 complete room names; `--daemon` and `--direct` force a mode.
 
+Local daemon replies are decoded incrementally. CLI and forwarded stdio MCP
+calls finish when a complete length-delimited or chunked response arrives,
+without waiting for socket closure. Header/trailer metadata is bounded to
+64 KiB and decoded response bodies to 16 MiB; chunk framing is discarded as it
+is consumed. Unframed replies still require EOF. Truncated, oversized or
+ambiguous replies retain the existing uncertain-mutation result and never
+authorize a retry. The total request deadline remains in force throughout.
+
 ### 12.9 A DJ that learns
 
 [`c-dj-feedback`, `d-dj-feedback-surface`] `dj like` and `dj dislike`, early

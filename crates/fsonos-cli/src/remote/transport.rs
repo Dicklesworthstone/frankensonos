@@ -3,10 +3,14 @@
 //! A socket's read/write timeout bounds each individual system call, not the
 //! whole exchange. A daemon that keeps sending a little data must not hold a
 //! CLI command or a forwarded stdio tool forever.
+//! Complete framed replies return immediately, with bounded metadata and body
+//! buffering; only replies without framing wait for the peer to close.
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
+
+use super::response::Response;
 
 fn remaining(deadline: Instant) -> io::Result<Duration> {
     let remaining = deadline.saturating_duration_since(Instant::now());
@@ -25,7 +29,7 @@ pub(super) fn exchange(
     request: &[u8],
     timeout: Duration,
     connect_timeout: Duration,
-) -> io::Result<Vec<u8>> {
+) -> io::Result<(u16, String)> {
     let deadline = Instant::now() + timeout;
     let mut stream =
         TcpStream::connect_timeout(&address, remaining(deadline)?.min(connect_timeout))?;
@@ -39,13 +43,17 @@ pub(super) fn exchange(
             Err(error) => return Err(error),
         }
     }
-    let mut response = Vec::new();
+    let mut response = Response::default();
     let mut buffer = [0; 8192];
     loop {
         stream.set_read_timeout(Some(remaining(deadline)?))?;
         match stream.read(&mut buffer) {
-            Ok(0) => return Ok(response),
-            Ok(read) => response.extend_from_slice(&buffer[..read]),
+            Ok(0) => return response.finish(),
+            Ok(read) => {
+                if response.push(&buffer[..read])? {
+                    return response.finish();
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
@@ -91,12 +99,64 @@ mod tests {
             Duration::from_secs(1),
         );
         let listener = worker.join().unwrap();
-        assert_eq!(result.unwrap(), reply);
+        assert_eq!(result.unwrap(), (200, "{}".into()));
         listener.set_nonblocking(true).unwrap();
         assert!(
             listener.accept().is_err(),
             "an exchange never repeats a request"
         );
+    }
+
+    #[test]
+    fn complete_framed_replies_do_not_wait_for_the_server_to_close() {
+        for reply in [
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\n{\r\n1\r\n}\r\n0\r\nChecked: yes\r\n\r\n",
+            b"HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (release, hold) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mut stream = receive(&listener);
+                stream.write_all(reply).unwrap();
+                // Deliberately retain the socket until the caller returns.
+                // EOF-based clients time out instead of accepting this reply.
+                hold.recv_timeout(Duration::from_secs(10)).unwrap();
+                listener
+            });
+            let result = exchange(address, REQUEST, Duration::from_secs(2), Duration::from_secs(1));
+            release.send(()).unwrap();
+            let listener = worker.join().unwrap();
+            assert_eq!(result.unwrap(), (200, "{}".into()));
+            listener.set_nonblocking(true).unwrap();
+            assert!(listener.accept().is_err(), "never repeat a completed request");
+        }
+    }
+
+    #[test]
+    fn an_oversized_declared_reply_is_refused_before_body_or_eof() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, hold) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut stream = receive(&listener);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16777217\r\n\r\n")
+                .unwrap();
+            hold.recv_timeout(Duration::from_secs(10)).unwrap();
+        });
+        let result = exchange(
+            address,
+            REQUEST,
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+        );
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("16 MiB"));
     }
 
     #[test]
