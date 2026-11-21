@@ -16,13 +16,7 @@ use crate::failure::{ErrorCode, Failure};
 /// Length-prefix the UUID so punctuation in it cannot alias another token.
 /// UpdateID is an equality counter, not a timestamp (and may wrap or reset).
 pub(super) fn revision(coordinator: &PlayerId, page: &BrowsePage) -> String {
-    format!(
-        "q1:{}:{}:{}:{}",
-        coordinator.0.len(),
-        coordinator.0,
-        page.update_id,
-        page.total_matches
-    )
+    fsonos_core::playlists::queue_selection_revision(coordinator, page)
 }
 
 fn protocol(error: ProtoError) -> Failure {

@@ -1,6 +1,8 @@
 //! Discover and use native saved Sonos playlists directly and through the
 //! daemon's real HTTP API; no Spotify token or My Sonos favorite is needed.
 
+#[path = "e2e_sonos_playlists/composition.rs"]
+mod composition;
 mod e2e;
 
 use e2e::{Run, Scenario};
@@ -117,6 +119,7 @@ fn exercise(s: &mut Scenario, route: &str) {
         save_and_recall(s, route, room, generation, &selected);
         select_native_tracks(s, route, room);
         select_native_track(s, route, room);
+        composition::exercise(s, route, room);
         manage_saved_playlist(s, route, room);
     }
 }
@@ -644,14 +647,15 @@ fn native_playlists_use_the_daemons_http_catalog_control_and_action_log() {
             .is_some()
     );
     exercise(&mut s, "--daemon");
-    let log = call(&mut s, "--daemon", "native-log", &["log", "--limit", "20"]);
+    let log = call(&mut s, "--daemon", "native-log", &["log", "--limit", "100"]);
     s.check(
         "native-log",
         "cli",
         "the daemon records native playlist commands",
         log.ok()
             && log.stdout.contains("Sonos playlist")
-            && log.stdout.contains("save_sonos_playlist"),
+            && log.stdout.contains("save_sonos_playlist")
+            && log.stdout.contains("append_sonos_playlist_tracks"),
         format!("{} {}", log.stdout, log.stderr),
     );
     drop(daemon);

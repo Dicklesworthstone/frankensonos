@@ -65,9 +65,9 @@ pub use favorite_management::{
     CurrentFavorite, InspectFavorite, RemoveFavorite, RenameFavorite, SaveFavorite,
 };
 pub use sonos_playlists::{
-    ListSonosPlaylists, MoveSonosPlaylistTracks, PlaySonosPlaylist, RemoveSonosPlaylist,
-    RemoveSonosPlaylistTracks, RenameSonosPlaylist, SaveSonosPlaylist, SonosPlaylistContents,
-    SonosPlaylistTrack, SonosPlaylistTracks,
+    AppendSonosPlaylistTracks, ListSonosPlaylists, MoveSonosPlaylistTracks, PlaySonosPlaylist,
+    RemoveSonosPlaylist, RemoveSonosPlaylistTracks, RenameSonosPlaylist, SaveSonosPlaylist,
+    SonosPlaylistContents, SonosPlaylistTrack, SonosPlaylistTracks,
 };
 
 mod spotify_search;

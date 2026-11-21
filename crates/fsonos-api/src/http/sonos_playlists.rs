@@ -5,12 +5,12 @@ use fastapi::{JsonSchema, Request, fastapi_openapi};
 
 use super::{Ctx, Op, answer, body, query_param, whole_number};
 use crate::surface::sonos_playlists::{
-    EditedSonosPlaylistDto, ManagedSonosPlaylistDto, MoveSonosPlaylistTracksRequest,
-    PlaySonosPlaylistRequest, RemoveSonosPlaylistRequest, RemoveSonosPlaylistTracksRequest,
-    RenameSonosPlaylistRequest, SaveSonosPlaylistRequest, SavedSonosPlaylistDto,
-    SonosPlaylistContentsDto, SonosPlaylistContentsRequest, SonosPlaylistDto,
-    SonosPlaylistTrackDto, SonosPlaylistTrackRequest, SonosPlaylistTracksDto,
-    SonosPlaylistTracksRequest,
+    AppendSonosPlaylistTracksRequest, AppendedSonosPlaylistDto, EditedSonosPlaylistDto,
+    ManagedSonosPlaylistDto, MoveSonosPlaylistTracksRequest, PlaySonosPlaylistRequest,
+    RemoveSonosPlaylistRequest, RemoveSonosPlaylistTracksRequest, RenameSonosPlaylistRequest,
+    SaveSonosPlaylistRequest, SavedSonosPlaylistDto, SonosPlaylistContentsDto,
+    SonosPlaylistContentsRequest, SonosPlaylistDto, SonosPlaylistTrackDto,
+    SonosPlaylistTrackRequest, SonosPlaylistTracksDto, SonosPlaylistTracksRequest,
 };
 use crate::{Failure, OutcomeDto};
 
@@ -103,6 +103,16 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 
 fn edit_routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     vec![
+        cx.route(
+            &Op::post(
+                "/sonos/playlists/append-tracks", "append_sonos_playlist_tracks", TAG,
+                "Append 1-10 observed queue or saved-playlist occurrences to an existing native playlist without changing playback (house-config permission)",
+            ),
+            |s, c, req| answer(body::<AppendSonosPlaylistTracksRequest>(req)
+                .and_then(|r| s.append_sonos_playlist_tracks(c, &r))),
+        )
+        .request_schema::<AppendSonosPlaylistTracksRequest>(true)
+        .response_schema::<AppendedSonosPlaylistDto>(200, "The existing saved playlist was confirmed with the selected occurrences appended"),
         cx.route(
             &Op::post(
                 "/sonos/playlists/remove-tracks", "remove_sonos_playlist_tracks", TAG,

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
+mod append;
 mod edit;
 mod manage;
 

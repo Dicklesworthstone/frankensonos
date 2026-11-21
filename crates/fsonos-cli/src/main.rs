@@ -175,6 +175,9 @@ enum Command {
     /// Move a reviewed contiguous saved-playlist block before an original position.
     /// Does not change any loaded playing queue or interrupt playback.
     PlaylistMoveTracks(playlist_cmd::PlaylistMoveTracksArgs),
+    /// Append reviewed queue or saved-playlist occurrences to a native saved playlist.
+    /// Requires source and destination revisions; preserves their order and repeats.
+    PlaylistAppendTracks(playlist_cmd::PlaylistAppendTracksArgs),
     /// What played lately, newest first: when, the room whose group played
     /// it, and what.
     History {
@@ -628,6 +631,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::PlaylistRemove(args) => playlist_cmd::remove(global, &args),
         Command::PlaylistRemoveTracks(args) => playlist_cmd::remove_tracks(global, &args),
         Command::PlaylistMoveTracks(args) => playlist_cmd::move_tracks(global, &args),
+        Command::PlaylistAppendTracks(args) => playlist_cmd::append_tracks(global, &args),
         Command::PlaylistContents(args) => playlist_cmd::contents(global, &args),
         Command::PlaylistTrack(args) => playlist_cmd::track(global, &args),
         Command::PlaylistTracks(args) => playlist_cmd::tracks(global, &args),
@@ -1109,6 +1113,7 @@ fn plan_for<'a>(
         | Command::PlaylistRemove(_)
         | Command::PlaylistRemoveTracks(_)
         | Command::PlaylistMoveTracks(_)
+        | Command::PlaylistAppendTracks(_)
         | Command::PlaylistContents(_)
         | Command::PlaylistTrack(_)
         | Command::PlaylistTracks(_)
