@@ -73,10 +73,15 @@ def _server(host, port, payload_dir):
         def do_GET(self):
             p = os.path.join(payload_dir, self.path.split("?")[0].lstrip("/"))
             if os.path.isfile(p):
-                data = open(p, "rb").read()
+                with open(p, "rb") as fh:
+                    data = fh.read()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(data)))
-                self.end_headers(); self.wfile.write(data)
+                self.end_headers()
+                try:
+                    self.wfile.write(data)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass          # the players abort fetches routinely; do not spam the console
             else:
                 # 404 rather than a filler byte: a missing payload then shows up as a failed
                 # fetch instead of a silently truncated stream.
