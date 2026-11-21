@@ -1214,7 +1214,7 @@ const SourcePlayerRemote = (() => {
               if (!current(version)) throw new Error('The source draft changed. Review it again.');
             } });
           if (!current(version)) return false;
-          const request = targets().request(prepared, reviewed.target, SourcePlayerRemote);
+          const request = targets().request(prepared, reviewed, SourcePlayerRemote);
           state.pending = Object.freeze({ ...prepared, targets: reviewed, body: request.body, route: request.route });
           return true;
         } catch (error) { if (current(version)) state.message = problem(error); return false; }

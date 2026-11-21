@@ -5,6 +5,9 @@
 use fsonos_api::plan::plan_play_set;
 use fsonos_api::source::{SourceSelection, SourceSelectionKind, SpotifySources};
 use fsonos_api::surface::sonos_playlists::PlaySonosPlaylistRequest;
+use fsonos_api::surface::source_control::{
+    ReviewedSource, ReviewedSourceMode, ReviewedSourceOutcome, ReviewedSourceRequest,
+};
 use fsonos_api::{ErrorCode, Failure, NoteCode, PlayFavoriteRequest, PlayRequest, Surface};
 use fsonos_core::actions::BeforeState;
 use fsonos_core::clock::SystemClock;
@@ -907,5 +910,305 @@ fn a_partial_container_replacement_does_not_offer_an_undo_that_omits_a_group() {
     house.original_playback("Guest@S2");
     for zone in ["Lead@S1", "Guest@S1", "Lead@S2"] {
         assert_ne!(house.queue(zone), ORIGINAL);
+    }
+}
+
+fn reviewed_source(
+    surface: &Surface,
+    target: &str,
+    mode: ReviewedSourceMode,
+    source: ReviewedSource,
+) -> ReviewedSourceRequest {
+    ReviewedSourceRequest {
+        zone: target.into(),
+        expected_revision: surface
+            .resolve_rooms(&Client::McpStdio, target)
+            .unwrap()
+            .revision,
+        mode,
+        source,
+    }
+}
+
+#[test]
+fn a_source_review_cannot_expand_after_the_browser_final_read() {
+    let house = House::new();
+    let surface = house.surface();
+    let request = reviewed_source(
+        &surface,
+        "selected",
+        ReviewedSourceMode::Play,
+        ReviewedSource::Favorite {
+            favorite: "Nocturne".into(),
+        },
+    );
+    // This happens after the browser has completed every read and immediately
+    // before the POST is dispatched. The server must enforce the same review.
+    std::fs::write(
+        house.directory.path().join("aliases.toml"),
+        "[aliases]\nselected = ['Member@S1', 'Lead@S1', 'Member@S2', 'Lead@S2', 'Guest@S2']\n",
+    )
+    .unwrap();
+    let start = house.sim.soap_log().len();
+    let failure = surface
+        .control_reviewed_source(&Client::McpStdio, &request)
+        .unwrap_err();
+    assert_eq!(failure.code, ErrorCode::NotCoordinator);
+    assert!(failure.detail.contains("nothing was changed"));
+    assert_eq!(
+        house.sim.soap_log().len(),
+        start,
+        "no source or cap reads before admission"
+    );
+    house.untouched(start);
+}
+
+#[test]
+fn a_reviewed_one_group_alias_survives_catalog_time_edits_without_expanding_or_reresolving() {
+    for mode in [
+        ReviewedSourceMode::Play,
+        ReviewedSourceMode::Next,
+        ReviewedSourceMode::Append,
+    ] {
+        let house = House::new();
+        let aliases = house.directory.path().join("aliases.toml");
+        std::fs::write(&aliases, "[aliases]\nselected = ['Member@S1', 'Lead@S1']\n").unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let surface = house.surface().with_spotify_sources(Box::new(Catalog {
+            calls: Arc::clone(&calls),
+            during_lookup: Some(Box::new(move || {
+                std::fs::write(
+                    &aliases,
+                    "[aliases]\nselected = ['Guest@S1', 'Member@S2', 'Lead@S2']\n",
+                )
+                .unwrap();
+            })),
+        }));
+        let request = reviewed_source(
+            &surface,
+            "selected",
+            mode,
+            ReviewedSource::Uri {
+                source_uri: ARTIST.into(),
+                title: None,
+            },
+        );
+        let start = house.sim.soap_log().len();
+        let result = surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        match result {
+            ReviewedSourceOutcome::Play(outcome) => {
+                assert_eq!(mode, ReviewedSourceMode::Play);
+                assert!(outcome.changed && outcome.complete());
+                assert_eq!(house.queue("Lead@S1").len(), 3);
+            }
+            ReviewedSourceOutcome::Queue(fsonos_api::surface::queue::QueueAddOutcome::Groups(
+                added,
+            )) => {
+                assert!(added.complete && added.failed.is_empty());
+                assert_eq!(
+                    added.added.len(),
+                    1,
+                    "one-group aliases retain the prepared path"
+                );
+                assert_eq!(
+                    added.added[0].coordinator,
+                    house.target("Lead@S1").coordinator.id.0
+                );
+                assert_eq!(
+                    added.added[0].queue.first,
+                    if mode == ReviewedSourceMode::Next {
+                        3
+                    } else {
+                        4
+                    }
+                );
+                assert_eq!(house.queue("Lead@S1").len(), 6);
+                assert_eq!(
+                    soap::get_transport_info(
+                        &house.sim.lan(),
+                        house.target("Lead@S1").coordinator.ip
+                    )
+                    .unwrap()
+                    .state,
+                    TransportState::Paused,
+                );
+            }
+            other => panic!("reviewed queue requests retain per-group receipts: {other:?}"),
+        }
+        let allowed = [
+            house.target("Lead@S1").player.id.0.clone(),
+            house.target("Member@S1").player.id.0.clone(),
+        ];
+        assert!(
+            house
+                .writes_since(start)
+                .iter()
+                .all(|write| allowed.contains(&write.player))
+        );
+        for zone in ["Guest@S1", "Lead@S2", "Guest@S2"] {
+            house.original_playback(zone);
+        }
+        one_action(&surface);
+    }
+}
+
+#[test]
+fn reviewed_native_sources_use_the_same_household_metadata_and_queue_receipts() {
+    for (mode, source) in [
+        (
+            ReviewedSourceMode::Play,
+            ReviewedSource::Favorite {
+                favorite: "Nocturne".into(),
+            },
+        ),
+        (
+            ReviewedSourceMode::Play,
+            ReviewedSource::Playlist {
+                playlist: "SQ:7".into(),
+            },
+        ),
+        (
+            ReviewedSourceMode::Next,
+            ReviewedSource::Favorite {
+                favorite: "Nocturne".into(),
+            },
+        ),
+        (
+            ReviewedSourceMode::Append,
+            ReviewedSource::Playlist {
+                playlist: "SQ:7".into(),
+            },
+        ),
+    ] {
+        let house = House::new();
+        let surface = house.surface();
+        let request = reviewed_source(&surface, "selected", mode, source);
+        let result = surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .unwrap();
+        match result {
+            ReviewedSourceOutcome::Play(outcome) => {
+                assert_eq!(mode, ReviewedSourceMode::Play);
+                assert!(outcome.complete());
+                assert_eq!(outcome.batch.unwrap().results.len(), 2);
+            }
+            ReviewedSourceOutcome::Queue(fsonos_api::surface::queue::QueueAddOutcome::Groups(
+                added,
+            )) => {
+                assert!(added.complete && added.failed.is_empty());
+                assert_eq!(added.added.len(), 2);
+                assert!(added.logged && added.undoable);
+            }
+            other => panic!("missing reviewed source receipt: {other:?}"),
+        }
+        for zone in ["Guest@S1", "Guest@S2"] {
+            house.original_playback(zone);
+        }
+        one_action(&surface);
+    }
+}
+
+struct RegroupDuringReviewedWrite {
+    lan: SimLan,
+    selected: IpAddr,
+    guest: IpAddr,
+    coordinator: PlayerId,
+    after_action: &'static str,
+    changed: AtomicBool,
+}
+
+impl Transport for RegroupDuringReviewedWrite {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let reply = self.lan.soap_post(host, path, action, body)?;
+        let verb = action.trim_matches('"').rsplit('#').next().unwrap_or("");
+        if host == self.selected
+            && verb == self.after_action
+            && !self.changed.swap(true, Ordering::SeqCst)
+        {
+            soap::join_group(&self.lan, self.guest, &self.coordinator)?;
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn a_late_join_cannot_inherit_reviewed_playback_or_bypass_the_original_caps() {
+    for after_action in ["GetVolume", "SetVolume"] {
+        let house = House::new();
+        std::fs::write(
+            house.directory.path().join("aliases.toml"),
+            "[aliases]\nselected = ['Lead@S1', 'Member@S1']\n",
+        )
+        .unwrap();
+        let lead = house.target("Lead@S1");
+        let guest = house.target("Guest@S1");
+        let surface = house.surface_over(Box::new(RegroupDuringReviewedWrite {
+            lan: house.sim.lan(),
+            selected: lead.player.ip,
+            guest: guest.player.ip,
+            coordinator: lead.coordinator.id.clone(),
+            after_action,
+            changed: AtomicBool::new(false),
+        }));
+        let request = reviewed_source(
+            &surface,
+            "selected",
+            ReviewedSourceMode::Play,
+            ReviewedSource::Uri {
+                source_uri: STREAM.into(),
+                title: None,
+            },
+        );
+        let start = house.sim.soap_log().len();
+        let failure = surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .unwrap_err();
+        assert_eq!(
+            failure.code,
+            if after_action == "GetVolume" {
+                ErrorCode::NotCoordinator
+            } else {
+                ErrorCode::OutcomeUncertain
+            },
+            "{failure:?}",
+        );
+        let writes = house.writes_since(start);
+        assert!(
+            writes.iter().all(|write| {
+                (write.player == guest.player.id.0 && write.action == "SetAVTransportURI")
+                    || (after_action == "SetVolume"
+                        && write.action == "SetVolume"
+                        && [
+                            lead.player.id.0.as_str(),
+                            house.target("Member@S1").player.id.0.as_str(),
+                        ]
+                        .contains(&write.player.as_str()))
+            }),
+            "no playback or new-audience cap write is permitted: {writes:?}"
+        );
+        assert_eq!(
+            soap::get_volume(&house.sim.lan(), guest.player.ip).unwrap(),
+            80
+        );
+        assert!(writes.iter().all(|write| write.action != "Play"));
+        house.original_playback("Lead@S1");
+        if after_action == "SetVolume" {
+            let action = one_action(&surface);
+            let before =
+                BeforeState::parse(action.action.before_state.as_deref().unwrap()).unwrap();
+            assert!(
+                before.not_undoable.is_some(),
+                "a partially sent source must not advertise aggregate undo"
+            );
+        }
     }
 }

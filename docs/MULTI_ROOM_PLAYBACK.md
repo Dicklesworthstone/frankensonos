@@ -34,7 +34,9 @@ The target remains `zone`, and the outcome retains `done`, `changed` and
 `notes`. A request that plans several control commands also returns a `batch`
 receipt; single-group playback retains its existing response shape. Direct CLI,
 daemon CLI, standalone MCP and daemon MCP use the shared planner and executor.
-The phone remote and desktop dashboard also send these same source requests.
+The phone remote and desktop dashboard use the reviewed source endpoint below
+for room sets and favorite-title selections. It retains the same underlying
+source preparation, policy tools, action logging and per-group receipts.
 
 Search-and-play picks, line-in playback, revision-bound ordered track
 selections (`queue-tracks` / `POST /queue/tracks`), and the legacy `/sonos` compatibility bridge
@@ -59,12 +61,66 @@ individual saved-track actions and line-in controls remain available.
 
 Confirmation checks the complete target, catalog selection and relevant state
 again, reserves the existing browser command lanes, and sends one daemon
-request. Each queue receipt must account for every reviewed group. Successful
+request containing the resolver's revision. The daemon checks that revision
+against the same room snapshot it uses to plan the action. Each queue receipt
+must account for every reviewed group. Successful
 ranges, failed destinations, partial completion and undo limitations stay
 visible, including an all-failed batch. A missing or malformed reply is
 uncertain and is never automatically repeated. Source panels add no background
 polling. The review cannot lock out another controller after its final read;
 the daemon's execution checks still apply.
+
+## Reviewed source requests
+
+`GET /rooms/resolve?target=<target>` returns an opaque `revision` covering
+the selected rooms, complete physical groups, coordinators and known addresses.
+After reviewing that observation, send the exact target and revision to
+`POST /sources/control`:
+
+```json
+{
+  "zone": "downstairs",
+  "expected_revision": "<revision returned for downstairs>",
+  "mode": "next",
+  "source": {
+    "kind": "uri",
+    "source_uri": "spotify:album:<album-id>",
+    "title": "Evening listening"
+  }
+}
+```
+
+The mode is `play`, `next` or `append`. The source is exactly one of
+`{"kind":"uri","source_uri":"...","title":"..."}`,
+`{"kind":"favorite","favorite":"Morning"}` or
+`{"kind":"playlist","playlist":"Evening Mix"}`; `title` is optional for
+URI sources. Streams support `play` only. Unknown fields, unsupported modes
+and malformed revisions are rejected before discovery or speaker reads.
+
+A revision that no longer matches the planning snapshot returns
+`NOT_COORDINATOR` before source preparation or speaker writes. A target that
+no longer resolves keeps its normal resolution error. After admission the
+concrete original destinations remain fixed, even if an alias changes during
+a slow catalog read. Every subsequent speaker write checks the original
+physical group, room names and bonding again. A new member, renamed or
+rebonded room, changed coordinator or changed address causes a refusal; the
+request does not heal onto another group or expand its audience. This also
+applies to aliases resolving to just one group.
+
+Play uses the ordinary `play` or `play_favorite` policy permission and
+returns the existing playback outcome. Queue modes use `add_to_queue`
+permission and return the full `added`/`failed` receipt described below,
+including when only one group was reviewed. If some speaker steps already
+went out before a later failure, the result preserves that uncertainty and
+does not advertise aggregate undo. Inspect the affected group before another
+action; no whole-request retry is performed.
+
+The phone and dashboard keep the revision in both the review comparison and
+the submitted body, so physical changes that leave all displayed names
+unchanged still retire the review. A daemon that omits a valid revision
+cannot accept a room-set source review in these controls. The ordinary source
+endpoints remain available to clients using their existing immediate-command
+contracts.
 
 ## Preparing the source
 
@@ -164,14 +220,15 @@ and inside each insertion engine immediately before its write. A change during
 renderer learning or a definite renderer-rejection retry cannot become a new
 baseline for the request.
 
-A request resolving to one group keeps the existing response, including when
-an alias names two members of that group:
+An ordinary `POST /queue` request resolving to one group keeps the existing
+response, including when an alias names two members of that group:
 
 ```json
 {"done":"queued 2 tracks","zone":"Study","first":4,"count":2,"playing_queue":true}
 ```
 
-A request resolving to several groups returns a receipt with these fields:
+An ordinary request resolving to several groups, and every reviewed
+`POST /sources/control` queue request, returns a receipt with these fields:
 
 | Field | Meaning |
 |---|---|

@@ -22,6 +22,15 @@ const IN_FLIGHT: usize = 8;
 /// Each group's thread: room for a speaker's SOAP round trips.
 const STACK: usize = 8 * 1024 * 1024;
 
+/// Reviewed commands keep their admitted physical group even when only one
+/// group is selected. Ordinary commands retain their existing recovery path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Execution {
+    Ordinary,
+    Dj,
+    ReviewedSource,
+}
+
 /// A set as it ran: the zones captured before its commands (snapshots, and
 /// those that could not be read, with why) and each command's outcome, in
 /// order. Run one after another, it ends at a failure that ends the set
@@ -53,7 +62,7 @@ impl Surface {
         guard: &Guard<'_>,
         commands: &[Command],
         capture: bool,
-        pinned_dj: bool,
+        execution: Execution,
     ) -> SetRun {
         let zones: Vec<Vec<PlayerId>> = commands.iter().map(|c| affected(households, c)).collect();
         let now = self.now();
@@ -72,14 +81,16 @@ impl Surface {
                 }
             }
             let (snaps, missed) = captured(&every);
-            return self.run_sequential(households, guard, commands, snaps, missed, pinned_dj);
+            return self.run_sequential(households, guard, commands, snaps, missed, execution);
         }
         let one = |command: &Command, zones: &[PlayerId]| {
             let (snaps, missed) = captured(zones);
             let recovery = recovery::Audience::new(households, command);
             let mut queue_undo = None;
-            let outcome = if pinned_dj || dj_targets::is_set(commands) {
+            let outcome = if execution == Execution::Dj || dj_targets::is_set(commands) {
                 self.execute_dj_member(households, guard, command)
+            } else if execution == Execution::ReviewedSource {
+                self.execute_reviewed_source(households, guard, command, &mut queue_undo)
             } else {
                 self.execute_following(households, guard, command, &recovery, &mut queue_undo)
             };
@@ -142,7 +153,7 @@ impl Surface {
         commands: &[Command],
         snaps: Vec<ZoneSnapshot>,
         missed: Vec<(PlayerId, String)>,
-        pinned_dj: bool,
+        execution: Execution,
     ) -> SetRun {
         let mut outcomes = Vec::new();
         let mut queue_undo = Vec::new();
@@ -150,8 +161,10 @@ impl Surface {
         for command in commands {
             let recovery = recovery::Audience::new(households, command);
             let mut restored_queue = None;
-            let outcome = if pinned_dj || dj_targets::is_set(commands) {
+            let outcome = if execution == Execution::Dj || dj_targets::is_set(commands) {
                 self.execute_dj_member(households, guard, command)
+            } else if execution == Execution::ReviewedSource {
+                self.execute_reviewed_source(households, guard, command, &mut restored_queue)
             } else {
                 self.execute_following(households, guard, command, &recovery, &mut restored_queue)
             };

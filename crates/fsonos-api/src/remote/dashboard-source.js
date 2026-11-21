@@ -302,7 +302,7 @@ const DashboardSource = (() => {
       };
       try {
         const before = await inspect(proposed, { signal: abort.signal }, valid); valid();
-        const request = proposed.expanded ? T.request(proposed, proposed.target, P) : null;
+        const request = proposed.expanded ? T.request(proposed, before, P) : null;
         const body = request ? request.body : P.commandBody(proposed, proposed.target);
         if (proposed.item.kind === 'sonos_playlist_tracks') body.expected_queue_revision = before.queue.revision;
         state.pending = Object.freeze({ ...proposed, before, targets: proposed.expanded ? before : null,

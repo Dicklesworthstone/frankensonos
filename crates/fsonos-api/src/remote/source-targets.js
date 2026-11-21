@@ -3,7 +3,7 @@
 const SourceTargetsRemote = (() => {
   const R = typeof RoomSetsRemote !== 'undefined' ? RoomSetsRemote : require('./room-sets.js');
   const routes = { sourceTargetRooms: ['GET', '/rooms'], sourceTargetResolve: ['GET', '/rooms/resolve'],
-    sourceFavorites: ['GET', '/favorites'], sourceFavoritePlay: ['POST', '/play/favorite'] };
+    sourceFavorites: ['GET', '/favorites'], sourceControl: ['POST', '/sources/control'] };
   const text = (value, max = 65536) => typeof value === 'string' && value.trim() !== ''
     && value.length <= max && !/[\p{Cc}]/u.test(value);
   const key = (household, coordinator) => JSON.stringify([household, coordinator]);
@@ -66,7 +66,15 @@ const SourceTargetsRemote = (() => {
     const read = async (route, options = {}) => {
       valid(); const value = await call(route, { ...options, ...(signal ? { signal } : {}) }); valid(); return value;
     };
-    const resolve = async () => R.resolutionOf(await read('sourceTargetResolve', { query: { target } }), target);
+    const resolve = async () => {
+      const value = await read('sourceTargetResolve', { query: { target } });
+      const view = R.resolutionOf(value, target);
+      if (typeof value.revision !== 'string' || !/^[a-f0-9]{64}$/.test(value.revision)) {
+        fail('This daemon cannot bind a source command to the reviewed room identities. Update the daemon before using source controls across rooms.');
+      }
+      return Object.freeze({ ...view, revision: value.revision,
+        signature: JSON.stringify([view.signature, value.revision]) });
+    };
     const resolution = await resolve();
     const groups = Object.freeze(resolution.groups.map(g => Object.freeze({
       target: `${g.coordinator_room}@${g.household}`, household: g.household, coordinator: g.coordinator_room,
@@ -103,14 +111,24 @@ const SourceTargetsRemote = (() => {
     ]) });
   }
 
-  function request(choice, target, player) {
-    target = query(target);
-    if (!native(choice.item)) return Object.freeze({ route: choice.mode === 'play' ? 'sourcePlay' : 'sourceQueue',
-      body: Object.freeze(player.commandBody(choice, target)) });
-    const favorite = choice.item.kind === 'favorite_query';
-    return Object.freeze({ route: choice.mode === 'play' ? favorite ? 'sourceFavoritePlay' : 'sourcePlaylistPlay' : 'sourceQueue',
-      body: Object.freeze({ zone: target, [favorite ? 'favorite' : 'playlist']: choice.item.query,
-        ...(choice.mode === 'play' ? {} : { next: choice.mode === 'next' }) }) });
+  function request(choice, reviewed, player) {
+    const target = query(reviewed?.target);
+    const revision = reviewed?.resolution?.revision;
+    if (typeof revision !== 'string' || !/^[a-f0-9]{64}$/.test(revision)
+        || !['play', 'next', 'end'].includes(choice.mode) || reviewed.mode !== choice.mode) {
+      fail('Review this source action and its exact room set again before sending it.');
+    }
+    let source;
+    if (native(choice.item)) {
+      const kind = choice.item.kind === 'favorite_query' ? 'favorite' : 'playlist';
+      source = { kind, [kind]: choice.item.query };
+    } else {
+      const body = player.commandBody(choice, target);
+      source = { kind: 'uri', source_uri: body.source_uri, ...(body.title != null ? { title: body.title } : {}) };
+    }
+    return Object.freeze({ route: 'sourceControl', body: Object.freeze({ zone: target,
+      expected_revision: revision, mode: choice.mode === 'end' ? 'append' : choice.mode,
+      source: Object.freeze(source) }) });
   }
 
   function result(value, reviewed, player) {

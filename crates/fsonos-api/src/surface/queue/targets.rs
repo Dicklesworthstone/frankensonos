@@ -6,7 +6,7 @@ use fsonos_core::control::TrackBatchDestination;
 use fsonos_core::favorites::{Favorite, FavoriteKind};
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, HouseholdState, control, favorite_queue};
-use fsonos_proto::ProtoError;
+use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -20,7 +20,9 @@ use crate::heal::Observed;
 use crate::plan::{Command, Rooms, resolve_set};
 use crate::request::PlayRequest;
 use crate::source::{SourceSelection, is_catalog_source};
+use crate::surface::audience::AudienceTransport;
 use crate::surface::room_view;
+use crate::surface::source_control::{confirm_revision, validate_revision};
 use crate::surface::source_selection::{NativeSource, native_sources};
 use crate::{ApiError, ErrorCode, Failure};
 
@@ -156,13 +158,41 @@ impl Surface {
         client: &Client,
         request: &QueueRequest,
     ) -> Result<QueueAddOutcome, Failure> {
+        self.queue_request_targets_bound(client, request, None)
+    }
+
+    /// Retain even a one-group alias's admitted destination. Source catalog
+    /// reads must never lead back through the single-target resolver.
+    pub(in crate::surface) fn queue_request_targets_reviewed(
+        &self,
+        client: &Client,
+        request: &QueueRequest,
+        revision: &str,
+    ) -> Result<QueueAddOutcome, Failure> {
+        self.queue_request_targets_bound(client, request, Some(revision))
+    }
+
+    fn queue_request_targets_bound(
+        &self,
+        client: &Client,
+        request: &QueueRequest,
+        revision: Option<&str>,
+    ) -> Result<QueueAddOutcome, Failure> {
         self.authorize_logged(client, ADD)?;
         request.validate()?;
+        if let Some(revision) = revision {
+            validate_revision(revision)?;
+        }
         let households = self.households()?;
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
+        if let Some(revision) = revision {
+            confirm_revision(&rooms, request.zone.trim(), revision)?;
+        }
         let targets = targets(&rooms, request.zone.trim()).map_err(|error| self.explain(error))?;
-        if let [target] = targets.as_slice() {
+        if revision.is_none()
+            && let [target] = targets.as_slice()
+        {
             // The alias may name two members of one group. Pin its first
             // requested room, rather than passing that alias to resolve_one.
             let request = QueueRequest {
@@ -177,6 +207,9 @@ impl Surface {
             .into_iter()
             .map(|target| {
                 self.confirm_source_audience(&households, &target.coordinator)?;
+                if revision.is_some() {
+                    self.confirm_reviewed_group(&households, &target.coordinator)?;
+                }
                 let destination = TrackBatchDestination::read(
                     &*self.transport,
                     target.host,
@@ -193,6 +226,9 @@ impl Surface {
         self.guard(client).authorize(ADD, false)?;
         for group in &prepared {
             self.confirm_queue_target(&households, group)?;
+            if revision.is_some() {
+                self.confirm_reviewed_group(&households, &group.target.coordinator)?;
+            }
         }
         Ok(QueueAddOutcome::Groups(self.queue_targets_run(
             client,
@@ -200,6 +236,7 @@ impl Surface {
             request,
             &source,
             &prepared,
+            revision.is_some(),
         )))
     }
 
@@ -291,6 +328,7 @@ impl Surface {
         request: &QueueRequest,
         source: &Source,
         prepared: &[Prepared],
+        reviewed: bool,
     ) -> QueueAddedSetDto {
         let _changing = self
             .log
@@ -305,7 +343,16 @@ impl Surface {
                 .guard(client)
                 .authorize(ADD, false)
                 .and_then(|()| self.confirm_queue_target(households, group))
-                .and_then(|()| source.enqueue(self, households, group, request.next));
+                .and_then(|()| {
+                    if reviewed {
+                        let fence =
+                            AudienceTransport::new(self, households, &group.target.coordinator);
+                        fence.check()?;
+                        fence.finish(source.enqueue(&fence, households, group, request.next))
+                    } else {
+                        source.enqueue(&*self.transport, households, group, request.next)
+                    }
+                });
             match result {
                 Ok(queued) => {
                     added.push(group.receipt(&queued));
@@ -363,12 +410,12 @@ impl Surface {
 impl Source {
     fn enqueue(
         &self,
-        surface: &Surface,
+        transport: &dyn Transport,
         households: &[HouseholdState],
         group: &Prepared,
         next: bool,
     ) -> Result<control::Queued, Failure> {
-        let watch = Observed::new(&*surface.transport);
+        let watch = Observed::new(transport);
         let coordinator = &group.target.coordinator;
         let result = match self {
             Self::Spotify {
