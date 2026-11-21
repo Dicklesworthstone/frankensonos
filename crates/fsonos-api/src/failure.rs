@@ -568,6 +568,9 @@ impl From<CoreError> for Failure {
             CoreError::PlaylistChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
                 "Read the saved Sonos playlist again from offset 0 without expected_revision; do not combine old and new pages.",
             ),
+            CoreError::QueueChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
+                "Read the source queue again and review its current track positions and revision before another request.",
+            ),
             CoreError::FavoriteChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
                 "Read the original household's favorite or current source again and review its new revision before another edit.",
             ),

@@ -785,6 +785,7 @@ impl State {
                 self.av_reads(p, action, now)
             }
             "ReorderTracksInSavedQueue" => self.reorder_saved_tracks(p, args),
+            "AddURIToSavedQueue" => self.append_saved_track(p, args),
             _ => Err(INVALID_ACTION),
         }
     }

@@ -91,6 +91,10 @@ pub fn select_tracks<T: Transport + ?Sized>(
 /// Public core callers retain native metadata, rather than constructing a
 /// track-shaped container or substituting another resource after selection.
 pub(crate) fn validate_native_track(selected: &Favorite) -> Result<(), CoreError> {
+    native_item(selected).map(|_| ())
+}
+
+pub(super) fn native_item(selected: &Favorite) -> Result<DidlObject, CoreError> {
     let objects = parse_didl(&selected.metadata)?;
     let [item] = objects.as_slice() else {
         return Err(invalid(
@@ -102,10 +106,10 @@ pub(crate) fn validate_native_track(selected: &Favorite) -> Result<(), CoreError
             "a native track must match its retained resource and metadata",
         ));
     }
-    Ok(())
+    Ok(item.clone())
 }
 
-fn track(item: &DidlObject) -> Result<Favorite, CoreError> {
+pub(super) fn track(item: &DidlObject) -> Result<Favorite, CoreError> {
     const TRACK: &str = "object.item.audioItem.musicTrack";
     if item.kind != DidlKind::Item
         || !(item.class == TRACK

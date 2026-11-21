@@ -21,13 +21,17 @@ use fsonos_types::PlayerId;
 use std::collections::HashSet;
 use std::net::IpAddr;
 
+mod additions;
 mod contents;
 mod management;
+mod queue_selection;
 mod selection;
 mod tracks;
 
+pub use additions::append_tracks;
 pub use contents::{MAX_CONTENTS_PAGE, PlaylistContents, contents};
 pub use management::{PlaylistChange, remove, rename};
+pub use queue_selection::{queue_selection_revision, select_queue_tracks};
 pub(crate) use selection::validate_native_track;
 pub use selection::{select_track, select_tracks};
 pub use tracks::{

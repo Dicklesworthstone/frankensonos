@@ -62,10 +62,7 @@ pub(super) fn complete<T: Transport + ?Sized>(
         for item in &before.objects {
             // Account for every retained string, including unavailable native
             // items: removal must not require their resources to be playable.
-            let size = fsonos_proto::didl::item_metadata(item).len()
-                + item.res_md.as_ref().map_or(0, String::len)
-                + item.favorite_type.as_ref().map_or(0, String::len)
-                + item.favorite_description.as_ref().map_or(0, String::len);
+            let size = evidence_bytes(item);
             bytes = bytes.saturating_add(size);
             if bytes > MAX_PLAYLIST_EDIT_BYTES {
                 return Err(invalid("saved playlist edit evidence exceeds 4 MiB"));
@@ -104,6 +101,13 @@ pub(super) fn complete<T: Transport + ?Sized>(
         total,
         items,
     })
+}
+
+pub(super) fn evidence_bytes(item: &DidlObject) -> usize {
+    fsonos_proto::didl::item_metadata(item).len()
+        + item.res_md.as_ref().map_or(0, String::len)
+        + item.favorite_type.as_ref().map_or(0, String::len)
+        + item.favorite_description.as_ref().map_or(0, String::len)
 }
 
 /// At most one Sonos page is requested at a time. A short page is continued
