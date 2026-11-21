@@ -31,9 +31,8 @@ fn load_queue(
     set_play_mode(&lan, player.ip, mode).unwrap();
     soap::seek_track(&lan, player.ip, track).unwrap();
     soap::seek_position(&lan, player.ip, seconds).unwrap();
-    if playing {
-        soap::play(&lan, player.ip).unwrap();
-    } else {
+    soap::play(&lan, player.ip).unwrap();
+    if !playing {
         soap::pause(&lan, player.ip).unwrap();
     }
 }

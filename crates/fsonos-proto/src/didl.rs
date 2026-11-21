@@ -14,7 +14,10 @@ use fsonos_types::Track;
 use std::fmt::Write as _;
 
 mod native_metadata;
-pub use native_metadata::{NativeDidlObject, parse_didl_with_metadata};
+pub use native_metadata::{
+    NativeDidlObject, native_account_descriptor, parse_didl_with_metadata,
+    with_native_replay_identity,
+};
 
 /// Escape a string for inclusion in XML character data / attributes.
 #[must_use]
@@ -93,7 +96,7 @@ fn metadata_children<'a, 'input>(
         && node.children().any(|child| child.is_element())
         && node
             .children()
-            .filter(|child| child.is_text())
+            .filter(roxmltree::Node::is_text)
             .all(|child| child.text().is_none_or(|text| text.trim().is_empty()));
     let mut children = Vec::new();
     for child in node.children() {
@@ -715,7 +718,7 @@ mod tests {
                 <desc id="cdudn" nameSpace="urn:account">account-1</desc>
                 <r:extra r:token="one &amp; two" enabled="true">preserved</r:extra>
             </item></DIDL-Lite>"#;
-        let normalized = r#"<d:DIDL-Lite xmlns:d='urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/' xmlns:title='http://purl.org/dc/elements/1.1/' xmlns:vendor='urn:vendor'><d:item restricted='true' parentID='-1' id='track'><title:title>A <!--formatting--><![CDATA[& B]]></title:title><d:desc nameSpace='urn:account' id='cdudn'>account-1</d:desc><vendor:extra enabled='true' vendor:token='one &#38; two'>preserved</vendor:extra></d:item></d:DIDL-Lite>"#;
+        let normalized = r"<d:DIDL-Lite xmlns:d='urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/' xmlns:title='http://purl.org/dc/elements/1.1/' xmlns:vendor='urn:vendor'><d:item restricted='true' parentID='-1' id='track'><title:title>A <!--formatting--><![CDATA[& B]]></title:title><d:desc nameSpace='urn:account' id='cdudn'>account-1</d:desc><vendor:extra enabled='true' vendor:token='one &#38; two'>preserved</vendor:extra></d:item></d:DIDL-Lite>";
         assert!(equivalent_metadata(original, normalized));
         assert!(equivalent_metadata(normalized, original));
         for changed in [
