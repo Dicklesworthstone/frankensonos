@@ -1174,6 +1174,16 @@ and suspension until an explicit original-household catalog read. No Swift
 toolchain was available for local execution; see
 [Native playlist management](docs/NATIVE_SONOS_PLAYLIST_MANAGEMENT.md).
 
+The native Apple app now also authors My Sonos favorites in **Music → Favorites**:
+save the current native track or station, inspect and rename an exact saved
+entry, or remove it. Source and catalog revisions are reread at confirmation;
+all changes share the playback command session and retain original-household
+results through navigation and suspension. Uncertain outcomes require an
+explicit original-household catalog read before another favorite edit, with no
+automatic replay. Swift fixture coverage is included; local Swift execution
+requires an unavailable toolchain, so the Apple SDK workflow remains the runtime
+gate. See [favorite management](docs/FAVORITES_MANAGEMENT.md).
+
 Native queue creation is available through `fsonos playlist-save <room> <title>`,
 `POST /sonos/playlists/save`, MCP `save_sonos_playlist`, the phone's
 **Queue → Save queue as playlist**, and the dashboard's **Speaker queue →

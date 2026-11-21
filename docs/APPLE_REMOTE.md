@@ -134,6 +134,28 @@ the page readable but not editable. Source URIs and library results can be
 played, queued next or appended; adding to the queue does not start playback.
 Favorites are read from the selected household and reviewed by their stable ID.
 
+**Music → Favorites → Save current track or station** creates a My Sonos
+favorite from the selected group's actual current source. Enter a title, then
+review the source title, kind and description together with its household and
+group. The source revision is read again at confirmation. A track changing
+while the review is open requires a new review; saving one track does not save
+the entire queue. Native playback metadata stays on the daemon.
+
+Each favorite's menu also offers **Rename favorite** and **Remove favorite**,
+including saved stations and entries that cannot currently be played. Review
+inspects the exact household-local `FV:2/` identity and native revision. Equal
+titles remain distinct entries. Removing a favorite affects the saved catalog;
+already playing or queued music continues. These catalog edits are not undoable.
+
+Favorite authoring shares the command lane used by playback, saved playlists,
+scenes, schedules and undo. A confirmed result identifies the native favorite;
+a lost or malformed response stays uncertain and is never resent. Its result
+remains available after closing the sheet, changing rooms or suspending the app.
+**Check original household** reads the original catalog, even after that room
+joins another group, before another favorite edit is allowed. A matching title
+or an absent ID is a present observation, not confirmation of a lost reply.
+Confirmed changes refresh the open favorites or combined library panel.
+
 **Music → Sonos** lists the playlists saved in the selected S1 or S2 household,
 independently of Spotify Web API sign-in. **Read tracks** opens ordered pages of
 50 entries; continuation retains the native playlist ID and observed revision.
@@ -239,7 +261,7 @@ when that household's playlist catalog changes. The app returns to the current
 catalog directory; explicitly reopen the playlist to inspect its fresh contents
 before selecting tracks again.
 
-Unsent native-source and playlist-management reviews retire immediately, and
+Unsent native-source, favorite-management and playlist-management reviews retire immediately, and
 obsolete catalog responses cannot restore a retired selection. Already-sent
 changes retain their original receipts. A later event also retires an earlier
 recovery observation, so an uncertain save, rename or removal requires another
