@@ -1,6 +1,6 @@
 # Saved Sonos playlists
 
-FrankenSonos can list, inspect, play, create, rename, edit and remove playlists saved on the Sonos household, including
+FrankenSonos can list, inspect, play, create, compose, rename, edit and remove playlists saved on the Sonos household, including
 ones that are not in My Sonos favorites. These are the native `SQ:` saved queues,
 separate from the Spotify account's cached playlists.
 
@@ -321,6 +321,95 @@ the range, playlist, household or catalog invalidates the review. Pending and
 uncertain results retain their original household through navigation; recovery
 observes that catalog and requires a new review rather than repeating the edit.
 
+## Add selected tracks to an existing playlist
+
+Copy 1–10 observed occurrences from a group's retained queue or another saved
+playlist into an existing native playlist. The destination keeps its `SQ:` id,
+title and existing order. Positions are one-based and remain in the supplied
+order; `2,4,2` deliberately adds the second source occurrence twice.
+
+Read both the source and destination before adding:
+
+```sh
+# Copy from the retained group queue, including while another source plays.
+fsonos --json queue 'Kitchen@S1'
+fsonos --json playlist-contents 'Kitchen@S1' SQ:7 --limit 1
+fsonos playlist-append-tracks 'Kitchen@S1' SQ:7 --positions 2,4,2 \
+  --source-revision '<queue revision>' \
+  --expected-revision '<destination contents revision>'
+
+# Copy selected occurrences from another native saved playlist.
+fsonos --json playlist-contents 'Kitchen@S1' SQ:1
+fsonos --json playlist-contents 'Kitchen@S1' SQ:7 --limit 1
+fsonos playlist-append-tracks 'Kitchen@S1' SQ:7 --source-playlist SQ:1 \
+  --positions 3,1,3 --source-revision '<SQ:1 contents revision>' \
+  --expected-revision '<SQ:7 contents revision>'
+```
+
+`source_revision` and `expected_revision` bind different observations. Both
+are required; read them again after a native catalog change. Source and
+destination belong to the selected room's household. Copying from the
+destination itself is supported: the original selected occurrences are frozen
+before any additions. An empty destination remains the same named playlist.
+
+The server resolves the source positions again, retains each native resource
+and DIDL document, and validates the entire selection before the first write.
+It accepts native music tracks, including local files and supported service
+tracks, without a Spotify Web API lookup. Missing resources, streams,
+containers and unavailable entries reject the selection. Raw media addresses
+and caller-supplied metadata are not request fields.
+
+The completed destination must fit the existing **1,000-track / 4 MiB** saved
+playlist bounds. Each `AddURIToSavedQueue` uses the most recently confirmed
+nonzero native update counter. A complete read-back must confirm the original
+prefix and the appended track before the next addition is sent. The live queue,
+playback source, position, mode, volume and DJ ownership remain unchanged.
+This is a catalog edit with no playback undo record; it does not replace an
+earlier playback undo.
+
+The batch is **not atomic**. If a later addition fails, earlier additions can
+remain saved. An uncertain response reports how many of the requested
+additions were confirmed and stops the batch. Nothing is retried or rolled
+back automatically. Read the **original destination playlist** before deciding
+whether to add any remaining occurrences. A stale observation or definite
+refusal before the first addition remains an ordinary refusal. Native counters
+and read-back checks cannot prevent another controller from changing the
+playlist after confirmation.
+
+The success receipt includes `playlist`, `zone`, `revision`, `previous_total`,
+`total`, `added`, the original `positions`, selected `titles`, `done` and
+`logged`. Text output includes the confirmed destination revision. If logging
+fails, the additions remain confirmed with `logged: false`; do not repeat them
+to repair the log.
+
+Both web remotes expose **Manage saved playlist → Add tracks to this playlist**.
+Choose **Tracks from**, enter the track numbers in order, and choose **Review
+additions**. The review reads and shows the source titles, repeated selections,
+destination household and resulting track count. Confirmation rechecks both
+observations before one batch request. **Read original playlist contents**
+recovers an uncertain result by showing the current count and entries at the
+original append boundary, even after switching rooms. It reports the current
+observation without claiming how the earlier request finished.
+
+HTTP uses `POST /sonos/playlists/append-tracks`; MCP uses
+`append_sonos_playlist_tracks` in the Full profile:
+
+```json
+{
+  "zone": "Kitchen@S1",
+  "playlist": "SQ:7",
+  "expected_revision": "<destination contents revision>",
+  "source_playlist": "SQ:1",
+  "source_revision": "<source contents revision>",
+  "positions": [3, 1, 3]
+}
+```
+
+Omit `source_playlist` to select the group queue and use its queue revision.
+The operation requires `append_sonos_playlist_tracks` in the `house-config`
+class. CLI uses the selected daemon when available, supports explicit
+`--direct` / `--daemon`, and never retries an answered daemon failure locally.
+
 ## Phone remote and desktop dashboard
 
 Open **Play a link or Sonos playlist** in the phone remote, or the source dialog
@@ -393,6 +482,7 @@ read and review.
 | Permanently remove an exact observed playlist | `POST /sonos/playlists/remove` with `zone`, exact `playlist`, and `expected_revision` | `remove_sonos_playlist` with the same fields |
 | Remove consecutive saved occurrences | `POST /sonos/playlists/remove-tracks` with `zone`, exact `playlist`, `expected_revision`, `position`, and `count` | `remove_sonos_playlist_tracks` with the same fields |
 | Reorder a saved block | `POST /sonos/playlists/move-tracks` with the same fields plus original `insert_before` | `move_sonos_playlist_tracks` with the same fields |
+| Add selected occurrences to an existing saved playlist | `POST /sonos/playlists/append-tracks` with `zone`, exact destination `playlist`, `expected_revision`, `source_revision`, `positions`, and optional exact `source_playlist` | `append_sonos_playlist_tracks` with the same fields |
 | Replace the queue and play | `POST /sonos/playlists/play` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `play_sonos_playlist(zone="Kitchen", playlist="SQ:7")` |
 | Append | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `add_to_queue(zone="Kitchen", playlist="SQ:7")` |
 | Play next in the queue | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7","next":true}` | `add_to_queue(zone="Kitchen", playlist="SQ:7", next=true)` |
@@ -411,9 +501,10 @@ without a DJ handoff, volume changes or a playback undo record. The save body
 accepts only `zone` and `title`, never an existing playlist id or overwrite flag.
 Rename and removal require their own `rename_sonos_playlist` and
 `remove_sonos_playlist` permissions, also in `house-config`. Saved-track edits
-require `remove_sonos_playlist_tracks` or `move_sonos_playlist_tracks`, likewise
+require `remove_sonos_playlist_tracks`, `move_sonos_playlist_tracks`, or
+`append_sonos_playlist_tracks`, likewise
 in `house-config`. A read-only catalog
-allowlist cannot perform these writes. All five catalog mutation operations are in the
+allowlist cannot perform these writes. All six catalog mutation operations are in the
 MCP Full profile. Request bodies reject unknown fields, including overwrite or
 force flags.
 

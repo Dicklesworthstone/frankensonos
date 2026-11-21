@@ -199,6 +199,7 @@ fsonos playlist-rename Kitchen SQ:7 'Evening Mix' --expected-revision '<contents
 fsonos playlist-remove Kitchen SQ:7 --expected-revision '<fresh contents revision>'
 fsonos playlist-move-tracks Kitchen SQ:7 4 --count 2 --before 1 --expected-revision '<revision>'
 fsonos playlist-remove-tracks Kitchen SQ:7 3 --expected-revision '<fresh revision>'
+fsonos playlist-append-tracks Kitchen SQ:7 --positions 2,4,2 --source-revision '<queue revision>' --expected-revision '<saved revision>'
 fsonos play Kitchen --playlist 'Evening Mix'     # recall one; --next or --queue adds its tracks
 fsonos play Kitchen spotify:album:<id> --next     # after the track playing; --queue for the end
 fsonos play-tracks Kitchen spotify:track:<id1> spotify:track:<id2>  # replace queue and start this ordered selection
@@ -710,6 +711,16 @@ and the original destination. The native operation checks the complete saved
 order and its revision, retains duplicate occurrences, and leaves current
 playback untouched. The same operations are available through CLI, HTTP and
 MCP; see [Saved playlist editing](docs/SONOS_PLAYLISTS.md#remove-or-reorder-saved-tracks).
+
+**Add tracks to this playlist** composes an existing saved playlist from selected
+occurrences in the group queue or another native playlist. Enter up to ten track
+numbers in the order to add them, then review their titles and destination.
+Repeated selections are retained, and the existing playlist identity and live
+playback stay in place. CLI `playlist-append-tracks`, HTTP and MCP expose the
+same operation with separate source and destination revisions. A partially
+completed batch reports its confirmed count and is never automatically retried;
+the remotes can inspect the original destination after a lost reply. See
+[Adding selected tracks](docs/SONOS_PLAYLISTS.md#add-selected-tracks-to-an-existing-playlist).
 
 Saved albums, liked tracks, and missing album-track pages now resume from
 private checkpoints after an interrupted read or Spotify cooldown. Each pass

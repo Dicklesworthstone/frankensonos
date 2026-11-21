@@ -1225,6 +1225,21 @@ are never replayed. Browser review names the exact occurrences and destination,
 rechecks them before dispatch, and retains uncertain results in their original
 household. See [Saved Sonos playlists](docs/SONOS_PLAYLISTS.md).
 
+Existing native playlists can now receive 1–10 selected occurrences from a
+retained group queue or another saved playlist through `playlist-append-tracks`,
+HTTP `/sonos/playlists/append-tracks`, MCP `append_sonos_playlist_tracks`, and
+the shared phone/dashboard editor. Separate source and destination revisions
+bind the selection; deliberate repeats and supplied order survive. Native
+`AddURIToSavedQueue` preserves the destination identity and playing queue.
+Every append must confirm the full saved prefix and retained track metadata
+before the next write. A batch that stops after partial progress reports its
+confirmed count without replay or automatic rollback. Original-household
+recovery reads the destination contents, including the append boundary.
+Browser model regressions and pinned nightly workspace formatting pass locally.
+The new protocol/core/API/simulator Rust regressions still require execution;
+earlier dependency builds were killed before project tests ran. Physical S1/S2
+acceptance remains separate.
+
 The phone and Listening room source editors expose these catalog edits through
 a shared **Manage saved playlist** review. Both read the exact saved contents
 before review and again inside their existing command lane before dispatch.

@@ -97,6 +97,7 @@ const DashboardSource = (() => {
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
     const manager = P.playlistManager({ call: targetCall, live,
+      catalog: () => state.playlists,
       selection: () => {
         const item = state.playlists.find(item => item.id === state.playlist);
         return matching() && state.group && !targetSet() && state.sourceType === 'playlist'
