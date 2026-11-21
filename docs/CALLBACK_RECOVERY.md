@@ -25,6 +25,38 @@ an admitted clip can finish using its original media URL. The daemon retains
 at most 16 listeners, including retired ones; reaching that bound reports an
 unavailable route and retries after capacity becomes available.
 
+## Discovery while some speakers are offline
+
+The LAN transport reads independent device descriptions concurrently, with at
+most eight requests outstanding in one discovery pass. A slow or offline player
+therefore consumes one place in that window while the other addresses continue.
+Each request retains the normal per-address lane, routing, transcript and timeout;
+topology reconciliation still processes results in discovery order and reports
+each failure against its original address.
+
+Shutdown or superseding a live survey stops admission of further description
+reads. An already dispatched exchange keeps its ordinary timeout, and its late
+answer cannot become accepted inventory after cancellation. Shared transports
+and the live survey wrapper preserve this behavior. Custom transports that only
+implement individual GETs retain sequential reads and their own checks, including
+simulator route confinement.
+
+The protocol's `net::description_tests` use real held localhost replies to check
+overlap, ordered successes and failures, the eight-request window, continued
+admission when a slot opens, and cancellation. Core regressions check live
+shutdown, superseded surveys and per-address error attribution. Run:
+
+```sh
+cargo test --locked -p fsonos-proto --lib description
+cargo test --locked -p fsonos-core --lib description
+cargo test --locked -p fsonos-core --test survey --test survey_startup --test survey_known_sim
+```
+
+These additions passed the pinned formatter and source review. Rust execution
+was still pending behind the shared build environment's dependency compilation
+when this change was committed; these commands are validation targets, not a
+claim that the simulator or physical speakers have passed.
+
 ## Announcements across separate networks
 
 Speech, chimes and uploaded WAVs are generated or stored once. Each household

@@ -510,6 +510,14 @@ impl Transport for Via<'_> {
         self.transport.http_get(url)
     }
 
+    fn http_get_many(
+        &self,
+        urls: &[String],
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Result<String, ProtoError>> {
+        self.transport.http_get_many(urls, cancelled)
+    }
+
     fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
         self.transport.http_get_bytes(url)
     }
@@ -1162,6 +1170,22 @@ mod tests {
                 mdns: Ok(Vec::new()),
             }
         }
+
+        fn http_get_many(
+            &self,
+            urls: &[String],
+            cancelled: &(dyn Fn() -> bool + Sync),
+        ) -> Vec<Result<String, ProtoError>> {
+            urls.iter()
+                .map(|url| {
+                    if cancelled() {
+                        Err(ProtoError::NotWired("cancelled batch"))
+                    } else {
+                        Ok(format!("batch {url}"))
+                    }
+                })
+                .collect()
+        }
     }
 
     #[test]
@@ -1209,6 +1233,15 @@ mod tests {
         let found = via.discover(1, Duration::ZERO);
         assert!(matches!(found.ssdp, Err(ProtoError::NotWired("at once"))));
         assert!(found.mdns.is_ok_and(|m| m.is_empty()));
+        let urls = ["description".to_owned()];
+        assert_eq!(
+            via.http_get_many(&urls, &|| false)[0].as_ref().unwrap(),
+            "batch description"
+        );
+        assert!(matches!(
+            via.http_get_many(&urls, &|| true).as_slice(),
+            [Err(ProtoError::NotWired("cancelled batch"))]
+        ));
     }
 
     #[test]

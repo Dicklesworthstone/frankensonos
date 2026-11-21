@@ -98,6 +98,34 @@ pub trait Transport {
         Err(ProtoError::NotWired("http_get"))
     }
 
+    /// Read device descriptions, retaining one result per URL in input order.
+    /// Transports may overlap independent requests; the default stays sequential
+    /// so in-memory transports need not be thread-safe. Cancellation stops new
+    /// reads and rejects an answer that arrives after cancellation. An exchange
+    /// already in flight retains the transport's ordinary timeout.
+    /// Wrappers forwarding only `http_get` intentionally retain this safe
+    /// sequential path, including their own routing or access checks. Forward
+    /// this method explicitly only when the wrapped batch preserves those checks.
+    fn http_get_many(
+        &self,
+        urls: &[String],
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Result<String, ProtoError>> {
+        urls.iter()
+            .map(|url| {
+                if cancelled() {
+                    return Err(ProtoError::NotWired("description read cancelled"));
+                }
+                let result = self.http_get(url);
+                if cancelled() {
+                    Err(ProtoError::NotWired("description read cancelled"))
+                } else {
+                    result
+                }
+            })
+            .collect()
+    }
+
     /// GET `url` (album art a player serves, say) and return the body as
     /// bytes, with its content type. At most [`MAX_BODY_BYTES`].
     fn http_get_bytes(&self, _url: &str) -> Result<HttpBody, ProtoError> {
@@ -148,6 +176,14 @@ impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
         (**self).http_get(url)
     }
 
+    fn http_get_many(
+        &self,
+        urls: &[String],
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Result<String, ProtoError>> {
+        (**self).http_get_many(urls, cancelled)
+    }
+
     fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
         (**self).http_get_bytes(url)
     }
@@ -168,7 +204,61 @@ impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// This deliberately is not Sync: the default retains simple transports.
+    struct Sequential<'a> {
+        calls: RefCell<Vec<String>>,
+        cancel_on: Option<&'a str>,
+        cancelled: &'a AtomicBool,
+    }
+
+    impl Transport for Sequential<'_> {
+        fn soap_post(
+            &self,
+            _host: std::net::IpAddr,
+            _path: &str,
+            _action: &str,
+            _body: &str,
+        ) -> Result<String, ProtoError> {
+            Err(ProtoError::NotWired("soap"))
+        }
+
+        fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+            self.calls.borrow_mut().push(url.to_owned());
+            if self.cancel_on == Some(url) {
+                self.cancelled.store(true, Ordering::Release);
+            }
+            if url == "failed" {
+                Err(ProtoError::Malformed("bad description".into()))
+            } else {
+                Ok(url.to_owned())
+            }
+        }
+    }
+
+    #[test]
+    fn sequential_description_batches_keep_errors_and_cancellation_in_place() {
+        let cancelled = AtomicBool::new(false);
+        let transport = Sequential {
+            calls: RefCell::default(),
+            cancel_on: Some("cancel"),
+            cancelled: &cancelled,
+        };
+        let urls = ["first", "failed", "cancel", "never"].map(str::to_owned);
+        let results = transport.http_get_many(&urls, &|| cancelled.load(Ordering::Acquire));
+        assert_eq!(*transport.calls.borrow(), ["first", "failed", "cancel"]);
+        assert_eq!(results.len(), urls.len());
+        assert_eq!(results[0].as_ref().unwrap(), "first");
+        assert!(matches!(&results[1], Err(ProtoError::Malformed(_))));
+        assert!(results[2..].iter().all(|result| matches!(
+            result,
+            Err(ProtoError::NotWired("description read cancelled"))
+        )));
+        assert!(transport.http_get_many(&[], &|| false).is_empty());
+    }
 
     /// Answers every channel a transport has, each in its own way.
     struct Everything;

@@ -330,6 +330,15 @@ impl Transport for Cancellable<'_> {
         self.read(|| self.transport.http_get(url))
     }
 
+    fn http_get_many(
+        &self,
+        urls: &[String],
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Result<String, ProtoError>> {
+        self.transport
+            .http_get_many(urls, &|| self.stopping() || cancelled())
+    }
+
     fn discover(&self, mx_secs: u8, wait: Duration) -> Discovered {
         if !self.stopping() {
             let found = self.transport.discover(mx_secs, wait);

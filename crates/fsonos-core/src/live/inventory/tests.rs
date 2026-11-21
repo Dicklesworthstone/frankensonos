@@ -14,6 +14,72 @@ use std::time::SystemTime;
 
 const WAIT: Duration = Duration::from_secs(10);
 
+struct CancellingDescriptions<'a> {
+    stop: &'a AtomicBool,
+    calls: AtomicUsize,
+}
+
+impl Transport for CancellingDescriptions<'_> {
+    fn soap_post(
+        &self,
+        _host: IpAddr,
+        _path: &str,
+        _action: &str,
+        _body: &str,
+    ) -> Result<String, ProtoError> {
+        Err(ProtoError::NotWired("soap"))
+    }
+
+    fn http_get(&self, _url: &str) -> Result<String, ProtoError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Release);
+        Ok("an answer after cancellation".into())
+    }
+}
+
+#[test]
+fn description_batches_retain_live_shutdown_and_survey_cancellation() {
+    let urls = ["first".to_owned(), "never".to_owned()];
+    for shutdown in [false, true] {
+        let stop = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(false);
+        let transport = CancellingDescriptions {
+            stop: if shutdown { &stop } else { &cancelled },
+            calls: AtomicUsize::new(0),
+        };
+        let guarded = Cancellable {
+            transport: &transport,
+            stop: &stop,
+            cancelled: &cancelled,
+        };
+        let results = guarded.http_get_many(&urls, &|| false);
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(results.len(), urls.len());
+        assert!(results.iter().all(|result| matches!(
+            result,
+            Err(ProtoError::NotWired("description read cancelled"))
+        )));
+    }
+    let stop = AtomicBool::new(false);
+    let cancelled = AtomicBool::new(false);
+    let transport = CancellingDescriptions {
+        stop: &stop,
+        calls: AtomicUsize::new(0),
+    };
+    let guarded = Cancellable {
+        transport: &transport,
+        stop: &stop,
+        cancelled: &cancelled,
+    };
+    assert!(
+        guarded
+            .http_get_many(&urls, &|| true)
+            .iter()
+            .all(Result::is_err)
+    );
+    assert_eq!(transport.calls.load(Ordering::Relaxed), 0);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
     Discovery,
