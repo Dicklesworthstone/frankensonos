@@ -14,7 +14,7 @@ async fn preview_undo(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToo
 }
 
 #[tool(
-    description = "Undo exactly the caller-owned action reviewed with preview_undo. expected_id is the positive id from that preview. A superseded, consumed or foreign target is refused rather than replaced by a different action; never drop expected_id or fall back to undo_last. Inspect the summary and failures for partial restoration. This can overwrite later speaker changes and has no redo. On a lost reply, inspect playback and preview again; never automatically replay a sent undo. Uses the same policy and daemon as the other controls."
+    description = "Undo exactly the caller-owned action reviewed with preview_undo. expected_id is the positive id from that preview. A superseded, consumed or foreign target is refused rather than replaced by a different action; never drop expected_id or fall back to undo_last. Partial restoration marks the tool result as an error and retains the summary and failures; inspect both because the action may already be consumed. This can overwrite later speaker changes and has no redo. On a lost reply, inspect playback and preview again; never automatically replay a sent undo. Uses the same policy and daemon as the other controls."
 )]
 async fn undo_checked(
     ctx: &McpContext,

@@ -555,15 +555,14 @@ impl Backend {
     /// The `undo_last` tool: undo this caller's own newest action.
     pub fn undo_last(&self) -> McpResult<FinalCallToolResult> {
         let body = serde_json::json!({ "own_only": true });
-        if let Some(answer) =
-            self.on_daemon::<UndoDto>("POST", "/undo", Some(&body), |r| r.summary.clone())
-        {
-            return answer;
+        if let Some(answer) = self.on_daemon::<UndoDto>("POST", "/undo", Some(&body), undo_text) {
+            return answer.map(undo_outcome);
         }
         respond(|| {
             let undone = UndoDto::from(self.surface.undo(&self.client, true)?);
-            Ok((undone.summary.clone(), undone))
+            Ok((undo_text(&undone), undone))
         })
+        .map(undo_outcome)
     }
 
     /// The `doctor` tool.
@@ -716,6 +715,33 @@ fn control_outcome(mut result: FinalCallToolResult) -> FinalCallToolResult {
         result.is_error = true;
     }
     result
+}
+
+/// Recovery can consume an action even when some of its state cannot be
+/// restored. Preserve that receipt and signal the failure without replaying
+/// the undo or discarding its successful parts.
+fn undo_outcome(mut result: FinalCallToolResult) -> FinalCallToolResult {
+    if result
+        .structured_content
+        .as_ref()
+        .and_then(|value| serde_json::from_value::<UndoDto>(value.clone()).ok())
+        .is_some_and(|undone| !undone.failures.is_empty())
+    {
+        result.is_error = true;
+    }
+    result
+}
+
+fn undo_text(undone: &UndoDto) -> String {
+    std::iter::once(undone.summary.clone())
+        .chain(
+            undone
+                .failures
+                .iter()
+                .map(|why| format!("Not restored: {why}")),
+        )
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A control outcome's sentence, then its notes.
@@ -964,7 +990,7 @@ async fn recent_actions(
 }
 
 #[tool(
-    description = "Undo your own most recent action: restore the volumes, grouping and what was playing in the zones it changed. The reply says what could not be restored."
+    description = "Undo your own most recent action: restore the volumes, grouping and what was playing in the zones it changed. Partial restoration marks the tool result as an error and retains the summary and failures. Inspect those details; the action may already be consumed, so never automatically replay an undo."
 )]
 async fn undo_last(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, Backend::undo_last).await

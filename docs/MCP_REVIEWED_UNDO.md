@@ -35,10 +35,14 @@ review after replacing a store; do not carry old previews across that event.
 ## Report what actually came back
 
 The reply includes the exact `undone` id, summary and structured `failures`.
-Partial failures are also listed in the text an agent reads. A contradictory
-id is an uncertain outcome, not a successful confirmation. A lost or unreadable
-reply must not be automatically replayed; inspect playback and obtain a fresh
-preview. Cancelling a client call cannot retract speaker I/O already sent.
+Both `undo_checked` and `undo_last` set `isError` when any restoration failed,
+preserving the complete receipt and listing each failure in the text an agent
+reads. Complete restores and `nothing to undo` remain successful results.
+A partial undo may already have consumed its action; inspect the receipt and
+playback instead of automatically replaying it. A contradictory id is an
+uncertain outcome, not a successful confirmation. A lost or unreadable reply
+also requires inspection and a fresh preview. Cancelling a client call cannot
+retract speaker I/O already sent.
 
 Targeted regressions: `cargo test --locked -p fsonos-mcp --lib reviewed_undo`
 and `cargo test --locked -p fsonos-cli --test mcp_reviewed_undo`.

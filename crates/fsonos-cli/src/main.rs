@@ -893,9 +893,7 @@ fn undo(
         Some(id) => house.undo_checked(id)?,
         None => house.undo(mine, force)?,
     };
-    emit(global.json, &undone, |u: &fsonos_api::UndoDto| {
-        format!("{}\n", u.summary)
-    })
+    emit_undo_outcome(global.json, &undone)
 }
 
 /// Where `fsonos play --search` searches and plays: directly ([`Direct`]),
@@ -1036,6 +1034,27 @@ fn emit_control_outcome(json: bool, outcome: &OutcomeDto) -> anyhow::Result<()> 
         );
     }
     Ok(())
+}
+
+/// An undo can restore some state and still consume its action. Keep every
+/// failure in the receipt, then exit nonzero without replaying restoration.
+fn emit_undo_outcome(json: bool, outcome: &fsonos_api::UndoDto) -> anyhow::Result<()> {
+    emit(json, outcome, undo_text)?;
+    if !outcome.failures.is_empty() {
+        anyhow::bail!(
+            "undo incomplete: {} restoration failure(s); inspect the receipt and current state; do not replay the undo",
+            outcome.failures.len()
+        );
+    }
+    Ok(())
+}
+
+fn undo_text(outcome: &fsonos_api::UndoDto) -> String {
+    let mut text = format!("{}\n", outcome.summary);
+    for failure in &outcome.failures {
+        let _ = writeln!(text, "Not restored: {failure}");
+    }
+    text
 }
 
 /// `fsonos party [target]`: a household label names the household;
@@ -1595,6 +1614,28 @@ mod tests {
             .to_string();
         assert!(
             error.contains("1 target(s)") && error.contains("do not replay"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn incomplete_undo_output_keeps_each_failure_and_a_nonzero_exit() {
+        let mut outcome = fsonos_api::UndoDto::from(None);
+        assert_eq!(undo_text(&outcome), "nothing to undo\n");
+        assert!(emit_undo_outcome(true, &outcome).is_ok());
+        outcome.summary = "restored part of action #7".into();
+        outcome.undone = Some(7);
+        outcome.failures = vec![
+            "Office: volume refused".into(),
+            "Den: source changed".into(),
+        ];
+        assert_eq!(
+            undo_text(&outcome),
+            "restored part of action #7\nNot restored: Office: volume refused\nNot restored: Den: source changed\n"
+        );
+        let error = emit_undo_outcome(true, &outcome).unwrap_err().to_string();
+        assert!(
+            error.contains("2 restoration failure(s)") && error.contains("do not replay"),
             "{error}"
         );
     }

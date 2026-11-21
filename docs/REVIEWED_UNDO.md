@@ -50,6 +50,15 @@ Success uses `UndoDto`, with the exact `undone` id, `intent`, human summary and
 in addition to whole-zone, steering, tone and queue failures. Always show the
 summary and failures rather than presenting every HTTP 200 as a full restore.
 
+The CLI prints the complete receipt before exiting: a partial restore exits
+**1**, while a complete restore or `nothing to undo` exits **0**. This applies
+to `undo` and `undo --id`, both directly and through the daemon. `--json` keeps
+the full `UndoDto` on stdout; text output lists every failure after the summary.
+MCP `undo_last` and `undo_checked` likewise set `isError` when `failures` is
+nonempty and retain the complete structured receipt. A partial undo may already
+have consumed its action. Inspect the failures and current speaker state;
+do not automatically replay restoration.
+
 Regression coverage is in core `actions::checked_tests`, API
 `surface::shared_store::reviewed_undo::tests`, the HTTP request tests and the
 `log` DTO conversion tests. The empty-snapshot fixtures do not test physical

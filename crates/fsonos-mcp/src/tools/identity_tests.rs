@@ -211,6 +211,51 @@ fn named_callers_keep_their_own_caps_actions_and_undo_on_shared_speakers() {
 }
 
 #[test]
+fn partial_undo_preserves_successful_rooms_and_reports_failed_restoration() {
+    let runtime = runtime();
+    for checked in [false, true] {
+        let (sim, backend) = fixture();
+        let alice = backend.for_request(&request(&runtime, 1, ALICE)).unwrap();
+        output(alice.set_volume(&volume_request("all", 20)));
+        let action = actions(&alice)
+            .into_iter()
+            .find(|action| action.undoable)
+            .unwrap()
+            .id;
+        sim.upnp_fault("Office", "SetVolume", 701).unwrap();
+
+        let result = if checked {
+            alice.undo_checked(action)
+        } else {
+            alice.undo_last()
+        }
+        .unwrap();
+        assert!(result.is_error, "a refused room must reach tool consumers");
+        let text = serde_json::to_value(&result).unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let undone: UndoDto = serde_json::from_value(result.structured_content.unwrap()).unwrap();
+        assert_eq!(undone.undone, Some(action));
+        assert!(!undone.failures.is_empty());
+        for failure in undone.failures {
+            assert!(text.contains(&format!("Not restored: {failure}")));
+        }
+        assert_eq!(volume(&sim, "Kitchen"), 10, "keep the successful restore");
+        assert_eq!(volume(&sim, "Office"), 20, "retain the failed room's state");
+
+        sim.clear_faults("Office").unwrap();
+        assert_eq!(undo(&alice).undone, None, "the partial action was consumed");
+        assert_eq!(
+            volume(&sim, "Office"),
+            20,
+            "never replay the failed restore"
+        );
+        sim.shutdown();
+    }
+}
+
+#[test]
 fn named_requests_do_not_change_anonymous_or_stdio_authority() {
     let runtime = runtime();
     let (sim, backend) = fixture();

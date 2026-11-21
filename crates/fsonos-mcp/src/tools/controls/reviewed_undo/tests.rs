@@ -96,7 +96,9 @@ fn previews_and_consumes_only_its_own_exact_latest_action() {
         backend.undo_checked(1).is_err(),
         "a superseded action is never selected"
     );
-    let answer = backend.undo_checked(2).unwrap().structured_content.unwrap();
+    let answer = backend.undo_checked(2).unwrap();
+    assert!(!answer.is_error);
+    let answer = answer.structured_content.unwrap();
     assert_eq!(answer["undone"], 2);
     assert!(
         backend.undo_checked(2).is_err(),
@@ -159,6 +161,7 @@ fn daemon_preview_and_confirmation_use_exact_routes_and_only_expected_id() {
     let backend = local(Client::McpStdio).with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
     assert_eq!(preview_id(&backend), 7);
     let answer = backend.undo_checked(7).unwrap();
+    assert!(answer.is_error, "partial restoration is visible to agents");
     assert_eq!(
         answer.structured_content.as_ref().unwrap()["failures"][0],
         "Den: position unavailable"
