@@ -619,13 +619,18 @@ test('four actions emit only their fields through the native creation route', as
   }
 });
 
-test('volume targets physical member rooms while playback targets only group leaders', async () => {
+test('volume targets physical member rooms while a pause resolves their complete playback group', async () => {
   const f = builderFixture();
   await draft(f, 'volume');
   assert.deepEqual(f.control.state.options.rooms.map((r) => r.target), ['Studio@S2', 'Den@S2', 'Studio@S1']);
   await f.control.beginCreate('pause');
   f.control.edit('zone', 'Den@S2');
-  assert.equal(await f.control.reviewCreate(), false);
+  assert.equal(await f.control.reviewCreate(), true);
+  const reviewed = f.control.state.pending;
+  assert.equal(reviewed.body.zone, 'Den@S2');
+  assert.deepEqual(reviewed.destination.resolution.groups.map(group => group.coordinator_room), ['Studio']);
+  assert.deepEqual(reviewed.destination.resolution.groups[0].members.map(room => room.room), ['Den', 'Studio']);
+  assert.deepEqual(f.writes, []);
 });
 
 test('out-of-range, fractional, blank volume/fade and missing mood do not review', async () => {
@@ -727,11 +732,11 @@ test('malformed or ambiguous choices cannot become destinations', () => {
 test('closing creation during option loading does not resurrect its draft', async () => {
   const wait = deferred();
   const f = builderFixture();
-  const control = Schedules.model({ call: (name, args) => name === 'scheduleZones' ? wait.promise : f.call(name, args) });
+  const control = Schedules.model({ call: (name, args) => name === 'scheduleRooms' ? wait.promise : f.call(name, args) });
   await control.refresh();
   const work = control.beginCreate('pause');
   control.close();
-  wait.resolve(groups());
+  wait.resolve(targets.rooms(groups()));
   assert.equal(await work, false);
   assert.equal(control.state.open, false);
   assert.equal(control.state.draft, null);
@@ -741,13 +746,13 @@ test('closing creation during option loading does not resurrect its draft', asyn
 test('a close during creation preflight cancels only an unsent request', async () => {
   const wait = deferred();
   const f = builderFixture();
-  let zones = 0;
-  const control = Schedules.model({ call: (name, args) => name === 'scheduleZones' && ++zones === 2 ? wait.promise : f.call(name, args) });
+  let resolutions = 0;
+  const control = Schedules.model({ call: (name, args) => name === 'scheduleResolve' && ++resolutions === 2 ? wait.promise : f.call(name, args) });
   await control.refresh(); await control.beginCreate('pause');
   control.edit('zone', 'Studio@S2'); await control.reviewCreate();
   const work = control.confirm(control.state.pending);
   await new Promise(setImmediate);
-  control.close(); wait.resolve(groups());
+  control.close(); wait.resolve(targets.resolve(groups(), 'Studio@S2'));
   assert.equal(await work, false);
   assert.deepEqual(f.writes, []);
 });
@@ -1089,4 +1094,33 @@ test('saved queue backups are schedulable while bookmark and backup summaries ca
   assert.throws(() => Schedules.scenesOf([scene]), /kind does not match/);
   scene.groups[0].source.kind = 'queue_backup'; delete scene.groups[0].source.queue.total;
   assert.throws(() => Schedules.scenesOf([scene]), /kind does not match/);
+});
+
+test('the phone routine form creates a whole-house faded bedtime after reviewing every group', async (t) => {
+  const prior = global.document, dom = domFixture(); global.document = dom.document;
+  t.after(() => { if (prior === undefined) delete global.document; else global.document = prior; });
+  const f = builderFixture(), panel = Schedules.panel({ call: f.call, el: dom.el });
+  t.after(() => panel.dispose());
+  const control = key => {
+    const found = panel.node.querySelectorAll('[data-schedule-focus]').find(node => node.getAttribute('data-schedule-focus') === key);
+    assert.ok(found, `missing control ${key}`); return found;
+  };
+  const choose = async (key, value, event = 'change') => { control(key).value = value; await control(key).dispatch(event); };
+  panel.node.open = true; await panel.node.dispatch('toggle'); await new Promise(setImmediate);
+  await control('new-create').dispatch('click');
+  await choose('action', 'pause');
+  assert.match(panel.node.textContent, /Pause rooms or saved set/);
+  assert.ok(control('zone').children.some(option => option.value === 'all@S1'));
+  assert.ok(control('zone').children.some(option => option.value === 'all@S2'));
+  await choose('zone', 'all'); await choose('cadence', 'daily');
+  await choose('time', '22:30', 'input'); await choose('fade_secs', '120', 'input');
+  await control('review-create').dispatch('click');
+  assert.match(panel.node.textContent, /Current pause target: all/);
+  assert.match(panel.node.textContent, /Den@S2, Studio@S2/); assert.match(panel.node.textContent, /Studio@S1/);
+  assert.match(panel.node.textContent, /fades out over 120s/);
+  assert.match(panel.node.textContent, /No music pauses or fades while saving/);
+  assert.deepEqual(f.writes, []);
+  await control('confirm').dispatch('click');
+  assert.deepEqual(f.writes, [{ when: 'daily 22:30', action: 'pause', zone: 'all', fade_secs: 120 }]);
+  assert.match(panel.node.textContent, /Created schedule #99/);
 });

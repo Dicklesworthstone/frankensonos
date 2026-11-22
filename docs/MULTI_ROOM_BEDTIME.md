@@ -133,6 +133,13 @@ pauses use the existing `OutcomeDto.batch` per-group control receipt.
 
 ## Scheduled pauses and action history
 
+Both browser routine forms offer **Pause rooms** with a **Pause rooms or saved
+set** target. Choose a room, saved alias, `all` / `everywhere`, or a household,
+and an optional fade of 0–600 seconds. Creating or editing the routine reviews
+every affected physical group and rechecks the resolver revision before one
+schedule write. Saving changes no current playback. The saved target remains
+dynamic for future runs; an alias is resolved again for each occurrence.
+
 A scheduled faded pause resolves and checks every selected group before its
 durable occurrence claim. The admitted audience is retained through dispatch,
 so an alias edit after the claim cannot expand that occurrence. Readiness

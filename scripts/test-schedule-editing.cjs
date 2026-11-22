@@ -338,7 +338,11 @@ test('dashboard DOM opens every saved action in the shared form and shows retain
     click('edit-21'); await settled(() => f.control.state.options);
     assert.equal(f.document.getElementById('routine-action').value, action);
     assert.equal(f.document.getElementById('routine-action').children.length, 5);
-    if (['pause', 'volume'].includes(action)) assert.match(f.document.getElementById('routine-zone').textContent, /Saved target/);
+    if (action === 'volume') assert.match(f.document.getElementById('routine-zone').textContent, /Saved target/);
+    if (action === 'pause') {
+      assert.equal(f.document.getElementById('routine-zone').value, 'all');
+      assert.match(f.document.getElementById('routine-zone').textContent, /Everywhere/);
+    }
     if (action === 'announce') assert.equal(f.document.getElementById('routine-announcement_text').value, 'Synthetic reminder');
     const input = f.document.getElementById('routine-time'); input.value = '08:45'; input.fire('input');
     click('review-create');
@@ -346,6 +350,11 @@ test('dashboard DOM opens every saved action in the shared form and shows retain
     const review = f.document.getElementById('routines-body').textContent;
     assert.match(review, /routine #21/); assert.match(review, /Previously: weekdays 07:30/);
     assert.match(review, /weekdays 08:45/); assert.match(review, /cannot be undone/); assert.match(review, /No music starts now/);
+    if (action === 'pause') {
+      assert.match(review, /Current pause target: all/);
+      assert.match(review, /Hall@SIM_S2, Study@SIM_S2/);
+      assert.match(review, /No music pauses or fades while saving/);
+    }
     click('confirm'); await settled(() => f.control.state.result?.status === 'accepted');
     assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].url, '/schedules/update');
   }

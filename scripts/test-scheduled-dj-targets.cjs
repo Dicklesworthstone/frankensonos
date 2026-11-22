@@ -11,7 +11,7 @@ const row = (extra = {}) => ({ id: 7, revision: 'saved-v1', when: 'weekdays 07:3
   zone: 'together', mood: 'calm', direction: { constraints: { include_genres: ['jazz'] }, for_secs: 900 },
   summary: 'Saved DJ routine', creator: 'original creator', enabled: false, next: null, last_fired: null, ...extra });
 
-function fixture(surface, initial = []) {
+function fixture(surface, initial = [], action = 'dj_start') {
   const groups = [
     { household: 'S1', coordinator_room: 'Lead', members: ['Lead', 'Member', 'Guest'] },
     { household: 'S2', coordinator_room: 'Lead', members: ['Lead'] },
@@ -19,7 +19,7 @@ function fixture(surface, initial = []) {
   ];
   const aliases = { together: ['Lead@S1', 'Member@S1', 'Lead@S2'] };
   const moods = { moods: [{ name: 'calm', constraints: { include_genres: ['jazz'] } }] };
-  let rows = copy(initial), physical = '', intercept = null, rejectWrite = null, control;
+  let rows = copy(initial), physical = '', intercept = null, rejectWrite = null, loseReply = false, control;
   const calls = [];
   const resolve = query => targets.resolve(groups, query, aliases, physical);
   const call = async (url, body, options) => {
@@ -38,10 +38,12 @@ function fixture(surface, initial = []) {
     const original = url === '/schedules/update' ? rows.find(saved => saved.id === body.id) : null;
     if (original) assert.equal(body.expected_revision, original.revision);
     const definition = original ? body.schedule : body;
-    const saved = row({ ...copy(definition), mood: definition.mood ?? null, id: original?.id ?? 8,
+    const saved = row({ ...copy(definition), mood: definition.mood ?? null, direction: definition.direction ?? null,
+      fade_secs: definition.fade_secs ?? null, id: original?.id ?? 8,
       revision: original ? original.revision + '.next' : 'new-v1', creator: original?.creator ?? 'current caller',
       enabled: original?.enabled ?? true, next: original && !original.enabled ? null : '2030-06-18T07:30:00Z' });
     rows = original ? rows.map(item => item.id === original.id ? saved : item) : [...rows, saved];
+    if (loseReply) throw new Error('The saved routine reply was lost');
     return copy(saved);
   };
   const named = (name, args = {}) => call(S.routes[name][1]
@@ -50,13 +52,14 @@ function fixture(surface, initial = []) {
   control = controller ? R.model({ call, controller }) : S.model({ call: named });
   return { control, groups, aliases, moods, calls, resolve,
     physical(value) { physical = value; }, intercept(value) { intercept = value; }, reject(value) { rejectWrite = value; },
+    lose(value = true) { loseReply = value; },
     rows: () => copy(rows), writes: () => calls.filter(call => call.body !== undefined),
     refresh() { return controller ? control.read(true) : control.refresh(true); },
     apply(pending = control.state.pending) { return controller ? control.apply(pending) : control.confirm(pending); },
     async ready() { if (controller) control.open(); assert.equal(await this.refresh(), true); return this; },
     async draft(target = 'together', editing = false) {
       await this.ready();
-      assert.equal(await (editing ? control.beginEdit(7) : control.beginCreate('dj_start')), true);
+      assert.equal(await (editing ? control.beginEdit(7) : control.beginCreate(action)), true);
       if (target !== null) assert.equal(control.edit('zone', target), true);
       return this;
     },
@@ -241,5 +244,119 @@ for (const surface of ['phone', 'dashboard']) {
     assert.equal(f.writes()[0].body.schedule.zone, 'here');
     assert.equal(f.rows()[0].creator, 'original creator');
     assert.equal(f.rows()[0].enabled, false);
+  });
+}
+
+const pauseRow = extra => row({ action: 'pause', mood: null, direction: null, fade_secs: 120,
+  summary: 'Saved faded bedtime pause', ...extra });
+
+for (const surface of ['phone', 'dashboard']) {
+  test(`${surface}: faded bedtime routines review every aliased group without reading current music or DJ settings`, async () => {
+    const f = await fixture(surface, [], 'pause').draft();
+    f.control.edit('fade_secs', '120');
+    assert.equal(await f.control.reviewCreate(), true, f.control.state.message);
+    const pending = f.control.state.pending;
+    assert.equal(pending.destination.resolution.groups.length, 2);
+    assert.equal(pending.body.zone, 'together'); assert.equal(pending.body.fade_secs, 120);
+    const view = S.routineTargets(pending, element);
+    assert.equal(view.attrs['aria-label'], 'Currently affected pause groups');
+    assert.match(view.textContent, /Lead@S1/); assert.match(view.textContent, /Lead@S2/);
+    assert.match(view.textContent, /Also affected through grouping: Guest@S1/);
+    assert.match(view.textContent, /fades out over 120s, pauses, and has its original volumes restored/);
+    assert.match(view.textContent, /No music pauses or fades while saving/);
+    assert.doesNotMatch(view.textContent, /Each group starts once|Current DJ target/);
+    assert.ok(!f.calls.some(call => /\/(state|dj|queue|moods)$/.test(call.url)));
+    assert.equal(f.writes().length, 0);
+    assert.equal(await f.apply(pending), true, f.control.state.message);
+    assert.deepEqual(f.writes().map(({ url, body }) => ({ url, body })), [{ url: '/schedules', body: pending.body }]);
+    assert.equal(f.calls.filter(call => call.url.startsWith('/rooms/resolve?')).length, 2);
+    assert.equal(pending.body.expected_revision, undefined, 'future occurrences keep the authored dynamic target');
+  });
+
+  test(`${surface}: immediate and faded pause schedules accept all, household and member-room targets`, async () => {
+    for (const [target, count] of [['all', 3], ['all@S1', 1], ['all@S2', 2], ['Member@S1', 1]]) {
+      for (const seconds of ['0', '600']) {
+        const f = await fixture(surface, [], 'pause').draft(target);
+        f.control.edit('fade_secs', seconds);
+        assert.equal(await f.control.reviewCreate(), true, f.control.state.message);
+        const pending = f.control.state.pending;
+        assert.equal(pending.destination.resolution.groups.length, count);
+        assert.match(S.routineTargets(pending, element).textContent,
+          seconds === '0' ? /Each group pauses once/ : /fades out over 600s/);
+        assert.equal(await f.apply(pending), true, f.control.state.message);
+        assert.equal(f.rows()[0].zone, target); assert.equal(f.rows()[0].fade_secs, Number(seconds));
+        assert.equal(await f.apply(pending), false); assert.equal(f.writes().length, 1);
+      }
+    }
+  });
+
+  test(`${surface}: a faded pause edit preserves the creator and disabled state while replacing its room target`, async () => {
+    const f = fixture(surface, [pauseRow({ zone: 'Lead@S1' })], 'pause');
+    const pending = await f.review('together', true);
+    assert.equal(pending.request.expected_revision, 'saved-v1');
+    assert.equal(pending.request.schedule.fade_secs, 120);
+    assert.equal(pending.destination.resolution.groups.length, 2);
+    assert.equal(await f.apply(pending), true, f.control.state.message);
+    assert.equal(f.rows()[0].creator, 'original creator'); assert.equal(f.rows()[0].enabled, false);
+    assert.equal(f.rows()[0].zone, 'together'); assert.equal(f.rows()[0].fade_secs, 120);
+    assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].url, '/schedules/update');
+  });
+
+  test(`${surface}: a changed bedtime audience invalidates both a new routine and a reviewed edit before persistence`, async () => {
+    for (const editing of [false, true]) for (const change of [
+      f => f.aliases.together.push('Kitchen@S2'),
+      f => f.physical('a bonded player or its address changed'),
+      f => f.groups[0].members.push('Later joined room'),
+      f => { delete f.aliases.together; },
+    ]) {
+      const f = fixture(surface, editing ? [pauseRow()] : [], 'pause');
+      const pending = await f.review('together', editing); change(f);
+      assert.equal(await f.apply(pending), false); assert.equal(f.writes().length, 0);
+      if (editing) { assert.equal(f.control.state.draft.zone, 'together'); assert.equal(f.control.state.result.status, 'not_sent'); }
+    }
+  });
+
+  test(`${surface}: missing bedtime revisions and cancelled in-flight reviews cannot authorize a saved routine`, async () => {
+    const malformed = await fixture(surface, [], 'pause').draft();
+    malformed.intercept(url => {
+      if (!url.startsWith('/rooms/resolve?')) return;
+      const value = malformed.resolve('together'); delete value.revision; return value;
+    });
+    assert.equal(await malformed.control.reviewCreate(), false); assert.equal(malformed.writes().length, 0);
+    for (const method of ['cancel', 'close']) {
+      const f = await fixture(surface, [], 'pause').draft(), gate = defer();
+      f.intercept(url => url.startsWith('/rooms/resolve?') ? gate.promise : undefined);
+      const reading = f.control.reviewCreate(); f.control[method](); gate.resolve(f.resolve('together'));
+      assert.equal(await reading, false); assert.equal(f.control.state.pending, null);
+      assert.equal(await f.apply(), false); assert.equal(f.writes().length, 0);
+    }
+  });
+
+  test(`${surface}: an offline saved bedtime target stays explicit and a lost accepted edit is never replayed`, async () => {
+    const offline = fixture(surface, [pauseRow({ zone: 'Offline room@S1' })], 'pause');
+    const retained = await offline.review(null, true);
+    assert.equal(retained.body.zone, 'Offline room@S1'); assert.ok(retained.destination.unresolved);
+    assert.match(S.routineTargets(retained, element).textContent, /not currently resolved/);
+    offline.groups.push({ household: 'S1', coordinator_room: 'Offline room', members: ['Offline room'] });
+    assert.equal(await offline.apply(retained), false); assert.equal(offline.writes().length, 0);
+    const f = await fixture(surface, [pauseRow()], 'pause').draft('all', true);
+    f.control.edit('fade_secs', '60'); assert.equal(await f.control.reviewCreate(), true);
+    const pending = f.control.state.pending; f.lose();
+    assert.equal(await f.apply(pending), false); assert.equal(f.control.state.result.status, 'uncertain');
+    assert.equal(f.rows()[0].zone, 'all'); assert.equal(f.rows()[0].fade_secs, 60);
+    assert.equal(await f.apply(pending), false); assert.equal(f.writes().length, 1);
+    await f.refresh(); assert.equal(f.control.state.recovery, null);
+    assert.equal(f.writes().length, 1);
+  });
+
+  test(`${surface}: editing a bedtime here target describes the original creator's future default`, async () => {
+    const f = fixture(surface, [pauseRow({ zone: 'here' })], 'pause');
+    f.aliases.here = ['Lead@S2'];
+    const pending = await f.review(null, true), view = S.routineTargets(pending, element);
+    assert.equal(view.attrs['aria-label'], 'Current browser default preview');
+    assert.match(view.textContent, /original creator/); assert.match(view.textContent, /may already.*different rooms/);
+    assert.doesNotMatch(view.textContent, /Each group pauses once|Each active group fades/);
+    assert.equal(await f.apply(pending), true, f.control.state.message);
+    assert.equal(f.rows()[0].zone, 'here'); assert.equal(f.rows()[0].creator, 'original creator');
   });
 }

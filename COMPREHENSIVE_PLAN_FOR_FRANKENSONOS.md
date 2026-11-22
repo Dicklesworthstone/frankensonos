@@ -1568,6 +1568,12 @@ each group's current timer and playback, tolerate ordinary countdown progress,
 and invalidate after changed targets or timer edits. See
 [Multi-room bedtime](docs/MULTI_ROOM_BEDTIME.md).
 
+The phone and dashboard routine forms also create and edit pause routines for
+saved aliases and household targets, including fades up to 600 seconds. They
+review complete physical groups and recheck the resolver revision before
+saving, preserve an edited routine's target expression and creator, and send no
+immediate playback command. Future occurrences resolve the saved target anew.
+
 Run and skip admission atomically compare the stored schedule definition,
 enabled state and prior occurrence while recording the new occurrence. A pause,
 removal, replacement or competing claim committed by another process before

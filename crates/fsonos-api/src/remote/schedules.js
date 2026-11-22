@@ -79,7 +79,8 @@ const SchedulesRemote = (() => {
   }
 
   const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-  const ACTIONS = { dj_start: 'Start the DJ', apply_scene: 'Apply a scene', volume: 'Set room volume', pause: 'Pause a group', announce: 'Make an announcement' };
+  const ACTIONS = { dj_start: 'Start the DJ', apply_scene: 'Apply a scene', volume: 'Set room volume', pause: 'Pause rooms', announce: 'Make an announcement' };
+  const resolvesGroups = action => action === 'dj_start' || action === 'pause';
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const draftOf = (action) => ({ action, cadence: 'weekdays', time: '07:30', days: [],
     delay: '45m', at: '', zone: '', scene: '', mood: '', volume: '20', fade_secs: '0',
@@ -128,7 +129,7 @@ const SchedulesRemote = (() => {
   function retainedChoices(options, row, action) {
     if (!row || row.action !== action) return options;
     const targets = action === 'announce' ? row.announcement.rooms : row.zone ? [row.zone] : [];
-    const rooms = options.rooms.map(room => action === 'dj_start' && targets.includes(room.target)
+    const rooms = options.rooms.map(room => resolvesGroups(action) && targets.includes(room.target)
       ? Object.freeze({ ...room, retained: true }) : room);
     for (const target of targets) if (!rooms.some(room => room.target === target)) {
       const label = `Saved target “${target}” (resolved by the house)`;
@@ -291,7 +292,7 @@ const SchedulesRemote = (() => {
     });
   }
 
-  async function resolveDjDestination(call, destination) {
+  async function resolveGroupDestination(call, destination, action) {
     let value;
     try { value = await call('scheduleResolve', { query: { target: destination.target } }); }
     catch (error) {
@@ -299,36 +300,37 @@ const SchedulesRemote = (() => {
       // is chosen, and saving still has to pass the daemon's own validation.
       if (!destination.retained || !['UNKNOWN_ROOM', 'UNKNOWN_HOUSEHOLD', 'NOT_READY', 'PLAYER_UNREACHABLE'].includes(error?.code)) throw error;
       return Object.freeze({ ...destination,
-        signature: stamp(['unresolved-saved-dj-target', destination.target, error.code]),
+        signature: stamp(['unresolved-saved-group-target', action, destination.target, error.code]),
         unresolved: errorText(error) });
     }
     const resolution = roomSetsApi().resolutionOf(value, destination.target);
     if (typeof value.revision !== 'string' || !/^[a-f0-9]{64}$/.test(value.revision)) {
-      throw new Error('Refresh from an updated daemon that can review the complete DJ target identities.');
+      throw new Error('Refresh from an updated daemon that can review every affected group identity.');
     }
     return Object.freeze({ ...destination, resolution,
-      signature: stamp(['resolved-dj-target', resolution.signature, value.revision]) });
+      signature: stamp(['resolved-group-target', action, resolution.signature, value.revision]) });
   }
 
   async function reviewTargets(call, planned) {
-    return planned.body.action === 'dj_start'
-      ? Object.freeze({ ...planned, destination: await resolveDjDestination(call, planned.destination) }) : planned;
+    return resolvesGroups(planned.body.action)
+      ? Object.freeze({ ...planned, destination: await resolveGroupDestination(call, planned.destination, planned.body.action) }) : planned;
   }
 
   async function choices(call, action, retained = null, target = null) {
     if (action === 'apply_scene') return { scenes: scenesOf(await call('scheduleScenes')), rooms: [], moods: [] };
-    if (action === 'dj_start') {
+    if (resolvesGroups(action)) {
       const suggestions = roomSetsApi().suggestionsOf(await call('scheduleRooms'));
       const rooms = suggestions.map(item => {
         const target = item.query === 'everywhere' ? 'all' : item.query;
         return Object.freeze({ target, lead: true, label: item.label, roomLabel: item.label,
-          signature: stamp(['dj-target-suggestion', target]) });
+          signature: stamp(['group-target-suggestion', action, target]) });
       });
-      const options = retainedChoices({ rooms, moods: moodsOf(await call('scheduleMoods')), scenes: [] }, retained, action);
+      const options = retainedChoices({ rooms,
+        moods: action === 'dj_start' ? moodsOf(await call('scheduleMoods')) : [], scenes: [] }, retained, action);
       if (target !== null) {
         const destination = options.rooms.find(room => room.target === target);
-        if (!destination) throw new Error('The saved DJ target is no longer in the current choices. Refresh and review it again.');
-        const resolved = await resolveDjDestination(call, destination);
+        if (!destination) throw new Error('The reviewed target is no longer in the current choices. Refresh and review it again.');
+        const resolved = await resolveGroupDestination(call, destination, action);
         options.rooms = options.rooms.map(room => room === destination ? resolved : room);
       }
       return options;
@@ -629,9 +631,9 @@ const SchedulesRemote = (() => {
       try {
         const planned = state.editing ? updatePlan(state.editing, state.draft, state.options, state.rows) : creation(state.draft, state.options);
         if (!state.editing) noDuplicate(state.rows, planned);
-        if (planned.body.action === 'dj_start') {
+        if (resolvesGroups(planned.body.action)) {
           const version = ++epoch;
-          state.pending = null; state.loading = true; state.message = 'Reading every group in the scheduled DJ target…'; publish();
+          state.pending = null; state.loading = true; state.message = 'Reading every group affected by this routine…'; publish();
           return reviewTargets(call, planned).then(reviewed => {
             if (!current(version)) return false;
             state.pending = reviewed; state.message = ''; return true;
@@ -699,7 +701,7 @@ const SchedulesRemote = (() => {
           if (updating) editUnchanged(rows.find(row => row.id === reviewed.row.id), reviewed.row);
           noDuplicate(rows.filter(row => !updating || row.id !== reviewed.row.id), reviewed);
           const options = await choices(call, reviewed.body.action, updating ? reviewed.row : null,
-            reviewed.body.action === 'dj_start' ? reviewed.body.zone : null);
+            resolvesGroups(reviewed.body.action) ? reviewed.body.zone : null);
           if (!current(version)) return false;
           targetsUnchanged(reviewed, options);
           sent = true;
@@ -803,11 +805,11 @@ const SchedulesRemote = (() => {
       form.append(targets, field('Announcement volume (0–100; blank keeps the default)', 'announcement_volume', { type: 'number', min: 0, max: 100, step: 1 }),
         el('p', { text: 'Each run announces in the selected rooms and restores their music. House volume limits apply when it runs. Speech uses the daemon host’s configured local speech engine.' }));
     }
-    else form.append(select(d.action === 'volume' ? 'Room' : d.action === 'dj_start' ? 'DJ rooms or saved set' : 'Group', 'zone', [['', 'Choose a destination…'],
+    else form.append(select(d.action === 'volume' ? 'Room' : d.action === 'dj_start' ? 'DJ rooms or saved set' : 'Pause rooms or saved set', 'zone', [['', 'Choose a destination…'],
       ...(options?.rooms || []).map((v) => [v.target, d.action === 'volume' ? v.roomLabel : v.label])]),
       el('p', { text: d.action === 'volume' ? 'Changes the selected room or saved room set’s volume, subject to house limits.'
         : d.action === 'dj_start' ? 'Choose a room, saved alias, all rooms, or all rooms in one household. Review shows every currently affected group. Each future occurrence resolves this saved target again; later alias edits, added rooms or regrouping can change where it plays.'
-          : 'The house resolves the selected target at run time. Regrouping or changing a saved room set can change which rooms hear it.' }));
+          : 'Choose a room, saved alias, all rooms, or one household. Review shows each complete playback group that will pause. Every occurrence resolves this saved target again; later alias edits, added rooms or regrouping can change which groups pause.' }));
     if (d.action === 'dj_start') form.append(select('DJ mood', 'mood', [['', 'Automatic time-of-day program'],
       ...(options?.moods || []).map((v) => [v.name, v.name])]),
       directionApi().editor({ draft: d.direction, change: (field, value) => control.editDirection(field, value),
@@ -829,20 +831,23 @@ const SchedulesRemote = (() => {
   }
 
   function routineTargets(planned, el) {
-    if (planned.body.action !== 'dj_start') return null;
+    if (!resolvesGroups(planned.body.action)) return null;
+    const dj = planned.body.action === 'dj_start';
     const destination = planned.destination, view = destination.resolution;
     const creatorDefault = planned.action === 'update'
       && (view?.matched === 'here' || planned.body.zone.trim().toLowerCase() === 'here');
     const node = el('section', { class: 'routine-targets',
-      'aria-label': creatorDefault ? 'Current browser default preview' : 'Currently affected DJ groups' },
-      el('h4', { text: (creatorDefault ? 'Current browser default preview: ' : 'Current DJ target: ') + planned.body.zone }));
+      'aria-label': creatorDefault ? 'Current browser default preview' : dj ? 'Currently affected DJ groups' : 'Currently affected pause groups' },
+      el('h4', { text: (creatorDefault ? 'Current browser default preview: ' : dj ? 'Current DJ target: ' : 'Current pause target: ') + planned.body.zone }));
     if (creatorDefault) node.append(el('p', { role: 'note',
       text: `This preview resolves “here” for the current browser caller. Routine #${planned.row.id} keeps ${planned.row.creator} as its creator and uses that creator’s default, which may already select different rooms. This edit preserves the authored “here” target.` }));
     if (view) {
       const selected = new Set(view.rooms.map(room => stamp([room.household, room.player])));
       node.append(el('p', { text: creatorDefault
         ? `${view.rooms.length} preview room(s), ${view.groups.length} group(s) in this browser caller’s current default. The routine’s actual groups follow its creator’s default.`
-        : `${view.rooms.length} selected room(s), ${view.groups.length} independent group(s). Each group starts once.` }));
+        : `${view.rooms.length} selected room(s), ${view.groups.length} independent group(s). ${dj ? 'Each group starts once.'
+          : planned.body.fade_secs ? `Each active group fades out over ${planned.body.fade_secs}s, pauses, and has its original volumes restored.`
+            : 'Each group pauses once.'}` }));
       const groups = el('ul');
       for (const group of view.groups) {
         const outside = group.members.filter(room => !selected.has(stamp([room.household, room.player])));
@@ -853,7 +858,8 @@ const SchedulesRemote = (() => {
       }
       node.append(groups);
     } else node.append(el('p', { text: `The saved target is not currently resolved: ${destination.unresolved || 'refresh its current rooms'}. It is retained exactly; the daemon validates it when saving and before a run.` }));
-    node.append(el('p', { text: 'This review describes the current caller’s target, not fixed future rooms. Each occurrence resolves the saved target with its creator’s defaults and permissions. Alias edits, discovery and regrouping can change future groups. No music starts while saving this routine.' }));
+    node.append(el('p', { text: 'This review describes the current caller’s target, not fixed future rooms. Each occurrence resolves the saved target with its creator’s defaults and permissions. Alias edits, discovery and regrouping can change future groups. '
+      + (dj ? 'No music starts while saving this routine.' : 'No music pauses or fades while saving this routine.') }));
     return node;
   }
 
@@ -937,7 +943,7 @@ const SchedulesRemote = (() => {
   }
 
   return { routes, scheduleOf, schedulesOf, definition, announcementOf, roomsOf, scenesOf, moodsOf,
-    timeOf, creation, draftOf, draftFromSchedule, actionDraft, choices, reviewTargets, noDuplicate, addedOf, changedOf, editUnchanged, updatePlan, targetsUnchanged, updatedOf, updateEffect, updateObservation, routineForm, routineTargets, displayTime, DAYS: Object.freeze(DAYS), model, panel };
+    timeOf, creation, draftOf, draftFromSchedule, actionDraft, choices, resolvesGroups, reviewTargets, noDuplicate, addedOf, changedOf, editUnchanged, updatePlan, targetsUnchanged, updatedOf, updateEffect, updateObservation, routineForm, routineTargets, displayTime, DAYS: Object.freeze(DAYS), model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SchedulesRemote;

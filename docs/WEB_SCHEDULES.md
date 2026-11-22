@@ -6,15 +6,18 @@ occurrence can have been skipped; it is not a claim that playback succeeded.
 
 Choose **New routine**, then choose an action and an explicit destination:
 
-- **Start the DJ:** a group and an optional mood; leaving the mood automatic
-  uses the daemon's time-of-day program.
+- **Start the DJ:** a room, saved alias, `all` / `everywhere`, or `all@S1` /
+  `all@S2`, with an optional mood; leaving the mood automatic uses the daemon's
+  time-of-day program.
 - **Apply a scene:** an existing scene, including one that loads a native saved
   Sonos playlist. The review includes the scene's group, source, volume and mute
   definition, and a native playlist's pinned household, `SQ:` id and title.
 - **Set room volume:** one physical room, including a member of a larger group,
   and a level from 0 to 100, still subject to house safety limits.
-- **Pause a group:** optionally fade first, over 0 to 600 seconds. Zero pauses
-  immediately when the routine runs, not when it is saved.
+- **Pause rooms:** a room, saved alias, `all` / `everywhere`, or `all@S1` /
+  `all@S2`; optionally fade first, over 0 to 600 seconds. Zero pauses immediately
+  when the routine runs, not when it is saved. Each distinct existing group
+  acts once and keeps its grouping.
 
 Choose daily, weekdays, weekends or particular weekdays and a house time.
 Recurring wall times use the **daemon host's local time zone**, not the phone's
@@ -43,6 +46,16 @@ the selected group, scene and mood, and checks for an equivalent fixed-time
 routine before sending. Creation and management share a single in-flight write
 limit in the panel. Editing, refreshing or closing invalidates unsent reviews;
 a stale confirmation button cannot approve a newer review.
+
+DJ starts and pauses, including faded pauses, resolve their target into its
+complete physical groups for review in both the phone and dashboard routine
+forms. The review includes members outside a named alias when they share a
+selected group's playback. Confirmation checks the resolver revision again;
+changed alias contents or physical membership require a new review. Editing an
+existing routine preserves its saved target expression and creator. These
+checks send no immediate playback commands. Future occurrences resolve the
+saved target afresh, so a later alias edit can change the groups selected for a
+later run. The daemon retains the admitted audience through each claimed fade.
 
 Native playlist scenes appear alongside other saved scenes in both the phone
 remote and dashboard routine choosers. Choosing one and creating its routine
