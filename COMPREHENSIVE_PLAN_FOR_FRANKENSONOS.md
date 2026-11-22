@@ -1094,10 +1094,16 @@ against its own listing revision before review and again at confirmation;
 the final command retains the chosen order and intentional duplicates.
 Changed selected-source evidence blocks submission. Explicit refreshes, clearing
 or closing the chooser retire the selection; browsing another collection retains it.
-Group, playback and queue are also checked before submission. The optional destination revision is separate from
-the library revision. One successful batch has one inserted-range undo record;
-an uncertain partial batch is not replayed and leaves an undo barrier. The
-existing `add_to_queue` policy and bounded insertion engine apply throughout.
+Group, playback and queue are also checked before submission. Quiet ordered
+queue additions accept saved aliases and all/everywhere through CLI, HTTP and
+MCP, deduplicating groups and retaining every destination before renderer
+reads. Each group receives the same sequence. Complete and partial receipts
+retain each insertion range and failure; incomplete CLI/MCP results signal an
+error while preserving those receipts. The optional direct destination queue
+revision is separate from the library revision and applies to one group only.
+A confirmed batch can share one inserted-range undo; any uncertain insertion
+leaves a whole-action barrier. The existing `add_to_queue` policy and bounded
+insertion engine apply throughout.
 See [`docs/QUEUE_TRACK_SELECTIONS.md`](docs/QUEUE_TRACK_SELECTIONS.md).
 
 Explicit selections also support **Play selected now** in both cached-library
@@ -1109,13 +1115,23 @@ permission/caps, then reuses staged queue replacement to start the first item
 in NORMAL order. Full replacement undo is available only with the existing
 complete original queue proof; other starts retain the action-history barrier.
 Browser review makes replacement explicit and rechecks the selected cached
-occurrences, playback and destination queue before one command. CLI, HTTP and
-MCP ordered playback also accept aliases and all/everywhere, deduplicating
-existing groups and retaining every original destination before renderer
-learning. Each group receives the same order and intentional duplicates; a
-scalar destination revision remains valid only for a one-group selection.
-Multi-group results retain individual receipts and offer one undo only with
-complete replacement proof for every affected group.
+occurrences, playback and destination queues before one command. Ordered
+playback accepts aliases and all/everywhere through CLI, HTTP and MCP,
+deduplicating existing groups and retaining every original destination before
+renderer learning. Each group receives the same order and intentional
+duplicates; a scalar destination queue revision remains valid only for a
+one-group selection. Multi-group results retain individual receipts and offer
+one undo only with complete replacement proof for every affected group.
+
+Both cached-library baskets expose **Rooms or saved room set** for ordered
+playback and quiet queueing. Destination edits retain the basket's order and
+repeats while retiring its review. The review shows every affected group and
+its source/queue effect. Confirmation rechecks each selected source page and
+destination, reserves the existing command lanes, and sends one
+`POST /sources/control` with `source.kind = "tracks"` and the resolver's
+whole-audience revision. Partial and uncertain results remain visible without
+replay. A failed dashboard review leaves the chooser and basket editable;
+closing it during a pending read cancels the review.
 
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
@@ -1773,8 +1789,11 @@ availability. Definite refusals can leave confirmed additions undoable together;
 any uncertain insertion leaves a whole-action barrier. CLI prints the complete
 receipt and exits nonzero on incomplete batches. Ordered track playback also
 uses the set executor, with the same sequence in each group and per-group
-replacement proof. Search picks, line-in, ordered queue additions and the
-browser's ordered-track review keep their single-group contracts.
+replacement proof. Ordered queue additions use the same retained-target
+insertion path, preserving next/append behavior and per-group receipts. Both
+browser baskets use the reviewed source endpoint for all three ordered-track
+modes, binding the exact selection to the resolver's whole-audience revision.
+Search picks and line-in keep their single-group contracts.
 See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
 for the interface, restoration limits and validation status.
 

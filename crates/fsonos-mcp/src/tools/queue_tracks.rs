@@ -2,9 +2,7 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::queue::{
-    PlayTracksRequest, QueueTrackInput, QueueTracksRequest,
-};
+use fsonos_api::surface::queue::{PlayTracksRequest, QueueTrackInput, QueueTracksRequest};
 
 use super::{Backend, respond, said, with_backend_off_thread};
 

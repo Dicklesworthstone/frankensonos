@@ -328,7 +328,12 @@ fn reviewed_track_choices_preserve_order_and_reject_ambiguous_or_invalid_inputs(
         json!({"kind": "tracks", "tracks": selected})
     );
     for (uri, favorite, playlist, title) in [
-        (Some("spotify:track:1000000000000000000001"), None, None, None),
+        (
+            Some("spotify:track:1000000000000000000001"),
+            None,
+            None,
+            None,
+        ),
         (None, Some("Evening"), None, None),
         (None, None, Some("Evening"), None),
         (None, None, None, Some("Shared title")),

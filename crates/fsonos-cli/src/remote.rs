@@ -95,6 +95,7 @@ fn command_timeout(path: &str) -> Duration {
     if path == "/queue"
         || path == "/queue/tracks"
         || path == "/play/tracks"
+        || path == "/sources/control"
         || path == "/sonos/playlists/play"
         || path == "/sonos/playlists/tracks"
         || path == "/sonos/playlists/remove-tracks"
@@ -1131,6 +1132,8 @@ mod tests {
             "/sonos/playlists/append-tracks?trace=1",
             "/play/tracks",
             "/play/tracks?trace=1",
+            "/sources/control",
+            "/sources/control?trace=1",
             "/dj/start",
             "/dj/skip",
             "/dj/rehearse",
@@ -1153,6 +1156,7 @@ mod tests {
             "/scenes//apply",
             "/dj",
             "/djs/start",
+            "/sources/control/extra",
         ] {
             assert_eq!(command_timeout(path), CALL, "{path}");
         }

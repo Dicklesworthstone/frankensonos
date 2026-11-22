@@ -439,6 +439,11 @@
     if (r === reviewed) return; reviewed = r;
     $('review-title').textContent = r.title; $('review-target').textContent = `${r.label} · ${r.target}`;
     $('review-description').textContent = r.detail; $('review-details').replaceChildren();
+    if (r.targetGroups) {
+      const groups = el('ul', 'review-target-groups');
+      for (const group of r.targetGroups) groups.append(el('li', '', group));
+      $('review-details').append(groups);
+    }
     if (r.trackSelection) {
       const list = el('ol', 'review-track-selection');
       for (const entry of r.trackSelection) list.append(el('li', '', entry));

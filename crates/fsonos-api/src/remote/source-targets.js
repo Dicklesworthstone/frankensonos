@@ -29,6 +29,20 @@ const SourceTargetsRemote = (() => {
     if (/^\+?\d+$/.test(title) || /^(?:SQ:|FV:)/i.test(title)) fail('Use the full title for a room set. Native IDs and numbered positions belong to one household.');
     return Object.freeze({ item: Object.freeze({ kind: kind + '_query', query: title, container: true }), title, mode });
   }
+  function prepareTracks(value, mode) {
+    if (!['play', 'next', 'end'].includes(mode)) fail('Choose Play now, Queue next or Add to end.');
+    const Q = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote : require('./queue-tracks.js');
+    return Object.freeze({ item: Object.freeze({ kind: 'tracks', tracks: Q.tracksOf(value), container: true }), mode });
+  }
+  function reviewGroups(reviewed) {
+    return reviewed.entries.map(({ group, before }) => {
+      const queue = before.queue;
+      const effect = reviewed.mode === 'play' ? `Replace ${queue.total} queue entries and start the first selected track.`
+        : reviewed.mode === 'next' && queue.playing !== null ? `Add after queue occurrence ${queue.playing}; ${queue.total} entries currently.`
+          : `Append after ${queue.total} entries${reviewed.mode === 'next' ? '; this group is not playing its queue' : ''}.`;
+      return `${group.label} · ${group.target}: ${before.label}. ${effect}`;
+    });
+  }
   const native = item => ['playlist_query', 'favorite_query'].includes(item.kind);
   function nativeItem(value, item, mode, player) {
     const favorite = item.kind === 'favorite_query';
@@ -103,7 +117,8 @@ const SourceTargetsRemote = (() => {
         ]) });
       }
       return Object.freeze({ group, item: selected, before,
-        sourceLabel: selected.id ? `${selected.title} (${selected.id})` : selected.uri });
+        sourceLabel: selected.kind === 'tracks' ? `${selected.tracks.length} ordered track(s)`
+          : selected.id ? `${selected.title} (${selected.id})` : selected.uri });
     }, valid));
     if ((await resolve()).signature !== resolution.signature) fail('The resolved room set changed during review. Review its current groups again.');
     return Object.freeze({ target, item, mode, resolution, groups, entries, signature: JSON.stringify([
@@ -119,7 +134,9 @@ const SourceTargetsRemote = (() => {
       fail('Review this source action and its exact room set again before sending it.');
     }
     let source;
-    if (native(choice.item)) {
+    if (choice.item.kind === 'tracks') {
+      source = { kind: 'tracks', tracks: prepareTracks(choice.item.tracks, choice.mode).item.tracks };
+    } else if (native(choice.item)) {
       const kind = choice.item.kind === 'favorite_query' ? 'favorite' : 'playlist';
       source = { kind, [kind]: choice.item.query };
     } else {
@@ -216,10 +233,17 @@ const SourceTargetsRemote = (() => {
   function result(value, reviewed, player) {
     if (reviewed.mode === 'play') return playbackResult(value, reviewed, player);
     const groups = reviewed.groups;
-    if (groups.length === 1 && value && !Object.hasOwn(value, 'added') && !Object.hasOwn(value, 'failed')) {
-      return Object.freeze({ status: 'accepted', detail: player.queued(value, groups[0]), partial: false, complete: true });
-    }
     const bad = () => fail('The daemon did not return one complete queue receipt for every reviewed group. Read their queues before another add; this request was not repeated.');
+    const queued = (value, group) => {
+      if (reviewed.item?.kind === 'tracks') {
+        const before = reviewed.entries.find(entry => entry.group === group)?.before.queue;
+        if (!before || value?.count !== reviewed.item.tracks.length || value.first > before.total + 1) bad();
+      }
+      return player.queued(value, group);
+    };
+    if (groups.length === 1 && value && !Object.hasOwn(value, 'added') && !Object.hasOwn(value, 'failed')) {
+      return Object.freeze({ status: 'accepted', detail: queued(value, groups[0]), partial: false, complete: true });
+    }
     if (!value || !text(value.done) || typeof value.complete !== 'boolean' || !Array.isArray(value.added)
         || !Array.isArray(value.failed) || typeof value.logged !== 'boolean' || typeof value.undoable !== 'boolean'
         || value.complete !== (value.failed.length === 0) || (value.undoable && !value.logged)
@@ -233,7 +257,7 @@ const SourceTargetsRemote = (() => {
     const details = [value.done];
     for (const added of value.added) {
       const group = claim(added);
-      details.push(`${group.coordinator}@${group.household}: ${player.queued(added.queue, group)}`);
+      details.push(`${group.coordinator}@${group.household}: ${queued(added.queue, group)}`);
     }
     for (const failed of value.failed) {
       const group = claim(failed), error = failed.error;
@@ -247,6 +271,6 @@ const SourceTargetsRemote = (() => {
     return Object.freeze({ status: 'accepted', detail: details.join('\n'), partial: !value.complete, complete: value.complete,
       logged: value.logged, undoable: value.undoable });
   }
-  return { routes, query, nameKey, prepareNative, inspect, request, result, failure, suggestions: R.suggestionsOf };
+  return { routes, query, nameKey, prepareNative, prepareTracks, reviewGroups, inspect, request, result, failure, suggestions: R.suggestionsOf };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SourceTargetsRemote;

@@ -39,6 +39,17 @@ const DashboardLibraryPanel = (() => {
     form.append(categoryLabel, filterLabel, refresh, back);
     const navigation = el('nav', null, 'dashboard-library-pages'); navigation.setAttribute('aria-label', 'Cached library pages');
     const range = el('span'); navigation.append(previous, range, next);
+    let trackDestination = 'group', trackTarget = '', reviewing = false;
+    const destinationMode = el('select'); destinationMode.setAttribute('aria-label', 'Selected track destination');
+    for (const [value, label] of [['group', 'Current listening group'], ['set', 'Rooms or saved room set']]) {
+      const option = el('option', label); option.value = value; destinationMode.append(option);
+    }
+    const destinationInput = el('input'); destinationInput.type = 'text'; destinationInput.maxLength = 128;
+    destinationInput.setAttribute('aria-label', 'Rooms or room set for selected tracks');
+    destinationInput.placeholder = 'Saved alias, everywhere, all@S1 or all@S2';
+    const destinationLabel = el('label', 'Selected tracks in'); destinationLabel.append(destinationMode);
+    const targetLabel = el('label', 'Rooms or room set'); targetLabel.append(destinationInput);
+    const destinations = el('div', null, 'dashboard-library-tools'); destinations.append(destinationLabel, targetLabel);
     const selectedCount = el('span');
     const selectedPlay = button('Play selected now', () => { void selectTracks('play'); });
     const selectedNext = button('Queue selected next', () => { void selectTracks('next'); });
@@ -52,13 +63,13 @@ const DashboardLibraryPanel = (() => {
     const basket = el('ol', null, 'dashboard-library-selection');
     basket.setAttribute('aria-label', 'Selected tracks in playback order');
     body.append(el('p', 'Browse the daemon’s saved cache. It may be older or incomplete; browsing does not sync Spotify.', 'small-note'),
-      scope, form, status, selectionHelp, selectionNotice, selectedActions, basket, rows, navigation); node.append(body);
+      scope, form, status, selectionHelp, selectionNotice, destinations, selectedActions, basket, rows, navigation); node.append(body);
     (doc.getElementById('search-results') || dialog.lastElementChild)?.before(node);
     let disposed = false, timer = null, focusAlbum = false, lastPage = null;
     const visible = () => !disposed && !doc.hidden && dialog.open && node.open && node.isConnected && !node.closest('[hidden], [inert]');
     const control = L.model({ call, changed: render });
     function clearTimer() { if (timer !== null) cancel(timer); timer = null; }
-    function close() { clearTimer(); node.open = false; control.close(); }
+    function close() { clearTimer(); if (reviewing) session.cancel(); node.open = false; control.close(); }
     function select(item, action, destination) {
       if (!visible() || !destination || !controller.canControl() || session.state.pending) return;
       const selected = controller.selected(), choice = control.choose(item);
@@ -73,14 +84,29 @@ const DashboardLibraryPanel = (() => {
       }
     }
     async function selectTracks(action) {
-      if (!visible() || !controller.canControl() || session.state.pending) return;
+      if (!visible() || reviewing || !controller.canControl() || session.state.pending) return;
       const selected = controller.selected(), choice = control.chooseTracks();
       if (!selected || !choice) return;
-      const destination = Object.freeze({ target: C.key(selected.zone), shape: C.shape(selected.zone) });
-      close(); dialog.close();
-      if (!await session.reviewLibraryTracks(choice, action, destination) && !disposed && !doc.hidden) {
-        dialog.showModal(); node.open = true;
-        status.textContent = session.state.error || 'The destination changed. Refresh before reviewing the selected tracks.';
+      const destination = Object.freeze(trackDestination === 'set' ? { target: trackTarget, set: true }
+        : { target: C.key(selected.zone), shape: C.shape(selected.zone) });
+      reviewing = true; render(control.state);
+      try {
+        const reviewed = await session.reviewLibraryTracks(choice, action, destination);
+        if (!visible()) { if (reviewed === session.state.pending) session.cancel(); return; }
+        if (reviewed) {
+          // Keep the basket through asynchronous review. Only a valid review
+          // consumes this chooser; failed reads leave the selection editable.
+          reviewing = false; close(); dialog.close();
+        } else {
+          reviewing = false; render(control.state);
+          status.textContent = session.state.error || 'The destination changed. Review the selected tracks again.';
+        }
+      } finally {
+        reviewing = false;
+        if (!disposed) {
+          render(control.state);
+          if (visible() && session.state.error) status.textContent = session.state.error;
+        }
       }
     }
     function render(state) {
@@ -91,17 +117,22 @@ const DashboardLibraryPanel = (() => {
         : 'You can browse without speakers. Choose a listening group before playing or queueing.';
       kind.value = state.kind; if (filter.value !== state.filter) filter.value = state.filter;
       body.setAttribute('aria-busy', String(state.loading));
-      refresh.disabled = !visible() || state.loading;
+      refresh.disabled = !visible() || state.loading || reviewing;
       back.hidden = !state.album && !state.playlist;
       back.textContent = state.playlist ? 'Back to playlists' : 'Back to albums';
-      const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired;
-      const basketUsable = visible() && !state.loading;
+      kind.disabled = filter.disabled = reviewing;
+      const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired && !reviewing;
+      const basketUsable = visible() && !state.loading && !reviewing;
+      destinations.hidden = !state.basket.length;
+      destinationMode.value = trackDestination; destinationMode.disabled = reviewing || controller.state.busy;
+      if (destinationInput.value !== trackTarget) destinationInput.value = trackTarget;
+      targetLabel.hidden = trackDestination !== 'set'; destinationInput.disabled = reviewing || controller.state.busy;
       selectionHelp.hidden = selectedActions.hidden = state.kind !== 'tracks' && !state.basket.length;
       selectionNotice.textContent = state.selectionNotice; selectionNotice.hidden = !state.selectionNotice;
       selectedCount.textContent = `${state.basket.length} selected`;
-      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !basketUsable || !state.basket.length || !destination
+      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !basketUsable || !state.basket.length || (trackDestination === 'set' ? !trackTarget.trim() : !destination)
         || !controller.canControl() || !!session.state.pending;
-      selectedClear.disabled = !visible() || !state.basket.length;
+      selectedClear.disabled = !visible() || reviewing || !state.basket.length;
       const basketFocus = basket.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
       basket.hidden = !state.basket.length;
       basket.replaceChildren();
@@ -190,6 +221,14 @@ const DashboardLibraryPanel = (() => {
       if (visible()) void control.open(); else control.close();
     };
     node.addEventListener('toggle', toggle); dialog.addEventListener('close', close);
+    destinationMode.addEventListener('change', () => {
+      if (!visible() || reviewing || controller.state.busy) return;
+      trackDestination = destinationMode.value; session.cancel(); render(control.state);
+    });
+    destinationInput.addEventListener('input', () => {
+      if (!visible() || reviewing || controller.state.busy) return;
+      trackTarget = destinationInput.value; session.cancel(); render(control.state);
+    });
     kind.addEventListener('change', () => { if (visible()) { clearTimer(); void control.browse(kind.value); } });
     filter.addEventListener('input', () => {
       if (!visible()) return;

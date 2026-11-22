@@ -233,11 +233,9 @@ impl Surface {
         request.validate()?;
         if request.mode != ReviewedSourceMode::Play {
             let result = match request.tracks_request() {
-                Some(tracks) => self.queue_tracks_targets_reviewed(
-                    client,
-                    &tracks,
-                    &request.expected_revision,
-                ),
+                Some(tracks) => {
+                    self.queue_tracks_targets_reviewed(client, &tracks, &request.expected_revision)
+                }
                 None => self.queue_request_targets_reviewed(
                     client,
                     &request.queue_request()?,

@@ -317,7 +317,14 @@ fn room_set_selections_are_quiet_undo_together_and_keep_partial_cli_and_mcp_rece
         let run = s.cli(
             "selected-next",
             &[
-                mode, "--json", "queue-tracks", "selected", TRACK, EPISODE, TRACK, "--next",
+                mode,
+                "--json",
+                "queue-tracks",
+                "selected",
+                TRACK,
+                EPISODE,
+                TRACK,
+                "--next",
             ],
         );
         assert!(run.ok(), "{run:?}");
@@ -366,7 +373,15 @@ fn room_set_selections_are_quiet_undo_together_and_keep_partial_cli_and_mcp_rece
         let start = s.sim_handle().unwrap().soap_log().len();
         let partial = s.cli(
             "partial-selection",
-            &[mode, "--json", "queue-tracks", "selected", TRACK, EPISODE, TRACK],
+            &[
+                mode,
+                "--json",
+                "queue-tracks",
+                "selected",
+                TRACK,
+                EPISODE,
+                TRACK,
+            ],
         );
         assert!(!partial.ok(), "{partial:?}");
         assert!(partial.stderr.contains("queue addition incomplete"));

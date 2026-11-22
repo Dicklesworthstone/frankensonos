@@ -215,8 +215,7 @@ impl Surface {
                 .queue_request(client, &request)
                 .map(QueueAddOutcome::Single);
         }
-        let prepared =
-            self.prepare_queue_targets(&households, targets, revision.is_some())?;
+        let prepared = self.prepare_queue_targets(&households, targets, revision.is_some())?;
         // Every destination is retained before native or Spotify catalog I/O.
         let source = self.queue_targets_source(&rooms, request, &prepared)?;
         self.confirm_queue_targets(client, &households, &prepared, revision.is_some())?;
@@ -236,9 +235,11 @@ impl Surface {
                 request.zone, request.next
             ),
         };
-        Ok(QueueAddOutcome::Groups(
-            self.queue_targets_run(client, &households, &plan),
-        ))
+        Ok(QueueAddOutcome::Groups(self.queue_targets_run(
+            client,
+            &households,
+            &plan,
+        )))
     }
 
     /// Queue the same ordered occurrences in each distinct selected group.
@@ -294,8 +295,7 @@ impl Surface {
                 .queue_tracks(client, &request)
                 .map(QueueAddOutcome::Single);
         }
-        let prepared =
-            self.prepare_queue_targets(&households, targets, revision.is_some())?;
+        let prepared = self.prepare_queue_targets(&households, targets, revision.is_some())?;
         for group in &prepared {
             confirm_destination_revision(
                 &*self.transport,
@@ -341,9 +341,11 @@ impl Surface {
                 request.next
             ),
         };
-        Ok(QueueAddOutcome::Groups(
-            self.queue_targets_run(client, &households, &plan),
-        ))
+        Ok(QueueAddOutcome::Groups(self.queue_targets_run(
+            client,
+            &households,
+            &plan,
+        )))
     }
 
     fn prepare_queue_targets(
@@ -496,7 +498,8 @@ impl Surface {
                         fence.check()?;
                         fence.finish(plan.source.enqueue(&fence, households, group, plan.next))
                     } else {
-                        plan.source.enqueue(&*self.transport, households, group, plan.next)
+                        plan.source
+                            .enqueue(&*self.transport, households, group, plan.next)
                     }
                 });
             match result {

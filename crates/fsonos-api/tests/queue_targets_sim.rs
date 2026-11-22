@@ -735,8 +735,8 @@ fn selected_tracks(zone: &str, next: bool) -> QueueTracksRequest {
 }
 
 fn assert_selected_queue(house: &House, zone: &str, next: bool) {
-    let mut entries = browse_all(&house.sim.lan(), house.target(zone).coordinator.ip, QUEUE)
-        .unwrap();
+    let mut entries =
+        browse_all(&house.sim.lan(), house.target(zone).coordinator.ip, QUEUE).unwrap();
     let first = if next { 2 } else { 3 };
     let inserted: Vec<_> = entries
         .drain(first..first + 3)

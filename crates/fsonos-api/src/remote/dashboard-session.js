@@ -8,6 +8,8 @@ const DashboardSession = (() => {
     : typeof require === 'function' ? require('./dashboard-library.js') : null;
   const queueTracksApi = () => typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote
     : typeof require === 'function' ? require('./queue-tracks.js') : null;
+  const targetsApi = () => typeof SourceTargetsRemote !== 'undefined' ? SourceTargetsRemote : require('./source-targets.js');
+  const playerApi = () => typeof SourcePlayerRemote !== 'undefined' ? SourcePlayerRemote : require('./source-player.js');
   const directionApi = () => typeof DjDirection !== 'undefined' ? DjDirection : require('./dj-direction.js');
   const sceneQueueApi = () => typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
   const text = (v, max = 4096) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
@@ -117,6 +119,14 @@ const DashboardSession = (() => {
     const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
     const selection = () => controller.selected();
     const ready = () => active && !disposed && (demo || controller.canControl());
+    const targetCall = (name, args = {}) => {
+      const routes = { state: ['GET', '/zones/{room}/state'], ...playerApi().routes, ...targetsApi().routes };
+      const route = routes[name];
+      if (!route) fail('Unknown selected-track read.');
+      const url = route[1].replace(/\{([^}]+)\}/g, (_, key) => encodeURIComponent(args.params?.[key] || ''))
+        + (args.query ? '?' + new URLSearchParams(args.query) : '');
+      return call(url, args.body, { signal: args.signal });
+    };
     const freshDj = () => state.dj && state.target === controller.state.selected && now() - state.djAt < 45000 && !state.loading;
     function cancel() { ++intent; state.pending = null; emit(); }
     async function load() {
@@ -226,16 +236,33 @@ const DashboardSession = (() => {
     async function reviewLibraryTracks(value, action, destination) {
       const L = libraryApi(), Q = queueTracksApi();
       if (!L || !Q || !ready() || state.pending || !['play', 'append', 'next'].includes(action)) return null;
-      const item = selection();
-      if (!item || destination?.target !== C.key(item.zone) || destination?.shape !== C.shape(item.zone)) return null;
+      const item = selection(), set = destination?.set === true;
+      if (!item || (!set && (destination?.target !== C.key(item.zone) || destination?.shape !== C.shape(item.zone)))) return null;
       const target = C.key(item.zone), playback = playbackIdentity(item), id = ++intent;
       try {
         const catalog = L.selectionOf(value), tracks = Q.tracksOf(catalog.rows.map(row => row.item));
         const check = () => {
           if (!ready() || id !== intent || state.pending || target !== controller.state.selected
-              || playbackIdentity(selection()) !== playback) fail('The destination or selection review changed. Choose the tracks again.');
+              || (!set && playbackIdentity(selection()) !== playback)) fail('The destination or selection review changed. Choose the tracks again.');
         };
         await L.verifySelection(call, catalog, check);
+        if (set) {
+          const T = targetsApi(), player = playerApi(), choice = T.prepareTracks(tracks, action === 'append' ? 'end' : action);
+          const targets = await T.inspect({ call: targetCall, player, target: destination.target, ...choice, valid: check });
+          check();
+          const request = T.request(choice, targets, player);
+          state.result = null; state.error = '';
+          state.pending = freeze({ kind: 'library_tracks', target, label: targets.target,
+            title: `${{ play: 'Play selected now', next: 'Queue selected next', append: 'Add selected to end' }[action]}: ${tracks.length} track(s)`,
+            detail: action === 'play'
+              ? 'Replaces every reviewed group’s queue with this exact selection, then starts the first track. Your order and repeated occurrences are preserved. Shuffle and repeat are turned off.'
+              : 'Adds this exact selection in your chosen order to every reviewed group. Repeated occurrences are preserved and playback stays as it is.',
+            targetGroups: T.reviewGroups(targets),
+            trackSelection: catalog.rows.map(({ item: source, page }) => `${source.title || 'Untitled track'} · ${Q.originLabel(page)} · ${source.position ? 'Playlist position ' + source.position + ' · ' : ''}${source.source_uri}`),
+            catalogTracks: catalog, libraryAction: action, choice, targets,
+            url: '/sources/control', body: request.body });
+          emit(); return state.pending;
+        }
         const queue = Q.queueOf(await call(`/zones/${encodeURIComponent(target)}/queue?offset=0&limit=1`), target);
         if (!ready() || id !== intent || state.pending || target !== controller.state.selected
             || playbackIdentity(selection()) !== playback) return null;
@@ -298,6 +325,27 @@ const DashboardSession = (() => {
       };
       const ok = await controller.mutate(async ({ item, target, check, send }) => {
         valid(check);
+        if (r.targets) {
+          const T = targetsApi(), player = playerApi();
+          await libraryApi().verifySelection(call, r.catalogTracks, () => valid(check));
+          const before = await T.inspect({ call: targetCall, player, target: r.targets.target,
+            ...r.choice, valid: () => valid(check) });
+          valid(check);
+          if (before.signature !== r.targets.signature) fail('Playback, queues or resolved destinations changed. Review the selected tracks again.');
+          let value;
+          try { value = await send(r.url, r.body); }
+          catch (error) {
+            const receipt = T.failure(error, r.targets, player);
+            if (receipt) {
+              state.result = freeze({ kind: 'library_tracks', ...receipt });
+              throw Object.assign(new Error(receipt.detail), { code: error.code });
+            }
+            throw error;
+          }
+          const receipt = T.result(value, r.targets, player);
+          state.result = freeze({ kind: 'library_tracks', ...receipt });
+          return { done: receipt.detail, changed: true };
+        }
         if (r.kind === 'scene') {
           const [definition, groups] = await Promise.all([call(`/scenes/${encodeURIComponent(r.scene.name)}`).then(scene), call('/zones').then(C.zones)]);
           valid(check);
@@ -377,14 +425,16 @@ const DashboardSession = (() => {
           return { ...result, done: `${result.done}${incomplete ? ' Partial result: check the failed or skipped steps below. No automatic retry.' : ''}` };
         }
         return result;
-      }, { wholeHouse: r.kind === 'scene' });
+      }, { wholeHouse: r.kind === 'scene' || !!r.targets });
       emit(); if (ok && active && !disposed) await load(); return ok;
     }
     return { state, load, catalog, search, review, reviewLibrary, reviewLibraryTracks, reviewQueue, reviewScene, confirm, cancel,
       queueChanged(room = null) {
         const item = selection();
         if (!disposed && ['queue', 'library_tracks'].includes(state.pending?.kind)
-            && (!room || item?.zone.members.includes(room))) cancel();
+            && (!room || (state.pending.targets ? state.pending.targets.groups.some(group =>
+              group.target === room || group.members.some(member => member.room === room || `${member.room}@${member.household}` === room))
+              : item?.zone.members.includes(room)))) cancel();
       },
       catalogChanged(change = null) {
         if (disposed || change?.favorites === false

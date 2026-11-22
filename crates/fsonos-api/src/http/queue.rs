@@ -13,9 +13,9 @@ use fastapi::core::RouteEntry;
 use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
-    ADD, MOVE, PLAY, PlayTracksRequest, QueueAddOutcome, QueueMoveRequest,
-    QueueMovedDto, QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, QueueRequest,
-    QueueTracksRequest, REMOVE,
+    ADD, MOVE, PLAY, PlayTracksRequest, QueueAddOutcome, QueueMoveRequest, QueueMovedDto,
+    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, QueueRequest, QueueTracksRequest,
+    REMOVE,
 };
 
 mod mode;

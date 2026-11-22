@@ -3,10 +3,10 @@
 Choose a few movements from a cached album, several entries from a playlist,
 or individual library tracks and play or queue them in one action.
 The selection contains **1–10 tracks or episodes**, preserves their supplied
-order and repeated occurrences. **Play selected now** replaces the selected
-group's queue and starts the first track in normal order. CLI, HTTP and MCP
-ordered playback and quiet queueing can also address a saved room set or every
-existing group, with the same selection in each. Queue-next and append
+order and repeated occurrences. **Play selected now** replaces each selected
+group's queue and starts the first track in normal order. The phone remote,
+Listening Room, CLI, HTTP and MCP can address one group, a saved room set or
+every existing group, with the same selection in each. Queue-next and append
 leave current playback alone. All three operations share the existing policy,
 action history and verified undo boundaries.
 
@@ -25,14 +25,24 @@ limit; removing one occurrence keeps the others. Unchecking a source row removes
 all its selected copies. A disc/track position or original playlist position
 distinguishes separate source occurrences, even when they share one URI.
 
-Choose an explicit listening group, then **Play selected now**, **Queue selected
-next** or **Add selected to end**. The review shows the complete ordered list,
-source URIs, destination and effect. Play-now explicitly reviews replacing the
-existing queue and starting the selected music. Confirm to send the selection
-once. Queue-next places
-the list after the current queue occurrence. When a group is playing another
-source, it appends to the queue without activating it. Paused playback stays
-paused, and queueing does not raise volume.
+Keep the chosen listening group, or change **Selected track destination** to
+**Rooms or saved room set**. Enter a room, saved alias, `here`,
+`all`/`everywhere`, `all@S1` or `all@S2` in **Rooms or room set for
+selected tracks**. Changing this destination keeps the selected tracks, custom
+order and repeats, and retires any earlier review.
+
+Choose **Play selected now**, **Queue selected next** or **Add selected to end**.
+The review shows the complete ordered list and source URIs, plus every affected
+group's current source and queue effect. Play-now explicitly reviews replacing
+each existing queue and starting the selected music. Confirm once to submit one
+daemon request for the complete room set. Grouped rooms are deduplicated;
+separate groups keep their membership and start independently.
+
+Queue-next places the list after each group's current queue occurrence.
+When a group is playing another source, it appends to that queue without
+activating it. Paused playback stays paused, and queueing does not raise volume.
+Confirmed insertions and failed destinations stay visible in a partial result;
+an uncertain or missing reply is never automatically replayed.
 
 Selection is limited to ten entries across cached listings, each browsed in
 50-entry pages. The list names each track's original album, playlist or filter.
@@ -45,17 +55,19 @@ read must finish first.
 Returning to a selected listing whose revision, contents or coverage changed
 also clears it with an explanation. An unrelated uncached playlist or failed
 listing does not discard music already selected elsewhere. You can browse and mark cached tracks
-without online speakers, but review requires a fresh explicit destination and
-readable queue. The phone retains the selected music when you choose another
-group and requires a new review for that group.
+without online speakers, but review requires fresh destinations and readable
+queues. Both clients retain the basket while editing its room-set destination.
+The Listening Room also keeps it editable after a failed review; a successful
+review closes the chooser only after the review is ready.
 
 Before showing the review and again at confirmation, the clients reread every
 distinct selected source page and its exact occurrences. Each listing retains
 its own revision and complete/partial cache evidence; different collections do
 not need matching revisions. Repeated copies share one verification read per
 page; at most ten source pages are read in each pass.
-Confirmation also checks destination group, playback source and destination queue. A changed
-listing, group, source or queue asks for another review. Queue-next also checks
+Confirmation also checks every destination group, playback source and queue,
+plus the complete resolved room-set revision. A changed listing, group, source,
+queue or audience asks for another review. Queue-next also checks
 that the current queue occurrence has not changed. These checks are optimistic
 observations; they do not reserve speakers against another controller. The
 server additionally retains and verifies its own destination through insertion
@@ -97,12 +109,16 @@ result. MCP marks partial delivery as an error while retaining every receipt.
 `expected_revision` is a **single destination's queue token**. It is accepted
 only when the selector resolves to one distinct group, including an alias
 naming several members of that same group. Supplying one token for multiple
-groups is rejected before speaker mutation; read and address each group
-separately when revision-bound playback is required. Without this caller token,
+groups is rejected before speaker mutation. Without this caller token,
 the server still retains and rechecks each original queue, source and group.
 
-The browser's ordered-selection review uses its own explicit destination
-review. Both direct track endpoints accept the same room-set selectors.
+Both direct track endpoints accept the same room-set selectors. For reviewed
+room-set operations, use `POST /sources/control` with
+`source: {"kind":"tracks","tracks":[...]}` and the audience revision returned
+by `GET /rooms/resolve`. Both browser baskets use this contract for room sets;
+they also reread every source page and destination queue before confirmation.
+The audience revision and a direct track endpoint's queue revision are
+different tokens; see [reviewed source requests](MULTI_ROOM_PLAYBACK.md#reviewed-source-requests).
 
 ### Add without changing playback
 
@@ -279,8 +295,28 @@ partial staging. Room-set regressions also cover alias deduplication, mixed
 S1/S2 destinations, per-household renderer preparation, shared undo, scalar
 revision refusal and per-target partial receipts. Browser Node tests execute the real selection components and
 their request/receipt logic with synthetic observations, including three-page
-catalogs, mixed collections and filters, custom order, repeats, exact source positions, delayed reads and lost
-HTTP replies. These browser additions use the existing Rust contracts. The new Rust checks
-remain unexecuted: local builds were killed in `asupersync` and `zerocopy`,
-and the execution environment then disconnected. Node coverage does not
-establish Rust or physical-speaker execution.
+catalogs, mixed collections and filters, custom order, repeats, exact source
+positions, delayed reads and lost HTTP replies. Room-set cases include actual
+destination controls, failed and cancelled review lifecycles, replacement-card
+command reservations, per-group receipts and the long write deadline. The
+focused nine-suite native Node run passed all 383 tests:
+
+```sh
+node --test --test-reporter=dot \
+  scripts/test-library-basket.cjs \
+  scripts/test-dashboard-library-basket.cjs \
+  scripts/test-remote-library.cjs \
+  scripts/test-source-targets.cjs \
+  scripts/test-dashboard-source-targets.cjs \
+  scripts/test-library-track-selection.cjs \
+  scripts/test-dashboard-library-actions.cjs \
+  scripts/test-remote-http.cjs \
+  scripts/test-dashboard-http.cjs
+```
+
+The new Rust checks remain unverified in this session. Earlier local builds
+were killed in `asupersync` and `zerocopy`; the later workspace has insufficient
+space for another full build. Rust formatting was checked with the available
+nightly formatter, which is newer than the repository's pinned toolchain.
+Native Node coverage does not establish Rust, rendered Chromium or
+physical-speaker execution.

@@ -193,8 +193,7 @@ impl Surface {
             // Retain every destination before any household's renderer
             // learning. The set executor rechecks the complete selection
             // before caps, snapshots or playback writes and again per group.
-            let destination =
-                control::TrackBatchDestination::read(transport, host, coordinator)?;
+            let destination = control::TrackBatchDestination::read(transport, host, coordinator)?;
             confirm_destination_revision(
                 transport,
                 host,

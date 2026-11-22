@@ -35,7 +35,34 @@ function catalog(query) {
 async function fixture(collection = 'tracks', rooms = true) {
   const calls = [], zones = ['S1', 'S2'].map(household => ({ household, coordinator_room: 'Room', members: ['Room', 'Study'] }));
   let hook;
-  const state = { source: 'fixture:current', queueRevision: 'queue-a' };
+  const state = { source: 'fixture:current', queueRevision: 'queue-a', targetRevision: 'a'.repeat(64), executions: 0 };
+  const resolve = target => {
+    const selected = zones.filter(zone => !/^all@/.test(target) || zone.household === target.slice(4));
+    const groups = selected.map(zone => {
+      const coordinator = `fixture-${zone.household}-Room${state.replaced ? '-new' : ''}`;
+      return { household: zone.household, coordinator, coordinator_room: 'Room',
+        members: zone.members.map(room => ({ household: zone.household, room,
+          player: room === 'Room' ? coordinator : `fixture-${zone.household}-${room}`, coordinator })) };
+    });
+    return { target, revision: state.targetRevision, matched: target.startsWith('all') || target === 'everywhere' ? 'everywhere' : 'alias',
+      groups, rooms: groups.flatMap(group => group.members) };
+  };
+  const queueFor = target => ({ zone: 'Room', total: target.endsWith('@S1') ? 2 : 5,
+    revision: state.queueRevision + '-' + target, playing: target.endsWith('@S1') ? 1 : null,
+    items: [{ position: 1, title: 'Current queue' }] });
+  const receipt = body => {
+    const groups = resolve(body.zone).groups;
+    return body.mode === 'play' ? { done: 'Playing selected tracks', changed: true, ...(groups.length > 1 ? { batch: {
+      complete: true, results: groups.map(group => ({ household: group.household, target: group.coordinator, zone: group.coordinator_room,
+        result: { status: 'succeeded', done: 'Started selected tracks', changed: true } })) } } : {}) }
+      : { done: 'Added selected tracks', complete: true, logged: true, undoable: true, failed: [],
+        added: groups.map(group => {
+          const queue = queueFor(`${group.coordinator_room}@${group.household}`);
+          return { household: group.household, coordinator: group.coordinator, queue: { zone: 'Room', done: 'Added selected tracks',
+            first: body.mode === 'next' && queue.playing !== null ? queue.playing + 1 : queue.total + 1,
+            count: body.source.tracks.length, playing_queue: queue.playing !== null } };
+        }) };
+  };
   const backend = async (name, args = {}) => {
     calls.push({ name, args: copy(args) });
     const changed = hook?.(name, args); if (changed !== undefined) return changed;
@@ -46,6 +73,9 @@ async function fixture(collection = 'tracks', rooms = true) {
       { kind: 'playlist', source_uri: playlist, title: 'Search playlist' },
     ];
     if (name === 'libraryHistory') return [];
+    if (name === 'sourceTargetResolve') return resolve(args.query.target);
+    if (name === 'sourceQueueState') return queueFor(args.params.room);
+    if (name === 'sourceControl') return receipt(args.body);
     if (name === 'queue') return { zone: 'Room', total: 2, revision: state.queueRevision, playing: 1,
       items: [{ position: 1, title: 'Current queue' }] };
     if (name === 'state') return { zone: copy(zones.find(zone => `${zone.coordinator_room}@${zone.household}` === args.params.room)),
@@ -55,11 +85,13 @@ async function fixture(collection = 'tracks', rooms = true) {
       count: args.body.tracks.length, playing_queue: true };
     throw new Error(`Unexpected ${name}`);
   };
-  const control = R.model({ call: backend }); await control.refreshRooms();
+  const control = R.model({ call: backend, executeSet: async (groups, work) => {
+    state.executions++; state.held = groups; return state.lane ? state.lane(groups, work) : work();
+  } }); await control.refreshRooms();
   if (rooms) control.target('Room@S2');
   assert.equal(await control.browse('tracks', 0, collection === 'album' ? { uri: album, title: 'Synthetic album' } : null,
     null, collection === 'playlist' ? { uri: playlist, title: 'Synthetic playlist' } : null), true);
-  return { control, calls, state, hook(fn) { hook = fn; },
+  return { control, calls, state, zones, resolve, receipt, hook(fn) { hook = fn; },
     reads: () => calls.filter(call => call.name === 'libraryBrowse' || call.name === 'libraryPlaylist'),
     writes: () => calls.filter(call => call.args.body !== undefined) };
 }
@@ -422,4 +454,92 @@ test('phone validates at most ten distinct selected source pages even across ten
   assert.equal(await f.control.confirm(), true); assert.equal(f.reads().length - before, 20);
   assert.equal(f.writes()[0].args.body.tracks.length, 10);
   assert.ok(f.writes()[0].args.body.tracks.every(track => track.source_uri === uri(1)));
+});
+
+for (const action of ['play', 'next', 'append']) test(`phone ${action} sends an ordered mixed-source basket to a reviewed room set once`, async () => {
+  for (const target of ['Evening & rooms/#', 'all', 'everywhere', 'all@S1', 'all@S2']) {
+    const f = await fixture(), rows = await selectMixed(f);
+    f.control.repeatTrack(rows[0].id); f.control.moveTrack(rows[3].id, -1);
+    const retained = f.control.state.basket, page = f.control.state.page;
+    assert.equal(f.control.trackTarget('trackDestination', 'set'), true);
+    assert.equal(f.control.trackTarget('trackTarget', target), true);
+    assert.equal(f.control.state.basket, retained); assert.equal(f.control.state.page, page);
+    const expected = retained.map(({ item }) => ({ source_uri: item.source, title: item.title }));
+    const reads = f.reads().length;
+    assert.equal(await f.control.chooseTracks(action), true, f.control.state.message);
+    const pending = f.control.state.pending;
+    assert.equal(pending.targets.groups.length, target.includes('@') ? 1 : 2);
+    assert.deepEqual(pending.body, { zone: target, expected_revision: f.state.targetRevision,
+      mode: action, source: { kind: 'tracks', tracks: expected } });
+    assert.equal(f.writes().length, 0);
+    assert.equal(await f.control.confirm(pending), true, f.control.state.message);
+    assert.equal(f.state.executions, 1); assert.equal(f.state.held.length, pending.targets.groups.length);
+    assert.equal(f.reads().length - reads, 8, 'all four source contexts are rechecked at review and confirmation');
+    assert.deepEqual(f.writes(), [{ name: 'sourceControl', args: { body: pending.body } }]);
+    assert.equal(f.control.state.result.complete, true);
+    assert.equal(await f.control.confirm(pending), false); assert.equal(f.writes().length, 1);
+  }
+});
+
+test('phone room-set destination changes preserve the basket and consume the old review', async () => {
+  const f = await fixture(); await selectMixed(f);
+  f.control.trackTarget('trackDestination', 'set'); f.control.trackTarget('trackTarget', 'all');
+  assert.equal(await f.control.chooseTracks('next'), true); const pending = f.control.state.pending, basket = f.control.state.basket;
+  f.control.trackTarget('trackTarget', 'all@S1');
+  assert.equal(f.control.state.basket, basket); assert.equal(f.control.state.pending, null);
+  assert.equal(await f.control.confirm(pending), false); assert.equal(f.writes().length, 0);
+  assert.equal(await f.control.chooseTracks('append'), true);
+  assert.equal(f.control.state.pending.targets.groups.length, 1);
+});
+
+for (const change of ['source', 'identity', 'revision', 'queue']) test(`phone changed ${change} prevents the whole room-set basket write`, async () => {
+  const f = await fixture(); await selectMixed(f);
+  f.control.trackTarget('trackDestination', 'set'); f.control.trackTarget('trackTarget', 'all');
+  assert.equal(await f.control.chooseTracks('play'), true); const pending = f.control.state.pending;
+  if (change === 'source') f.hook((name, args) => {
+    if (!['libraryBrowse', 'libraryPlaylist'].includes(name)) return;
+    const page = mixedCatalog(args.query); if (args.query.playlist_uri) page.items[0].title = 'Changed cached occurrence'; return page;
+  });
+  if (change === 'identity') f.state.replaced = true;
+  if (change === 'revision') f.state.targetRevision = 'b'.repeat(64);
+  if (change === 'queue') f.state.queueRevision = 'queue-new';
+  assert.equal(await f.control.confirm(pending), false); assert.equal(f.writes().length, 0);
+});
+
+test('phone a late room-set resolver cannot restore a review after a target edit', async () => {
+  const f = await fixture(), entered = deferred(), reply = deferred(); await selectThreePages(f);
+  f.control.trackTarget('trackDestination', 'set'); f.control.trackTarget('trackTarget', 'all');
+  f.hook(name => { if (name === 'sourceTargetResolve') { entered.resolve(); return reply.promise; } });
+  const reading = f.control.chooseTracks('play'); await entered.promise;
+  const basket = f.control.state.basket; f.control.trackTarget('trackTarget', 'all@S2');
+  reply.resolve(f.resolve('all')); assert.equal(await reading, false);
+  assert.equal(f.control.state.pending, null); assert.equal(f.control.state.basket, basket); assert.equal(f.writes().length, 0);
+});
+
+for (const response of ['partial', 'all_failed', 'lost', 'malformed', 'queue_count']) test(`phone retains ${response} room-set results without replaying the selected tracks`, async () => {
+  const f = await fixture(); await selectThreePages(f);
+  f.control.trackTarget('trackDestination', 'set'); f.control.trackTarget('trackTarget', 'all');
+  const action = response === 'queue_count' ? 'next' : 'play';
+  assert.equal(await f.control.chooseTracks(action), true); const pending = f.control.state.pending;
+  f.hook((name, args) => {
+    if (name !== 'sourceControl') return;
+    if (response === 'lost') throw new Error('Reply lost');
+    const receipt = f.receipt(args.body);
+    if (response === 'queue_count') { receipt.added[0].queue.count--; return receipt; }
+    if (response === 'malformed') { receipt.batch.results.pop(); return receipt; }
+    receipt.batch.complete = false;
+    receipt.batch.results[1].result = { status: 'failed', error: { code: 'OUTCOME_UNCERTAIN', detail: 'The reply was lost', retryable: false } };
+    if (response === 'all_failed') {
+      receipt.batch.results[0].result = { status: 'not_attempted' };
+      throw Object.assign(new Error('Playback incomplete'), { batch: receipt.batch });
+    }
+    return receipt;
+  });
+  assert.equal(await f.control.confirm(pending), response === 'partial');
+  if (['partial', 'all_failed'].includes(response)) {
+    assert.equal(f.control.state.result.complete, false);
+    assert.match(f.control.state.message, /Room@S1/); assert.match(f.control.state.message, /Room@S2/);
+  }
+  assert.match(f.control.state.message, /not repeated|Do not repeat/);
+  assert.equal(await f.control.confirm(pending), false); assert.equal(f.writes().length, 1);
 });

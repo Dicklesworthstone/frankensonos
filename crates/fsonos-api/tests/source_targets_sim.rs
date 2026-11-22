@@ -1290,7 +1290,10 @@ fn explicit_track_sets_preserve_order_repeats_caps_and_complete_queue_undo() {
         let result = surface
             .play_tracks(&Client::McpStdio, &selected_tracks(selector))
             .unwrap();
-        assert!(result.changed && result.complete(), "{selector}: {result:?}");
+        assert!(
+            result.changed && result.complete(),
+            "{selector}: {result:?}"
+        );
         let batch = result.batch.as_ref().unwrap();
         assert!(batch.complete);
         assert_eq!(batch.results.len(), selected.len());
@@ -1341,7 +1344,11 @@ fn explicit_track_sets_preserve_order_repeats_caps_and_complete_queue_undo() {
                 }
             } else {
                 house.original_playback(zone);
-                assert!(writes.iter().all(|call| call.player != target.coordinator.id.0));
+                assert!(
+                    writes
+                        .iter()
+                        .all(|call| call.player != target.coordinator.id.0)
+                );
             }
         }
         for zone in ROOMS {
@@ -1619,7 +1626,14 @@ fn reviewed_ordered_tracks_play_or_queue_in_every_admitted_group_with_one_undo()
                 for added in &outcome.added {
                     assert_eq!(
                         (added.queue.first, added.queue.count),
-                        (if mode == ReviewedSourceMode::Next { 3 } else { 4 }, 3)
+                        (
+                            if mode == ReviewedSourceMode::Next {
+                                3
+                            } else {
+                                4
+                            },
+                            3
+                        )
                     );
                 }
                 for zone in ["Lead@S1", "Lead@S2"] {
@@ -1738,11 +1752,7 @@ fn reviewed_track_baskets_keep_a_single_groups_identity_through_renderer_time_al
                     outcome.added[0].coordinator,
                     house.target("Lead@S1").coordinator.id.0
                 );
-                assert_reviewed_queue_tracks(
-                    &house,
-                    "Lead@S1",
-                    mode == ReviewedSourceMode::Next,
-                );
+                assert_reviewed_queue_tracks(&house, "Lead@S1", mode == ReviewedSourceMode::Next);
                 assert!(
                     house
                         .writes_since(start)

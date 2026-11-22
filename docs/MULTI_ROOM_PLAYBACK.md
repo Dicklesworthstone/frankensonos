@@ -66,6 +66,16 @@ each household's own entry and ID. The browser does not copy an ID from one
 household into another household's selection. The single-group playlist picker,
 individual saved-track actions and line-in controls remain available.
 
+The cached-library baskets also target room sets. Select up to ten tracks
+across albums, playlists, filters and pages, arrange or repeat occurrences,
+then choose **Rooms or saved room set** in **Selected track destination**.
+Enter the alias or selector and choose **Play selected now**, **Queue selected
+next** or **Add selected to end**. The basket survives destination edits, and
+review lists the exact ordered selection plus each group's source and queue
+effect. Both source-page observations and destination evidence are reread at
+confirmation. See [ordered track selections](QUEUE_TRACK_SELECTIONS.md) for
+the chooser and revision contracts.
+
 Confirmation checks the complete target, catalog selection and relevant state
 again, reserves the existing browser command lanes, and sends one daemon
 request containing the resolver's revision. The daemon checks that revision
@@ -261,7 +271,8 @@ writes. After dispatch begins, HTTP returns the complete batch receipt, even
 if every group failed. **Check `complete` and every `failed` entry; an HTTP 200
 does not mean all groups accepted the addition.** The CLI prints the receipt
 (JSON with `--json`) and exits nonzero for an incomplete batch. MCP retains the
-same structured receipt and names each destination's result in its text.
+same structured receipt, names each destination's result in its text, and
+sets `isError` for an incomplete batch.
 
 Never repeat the whole request after partial or uncertain delivery. Read the
 failed groups' queues before deciding on a new targeted add. Definite refusals

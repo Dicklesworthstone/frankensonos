@@ -6,6 +6,8 @@ const LibraryRemote = (() => {
     : typeof require === 'function' ? require('./playlist-contents.js') : null;
   const Q = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote
     : typeof require === 'function' ? require('./queue-tracks.js') : null;
+  const targetsApi = () => typeof SourceTargetsRemote !== 'undefined' ? SourceTargetsRemote : require('./source-targets.js');
+  const playerApi = () => typeof SourcePlayerRemote !== 'undefined' ? SourcePlayerRemote : require('./source-player.js');
   const LIMIT = 50;
   const MAX_QUERY = 512;
   const routes = {
@@ -167,14 +169,14 @@ const LibraryRemote = (() => {
       next: page.next, revision: page.revision, hits: Object.freeze(hits), playlist: page });
   }
 
-  function model({ call, changed = () => {}, played = () => {} }) {
+  function model({ call, changed = () => {}, played = () => {}, executeSet = async (_, work) => work() }) {
     let epoch = 0;
     let disposed = false;
     const selection = Q?.basket();
     const state = { open: false, zones: [], target: '', query: '', hits: [], view: 'search',
       loaded: false, loading: false, writing: false, pending: null, message: '',
       page: null, browseKind: 'tracks', browseAlbum: null, browsePlaylist: null, selected: [],
-      basket: Object.freeze([]), selectionNotice: '' };
+      basket: Object.freeze([]), selectionNotice: '', trackDestination: 'group', trackTarget: '', result: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
     const destination = () => state.zones.find((zone) => zone.target === state.target);
     const observation = (page = state.page) => Q.basketPage({
@@ -432,17 +434,32 @@ const LibraryRemote = (() => {
       return true;
     }
 
+    function trackTarget(field, value) {
+      if (disposed || !state.open || state.writing || !['trackDestination', 'trackTarget'].includes(field)
+          || typeof value !== 'string' || (field === 'trackDestination' && !['group', 'set'].includes(value))) return false;
+      ++epoch; state.pending = null; state.loading = false; state.result = null;
+      state[field] = value; state.message = ''; publish(); return true;
+    }
+
     async function chooseTracks(action) {
-      const zone = destination();
-      if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || !zone
+      const zone = destination(), set = state.trackDestination === 'set';
+      if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || (set ? !state.trackTarget.trim() : !zone)
           || !state.basket.length || !['play', 'append', 'next'].includes(action)) return false;
       const rows = Object.freeze(state.basket.map(row => Object.freeze({ ...row, hit: row.item })));
       const catalog = Object.freeze({ rows });
       const version = ++epoch;
-      state.loading = true; state.message = 'Checking selected pages and the destination queue for review…'; publish();
+      state.loading = true; state.result = null; state.message = 'Checking selected pages and destination queues for review…'; publish();
       try {
         if (!await verifySelection(rows, () => current(version))) return false;
         const tracks = Q.tracksOf(rows.map(({ hit }) => ({ source_uri: hit.source, title: hit.title })));
+        if (set) {
+          const T = targetsApi(), player = playerApi(), choice = T.prepareTracks(tracks, action === 'append' ? 'end' : action);
+          const valid = () => { if (!current(version)) throw new Error('The track selection or destination changed during review.'); };
+          const targets = await T.inspect({ call, player, target: state.trackTarget, ...choice, valid });
+          valid();
+          state.pending = Object.freeze({ tracks: catalog, action, version, choice, targets, ...T.request(choice, targets, player) });
+          state.message = ''; return true;
+        }
         const [queueValue, playbackValue] = await Promise.all([
           call('queue', { params: { room: zone.target }, query: { offset: 0, limit: 1 } }),
           call('state', { params: { room: zone.target } }),
@@ -508,6 +525,24 @@ const LibraryRemote = (() => {
       let sent = false;
       publish();
       try {
+        if (pending.targets) {
+          const T = targetsApi(), player = playerApi();
+          const valid = () => { if (!current(version)) throw new Error('The track selection review closed or changed before sending.'); };
+          await executeSet(pending.targets.groups, async () => {
+            if (sent) return;
+            valid();
+            if (!await verifySelection(pending.tracks.rows, () => current(version))) return;
+            const before = await T.inspect({ call, player, target: pending.targets.target, ...pending.choice, valid });
+            valid();
+            if (before.signature !== pending.targets.signature) throw new Error('Playback, queues or resolved destinations changed. Review the selected tracks again.');
+            sent = true;
+            const value = await call(pending.route, { body: pending.body });
+            state.result = T.result(value, pending.targets, player);
+            state.message = state.result.detail;
+          });
+          if (!sent) throw new Error('No selected-track command was sent. Review the destinations again.');
+          selection?.clear(); syncSelection(); return true;
+        }
         const zones = zonesOf(await call('zones'));
         if (!current(version)) return false;
         if (!zones.some((zone) => zone.signature === pending.zone.signature)) {
@@ -581,8 +616,9 @@ const LibraryRemote = (() => {
         state.hits = [];
         state.loaded = false;
         selection?.clear(); syncSelection();
-        state.message = `${message(error)}${sent
-          ? ' Read the room and queue before trying again; the request was not repeated.' : ' No playback request was sent.'}`;
+        state.result = sent && pending.targets ? targetsApi().failure(error, pending.targets, playerApi()) : null;
+        state.message = state.result?.detail || `${message(error)}${sent
+          ? ' Read the rooms and queues before another action; the request was not repeated.' : ' No playback request was sent.'}`;
         return false;
       } finally {
         state.writing = false;
@@ -598,21 +634,28 @@ const LibraryRemote = (() => {
             || change?.household && destination()?.household !== change.household) return;
         invalidate(true); state.message = 'The household favorites changed. Search again for current results.'; publish();
       },
-      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, chooseTracks, routine, cancel, confirm,
+      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, trackTarget, chooseTracks, routine, cancel, confirm,
       removeTrack: id => editSelection('remove', id), repeatTrack: id => editSelection('repeat', id),
       moveTrack: (id, delta) => editSelection('move', id, delta),
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; invalidate(); } };
   }
 
-  function panel({ call, el, played }) {
+  function panel({ call, el, played, executeSet }) {
     const body = el('div', { class: 'library-body' });
     const node = el('details', { class: 'library' }, el('summary', { text: 'Find music' }), body);
-    const control = model({ call, played, changed: render });
+    const control = model({ call, played, executeSet, changed: render });
     const button = (label, action, disabled = false, key = label) => el('button', {
       type: 'button', text: label, onclick: action, disabled, 'data-library-focus': key,
     });
     const destination = el('select', { 'aria-label': 'Destination group' });
+    const trackDestination = el('select', { 'aria-label': 'Selected track destination' },
+      el('option', { value: 'group', text: 'Chosen listening group' }),
+      el('option', { value: 'set', text: 'Rooms or saved room set' }));
+    const trackTarget = el('input', { type: 'text', maxlength: 128, 'aria-label': 'Rooms or room set for selected tracks',
+      placeholder: 'Saved alias, everywhere, all@S1 or all@S2' });
+    const trackTargetLabel = el('label', {}, 'Rooms or room set', trackTarget);
+    const trackTargets = el('div', { class: 'row' }, el('label', {}, 'Selected tracks in', trackDestination), trackTargetLabel);
     const input = el('input', { type: 'search', maxlength: MAX_QUERY, placeholder: 'Artist, title, album or playlist',
       'aria-label': 'Search your music library', class: 'library-query' });
     const search = button('Search library', () => control.search());
@@ -637,6 +680,8 @@ const LibraryRemote = (() => {
         : 'Music routines opened. Check the music, group and timing there before saving.';
     }
     destination.addEventListener('change', () => control.target(destination.value));
+    trackDestination.addEventListener('change', () => control.trackTarget('trackDestination', trackDestination.value));
+    trackTarget.addEventListener('input', () => control.trackTarget('trackTarget', trackTarget.value));
     input.addEventListener('input', () => control.query(input.value));
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); control.filter(); }
@@ -644,7 +689,7 @@ const LibraryRemote = (() => {
     body.append(el('p', { text: 'Browse cached tracks, albums and playlists, or search your library and the chosen household’s Sonos favorites. Choose a group before playing.' }),
       el('label', {}, 'Play in', destination), el('div', { class: 'row' }, rooms),
       input, el('div', { class: 'row' }, search, recent),
-      el('div', { class: 'row' }, ...browseButtons.map(([, button]) => button)), navigation, status, results);
+      el('div', { class: 'row' }, ...browseButtons.map(([, button]) => button)), navigation, trackTargets, status, results);
 
     function render(state) {
       const active = document.activeElement;
@@ -665,6 +710,10 @@ const LibraryRemote = (() => {
       }
       navigation.hidden = state.view !== 'browse' || Boolean(state.pending);
       const busy = state.loading || state.writing;
+      trackTargets.hidden = !state.basket.length;
+      trackDestination.value = state.trackDestination; trackDestination.disabled = state.writing;
+      if (trackTarget.value !== state.trackTarget) trackTarget.value = state.trackTarget;
+      trackTargetLabel.hidden = state.trackDestination !== 'set'; trackTarget.disabled = state.writing;
       previous.disabled = busy || !state.loaded || !state.page || state.page.offset === 0;
       next.disabled = busy || !state.loaded || !state.page || state.page.next === null;
       refresh.disabled = busy;
@@ -677,7 +726,7 @@ const LibraryRemote = (() => {
       results.replaceChildren();
       if (Q && !state.pending && (state.basket.length || state.loaded && state.view === 'browse' && state.browseKind === 'tracks')) {
         const choose = action => { reviewFocus = `selected-${action}`; void control.chooseTracks(action); };
-        const locked = busy || !state.basket.length || !state.target;
+        const locked = busy || !state.basket.length || (state.trackDestination === 'set' ? !state.trackTarget.trim() : !state.target);
         const basketList = el('ol', { class: 'library-selection', 'aria-label': 'Selected tracks in playback order' });
         state.basket.forEach((entry, index) => {
           const hit = entry.item;
@@ -716,11 +765,12 @@ const LibraryRemote = (() => {
           hit.source].filter(Boolean).join(' · ') }));
         results.append(el('div', { class: 'library-review', role: 'group', 'aria-label': 'Review selected tracks' },
           el('strong', { text: `${label}: ${pending.tracks.rows.length} track(s)` }),
-          el('p', { text: `Destination: ${pending.zone.label}` }), list,
+          el('p', { text: `Destination: ${pending.targets ? pending.targets.target : pending.zone.label}` }), list,
+          pending.targets ? el('ul', {}, ...targetsApi().reviewGroups(pending.targets).map(text => el('li', { text }))) : null,
           el('p', { text: pending.action === 'play'
-            ? `Replaces this group’s ${pending.queue.total} existing queue entries with only the tracks shown, then starts from the first track in this order. Repeated occurrences are preserved. Shuffle and repeat are turned off. This changes current playback.`
+            ? `Replaces ${pending.targets ? 'each reviewed group’s queue' : `this group’s ${pending.queue.total} existing queue entries`} with only the tracks shown, then starts from the first track in this order. Repeated occurrences are preserved. Shuffle and repeat are turned off. This changes current playback.`
             : 'Adds this exact list in the shown order, including repeated occurrences. Playback stays as it is. The whole successful selection has one undo record.' }),
-          pending.action === 'next' && pending.queue.playing === null
+          !pending.targets && pending.action === 'next' && pending.queue.playing === null
             ? el('p', { text: 'This group is not playing its queue. The selection will be added to its end without changing the source.' }) : null,
           el('div', { class: 'row' }, button('Cancel', () => control.cancel()),
             button(`Confirm ${label.toLowerCase()}`, () => control.confirm(pending)))));
@@ -826,5 +876,18 @@ if (typeof module !== 'undefined' && module.exports) module.exports = LibraryRem
 else {
   Object.assign(ROUTES, LibraryRemote.routes);
   const libraryRoot = document.getElementById('music-library');
-  if (libraryRoot) libraryRoot.append(LibraryRemote.panel({ call, el, played: loadZones }).node);
+  if (libraryRoot) {
+    let levels;
+    registerCardPanel(parts => {
+      const observe = () => levels?.observe(parts); observe();
+      return { node: el('span', { hidden: true }), observe, block: observe };
+    });
+    libraryRoot.append(LibraryRemote.panel({ call, el, played: loadZones,
+      executeSet(groups, work) {
+        levels ||= RoomSetsRemote.levelLanes({ cards: () => house.cards.values(), flights: volumeFlights });
+        return RoomSetsRemote.coordinated({ cards: () => house.cards.values(), refresh: loadZones,
+          begin: beginAction, end: endAction, shape: groupShape, levels })(groups, work);
+      },
+    }).node);
+  }
 }

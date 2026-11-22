@@ -54,22 +54,55 @@ function uncachedPlaylist(query) {
     coverage: 'not_cached', fetched_at: null, revision: null, next_offset: null, items: [] };
 }
 
-async function fixture({ collection = 'album', callWrapper } = {}) {
+async function fixture({ collection = 'album', callWrapper, sets = false } = {}) {
   const group = { household: 'S2', coordinator_room: 'Room', members: ['Room', 'Study'], transport_state: 'paused' };
   const value = { group, playback: { zone: copy(group), transport_state: 'paused', volume: 27,
     track: { uri: 'fixture:current', queue_position: 1 } },
   queue: { zone: 'Room', total: 2, revision: 'queue-a', playing: 1,
     items: [{ position: 1, title: 'Current queue entry' }] } };
+  const groups = sets ? [group, { ...copy(group), household: 'S1' }] : [group];
+  value.targetRevision = 'a'.repeat(64);
+  const resolve = target => {
+    const selected = groups.filter(zone => !target.startsWith('all@') || zone.household === target.slice(4));
+    const resolved = selected.map(zone => {
+      const coordinator = `fixture-${zone.household}-Room${value.replaced ? '-new' : ''}`;
+      return { household: zone.household, coordinator, coordinator_room: zone.coordinator_room,
+        members: zone.members.map(room => ({ household: zone.household, room,
+          player: room === 'Room' ? coordinator : `fixture-${zone.household}-${room}`, coordinator })) };
+    });
+    return { target, revision: value.targetRevision, matched: target.startsWith('all') || target === 'everywhere' ? 'everywhere' : 'alias',
+      groups: resolved, rooms: resolved.flatMap(group => group.members) };
+  };
+  const queueFor = target => target.endsWith('@S1') ? { ...copy(value.queue), total: 4, playing: null,
+    revision: value.queue.revision + '-S1' } : copy(value.queue);
+  const receipt = body => {
+    const selected = resolve(body.zone).groups;
+    return body.mode === 'play' ? { done: 'Playing selected tracks', changed: true, ...(selected.length > 1 ? { batch: {
+      complete: true, results: selected.map(group => ({ household: group.household, target: group.coordinator, zone: group.coordinator_room,
+        result: { status: 'succeeded', done: 'Started selected tracks', changed: true } })) } } : {}) }
+      : { done: 'Added selected tracks', complete: true, logged: true, undoable: true, failed: [],
+        added: selected.map(group => {
+          const queue = queueFor(`${group.coordinator_room}@${group.household}`);
+          return { household: group.household, coordinator: group.coordinator, queue: { zone: 'Room', done: 'Added selected tracks',
+            first: body.mode === 'next' && queue.playing !== null ? queue.playing + 1 : queue.total + 1,
+            count: body.source.tracks.length, playing_queue: queue.playing !== null } };
+        }) };
+  };
   const calls = [];
   let hook;
   const backend = async (url, body) => {
     calls.push({ url, body: copy(body) });
     const override = hook?.(url, body);
     if (override !== undefined) return override;
-    if (url === '/zones') return [copy(value.group)];
-    if (url.endsWith('/state')) return copy(value.playback);
+    if (url === '/zones') return copy(groups);
+    if (url.startsWith('/rooms/resolve?')) return resolve(queryOf(url).target);
+    if (url === '/sources/control') return receipt(body);
+    if (url.endsWith('/state')) {
+      const zone = groups.find(group => url.includes(encodeURIComponent(C.key(group))));
+      return { ...copy(value.playback), zone: copy(zone) };
+    }
     if (url.endsWith('/dj')) return { zone: 'Room', running: false, steering: { source: 'none' }, next: [] };
-    if (url.includes('/queue?')) return copy(value.queue);
+    if (url.includes('/queue?')) return queueFor(decodeURIComponent(url.split('/')[2]));
     if (url.startsWith('/library/')) return catalog(queryOf(url));
     if (url === '/queue/tracks') return { done: 'Queued selected tracks', zone: 'Room',
       first: body.next ? 2 : 3, count: body.tracks.length, playing_queue: true };
@@ -90,9 +123,10 @@ async function fixture({ collection = 'album', callWrapper } = {}) {
   } else assert.equal(await library.browse('tracks'), true);
   const select = index => assert.equal(library.selectTrack(library.state.page.items[index], true), true);
   const destination = () => ({ target: controller.state.selected, shape: C.shape(controller.selected().zone) });
-  return { value, calls, library, session, controller, select, backend,
+  return { value, groups, calls, library, session, controller, select, backend, resolve, receipt,
     hook(fn) { hook = fn; },
     review: action => session.reviewLibraryTracks(library.chooseTracks(), action, destination()),
+    reviewSet: (action, target = 'all') => session.reviewLibraryTracks(library.chooseTracks(), action, { target, set: true }),
     writes: () => calls.filter(call => call.body !== undefined) };
 }
 
@@ -601,4 +635,101 @@ test('a cross-page selection with a lost HTTP acknowledgement is submitted once 
   await f.controller.refresh();
   assert.equal(await f.review('append'), null, 'ordinary background refresh cannot authorize retry');
   assert.equal(posts, 1);
+});
+
+for (const action of ['play', 'next', 'append']) test(`dashboard ${action} sends a mixed-source ordered basket to each reviewed group once`, async () => {
+  for (const target of ['Evening & rooms/#', 'all', 'everywhere', 'all@S1', 'all@S2']) {
+    const f = await fixture({ collection: 'tracks', sets: true }); await selectMixedSources(f);
+    const rows = f.library.state.basket; f.library.repeatTrack(rows[0].id); f.library.moveTrack(rows[2].id, -1);
+    const expected = f.library.state.basket.map(({ item }) => ({ source_uri: item.source_uri, title: item.title }));
+    const reads = f.calls.filter(catalogRead).length;
+    const review = await f.reviewSet(action, target); assert.ok(review, f.session.state.error);
+    assert.equal(review.target, 'Room@S2', 'the controller anchor remains separate from the selected room-set query');
+    assert.equal(review.targets.target, target);
+    assert.equal(review.targets.groups.length, target.includes('@') ? 1 : 2);
+    assert.deepEqual(review.body, { zone: target, expected_revision: f.value.targetRevision,
+      mode: action, source: { kind: 'tracks', tracks: expected } });
+    assert.equal(review.targetGroups.length, review.targets.groups.length);
+    assert.equal(f.writes().length, 0);
+    assert.equal(await f.session.confirm(review), true, f.controller.state.message);
+    assert.equal(f.calls.filter(catalogRead).length - reads, 6, 'all selected source pages are checked twice');
+    assert.deepEqual(f.writes().map(({ url, body }) => ({ url, body })), [{ url: '/sources/control', body: review.body }]);
+    assert.equal(f.session.state.result.complete, true);
+    assert.equal(await f.session.confirm(review), false); assert.equal(f.writes().length, 1);
+  }
+});
+
+test('dashboard changing the reviewed room set retains the basket and retires the prior confirmation', async () => {
+  const f = await fixture({ collection: 'tracks', sets: true }); await selectMixedSources(f);
+  const basket = f.library.state.basket, old = await f.reviewSet('play', 'all'); assert.ok(old);
+  f.session.cancel();
+  const next = await f.reviewSet('append', 'all@S1'); assert.ok(next);
+  assert.equal(f.library.state.basket, basket); assert.equal(next.targets.groups.length, 1);
+  assert.equal(await f.session.confirm(old), false); assert.equal(f.writes().length, 0);
+});
+
+for (const change of ['source', 'identity', 'revision', 'queue']) test(`dashboard changed ${change} prevents the whole reviewed room-set basket write`, async () => {
+  const f = await fixture({ collection: 'tracks', sets: true }); await selectMixedSources(f);
+  const review = await f.reviewSet('play'); assert.ok(review);
+  if (change === 'source') f.hook(url => {
+    if (!catalogRead({ url })) return;
+    const query = queryOf(url), page = catalog(query);
+    if (query.playlist_uri) page.items[0].title = 'Changed cached occurrence'; return page;
+  });
+  if (change === 'identity') f.value.replaced = true;
+  if (change === 'revision') f.value.targetRevision = 'b'.repeat(64);
+  if (change === 'queue') f.value.queue.revision = 'queue-new';
+  assert.equal(await f.session.confirm(review), false); assert.equal(f.writes().length, 0);
+});
+
+test('dashboard cancelling a pending room-set resolution cannot publish a late basket review', async () => {
+  const f = await fixture({ sets: true }), entered = deferred(), reply = deferred(); await selectAcrossPages(f);
+  f.hook(url => { if (url.startsWith('/rooms/resolve?')) { entered.resolve(); return reply.promise; } });
+  const preparing = f.reviewSet('play'); await entered.promise; f.session.cancel();
+  reply.resolve(f.resolve('all')); assert.equal(await preparing, null);
+  assert.equal(f.session.state.pending, null); assert.equal(f.writes().length, 0);
+});
+
+test('dashboard room-set basket holds its existing command lane until the one receipt arrives', async () => {
+  const f = await fixture({ sets: true }), reply = deferred(); await selectAcrossPages(f);
+  const review = await f.reviewSet('next');
+  f.hook((url, body) => url === '/sources/control' ? reply.promise : undefined);
+  const sending = f.session.confirm(review); while (!f.writes().length) await tick();
+  assert.equal(f.controller.state.busy, true); assert.equal(await f.controller.command('resume'), false);
+  assert.equal(await f.session.confirm(review), false);
+  reply.resolve(f.receipt(review.body)); assert.equal(await sending, true); assert.equal(f.writes().length, 1);
+});
+
+for (const response of ['partial', 'all_failed', 'lost', 'malformed', 'queue_count']) test(`dashboard retains ${response} room-set results without replaying the selected tracks`, async () => {
+  const f = await fixture({ sets: true }); await selectAcrossPages(f);
+  const review = await f.reviewSet(response === 'queue_count' ? 'next' : 'play'); assert.ok(review);
+  f.hook((url, body) => {
+    if (url !== '/sources/control') return;
+    if (response === 'lost') throw new Error('Reply lost');
+    const receipt = f.receipt(body);
+    if (response === 'queue_count') { receipt.added[0].queue.count--; return receipt; }
+    if (response === 'malformed') { receipt.batch.results.pop(); return receipt; }
+    receipt.batch.complete = false;
+    receipt.batch.results[1].result = { status: 'failed', error: { code: 'OUTCOME_UNCERTAIN', detail: 'The reply was lost', retryable: false } };
+    if (response === 'all_failed') {
+      receipt.batch.results[0].result = { status: 'not_attempted' };
+      throw Object.assign(new Error('Playback incomplete'), { batch: receipt.batch });
+    }
+    return receipt;
+  });
+  assert.equal(await f.session.confirm(review), response === 'partial');
+  if (['partial', 'all_failed'].includes(response)) {
+    assert.equal(f.session.state.result.complete, false);
+    assert.match(f.session.state.result.detail, /Room@S1/); assert.match(f.session.state.result.detail, /Room@S2/);
+  }
+  assert.match(f.controller.state.message, /no retry|not repeated|Do not repeat/);
+  assert.equal(await f.session.confirm(review), false); assert.equal(f.writes().length, 1);
+});
+
+test('a queue event in any reviewed group retires the dashboard basket review', async () => {
+  const f = await fixture({ sets: true }); await selectAcrossPages(f);
+  const review = await f.reviewSet('next'); assert.ok(review);
+  f.session.queueChanged('Room@S1');
+  assert.equal(f.session.state.pending, null); assert.equal(await f.session.confirm(review), false);
+  assert.equal(f.writes().length, 0);
 });
