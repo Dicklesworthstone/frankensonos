@@ -3,12 +3,21 @@
 const RoomSetsRemote = (() => {
   const routes = { setRooms: ['GET', '/rooms'], resolveRooms: ['GET', '/rooms/resolve'],
     setPause: ['POST', '/pause'], setResume: ['POST', '/resume'],
-    setMute: ['POST', '/mute'], setVolume: ['POST', '/volume'] };
+    setMute: ['POST', '/mute'], setVolume: ['POST', '/volume'],
+    setSleepRead: ['GET', '/sleep'], setSleep: ['POST', '/sleep'], setFadePause: ['POST', '/pause/fade'] };
   const actions = Object.freeze({ pause: 'Pause groups', resume: 'Resume groups',
     mute: 'Mute selected rooms', unmute: 'Unmute selected rooms',
-    lower: 'Lower each room', raise: 'Raise each room', volume: 'Set each room’s volume' });
+    lower: 'Lower each room', raise: 'Raise each room', volume: 'Set each room’s volume',
+    sleep_set: 'Set sleep timers', sleep_extend: 'Extend sleep timers', sleep_cancel: 'Cancel sleep timers',
+    fade_pause: 'Fade out and pause groups' });
+  const bedtime = action => ['sleep_set', 'sleep_extend', 'sleep_cancel', 'fade_pause'].includes(action);
+  const timersApi = () => typeof TimersRemote !== 'undefined' ? TimersRemote : require('./timers.js');
+  const playerApi = () => typeof SourcePlayerRemote !== 'undefined' ? SourcePlayerRemote : require('./source-player.js');
+  const sourcesApi = () => typeof SourceTargetsRemote !== 'undefined' ? SourceTargetsRemote : require('./source-targets.js');
   const MAX_ROOMS = 512;
   const text = (v, max = 4096) => typeof v === 'string' && v.trim() !== '' && v.length <= max && !/[\p{Cc}]/u.test(v);
+  const receiptText = v => typeof v === 'string' && v.trim() !== '' && v.length <= 65536
+    && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(v);
   const queryOf = v => {
     if (!text(v) || [...v.trim()].length > 128) throw new Error('Enter a room, alias, here, or everywhere (at most 128 characters).');
     return v.trim();
@@ -18,7 +27,7 @@ const RoomSetsRemote = (() => {
   const roomName = r => `${r.room}@${r.household}`;
   const identity = r => [r.household, r.room, r.player, r.coordinator];
   const order = (a, b) => roomKey(a) < roomKey(b) ? -1 : roomKey(a) > roomKey(b) ? 1 : 0;
-  const transport = action => action === 'pause' || action === 'resume';
+  const transport = action => action === 'pause' || action === 'resume' || bedtime(action);
 
   function resolutionOf(value, target) {
     const bad = () => { throw new Error('The resolved room set is incomplete or contradictory. Resolve it again.'); };
@@ -81,11 +90,26 @@ const RoomSetsRemote = (() => {
     return Object.freeze([...choices].map(([query, label]) => Object.freeze({ query, label })));
   }
 
-  function command(target, action, amount) {
+  function command(target, action, amount, duration = '45m', seconds = '5') {
     if (!Object.hasOwn(actions, action)) throw new Error('Choose a supported collective action.');
     const body = { zone: target };
     let route;
-    if (action === 'pause' || action === 'resume') route = action === 'pause' ? 'setPause' : 'setResume';
+    if (bedtime(action)) {
+      if (action === 'fade_pause') {
+        if (typeof seconds !== 'string' || !/^\d{1,2}$/.test(seconds.trim()) || Number(seconds) < 1 || Number(seconds) > 60) {
+          throw new Error('Choose a fade from 1 to 60 whole seconds.');
+        }
+        route = 'setFadePause'; body.fade_secs = Number(seconds);
+      } else {
+        route = 'setSleep';
+        if (action === 'sleep_cancel') body.cancel = true;
+        else {
+          body.duration = timersApi().durationOf(duration);
+          if (!body.duration) throw new Error('Choose a sleep duration from 1 second to 23 hours, such as 45m or 1h30m.');
+          if (action === 'sleep_extend') body.extend = true;
+        }
+      }
+    } else if (action === 'pause' || action === 'resume') route = action === 'pause' ? 'setPause' : 'setResume';
     else if (action === 'mute' || action === 'unmute') { route = 'setMute'; body.mute = action === 'mute'; }
     else {
       if (typeof amount !== 'string' || !/^\d{1,3}$/.test(amount.trim())) throw new Error('Enter a whole-number volume or step.');
@@ -95,6 +119,94 @@ const RoomSetsRemote = (() => {
       if (action === 'volume') body.volume = n; else body.delta = action === 'lower' ? -n : n;
     }
     return Object.freeze({ route, body: Object.freeze(body), action, amount });
+  }
+
+  function bedtimeGroup(group) {
+    return Object.freeze({ target: `${group.coordinator_room}@${group.household}`, household: group.household,
+      coordinator: group.coordinator_room, coordinator_id: group.coordinator, signature: group.shape });
+  }
+  function bedtimeView(view) { return { mode: 'play', groups: view.groups.map(bedtimeGroup) }; }
+  function sleepDuration(value) {
+    if (/^\d+$/.test(value)) return Number(value) * 60;
+    return [...value.matchAll(/(\d+)([hms])/g)].reduce((total, [, n, unit]) => total + Number(n) * { h: 3600, m: 60, s: 1 }[unit], 0);
+  }
+  function timerLabel(timer) {
+    return timer ? `${timer.fading ? 'Fading now. ' : ''}Timer pauses at ${timersApi().displayTime(timer.ends)}; ${timer.fades ? 'daemon fade' : 'speaker timer without a fade'}.`
+      : 'No active sleep timer.';
+  }
+  function bedtimeEffect(action, request, timer) {
+    if (action === 'sleep_cancel') return timer ? 'Cancel this timer; music is not restarted.' : 'No timer to cancel; this group stays unchanged.';
+    if (action === 'sleep_set') return `${timer ? 'Replace the current timer' : 'Set a timer'} for ${request.body.duration}.`;
+    if (action === 'sleep_extend') return !timer ? 'No timer to extend: this group will report a failure while the other groups continue.'
+      : timer.remaining + sleepDuration(request.body.duration) > 23 * 3600
+        ? 'This extension exceeds 23 hours here: this group will report a failure while the other groups continue.'
+        : `Add ${request.body.duration} to this group’s own remaining time.`;
+    return `Fade playing or transitioning groups over ${request.body.fade_secs} seconds, pause them, then restore their pre-fade levels. Paused or stopped groups stay unchanged.`;
+  }
+
+  // Sleep reads keep each group's own deadline. Ordinary countdown progress is
+  // expected; sameTimer also permits the speaker-only clock's rounding jitter.
+  async function bedtimeObservation(call, group, action, request, signal, valid) {
+    const target = bedtimeGroup(group), value = await call('state', { params: { room: target.target }, signal });
+    if (!valid()) return null;
+    const playback = playerApi().playback(value, target);
+    if (value.transport_status != null && !text(value.transport_status, 256)) {
+      throw new Error('A group returned an unreadable playback status. Read it again.');
+    }
+    const list = await call('setSleepRead', { query: { zone: target.target }, signal });
+    if (!valid()) return null;
+    if (!Array.isArray(list) || list.length > 1) throw new Error('A group returned an unreadable sleep timer list. Read it again.');
+    const timer = list.length ? timersApi().timerOf(list[0], target) : null;
+    return Object.freeze({ timer, signature: JSON.stringify([playback.signature, value.transport_status ?? null]),
+      label: `${target.target}: ${playback.label}${value.transport_status === 'ERROR_OCCURRED' ? ' · Playback error reported' : ''}. ${timerLabel(timer)} ${bedtimeEffect(action, request, timer)}` });
+  }
+
+  function sleepOutcome(value, preview) {
+    const { view, request } = preview, groups = view.groups;
+    const bad = () => { throw new Error('The daemon did not return one consistent sleep-timer receipt for every reviewed group. Read their timers before another change; this request was not repeated.'); };
+    const key = group => JSON.stringify([group.household, group.coordinator]);
+    const applied = (timer, group) => {
+      const current = timersApi().timerOf(timer, bedtimeGroup(group));
+      if ((request.action === 'sleep_cancel') !== (current === null)
+          || (current && (current.fading || !timer.changed))
+          || (request.action === 'sleep_set' && current.remaining !== sleepDuration(request.body.duration))) bad();
+      return Object.freeze({ household: group.household, coordinator: group.coordinator, zone: group.coordinator_room,
+        status: 'confirmed', complete: true, detail: `${group.coordinator_room}@${group.household}: ${timer.done}. ${timerLabel(current)}` });
+    };
+    if (groups.length === 1 && value && !Object.hasOwn(value, 'applied') && !Object.hasOwn(value, 'failed')) {
+      const target = applied(value, groups[0]);
+      return Object.freeze({ status: 'accepted', complete: true, partial: false, changed: value.changed,
+        detail: target.detail, targets: Object.freeze([target]) });
+    }
+    if (!value || !receiptText(value.done) || typeof value.complete !== 'boolean' || typeof value.changed !== 'boolean'
+        || !Array.isArray(value.applied) || !Array.isArray(value.failed)
+        || value.applied.length + value.failed.length !== groups.length || value.complete !== !value.failed.length) bad();
+    const expected = new Map(groups.map(g => [key(g), g])), found = new Map();
+    const claim = row => {
+      if (!row || !text(row.household) || !text(row.coordinator, 256)) bad();
+      const id = key(row), group = expected.get(id);
+      if (!group || found.has(id)) bad();
+      found.set(id, null); return group;
+    };
+    for (const row of value.applied) {
+      const group = claim(row); found.set(key(group), applied(row.timer, group));
+    }
+    for (const row of value.failed) {
+      const group = claim(row), error = row.error;
+      if (row.zone !== group.coordinator_room || !error || !text(error.code, 256) || !receiptText(error.detail)
+          || typeof error.retryable !== 'boolean' || (error.hint != null && (typeof error.hint !== 'string' || error.hint.length > 65536))
+          || error.batch != null) bad();
+      const status = error.code === 'OUTCOME_UNCERTAIN' ? 'uncertain' : 'failed';
+      found.set(key(group), Object.freeze({ household: group.household, coordinator: group.coordinator,
+        zone: group.coordinator_room, status, complete: false,
+        detail: `${group.coordinator_room}@${group.household}: ${status === 'uncertain' ? 'Outcome uncertain' : 'Failed'}: ${error.code}: ${error.detail}${error.hint ? ' ' + error.hint : ''}` }));
+    }
+    if (value.changed !== value.applied.some(row => row.timer.changed)) bad();
+    const targets = Object.freeze(groups.map(g => found.get(key(g))));
+    return Object.freeze({ status: 'accepted', complete: value.complete, partial: !value.complete, changed: value.changed,
+      uncertain: targets.some(t => t.status === 'uncertain'), targets,
+      detail: [value.done, ...targets.map(t => t.detail), ...(!value.complete
+        ? ['Read failed groups before another change. Do not repeat the whole batch.'] : [])].join('\n') });
   }
 
   function resumeState(value, group) {
@@ -122,40 +234,58 @@ const RoomSetsRemote = (() => {
       detail: [value.done, ...notes.map(n => `${n.code}: ${n.detail}`)].join(' '), notes: Object.freeze(notes) });
   }
 
-  function model({ call, execute = (_, work) => work(), changed = () => {} }) {
+  function model({ call, execute = (_, work) => work(), changed = () => {}, available = () => true, initialAction = 'pause' }) {
     let epoch = 0, disposed = false, reader = null;
-    const state = { open: false, input: '', action: 'pause', amount: '5', suggestions: [], reading: false,
+    const state = { open: false, input: '', action: Object.hasOwn(actions, initialAction) ? initialAction : 'pause',
+      amount: '5', duration: '45m', seconds: '5', suggestions: [], reading: false,
       writing: false, preview: null, result: null, message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
     const current = v => !disposed && state.open && epoch === v;
     const invalidate = () => { ++epoch; state.preview = null; reader?.abort(); };
     const read = async task => {
-      if (disposed || !state.open || state.reading || state.writing) return false;
+      if (disposed || !state.open || state.reading || state.writing || !available()) return false;
       const version = ++epoch, abort = new AbortController(); reader = abort;
       state.reading = true; state.preview = null; state.message = ''; publish();
       try { return await task(version, abort.signal); }
       catch (error) { if (current(version)) state.message = errorText(error); return false; }
       finally { state.reading = false; reader = null; publish(); }
     };
-    async function inspect(target, action, signal, valid) {
-      const view = resolutionOf(await call('resolveRooms', { query: { target }, signal }), target);
+    async function inspect(target, request, signal, valid) {
+      const action = request.action;
+      const resolve = async () => {
+        const value = await call('resolveRooms', { query: { target }, signal });
+        const view = resolutionOf(value, target);
+        if (!bedtime(action)) return view;
+        if (typeof value.revision !== 'string' || !/^[a-f0-9]{64}$/.test(value.revision)) {
+          throw new Error('The daemon must provide a room-set revision before a reviewed bedtime action can be sent.');
+        }
+        return Object.freeze({ ...view, revision: value.revision, signature: JSON.stringify([view.signature, value.revision]) });
+      };
+      const view = await resolve();
       if (!valid()) return null;
       const sources = new Array(view.groups.length);
-      if (action === 'resume') {
+      if (action === 'resume' || bedtime(action)) {
         let next = 0, failure = null;
         await Promise.all(Array.from({ length: Math.min(4, view.groups.length) }, async () => {
           while (valid() && !failure && next < view.groups.length) {
             const index = next++, group = view.groups[index];
             try {
-              const room = queryOf(`${group.coordinator_room}@${group.household}`);
-              sources[index] = resumeState(await call('state', { params: { room }, signal }), group);
+              if (bedtime(action)) sources[index] = await bedtimeObservation(call, group, action, request, signal, valid);
+              else {
+                const room = queryOf(`${group.coordinator_room}@${group.household}`);
+                sources[index] = resumeState(await call('state', { params: { room }, signal }), group);
+              }
             } catch (error) { failure = error; }
           }
         }));
         if (failure) throw failure;
       }
       if (!valid()) return null;
-      const entries = action === 'resume' ? sources : [];
+      if (bedtime(action) && (await resolve()).signature !== view.signature) {
+        throw new Error('The room set changed while its timers and playback were read. Review the current groups again.');
+      }
+      if (!valid()) return null;
+      const entries = action === 'resume' || bedtime(action) ? sources : [];
       return Object.freeze({ view, sources: Object.freeze(entries),
         signature: JSON.stringify([view.signature, entries.map(s => s.signature)]) });
     }
@@ -170,41 +300,53 @@ const RoomSetsRemote = (() => {
         });
       },
       edit(field, value) {
-        if (disposed || state.writing || !['input', 'action', 'amount'].includes(field) || typeof value !== 'string') return false;
+        if (disposed || state.writing || !['input', 'action', 'amount', 'duration', 'seconds'].includes(field) || typeof value !== 'string') return false;
         if (field === 'action' && !Object.hasOwn(actions, value)) return false;
         invalidate(); state[field] = value; state.message = ''; publish(); return true;
       },
       review() {
         return read(async (v, signal) => {
-          const target = queryOf(state.input), request = command(target, state.action, state.amount);
-          const snapshot = await inspect(target, request.action, signal, () => current(v));
+          const target = queryOf(state.input);
+          let request = command(target, state.action, state.amount, state.duration, state.seconds);
+          const snapshot = await inspect(target, request, signal, () => current(v));
           if (!snapshot || !current(v)) return false;
+          if (bedtime(request.action)) request = Object.freeze({ ...request,
+            body: Object.freeze({ ...request.body, expected_revision: snapshot.view.revision }) });
           state.preview = Object.freeze({ ...snapshot, request }); return true;
         });
       },
       async confirm(preview) {
-        if (disposed || !state.open || state.reading || state.writing || !preview || preview !== state.preview) return false;
+        if (disposed || !state.open || state.reading || state.writing || !available() || !preview || preview !== state.preview) return false;
         const version = ++epoch;
         state.preview = null; state.writing = true; state.message = 'Checking the complete room set…'; publish();
         let sent = false, accepted = false;
         try {
           await execute(preview.view.groups, async () => {
             if (sent || !current(version)) return;
-            const fresh = await inspect(preview.view.target, preview.request.action, undefined, () => current(version));
+            const fresh = await inspect(preview.view.target, preview.request, undefined, () => current(version));
             if (sent || !fresh || !current(version)) return;
             if (fresh.signature !== preview.signature) throw new Error('The resolved rooms, group identities, or resumed sources changed. Review the new target before acting.');
+            if (bedtime(preview.request.action) && fresh.sources.some((source, i) => !timersApi().sameTimer(source.timer, preview.sources[i].timer))) {
+              throw new Error('A sleep timer or its fade state changed. Read the timers and review this room set again.');
+            }
             sent = true;
-            const result = outcomeOf(await call(preview.request.route, { body: preview.request.body }));
+            const value = await call(preview.request.route, { body: preview.request.body });
+            const result = preview.request.action === 'fade_pause'
+              ? sourcesApi().result(value, bedtimeView(preview.view), playerApi())
+              : bedtime(preview.request.action) ? sleepOutcome(value, preview) : outcomeOf(value);
             state.result = result; accepted = true;
           });
           if (!sent) state.result = Object.freeze({ status: 'not_sent', detail: 'No command was sent. Review the target again.' });
         } catch (error) {
-          if (!accepted) state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent', detail: `${errorText(error)} ${sent
-            ? 'Some rooms may have changed, or the request may still finish. Check the house before another action; this request was not repeated.'
-            : 'No command was sent.'}` });
+          if (!accepted) state.result = sent && preview.request.action === 'fade_pause'
+            ? sourcesApi().failure(error, bedtimeView(preview.view), playerApi()) : null;
+          if (!accepted && !state.result) state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent', detail: `${errorText(error)} ${sent
+              ? 'Some rooms may have changed, or the request may still finish. Check the house before another action; this request was not repeated.'
+              : 'No command was sent.'}` });
         } finally { state.writing = false; state.message = ''; publish(); }
         return accepted;
       },
+      observe() { publish(); },
       cancel() { if (!disposed && !state.writing) { invalidate(); state.message = ''; publish(); } },
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; state.open = false; invalidate(); },
@@ -279,6 +421,6 @@ const RoomSetsRemote = (() => {
       },
     };
   }
-  return { routes, actions, resolutionOf, suggestionsOf, command, resumeState, outcomeOf, model, coordinated, levelLanes, transport, roomName, MAX_ROOMS };
+  return { routes, actions, resolutionOf, suggestionsOf, command, resumeState, outcomeOf, sleepOutcome, bedtime, model, coordinated, levelLanes, transport, roomName, MAX_ROOMS };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = RoomSetsRemote;

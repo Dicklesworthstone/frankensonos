@@ -1554,6 +1554,20 @@ environment becoming unavailable.
 Device alarms can't start the DJ or a scene and differ between S1 and S2, so the
 daemon owns scheduling. A run missed by more than 10 minutes is skipped.
 
+Sleep set, extend, cancel and read operations now accept saved room aliases,
+`all` / `everywhere`, and `all@S1` / `all@S2`. Each distinct existing group
+retains its own timer and returns its confirmed result or failure; grouped
+rooms act once and cross-household targets do not regroup speakers. Immediate
+and scheduled faded pauses use the same resolved audiences, with bounded
+concurrent fades, unchanged inactive groups, per-group receipts and one
+non-undoable action-history boundary. A scheduled fade retains its admitted
+physical audience through the durable occurrence claim. CLI, HTTP and MCP
+preserve partial results without replay, and the phone and dashboard expose
+reviewed bedtime actions through their shared room-set panel. Reviews include
+each group's current timer and playback, tolerate ordinary countdown progress,
+and invalidate after changed targets or timer edits. See
+[Multi-room bedtime](docs/MULTI_ROOM_BEDTIME.md).
+
 Run and skip admission atomically compare the stored schedule definition,
 enabled state and prior occurrence while recording the new occurrence. A pause,
 removal, replacement or competing claim committed by another process before

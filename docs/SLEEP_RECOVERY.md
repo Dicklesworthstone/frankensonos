@@ -6,6 +6,11 @@ expected level. Each speaker's own timer remains a backstop five minutes after
 the daemon's deadline. A direct CLI or standalone MCP timer uses that native
 timer without the daemon's fade.
 
+The same behavior applies independently to every group selected by a saved
+room alias, `all` / `everywhere`, or `all@S1` / `all@S2`. See
+[Multi-room bedtime](MULTI_ROOM_BEDTIME.md) for set, extend, cancel, read and
+faded-pause commands, browser controls and partial-result handling.
+
 ## Recovering an interrupted fade
 
 The daemon keeps both armed timers and unfinished fades in its private
