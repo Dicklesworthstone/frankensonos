@@ -42,6 +42,9 @@ pub use scenes::{ApplyScene, DeleteScene, GetScene, ListScenes, SaveScene};
 mod players;
 pub use players::ListPlayers;
 
+mod reviewed_sources;
+pub use reviewed_sources::{ControlSource, ResolveRooms};
+
 mod announce;
 pub use announce::{
     Announce, AnnounceStart, CancelAnnouncement, GetAnnouncement, ListAnnouncements,

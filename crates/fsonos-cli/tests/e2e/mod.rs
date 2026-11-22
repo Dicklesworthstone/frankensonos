@@ -815,6 +815,7 @@ pub struct McpSession {
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     next_id: u64,
+    modern: bool,
 }
 
 impl McpSession {
@@ -848,6 +849,7 @@ impl McpSession {
             stdin,
             lines,
             next_id: 1,
+            modern: false,
         }
     }
 
@@ -861,6 +863,14 @@ impl McpSession {
     pub fn request(&mut self, method: &str, params: &Value) -> Value {
         let id = self.next_id;
         self.next_id += 1;
+        let mut params = params.clone();
+        if self.modern {
+            params["_meta"] = json!({
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": {"name": "fsonos-e2e", "version": "0"},
+            });
+        }
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
@@ -880,21 +890,28 @@ impl McpSession {
 
     /// `initialize` (protocol 2024-11-05) plus `notifications/initialized`.
     pub fn initialize(&mut self) -> Value {
-        self.initialize_with_protocol("2024-11-05")
-    }
-
-    /// Initialize the requested protocol era so tests exercise its wire shape.
-    pub fn initialize_with_protocol(&mut self, protocol: &str) -> Value {
+        assert!(!self.modern, "modern MCP has no initialize handshake");
         let init = self.request(
             "initialize",
             &json!({
-                "protocolVersion": protocol,
+                "protocolVersion": "2024-11-05",
                 "capabilities": {},
                 "clientInfo": {"name": "fsonos-e2e", "version": "0"}
             }),
         );
         self.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
         init
+    }
+
+    /// Select modern per-request admission before sending the first request.
+    /// Modern stdio has no initialize handshake: every request carries its
+    /// protocol version, capabilities and client identity in `params._meta`.
+    pub fn use_modern_protocol(&mut self) {
+        assert_eq!(
+            self.next_id, 1,
+            "select a protocol before the first request"
+        );
+        self.modern = true;
     }
 }
 

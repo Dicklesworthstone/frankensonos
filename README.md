@@ -459,13 +459,13 @@ a local agent, which hands the DJ, scenes, sleep timers and announcements to a
 running `serve`):
 
 ```text
-reads      list_zones · list_rooms · list_players · get_zone · get_zone_state · list_favorites
+reads      list_zones · list_rooms · list_players · resolve_rooms · get_zone · get_zone_state · list_favorites
            list_sonos_playlists · search_library · search_spotify · browse_library · playlist_contents · get_queue · search_queue
            get_play_mode · recent_plays · recent_actions · get_policy · doctor
            dj_status · dj_moods · dj_rehearse · events · echo
            list_scenes · get_scene · list_sleep_timers · list_schedules · get_eq
            list_announcements · get_announcement
-control    play · play_favorite · play_sonos_playlist · add_to_queue · play_queue · remove_from_queue · move_in_queue
+control    play · play_favorite · play_sonos_playlist · control_source · add_to_queue · play_queue · remove_from_queue · move_in_queue
            set_play_mode · pause · resume · next · previous
            seek · set_volume · mute · group · ungroup · move_playback · group_all · set_eq
            announce · announce_start · cancel_announcement
@@ -480,6 +480,15 @@ house      room_configuration · configure_rooms
            set_sleep_timer · add_schedule · update_schedule · pause_schedule · resume_schedule · remove_schedule
 resources  sonos://zones · sonos://zones/{room} · sonos://dj
 ```
+
+For reviewed source playback, call `resolve_rooms` with a room or alias, inspect
+its complete affected groups, then pass its `target` as `zone` and its exact
+`revision` as `expected_revision` to `control_source`. Choose `mode: "play"`,
+`"next"` or `"append"` and exactly one of `source_uri`, `favorite` or `playlist`.
+This retains the reviewed physical audience through source lookup and speaker
+commands. Changed groups require a new review; incomplete results retain each
+group's receipt and must not be replayed. Both MCP protocol eras expose the
+revision and partial receipts. See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md).
 
 An agent that needs only the everyday tools can ask for fewer:
 `fsonos mcp --profile essentials` (or `FSONOS_MCP_PROFILE=essentials`) offers the

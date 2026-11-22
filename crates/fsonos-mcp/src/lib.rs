@@ -227,6 +227,8 @@ fn configured_server(
             .tool(Echo)
             .tool(tools::ListRooms)
             .tool(tools::ListPlayers)
+            .tool(tools::ResolveRooms)
+            .tool(tools::ControlSource)
             .tool(tools::room_config::RoomConfiguration)
             .tool(tools::room_config::ConfigureRooms)
             .tool(tools::ListLineIn)

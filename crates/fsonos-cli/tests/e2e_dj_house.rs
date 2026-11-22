@@ -254,14 +254,7 @@ fn two_rooms_djs_never_queue_the_same_work() {
         stopped,
     );
     let mut mcp = s.mcp_env(&[], &[("FSONOS_DAEMON_URL", &daemon_url)]);
-    let initialized = mcp.initialize_with_protocol("2026-07-28");
-    s.check(
-        "initialize",
-        "mcp",
-        "MCP initializes beside the daemon",
-        initialized.get("result").is_some(),
-        initialized,
-    );
+    mcp.use_modern_protocol();
     let skipped = mcp.request(
         "tools/call",
         &json!({

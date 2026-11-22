@@ -604,7 +604,7 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         cx.route(
             &Op::post(
                 "/sources/control",
-                "source_control",
+                "control_source",
                 CONTROL,
                 "Play or queue one source in the exact room set reviewed with /rooms/resolve",
             ),

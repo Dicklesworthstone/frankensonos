@@ -129,8 +129,12 @@ fn partial_commands(via_daemon: bool) {
     for protocol in ["2024-11-05", "2026-07-28"] {
         soap::play(&s.lan(), s.ip("Kitchen")).unwrap();
         let mut mcp = s.mcp();
-        let initialized = mcp.initialize_with_protocol(protocol);
-        assert_eq!(initialized["result"]["protocolVersion"], protocol);
+        if protocol == "2024-11-05" {
+            let initialized = mcp.initialize();
+            assert_eq!(initialized["result"]["protocolVersion"], protocol);
+        } else {
+            mcp.use_modern_protocol();
+        }
         let start = s.sim_handle().unwrap().soap_log().len();
         let paused = mcp.request(
             "tools/call",
