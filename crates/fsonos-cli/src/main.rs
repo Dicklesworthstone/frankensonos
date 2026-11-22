@@ -825,6 +825,7 @@ fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result
         } => direct.fade_out(&FadePauseRequest {
             zone: zone.clone(),
             fade_secs: *secs,
+            expected_revision: None,
         })?,
         _ if takes_set(control) => {
             direct.run_set(tool, |households| plan_set_for(control, households))?

@@ -199,7 +199,7 @@ fn room_set_partial_delivery_keeps_json_receipts_and_exits_unsuccessfully_withou
     let mut s = Scenario::start("play-tracks-cli-partial-room-set");
     s.sim(SimHousehold::standard());
     let reply = json!({
-        "done": "played in one of two groups", "changed": true, "notes": [],
+        "done": "played in one of two groups", "changed": true,
         "batch": {
             "complete": false,
             "results": [
@@ -207,7 +207,7 @@ fn room_set_partial_delivery_keeps_json_receipts_and_exits_unsuccessfully_withou
                     "household": "S1", "target": "fixture-s1-lead", "zone": "Lead",
                     "result": {
                         "status": "succeeded", "done": "playing selected tracks",
-                        "changed": true, "notes": []
+                        "changed": true
                     }
                 },
                 {

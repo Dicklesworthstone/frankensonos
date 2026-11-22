@@ -311,7 +311,7 @@ fn room_set_partial_receipt_is_an_error_and_preserves_every_group_without_replay
     request.zone = "all".into();
     request.expected_revision = None;
     let outcome = json!({
-        "done": "played in one of two groups", "changed": true, "notes": [],
+        "done": "played in one of two groups", "changed": true,
         "batch": {
             "complete": false,
             "results": [
@@ -319,7 +319,7 @@ fn room_set_partial_receipt_is_an_error_and_preserves_every_group_without_replay
                     "household": "S1", "target": "fixture-s1-lead", "zone": "Lead",
                     "result": {
                         "status": "succeeded", "done": "playing selected tracks",
-                        "changed": true, "notes": []
+                        "changed": true
                     }
                 },
                 {

@@ -544,6 +544,7 @@ fn a_panicked_scheduler_restores_an_active_sleep_fade_before_exit() {
                 duration: Some("1m".into()),
                 extend: false,
                 cancel: false,
+                expected_revision: None,
             },
         )
         .unwrap();

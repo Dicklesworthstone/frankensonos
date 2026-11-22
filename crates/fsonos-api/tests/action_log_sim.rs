@@ -124,6 +124,7 @@ fn fade_out_losing(action: &'static str) -> (SimHandle, Surface, u8) {
     .unwrap();
     armed.store(true, Ordering::SeqCst);
     let fade = FadePauseRequest {
+        expected_revision: None,
         zone: "Kitchen".into(),
         fade_secs: 1,
     };
@@ -638,6 +639,7 @@ fn undo_stops_at_a_sleep_timer_or_a_fade_out_but_not_at_cancelling_none() {
         .unwrap()
     };
     let sleep = |duration: Option<&str>| SleepRequest {
+        expected_revision: None,
         zone: "Kitchen".into(),
         duration: duration.map(str::to_owned),
         extend: false,
@@ -677,6 +679,7 @@ fn undo_stops_at_a_sleep_timer_or_a_fade_out_but_not_at_cancelling_none() {
     s.fade_out(
         &Client::Cli,
         &FadePauseRequest {
+            expected_revision: None,
             zone: "Kitchen".into(),
             fade_secs: 1,
         },

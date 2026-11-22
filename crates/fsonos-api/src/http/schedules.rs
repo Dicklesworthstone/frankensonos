@@ -2,8 +2,8 @@
 //!
 //! | Route | Body | Answer |
 //! |---|---|---|
-//! | `GET /sleep?zone=<room>` | | `[SleepTimerDto]`: the group's timer, or every running one |
-//! | `POST /sleep` | [`SleepRequest`] | [`SleepTimerDto`] |
+//! | `GET /sleep?zone=<target>` | | `[SleepTimerDto]`: the selected groups' timers, or every running one |
+//! | `POST /sleep` | [`SleepRequest`] | [`SleepOutcome`]: one timer or complete per-group results |
 //! | `GET /schedules` | | `[ScheduleDto]` |
 //! | `POST /schedules` | [`ScheduleRequest`] | [`ScheduleDto`] |
 //! | `POST /schedules/update` | [`UpdateScheduleRequest`] | [`ScheduleDto`]: revision-bound edit retaining the creator and enabled state |
@@ -19,7 +19,7 @@ use crate::execute::OutcomeDto;
 use crate::failure::Failure;
 use crate::surface::schedules::{
     FadePauseRequest, FadeVolumeRequest, ScheduleDto, ScheduleIdRequest, ScheduleRequest,
-    SleepRequest, SleepTimerDto, UpdateScheduleRequest,
+    SleepOutcome, SleepRequest, SleepTimerDto, UpdateScheduleRequest,
 };
 
 const SCHEDULES: &str = "schedules";
@@ -32,7 +32,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/sleep",
                 "list_sleep_timers",
                 SCHEDULES,
-                "The sleep timers that run: a room's group's, or every group's",
+                "The sleep timers that run in a room, saved room set, or every group",
             ),
             |s, c, req| answer(sleep_query(req).and_then(|q| s.sleep_timers(c, q.zone.as_deref()))),
         )
@@ -43,12 +43,12 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/sleep",
                 "set_sleep_timer",
                 SCHEDULES,
-                "Pause a room's group after a while (fading out), extend its timer, or cancel it",
+                "Set, extend or cancel sleep timers in a room, saved room set or every group",
             ),
-            |s, c, req| answer(body::<SleepRequest>(req).and_then(|r| s.set_sleep_timer(c, &r))),
+            |s, c, req| answer(body::<SleepRequest>(req).and_then(|r| s.set_sleep_timers(c, &r))),
         )
         .request_schema::<SleepRequest>(true)
-        .response_schema::<SleepTimerDto>(200, "The timer as it now stands"),
+        .response_schema::<SleepOutcome>(200, "One timer or every group's applied/failed receipt"),
         cx.route(
             &Op::get(
                 "/schedules",
@@ -138,7 +138,7 @@ fn fade_routes(cx: &Ctx<'_>) -> [RouteEntry; 2] {
                 "/pause/fade",
                 "fade_and_pause",
                 CONTROL,
-                "Fade a room's group out over up to 60 s, pause it, and put its volumes back",
+                "Fade every selected group out over up to 60 s, pause it, and restore its volumes",
             ),
             |s, c, req| answer(body::<FadePauseRequest>(req).and_then(|r| s.fade_out(c, &r))),
         )
@@ -150,7 +150,7 @@ fn fade_routes(cx: &Ctx<'_>) -> [RouteEntry; 2] {
 /// `GET /sleep?zone=<room>`.
 #[derive(JsonSchema)]
 struct SleepQuery {
-    /// A room: only its group's timer.
+    /// A room, alias, here, all/everywhere, all@S1 or all@S2: only its groups' timers.
     zone: Option<String>,
 }
 

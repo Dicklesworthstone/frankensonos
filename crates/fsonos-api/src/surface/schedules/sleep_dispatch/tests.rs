@@ -431,10 +431,16 @@ fn interruption_after_failed_spawn_ends_the_timer_without_pausing_music() {
     assert_eq!(start(&scheduler, h.now).len(), 1);
     assert!(scheduler.wait(Duration::from_secs(5)));
     let log = h.sim.soap_log();
-    assert!(
+    assert!(log[before..].iter().all(|entry| matches!(
+        entry.action.as_str(),
+        "GetZoneGroupState" | "ConfigureSleepTimer"
+    )));
+    assert_eq!(
         log[before..]
             .iter()
-            .all(|entry| entry.action == "ConfigureSleepTimer")
+            .filter(|entry| entry.action == "ConfigureSleepTimer")
+            .count(),
+        1
     );
     assert_eq!(
         soap::get_transport_info(&h.sim.lan(), host).unwrap().state,

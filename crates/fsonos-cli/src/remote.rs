@@ -33,7 +33,7 @@
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
 use fsonos_api::surface::queue::{QueueAddOutcome, QueueDto};
-use fsonos_api::surface::schedules::{FadePauseRequest, SleepTimerDto};
+use fsonos_api::surface::schedules::{FadePauseRequest, SleepOutcome, SleepTimerDto};
 use fsonos_api::surface::sonos_playlists::{self, PlaySonosPlaylistRequest, SonosPlaylistDto};
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, LineInSourcesDto,
@@ -96,6 +96,8 @@ fn command_timeout(path: &str) -> Duration {
         || path == "/queue/tracks"
         || path == "/play/tracks"
         || path == "/sources/control"
+        || path == "/sleep"
+        || path == "/pause/fade"
         || path == "/sonos/playlists/play"
         || path == "/sonos/playlists/tracks"
         || path == "/sonos/playlists/remove-tracks"
@@ -933,8 +935,8 @@ fn sleep(daemon: &Daemon, json: bool, args: &schedule_cmd::SleepArgs) -> anyhow:
             })
         }
         Some(req) => {
-            let timer: SleepTimerDto = daemon.post("/sleep", &req)?;
-            emit(json, &timer, schedule_cmd::timer_text)
+            let timers: SleepOutcome = daemon.post("/sleep", &req)?;
+            schedule_cmd::emit_sleep_outcome(json, &timers)
         }
     }
 }
@@ -975,6 +977,7 @@ fn fade_request(command: &Command) -> Result<Option<(&'static str, serde_json::V
             serde_json::to_value(FadePauseRequest {
                 zone: zone.clone(),
                 fade_secs: *secs,
+                expected_revision: None,
             }),
         ),
         Command::Volume {
@@ -1134,6 +1137,10 @@ mod tests {
             "/play/tracks?trace=1",
             "/sources/control",
             "/sources/control?trace=1",
+            "/sleep",
+            "/sleep?trace=1",
+            "/pause/fade",
+            "/pause/fade?trace=1",
             "/dj/start",
             "/dj/skip",
             "/dj/rehearse",
@@ -1157,6 +1164,8 @@ mod tests {
             "/dj",
             "/djs/start",
             "/sources/control/extra",
+            "/sleep/extra",
+            "/pause/fade/extra",
         ] {
             assert_eq!(command_timeout(path), CALL, "{path}");
         }

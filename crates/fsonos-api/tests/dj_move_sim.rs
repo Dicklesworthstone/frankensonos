@@ -305,6 +305,7 @@ fn recovered_move(s2: bool, malformed: bool) {
         .set_sleep_timer(
             &client,
             &SleepRequest {
+                expected_revision: None,
                 zone: "Kitchen".into(),
                 duration: Some("45m".into()),
                 extend: false,

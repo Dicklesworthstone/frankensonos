@@ -48,6 +48,7 @@ fn a_sleep_timer_follows_the_music_when_it_moves() {
         .control(&me, "play", |rooms| plan_play(rooms, &play))
         .unwrap();
     let sleep = SleepRequest {
+        expected_revision: None,
         zone: "Kitchen".into(),
         duration: Some("45m".into()),
         extend: false,

@@ -1642,6 +1642,7 @@ mod tests {
         let paused = b.fade_and_pause(&fsonos_api::surface::schedules::FadePauseRequest {
             zone: "Den".into(),
             fade_secs: 5,
+            expected_revision: None,
         });
         assert!(!paused.unwrap().is_error);
         assert!(sent.lock().unwrap().is_empty(), "nothing sent from here");
