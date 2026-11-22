@@ -108,6 +108,10 @@ impl Owner {
         }
     }
 
+    pub(super) fn is_queue(&self, coordinator: &PlayerId) -> bool {
+        self.source == format!("x-rincon-queue:{}#0", coordinator.0)
+    }
+
     pub(super) fn reusable(&self) -> bool {
         self.group.boot.is_some() && matches!(self.group.generation, Some(1 | 2))
     }

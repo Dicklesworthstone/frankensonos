@@ -593,10 +593,11 @@ impl QueueFeed {
         // An explicit start authorizes a new set even if reconciliation
         // relinquished every old occurrence. Automatic callers stay released.
         self.active = true;
-        self.finish_partial(at, store, plan.now)?;
+        let mut proof = enqueue::Batch::new(at.coordinator);
+        self.finish_partial(at, store, plan.now, &mut proof)?;
         let want = 1 + self.lookahead();
         if self.queued.len() < want {
-            self.enqueue(at, plan, store, want - self.queued.len())?;
+            self.enqueue(at, plan, store, want - self.queued.len(), &mut proof)?;
         }
         let first = self.queued[0]
             .first()
@@ -663,6 +664,22 @@ impl QueueFeed {
             // Errors are neither listens nor ordinary queue exhaustion.
             // A stale error also exits after its read-only confirmation.
             return recovery::recover(self, at, playback, plan.now, checkpoint).map(|()| 0);
+        }
+        if self.may_maintain_queue(playback) {
+            // A buffered queue event can arrive after another controller has
+            // selected radio or an announcement. Reject it before changing the
+            // cursor, invalidating queue evidence or recording a listen.
+            let response = soap::call(
+                at.transport,
+                host_of(at)?,
+                &AV_TRANSPORT,
+                "GetMediaInfo",
+                &soap::args_xml(&[("InstanceID", "0")]),
+            )?;
+            let own_queue = format!("x-rincon-queue:{}#0", at.coordinator.0);
+            if response.require("CurrentURI")? != own_queue {
+                return Ok(0);
+            }
         }
         if !mode::maintain(self, at, playback)? {
             return Ok(0);
@@ -752,6 +769,44 @@ impl QueueFeed {
             }
         }
         self.top_up(at, plan, store)
+    }
+
+    /// Preserve the event-only fast path while enough whole works remain.
+    /// Anything that could reconcile, complete, trim or refill the queue first
+    /// checks the live source; an old queue event is not maintenance permission.
+    fn may_maintain_queue(&self, playback: &PlayerPlayback) -> bool {
+        let position = playback.queue_position.filter(|&position| position > 0);
+        let uri = playback
+            .track_uri
+            .as_deref()
+            .and_then(spotify_uri_from_renderer_uri);
+        if self.queue_len.is_none()
+            || playback
+                .queue_length
+                .is_some_and(|length| self.queue_len != Some(length))
+            || position.is_some_and(|position| !self.agrees(position, uri.as_deref()))
+            || self.moves_back_to(position)
+            || self.queued.iter().any(|work| !work.is_whole())
+        {
+            return true;
+        }
+        let playing = position.or(self.playing).unwrap_or(0);
+        let ahead = self
+            .queued
+            .iter()
+            .filter(|work| work.first().is_some_and(|first| first > playing))
+            .count();
+        if ahead < self.lookahead() {
+            return true;
+        }
+        let before = playing.saturating_sub(self.config.keep_played);
+        self.queue_len
+            .is_some_and(|length| length > self.config.trim_queue_at)
+            && self
+                .played
+                .iter()
+                .chain(&self.queued)
+                .any(|work| work.is_whole() && work.last().is_some_and(|last| last < before))
     }
 
     /// Whether the queue ran out under the feed: the group was last seen on
@@ -939,6 +994,7 @@ impl QueueFeed {
             return Err(FeedError::Inactive);
         }
         navigation::prepare_skip(self, at)?;
+        let mut proof = enqueue::Batch::on_queue(at.coordinator);
         let playing = self.playing.unwrap_or(0);
         let waiting = self
             .queued
@@ -949,11 +1005,11 @@ impl QueueFeed {
             // enqueue could not add. Only the selected successor must be
             // completed before playback can move to it.
             if !self.queued[next].is_whole() {
-                self.finish_partial_work(at, store, plan.now, next)?;
+                self.finish_partial_work(at, store, plan.now, next, &mut proof)?;
             }
             next
         } else {
-            self.enqueue(at, plan, store, 1)?;
+            self.enqueue(at, plan, store, 1, &mut proof)?;
             self.queued.len() - 1
         };
         let first = self.queued[next]
@@ -1122,7 +1178,8 @@ impl QueueFeed {
         if self.queue_len.is_none() {
             return Ok(0);
         }
-        self.finish_partial(at, store, plan.now)?;
+        let mut proof = enqueue::Batch::on_queue(at.coordinator);
+        self.finish_partial(at, store, plan.now, &mut proof)?;
         let playing = self.playing.unwrap_or(0);
         let ahead = self
             .queued
@@ -1133,7 +1190,7 @@ impl QueueFeed {
         if ahead >= want {
             return Ok(0);
         }
-        self.enqueue(at, plan, store, want - ahead)?;
+        self.enqueue(at, plan, store, want - ahead, &mut proof)?;
         Ok(want - ahead)
     }
 
@@ -1160,11 +1217,12 @@ impl QueueFeed {
         at: &Speakers<'_, T>,
         store: &mut S,
         now: i64,
+        proof: &mut enqueue::Batch,
     ) -> Result<(), FeedError> {
         let Some(index) = self.partial_to_finish() else {
             return Ok(());
         };
-        self.finish_partial_work(at, store, now, index)
+        self.finish_partial_work(at, store, now, index, proof)
     }
 
     fn finish_partial_work<T: Transport + ?Sized, S: Store + ?Sized>(
@@ -1173,10 +1231,10 @@ impl QueueFeed {
         store: &mut S,
         now: i64,
         index: usize,
+        proof: &mut enqueue::Batch,
     ) -> Result<(), FeedError> {
         let params = render_params(at, store, now)?;
         let host = host_of(at)?;
-        let mut proof = enqueue::Batch::new(at.coordinator);
         while let Some(m) = self.queued[index].movements.iter().position(|m| !m.added) {
             let desired = self.queued[index].last().map_or(0, |last| last + 1);
             let result = add_movement(
@@ -1185,7 +1243,7 @@ impl QueueFeed {
                 &params,
                 &self.queued[index].movements[m],
                 desired,
-                &mut proof,
+                proof,
             )
             .map_err(|e| render_refused(at, e));
             let (position, len) = self.add_result(result)?;
@@ -1235,6 +1293,7 @@ impl QueueFeed {
         plan: Planning<'_>,
         store: &mut S,
         count: usize,
+        proof: &mut enqueue::Batch,
     ) -> Result<(), FeedError> {
         if plan.pool.is_empty() {
             return Err(FeedError::EmptyPool);
@@ -1243,7 +1302,6 @@ impl QueueFeed {
         let host = host_of(at)?;
         let mut history = self.history(&*store, plan.now)?;
         let elsewhere = self.elsewhere(&*store, &plan)?;
-        let mut proof = enqueue::Batch::new(at.coordinator);
         for _ in 0..count {
             let ctx = PickContext {
                 history: &history,
@@ -1278,7 +1336,7 @@ impl QueueFeed {
                     .iter()
                     .map(|m| PlayRecord::at(m.uri.clone(), plan.now)),
             );
-            let added = self.append(at.transport, host, &params, &mut work, &mut proof);
+            let added = self.append(at.transport, host, &params, &mut work, proof);
             if self.active && work.first().is_some() {
                 self.queued.push(work);
             }

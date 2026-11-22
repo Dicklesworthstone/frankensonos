@@ -174,10 +174,11 @@ fn recover<T: Transport + ?Sized>(
     })
 }
 
-/// Evidence is local to one append/partial-completion call, never serialized,
+/// Evidence is local to one start, skip or automatic top-up, never serialized,
 /// cloned with a feed, or carried across coordinator handoff or restart.
 pub(super) struct Batch {
     coordinator: PlayerId,
+    queue_source: bool,
     owner: Option<Owner>,
     queue: Option<Queue>,
 }
@@ -186,8 +187,18 @@ impl Batch {
     pub(super) fn new(coordinator: &PlayerId) -> Self {
         Self {
             coordinator: coordinator.clone(),
+            queue_source: false,
             owner: None,
             queue: None,
+        }
+    }
+
+    /// Automatic maintenance and skips require the retained DJ queue to be
+    /// the active source. Only an explicit start may begin from another source.
+    pub(super) fn on_queue(coordinator: &PlayerId) -> Self {
+        Self {
+            queue_source: true,
+            ..Self::new(coordinator)
         }
     }
 
@@ -204,6 +215,9 @@ impl Batch {
         // Taking the cached observation first invalidates it on every error.
         let retained = self.queue.take();
         let observed_owner = Owner::read(transport, host, &self.coordinator)?;
+        if self.queue_source && !observed_owner.is_queue(&self.coordinator) {
+            return Err(invalid("the DJ queue is not the active source"));
+        }
         if self
             .owner
             .as_ref()
