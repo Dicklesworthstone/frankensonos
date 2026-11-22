@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::OutcomeDto;
 use crate::guard::Note;
-use crate::{ApiError, NoteCode};
+use crate::{ErrorCode, Failure, NoteCode};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ControlBatchDto {
@@ -27,6 +27,33 @@ pub struct ControlTargetDto {
     pub result: ControlResultDto,
 }
 
+/// One target's failure, with the same fields as a single-command API error.
+/// A target cannot contain another batch: the enclosing receipt already names
+/// every planned destination, including those that were not attempted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ControlErrorDto {
+    pub detail: String,
+    pub code: ErrorCode,
+    pub hint: String,
+    pub suggestions: Vec<String>,
+    pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upnp_code: Option<u16>,
+}
+
+impl From<&Failure> for ControlErrorDto {
+    fn from(failure: &Failure) -> Self {
+        Self {
+            detail: failure.detail.clone(),
+            code: failure.code,
+            hint: failure.hint.clone(),
+            suggestions: failure.suggestions.clone(),
+            retryable: failure.retryable(),
+            upnp_code: failure.upnp_code,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ControlResultDto {
@@ -39,7 +66,7 @@ pub enum ControlResultDto {
         notes: Vec<Note>,
     },
     Failed {
-        error: ApiError,
+        error: ControlErrorDto,
     },
     /// A preceding failure ended sequential execution before this target.
     NotAttempted,
@@ -115,7 +142,7 @@ impl fastapi_openapi::JsonSchema for ControlResultDto {
             variant(
                 "failed",
                 &["status", "error"],
-                vec![("error", ApiError::schema())],
+                vec![("error", ControlErrorDto::schema())],
             ),
             variant("not_attempted", &["status"], Vec::new()),
         ])
@@ -198,5 +225,16 @@ mod tests {
                     .contains(&serde_json::json!("status"))
             );
         }
+    }
+
+    #[test]
+    fn error_schema_includes_a_finite_batch_receipt_without_nested_batches() {
+        let schema =
+            serde_json::to_value(<crate::ApiError as fastapi_openapi::JsonSchema>::schema())
+                .unwrap();
+        let text = serde_json::to_string(&schema).unwrap();
+        assert!(schema["properties"].get("batch").is_some(), "{schema}");
+        assert_eq!(text.matches("\"batch\"").count(), 1, "{schema}");
+        assert!(text.contains("not_attempted"), "{schema}");
     }
 }

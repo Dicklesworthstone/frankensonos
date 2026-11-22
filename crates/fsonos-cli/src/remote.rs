@@ -598,6 +598,7 @@ fn refused(method: &str, path: &str, status: u16, text: &str) -> Failure {
                 .with_hint(api.hint)
                 .with_suggestions(api.suggestions);
             failure.upnp_code = api.upnp_code;
+            failure.batch = api.batch.map(Box::new);
             failure
         }
         Err(_) => unconfirmed(
@@ -1379,6 +1380,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn daemon_errors_retain_all_targets_and_cannot_become_retryable() {
+        let body = serde_json::json!({
+            "code": "PLAYER_UNREACHABLE", "detail": "neither target completed",
+            "hint": "Inspect each target; do not replay the batch.",
+            "suggestions": [], "retryable": false,
+            "batch": {"complete": false, "results": [
+                {"household": "S1", "target": "FIRST", "zone": "Kitchen",
+                 "result": {"status": "failed", "error": {
+                     "code": "PLAYER_UNREACHABLE", "detail": "no answer",
+                     "hint": "Check power.", "suggestions": [], "retryable": true
+                 }}},
+                {"household": "S2", "target": "SECOND", "zone": "Study",
+                 "result": {"status": "not_attempted"}}
+            ]}
+        });
+        let failure = daemon_reply("POST", &json_response(503, &body.to_string())).unwrap_err();
+        assert_eq!(failure.status(), 503);
+        assert!(!failure.retryable());
+        assert_eq!(serde_json::to_value(failure.body()).unwrap(), body);
+        assert!(failure.cli_text().contains("SECOND"));
     }
 
     /// What a daemon at a fresh listener receives for `forward(method, ...)`:

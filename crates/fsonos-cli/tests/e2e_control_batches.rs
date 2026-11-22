@@ -4,7 +4,7 @@
 mod e2e;
 
 use e2e::Scenario;
-use fsonos_api::{ControlResultDto, ErrorCode, OutcomeDto};
+use fsonos_api::{ApiError, ControlResultDto, ErrorCode, OutcomeDto};
 use fsonos_proto::control as soap;
 use fsonos_sim::SimHousehold;
 use fsonos_types::TransportState;
@@ -35,13 +35,7 @@ fn assert_partial(outcome: &OutcomeDto) {
 }
 
 fn assert_dispatched_once(s: &Scenario, start: usize) {
-    let mut paused: Vec<_> = s.sim_handle().unwrap().soap_log()[start..]
-        .iter()
-        .filter(|call| call.action == "Pause")
-        .map(|call| call.room.clone())
-        .collect();
-    paused.sort();
-    assert_eq!(paused, ["Kitchen", "Living Room"]);
+    assert_pauses_sent_once(s, start);
     assert_eq!(
         soap::get_transport_info(&s.lan(), s.ip("Kitchen"))
             .unwrap()
@@ -54,6 +48,34 @@ fn assert_dispatched_once(s: &Scenario, start: usize) {
             .state,
         TransportState::Playing
     );
+}
+
+fn assert_pauses_sent_once(s: &Scenario, start: usize) {
+    let mut paused: Vec<_> = s.sim_handle().unwrap().soap_log()[start..]
+        .iter()
+        .filter(|call| call.action == "Pause")
+        .map(|call| call.room.clone())
+        .collect();
+    paused.sort();
+    assert_eq!(paused, ["Kitchen", "Living Room"]);
+}
+
+fn assert_failed(receipt: &ApiError) {
+    assert_eq!(receipt.code, ErrorCode::UpnpFault);
+    assert!(!receipt.retryable);
+    let batch = receipt.batch.as_ref().expect("all failed targets retained");
+    assert!(!batch.complete);
+    assert_eq!(batch.results.len(), 2);
+    let mut targets = Vec::new();
+    for target in &batch.results {
+        assert!(!target.target.is_empty());
+        assert!(matches!(&target.result, ControlResultDto::Failed { error }
+            if error.code == ErrorCode::UpnpFault && error.upnp_code == Some(702)));
+        targets.push((target.household.as_str(), target.zone.as_str()));
+    }
+    targets.sort();
+    assert_eq!(targets, [("S1", "Kitchen"), ("S2", "Living Room")]);
+    assert!(receipt.hint.contains("do not replay the batch"));
 }
 
 fn partial_commands(via_daemon: bool) {
@@ -165,7 +187,66 @@ fn partial_commands(via_daemon: bool) {
         drop(mcp);
     }
 
-    s.sim_handle().unwrap().clear_faults("Living Room").unwrap();
+    // No successful target is not proof that no write was sent. Keep a real
+    // error response and account for every attempted group without retrying it.
+    soap::play(&s.lan(), s.ip("Kitchen")).unwrap();
+    s.sim_handle()
+        .unwrap()
+        .upnp_fault("Kitchen", "Pause", 702)
+        .unwrap();
+    let start = s.sim_handle().unwrap().soap_log().len();
+    let failed = s.cli("failed-pause", &[mode, "--json", "pause", "selected"]);
+    assert!(!failed.ok());
+    let receipt: ApiError = serde_json::from_str(
+        failed
+            .stderr
+            .split_once("\n\nReceipt: ")
+            .expect("CLI retains error receipt")
+            .1
+            .trim(),
+    )
+    .unwrap();
+    assert_failed(&receipt);
+    assert_pauses_sent_once(&s, start);
+    for protocol in ["2024-11-05", "2026-07-28"] {
+        let mut mcp = s.mcp();
+        if protocol == "2024-11-05" {
+            mcp.initialize();
+        } else {
+            mcp.use_modern_protocol();
+        }
+        let start = s.sim_handle().unwrap().soap_log().len();
+        let failed = mcp.request(
+            "tools/call",
+            &json!({"name": "pause", "arguments": {"zone": "selected"}}),
+        );
+        assert!(failed.get("error").is_none(), "{protocol}: {failed}");
+        assert_eq!(failed["result"]["isError"], true, "{protocol}: {failed}");
+        let receipt: ApiError = if protocol == "2024-11-05" {
+            let text = failed["result"]["content"][0]["text"].as_str().unwrap();
+            serde_json::from_str(text.split_once("\n\nReceipt: ").unwrap().1).unwrap()
+        } else {
+            serde_json::from_value(failed["result"]["structuredContent"].clone()).unwrap()
+        };
+        assert_failed(&receipt);
+        assert_pauses_sent_once(&s, start);
+        s.check(
+            "failed-pause",
+            protocol,
+            "all-failed receipt retains both targets",
+            true,
+            &failed,
+        );
+    }
+    for room in ["Kitchen", "Living Room"] {
+        assert_eq!(
+            soap::get_transport_info(&s.lan(), s.ip(room))
+                .unwrap()
+                .state,
+            TransportState::Playing
+        );
+        s.sim_handle().unwrap().clear_faults(room).unwrap();
+    }
     let complete = s.cli("complete-pause", &[mode, "--json", "pause", "selected"]);
     let receipt: OutcomeDto = serde_json::from_str(&complete.stdout).unwrap();
     s.check(

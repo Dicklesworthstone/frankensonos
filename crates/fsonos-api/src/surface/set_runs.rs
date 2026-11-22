@@ -206,7 +206,8 @@ fn ends_set(commands: usize, failure: &Failure) -> bool {
 
 /// Keep every actual result after a batch has run. An error from one worker
 /// cannot erase another worker's successful command. A single command and an
-/// entirely failed batch retain their existing error responses.
+/// entirely failed batch retain their error status; the latter carries every
+/// failure and unattempted target instead of discarding all but one error.
 pub(super) fn merged(
     households: &[HouseholdState],
     commands: &[Command],
@@ -220,7 +221,7 @@ pub(super) fn merged(
         notes: Vec::new(),
         batch: None,
     };
-    let (mut skipped, mut terminal, mut went) = (None, None, false);
+    let (mut skipped, mut terminal, mut uncertain, mut went) = (None, None, None, false);
     let mut results = Vec::with_capacity(commands.len());
     let mut outcomes = outcomes.into_iter();
     for command in commands {
@@ -245,9 +246,12 @@ pub(super) fn merged(
                     detail,
                 });
                 receipt.result = ControlResultDto::Failed {
-                    error: failure.body(),
+                    error: (&failure).into(),
                 };
                 results.push(receipt);
+                if failure.code == ErrorCode::OutcomeUncertain {
+                    uncertain.get_or_insert_with(|| failure.clone());
+                }
                 if !dj_set && ends_set(commands.len(), &failure) {
                     terminal.get_or_insert_with(|| failure.clone());
                 }
@@ -294,14 +298,30 @@ pub(super) fn merged(
             results,
         });
     }
-    match skipped {
-        Some(_) if !went && dj_set => Err(Failure::new(
-            ErrorCode::OutcomeUncertain,
-            combined.notes.iter().map(|note| note.detail.as_str()).collect::<Vec<_>>().join("; "),
-        )
-        .with_hint("No group returned a successful DJ result. Read the groups and action log; do not replay the batch.")),
-        Some(failure) if !went => Err(terminal.unwrap_or(failure)),
-        _ => Ok(combined),
+    if let Some(failure) = skipped.filter(|_| !went) {
+        // An uncertain write anywhere takes precedence over a retryable refusal
+        // elsewhere. Keeping a non-2xx error also preserves old clients' contract.
+        let mut failure = if dj_set {
+            Failure::new(
+                ErrorCode::OutcomeUncertain,
+                "No group returned a successful DJ result",
+            )
+        } else {
+            uncertain.or(terminal).unwrap_or(failure)
+        };
+        if let Some(batch) = combined.batch {
+            failure.detail = combined
+                .notes
+                .iter()
+                .map(|note| note.detail.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            failure.hint = "Read each target's current state and the action log before another action; do not replay the batch.".into();
+            failure.batch = Some(Box::new(batch));
+        }
+        Err(failure)
+    } else {
+        Ok(combined)
     }
 }
 
@@ -419,14 +439,25 @@ mod tests {
             merged(&[], &[pause("one")], vec![Err(failure.clone())]),
             Err(failure.clone())
         );
-        assert_eq!(
-            merged(
-                &[],
-                &[pause("one"), pause("two")],
-                vec![Err(failure.clone()), Err(failure.clone())]
-            ),
-            Err(failure),
-        );
+        let failed = merged(
+            &[],
+            &[pause("one"), pause("two")],
+            vec![Err(failure.clone()), Err(failure.clone())],
+        )
+        .unwrap_err();
+        assert_eq!(failed.code, failure.code);
+        assert_eq!(failed.status(), failure.status());
+        assert_eq!(failed.exit_code(), failure.exit_code());
+        assert!(!failed.retryable());
+        let batch = failed.batch.as_ref().unwrap();
+        assert!(!batch.complete);
+        assert_eq!(batch.results.len(), 2);
+        assert!(batch.results.iter().all(|target| matches!(
+            &target.result,
+            ControlResultDto::Failed { error } if error.code == ErrorCode::UpnpFault
+        )));
+        assert!(failed.detail.contains("one") && failed.detail.contains("two"));
+        assert!(failed.hint.contains("do not replay the batch"));
         let one = merged(&[], &[pause("one")], vec![accepted()]).unwrap();
         assert!(one.complete());
         assert!(one.batch.is_none());
@@ -438,5 +469,56 @@ mod tests {
         .unwrap();
         assert!(all.complete());
         assert!(all.batch.unwrap().complete);
+    }
+
+    #[test]
+    fn an_uncertain_target_is_not_hidden_by_another_targets_definite_refusal() {
+        for preceding in [ErrorCode::PlayerUnreachable, ErrorCode::InvalidArgument] {
+            let failed = merged(
+                &[],
+                &[pause("refused"), pause("lost-reply"), pause("unattempted")],
+                vec![
+                    Err(Failure::new(preceding, "the first target refused")),
+                    Err(Failure::new(
+                        ErrorCode::OutcomeUncertain,
+                        "the write reply was lost",
+                    )),
+                ],
+            )
+            .unwrap_err();
+            assert_eq!(failed.code, ErrorCode::OutcomeUncertain);
+            assert!(!failed.retryable());
+            let batch = failed.batch.as_ref().unwrap();
+            assert_eq!(batch.results.len(), 3);
+            assert_eq!(batch.results[0].target, "refused");
+            assert_eq!(batch.results[1].target, "lost-reply");
+            assert!(matches!(
+                &batch.results[1].result,
+                ControlResultDto::Failed { error } if error.code == ErrorCode::OutcomeUncertain
+            ));
+            assert!(matches!(
+                batch.results[2].result,
+                ControlResultDto::NotAttempted
+            ));
+        }
+    }
+
+    #[test]
+    fn all_retryable_target_errors_still_require_inspecting_the_batch() {
+        let failed = merged(
+            &[],
+            &[pause("one"), pause("two")],
+            vec![
+                Err(Failure::new(ErrorCode::PlayerUnreachable, "no answer")),
+                Err(Failure::new(ErrorCode::NotCoordinator, "group changed")),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(failed.status(), 503);
+        assert!(!failed.retryable());
+        assert!(failed.batch.as_ref().unwrap().results.iter().all(|target| {
+            matches!(&target.result, ControlResultDto::Failed { error } if error.retryable)
+        }));
+        assert!(failed.hint.contains("do not replay the batch"));
     }
 }

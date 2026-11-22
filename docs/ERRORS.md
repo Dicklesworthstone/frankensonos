@@ -52,6 +52,15 @@ Legacy 2024-11-05 clients receive the complete receipt as JSON after
 field that their protocol does not define. Neither path replays the operation
 or substitutes a generic internal-server error.
 
+If every target fails, HTTP still returns an error status, the CLI still exits
+nonzero, and MCP still sets `isError`. The error body now includes the same
+`batch` receipt: every planned household, player and room, its individual error,
+and any target that was not attempted. An uncertain write takes precedence in
+the top-level code. The whole batch is never marked `retryable`, even if one
+target's individual error normally is. Inspect each target before deciding on
+another action. CLI stderr and legacy MCP error text retain this complete error
+body as JSON after `Receipt: `; a daemon-forwarded request preserves it too.
+
 The real-process `e2e_control_batches` regression exercises both protocol
 versions against S1/S2 simulators, through standalone MCP and the daemon
 bridge, and checks that each selected speaker receives one command.

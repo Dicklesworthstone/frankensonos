@@ -21,7 +21,7 @@ use crate::request::VolumeChange;
 use crate::source::validate_playable_source;
 
 mod batch;
-pub use batch::{ControlBatchDto, ControlResultDto, ControlTargetDto};
+pub use batch::{ControlBatchDto, ControlErrorDto, ControlResultDto, ControlTargetDto};
 
 /// The result of a command, for every surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
