@@ -59,6 +59,35 @@ recall left that queue selected.
 
 ## Author and review in the web remote
 
+### Save a library selection
+
+In **Find music**, build an ordered selection from cached tracks, albums or
+playlists, using the move and repeat controls as needed. Choose a listening
+group, then **Save selection as scene**. The chooser checks the selected cached
+occurrences and copies their exact order, repeated entries and titles into a
+scene draft for that group and its full membership.
+
+On the phone, the shortcut opens the custom scene editor with that group and
+selection already filled in. Name it, choose **Playing** or **Paused**, and
+optionally adjust the scene's groups and room settings before review. On the
+Listening Room dashboard, the scene-save dialog retains the selected group and
+offers a name and playback intent. Its selection shortcut leaves volume and
+mute unspecified, so later recall retains those settings.
+
+Opening the draft does not save or play anything. Review the complete sequence
+and group before saving. A conflicting saved name requires a replacement
+review. Changed grouping or a changed saved definition requires another
+review; a lost save response is not automatically repeated. This shortcut uses
+the chosen listening group. For a scene with additional groups or explicit
+room levels, use the phone's custom editor or an authored CLI/API definition.
+
+Once saved, the concrete music identities remain reusable even if those cache
+pages later change. Recall still requires playable music and the destination
+household's linked service. See [ordered library selections](QUEUE_TRACK_SELECTIONS.md)
+for selection, ordering and source-page validation behavior.
+
+### Enter an ordered selection
+
 Open **Scenes**, create a custom scene, choose its group, then choose
 **Ordered tracks or episodes** as the source. Enter one track or episode URI
 or full Spotify link per line. Add `|` followed by an optional title:

@@ -851,7 +851,7 @@ function domFixture() {
     setAttribute(name, value) {
       this.attributes.set(name, String(value));
       if (['disabled', 'open', 'checked'].includes(name)) this[name] = true;
-      else if (['type', 'id', 'value'].includes(name)) this[name] = String(value);
+      else if (['type', 'id'].includes(name) || name === 'value' && this.tagName !== 'TEXTAREA') this[name] = String(value);
     }
     getAttribute(name) { return this.attributes.get(name) ?? null; }
     contains(other) { return this === other || this.children.some((child) => child instanceof Element && child.contains(other)); }
@@ -1065,11 +1065,13 @@ test('the schedule DOM creates multi-room speech and displays the complete saved
   await message.dispatch('input');
   assert.equal(dom.document.activeElement, control('announcement_text'));
   assert.equal(dom.document.activeElement.selectionStart, 12);
+  assert.equal(control('announcement_text').value, 'Time to leave — bring your coat', 'textarea value survives the rerender after typing');
   control('announcement_voice').value = 'Voice Name'; await control('announcement_voice').dispatch('input');
   control('announcement_volume').value = '0'; await control('announcement_volume').dispatch('input');
   for (const target of ['Den@S2', 'Studio@S1']) {
     control(`announcement-room-${target}`).checked = true; await control(`announcement-room-${target}`).dispatch('change');
   }
+  assert.equal(control('announcement_text').value, 'Time to leave — bring your coat', 'editing other fields keeps the complete spoken message visible');
   await control('review-create').dispatch('click');
   assert.match(panel.node.textContent, /Time to leave — bring your coat/);
   assert.match(panel.node.textContent, /Voice Name/);

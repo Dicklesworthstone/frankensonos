@@ -15,7 +15,7 @@ const DashboardWorkspace = (() => {
     if (index < 0 && event.target !== input) return;
     event.preventDefault(); list[next].focus();
   }
-  function create({ call, controller, session, el, icon, openSearch, native, immerse }) {
+  function create({ call, controller, session, el, icon, openSearch, native, immerse, offerScene }) {
     const $ = (id) => document.getElementById(id);
     let active = true, immersive = false, chosenTab = 'picks', roomKey = '', locatedPosition = null;
     const queue = DashboardQueue.model({ call, changed: paintQueue });
@@ -24,7 +24,7 @@ const DashboardWorkspace = (() => {
     $('queue-items').before(queueFinder.node);
     $('queue-items').after(queueEditor.node);
     const library = typeof DashboardLibraryPanel !== 'undefined'
-      ? DashboardLibraryPanel.create({ call, controller, session }) : null;
+      ? DashboardLibraryPanel.create({ call, controller, session, offerScene }) : null;
     const activity = typeof DashboardActivityPanel !== 'undefined'
       ? DashboardActivityPanel.create({ call, controller, session }) : null;
     function paintQueue(state) {

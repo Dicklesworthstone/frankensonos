@@ -165,7 +165,11 @@
     favorites?.catalogChanged(change);
   } });
   workspace = DashboardWorkspace.create({ call, controller, session, el, icon, openSearch,
-    native: (...args) => native(...args), immerse });
+    native: (...args) => native(...args), immerse, offerScene: selection => {
+      if (sceneCapture.state.open || sceneCapture.state.loading || sceneCapture.state.writing) return false;
+      void sceneCapture.openSelection(selection);
+      return sceneCapture.state.open;
+    } });
   music = DashboardMusic.panel({ call, demo, browse: () => workspace.browseLibrary() });
   playlistSave = DashboardPlaylistSavePanel.panel({ call, controller, demo,
     saved: async ({ target }) => {

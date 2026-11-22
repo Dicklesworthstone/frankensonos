@@ -291,6 +291,16 @@ const ScenesRemote = (() => {
     }));
   }
 
+  function librarySelection(value) {
+    const group = value?.group;
+    if (value?.kind !== 'tracks' || !plain(group) || !text(group.target, 1024)
+        || !Array.isArray(group.members) || !group.members.length || group.members.length > 512
+        || !group.members.every(room => text(room, 1024)) || new Set(group.members).size !== group.members.length
+        || !group.members.includes(group.target)) throw new Error('Choose a listening group and its selected tracks again.');
+    return freeze({ kind: 'tracks', tracks: queueApi().readTracks(value.tracks),
+      group: { target: group.target, members: [...group.members].sort() } });
+  }
+
   function definition(draft, rooms, name) {
     name = name.trim();
     if (!text(name, 64)) throw new Error('Use a scene name of 1 to 64 characters.');
@@ -312,7 +322,7 @@ const ScenesRemote = (() => {
           || (g.kind !== 'keep' && g.playing === 'keep')) throw new Error('Choose a source and explicit playback setting.');
       const source = { kind: g.kind };
       if (g.kind === 'uri') source.uri = sourceUri(g.value);
-      if (g.kind === 'tracks') source.tracks = trackSelection(g.value);
+      if (g.kind === 'tracks') source.tracks = g.importedTracks ? queueApi().readTracks(g.importedTracks) : trackSelection(g.value);
       if (g.kind === 'favorite') {
         if (!text(g.value.trim())) throw new Error('Name a favorite by its exact title or ID.');
         source.name = g.value.trim();
@@ -546,6 +556,35 @@ const ScenesRemote = (() => {
 
     let groupId = 0;
     const editable = () => !disposed && state.open && state.loaded && !state.loading && !state.writing;
+    function offerSelection(value) {
+      if (disposed || state.loading || state.writing || state.pending || state.draft) return false;
+      let selection;
+      try { selection = librarySelection(value); } catch (_) { return false; }
+      state.open = true; invalidate();
+      state.rooms = null; state.name = ''; state.result = state.saved = null; state.sourceChoices = Object.create(null);
+      const version = epoch;
+      state.loading = true; state.message = 'Reading saved scenes and checking the selected listening group…'; publish();
+      void (async () => {
+        try {
+          const [rows, zones] = await Promise.all([call('scenes'), call('zones')]);
+          if (!current(version)) return;
+          const rooms = roomsOf(zones), leader = rooms.find(room => room.target === selection.group.target);
+          if (!leader || JSON.parse(leader.shape)[1] !== leader.room
+              || JSON.stringify(rooms.filter(room => room.shape === leader.shape).map(room => room.target).sort()) !== JSON.stringify(selection.group.members)) {
+            throw new Error('The selected listening group changed. Choose the tracks and group again from the library.');
+          }
+          state.rows = scenesOf(rows); state.loaded = true; state.rooms = rooms;
+          state.draft = freeze({ groups: [{ id: ++groupId, coordinator: selection.group.target,
+            members: selection.group.members.filter(room => room !== selection.group.target), kind: 'tracks',
+            importedTracks: selection.tracks,
+            value: selection.tracks.map(track => track.source_uri + (track.title ? ` | ${track.title.replace(/[\r\n]+/g, ' ')}` : '')).join('\n'),
+            playing: 'play' }], volumes: {}, mutes: {} });
+          state.message = 'Name this scene and review its ordered tracks, group and playback setting before saving.';
+        } catch (error) { if (current(version)) state.message = errorText(error); }
+        finally { if (current(version)) { state.loading = false; publish(); } }
+      })();
+      return true;
+    }
     async function beginDefinition() {
       if (!editable() || state.pending) return false;
       const version = ++epoch;
@@ -591,6 +630,7 @@ const ScenesRemote = (() => {
       if (key === 'members' ? !Array.isArray(value) || !value.every((v) => typeof v === 'string') : typeof value !== 'string') return false;
       let next = { ...group, [key]: key === 'members' ? [...value] : value };
       if (['coordinator', 'kind', 'value'].includes(key)) delete next.choice;
+      if (['coordinator', 'kind', 'value'].includes(key)) delete next.importedTracks;
       if (key === 'coordinator') {
         next = { ...next, members: [], kind: 'keep', value: '', playing: 'keep' };
         delete next.direction;
@@ -809,7 +849,7 @@ const ScenesRemote = (() => {
     }
 
     return { state, refresh, editName, editFade, editBackupQueues, review, cancel, confirm,
-      beginDefinition, addGroup, editGroup, editDirection, removeGroup, editRoom, discardDefinition, reviewDefinition,
+      beginDefinition, offerSelection, addGroup, editGroup, editDirection, removeGroup, editRoom, discardDefinition, reviewDefinition,
       choicesFor, loadSources, filterSources, pageSources, chooseSource,
       close() { state.open = false; invalidate(); state.draft = state.rooms = null; state.sourceChoices = Object.create(null); publish(); },
       dispose() { disposed = true; ++epoch; } };
@@ -817,7 +857,8 @@ const ScenesRemote = (() => {
 
   let panelId = 0;
   function panel({ call, el, applied }) {
-    const identity = ++panelId, directionOpen = new Map();
+    const identity = ++panelId, directionOpen = new Map(), doc = document;
+    let skipOpenToggle = false;
     const body = el('div', { class: 'scene-manager-body' });
     const node = el('details', { class: 'scene-manager scenes' },
       el('summary', { text: 'Manage scenes' }), body);
@@ -958,6 +999,8 @@ const ScenesRemote = (() => {
           input.value = g.value;
           field.append(el('label', {}, 'Tracks in playback order', input),
           el('p', { id: help, text: 'Add 1–10 Spotify tracks or episodes, one per line. Add | and a title if wanted. Order and repeated entries are kept. Recall replaces this group’s queue; Paused loads it without starting playback. Saving leaves speakers unchanged.' }));
+          if (g.importedTracks?.some(track => /[\r\n]/.test(track.title || ''))) field.append(el('p', {
+            text: 'Full library titles are retained in the saved selection and its review. Editing these lines uses the single-line titles shown here.' }));
         }
         if (lead && ['favorite', 'sonos_playlist', 'dj'].includes(g.kind)) field.append(sourceChooser(g, i, busy));
         if (lead && g.kind === 'dj') {
@@ -1097,12 +1140,32 @@ const ScenesRemote = (() => {
         if (textInput(next) && caret?.every(Number.isInteger)) next.setSelectionRange(...caret);
       }
     }
-    node.addEventListener('toggle', () => { if (node.open) void control.refresh(); else control.close(); });
+    function offerSelection(value) {
+      if (doc.hidden || node.isConnected === false || control.state.loading || control.state.writing
+          || control.state.pending || control.state.draft) return false;
+      let selection;
+      try { selection = librarySelection(value); } catch (_) { return false; }
+      const workspace = node.closest?.('[data-studio-workspace]');
+      if (workspace?.hidden) [...doc.querySelectorAll('#studio-nav [data-workspace]')]
+        .find(button => button.dataset.workspace === workspace.dataset.studioWorkspace)?.click();
+      if (node.closest?.('[hidden], [inert]') || !control.offerSelection(selection)) return false;
+      if (!node.open) { skipOpenToggle = true; node.open = true; }
+      node.scrollIntoView?.({ block: 'start', behavior: 'auto' });
+      return true;
+    }
+    const fromLibrary = event => { if (offerSelection(event.detail)) event.preventDefault(); };
+    doc.addEventListener?.('fsonos:scene-selection', fromLibrary);
+    node.addEventListener('toggle', () => {
+      if (node.open) { if (skipOpenToggle) skipOpenToggle = false; else void control.refresh(); }
+      else { skipOpenToggle = false; control.close(); }
+    });
     render(control.state);
-    return { node, dispose: control.dispose };
+    return { node, offerSelection, dispose() {
+      doc.removeEventListener?.('fsonos:scene-selection', fromLibrary); control.dispose();
+    } };
   }
 
-  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, trackSelection, definition, prepareDefinition,
+  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, trackSelection, librarySelection, definition, prepareDefinition,
     sourceChoicesOf, sourcePage, model, panel };
 })();
 

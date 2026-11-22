@@ -441,6 +441,23 @@ const LibraryRemote = (() => {
       state[field] = value; state.message = ''; publish(); return true;
     }
 
+    async function sceneSelection() {
+      const zone = destination();
+      if (!Q || disposed || !state.open || state.loading || state.writing || state.pending
+          || state.trackDestination !== 'group' || !zone || !state.basket.length) return null;
+      const rows = Object.freeze(state.basket.map(row => Object.freeze({ ...row, hit: row.item }))), version = ++epoch;
+      state.loading = true; state.message = 'Checking the selected music before opening a scene draft…'; publish();
+      try {
+        if (!await verifySelection(rows, () => current(version))) return null;
+        const tracks = Q.tracksOf(rows.map(({ hit }) => ({ source_uri: hit.source, title: hit.title })));
+        state.message = '';
+        return Object.freeze({ kind: 'tracks', tracks, group: Object.freeze({ target: zone.target, members: zone.members }) });
+      } catch (error) {
+        if (current(version)) state.message = message(error);
+        return null;
+      } finally { if (current(version)) { state.loading = false; publish(); } }
+    }
+
     async function chooseTracks(action) {
       const zone = destination(), set = state.trackDestination === 'set';
       if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || (set ? !state.trackTarget.trim() : !zone)
@@ -634,7 +651,7 @@ const LibraryRemote = (() => {
             || change?.household && destination()?.household !== change.household) return;
         invalidate(true); state.message = 'The household favorites changed. Search again for current results.'; publish();
       },
-      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, trackTarget, chooseTracks, routine, cancel, confirm,
+      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, trackTarget, chooseTracks, sceneSelection, routine, cancel, confirm,
       removeTrack: id => editSelection('remove', id), repeatTrack: id => editSelection('repeat', id),
       moveTrack: (id, delta) => editSelection('move', id, delta),
       close() { state.open = false; invalidate(); publish(); },
@@ -678,6 +695,14 @@ const LibraryRemote = (() => {
       status.textContent = document.dispatchEvent(event)
         ? 'Music routines are not available on this page. Open the full remote to create a routine.'
         : 'Music routines opened. Check the music, group and timing there before saving.';
+    }
+    async function createSelectionScene() {
+      const selection = await control.sceneSelection();
+      if (!selection || document.hidden || !node.open || node.closest('[hidden], [inert]')) return;
+      const event = new CustomEvent('fsonos:scene-selection', { cancelable: true, detail: selection });
+      status.textContent = document.dispatchEvent(event)
+        ? 'Close any unfinished scene draft, then choose Save selection as scene again.'
+        : 'The selected tracks opened in Scenes. Name the scene, check its group and playback setting, then review before saving.';
     }
     destination.addEventListener('change', () => control.target(destination.value));
     trackDestination.addEventListener('change', () => control.trackTarget('trackDestination', trackDestination.value));
@@ -753,6 +778,7 @@ const LibraryRemote = (() => {
             button('Play selected now', () => choose('play'), locked, 'selected-play'),
             button('Queue selected next', () => choose('next'), locked, 'selected-next'),
             button('Add selected to end', () => choose('append'), locked, 'selected-append'),
+            button('Save selection as scene', () => createSelectionScene(), locked || state.trackDestination !== 'group', 'selected-scene'),
             button('Clear selection', () => control.clearSelection(), busy || !state.basket.length))));
       }
       if (state.pending?.tracks) {

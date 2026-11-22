@@ -3,7 +3,7 @@
 const DashboardLibraryPanel = (() => {
   const C = typeof DashboardCore !== 'undefined' ? DashboardCore : require('./dashboard-core.js');
   const L = typeof DashboardLibrary !== 'undefined' ? DashboardLibrary : require('./dashboard-library.js');
-  function create({ call, controller, session, doc = document, schedule = setTimeout, cancel = clearTimeout }) {
+  function create({ call, controller, session, offerScene, doc = document, schedule = setTimeout, cancel = clearTimeout }) {
     const dialog = doc.getElementById('search-dialog');
     if (!dialog) return null;
     const el = (tag, text, cls) => {
@@ -54,10 +54,12 @@ const DashboardLibraryPanel = (() => {
     const selectedPlay = button('Play selected now', () => { void selectTracks('play'); });
     const selectedNext = button('Queue selected next', () => { void selectTracks('next'); });
     const selectedEnd = button('Add selected to end', () => { void selectTracks('append'); });
+    const selectedScene = button('Save selection as scene', () => { void selectScene(); });
+    selectedScene.hidden = typeof offerScene !== 'function';
     const selectedClear = button('Clear selection', () => control.clearSelection());
     const selectedActions = el('div', null, 'dashboard-library-actions');
     selectedActions.setAttribute('role', 'group'); selectedActions.setAttribute('aria-label', 'Selected track actions');
-    selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedClear);
+    selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedScene, selectedClear);
     const selectionHelp = el('p', `Build a selection of up to ${L.MAX_TRACKS} tracks from different cached albums, playlists and filters. Keep browsing, then move, repeat or remove tracks below before review. Refresh listing, Clear selection or closing this browser clears it.`, 'small-note');
     const selectionNotice = el('p', '', 'small-note'); selectionNotice.setAttribute('role', 'status');
     const basket = el('ol', null, 'dashboard-library-selection');
@@ -109,6 +111,33 @@ const DashboardLibraryPanel = (() => {
         }
       }
     }
+    async function selectScene() {
+      if (!visible() || reviewing || trackDestination !== 'group' || !controller.canControl()
+          || session.state.pending || typeof offerScene !== 'function') return;
+      const selected = controller.selected(), choice = control.chooseTracks();
+      if (!selected || !choice) return;
+      const shape = C.shape(selected.zone), target = C.key(selected.zone);
+      const valid = () => {
+        if (!visible() || !controller.canControl() || session.state.pending
+            || target !== controller.state.selected || shape !== C.shape(controller.selected().zone)) {
+          throw new Error('The selected group changed. Review the music and group again.');
+        }
+      };
+      let problem = '';
+      reviewing = true; render(control.state);
+      try {
+        await L.verifySelection(call, choice, valid); valid();
+        const Q = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote : require('./queue-tracks.js');
+        const selection = Object.freeze({ kind: 'tracks', tracks: Q.tracksOf(choice.rows.map(row => row.item)),
+          group: Object.freeze({ target, members: Object.freeze(selected.zone.members.map(room => `${room}@${selected.zone.household}`).sort()) }) });
+        if (offerScene(selection) !== true) throw new Error('Close any unfinished scene draft, then choose Save selection as scene again.');
+        reviewing = false; close(); dialog.close();
+      } catch (error) { problem = C.problem(error); }
+      finally {
+        reviewing = false;
+        if (!disposed) { render(control.state); if (visible() && problem) status.textContent = problem; }
+      }
+    }
     function render(state) {
       if (disposed) return;
       const selected = controller.selected(), destination = selected
@@ -132,6 +161,7 @@ const DashboardLibraryPanel = (() => {
       selectedCount.textContent = `${state.basket.length} selected`;
       selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !basketUsable || !state.basket.length || (trackDestination === 'set' ? !trackTarget.trim() : !destination)
         || !controller.canControl() || !!session.state.pending;
+      selectedScene.disabled = selectedPlay.disabled || trackDestination !== 'group';
       selectedClear.disabled = !visible() || reviewing || !state.basket.length;
       const basketFocus = basket.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
       basket.hidden = !state.basket.length;

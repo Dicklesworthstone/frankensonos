@@ -1396,6 +1396,13 @@ apply as a tool error while preserving its full receipt. See
 authored Rust regressions still await execution because local dependency
 compilation is terminated before project code is reached.
 
+Both browser library baskets now hand their exact ordered selection to reviewed
+scene authoring. The phone opens its custom editor with the complete selected
+group; the dashboard reuses its scene-save dialog with a name and explicit
+playing/silent intent. Saving performs no queue or playback mutation, retains
+order and repeats, and rechecks the saved name and physical grouping before
+storage. These reusable scenes can then be selected by ordinary routines.
+
 Authored Spotify artist and show sources are resolved on each recall, including
 scheduled scenes. Saving retains the canonical URI without a catalog lookup.
 A readiness phase resolves every permitted source, deduplicates repeated URIs,

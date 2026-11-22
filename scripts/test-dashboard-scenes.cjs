@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const C = require('../crates/fsonos-api/src/remote/dashboard-core.js');
 const Scenes = require('../crates/fsonos-api/src/remote/dashboard-scenes.js');
+const LibraryPanel = require('../crates/fsonos-api/src/remote/dashboard-library-panel.js');
 const copy = value => structuredClone(value);
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 const settled = async predicate => {
@@ -12,16 +13,25 @@ const settled = async predicate => {
 };
 function documentFixture() {
   const nodes = new Map();
+  const descendants = node => node.children.flatMap(child => typeof child === 'object' ? [child, ...descendants(child)] : []);
   const doc = { activeElement: null, createElement(tag) {
     const listeners = new Map();
-    return { tag, children: [], open: false, hidden: false, disabled: false, checked: false, textContent: '', value: '',
+    return { tag, tagName: tag.toUpperCase(), children: [], dataset: {}, isConnected: true,
+      open: false, hidden: false, disabled: false, checked: false, textContent: '', value: '',
       attributes: {}, setAttribute(name, value) { this.attributes[name] = value; },
+      getAttribute(name) { return this.attributes[name] ?? null; },
       append(...children) { this.children.push(...children); }, replaceChildren(...children) { this.children = children; },
       addEventListener(name, listener) { listeners.set(name, listener); },
+      removeEventListener(name, listener) { if (listeners.get(name) === listener) listeners.delete(name); },
       fire(name, event = {}) { return listeners.get(name)?.({ target: this, preventDefault() {}, ...event }); },
+      descendants() { return descendants(this); }, contains(other) { return this === other || descendants(this).includes(other); },
+      closest() { return null; }, before() {}, remove() { this.isConnected = false; },
+      querySelectorAll(selector) { return descendants(this).filter(node => selector === '[data-catalog-key]'
+        ? node.dataset.catalogKey !== undefined : node.tag === selector); },
+      querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
       showModal() { this.open = true; }, close() { this.open = false; this.fire('close'); },
       focus() { doc.activeElement = this; } };
-  }, getElementById(id) {
+  }, createTextNode(text) { return String(text); }, getElementById(id) {
     if (!nodes.has(id)) nodes.set(id, { ...doc.createElement('div'), id });
     return nodes.get(id);
   } };
@@ -43,12 +53,19 @@ function fixture({ demo = false, dom = false, network } = {}) {
   const normalRead = url => {
     if (url === '/zones') return copy(zones);
     if (url === '/scenes') return copy(catalog);
+    if (url.startsWith('/rooms/resolve?')) {
+      const target = new URL(url, 'http://fixture').searchParams.get('target');
+      const match = /^(.*)@(S[12]|SIM_S[12])$/.exec(target);
+      if (!match) throw new Error('Unknown fixture room');
+      return { target, matched: 'room', rooms: [{ room: match[1], household: match[2].replace('SIM_', '') }] };
+    }
     if (url.startsWith('/zones/') && url.endsWith('/state')) return copy(rows.get(decodeURIComponent(url.slice(7, -6))));
     throw new Error('Unexpected fixture read: ' + url);
   };
   const normalWrite = (url, body, options) => {
     assert.equal(options?.method, 'PUT'); assert.match(url, /^\/scenes\/[^/]+$/);
-    const result = capture(decodeURIComponent(url.slice(8)), body.backup_queues === true);
+    const name = decodeURIComponent(url.slice(8));
+    const result = body.groups ? { name, saved: 1700000000, ...copy(body) } : capture(name, body.backup_queues === true);
     const index = catalog.findIndex(scene => scene.name === result.name);
     if (index < 0) catalog.push(result); else catalog[index] = result;
     return copy(result);
@@ -67,7 +84,7 @@ function fixture({ demo = false, dom = false, network } = {}) {
   const options = { call, controller: ctl, now: () => time, saved: () => session.catalog() };
   const doc = dom ? documentFixture() : null;
   capturer = dom ? Scenes.panel({ ...options, session, document: doc }) : Scenes.model(options);
-  return { ctl, capturer, zones, rows, catalog, calls, saved, recalled, doc, capture, normalRead, normalWrite, session,
+  return { ctl, capturer, zones, rows, catalog, calls, call, saved, recalled, doc, capture, normalRead, normalWrite, session,
     writes: () => calls.filter(row => row.body !== undefined).map(({ url, body, options }) => ({ url, body, method: options?.method })),
     read(fn) { reader = fn; }, write(fn) { writer = fn; }, time(value) { time = value; }, afterSave(fn) { onSaved = fn; },
     async ready() { assert.equal(await ctl.refresh(), true); ctl.connection(true); return this; } };
@@ -76,6 +93,149 @@ async function review(f, name = 'Quiet / evening', backup = false) {
   assert.equal(await f.capturer.open(), true); f.capturer.edit('name', name); f.capturer.edit('backupQueues', backup);
   const pending = f.capturer.review(); assert.ok(pending); return pending;
 }
+
+const selectedMusic = () => ({ kind: 'tracks', group: { target: 'Main room@S2', members: ['Main room@S2', 'Side room@S2'] },
+  tracks: [{ source_uri: `spotify:track:${'A'.repeat(22)}`, title: 'First <img src=x>' },
+    { source_uri: `spotify:episode:${'B'.repeat(22)}`, title: 'Second' },
+    { source_uri: `spotify:track:${'A'.repeat(22)}`, title: 'Repeated' }] });
+
+test('a library selection opens a named scene draft and saves only the reviewed ordered group', async () => {
+  for (const playing of [true, false]) {
+    const f = await fixture().ready(), start = f.calls.length;
+    assert.equal(await f.capturer.openSelection(selectedMusic()), true);
+    assert.equal(f.capturer.state.name, ''); assert.equal(f.capturer.canReview(), false);
+    assert.equal(f.capturer.edit('name', 'Selected / music'), true);
+    assert.equal(f.capturer.edit('playing', playing), true);
+    assert.equal(f.capturer.edit('backupQueues', true), false);
+    const pending = f.capturer.review(); assert.ok(pending);
+    assert.deepEqual(pending.body, { groups: [{ coordinator: 'Main room@S2', members: ['Side room@S2'],
+      source: { kind: 'tracks', tracks: selectedMusic().tracks }, playing }], volumes: {}, mutes: {} });
+    assert.deepEqual(f.writes(), []);
+    assert.equal(await f.capturer.apply(pending), true, f.capturer.state.message);
+    assert.equal(await f.capturer.apply(pending), false);
+    assert.deepEqual(f.writes(), [{ url: '/scenes/Selected%20%2F%20music', body: pending.body, method: 'PUT' }]);
+    const sent = f.calls.findIndex((call, index) => index >= start && call.body !== undefined);
+    assert.ok(f.calls.slice(start, sent).every(call => ['/zones', '/scenes'].includes(call.url)),
+      'reviewing a concrete selection needs no current music, queue or DJ state');
+    assert.ok(f.calls.slice(start).every(call => !/\/queue|\/dj/.test(call.url)));
+    assert.equal(f.capturer.state.result.groups[0].playing, playing);
+    assert.match(f.capturer.state.message, /Playback was not changed/);
+  }
+});
+
+test('selection import rejects unfinished editors, missing groups, malformed tracks and demo writes', async () => {
+  for (const change of ['open', 'target', 'members', 'bound', 'demo']) {
+    const f = await fixture({ demo: change === 'demo' }).ready(), selection = selectedMusic();
+    if (change === 'open') await f.capturer.open();
+    if (change === 'target') selection.group.target = 'Elsewhere@S2';
+    if (change === 'members') selection.group.members.pop();
+    if (change === 'bound') selection.tracks = Array(11).fill(selection.tracks[0]);
+    assert.equal(await f.capturer.openSelection(selection), false, change);
+    assert.deepEqual(f.writes(), []);
+  }
+});
+
+test('library scene group changes, replacement conflicts and edited playback consume previous reviews', async () => {
+  for (const change of ['groups', 'selection', 'playback', 'occupied']) {
+    const f = await fixture().ready(); assert.equal(await f.capturer.openSelection(selectedMusic()), true);
+    f.capturer.edit('name', 'Library scene'); const pending = f.capturer.review();
+    if (change === 'groups') f.zones[0].members.pop();
+    if (change === 'selection') f.ctl.select('Main room@S1');
+    if (change === 'playback') f.capturer.edit('playing', false);
+    if (change === 'occupied') f.catalog.push(f.capture('Library scene', false));
+    assert.equal(await f.capturer.apply(pending), false, change);
+    assert.deepEqual(f.writes(), []);
+    if (change === 'selection') {
+      assert.equal(await f.capturer.read(), false);
+      assert.equal(f.capturer.canReview(), false);
+    }
+  }
+});
+
+test('canonical room spellings confirm the selected group but changed saved music never claims success', async () => {
+  for (const change of ['canonical', 'room', 'order', 'playing', 'volume']) {
+    const f = await fixture().ready(); assert.equal(await f.capturer.openSelection(selectedMusic()), true);
+    f.capturer.edit('name', 'Library scene'); const pending = f.capturer.review();
+    f.write((url, body, options, normal) => {
+      const saved = normal(url, body, options), group = saved.groups[0];
+      group.coordinator = group.coordinator.replace('@S2', '@SIM_S2');
+      group.members = group.members.map(room => room.replace('@S2', '@SIM_S2'));
+      if (change === 'room') group.members = ['Other room@SIM_S2'];
+      if (change === 'order') group.source.tracks.reverse();
+      if (change === 'playing') group.playing = false;
+      if (change === 'volume') saved.volumes = { 'Main room@S2': 100 };
+      return saved;
+    });
+    assert.equal(await f.capturer.apply(pending), change === 'canonical', f.capturer.state.message);
+    assert.equal(await f.capturer.apply(pending), false); assert.equal(f.writes().length, 1);
+    if (change !== 'canonical') { assert.equal(f.capturer.state.result, null); assert.equal(f.ctl.state.uncertain, true); }
+  }
+});
+
+test('actual dashboard selection scene controls expose order, paused recall and reviewed storage', async () => {
+  const f = await fixture({ dom: true }).ready(), $ = id => f.doc.getElementById(id);
+  assert.equal(await f.capturer.openSelection(selectedMusic()), true);
+  assert.equal($('capture-scene-dialog').open, true);
+  assert.equal($('capture-scene-backup-option').hidden, true);
+  assert.equal($('capture-scene-playback-option').hidden, false);
+  assert.match($('capture-scene-tracks').textContent, /1\. First <img src=x>[\s\S]*2\. Second[\s\S]*3\. Repeated/);
+  $('capture-scene-name').value = 'My selection'; $('capture-scene-name').fire('input');
+  $('capture-scene-playback').value = 'pause'; $('capture-scene-playback').fire('change');
+  $('capture-scene-review').fire('click');
+  assert.match($('capture-scene-preview-detail').textContent, /without starting playback/);
+  assert.match($('capture-scene-review-note').textContent, /Apply the scene separately or choose it in Routines/);
+  assert.equal($('capture-scene-playback').disabled, true); assert.deepEqual(f.writes(), []);
+  $('capture-scene-confirm').fire('click'); await settled(() => !f.capturer.state.writing);
+  assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].body.groups[0].playing, false);
+  assert.equal(f.capturer.state.result.name, 'My selection');
+});
+
+test('actual dashboard basket button rechecks music and hands repeated tracks to the scene save dialog', async t => {
+  for (const changed of [false, true]) {
+    const f = await fixture({ dom: true }).ready();
+    let revision = 'observed-library';
+    f.read((url, options, normal) => {
+      if (!url.startsWith('/library/browse?')) return normal(url);
+      const query = new URL(url, 'http://fixture').searchParams, kind = query.get('kind');
+      return { kind, offset: 0, limit: 50, album_uri: null, total: 2, next_offset: null, coverage: 'cached', revision,
+        items: ['A', 'B'].map(letter => ({ kind: kind === 'tracks' ? 'track' : 'album',
+          source_uri: `spotify:${kind === 'tracks' ? 'track' : 'album'}:${letter.repeat(22)}`,
+          title: `Selected ${letter}`, subtitle: 'Fixture artist', explicit: false, ...(kind === 'albums' ? { cached_tracks: 2 } : {}) })) };
+    });
+    let offered = 0;
+    const panel = LibraryPanel.create({ call: f.call, controller: f.ctl, session: f.session, doc: f.doc,
+      offerScene(value) {
+        offered++; if (f.capturer.state.open) return false;
+        void f.capturer.openSelection(value); return f.capturer.state.open;
+      } });
+    t.after(() => panel.dispose());
+    f.doc.getElementById('search-dialog').showModal(); panel.node.open = true;
+    await panel.model.open(); await panel.model.browse('tracks');
+    const buttons = () => panel.node.descendants().filter(node => node.tag === 'button');
+    const checkbox = panel.node.descendants().find(node => node.dataset.catalogKey === 'select:0');
+    checkbox.checked = true; checkbox.fire('change');
+    buttons().find(node => node.dataset.catalogKey?.endsWith(':Repeat track')).fire('click');
+    assert.equal(panel.model.state.basket.length, 2);
+    const save = buttons().find(node => node.textContent === 'Save selection as scene');
+    assert.equal(save.disabled, false);
+    if (changed) revision = 'changed-library';
+    save.fire('click'); await new Promise(setImmediate);
+    assert.equal(offered, changed ? 0 : 1);
+    assert.deepEqual(f.writes(), []);
+    if (changed) {
+      assert.equal(f.doc.getElementById('search-dialog').open, true);
+      assert.equal(panel.model.state.basket.length, 2);
+      assert.equal(f.capturer.state.open, false);
+      assert.ok(panel.node.descendants().some(node => node.attributes.role === 'status' && /changed/i.test(node.textContent)));
+    } else {
+      assert.equal(f.doc.getElementById('search-dialog').open, false);
+      assert.equal(f.doc.getElementById('capture-scene-dialog').open, true);
+      assert.equal(f.capturer.state.selection.tracks.length, 2);
+      assert.deepEqual(f.capturer.state.selection.tracks[0], f.capturer.state.selection.tracks[1]);
+      assert.deepEqual(f.capturer.state.selection.group.members, selectedMusic().group.members);
+    }
+  }
+});
 
 test('capture is lazy and reads the whole-house inventory and existing definitions before review', async () => {
   const f = await fixture().ready(); assert.equal(f.calls.some(row => row.url === '/scenes'), false);

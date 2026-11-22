@@ -728,7 +728,11 @@ test('changed or lost ordered-scene acknowledgements remain uncertain and are ne
 });
 
 function sceneDocument() {
-  const document = { activeElement: null };
+  const listeners = new Map();
+  const document = { activeElement: null,
+    addEventListener(name, handler) { listeners.set(name, [...(listeners.get(name) || []), handler]); },
+    removeEventListener(name, handler) { listeners.set(name, (listeners.get(name) || []).filter(item => item !== handler)); },
+    dispatchEvent(event) { for (const handler of listeners.get(event.type) || []) handler(event); return !event.defaultPrevented; } };
   class Element {
     constructor(tag) {
       this.tagName = tag.toUpperCase(); this.children = []; this.attributes = new Map(); this.events = new Map();
@@ -807,6 +811,82 @@ test('actual custom-scene panel keeps multiline input, reviews order and silentl
   assert.equal(f.writes[0].body.groups[0].playing, false);
   assert.match(panel.node.textContent, /Saved custom scene “Ordered evening”. No playback was changed/);
   assert.equal(panel.node.descendants().some(node => node.tagName === 'IMG'), false);
+});
+
+const librarySelection = () => ({ kind: 'tracks', tracks: sceneTracks(),
+  group: { target: 'Den@S1', members: ['Den@S1', 'Hall@S1'] } });
+
+test('phone library handoff checks the current group and creates an editable storage-only scene draft', async () => {
+  const f = editorFixture();
+  assert.equal(f.control.offerSelection(librarySelection()), true);
+  await new Promise(setImmediate);
+  assert.equal(f.control.state.name, ''); assert.equal(f.control.state.draft.groups.length, 1);
+  const draft = f.control.state.draft.groups[0];
+  assert.equal(draft.coordinator, 'Den@S1'); assert.deepEqual(draft.members, ['Hall@S1']);
+  assert.deepEqual(Scenes.trackSelection(draft.value), sceneTracks());
+  assert.equal(await f.control.reviewDefinition(), false, 'import never invents a scene name');
+  f.control.editName('Library choice'); f.control.editGroup(f.control.state.draft.groups[0], 'playing', 'pause');
+  assert.equal(await f.control.reviewDefinition(), true); assert.deepEqual(f.writes, []);
+  const pending = f.control.state.pending;
+  assert.equal(await f.control.confirm(pending), true);
+  assert.equal(f.writes.length, 1); assert.equal(f.writes[0].name, 'sceneSave');
+  assert.deepEqual(f.writes[0].body.groups[0].source.tracks, sceneTracks());
+  assert.equal(f.writes[0].body.groups[0].playing, false);
+});
+
+test('phone library handoff does not overwrite drafts or survive changed grouping and closed reads', async () => {
+  const existing = await editor(); group(existing, 'Den@S1', 'tracks', tracksInput());
+  const oldDraft = existing.control.state.draft;
+  assert.equal(existing.control.offerSelection(librarySelection()), false);
+  assert.equal(existing.control.state.draft, oldDraft);
+  for (const change of ['members', 'coordinator', 'closed']) {
+    const f = editorFixture(), wait = deferred();
+    if (change === 'members') f.zones[0].members.pop();
+    if (change === 'coordinator') f.zones[0].coordinator_room = 'Hall';
+    if (change === 'closed') f.hook = async name => name === 'zones' ? wait.promise : undefined;
+    assert.equal(f.control.offerSelection(librarySelection()), true);
+    if (change === 'closed') { f.control.close(); wait.resolve(f.zones); }
+    await new Promise(setImmediate);
+    assert.equal(f.control.state.draft, null); assert.equal(f.control.state.loaded, false);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
+test('imported library titles retain newlines, tabs and pipes until their lines are explicitly edited', async () => {
+  const f = editorFixture(), selection = librarySelection();
+  selection.tracks[0].title = 'First\nSecond\r\nThird\t| remix';
+  assert.equal(f.control.offerSelection(selection), true); await new Promise(setImmediate);
+  f.control.editName('Full metadata'); f.control.editGroup(f.control.state.draft.groups[0], 'playing', 'pause');
+  assert.equal(await f.control.reviewDefinition(), true);
+  assert.deepEqual(f.control.state.pending.prepared.body.groups[0].source.tracks, selection.tracks);
+  f.control.cancel();
+  const draft = f.control.state.draft.groups[0];
+  assert.equal(f.control.editGroup(draft, 'value', draft.value.replace('First Second Third', 'Edited title')), true);
+  assert.equal(await f.control.reviewDefinition(), true);
+  assert.equal(f.control.state.pending.prepared.body.groups[0].source.tracks[0].title, 'Edited title\t| remix');
+  assert.equal(f.control.state.draft.groups[0].importedTracks, undefined);
+  assert.equal(await f.control.confirm(f.control.state.pending), true); assert.equal(f.writes.length, 1);
+});
+
+test('actual phone scene listener accepts a basket, opens its editor and retires the listener on dispose', async t => {
+  const prior = global.document, dom = sceneDocument(); global.document = dom.document;
+  t.after(() => { if (prior === undefined) delete global.document; else global.document = prior; });
+  const f = editorFixture(), panel = Scenes.panel({ call: f.call, el: dom.el });
+  const event = () => ({ type: 'fsonos:scene-selection', detail: librarySelection(), defaultPrevented: false,
+    preventDefault() { this.defaultPrevented = true; } });
+  assert.equal(dom.document.dispatchEvent(event()), false);
+  assert.equal(panel.node.open, true);
+  await panel.node.dispatch('toggle'); await new Promise(setImmediate);
+  const control = key => panel.node.querySelector(`[data-scene-focus="${key}"]`);
+  assert.equal(control('tracks-1').value, tracksInput());
+  assert.equal(control('leader-1').value, 'Den@S1');
+  assert.equal(control('member-1-Hall@S1').checked, true);
+  assert.equal(dom.document.dispatchEvent(event()), true, 'a second handoff cannot replace an unfinished draft');
+  control('name').value = 'Basket scene'; await control('name').dispatch('input');
+  await control('review-definition').dispatch('click'); assert.deepEqual(f.writes, []);
+  await control('confirm').dispatch('click');
+  assert.equal(f.writes.length, 1); assert.equal(f.writes[0].params.name, 'Basket scene');
+  panel.dispose(); assert.equal(dom.document.dispatchEvent(event()), true);
 });
 const nativeRow = () => row({ groups: [{ coordinator: 'Den@SIM_HOUSEHOLD_S1', members: [], playing: true,
   source: { kind: 'sonos_playlist', name: 'SQ:7',

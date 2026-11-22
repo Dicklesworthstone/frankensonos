@@ -103,6 +103,12 @@ Add to end. Confirmation rechecks the saved contents and destination queue
 before one request. It also preserves the native playlist save, rename and
 removal workflow.
 
+Both browser library baskets offer **Save selection as scene**. Keep the exact
+track order, repeated occurrences and selected group's membership, choose
+playing or silent recall, then review and save without changing current music.
+The resulting [ordered-track scene](docs/ORDERED_TRACK_SCENES.md) can be recalled
+later or selected by a scheduled Apply scene routine.
+
 Scenes saved with `--backup-queues` can reconstruct their saved queues after
 the originals change. A complete, verified recall on unchanged groups now
 retains [bounded queue undo](docs/QUEUE_UNDO.md), restoring the intervening

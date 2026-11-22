@@ -364,6 +364,38 @@ test('phone builds one ordered batch across all tracks, a filter, an album and a
   assert.equal(f.writes().length, 1); assert.deepEqual(f.writes()[0].args.body.tracks, pending.body.tracks);
 });
 
+test('phone basket hands an exact mixed-source selection to scene authoring without reading or changing playback', async () => {
+  const f = await fixture(), rows = await selectMixed(f);
+  assert.equal(f.control.repeatTrack(rows[0].id), true);
+  assert.equal(f.control.moveTrack(rows[3].id, -1), true);
+  const start = f.calls.length, selected = await f.control.sceneSelection();
+  assert.equal(selected.kind, 'tracks');
+  assert.deepEqual(selected.tracks.map(track => track.source_uri), [uri(2), uri(2), uri(1), uri(51), uri(2)]);
+  assert.deepEqual(selected.group, { target: 'Room@S2', members: ['Room@S2', 'Study@S2'] });
+  assert.equal(Object.isFrozen(selected.tracks[0]), true);
+  assert.equal(f.control.state.basket.length, 5, 'handoff leaves the original basket editable');
+  assert.deepEqual(f.writes(), []);
+  assert.ok(f.calls.slice(start).every(call => ['libraryBrowse', 'libraryPlaylist'].includes(call.name)));
+  assert.equal(f.control.state.pending, null);
+  assert.equal(f.control.trackTarget('trackDestination', 'set'), true);
+  assert.equal(await f.control.sceneSelection(), null, 'a saved scene requires an explicit observed group');
+});
+
+test('changed library pages and closed reads cannot hand a stale basket to scene authoring', async () => {
+  for (const change of ['page', 'close']) {
+    const f = await fixture(); await selectThreePages(f); const gate = deferred();
+    f.hook((name, args) => {
+      if (name !== 'libraryBrowse') return undefined;
+      const value = catalog(args.query);
+      if (change === 'page') { value.revision = 'changed'; return value; }
+      return gate.promise.then(() => value);
+    });
+    const work = f.control.sceneSelection();
+    if (change === 'close') { f.control.close(); gate.resolve(); }
+    assert.equal(await work, null); assert.deepEqual(f.writes(), []);
+  }
+});
+
 test('phone keeps mixed source proofs through search, collection changes and back navigation', async () => {
   const f = await fixture(); await selectMixed(f);
   const retained = f.control.state.basket;

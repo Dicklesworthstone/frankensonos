@@ -10,6 +10,14 @@ every existing group, with the same selection in each. Queue-next and append
 leave current playback alone. All three operations share the existing policy,
 action history and verified undo boundaries.
 
+The phone remote and Listening Room also offer **Save selection as scene** for
+the chosen listening group. This opens a reviewed scene draft with the exact
+order, titles, repeated occurrences and full group membership. Choose whether
+recall starts playback or loads silently; saving leaves current music and
+queues unchanged. The saved scene can then run through an ordinary Apply scene
+routine. See [ordered-track scenes](ORDERED_TRACK_SCENES.md) for the phone editor,
+dashboard dialog and the equivalent CLI/API definition.
+
 ## From the phone remote or Listening Room
 
 Open **Find music** and browse cached tracks, or open an album or playlist with

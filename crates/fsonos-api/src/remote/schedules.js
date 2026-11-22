@@ -793,11 +793,14 @@ const SchedulesRemote = (() => {
       el('p', { text: 'This schedules the scene by name, not a frozen copy. Later edits to that scene change what future runs do.' }));
     else if (d.action === 'announce') {
       form.append(select('Announcement sound', 'announcement_source', [['text', 'Speak a message'], ['chime', 'Play a chime']]));
-      if (d.announcement_source === 'text') form.append(
-        el('label', { class: 'routine-field' }, 'Message (maximum 1000 characters)', el('textarea', { id: `${idPrefix}-announcement_text`, value: d.announcement_text, maxlength: 2000,
+      if (d.announcement_source === 'text') {
+        const input = el('textarea', { id: `${idPrefix}-announcement_text`, maxlength: 2000,
           rows: 3, 'aria-label': 'Announcement message', [focusAttribute]: 'announcement_text', disabled: busy,
-          oninput: (e) => control.edit('announcement_text', e.target.value) })),
-        field('Voice (optional; uses the configured voice when blank)', 'announcement_voice', { maxlength: 4096 }));
+          oninput: (e) => control.edit('announcement_text', e.target.value) });
+        input.value = d.announcement_text;
+        form.append(el('label', { class: 'routine-field' }, 'Message (maximum 1000 characters)', input),
+          field('Voice (optional; uses the configured voice when blank)', 'announcement_voice', { maxlength: 4096 }));
+      }
       else form.append(select('Chime', 'announcement_chime', [['bell', 'Bell'], ['beep', 'Beep'], ['rise', 'Rise']]));
       form.append(el('label', { class: 'schedule-all-rooms' }, el('input', { type: 'checkbox', checked: d.announcement_all, disabled: busy,
         [focusAttribute]: 'announcement-all', onchange: event => control.edit('announcement_all', event.target.checked) }),

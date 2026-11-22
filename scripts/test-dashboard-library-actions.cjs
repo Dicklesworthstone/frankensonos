@@ -146,7 +146,7 @@ test('served dashboard embeds the catalog and panel before their consumers and k
   assert.match(source,/\{LIBRARY_PANEL\}(?:\\n\{[A-Z_]+\})*\\n\{WORKSPACE\}/);
   assert.match(source,/\{STYLE\}\\n\{LIBRARY_STYLE\}/);assert.match(source,/asset\(content_type, text\)/);assert.match(source,/microphone=\(self\)/);
   const workspace=fs.readFileSync(path.join(root,'remote/dashboard-workspace.js'),'utf8');
-  assert.match(workspace,/DashboardLibraryPanel.create\(\{ call, controller, session \}\)/);
+  assert.match(workspace,/DashboardLibraryPanel.create\(\{ call, controller, session, offerScene \}\)/);
   assert.match(workspace,/library\?\.suspend\(\)/);assert.match(workspace,/library\?\.resume\(\)/);assert.match(workspace,/library\?\.observe\(\)/);
 });
 
