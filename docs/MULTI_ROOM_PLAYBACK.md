@@ -1,6 +1,6 @@
 # Play or queue a source across existing groups
 
-`play`, `play_favorite` and `play_sonos_playlist` accept the same room sets as
+`play`, `play_tracks`, `play_favorite` and `play_sonos_playlist` accept the same room sets as
 transport and volume controls. A room name still selects its current group.
 A multi-room alias, `all` or `everywhere` selects every distinct group named by
 that target. `all@S1` and `all@S2` restrict the selection to one household.
@@ -26,6 +26,7 @@ to group one household before playback when that is the intended arrangement.
 | Operation | CLI | HTTP | MCP |
 |---|---|---|---|
 | Spotify or stream source | `play <target> <source>` | `POST /play` | `play` |
+| Ordered tracks or episodes | `play-tracks <target> <URI>...` | `POST /play/tracks` | `play_tracks` |
 | Sonos favorite | `play <target> --favorite <query>` | `POST /play/favorite` | `play_favorite` |
 | Saved Sonos playlist | `play <target> --playlist <query>` | `POST /sonos/playlists/play` | `play_sonos_playlist` |
 | Add a source next or at the end | `play <target> <source> --next` / `--queue` (also `--favorite` / `--playlist`) | `POST /queue` | `add_to_queue` |
@@ -38,9 +39,15 @@ The phone remote and desktop dashboard use the reviewed source endpoint below
 for room sets and favorite-title selections. It retains the same underlying
 source preparation, policy tools, action logging and per-group receipts.
 
-Search-and-play picks, line-in playback, revision-bound ordered track
-selections (`queue-tracks` / `POST /queue/tracks`), and the legacy `/sonos` compatibility bridge
-retain their single-group contracts. They do not silently choose one room
+Ordered playback sends the same 1–10 tracks or episodes to each group,
+preserving order and intentional repeats. It requires no Spotify Web API lookup
+for concrete track identities. An optional `expected_revision` queue token
+requires a selector resolving to one distinct group; one group's token cannot
+be used for a whole room set. See [ordered track selections](QUEUE_TRACK_SELECTIONS.md).
+
+Search-and-play picks, line-in playback, ordered queue additions
+(`queue-tracks` / `POST /queue/tracks`), the browser's ordered-track review, and
+the legacy `/sonos` compatibility bridge retain their single-group contracts. They do not silently choose one room
 from a multi-room alias.
 
 ## Phone and desktop controls

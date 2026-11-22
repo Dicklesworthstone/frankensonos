@@ -44,15 +44,16 @@ pub struct QueueTracksRequest {
     pub expected_revision: Option<String>,
 }
 
-/// `POST /play/tracks`: replace the selected group's queue with exactly these
+/// `POST /play/tracks`: replace each selected group's queue with exactly these
 /// ordered occurrences and start at the first in NORMAL mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlayTracksRequest {
     pub zone: String,
     pub tracks: Vec<QueueTrackInput>,
-    /// Optional destination queue revision from `get_queue`. The original
-    /// queue is retained through preparation and staged replacement.
+    /// Optional destination queue revision from `get_queue`, valid only when
+    /// zone resolves to one group. Every original queue is retained through
+    /// preparation and staged replacement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<String>,
 }
@@ -135,47 +136,65 @@ impl PlayTracksRequest {
 }
 
 impl Surface {
-    /// Start exactly the requested occurrences through ordinary playback
-    /// permission, group caps and complete queue-replacement undo. No Spotify
-    /// Web API lookup or sign-in is required for these concrete identities.
+    /// Start exactly the requested occurrences in each distinct selected group
+    /// through ordinary playback permission, group caps and one bounded undo
+    /// action. No Spotify Web API lookup is needed for concrete identities.
     pub fn play_tracks(
         &self,
         client: &Client,
         req: &PlayTracksRequest,
     ) -> Result<OutcomeDto, Failure> {
         let asked = req.normalized()?;
-        self.control_io(client, "play", |transport, rooms| {
-            let target = super::resolve(rooms, &asked.zone)?;
-            let coordinator = &target.coordinator.id;
-            let host = target.coordinator.ip;
-            self.confirm_source_audience(rooms.households, coordinator)?;
-            // Capture before renderer learning or the caller's optional
-            // revision read; no later observation can replace this baseline.
-            let destination = control::TrackBatchDestination::read(transport, host, coordinator)?;
-            confirm_destination_revision(
-                transport,
-                host,
-                coordinator,
-                asked.expected_revision.as_deref(),
-            )?;
-            let command = Command::PlaySelection {
-                coordinator: coordinator.clone(),
-                tracks: asked
-                    .tracks
+        self.control_set_io(client, "play", |transport, rooms| {
+            let mut targets: Vec<fsonos_core::ControlTarget<'_>> = Vec::new();
+            for target in crate::plan::resolve_set(rooms, &asked.zone)? {
+                if !targets
                     .iter()
-                    .map(|track| {
-                        (
-                            track.source_uri.clone(),
-                            track.title.as_ref().unwrap_or(&track.source_uri).clone(),
-                        )
-                    })
-                    .collect(),
-                destination,
-            };
-            // Unavailable linkage or changed destinations must leave levels,
-            // queue contents and current playback intent untouched.
-            self.confirm_source_selection(rooms.households, &command)?;
-            Ok(command)
+                    .any(|known| known.coordinator.id == target.coordinator.id)
+                {
+                    targets.push(target);
+                }
+            }
+            // Queue revisions are coordinator-bound. Never apply one group's
+            // token to another, or silently discard a caller's precondition.
+            if targets.len() > 1 && asked.expected_revision.is_some() {
+                return Err(Failure::invalid(
+                    "expected_revision requires a target resolving to one group; read each group's queue and address it separately for revision-bound playback",
+                ));
+            }
+            let tracks: Vec<_> = asked
+                .tracks
+                .iter()
+                .map(|track| {
+                    (
+                        track.source_uri.clone(),
+                        track.title.as_ref().unwrap_or(&track.source_uri).clone(),
+                    )
+                })
+                .collect();
+            let mut commands = Vec::with_capacity(targets.len());
+            for target in targets {
+                let coordinator = &target.coordinator.id;
+                let host = target.coordinator.ip;
+                self.confirm_source_audience(rooms.households, coordinator)?;
+                // Retain every destination before any household's renderer
+                // learning. The set executor rechecks the complete selection
+                // before caps, snapshots or playback writes and again per group.
+                let destination =
+                    control::TrackBatchDestination::read(transport, host, coordinator)?;
+                confirm_destination_revision(
+                    transport,
+                    host,
+                    coordinator,
+                    asked.expected_revision.as_deref(),
+                )?;
+                commands.push(Command::PlaySelection {
+                    coordinator: coordinator.clone(),
+                    tracks: tracks.clone(),
+                    destination,
+                });
+            }
+            Ok(commands)
         })
     }
 

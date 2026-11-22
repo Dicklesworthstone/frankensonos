@@ -7,11 +7,12 @@ use fsonos_core::policy::Client;
 
 use crate::config::GlobalArgs;
 use crate::remote::Daemon;
-use crate::{daemon, emit, outcome_text};
+use crate::{daemon, emit_control_outcome};
 
 #[derive(Debug, Args)]
 pub struct PlayTracksArgs {
-    /// A room, Room@S1 / Room@S2, here, or a single-room alias.
+    /// A room, saved alias, here, all/everywhere, all@S1, or all@S2.
+    /// Each distinct group plays independently and keeps its current members.
     #[arg(value_parser = nonblank)]
     zone: String,
     /// Spotify track or episode URIs or share links in the desired order.
@@ -19,8 +20,8 @@ pub struct PlayTracksArgs {
     /// Replaces the queue and starts the first occurrence in normal order.
     #[arg(required = true, num_args = 1..=MAX_QUEUE_TRACKS, value_name = "URI", value_parser = nonblank)]
     source_uris: Vec<String>,
-    /// Destination queue revision from `queue --json`. Refuse replacement if
-    /// it changed; this is not a library or playlist revision.
+    /// Destination queue revision from `queue --json`, for one group only.
+    /// Refuse replacement if it changed; not a library or playlist revision.
     #[arg(long, value_name = "REVISION", value_parser = nonblank)]
     expected_revision: Option<String>,
 }
@@ -63,7 +64,7 @@ pub fn run(global: &GlobalArgs, args: &PlayTracksArgs) -> anyhow::Result<()> {
         let surface = daemon::with_action_log(surface, &dir, "cli");
         surface.play_tracks(&Client::Cli, &request)?
     };
-    emit(global.json, &outcome, outcome_text)
+    emit_control_outcome(global.json, &outcome)
 }
 
 #[cfg(test)]
@@ -111,6 +112,26 @@ mod tests {
         );
         assert_eq!(request.expected_revision.as_deref(), Some("q1:original&?#"));
         assert!(serde_json::to_value(request).unwrap().get("next").is_none());
+    }
+
+    #[test]
+    fn room_sets_preserve_the_complete_selection_for_shared_execution() {
+        for zone in ["selected", "all", "everywhere", "all@S1", "all@S2"] {
+            let request = args(&[zone, TRACK, EPISODE, TRACK])
+                .unwrap()
+                .request()
+                .unwrap();
+            assert_eq!(request.zone, zone);
+            assert_eq!(
+                request
+                    .tracks
+                    .iter()
+                    .map(|track| track.source_uri.as_str())
+                    .collect::<Vec<_>>(),
+                [TRACK, EPISODE, TRACK]
+            );
+            assert!(request.expected_revision.is_none());
+        }
     }
 
     #[test]

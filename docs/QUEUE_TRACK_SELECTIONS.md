@@ -4,7 +4,9 @@ Choose a few movements from a cached album, several entries from a playlist,
 or individual library tracks and play or queue them in one action.
 The selection contains **1–10 tracks or episodes**, preserves their supplied
 order and repeated occurrences. **Play selected now** replaces the selected
-group's queue and starts the first track in normal order. Queue-next and append
+group's queue and starts the first track in normal order. CLI, HTTP and MCP
+ordered playback can also address a saved room set or every existing group,
+with the same selection in each. Queue-next and append
 leave current playback alone. All three operations share the existing policy,
 action history and verified undo boundaries.
 
@@ -81,8 +83,26 @@ It uses the existing **`play`** permission and the destination household's
 linked Spotify renderer. Concrete track and episode identities do not require
 a Spotify Web API lookup or Web API sign-in. Duplicate URIs and mixed tracks
 and episodes are intentional occurrences, not a request to expand containers.
-Room aliases must resolve to one room; an explicit ordered selection targets
-one existing group and one destination queue revision.
+For playback, `zone` accepts a room, saved alias, `here`, `all`/`everywhere`,
+`all@S1` or `all@S2`. Rooms already sharing a coordinator are deduplicated.
+Each selected group receives the same ordered occurrences and learns its own
+household's renderer metadata. Existing groups keep their members and start
+independently; this does not synchronize separate groups.
+
+A multi-group response includes the same per-target `batch` receipt as
+[other room-set playback](MULTI_ROOM_PLAYBACK.md#failures-policy-and-undo).
+Each target keeps its household, coordinator, room and succeeded/failed/not-attempted
+result. MCP marks partial delivery as an error while retaining every receipt.
+
+`expected_revision` is a **single destination's queue token**. It is accepted
+only when the selector resolves to one distinct group, including an alias
+naming several members of that same group. Supplying one token for multiple
+groups is rejected before speaker mutation; read and address each group
+separately when revision-bound playback is required. Without this caller token,
+the server still retains and rechecks each original queue, source and group.
+
+The browser's ordered-selection review and `POST /queue/tracks` continue to use
+one explicit destination group.
 
 ### Add without changing playback
 
@@ -142,19 +162,35 @@ fsonos queue-tracks 'Kitchen@S2' \
   --next --expected-revision 'revision-from-fsonos-queue'
 ```
 
+For the same three occurrences in every S2 group, use:
+
+```sh
+fsonos play-tracks all@S2 \
+  spotify:track:0000000000000000000001 \
+  spotify:episode:0000000000000000000002 \
+  spotify:track:0000000000000000000001 --json
+```
+
+Replace `all@S2` with a saved alias or `everywhere` as needed. The illustrative
+Spotify identities above must be replaced with playable tracks or episodes.
+
 CLI arguments retain their order and duplicates. `play-tracks` starts the
 selection; `queue-tracks` adds it quietly. Omit `--next` on `queue-tracks` to append.
 `--json`, `--daemon`, `--daemon-url` and `--direct` use the usual CLI routing and
 output rules. A daemon request is one native batch request; a failed response
 does not fall back to repeated single-source requests or local playback.
+Partial multi-group delivery exits unsuccessfully and keeps the complete
+receipt in output, including under `--json`; inspect failed targets before
+issuing another command.
 
 ## Failure and undo
 
 ### Replacing playback
 
 Play-now retains the original group, boot, source and queue before renderer
-learning or optional revision checks. Preparation failures leave playback and
-levels untouched. The existing replacement engine stages and verifies the
+learning or optional revision checks. For a room set, all destinations and
+household renderer prerequisites are checked before any group's caps or
+playback writes. Preparation failures leave playback and levels untouched. The existing replacement engine stages and verifies the
 complete selected suffix before removing the old prefix with its queue revision
 guard, then selects the first occurrence and starts it in `NORMAL` order.
 Playback caps apply to the complete affected group.
@@ -164,7 +200,10 @@ retain its complete before/after receipt for one undo. Starting from an empty
 queue or a direct source remains supported, but leaves the existing undo
 barrier when no complete original queue proof is available. A failed or partial
 replacement is not automatically replayed or described as fully reversible.
-Inspect the actual queue and action log before deciding on another request.
+A complete room-set replacement records one action and offers one undo only
+when every affected group has complete replacement proof; a partial batch
+creates an undo barrier rather than silently omitting failed groups.
+Inspect the actual queues and action log before deciding on another request.
 
 ### Adding to the current queue
 
@@ -200,6 +239,7 @@ node --test scripts/test-library-track-selection.cjs scripts/test-library-basket
 cargo test --locked -p fsonos-api --lib surface::queue::tracks::tests
 cargo test --locked -p fsonos-api --test queue_tracks_sim
 cargo test --locked -p fsonos-api --test play_tracks_sim
+cargo test --locked -p fsonos-api --test source_targets_sim
 cargo test --locked -p fsonos-cli --test e2e_play_tracks
 ```
 
@@ -213,9 +253,12 @@ account or physical-speaker availability.
 Ordered playback adds S1/S2 cases for mixed tracks and episodes, duplicate
 occurrences, all-member volume caps, complete replacement undo, direct-source
 and empty-queue starts, changed destination evidence, lost acknowledgements and
-partial staging. Browser Node tests execute the real selection components and
+partial staging. Room-set regressions also cover alias deduplication, mixed
+S1/S2 destinations, per-household renderer preparation, shared undo, scalar
+revision refusal and per-target partial receipts. Browser Node tests execute the real selection components and
 their request/receipt logic with synthetic observations, including three-page
 catalogs, mixed collections and filters, custom order, repeats, exact source positions, delayed reads and lost
 HTTP replies. These browser additions use the existing Rust contracts. The new Rust checks
-remain unexecuted behind the local `asupersync` dependency build failure; Node
-coverage does not establish Rust or physical-speaker execution.
+remain unexecuted: local builds were killed in `asupersync` and `zerocopy`,
+and the execution environment then disconnected. Node coverage does not
+establish Rust or physical-speaker execution.

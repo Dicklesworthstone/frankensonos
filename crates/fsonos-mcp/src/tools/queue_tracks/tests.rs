@@ -215,6 +215,47 @@ fn play_selection_forwards_once_with_order_duplicates_revision_and_cap_notes() {
 }
 
 #[test]
+fn room_set_partial_receipt_is_an_error_and_preserves_every_group_without_replay() {
+    let mut request = play_request();
+    request.zone = "all".into();
+    request.expected_revision = None;
+    let outcome = json!({
+        "done": "played in one of two groups", "changed": true, "notes": [],
+        "batch": {
+            "complete": false,
+            "results": [
+                {
+                    "household": "S1", "target": "fixture-s1-lead", "zone": "Lead",
+                    "result": {
+                        "status": "succeeded", "done": "playing selected tracks",
+                        "changed": true, "notes": []
+                    }
+                },
+                {
+                    "household": "S2", "target": "fixture-s2-lead", "zone": "Lead",
+                    "result": {
+                        "status": "failed",
+                        "error": {
+                            "detail": "speaker refused the selection", "code": "UPNP_FAULT",
+                            "hint": "Inspect the queue before another command.",
+                            "suggestions": [], "retryable": false
+                        }
+                    }
+                }
+            ]
+        }
+    });
+    let (backend, reply) = fixture(Some(Ok(outcome.clone())));
+    let result = backend.play_tracks(&request).unwrap();
+    assert!(result.is_error);
+    assert_eq!(result.structured_content, Some(outcome));
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["POST", "/play/tracks", request])]
+    );
+}
+
+#[test]
 fn invalid_play_selections_fail_before_daemon_or_local_io() {
     let mut invalid = Vec::new();
     let mut empty = play_request();
@@ -322,6 +363,10 @@ fn play_selection_schema_exposes_ordered_inputs_and_is_registered_only_in_full()
         "duplicates",
         "NORMAL",
         "destination queue revision",
+        "all@S1",
+        "all@S2",
+        "one group",
+        "partial delivery is an error",
         "existing play permission",
         "No Spotify Web API sign-in",
         "never automatically replay",

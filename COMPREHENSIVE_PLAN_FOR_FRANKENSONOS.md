@@ -1109,7 +1109,13 @@ permission/caps, then reuses staged queue replacement to start the first item
 in NORMAL order. Full replacement undo is available only with the existing
 complete original queue proof; other starts retain the action-history barrier.
 Browser review makes replacement explicit and rechecks the selected cached
-occurrences, playback and destination queue before one command.
+occurrences, playback and destination queue before one command. CLI, HTTP and
+MCP ordered playback also accept aliases and all/everywhere, deduplicating
+existing groups and retaining every original destination before renderer
+learning. Each group receives the same order and intentional duplicates; a
+scalar destination revision remains valid only for a one-group selection.
+Multi-group results retain individual receipts and offer one undo only with
+complete replacement proof for every affected group.
 
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
@@ -1765,8 +1771,10 @@ engines. Single-group responses keep their shape; multi-group receipts report
 each confirmed range and failure, completion, logging and verified undo
 availability. Definite refusals can leave confirmed additions undoable together;
 any uncertain insertion leaves a whole-action barrier. CLI prints the complete
-receipt and exits nonzero on incomplete batches. Search picks, line-in and
-revision-bound ordered track selections keep their single-group contracts.
+receipt and exits nonzero on incomplete batches. Ordered track playback also
+uses the set executor, with the same sequence in each group and per-group
+replacement proof. Search picks, line-in, ordered queue additions and the
+browser's ordered-track review keep their single-group contracts.
 See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
 for the interface, restoration limits and validation status.
 
