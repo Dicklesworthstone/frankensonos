@@ -309,7 +309,7 @@ impl Surface {
                         household: group.household,
                         coordinator: group.zone.coordinator.0,
                         zone: group.zone.room,
-                        error: (&failure).into(),
+                        error: failure.into(),
                     });
                 }
             }

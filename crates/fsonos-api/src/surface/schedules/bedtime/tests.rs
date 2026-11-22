@@ -40,7 +40,7 @@ fn the_single_timer_wire_shape_is_unchanged_and_partial_sets_keep_each_identity(
             household: "S2".into(),
             coordinator: "RINCON_SECOND".into(),
             zone: "Room".into(),
-            error: (&failure).into(),
+            error: failure.into(),
         }],
     };
     let batch = SleepOutcome::Groups(receipt.clone());

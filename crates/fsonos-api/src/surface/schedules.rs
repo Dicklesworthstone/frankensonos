@@ -1416,7 +1416,7 @@ impl Surface {
         zone: Option<&str>,
     ) -> Result<Vec<SleepTimerDto>, Failure> {
         self.guard(client).authorize("list_sleep_timers", true)?;
-        let zones = if let Some(z) = zone {
+        let zones: Vec<Zone> = if let Some(z) = zone {
             self.bedtime_targets(client, z, None)?
                 .1
                 .into_iter()
