@@ -113,6 +113,35 @@ async function edit(f, id = 21, time = '08:45') {
 }
 
 for (const surface of ['phone', 'dashboard']) {
+  test(`${surface}: scheduled track selections retain exact order and invalidate changed scene reviews`, async () => {
+    for (const change of [null, 'order', 'title', 'repeat']) {
+      const f = await fixture(surface, { rows: [row('apply_scene', { enabled: false, next: null })] }).ready();
+      const tracks = [
+        { source_uri: `spotify:track:${'A'.repeat(22)}`, title: 'First' },
+        { source_uri: `spotify:episode:${'B'.repeat(22)}`, title: 'Second' },
+        { source_uri: `spotify:track:${'A'.repeat(22)}`, title: 'First again' },
+      ];
+      f.scenes[0].groups = [{ coordinator: 'Study@SIM_S2', members: ['Hall@SIM_S2'],
+        source: { kind: 'tracks', tracks }, playing: false }];
+      const pending = await edit(f);
+      assert.deepEqual(JSON.parse(pending.destination.details).groups[0].source.tracks, tracks);
+      assert.equal(pending.body.scene, 'Morning fixture');
+      assert.deepEqual(f.writes(), []);
+      if (change === 'order') tracks.reverse();
+      if (change === 'title') tracks[0].title = 'Changed';
+      if (change === 'repeat') tracks.pop();
+      assert.equal(await f.apply(pending), change === null, f.control.state.message);
+      assert.equal(f.writes().length, change === null ? 1 : 0);
+      if (change === null) {
+        assert.equal(f.writes()[0].url, '/schedules/update');
+        assert.equal(f.rows()[0].creator, 'Fixture creator');
+        assert.equal(f.rows()[0].enabled, false);
+      }
+      assert.ok(f.calls.every(call => ['/schedules', '/scenes', '/schedules/update'].includes(call.url)),
+        'saving a scene routine never loads or plays its selection');
+    }
+  });
+
   for (const action of Object.keys(definitions)) test(`${surface}: ${action} edits retain ID, creator and paused state with one native request`, async () => {
     const original = row(action, { enabled: false, next: null }), f = await fixture(surface, { rows: [original] }).ready();
     const pending = await edit(f);

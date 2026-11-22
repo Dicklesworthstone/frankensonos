@@ -1,7 +1,7 @@
 //! Household-bound native playlist sources. A scene remembers an identity,
 //! not a renderer URI or a frozen copy of the playlist's contents.
 
-use super::{SceneHooks, SceneOp, ScenePlan};
+use super::{SceneHooks, SceneOp, ScenePlan, sources};
 use crate::favorites::{self, Favorite};
 use crate::{CoreError, HouseholdState, control, playlists};
 use fsonos_proto::topology::get_zone_group_state;
@@ -174,53 +174,6 @@ pub fn check_playlist_sources<T: Transport + ?Sized>(
     Ok(())
 }
 
-fn audience<'a>(
-    households: &'a [HouseholdState],
-    coordinator: &PlayerId,
-) -> Result<Vec<&'a str>, CoreError> {
-    let mut groups = households
-        .iter()
-        .flat_map(|house| &house.groups)
-        .filter(|group| group.coordinator == *coordinator);
-    let group = groups
-        .next()
-        .filter(|group| group.members.contains(coordinator))
-        .ok_or_else(|| invalid("the selected room no longer leads its confirmed group"))?;
-    if groups.next().is_some() {
-        return Err(invalid("the selected room's group is ambiguous"));
-    }
-    let mut members: Vec<_> = group
-        .members
-        .iter()
-        .map(|player| player.0.as_str())
-        .collect();
-    members.sort_unstable();
-    members.dedup();
-    Ok(members)
-}
-
-fn confirm_audience<T: Transport + ?Sized>(
-    t: &T,
-    households: &[HouseholdState],
-    coordinator: &PlayerId,
-) -> Result<(), CoreError> {
-    let host = control::locate(households, coordinator)?.ip;
-    let topology = get_zone_group_state(t, host)?;
-    if !crate::topology::coordinator_at(&topology, host, coordinator)? {
-        return Err(invalid(
-            "the selected room no longer owns its control address; refresh and apply again",
-        ));
-    }
-    let mut live = HouseholdState::default();
-    live.apply_topology(&topology);
-    if audience(households, coordinator)? != audience(&[live], coordinator)? {
-        return Err(invalid(
-            "the group's audience changed after scene preparation; refresh and apply again",
-        ));
-    }
-    Ok(())
-}
-
 pub(super) fn recall<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -235,7 +188,7 @@ pub(super) fn recall<T: Transport + ?Sized>(
     // Preflight permits a room that will become coordinator after regrouping.
     // Dispatch must instead retain the execution engine's confirmed audience,
     // including every room covered by its playback volume caps.
-    confirm_audience(t, households, coordinator).map_err(|e| e.to_string())?;
+    sources::confirm_audience(t, households, coordinator).map_err(|e| e.to_string())?;
     if hooks.queue_replacement_started(coordinator) {
         let receipt = if start {
             favorites::play_with_receipt(t, households, coordinator, &current)

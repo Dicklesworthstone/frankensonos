@@ -10,8 +10,10 @@ Choose **New routine**, then choose an action and an explicit destination:
   `all@S2`, with an optional mood; leaving the mood automatic uses the daemon's
   time-of-day program.
 - **Apply a scene:** an existing scene, including one that loads a native saved
-  Sonos playlist. The review includes the scene's group, source, volume and mute
-  definition, and a native playlist's pinned household, `SQ:` id and title.
+  Sonos playlist or an ordered selection of tracks and episodes. The review
+  includes the scene's group, source, volume and mute definition, a native
+  playlist's pinned household, `SQ:` id and title, and every authored selection
+  occurrence with its complete URI and playback intent.
 - **Set room volume:** one physical room, including a member of a larger group,
   and a level from 0 to 100, still subject to house safety limits.
 - **Pause rooms:** a room, saved alias, `all` / `everywhere`, or `all@S1` /
@@ -64,6 +66,13 @@ complete this form. A changed saved playlist binding requires a new review.
 When the routine runs, the daemon checks the destination and native catalog,
 then loads that playlist's current contents with the scene's playback intent.
 See [Saved Sonos playlist scenes](SONOS_PLAYLIST_SCENES.md) for recall behavior.
+
+[Ordered-track scenes](ORDERED_TRACK_SCENES.md) also work in both routine forms,
+including when editing an existing routine. Their stored order, repeats, titles
+and playback intent are included in review and confirmation checks. Recall
+reloads those exact concrete selections using each destination household's own
+Spotify renderer, without requiring a Spotify Web API lookup. A paused scene
+loads the queue silently.
 
 These are preflight checks, **not an atomic cross-client lock**. Another client
 can change a definition between the read and write. Schedules refer to rooms,

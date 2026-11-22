@@ -124,7 +124,7 @@ impl PlayTracksRequest {
         self.normalized().map(|_| ())
     }
 
-    fn normalized(&self) -> Result<Self, Failure> {
+    pub(in crate::surface) fn normalized(&self) -> Result<Self, Failure> {
         let (zone, tracks) =
             normalized_selection(&self.zone, &self.tracks, self.expected_revision.as_deref())?;
         Ok(Self {

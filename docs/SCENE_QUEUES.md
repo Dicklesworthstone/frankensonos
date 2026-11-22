@@ -106,8 +106,10 @@ An active DJ is still captured as a DJ source; its future music is chosen by
 the DJ when the scene starts it.
 
 Queue references are created by capturing the house. An authored JSON/TOML
-definition or MCP argument cannot invent one. Use a Spotify track, album or
-playlist URI, a favorite, a DJ source, or `keep` for authored music routines.
+definition or MCP argument cannot invent one. Use an
+[ordered selection of tracks or episodes](ORDERED_TRACK_SCENES.md), a Spotify
+track, album or playlist URI, a favorite, a DJ source, or `keep` for authored
+music routines.
 
 ## When recall succeeds
 

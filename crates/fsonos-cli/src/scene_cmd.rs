@@ -41,7 +41,9 @@ enum SceneAction {
         name: String,
         /// A TOML file writing the scene out: `[[groups]]` with `coordinator`,
         /// `members`, `source = { kind = "favorite", name = "…" }` (or `dj`
-        /// with a `mood` and full `direction`, `sonos_playlist` with `name = "SQ:7"`, a `uri`, `keep`) and `playing`; `[volumes]` and
+        /// with a `mood` and full `direction`, `sonos_playlist` with `name = "SQ:7"`,
+        /// `tracks` with an ordered 1-10 `tracks = [{ source_uri = "spotify:track:…", title = "…" }]`,
+        /// a `uri`, or `keep`) and `playing`; `[volumes]` and
         /// `[mutes]` by room.
         #[arg(long, value_name = "FILE")]
         from: Option<PathBuf>,
@@ -194,6 +196,9 @@ fn group_text(g: &SceneGroupDto) -> String {
             fsonos_api::surface::scenes::ScenePlaylistDto::text,
         ),
         "uri" => source.uri.clone().unwrap_or_default(),
+        "tracks" => source
+            .tracks_text()
+            .unwrap_or_else(|| "ordered track selection unavailable; save the scene again".into()),
         "dj" if source.direction.is_some() => {
             let direction = source.direction.as_ref().expect("matched direction");
             if source.mood.is_none() && direction.constraints.is_empty() {
@@ -217,7 +222,7 @@ fn group_text(g: &SceneGroupDto) -> String {
         Some(false)
             if matches!(
                 source.kind.as_str(),
-                "queue" | "queue_backup" | "sonos_playlist"
+                "queue" | "queue_backup" | "sonos_playlist" | "tracks"
             ) =>
         {
             "ready without playback"
@@ -337,6 +342,7 @@ mod tests {
             queue: None,
             playlist: None,
             direction: None,
+            tracks: None,
         };
         SceneDto {
             name: "Evening".into(),
@@ -405,6 +411,7 @@ mod tests {
             mood: None,
             direction: None,
             playlist: None,
+            tracks: None,
             queue: Some(fsonos_api::surface::scenes::SceneQueueDto {
                 total: None,
                 coordinator: "RINCON_SYNTHETIC".into(),
@@ -441,5 +448,55 @@ mod tests {
             assert!(text.contains("ready without playback"));
             assert!(!text.contains("queue contents are not saved"));
         }
+    }
+
+    #[test]
+    fn ordered_track_scenes_show_duplicate_occurrences_and_silent_load_intent() {
+        let mut scene = evening();
+        scene.groups[0].source = serde_json::from_value(serde_json::json!({
+            "kind": "tracks", "tracks": [
+                {"source_uri": "spotify:track:1000000000000000000001", "title": "Opening"},
+                {"source_uri": "spotify:episode:1000000000000000000002", "title": "Interlude"},
+                {"source_uri": "spotify:track:1000000000000000000001", "title": "Reprise"}
+            ]
+        }))
+        .unwrap();
+        scene.groups[0].playing = Some(false);
+        for text in [show_text(&scene), list_text(&[scene])] {
+            assert!(text.contains("3 selected tracks in order"), "{text}");
+            assert!(text.find("1. Opening").unwrap() < text.find("2. Interlude").unwrap());
+            assert!(text.find("2. Interlude").unwrap() < text.find("3. Reprise").unwrap());
+            assert_eq!(
+                text.matches("spotify:track:1000000000000000000001").count(),
+                2
+            );
+            assert!(text.contains("replaces the queue"));
+            assert!(text.contains("ready without playback"));
+        }
+    }
+
+    #[test]
+    fn a_scene_file_keeps_the_exact_ordered_selection_before_discovery() {
+        let file = r#"
+            [[groups]]
+            coordinator = "Kitchen@S1"
+            playing = false
+            source = { kind = "tracks", tracks = [
+                { source_uri = "https://open.spotify.com/track/1000000000000000000001?si=fixture", title = "Opening" },
+                { source_uri = "spotify:episode:1000000000000000000002" },
+                { source_uri = "spotify:track:1000000000000000000001", title = "Reprise" }
+            ] }
+            [volumes]
+            "Kitchen@S1" = 20
+        "#;
+        let definition: SceneDefinition = toml::from_str(file).unwrap();
+        definition.validate_sources().unwrap();
+        let source = definition.groups[0].source.as_ref().unwrap();
+        let tracks = source.tracks.as_ref().unwrap();
+        assert_eq!(tracks.len(), 3);
+        assert_eq!(tracks[0].title.as_deref(), Some("Opening"));
+        assert_eq!(tracks[2].title.as_deref(), Some("Reprise"));
+        assert_eq!(definition.groups[0].playing, Some(false));
+        assert_eq!(definition.volumes["Kitchen@S1"], 20);
     }
 }

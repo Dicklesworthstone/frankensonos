@@ -61,8 +61,9 @@ const DashboardSession = (() => {
   function scene(v) {
     if (!object(v) || !text(v.name, 256) || !Number.isSafeInteger(v.saved)
         || !list(v.groups, (g) => object(g) && text(g.coordinator) && list(g.members, text)
-          && object(g.source) && ['keep', 'favorite', 'sonos_playlist', 'uri', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
+          && object(g.source) && ['keep', 'favorite', 'sonos_playlist', 'uri', 'tracks', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
           && (g.source.kind === 'sonos_playlist' || g.source.playlist == null)
+          && (g.source.kind === 'tracks' || g.source.tracks == null)
           && (['queue', 'queue_backup'].includes(g.source.kind) || g.source.queue == null)
           && (g.source.kind === 'dj' || g.source.direction == null)
           && (g.source.kind !== 'favorite' || text(g.source.name))
@@ -74,6 +75,11 @@ const DashboardSession = (() => {
         || Object.entries(v.mutes).some(([r, m]) => !text(r) || typeof m !== 'boolean')) fail('The saved scene is unreadable.');
     const copy = clone(v);
     for (const group of copy.groups) {
+      if (group.source.kind === 'tracks') {
+        const source = group.source;
+        if (source.name != null || source.uri != null || source.mood != null) fail('A track selection cannot also name another source.');
+        source.tracks = sceneQueueApi().readTracks(source.tracks);
+      }
       if (group.source.kind === 'sonos_playlist') {
         const source = group.source, playlist = source.playlist;
         if (!object(playlist) || !text(playlist.id, 1024) || !/^SQ:\d+$/.test(playlist.id)
@@ -92,6 +98,7 @@ const DashboardSession = (() => {
   }
   function sceneSource(source) {
     return ['queue', 'queue_backup'].includes(source.kind) ? sceneQueueApi().describe(source.queue)
+      : source.kind === 'tracks' ? sceneQueueApi().describeTracks(source.tracks)
       : source.kind === 'sonos_playlist' ? `Saved Sonos playlist “${source.playlist.title}” (${source.playlist.id}, household ${source.playlist.household}; replaces the queue)`
       : source.kind === 'dj' && source.direction != null ? directionApi().describe(source.direction, source.mood)
         : `${source.kind}${source.mood ? ` · ${source.mood}` : ''}${source.name ? ` · ${source.name}` : ''}${source.uri ? ` · ${source.uri}` : ''}`;

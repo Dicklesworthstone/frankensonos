@@ -8,7 +8,10 @@ use fsonos_api::surface::scenes::{
 };
 use serde::{Deserialize as _, Serialize};
 
-use super::{Backend, respond, segment, with_backend_off_thread};
+use super::{Backend, from_daemon, respond, segment, with_backend_off_thread};
+
+#[cfg(test)]
+mod track_tests;
 
 /// `list_scenes` structured content (MCP wants an object).
 #[derive(Serialize)]
@@ -34,6 +37,9 @@ fn scene_line(scene: &SceneDto) -> String {
                     fsonos_api::surface::scenes::ScenePlaylistDto::text,
                 ),
                 "uri" => source.uri.clone().unwrap_or_default(),
+                "tracks" => source.tracks_text().unwrap_or_else(|| {
+                    "ordered track selection unavailable; save the scene again".into()
+                }),
                 "dj" if source.direction.is_some() => {
                     let direction = source.direction.as_ref().expect("matched direction");
                     if source.mood.is_none() && direction.constraints.is_empty() {
@@ -57,7 +63,7 @@ fn scene_line(scene: &SceneDto) -> String {
                 Some(false)
                     if matches!(
                         source.kind.as_str(),
-                        "queue" | "queue_backup" | "sonos_playlist"
+                        "queue" | "queue_backup" | "sonos_playlist" | "tracks"
                     ) =>
                 {
                     "ready without playback"
@@ -82,6 +88,9 @@ fn apply_text(applied: &SceneApplyDto) -> String {
             .map(|f| format!("- failed: {}: {}", f.step, f.error)),
     );
     lines.extend(applied.notes.iter().map(|n| format!("Note: {}.", n.detail)));
+    if !applied.complete || !applied.failed.is_empty() {
+        lines.push("Inspect the affected groups and queues before another action; do not replay the whole scene automatically.".into());
+    }
     lines.join("\n")
 }
 
@@ -168,14 +177,27 @@ impl Backend {
     ) -> McpResult<FinalCallToolResult> {
         // A scene that starts the DJ needs the daemon's DJ to keep it going.
         let path = format!("/scenes/{}/apply", segment(name));
-        let body = serde_json::to_value(req).unwrap_or_default();
-        if let Some(answer) = self.on_daemon("POST", &path, Some(&body), apply_text) {
-            return answer;
-        }
-        respond(|| {
-            let applied = self.surface.apply_scene_with(&self.client, name, req)?;
+        let body = serde_json::to_value(req).map_err(|error| {
+            crate::tool_error(&fsonos_api::Failure::new(
+                fsonos_api::ErrorCode::Internal,
+                error.to_string(),
+            ))
+        })?;
+        let mut complete = false;
+        let mut result = respond(|| {
+            let applied = match self
+                .daemon
+                .as_ref()
+                .and_then(|daemon| daemon.call("POST", &path, Some(&body)))
+            {
+                Some(answer) => from_daemon::<SceneApplyDto>(answer, "POST", &path)?,
+                None => self.surface.apply_scene_with(&self.client, name, req)?,
+            };
+            complete = applied.complete && applied.failed.is_empty();
             Ok((apply_text(&applied), applied))
-        })
+        })?;
+        result.is_error = !complete;
+        Ok(result)
     }
 
     /// The `get_scene` tool.
@@ -203,7 +225,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a native saved Sonos playlist, a URI, the DJ with a saved mood and full direction, a captured queue position, or whatever it has) and whether it plays, and each room's volume and mute. A queue reference requires the original unchanged queue. A queue_backup retains complete contents and rebuilds the original player's queue on recall. Put the house in a scene with apply_scene.",
+    description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a native saved Sonos playlist, an ordered track selection, a URI, the DJ with a saved mood and full direction, a captured queue position, or whatever it has) and whether it plays, and each room's volume and mute. A queue reference requires the original unchanged queue. A queue_backup retains complete contents and rebuilds the original player's queue on recall. Put the house in a scene with apply_scene.",
     annotations(read_only, idempotent)
 )]
 async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -211,7 +233,7 @@ async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallTool
 }
 
 #[tool(
-    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind sonos_playlist with name set to the target household’s exact SQ: id, or kind dj with optional mood and direction {constraints: {include_artists: [names], include_genres: [genres], ...}, for_secs: 7200}, uri with a stream uri or a Spotify track, album, playlist, artist, episode or show link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. A captured DJ retains its added filters and remaining duration, renewed on recall; an explicit empty direction without a mood clears prior steering. All steering constraint fields supported by add_schedule are accepted. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a bookmark by default. With backup_queues true, complete ordered contents are retained (up to 1000 entries and 4 MiB per queue) and recall can rebuild the original player's queue after edits or a restart. Recall replaces that player's current queue; a complete verified scene on unchanged groups can retain bounded queue-content and scoped-level undo. Inspect the result and undo preview for eligibility. Capture fails if a queue cannot be saved completely. The option cannot accompany scene. Captured queue sources cannot be authored; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A sonos_playlist source pins the household, native id and current title; every recall replaces the queue from that playlist’s current contents, refuses missing or renamed identities, and can retain bounded queue-content undo after a complete verified recall on unchanged groups. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes. Artist and show URIs are stored without catalog access, then resolve on each recall using the owner's Spotify sign-in."
+    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind tracks with tracks [{source_uri: Spotify track/episode URI or link, title: optional text}, ...] containing 1-10 entries in exact order with duplicates retained, or kind sonos_playlist with name set to the target household’s exact SQ: id, or kind dj with optional mood and direction {constraints: {include_artists: [names], include_genres: [genres], ...}, for_secs: 7200}, uri with a stream uri or a Spotify track, album, playlist, artist, episode or show link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. A captured DJ retains its added filters and remaining duration, renewed on recall; an explicit empty direction without a mood clears prior steering. All steering constraint fields supported by add_schedule are accepted. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a bookmark by default. With backup_queues true, complete ordered contents are retained (up to 1000 entries and 4 MiB per queue) and recall can rebuild the original player's queue after edits or a restart. Recall replaces that player's current queue; a complete verified scene on unchanged groups can retain bounded queue-content and scoped-level undo. Inspect the result and undo preview for eligibility. Capture fails if a queue cannot be saved completely. The option cannot accompany scene. Captured queue sources cannot be authored; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A tracks source retains concrete identities and optional titles; each recall replaces the queue through the destination household’s own renderer, and playing false loads it silently. A sonos_playlist source pins the household, native id and current title; every recall replaces the queue from that playlist’s current contents, refuses missing or renamed identities, and can retain bounded queue-content undo after a complete verified recall on unchanged groups. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes. Artist and show URIs are stored without catalog access, then resolve on each recall using the owner's Spotify sign-in."
 )]
 async fn save_scene(
     ctx: &McpContext,
@@ -233,7 +255,7 @@ async fn save_scene(
 }
 
 #[tool(
-    description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Only the needed steps are sent: regroup, volumes and mutes, sources and playback. A captured queue reference recalls its saved occurrence, elapsed time and known play mode only on the original unchanged queue; changed queues and known speaker restarts fail that step without playing a different source. A queue_backup reconstructs its saved contents on the original player; this replaces the current queue and can retain bounded queue-content undo after a complete verified recall on unchanged groups. A sonos_playlist reloads its current native contents on every recall, with household and title checks. Artist and show sources resolve to up to ten tracks or episodes before scene writes, with fresh permissions and destination checks. Paused scenes load silently. These catalog sources replace queue contents and share the same complete-proof queue undo. Every replacement in a scene must be eligible; partial scenes, regrouping, DJ changes and uncertain results remain whole-action barriers. An uncertain or partial apply must not be retried automatically: inspect the current house and queue before deciding to apply again. Volumes stay within your caps. undo_last can attempt to restore prior speaker state. Rooms no longer in the house are skipped; a step that fails is reported and independent groups still run. With `fade_secs` (1-60) the volumes ramp to the scene's over that long instead of jumping; the call answers when the fade is done."
+    description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Only the needed steps are sent: regroup, volumes and mutes, sources and playback. A captured queue reference recalls its saved occurrence, elapsed time and known play mode only on the original unchanged queue; changed queues and known speaker restarts fail that step without playing a different source. A queue_backup reconstructs its saved contents on the original player; this replaces the current queue and can retain bounded queue-content undo after a complete verified recall on unchanged groups. A sonos_playlist reloads its current native contents on every recall, with household and title checks. A tracks source reloads its exact saved sequence, including duplicate occurrences, without a catalog lookup. Artist and show sources resolve to up to ten tracks or episodes before scene writes, with fresh permissions and destination checks. Paused scenes load silently. These catalog sources replace queue contents and share the same complete-proof queue undo. Every replacement in a scene must be eligible; partial scenes, regrouping, DJ changes and uncertain results remain whole-action barriers. An incomplete apply retains the complete receipt and sets the MCP tool-error flag. An uncertain or partial apply must not be retried automatically: inspect the current house and queue before deciding to apply again. Volumes stay within your caps. undo_last can attempt to restore prior speaker state. Rooms no longer in the house are skipped; a step that fails is reported and independent groups still run. With `fade_secs` (1-60) the volumes ramp to the scene's over that long instead of jumping; the call answers when the fade is done."
 )]
 async fn apply_scene(
     ctx: &McpContext,
@@ -247,7 +269,7 @@ async fn apply_scene(
 }
 
 #[tool(
-    description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Queue references show an occurrence in the original unchanged queue; queue_backup summaries also show the number of saved entries that recall can reconstruct. Nothing on the speakers changes; put the house in it with apply_scene.",
+    description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Authored tracks show every selected occurrence in order. Queue references show an occurrence in the original unchanged queue; queue_backup summaries also show the number of saved entries that recall can reconstruct. Nothing on the speakers changes; put the house in it with apply_scene.",
     annotations(read_only, idempotent)
 )]
 async fn get_scene(

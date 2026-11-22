@@ -250,14 +250,20 @@ const SchedulesRemote = (() => {
           || !Object.values(v.mutes).every((b) => typeof b === 'boolean')
           || !v.groups.every((g) => g && text(g.coordinator, 256) && Array.isArray(g.members)
             && g.members.every((r) => text(r, 256)) && object(g.source)
-            && ['keep', 'favorite', 'sonos_playlist', 'uri', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
+            && ['keep', 'favorite', 'sonos_playlist', 'uri', 'tracks', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
             && (g.source.kind === 'sonos_playlist' || g.source.playlist == null)
+            && (g.source.kind === 'tracks' || g.source.tracks == null)
             && (g.source.kind === 'dj' || g.source.direction == null)
             && (['queue', 'queue_backup'].includes(g.source.kind) || g.source.queue == null)
             && (g.playing == null || typeof g.playing === 'boolean'))) {
         throw new Error('A saved scene is incomplete or ambiguous.');
       }
       for (const group of v.groups) {
+        if (group.source.kind === 'tracks') {
+          const source = group.source;
+          if (source.name != null || source.uri != null || source.mood != null) throw new Error('A track selection cannot also name another source.');
+          queueApi().readTracks(source.tracks);
+        }
         if (group.source.kind === 'sonos_playlist') {
           const source = group.source, playlist = source.playlist;
           if (!object(playlist) || !text(playlist.id, 1024) || !/^SQ:\d+$/.test(playlist.id)

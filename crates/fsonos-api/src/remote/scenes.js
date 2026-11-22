@@ -21,8 +21,9 @@ const ScenesRemote = (() => {
     : 'The request failed.';
 
   function sourceOf(v) {
-    if (!plain(v) || !['keep', 'favorite', 'sonos_playlist', 'uri', 'dj', 'queue', 'queue_backup'].includes(v.kind)
+    if (!plain(v) || !['keep', 'favorite', 'sonos_playlist', 'uri', 'tracks', 'dj', 'queue', 'queue_backup'].includes(v.kind)
         || (v.kind !== 'sonos_playlist' && v.playlist != null)
+        || (v.kind !== 'tracks' && v.tracks != null)
         || (!['queue', 'queue_backup'].includes(v.kind) && v.queue != null) || (v.kind !== 'dj' && v.direction != null)) {
       throw new Error('A scene source is unreadable.');
     }
@@ -31,6 +32,11 @@ const ScenesRemote = (() => {
     }
     if (v.kind === 'favorite' && !v.name) throw new Error('A favorite source has no name.');
     if (v.kind === 'uri' && !v.uri) throw new Error('A URI source has no URI.');
+    let tracks;
+    if (v.kind === 'tracks') {
+      if (v.name != null || v.uri != null || v.mood != null) throw new Error('A track selection cannot also name another source.');
+      tracks = queueApi().readTracks(v.tracks);
+    }
     let playlist;
     if (v.kind === 'sonos_playlist') {
       const p = v.playlist;
@@ -46,6 +52,7 @@ const ScenesRemote = (() => {
     return Object.freeze({ kind: v.kind, name: v.name ?? null, uri: v.uri ?? null, mood: v.mood ?? null,
       ...(queue ? { queue } : {}),
       ...(playlist ? { playlist } : {}),
+      ...(tracks ? { tracks } : {}),
       ...(v.direction != null ? { direction: directionApi().read(v.direction, v.mood) } : {}) });
   }
 
@@ -114,7 +121,8 @@ const ScenesRemote = (() => {
         g.source.uri, g.source.mood, g.playing,
         g.source.direction == null ? null : directionApi().signature(g.source.direction, g.source.mood),
         ['queue', 'queue_backup'].includes(g.source.kind) ? queueApi().signature(g.source.queue) : null,
-        g.source.playlist ? [g.source.playlist.household, g.source.playlist.id, g.source.playlist.title] : null]),
+        g.source.playlist ? [g.source.playlist.household, g.source.playlist.id, g.source.playlist.title] : null,
+        g.source.kind === 'tracks' ? queueApi().tracksSignature(g.source.tracks) : null]),
       Object.entries(scene.volumes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
       Object.entries(scene.mutes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
     ]);
@@ -127,10 +135,13 @@ const ScenesRemote = (() => {
       const src = g.source.kind === 'favorite' ? `favorite “${g.source.name}”`
         : g.source.kind === 'sonos_playlist' ? `saved Sonos playlist “${g.source.playlist.title}” (${g.source.playlist.id}, household ${g.source.playlist.household}; replaces the queue)`
         : g.source.kind === 'uri' ? g.source.uri
+          : g.source.kind === 'tracks' ? queueApi().describeTracks(g.source.tracks)
           : g.source.kind === 'dj' ? (g.source.direction != null ? directionApi().describe(g.source.direction, g.source.mood)
             : `DJ${g.source.mood ? ` (${g.source.mood})` : ''}`)
             : ['queue', 'queue_backup'].includes(g.source.kind) ? queueApi().describe(g.source.queue) : 'keep current source';
-      lines.push(`${rooms}: ${src}${g.playing == null ? '' : g.playing ? '; playing' : '; paused'}`);
+      const playback = g.playing == null ? '' : g.playing ? '; playing'
+        : g.source.kind === 'tracks' ? '; loads the queue without starting playback' : '; paused';
+      lines.push(`${rooms}: ${src}${playback}`);
     }
     const volumes = Object.entries(scene.volumes).map(([room, level]) => `${room} ${level}`).join(', ');
     const mutes = Object.entries(scene.mutes).map(([room, mute]) => `${room} ${mute ? 'muted' : 'unmuted'}`).join(', ');
@@ -270,6 +281,16 @@ const ScenesRemote = (() => {
     return uri;
   }
 
+  function trackSelection(raw) {
+    if (typeof raw !== 'string' || raw.length > 32768) throw new Error('Paste up to 10 track or episode links, one per line.');
+    const entries = raw.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    return queueApi().readTracks(entries.map(line => {
+      const divider = line.indexOf('|'), uri = divider < 0 ? line : line.slice(0, divider),
+        title = divider < 0 ? '' : line.slice(divider + 1).trim();
+      return { source_uri: sourceUri(uri), ...(title ? { title } : {}) };
+    }));
+  }
+
   function definition(draft, rooms, name) {
     name = name.trim();
     if (!text(name, 64)) throw new Error('Use a scene name of 1 to 64 characters.');
@@ -286,11 +307,12 @@ const ScenesRemote = (() => {
         if (room(target).household !== leader.household) throw new Error('Rooms in different households cannot share a group.');
         used.add(target);
       }
-      if (!['keep', 'favorite', 'sonos_playlist', 'uri', 'dj'].includes(g.kind)
+      if (!['keep', 'favorite', 'sonos_playlist', 'uri', 'tracks', 'dj'].includes(g.kind)
           || !['keep', 'play', 'pause'].includes(g.playing)
           || (g.kind !== 'keep' && g.playing === 'keep')) throw new Error('Choose a source and explicit playback setting.');
       const source = { kind: g.kind };
       if (g.kind === 'uri') source.uri = sourceUri(g.value);
+      if (g.kind === 'tracks') source.tracks = trackSelection(g.value);
       if (g.kind === 'favorite') {
         if (!text(g.value.trim())) throw new Error('Name a favorite by its exact title or ID.');
         source.name = g.value.trim();
@@ -914,7 +936,7 @@ const ScenesRemote = (() => {
               ? [...g.members, r.target] : g.members.filter((v) => v !== r.target)) }), r.target));
         }
         field.append(members, select(`Group ${i + 1} source`, `source-${g.id}`, g.kind,
-          [['keep', 'Keep the current source'], ['favorite', 'Sonos favorite'], ['sonos_playlist', 'Saved Sonos playlist'], ['uri', 'Music URI or Spotify link'], ['dj', 'DJ']],
+          [['keep', 'Keep the current source'], ['favorite', 'Sonos favorite'], ['sonos_playlist', 'Saved Sonos playlist'], ['uri', 'Music URI or Spotify link'], ['tracks', 'Ordered tracks or episodes'], ['dj', 'DJ']],
           (v) => {
             if (control.editGroup(g, 'kind', v) && ['favorite', 'sonos_playlist', 'dj'].includes(v)) {
               void control.loadSources(control.state.draft.groups.find((next) => next.id === g.id));
@@ -925,6 +947,17 @@ const ScenesRemote = (() => {
           field.append(el('label', {}, label, el('input', { type: 'text', value: g.value,
             maxlength: 2048, 'aria-label': `Group ${i + 1} ${label}`, 'data-scene-focus': `value-${g.id}`, disabled: busy,
             oninput: (e) => control.editGroup(g, 'value', e.target.value) })));
+        }
+        if (g.kind === 'tracks') {
+          const help = `scene-tracks-${identity}-${g.id}`;
+          const input = el('textarea', { rows: 6,
+            maxlength: 32768, 'aria-label': `Group ${i + 1} tracks in playback order`, 'aria-describedby': help,
+            'data-scene-focus': `tracks-${g.id}`, disabled: busy,
+            placeholder: 'Spotify track or episode URI or link | Optional title',
+            oninput: (e) => control.editGroup(g, 'value', e.target.value) });
+          input.value = g.value;
+          field.append(el('label', {}, 'Tracks in playback order', input),
+          el('p', { id: help, text: 'Add 1–10 Spotify tracks or episodes, one per line. Add | and a title if wanted. Order and repeated entries are kept. Recall replaces this group’s queue; Paused loads it without starting playback. Saving leaves speakers unchanged.' }));
         }
         if (lead && ['favorite', 'sonos_playlist', 'dj'].includes(g.kind)) field.append(sourceChooser(g, i, busy));
         if (lead && g.kind === 'dj') {
@@ -1069,7 +1102,7 @@ const ScenesRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, definition, prepareDefinition,
+  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, trackSelection, definition, prepareDefinition,
     sourceChoicesOf, sourcePage, model, panel };
 })();
 

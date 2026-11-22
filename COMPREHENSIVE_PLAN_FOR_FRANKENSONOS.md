@@ -1380,6 +1380,22 @@ mood). `scene apply` diffs current state against the scene and issues only the
 operations needed. One call replaces five to ten, and it matches how people
 describe what they want ("dinner", "work").
 
+Authored `kind: tracks` sources now retain 1–10 concrete Spotify track or
+episode identities with exact order, repeated occurrences and optional titles.
+CLI, HTTP and MCP author and expose the full sequence; the web custom scene
+editor accepts ordered links and titles and its scene and routine reviews
+recheck every occurrence. Recall and scheduled ApplyScene share the existing
+bound ordered writer, all-destination readiness, caller/writer permissions,
+prospective audience caps and actual replacement receipts. Silent loads never
+start the requested queue. Full audience checks bracket destination capture
+after intentional regrouping, including for existing artist/show sources.
+Complete recalls on unchanged groups can retain queue-content and scoped-level
+undo; partial or unproved outcomes remain barriers. MCP marks an incomplete
+apply as a tool error while preserving its full receipt. See
+`docs/ORDERED_TRACK_SCENES.md`. Focused browser regressions pass; the newly
+authored Rust regressions still await execution because local dependency
+compilation is terminated before project code is reached.
+
 Authored Spotify artist and show sources are resolved on each recall, including
 scheduled scenes. Saving retains the canonical URI without a catalog lookup.
 A readiness phase resolves every permitted source, deduplicates repeated URIs,

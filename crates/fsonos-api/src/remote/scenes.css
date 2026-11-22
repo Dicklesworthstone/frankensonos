@@ -20,7 +20,8 @@
 .scene-definition fieldset { border: 1px solid var(--line); border-radius: .5rem; padding: .75rem; min-width: 0; }
 .scene-definition legend { max-width: 100%; overflow-wrap: anywhere; }
 .scene-definition label { display: grid; gap: .35rem; margin: .5rem 0; }
-.scene-definition input:not([type="checkbox"]), .scene-definition select { font: inherit; width: 100%; max-width: 100%; min-width: 0; min-height: 44px; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem; color: var(--text); background: var(--card); }
+.scene-definition input:not([type="checkbox"]), .scene-definition select, .scene-definition textarea { font: inherit; width: 100%; max-width: 100%; min-width: 0; min-height: 44px; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem; color: var(--text); background: var(--card); }
+.scene-definition textarea { resize: vertical; overflow-wrap: anywhere; }
 .scene-members { display: flex; flex-wrap: wrap; gap: .5rem; }
 .scene-members label { display: flex; align-items: center; min-height: 44px; overflow-wrap: anywhere; }
 .scene-members input { flex: 0 0 auto; }

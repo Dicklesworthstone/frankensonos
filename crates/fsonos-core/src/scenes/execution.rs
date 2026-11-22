@@ -130,6 +130,7 @@ fn sound_target(op: &SceneOp) -> Option<&PlayerId> {
         SceneOp::Favorite { coordinator, .. }
         | SceneOp::SonosPlaylist { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
+        | SceneOp::Tracks { coordinator, .. }
         | SceneOp::Queue { coordinator, .. }
         | SceneOp::QueueBackup { coordinator, .. }
         | SceneOp::Dj { coordinator, .. }
@@ -148,6 +149,7 @@ fn target(op: &SceneOp) -> &PlayerId {
         SceneOp::Favorite { coordinator, .. }
         | SceneOp::SonosPlaylist { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
+        | SceneOp::Tracks { coordinator, .. }
         | SceneOp::Queue { coordinator, .. }
         | SceneOp::QueueBackup { coordinator, .. }
         | SceneOp::Dj { coordinator, .. }

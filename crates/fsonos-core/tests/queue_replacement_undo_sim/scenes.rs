@@ -5,7 +5,8 @@ use super::*;
 use fsonos_core::actions::PendingSceneQueueUndo;
 use fsonos_core::fade::Fader;
 use fsonos_core::scenes::{
-    self, ApplyOptions, SceneHooks, SceneOp, ScenePlan, SceneReport, SonosPlaylistReference,
+    self, ApplyOptions, SceneHooks, SceneOp, ScenePlan, SceneReport, SceneTrack,
+    SonosPlaylistReference,
 };
 use fsonos_core::snapshot::RestoreOp;
 use std::cell::RefCell;
@@ -58,7 +59,23 @@ fn plan(f: &Fixture, source: u8, start: bool) -> ScenePlan {
             }
         }
         4 => uri("spotify:artist:0000000000000000000001"),
-        _ => uri("spotify:show:0000000000000000000001"),
+        5 => uri("spotify:show:0000000000000000000001"),
+        6 | 7 => SceneOp::Tracks {
+            coordinator: f.coordinator.clone(),
+            tracks: if source == 6 {
+                &TRACKS[..]
+            } else {
+                &EPISODES[..]
+            }
+            .iter()
+            .map(|(uri, title)| SceneTrack {
+                source_uri: (*uri).into(),
+                title: Some((*title).into()),
+            })
+            .collect(),
+            start,
+        },
+        _ => panic!("unknown scene source fixture"),
     };
     let beta = PlayerId(f.sim.player("Beta").unwrap().uuid.clone());
     ScenePlan {
@@ -319,7 +336,7 @@ impl Transport for QuietLevels {
 fn scene_sources_restore_both_queue_and_changed_levels_without_sounding_the_replacement() {
     for generation in [1, 2] {
         for start in [false, true] {
-            for source in 0..6 {
+            for source in 0..8 {
                 let f = fixture(generation, !start);
                 let plan = plan(&f, source, start);
                 let before = f.sim.soap_log().len();

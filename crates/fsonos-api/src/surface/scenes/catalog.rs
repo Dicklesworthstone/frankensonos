@@ -1,9 +1,9 @@
-//! Resolve every artist/show in a scene before any scene mutation. Keep the
-//! observations made before the catalog read until policy and caps are ready;
-//! execution consumes the selection using the confirmed, regrouped audience.
+//! Prepare every resolved catalog or authored track selection before a scene
+//! mutates the house. Retain destinations through lookup, policy and caps;
+//! execution consumes each selection using the confirmed, regrouped audience.
 
 use fsonos_core::control::{TrackBatchDestination, queue_removal};
-use fsonos_core::scenes::{SceneOp, ScenePlan};
+use fsonos_core::scenes::{SceneOp, ScenePlan, SceneTrack};
 use fsonos_core::{HouseholdState, control};
 use fsonos_proto::soap::{self, AV_TRANSPORT};
 use fsonos_proto::topology::get_zone_group_state;
@@ -22,11 +22,33 @@ pub(super) struct Prepared {
 
 struct Destination {
     coordinator: PlayerId,
-    source_uri: String,
+    source: Selection,
     current_coordinator: PlayerId,
     current: TrackBatchDestination,
     members: Vec<PlayerId>,
     local: LocalState,
+}
+
+#[derive(PartialEq, Eq)]
+enum Selection {
+    Catalog(String),
+    Tracks(Vec<SceneTrack>),
+}
+
+impl Selection {
+    fn of(op: &SceneOp) -> Option<(&PlayerId, Self)> {
+        match op {
+            SceneOp::Uri {
+                coordinator, uri, ..
+            } if is_catalog_source(uri) => Some((coordinator, Self::Catalog(uri.clone()))),
+            SceneOp::Tracks {
+                coordinator,
+                tracks,
+                ..
+            } => Some((coordinator, Self::Tracks(tracks.clone()))),
+            _ => None,
+        }
+    }
 }
 
 /// Grouping does not authorize an independent edit to the destination's queue
@@ -128,7 +150,7 @@ fn members(households: &[HouseholdState], coordinator: &PlayerId) -> Vec<PlayerI
 fn changed() -> Failure {
     Failure::new(
         ErrorCode::QueueChanged,
-        "the scene's catalog destination changed while resolving its music; apply the scene again",
+        "the scene's selection destination changed while preparing its music; apply the scene again",
     )
 }
 
@@ -152,15 +174,9 @@ impl Prepared {
         // Capture all destinations before the first potentially slow external
         // read. A later group's missing source must not partly apply a scene.
         for op in &plan.ops {
-            let SceneOp::Uri {
-                coordinator, uri, ..
-            } = op
-            else {
+            let Some((coordinator, source)) = Selection::of(op) else {
                 continue;
             };
-            if !is_catalog_source(uri) {
-                continue;
-            }
             let room = households
                 .iter()
                 .flat_map(|house| &house.rooms)
@@ -184,7 +200,7 @@ impl Prepared {
             renderer_ready(surface, households, coordinator)?;
             prepared.destinations.push(Destination {
                 coordinator: coordinator.clone(),
-                source_uri: uri.clone(),
+                source,
                 current_coordinator,
                 current,
                 members,
@@ -192,12 +208,13 @@ impl Prepared {
             });
         }
         for destination in &prepared.destinations {
-            if !prepared.selections.contains_key(&destination.source_uri) {
-                let selection = surface.catalog_selection(&destination.source_uri)?;
-                selection.validate_for_source(&destination.source_uri)?;
-                prepared
-                    .selections
-                    .insert(destination.source_uri.clone(), selection);
+            let Selection::Catalog(uri) = &destination.source else {
+                continue;
+            };
+            if !prepared.selections.contains_key(uri) {
+                let selection = surface.catalog_selection(uri)?;
+                selection.validate_for_source(uri)?;
+                prepared.selections.insert(uri.clone(), selection);
             }
         }
         prepared.confirm(surface, households, plan)?;
@@ -212,8 +229,9 @@ impl Prepared {
     ) -> Result<(), Failure> {
         for destination in &self.destinations {
             if !plan.ops.iter().any(|op| {
-                matches!(op, SceneOp::Uri {coordinator, uri, ..}
-                    if coordinator == &destination.coordinator && uri == &destination.source_uri)
+                Selection::of(op).is_some_and(|(coordinator, source)| {
+                    coordinator == &destination.coordinator && source == destination.source
+                })
             }) {
                 continue;
             }
@@ -246,17 +264,51 @@ impl Prepared {
         start: bool,
         retain_receipt: bool,
     ) -> Result<Option<control::QueueReplacement>, String> {
+        self.load_selection(
+            surface,
+            households,
+            coordinator,
+            &Selection::Catalog(uri.into()),
+            start,
+            retain_receipt,
+        )
+    }
+
+    pub(super) fn load_tracks(
+        &self,
+        surface: &Surface,
+        households: &[HouseholdState],
+        coordinator: &PlayerId,
+        tracks: &[SceneTrack],
+        start: bool,
+        retain_receipt: bool,
+    ) -> Result<Option<control::QueueReplacement>, String> {
+        self.load_selection(
+            surface,
+            households,
+            coordinator,
+            &Selection::Tracks(tracks.to_vec()),
+            start,
+            retain_receipt,
+        )
+    }
+
+    fn load_selection(
+        &self,
+        surface: &Surface,
+        households: &[HouseholdState],
+        coordinator: &PlayerId,
+        source: &Selection,
+        start: bool,
+        retain_receipt: bool,
+    ) -> Result<Option<control::QueueReplacement>, String> {
         let prepared = self
             .destinations
             .iter()
             .find(|destination| {
-                destination.coordinator == *coordinator && destination.source_uri == uri
+                destination.coordinator == *coordinator && destination.source == *source
             })
-            .ok_or("the scene has no prepared selection for this catalog destination")?;
-        let selection = self
-            .selections
-            .get(uri)
-            .ok_or("the scene's Spotify catalog selection is unavailable")?;
+            .ok_or("the scene has no prepared selection for this destination")?;
         surface
             .confirm_source_audience(households, coordinator)
             .map_err(|error| error.detail)?;
@@ -287,11 +339,31 @@ impl Prepared {
                 .map_err(|error| error.detail)?;
             &regrouped
         };
-        let tracks: Vec<_> = selection
-            .tracks
-            .iter()
-            .map(|(uri, title)| (uri.as_str(), title.as_str()))
-            .collect();
+        // The permitted regrouping can require a fresh destination proof.
+        // Bracket that capture with the complete capped audience: a room
+        // joining during its reads must not become a new playback baseline.
+        surface
+            .confirm_source_audience(households, coordinator)
+            .map_err(|error| error.detail)?;
+        let tracks: Vec<_> = match &prepared.source {
+            Selection::Catalog(uri) => self
+                .selections
+                .get(uri)
+                .ok_or("the scene's Spotify catalog selection is unavailable")?
+                .tracks
+                .iter()
+                .map(|(uri, title)| (uri.as_str(), title.as_str()))
+                .collect(),
+            Selection::Tracks(tracks) => tracks
+                .iter()
+                .map(|track| {
+                    (
+                        track.source_uri.as_str(),
+                        track.title.as_deref().unwrap_or(&track.source_uri),
+                    )
+                })
+                .collect(),
+        };
         if retain_receipt {
             let replaced = if start {
                 control::play_spotify_tracks_bound_with_receipt(

@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const Scenes = require('../crates/fsonos-api/src/remote/scenes.js');
 const SceneQueue = require('../crates/fsonos-api/src/remote/scene-queue.js');
 const DjDirection = require('../crates/fsonos-api/src/remote/dj-direction.js');
+const DashboardSession = require('../crates/fsonos-api/src/remote/dashboard-session.js');
+const Schedules = require('../crates/fsonos-api/src/remote/schedules.js');
 
 const row = (extra = {}) => ({
   name: 'Evening',
@@ -588,6 +590,224 @@ const topology = () => [
   { household: 'S2', coordinator_room: 'Den', members: ['Den', 'Studio'] },
 ];
 const SPOTIFY_ID = '0123456789ABCDEFabcdef';
+const sceneTracks = () => [
+  { source_uri: `spotify:track:${SPOTIFY_ID}`, title: 'Opening <img src=x>' },
+  { source_uri: `spotify:episode:${'E'.repeat(22)}` },
+  { source_uri: `spotify:track:${SPOTIFY_ID}`, title: 'Opening again' },
+];
+const tracksRow = (tracks = sceneTracks()) => row({ groups: [{ ...row().groups[0], source: { kind: 'tracks', tracks } }] });
+const tracksInput = () => sceneTracks().map(track => track.source_uri + (track.title ? ` | ${track.title}` : '')).join('\n');
+
+test('all browser scene readers preserve ordered occurrences and expose every track identity', () => {
+  const raw = tracksRow(), phone = Scenes.sceneOf(raw), dashboard = DashboardSession.scene(raw);
+  assert.deepEqual(phone.groups[0].source.tracks, sceneTracks());
+  assert.deepEqual(dashboard.groups[0].source.tracks, sceneTracks());
+  assert.equal(Object.isFrozen(phone.groups[0].source.tracks[0]), true);
+  assert.equal(Object.isFrozen(dashboard.groups[0].source.tracks), true);
+  assert.deepEqual(JSON.parse(Schedules.scenesOf([raw])[0].details).groups[0].source.tracks, sceneTracks());
+  for (const description of [Scenes.detail(phone), DashboardSession.sceneSource(dashboard.groups[0].source)]) {
+    assert.match(description, /3 entries; replaces the queue on recall/);
+    assert.match(description, /1\. Opening <img src=x>/);
+    assert.match(description, /2\. spotify:episode:/);
+    assert.match(description, /3\. Opening again/);
+  }
+  const ten = Array.from({ length: 10 }, () => sceneTracks()[0]);
+  assert.equal(Scenes.sceneOf(tracksRow(ten)).groups[0].source.tracks.length, 10);
+  assert.equal(Scenes.sceneOf(row()).groups[0].source.tracks, undefined);
+  assert.equal(SceneQueue.readTracks([{ ...sceneTracks()[0], title: '🎵'.repeat(256) }])[0].title.length, 512);
+});
+
+test('all browser readers reject malformed, oversized and misplaced concrete selections', () => {
+  const good = sceneTracks()[0];
+  const badTracks = [undefined, null, [], Array(11).fill(good), [null],
+    [{ ...good, source_uri: 'spotify:track:short' }], [{ ...good, source_uri: `spotify:album:${SPOTIFY_ID}` }],
+    [{ ...good, source_uri: `https://open.spotify.com/track/${SPOTIFY_ID}` }],
+    [{ ...good, source_uri: `Spotify:track:${SPOTIFY_ID}` }], [{ ...good, title: '' }],
+    [{ ...good, title: ' ' }], [{ ...good, title: 7 }], [{ ...good, title: '🎵'.repeat(257) }],
+    [{ ...good, title: 'bad\u0001title' }], [{ ...good, account: 'unexpected' }]];
+  const readers = [Scenes.sceneOf, DashboardSession.scene, value => Schedules.scenesOf([value])];
+  for (const read of readers) {
+    for (const tracks of badTracks) {
+      const value = tracksRow(); value.groups[0].source.tracks = tracks;
+      assert.throws(() => read(value), JSON.stringify(tracks));
+    }
+    for (const extra of [{ name: 'Other source' }, { uri: 'x-file:other' }, { mood: 'other' },
+      { direction: {} }, { playlist: {} }, { queue: {} }, { kind: 'keep' }]) {
+      const value = tracksRow(); Object.assign(value.groups[0].source, extra);
+      assert.throws(() => read(value), JSON.stringify(extra));
+    }
+  }
+});
+
+test('ordered scene entry accepts full Spotify links and optional titles without sorting or dropping repeats', () => {
+  const input = `\n https://open.spotify.com/intl-fr/embed/track/${SPOTIFY_ID}?si=fixture | First | extra\n`
+    + `spotify:episode:${'E'.repeat(22)}\nspotify:track:${SPOTIFY_ID} | Repeated\n`;
+  assert.deepEqual(Scenes.trackSelection(input), [
+    { source_uri: `spotify:track:${SPOTIFY_ID}`, title: 'First | extra' }, sceneTracks()[1],
+    { source_uri: `spotify:track:${SPOTIFY_ID}`, title: 'Repeated' },
+  ]);
+  for (const raw of ['', `spotify:album:${SPOTIFY_ID}`, 'https://spotify.link/unresolved',
+    'x-file:unsupported', Array(11).fill(`spotify:track:${SPOTIFY_ID}`).join('\n'),
+    `spotify:track:${SPOTIFY_ID} | ${'a'.repeat(257)}`]) assert.throws(() => Scenes.trackSelection(raw));
+});
+
+test('every ordered selection field is bound to the reviewed scene identity', async () => {
+  const original = Scenes.signature(Scenes.sceneOf(tracksRow()));
+  for (const editTracks of [tracks => tracks.reverse(), tracks => tracks.pop(),
+    tracks => { tracks[0].title = 'Different title'; }, tracks => { tracks[0].source_uri = `spotify:track:${'B'.repeat(22)}`; }]) {
+    const changed = sceneTracks(); editTracks(changed);
+    assert.notEqual(Scenes.signature(Scenes.sceneOf(tracksRow(changed))), original);
+    const f = fixture([tracksRow()]); await f.control.refresh();
+    assert.equal(f.control.review('apply', 'Evening'), true);
+    const pending = f.control.state.pending;
+    f.set([tracksRow(changed)]);
+    assert.equal(await f.control.confirm(pending), false);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
+test('custom ordered scenes save once with explicit playback and never dispatch music', async () => {
+  for (const playing of ['play', 'pause']) {
+    const f = await editor();
+    group(f, 'Den@S1', 'tracks', tracksInput(), ['Hall@S1']);
+    f.control.editGroup(f.control.state.draft.groups[0], 'playing', playing);
+    assert.equal(await f.control.reviewDefinition(), true, f.control.state.message);
+    const pending = f.control.state.pending;
+    assert.deepEqual(f.writes, []);
+    assert.deepEqual(pending.prepared.body.groups[0], { coordinator: 'Den@S1', members: ['Hall@S1'],
+      source: { kind: 'tracks', tracks: sceneTracks() }, playing: playing === 'play' });
+    if (playing === 'pause') assert.match(Scenes.detail(pending.prepared.preview), /without starting playback/);
+    assert.equal(await f.control.confirm(pending), true, f.control.state.message);
+    assert.equal(await f.control.confirm(pending), false);
+    assert.deepEqual(f.writes.map(write => write.name), ['sceneSave']);
+    assert.match(f.control.state.message, /No playback was changed/);
+    assert.ok(f.reads.every(read => ['scenes', 'zones', 'sceneSave'].includes(read.name)), 'concrete selections need no current music or DJ reads');
+  }
+});
+
+test('ordered scene edits, regrouping and closed preflight invalidate the unsent custom definition', async () => {
+  for (const change of ['edit', 'group', 'close']) {
+    const f = await editor(); group(f, 'Den@S1', 'tracks', tracksInput(), ['Hall@S1']);
+    assert.equal(await f.control.reviewDefinition(), true);
+    const pending = f.control.state.pending;
+    if (change === 'edit') f.control.editGroup(f.control.state.draft.groups[0], 'value', sceneTracks()[1].source_uri);
+    if (change === 'group') f.zones[0].members.pop();
+    if (change === 'close') {
+      const wait = deferred(); f.hook = async name => name === 'zones' ? wait.promise : undefined;
+      const saving = f.control.confirm(pending);
+      await new Promise(setImmediate); f.control.close(); wait.resolve(structuredClone(f.zones));
+      assert.equal(await saving, false);
+    } else assert.equal(await f.control.confirm(pending), false);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
+test('changed or lost ordered-scene acknowledgements remain uncertain and are never replayed', async () => {
+  for (const change of ['order', 'title', 'repeat', 'lost']) {
+    const f = await editor(); group(f, 'Den@S1', 'tracks', tracksInput());
+    assert.equal(await f.control.reviewDefinition(), true);
+    let attempts = 0;
+    f.hook = async (name, args) => {
+      if (name !== 'sceneSave') return undefined;
+      attempts++;
+      if (change === 'lost') throw new Error('The storage acknowledgement was lost');
+      const saved = { name: args.params.name, saved: 1, ...structuredClone(args.body) }, tracks = saved.groups[0].source.tracks;
+      if (change === 'order') tracks.reverse();
+      if (change === 'title') tracks[0].title = 'Unexpected metadata';
+      if (change === 'repeat') tracks.pop();
+      return saved;
+    };
+    const pending = f.control.state.pending;
+    assert.equal(await f.control.confirm(pending), false, change);
+    assert.equal(await f.control.confirm(pending), false, change);
+    assert.equal(await f.control.reviewDefinition(), false, change);
+    assert.equal(attempts, 1, change);
+    assert.equal(f.control.state.saved, null);
+    assert.match(f.control.state.message, /uncertain/);
+  }
+});
+
+function sceneDocument() {
+  const document = { activeElement: null };
+  class Element {
+    constructor(tag) {
+      this.tagName = tag.toUpperCase(); this.children = []; this.attributes = new Map(); this.events = new Map();
+      this.disabled = false; this.open = false; this.type = tag === 'input' ? 'text' : tag;
+      this.value = ''; this.checked = false; this.selectionStart = 0; this.selectionEnd = 0;
+    }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
+    set textContent(value) { this.children = [String(value)]; }
+    get textContent() { return this.children.map(child => typeof child === 'string' ? child : child.textContent).join(''); }
+    set innerHTML(_) { throw new Error('Scene labels must remain text'); }
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+      if (['disabled', 'open', 'checked'].includes(name)) this[name] = true;
+      else if (['type', 'id'].includes(name) || name === 'value' && this.tagName !== 'TEXTAREA') this[name] = String(value);
+    }
+    getAttribute(name) { return this.attributes.get(name) ?? null; }
+    contains(other) { return this === other || this.children.some(child => child instanceof Element && child.contains(other)); }
+    descendants() { return this.children.flatMap(child => child instanceof Element ? [child, ...child.descendants()] : []); }
+    querySelectorAll(selector) {
+      const match = /^\[([^=\]]+)(?:="([^"]*)")?\]$/.exec(selector);
+      return this.descendants().filter(child => match && child.attributes.has(match[1])
+        && (match[2] === undefined || child.getAttribute(match[1]) === match[2]));
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    addEventListener(name, handler) { this.events.set(name, [...(this.events.get(name) || []), handler]); }
+    async dispatch(name) { if (!this.disabled) for (const handler of this.events.get(name) || []) await handler({ target: this }); }
+    focus() { document.activeElement = this; }
+    setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  }
+  document.createElement = tag => new Element(tag);
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const helper = source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer'));
+  return { document, el: require('node:vm').runInNewContext(`${helper}\nel`, { document }) };
+}
+
+test('actual custom-scene panel keeps multiline input, reviews order and silently saves through its buttons', async t => {
+  const prior = global.document, dom = sceneDocument(); global.document = dom.document;
+  t.after(() => { if (prior === undefined) delete global.document; else global.document = prior; });
+  const f = editorFixture(), panel = Scenes.panel({ call: f.call, el: dom.el });
+  t.after(() => panel.dispose());
+  const control = key => {
+    const found = panel.node.querySelector(`[data-scene-focus="${key}"]`);
+    assert.ok(found, `missing ${key}`); return found;
+  };
+  const set = async (key, value, event = 'change') => { control(key).value = value; await control(key).dispatch(event); };
+  panel.node.open = true; await panel.node.dispatch('toggle'); await new Promise(setImmediate);
+  await control('new-definition').dispatch('click');
+  await set('name', 'Ordered evening', 'input'); await control('add-group').dispatch('click');
+  await set('leader-1', 'Den@S1'); await set('source-1', 'tracks');
+  const input = control('tracks-1'); assert.equal(input.tagName, 'TEXTAREA');
+  assert.equal(input.getAttribute('aria-label'), 'Group 1 tracks in playback order');
+  input.value = tracksInput(); input.focus(); input.selectionStart = 8; input.selectionEnd = 13;
+  await input.dispatch('input');
+  assert.equal(control('tracks-1').value, tracksInput());
+  assert.equal(dom.document.activeElement, control('tracks-1'));
+  assert.equal(control('tracks-1').selectionStart, 8); assert.equal(control('tracks-1').selectionEnd, 13);
+  await set('playing-1', 'pause');
+  await control('review-definition').dispatch('click');
+  assert.match(panel.node.textContent, /1\. Opening <img src=x>[\s\S]*2\. spotify:episode:[\s\S]*3\. Opening again/);
+  assert.match(panel.node.textContent, /without starting playback/);
+  assert.match(panel.node.textContent, /Saving does not play or regroup anything/);
+  assert.equal(control('tracks-1').disabled, true);
+  assert.deepEqual(f.writes, []);
+  const oldConfirm = control('confirm');
+  await control('cancel').dispatch('click');
+  await set('tracks-1', `spotify:album:${SPOTIFY_ID}`, 'input');
+  await oldConfirm.dispatch('click'); assert.deepEqual(f.writes, []);
+  await control('review-definition').dispatch('click');
+  assert.match(panel.node.textContent, /complete Spotify track or episode URI/);
+  assert.equal(panel.node.querySelector('[data-scene-focus="confirm"]'), null);
+  await set('tracks-1', tracksInput(), 'input'); await control('review-definition').dispatch('click');
+  await control('confirm').dispatch('click');
+  assert.deepEqual(f.writes.map(write => write.name), ['sceneSave']);
+  assert.deepEqual(f.writes[0].body.groups[0].source, { kind: 'tracks', tracks: sceneTracks() });
+  assert.equal(f.writes[0].body.groups[0].playing, false);
+  assert.match(panel.node.textContent, /Saved custom scene “Ordered evening”. No playback was changed/);
+  assert.equal(panel.node.descendants().some(node => node.tagName === 'IMG'), false);
+});
 const nativeRow = () => row({ groups: [{ coordinator: 'Den@SIM_HOUSEHOLD_S1', members: [], playing: true,
   source: { kind: 'sonos_playlist', name: 'SQ:7',
     playlist: { household: 'SIM_HOUSEHOLD_S1', id: 'SQ:7', title: 'Evening & friends' } } }] });
