@@ -59,6 +59,9 @@ import FrankenSonosKit
             .sheet(isPresented: Binding(get: { model.playlistManagement.isOpen }, set: { if !$0 { model.playlistManagement.close() } })) {
                 SonosPlaylistManagementPanel(bridge: bridge)
             }
+            .sheet(isPresented: Binding(get: { model.favoriteManagement.isOpen }, set: { if !$0 { model.favoriteManagement.close() } })) {
+                FavoriteManagementPanel(bridge: bridge)
+            }
     }
 
     @ViewBuilder private var navigation: some View {
@@ -166,7 +169,7 @@ import FrankenSonosKit
                     Button("Setup diagnostics", systemImage: "stethoscope") { showDiagnostics = true }
                         .disabled(!model.canSchedule)
                     Button("Connection details", systemImage: "network") { showConnection = true }
-                        .disabled(model.preferences.isEngaged || model.playlistManagement.isEngaged || model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
+                        .disabled(model.preferences.isEngaged || model.playlistManagement.isEngaged || model.favoriteManagement.isEngaged || model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
                 } label: {
                     Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44)
                 }.accessibilityLabel("House options")
@@ -198,7 +201,7 @@ import FrankenSonosKit
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).disabled(model.preferences.isEngaged || model.playlistManagement.isEngaged || model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
+        .buttonStyle(.plain).disabled(model.preferences.isEngaged || model.playlistManagement.isEngaged || model.favoriteManagement.isEngaged || model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
         .accessibilityHint("Choose a room or group to control.")
     }
 
@@ -241,6 +244,7 @@ import FrankenSonosKit
 
     @ViewBuilder private var notices: some View {
         SonosPlaylistManagementNotice(bridge: bridge)
+        FavoriteManagementNotice(bridge: bridge)
         if let result = model.result {
             ResultNotice(title: result.title, scope: result.scene.map { "Scene: " + $0 + " · saved house scope" } ?? result.target.address,
                          detail: result.detail, warning: result.kind != .confirmed, dismiss: { model.dismissResult() })

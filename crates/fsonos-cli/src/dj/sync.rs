@@ -59,6 +59,9 @@ use continuation::Pass;
 /// The last successful refresh, in the data directory.
 pub const STAMP: &str = "library-sync.json";
 
+/// One writer per data directory, including direct commands beside a daemon.
+const REFRESH_LOCK: &str = "library-sync.lock";
+
 /// How old the last refresh may get before the daemon refreshes again.
 pub const MAX_AGE: Duration = Duration::from_hours(24);
 
@@ -181,6 +184,32 @@ impl LibrarySync {
         state.intake = true;
         state.error = None;
         true
+    }
+
+    /// Hold through selection, network reads and checkpoint publication. A
+    /// process-local slot cannot exclude a direct CLI refresh or another
+    /// LibrarySync instance using the same data directory.
+    fn try_claim_directory(&self) -> Result<Option<std::fs::File>, Failure> {
+        let acquire = || -> std::io::Result<Option<std::fs::File>> {
+            std::fs::create_dir_all(&self.data_dir)?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(self.data_dir.join(REFRESH_LOCK))?;
+            match file.try_lock() {
+                Ok(()) => Ok(Some(file)),
+                Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+                Err(std::fs::TryLockError::Error(error)) => Err(error),
+            }
+        };
+        acquire().map_err(|error| {
+            Failure::new(
+                ErrorCode::Internal,
+                format!("lock the Spotify library refresh: {error}"),
+            )
+        })
     }
 
     /// Start a refresh on a thread of its own, unless one is running;

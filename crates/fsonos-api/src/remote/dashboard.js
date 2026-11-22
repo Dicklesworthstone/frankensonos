@@ -165,7 +165,11 @@
     favorites?.catalogChanged(change);
   } });
   workspace = DashboardWorkspace.create({ call, controller, session, el, icon, openSearch,
-    native: (...args) => native(...args), immerse });
+    native: (...args) => native(...args), immerse, offerScene: selection => {
+      if (sceneCapture.state.open || sceneCapture.state.loading || sceneCapture.state.writing) return false;
+      void sceneCapture.openSelection(selection);
+      return sceneCapture.state.open;
+    } });
   music = DashboardMusic.panel({ call, demo, browse: () => workspace.browseLibrary() });
   playlistSave = DashboardPlaylistSavePanel.panel({ call, controller, demo,
     saved: async ({ target }) => {
@@ -439,6 +443,11 @@
     if (r === reviewed) return; reviewed = r;
     $('review-title').textContent = r.title; $('review-target').textContent = `${r.label} · ${r.target}`;
     $('review-description').textContent = r.detail; $('review-details').replaceChildren();
+    if (r.targetGroups) {
+      const groups = el('ul', 'review-target-groups');
+      for (const group of r.targetGroups) groups.append(el('li', '', group));
+      $('review-details').append(groups);
+    }
     if (r.trackSelection) {
       const list = el('ol', 'review-track-selection');
       for (const entry of r.trackSelection) list.append(el('li', '', entry));

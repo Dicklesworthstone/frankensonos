@@ -1,6 +1,7 @@
 use super::*;
 use crate::tools::Daemon;
 use fsonos_api::surface::queue::MAX_QUEUE_TRACKS;
+use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_proto::{ProtoError, Transport};
@@ -84,6 +85,92 @@ fn selection_forwards_once_with_order_duplicates_titles_and_revision() {
         *reply.calls.lock().unwrap(),
         [json!(["POST", "/queue/tracks", request()])]
     );
+}
+
+fn group_queue_receipt(complete: bool, any_added: bool, uncertain: bool) -> Value {
+    let mut added = Vec::new();
+    if any_added {
+        added.push(json!({
+            "household": "S1", "coordinator": "RINCON_TEST_S1",
+            "queue": {
+                "done": "queued three selected occurrences in Den", "zone": "Den",
+                "first": 4, "count": 3, "playing_queue": true
+            }
+        }));
+    }
+    if complete {
+        added.push(json!({
+            "household": "S2", "coordinator": "RINCON_TEST_S2",
+            "queue": {
+                "done": "appended three selected occurrences in Den", "zone": "Den",
+                "first": 8, "count": 3, "playing_queue": false
+            }
+        }));
+    }
+    let failed = if complete {
+        Vec::new()
+    } else {
+        vec![json!({
+            "household": "S2", "coordinator": "RINCON_TEST_S2", "zone": "Den",
+            "error": {
+                "code": if uncertain { "OUTCOME_UNCERTAIN" } else { "UPNP_FAULT" },
+                "detail": "selection was not confirmed", "hint": "Read the queue before another add.",
+                "suggestions": [], "retryable": false
+            }
+        })]
+    };
+    json!({
+        "done": "ordered queue selection returned", "complete": complete,
+        "added": added, "failed": failed, "logged": true,
+        "undoable": !uncertain && any_added
+    })
+}
+
+#[test]
+fn room_set_queue_receipts_preserve_every_target_and_mark_incomplete_delivery() {
+    for (complete, any_added, uncertain) in [
+        (true, true, false),
+        (false, true, false),
+        (false, true, true),
+        (false, false, false),
+    ] {
+        let mut request = request();
+        request.zone = "everywhere".into();
+        request.expected_revision = None;
+        let answer = group_queue_receipt(complete, any_added, uncertain);
+        let (backend, reply) = fixture(Some(Ok(answer.clone())));
+        let result = backend.add_tracks_to_queue(&request).unwrap();
+        assert_eq!(result.is_error, !complete);
+        assert_eq!(result.structured_content, Some(answer));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/queue/tracks", request])]
+        );
+    }
+}
+
+#[test]
+fn contradictory_or_malformed_group_queue_receipts_cannot_report_complete_success() {
+    let mut request = request();
+    request.zone = "all@S2".into();
+    request.expected_revision = None;
+    let mut contradictory = group_queue_receipt(false, true, false);
+    contradictory["complete"] = json!(true);
+    let (backend, reply) = fixture(Some(Ok(contradictory.clone())));
+    let result = backend.add_tracks_to_queue(&request).unwrap();
+    assert!(result.is_error);
+    assert_eq!(result.structured_content, Some(contradictory));
+    assert_eq!(reply.calls.lock().unwrap().len(), 1);
+
+    let mut malformed = group_queue_receipt(true, true, false);
+    malformed["added"][0]["queue"]
+        .as_object_mut()
+        .unwrap()
+        .remove("count");
+    let (backend, reply) = fixture(Some(Ok(malformed)));
+    let error = backend.add_tracks_to_queue(&request).unwrap_err();
+    assert_eq!(error.data.unwrap()["code"], "OUTCOME_UNCERTAIN");
+    assert_eq!(reply.calls.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -174,6 +261,10 @@ fn tool_schema_describes_typed_selection_and_optional_destination_guard() {
     assert!(description.contains("1-10"));
     assert!(description.contains("duplicates"));
     assert!(description.contains("destination queue revision"));
+    assert!(description.contains("all@S1"));
+    assert!(description.contains("all@S2"));
+    assert!(description.contains("one group"));
+    assert!(description.contains("tool-error flag"));
     fastmcp_server::ServerBuilder::try_new_with_fixed_protocol_policy(
         "queue-tracks-test",
         "1.0",
@@ -211,6 +302,47 @@ fn play_selection_forwards_once_with_order_duplicates_revision_and_cap_notes() {
     assert_eq!(
         *reply.calls.lock().unwrap(),
         [json!(["POST", "/play/tracks", play_request()])]
+    );
+}
+
+#[test]
+fn room_set_partial_receipt_is_an_error_and_preserves_every_group_without_replay() {
+    let mut request = play_request();
+    request.zone = "all".into();
+    request.expected_revision = None;
+    let outcome = json!({
+        "done": "played in one of two groups", "changed": true,
+        "batch": {
+            "complete": false,
+            "results": [
+                {
+                    "household": "S1", "target": "fixture-s1-lead", "zone": "Lead",
+                    "result": {
+                        "status": "succeeded", "done": "playing selected tracks",
+                        "changed": true
+                    }
+                },
+                {
+                    "household": "S2", "target": "fixture-s2-lead", "zone": "Lead",
+                    "result": {
+                        "status": "failed",
+                        "error": {
+                            "detail": "speaker refused the selection", "code": "UPNP_FAULT",
+                            "hint": "Inspect the queue before another command.",
+                            "suggestions": [], "retryable": false
+                        }
+                    }
+                }
+            ]
+        }
+    });
+    let (backend, reply) = fixture(Some(Ok(outcome.clone())));
+    let result = backend.play_tracks(&request).unwrap();
+    assert!(result.is_error);
+    assert_eq!(result.structured_content, Some(outcome));
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["POST", "/play/tracks", request])]
     );
 }
 
@@ -322,6 +454,10 @@ fn play_selection_schema_exposes_ordered_inputs_and_is_registered_only_in_full()
         "duplicates",
         "NORMAL",
         "destination queue revision",
+        "all@S1",
+        "all@S2",
+        "one group",
+        "partial delivery is an error",
         "existing play permission",
         "No Spotify Web API sign-in",
         "never automatically replay",

@@ -378,7 +378,13 @@ fn an_indeterminate_top_up_stops_feeding_without_stopping_the_music() {
         feed.start(&at, planning, &mut store).unwrap();
         let transport = Replies::new(&sim, fault);
         let speakers = speakers(&transport, &households, &coordinator);
-        let result = feed.enqueue(&speakers, planning, &mut store, 1);
+        let result = feed.enqueue(
+            &speakers,
+            planning,
+            &mut store,
+            1,
+            &mut Batch::on_queue(&coordinator),
+        );
         assert!(matches!(result, Err(FeedError::UncertainEnqueue(_))));
         assert!(!feed.is_active());
         assert!(

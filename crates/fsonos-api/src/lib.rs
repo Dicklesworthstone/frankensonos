@@ -51,7 +51,8 @@ pub use dj::{
     DjSteeringDto, DjWorkDto, SteerConstraints,
 };
 pub use execute::{
-    ControlBatchDto, ControlResultDto, ControlTargetDto, OutcomeDto, execute, execute_guarded,
+    ControlBatchDto, ControlErrorDto, ControlResultDto, ControlTargetDto, OutcomeDto, execute,
+    execute_guarded,
 };
 pub use failure::{ErrorCode, Failure, NoteCode};
 pub use guard::{Guard, Note};
@@ -205,4 +206,8 @@ pub struct ApiError {
     pub retryable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upnp_code: Option<u16>,
+    /// Every planned destination when no target returned a successful result.
+    /// The response remains an error; this receipt must not be replayed wholesale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch: Option<ControlBatchDto>,
 }

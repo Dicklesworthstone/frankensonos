@@ -66,6 +66,9 @@ pub(super) fn replace<T: Transport + ?Sized>(
         .then(|| queue_source::replacement_owner(t, host, coordinator))
         .flatten();
     if !autoplay {
+        // Optional undo preparation performs network reads and may discard its
+        // proof. It cannot authorize pausing a new source or an edited queue.
+        destination.confirm(t, host, coordinator)?;
         pause_confirmed(t, households, coordinator)?;
         destination.confirm(t, host, coordinator)?;
         owner = owner.and_then(|owner| owner.after_pause(t, host, coordinator));

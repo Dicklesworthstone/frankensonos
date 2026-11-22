@@ -24,6 +24,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
+#[path = "scenes_catalog_sim/tracks.rs"]
+mod tracks;
+
 const ORIGINAL: &str = "x-rincon-mp3radio://example.invalid/before-scene.mp3";
 const ARTIST: &str = "spotify:artist:2000000000000000000001";
 const SHOW: &str = "spotify:show:3000000000000000000001";

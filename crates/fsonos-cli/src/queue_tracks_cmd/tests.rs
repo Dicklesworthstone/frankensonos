@@ -55,6 +55,26 @@ fn next_and_destination_revision_are_forwarded_without_rewriting() {
 }
 
 #[test]
+fn room_sets_keep_the_complete_selection_and_queue_mode() {
+    for zone in ["selected", "all", "everywhere", "all@S1", "all@S2"] {
+        let request = arguments(&[zone, TRACK, EPISODE_LINK, TRACK, "--next"])
+            .request()
+            .unwrap();
+        assert_eq!(request.zone, zone);
+        assert!(request.next);
+        assert!(request.expected_revision.is_none());
+        assert_eq!(
+            request
+                .tracks
+                .iter()
+                .map(|track| track.source_uri.as_str())
+                .collect::<Vec<_>>(),
+            [TRACK, EPISODE_LINK, TRACK]
+        );
+    }
+}
+
+#[test]
 fn invalid_selections_are_rejected_before_routing() {
     for args in [
         vec!["Room"],

@@ -101,6 +101,29 @@ does not replay a write. Confirmed local changes refresh existing favorite
 pickers immediately, without waiting for the event feed. A confirmed result
 with unavailable action logging remains confirmed and must not be repeated.
 
+## Native iPhone, iPad and Mac app
+
+The native app's **Music → Favorites** panel offers **Save current track or
+station**, including when the household has no favorites yet. Enter a title
+and review the freshly observed current source, kind, description and group.
+Each saved entry also has **Rename favorite** and **Remove favorite** in its
+menu; the review inspects its exact `FV:2/` identity and catalog revision.
+
+Confirmation rereads the source or saved entry before sending one revision-bound
+request through the shared native command session. Changing the current track,
+the selected saved entry or its group requires a new review. Renderer URLs and
+DIDL are never supplied by the app. A lost or invalid reply retains an uncertain
+result attributed to the original household. Closing the sheet, changing rooms
+or backgrounding does not discard it. Use **Check original household** to read
+the present catalog before starting another favorite edit; the app follows the
+original room after regrouping and does not replay the earlier command.
+
+The Swift package includes transport, command-session and workflow regressions
+for source changes, household-local IDs, malformed or lost replies, cancellation
+and catalog-event races. The native Apple workflow builds both the macOS app and
+the iPhone/iPad target; physical-speaker acceptance remains separate from these
+fixtures. See [the native app guide](APPLE_REMOTE.md) for installation and use.
+
 ## HTTP and MCP
 
 | Operation | HTTP | Full MCP profile |

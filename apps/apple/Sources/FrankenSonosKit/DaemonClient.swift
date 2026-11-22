@@ -287,6 +287,28 @@ extension DaemonClient {
 }
 
 extension DaemonClient {
+    /// Send only the reviewed source revision and native favorite identity.
+    /// A lost or invalid reply is retained as uncertain, never replayed.
+    func perform(_ review: FavoriteMutationReview) async throws -> FavoriteMutationReceipt {
+        try Task.checkCancellation()
+        var request = URLRequest(url: try endpoint.resource(review.command.path),
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(review.body)
+        try Task.checkCancellation()
+        do {
+            let reply = try await transport.send(request)
+            try Self.check(reply)
+            return try review.receipt(reply.data)
+        } catch {
+            throw ClientError.uncertain(error.localizedDescription)
+        }
+    }
+}
+
+extension DaemonClient {
     /// Dispatch only the immutable, one-use scene review. A response lost after
     /// the PUT/DELETE was handed to transport is uncertain and is never retried.
     func perform(_ review: SceneMutationReview) async throws -> SceneMutationReceipt {

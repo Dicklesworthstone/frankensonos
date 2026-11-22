@@ -1,6 +1,6 @@
 # Play or queue a source across existing groups
 
-`play`, `play_favorite` and `play_sonos_playlist` accept the same room sets as
+`play`, `play_tracks`, `play_favorite` and `play_sonos_playlist` accept the same room sets as
 transport and volume controls. A room name still selects its current group.
 A multi-room alias, `all` or `everywhere` selects every distinct group named by
 that target. `all@S1` and `all@S2` restrict the selection to one household.
@@ -26,6 +26,8 @@ to group one household before playback when that is the intended arrangement.
 | Operation | CLI | HTTP | MCP |
 |---|---|---|---|
 | Spotify or stream source | `play <target> <source>` | `POST /play` | `play` |
+| Play ordered tracks or episodes | `play-tracks <target> <URI>...` | `POST /play/tracks` | `play_tracks` |
+| Queue ordered tracks or episodes | `queue-tracks <target> <URI>... [--next]` | `POST /queue/tracks` | `add_tracks_to_queue` |
 | Sonos favorite | `play <target> --favorite <query>` | `POST /play/favorite` | `play_favorite` |
 | Saved Sonos playlist | `play <target> --playlist <query>` | `POST /sonos/playlists/play` | `play_sonos_playlist` |
 | Add a source next or at the end | `play <target> <source> --next` / `--queue` (also `--favorite` / `--playlist`) | `POST /queue` | `add_to_queue` |
@@ -34,11 +36,18 @@ The target remains `zone`, and the outcome retains `done`, `changed` and
 `notes`. A request that plans several control commands also returns a `batch`
 receipt; single-group playback retains its existing response shape. Direct CLI,
 daemon CLI, standalone MCP and daemon MCP use the shared planner and executor.
-The phone remote and desktop dashboard also send these same source requests.
+The phone remote and desktop dashboard use the reviewed source endpoint below
+for room sets and favorite-title selections. It retains the same underlying
+source preparation, policy tools, action logging and per-group receipts.
 
-Search-and-play picks, line-in playback, revision-bound ordered track
-selections (`queue-tracks` / `POST /queue/tracks`), and the legacy `/sonos` compatibility bridge
-retain their single-group contracts. They do not silently choose one room
+Ordered playback and quiet queueing send the same 1–10 tracks or episodes to each group,
+preserving order and intentional repeats. It requires no Spotify Web API lookup
+for concrete track identities. An optional `expected_revision` queue token
+requires a selector resolving to one distinct group; one group's token cannot
+be used for a whole room set. See [ordered track selections](QUEUE_TRACK_SELECTIONS.md).
+
+Search-and-play picks, line-in playback, and the legacy `/sonos`
+compatibility bridge retain their single-group contracts. They do not silently choose one room
 from a multi-room alias.
 
 ## Phone and desktop controls
@@ -57,14 +66,85 @@ each household's own entry and ID. The browser does not copy an ID from one
 household into another household's selection. The single-group playlist picker,
 individual saved-track actions and line-in controls remain available.
 
+The cached-library baskets also target room sets. Select up to ten tracks
+across albums, playlists, filters and pages, arrange or repeat occurrences,
+then choose **Rooms or saved room set** in **Selected track destination**.
+Enter the alias or selector and choose **Play selected now**, **Queue selected
+next** or **Add selected to end**. The basket survives destination edits, and
+review lists the exact ordered selection plus each group's source and queue
+effect. Both source-page observations and destination evidence are reread at
+confirmation. See [ordered track selections](QUEUE_TRACK_SELECTIONS.md) for
+the chooser and revision contracts.
+
 Confirmation checks the complete target, catalog selection and relevant state
 again, reserves the existing browser command lanes, and sends one daemon
-request. Each queue receipt must account for every reviewed group. Successful
+request containing the resolver's revision. The daemon checks that revision
+against the same room snapshot it uses to plan the action. Each queue receipt
+must account for every reviewed group. Successful
 ranges, failed destinations, partial completion and undo limitations stay
 visible, including an all-failed batch. A missing or malformed reply is
 uncertain and is never automatically repeated. Source panels add no background
 polling. The review cannot lock out another controller after its final read;
 the daemon's execution checks still apply.
+
+## Reviewed source requests
+
+`GET /rooms/resolve?target=<target>` returns an opaque `revision` covering
+the selected rooms, complete physical groups, coordinators and known addresses.
+After reviewing that observation, send the exact target and revision to
+`POST /sources/control`:
+
+```json
+{
+  "zone": "downstairs",
+  "expected_revision": "<revision returned for downstairs>",
+  "mode": "next",
+  "source": {
+    "kind": "uri",
+    "source_uri": "spotify:album:<album-id>",
+    "title": "Evening listening"
+  }
+}
+```
+
+The mode is `play`, `next` or `append`. The source is exactly one of
+`{"kind":"uri","source_uri":"...","title":"..."}`,
+`{"kind":"favorite","favorite":"Morning"}`,
+`{"kind":"playlist","playlist":"Evening Mix"}`, or
+`{"kind":"tracks","tracks":[{"source_uri":"spotify:track:<id>","title":"First"}]}`.
+`title` is optional for URI sources and individual selected tracks.
+An ordered selection contains 1–10 concrete Spotify tracks or episodes, retains
+repeated occurrences, and supports all three modes. It needs the target's
+Spotify renderer linkage but no Web API catalog lookup. The outer revision
+is always the reviewed audience token, including for ordered selections;
+it is never a queue revision. Streams support `play` only. Unknown fields,
+unsupported modes and malformed revisions are rejected before discovery or
+speaker reads.
+
+A revision that no longer matches the planning snapshot returns
+`NOT_COORDINATOR` before source preparation or speaker writes. A target that
+no longer resolves keeps its normal resolution error. After admission the
+concrete original destinations remain fixed, even if an alias changes during
+a slow catalog read. Every subsequent speaker write checks the original
+physical group, room names and bonding again. A new member, renamed or
+rebonded room, changed coordinator or changed address causes a refusal; the
+request does not heal onto another group or expand its audience. This also
+applies to aliases resolving to just one group.
+
+Play uses the ordinary `play` or `play_favorite` policy permission and
+returns the existing playback outcome. Queue modes use `add_to_queue`
+permission and return the full `added`/`failed` receipt described below,
+including when only one group was reviewed. If some speaker steps already
+went out before a later failure, the result preserves that uncertainty and
+does not advertise aggregate undo. Inspect the affected group before another
+action; no whole-request retry is performed.
+
+The phone and dashboard keep the revision in both the review comparison and
+the submitted body, so physical changes that leave all displayed names
+unchanged still retire the review. A daemon that omits a valid revision
+cannot accept a room-set source review in these controls. The ordinary source
+endpoints remain available to clients using their existing immediate-command
+contracts.
 
 ## Preparing the source
 
@@ -164,14 +244,15 @@ and inside each insertion engine immediately before its write. A change during
 renderer learning or a definite renderer-rejection retry cannot become a new
 baseline for the request.
 
-A request resolving to one group keeps the existing response, including when
-an alias names two members of that group:
+An ordinary `POST /queue` request resolving to one group keeps the existing
+response, including when an alias names two members of that group:
 
 ```json
 {"done":"queued 2 tracks","zone":"Study","first":4,"count":2,"playing_queue":true}
 ```
 
-A request resolving to several groups returns a receipt with these fields:
+An ordinary request resolving to several groups, and every reviewed
+`POST /sources/control` queue request, returns a receipt with these fields:
 
 | Field | Meaning |
 |---|---|
@@ -190,7 +271,8 @@ writes. After dispatch begins, HTTP returns the complete batch receipt, even
 if every group failed. **Check `complete` and every `failed` entry; an HTTP 200
 does not mean all groups accepted the addition.** The CLI prints the receipt
 (JSON with `--json`) and exits nonzero for an incomplete batch. MCP retains the
-same structured receipt and names each destination's result in its text.
+same structured receipt, names each destination's result in its text, and
+sets `isError` for an incomplete batch.
 
 Never repeat the whole request after partial or uncertain delivery. Read the
 failed groups' queues before deciding on a new targeted add. Definite refusals

@@ -50,6 +50,7 @@ pub(crate) mod queue_backup;
 mod sonos_playlist;
 mod sources;
 mod targets;
+mod tracks;
 
 pub use queue::QueueReference;
 pub use queue_backup::{
@@ -59,6 +60,7 @@ pub use queue_backup::{
 pub use sonos_playlist::{SonosPlaylistReference, check_playlist_sources};
 pub use sources::check_sources;
 pub use targets::canonical_room_name;
+pub use tracks::{MAX_SCENE_TRACKS, SceneTrack, validate_track_selection};
 
 /// The longest scene name.
 pub const MAX_NAME: usize = 64;
@@ -123,6 +125,9 @@ pub enum SceneSource {
         #[serde(default)]
         metadata: String,
     },
+    /// A reusable ordered selection, rendered through each target household's
+    /// own account. Repeated identities remain separate queue occurrences.
+    Tracks { tracks: Vec<SceneTrack> },
     /// A captured occurrence in an unchanged queue on its original player.
     Queue { queue: QueueReference },
     /// A complete, bounded queue copy, reconstructed on its original player.
@@ -212,6 +217,13 @@ pub enum SceneOp {
         metadata: String,
         start: bool,
     },
+    /// Replace the queue with an exact ordered selection; false `start`
+    /// loads the first occurrence silently, ready to resume.
+    Tracks {
+        coordinator: PlayerId,
+        tracks: Vec<SceneTrack>,
+        start: bool,
+    },
     /// Recall a guarded queue bookmark. `start` is the final playback
     /// intent: false loads it silently, ready to resume.
     Queue {
@@ -248,6 +260,7 @@ impl SceneOp {
             Self::Favorite { start, .. }
             | Self::SonosPlaylist { start, .. }
             | Self::Uri { start, .. }
+            | Self::Tracks { start, .. }
             | Self::Queue { start, .. }
             | Self::QueueBackup { start, .. } => *start,
             Self::Dj { .. } | Self::Play { .. } => true,
@@ -320,6 +333,20 @@ pub trait SceneHooks {
         _start: bool,
     ) -> Result<(), String> {
         Err("this scene has no prepared Spotify catalog selection".into())
+    }
+
+    /// A surface can retain the selection's original destination across its
+    /// readiness phase and intentional regrouping. `Some` is authoritative:
+    /// even a refusal never falls back to an unprepared load. With `None`,
+    /// the core binds the current confirmed group before loading directly.
+    fn load_track_selection(
+        &self,
+        _households: &[HouseholdState],
+        _coordinator: &PlayerId,
+        _tracks: &[SceneTrack],
+        _start: bool,
+    ) -> Option<Result<(), String>> {
+        None
     }
 
     /// Start the DJ in the group `coordinator` leads, in `mood`, or steer
@@ -405,6 +432,7 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
     for g in &scene.groups {
         let source_valid = match &g.source {
             SceneSource::SonosPlaylist { playlist } => playlist.validate(),
+            SceneSource::Tracks { tracks } => validate_track_selection(tracks),
             SceneSource::Queue { queue } => queue.validate(),
             SceneSource::QueueBackup { backup } => backup.validate(),
             _ => Ok(()),
@@ -552,6 +580,14 @@ fn plan_sources(
         });
         let coordinator = lead.primary.clone();
         let playing_now = now.is_some_and(|s| s.transport_state == TransportState::Playing);
+        if let SceneSource::Tracks { tracks } = &g.source {
+            plan.ops.push(SceneOp::Tracks {
+                coordinator,
+                tracks: tracks.clone(),
+                start: g.playing.unwrap_or(playing_now),
+            });
+            continue;
+        }
         if let SceneSource::SonosPlaylist { playlist } = &g.source {
             plan.ops.push(SceneOp::SonosPlaylist {
                 coordinator,
@@ -584,6 +620,7 @@ fn plan_sources(
         let start = g.playing != Some(false);
         let source = match &g.source {
             SceneSource::Keep
+            | SceneSource::Tracks { .. }
             | SceneSource::SonosPlaylist { .. }
             | SceneSource::Queue { .. }
             | SceneSource::QueueBackup { .. } => None,
@@ -675,6 +712,11 @@ pub fn fade_players(households: &[HouseholdState], plan: &ScenePlan) -> Vec<Play
                 start: true,
                 ..
             }
+            | SceneOp::Tracks {
+                coordinator,
+                start: true,
+                ..
+            }
             | SceneOp::Queue {
                 coordinator,
                 start: true,
@@ -756,6 +798,11 @@ fn silence_starting<T: Transport + ?Sized>(
                 ..
             }
             | SceneOp::Uri {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::Tracks {
                 coordinator,
                 start: true,
                 ..
@@ -1057,6 +1104,11 @@ fn run<T: Transport + ?Sized>(
             playlist,
             start,
         } => sonos_playlist::recall(t, households, coordinator, playlist, *start, options.hooks),
+        SceneOp::Tracks {
+            coordinator,
+            tracks,
+            start,
+        } => tracks::recall(t, households, coordinator, tracks, *start, options.hooks),
         SceneOp::Uri {
             coordinator,
             uri,

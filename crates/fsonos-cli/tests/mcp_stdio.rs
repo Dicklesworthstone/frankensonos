@@ -318,6 +318,27 @@ fn assert_music_tool_schemas(tools: &[Value]) {
     );
     assert_ne!(selection["annotations"]["readOnlyHint"], true);
     assert_ne!(selection["annotations"]["idempotentHint"], true);
+    let composition = tool("append_sonos_playlist_tracks");
+    assert_tool_arguments(
+        composition,
+        &[
+            "zone",
+            "playlist",
+            "expected_revision",
+            "source_revision",
+            "positions",
+            "source_playlist",
+        ],
+        &[
+            "zone",
+            "playlist",
+            "expected_revision",
+            "source_revision",
+            "positions",
+        ],
+    );
+    assert_ne!(composition["annotations"]["readOnlyHint"], true);
+    assert_ne!(composition["annotations"]["idempotentHint"], true);
 }
 
 fn assert_tool_descriptions(tools: &[Value]) {
@@ -354,6 +375,7 @@ fn assert_tool_descriptions(tools: &[Value]) {
         "save_sonos_playlist",
         "rename_sonos_playlist",
         "remove_sonos_playlist",
+        "append_sonos_playlist_tracks",
         "update_schedule",
         "room_configuration",
         "configure_rooms",

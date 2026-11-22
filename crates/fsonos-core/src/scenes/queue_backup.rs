@@ -6,8 +6,8 @@ use crate::snapshot::{self, ZoneSnapshot};
 use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::content::{self, BrowseFlag, BrowseSnapshot, QUEUE};
 use fsonos_proto::didl::{
-    DidlKind, DidlObject, SpotifyRenderParams, item_metadata, parse_didl, spotify_track_didl,
-    spotify_uri_from_renderer_uri,
+    DidlKind, DidlObject, NativeDidlObject, SpotifyRenderParams, native_account_descriptor,
+    parse_didl, spotify_track_didl, spotify_uri_from_renderer_uri, with_native_replay_identity,
 };
 use fsonos_proto::play_mode::get_play_mode;
 use fsonos_proto::{ProtoError, Transport};
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::Instant;
 
+mod native;
 mod staging;
 
 /// Maximum number of occurrences in one durable scene queue.
@@ -95,10 +96,9 @@ impl QueueBackup {
             }
             if spotify_uri_from_renderer_uri(&entry.uri)
                 .is_some_and(|uri| uri.starts_with("spotify:track:"))
-                && object
-                    .desc
-                    .as_ref()
-                    .is_none_or(|desc| desc.id != "cdudn" || desc.value.trim().is_empty())
+                && native_account_descriptor(&entry.metadata)
+                    .map_err(|error| format!("queue occurrence {}: {error}", index + 1))?
+                    .is_none_or(|desc| desc.value.trim().is_empty())
             {
                 return Err(format!(
                     "queue occurrence {} is missing its Spotify account descriptor",
@@ -173,9 +173,13 @@ fn replay_item<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
-    mut object: DidlObject,
+    native: NativeDidlObject,
     parameters: &mut Option<SpotifyRenderParams>,
 ) -> Result<QueueBackupEntry, CoreError> {
+    let NativeDidlObject {
+        object,
+        mut metadata,
+    } = native;
     let uri = object
         .res
         .as_ref()
@@ -200,12 +204,12 @@ fn replay_item<T: Transport + ?Sized>(
                 })?,
             );
         }
-        let metadata = spotify_track_didl(
+        let replay_metadata = spotify_track_didl(
             &spotify,
             &object.title,
             parameters.as_ref().expect("parameters resolved above"),
         );
-        let replay = parse_didl(&metadata)?
+        let replay = parse_didl(&replay_metadata)?
             .into_iter()
             .next()
             .ok_or_else(|| invalid("Spotify replay metadata is missing"))?;
@@ -219,27 +223,25 @@ fn replay_item<T: Transport + ?Sized>(
             };
             number("sid") == Some(params.sid) && number("sn") == Some(params.sn)
         });
-        if !same_account
-            || object
-                .desc
-                .as_ref()
-                .is_some_and(|desc| replay.desc.as_ref() != Some(desc))
-        {
+        if !same_account {
             return Err(invalid(
                 "a Spotify queue occurrence belongs to an unresolved linked account",
             )
             .into());
         }
-        // Browse assigns Q:0/n IDs. Enqueue needs the renderer's service
-        // item prefix, while resource/display metadata remains intact.
-        object.id = replay.id;
-        object.parent_id = replay.parent_id;
-        object.desc = replay.desc;
+        // Queue IDs need the renderer's service prefix. Repair only that
+        // identity and a missing account; native extensions remain intact.
+        metadata = with_native_replay_identity(
+            &metadata,
+            &replay.id,
+            &replay.parent_id,
+            replay
+                .desc
+                .as_ref()
+                .ok_or_else(|| invalid("Spotify replay account is missing"))?,
+        )?;
     }
-    Ok(QueueBackupEntry {
-        uri,
-        metadata: item_metadata(&object),
-    })
+    Ok(QueueBackupEntry { uri, metadata })
 }
 
 pub(crate) fn capture<T: Transport + ?Sized>(
@@ -253,7 +255,7 @@ pub(crate) fn capture<T: Transport + ?Sized>(
         return Ok(None);
     };
     let host = control::locate(households, &snap.coordinator)?.ip;
-    let contents = bounded_snapshot(t, host)?;
+    let contents = native::snapshot(t, host)?;
     if contents.update_id != original.update_id {
         return Err(invalid("the queue changed while its backup was read").into());
     }

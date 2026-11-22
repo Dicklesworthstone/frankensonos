@@ -16,6 +16,8 @@
 mod e2e;
 #[path = "e2e_schedules/edits.rs"]
 mod edits;
+#[path = "e2e_schedules/targets.rs"]
+mod targets;
 
 use chrono::{DateTime, FixedOffset, Local, NaiveTime, TimeDelta, TimeZone, Timelike};
 use e2e::{Daemon, Scenario, http};
@@ -207,6 +209,12 @@ fn a_sleep_timer_fades_out_in_serve_and_is_the_speakers_own_from_the_cli() {
     set_clock(&clock, t0 + TimeDelta::minutes(10));
     let paused = eventually(Duration::from_secs(15), || {
         transport(&s) == Some(TransportState::Paused)
+            // Pause precedes volume restoration and native timer cleanup.
+            // Observe completion before asserting the final state below.
+            && get_volume(&s.lan(), s.ip(ROOM)).ok() == Some(30)
+            && get_remaining_sleep_timer(&s.lan(), s.ip(ROOM))
+                .is_ok_and(|timer| timer.is_none())
+            && call(&api, "GET", "/sleep", None).1 == json!([])
     });
     s.check(
         "fade",

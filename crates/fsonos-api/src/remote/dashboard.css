@@ -150,7 +150,8 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line-str
 .scene-capture-groups{list-style:none;display:grid;gap:6px;padding:0;margin:8px 0 20px;font-size:12px;line-height:1.6;color:var(--muted)}
 .scene-capture-groups li{border-left:2px solid var(--accent);padding-left:11px;overflow-wrap:anywhere}
 .scene-capture-name{display:grid;gap:8px;font-size:12px;margin-top:16px}
-.scene-capture-name input{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--raised);border:1px solid var(--line-strong);border-radius:8px;font-size:14px}
+.scene-capture-name input,.scene-capture-name select{width:100%;min-width:0;min-height:44px;padding:10px 12px;background:var(--raised);border:1px solid var(--line-strong);border-radius:8px;font-size:14px;color:var(--text)}
+.scene-capture-tracks{white-space:pre-wrap;overflow-wrap:anywhere;max-height:18rem;overflow:auto;font:inherit;font-size:12px;line-height:1.75}
 .scene-capture-option{display:flex;align-items:flex-start;gap:11px;padding:15px 0;font-size:13px;line-height:1.6}
 .scene-capture-option input{width:18px;height:18px;margin-top:3px;flex:none;accent-color:var(--accent)}
 .scene-capture-option small{display:block;margin-top:5px;font-size:11px;color:var(--muted)}

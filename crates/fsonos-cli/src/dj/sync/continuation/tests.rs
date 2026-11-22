@@ -449,3 +449,126 @@ fn a_saved_library_window_reports_progress_without_claiming_success() {
     assert!(error.detail.contains("public library is unchanged"));
     assert!(error.detail.contains("next refresh continues"));
 }
+
+#[test]
+fn another_directory_writer_blocks_manual_and_background_reads_without_changing_progress() {
+    let dir = directory("writer-contention");
+    let at = 1_790_000_000;
+    let checkpoint = Checkpoint::default().observed(&pending(3, 100), at);
+    write(&dir, Some(&full(at)), &checkpoint).unwrap();
+    let original = std::fs::read(dir.join(STAMP)).unwrap();
+    let writer = controller(dir.clone(), at);
+    let lock = writer.try_claim_directory().unwrap().unwrap();
+    let contender = controller(dir.clone(), at + 100_000);
+
+    let error = contender.run().unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotReady);
+    assert!(error.detail.contains("another process"));
+    assert!(!contender.running().running, "release the local slot");
+    assert_eq!(std::fs::read(dir.join(STAMP)).unwrap(), original);
+
+    contender.running().error = Some("previous reader failed".into());
+    assert!(
+        contender.background().is_none(),
+        "a busy writer is idle work"
+    );
+    assert!(!contender.running().running);
+    assert_eq!(
+        contender.running().error.as_deref(),
+        Some("previous reader failed")
+    );
+    assert_eq!(std::fs::read(dir.join(STAMP)).unwrap(), original);
+    assert!(!contender.take_fresh());
+
+    drop(lock);
+    let error = contender.run().unwrap_err();
+    assert_eq!(error.code, ErrorCode::SpotifyAuthRequired);
+    assert!(!contender.running().running);
+    assert!(
+        writer.try_claim_directory().unwrap().is_some(),
+        "a failed read must release the directory lock"
+    );
+}
+
+#[test]
+fn a_retried_reader_observes_the_latest_writer_cooldown_before_admission() {
+    let dir = directory("writer-cooldown");
+    let at = 1_790_000_000;
+    let reader = controller(dir.clone(), at);
+    let writer = controller(dir.clone(), at);
+    let lock = writer.try_claim_directory().unwrap().unwrap();
+    assert_eq!(reader.run().unwrap_err().code, ErrorCode::NotReady);
+
+    let mut saved = Checkpoint::default().observed(&pending(2, 50), at);
+    saved.cooldown(at, 3_600);
+    write(&dir, Some(&full(at)), &saved).unwrap();
+    let original = std::fs::read(dir.join(STAMP)).unwrap();
+    drop(lock);
+
+    let error = reader.run().unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotReady);
+    assert!(error.detail.contains("no refresh request was sent"));
+    assert!(reader.background().is_none());
+    assert_eq!(std::fs::read(dir.join(STAMP)).unwrap(), original);
+    assert!(!reader.running().running);
+}
+
+#[test]
+fn refresh_locks_are_per_directory_and_failed_admission_releases_the_local_slot() {
+    let at = 1_790_000_000;
+    let first = controller(directory("writer-first"), at);
+    let second = controller(directory("writer-second"), at);
+    let _first = first.try_claim_directory().unwrap().unwrap();
+    let _second = second.try_claim_directory().unwrap().unwrap();
+
+    let dir = directory("writer-open-error");
+    let blocked = dir.join(super::super::REFRESH_LOCK);
+    std::fs::create_dir(&blocked).unwrap();
+    let reader = controller(dir.clone(), at);
+    assert_eq!(reader.run().unwrap_err().code, ErrorCode::Internal);
+    assert!(!reader.running().running);
+    assert_eq!(
+        reader.background().unwrap().unwrap_err().code,
+        ErrorCode::Internal
+    );
+    assert!(!reader.running().running);
+    assert!(!dir.join(STAMP).exists());
+
+    std::fs::rename(blocked, dir.join("former-lock-directory")).unwrap();
+    let lock = reader.try_claim_directory().unwrap().unwrap();
+    assert!(
+        reader.claim(),
+        "failed admission must allow another attempt"
+    );
+    reader.running().running = false;
+    drop(lock);
+    assert!(reader.try_claim_directory().unwrap().is_some());
+}
+
+#[test]
+fn checkpoint_publication_uses_private_staging_and_leaves_another_writers_file_intact() {
+    let dir = directory("writer-publication");
+    let at = 1_790_000_000;
+    let old_temporary = dir.join(format!("{STAMP}.tmp"));
+    std::fs::write(&old_temporary, "another writer's incomplete checkpoint").unwrap();
+    let checkpoint = Checkpoint::default().observed(&pending(3, 100), at);
+    write(&dir, Some(&full(at)), &checkpoint).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(old_temporary).unwrap(),
+        "another writer's incomplete checkpoint"
+    );
+    assert_eq!(load(&dir), Some(checkpoint));
+    assert_eq!(super::super::last_synced(&dir), Some(full(at)));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(dir.join(STAMP))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+}

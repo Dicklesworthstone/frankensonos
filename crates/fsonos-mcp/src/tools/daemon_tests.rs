@@ -463,11 +463,46 @@ fn a_read_falls_back_only_when_no_daemon_was_selected() {
 }
 
 #[test]
-fn undo_uses_the_same_daemon_log_without_widening_ownership() {
-    let answer = json!({"summary":"restored partly", "undone":7, "intent":"play",
-        "failures":["Room: the queue changed"]});
+fn undo_receipts_keep_partial_failures_and_signal_errors_without_replay() {
+    for partial in [false, true] {
+        let mut answer = json!({"summary":"restore finished", "undone":7, "intent":"play"});
+        if partial {
+            answer["failures"] = json!(["Room: the queue changed", "Office: volume refused"]);
+        }
+        for checked in [false, true] {
+            let (backend, reply) = fixture(Some(Ok(answer.clone())));
+            let (result, path, body) = if checked {
+                (
+                    backend.undo_checked(7),
+                    "/undo/checked",
+                    json!({"expected_id":7}),
+                )
+            } else {
+                (backend.undo_last(), "/undo", json!({"own_only":true}))
+            };
+            let result = result.unwrap();
+            assert_eq!(result.is_error, partial, "{path}");
+            assert_eq!(result.structured_content, Some(answer.clone()));
+            assert!(text(&result).contains("restore finished"));
+            if partial {
+                assert!(text(&result).contains("Not restored: Room: the queue changed"));
+                assert!(text(&result).contains("Not restored: Office: volume refused"));
+            }
+            assert_eq!(
+                *reply.calls.lock().unwrap(),
+                [json!(["POST", path, body])],
+                "retain caller ownership and never replay an undo"
+            );
+        }
+    }
+}
+
+#[test]
+fn nothing_to_undo_remains_a_successful_daemon_result() {
+    let answer = json!({"summary":"nothing to undo"});
     let (backend, reply) = fixture(Some(Ok(answer.clone())));
     let result = backend.undo_last().unwrap();
+    assert!(!result.is_error);
     assert_eq!(result.structured_content, Some(answer));
     assert_eq!(
         *reply.calls.lock().unwrap(),

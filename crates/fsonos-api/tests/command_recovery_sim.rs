@@ -17,13 +17,27 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn grouped() -> (SimHandle, Vec<HouseholdState>, PlayerId) {
-    let sim = SimHousehold::builder()
-        .s1([
-            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
-            SimPlayerSpec::new("Office", SimModel::Play5Gen1),
-        ])
-        .spawn()
-        .unwrap();
+    grouped_generation(false)
+}
+
+fn grouped_generation(s2: bool) -> (SimHandle, Vec<HouseholdState>, PlayerId) {
+    let model = if s2 {
+        SimModel::One
+    } else {
+        SimModel::Play5Gen1
+    };
+    let players = [
+        SimPlayerSpec::new("Kitchen", model),
+        SimPlayerSpec::new("Office", model),
+    ];
+    let builder = SimHousehold::builder();
+    let sim = if s2 {
+        builder.s2(players)
+    } else {
+        builder.s1(players)
+    }
+    .spawn()
+    .unwrap();
     let lan = sim.lan();
     let houses = survey(&lan);
     let kitchen = resolve_room(&houses, "Kitchen").unwrap().player.id.clone();
@@ -100,7 +114,7 @@ impl Transport for Handoff<'_> {
 }
 
 #[test]
-fn a_late_800_does_not_replay_the_accepted_source_on_a_new_coordinator() {
+fn an_acknowledged_source_cannot_start_after_its_coordinator_changes() {
     let (sim, houses, kitchen) = grouped();
     let t = Handoff {
         sim: &sim,
@@ -112,18 +126,91 @@ fn a_late_800_does_not_replay_the_accepted_source_on_a_new_coordinator() {
         panic!("late source failure must not start another recovery")
     })
     .unwrap_err();
-    assert_eq!(failure.upnp_code, Some(800));
+    assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
+    assert_eq!(failure.upnp_code, None, "no refused Play was sent");
     assert!(failure.hint.contains("earlier speaker step"), "{failure:?}");
     let calls = t.calls.borrow();
     assert_eq!(
         calls.iter().filter(|a| *a == "SetAVTransportURI").count(),
         1
     );
-    assert_eq!(calls.iter().filter(|a| *a == "Play").count(), 1);
+    assert_eq!(calls.iter().filter(|a| *a == "Play").count(), 0);
+}
+
+/// A different controller selects its own source while our acknowledged
+/// source-selection reply is in flight. Only our calls enter `calls`.
+struct SourceTakeover {
+    lan: SimLan,
+    switched: Cell<bool>,
+    calls: RefCell<Vec<String>>,
+}
+
+const LISTENER_SOURCE: &str = "http://example.invalid/listener-selected-radio";
+
+impl Transport for SourceTakeover {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        header: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let action = header.trim_matches('"').rsplit('#').next().unwrap();
+        self.calls.borrow_mut().push(action.to_string());
+        let reply = self.lan.soap_post(host, path, header, body)?;
+        if action == "SetAVTransportURI"
+            && soap::parse_response(&reply, action).is_ok()
+            && !self.switched.replace(true)
+        {
+            fsonos_proto::control::set_av_transport_uri(&self.lan, host, LISTENER_SOURCE, "")?;
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn an_acknowledged_source_takeover_never_plays_or_replays_through_outer_healing() {
+    for s2 in [false, true] {
+        let (sim, houses, kitchen) = grouped_generation(s2);
+        let transport = SourceTakeover {
+            lan: sim.lan(),
+            switched: Cell::new(false),
+            calls: RefCell::new(Vec::new()),
+        };
+        let failure = execute_healing(&transport, &houses, &guard(), &play(&kitchen), || {
+            panic!("an accepted selection cannot be restarted after a listener takeover")
+        })
+        .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
+        assert!(failure.hint.contains("not repeated"), "{failure:?}");
+        let calls = transport.calls.borrow();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|action| *action == "SetAVTransportURI")
+                .count(),
+            1
+        );
+        assert!(!calls.iter().any(|action| action == "Play"));
+        let host = sim.player("Kitchen").unwrap().ip;
+        assert_eq!(
+            fsonos_proto::control::get_media_info(&sim.lan(), host)
+                .unwrap()
+                .uri,
+            LISTENER_SOURCE
+        );
+        assert_eq!(
+            fsonos_proto::control::get_transport_info(&sim.lan(), host)
+                .unwrap()
+                .state,
+            fsonos_types::TransportState::Stopped
+        );
+    }
 }
 
 struct LostPlay {
     lan: SimLan,
+    attempted: Cell<bool>,
     calls: RefCell<Vec<String>>,
 }
 
@@ -137,7 +224,10 @@ impl Transport for LostPlay {
     ) -> Result<String, ProtoError> {
         let action = header.trim_matches('"').rsplit('#').next().unwrap();
         self.calls.borrow_mut().push(action.to_string());
-        if action == "Play" || action == "GetMediaInfo" {
+        if action == "Play" {
+            self.attempted.set(true);
+        }
+        if action == "Play" || (action == "GetMediaInfo" && self.attempted.get()) {
             return Err(ProtoError::Network {
                 target: "synthetic".into(),
                 detail: "reply lost".into(),
@@ -152,6 +242,7 @@ fn source_success_then_lost_play_and_readback_does_not_restart_at_a_new_address(
     let (sim, houses, kitchen) = grouped();
     let t = LostPlay {
         lan: sim.lan(),
+        attempted: Cell::new(false),
         calls: RefCell::new(Vec::new()),
     };
     let surveys = Cell::new(0);
@@ -160,7 +251,8 @@ fn source_success_then_lost_play_and_readback_does_not_restart_at_a_new_address(
         None
     })
     .unwrap_err();
-    assert_eq!(failure.code, ErrorCode::PlayerUnreachable);
+    assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
+    assert!(t.attempted.get(), "the fault must occur after source proof");
     assert_eq!(surveys.get(), 0, "do not enter the outer readdress retry");
     assert!(failure.hint.contains("not repeated"));
     assert_eq!(

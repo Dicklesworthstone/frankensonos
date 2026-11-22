@@ -290,7 +290,12 @@ test('valid JSON null and a no-content response preserve optional-result endpoin
 test('long-running actions get finite route-aware deadlines, not the short read timeout', () => {
   const { RequestRemote: r } = harness(async () => response());
   assert.equal(r.timeoutFor('GET', '/announce'), 15000);
-  assert.equal(r.timeoutFor('POST', '/pause/fade'), 120000);
+  for (const where of ['/sleep', '/pause/fade']) {
+    assert.equal(r.timeoutFor('POST', where), 600000);
+    assert.equal(r.timeoutFor('POST', where + '?scope=current'), 600000);
+    assert.equal(r.timeoutFor('GET', where), 15000);
+    assert.equal(r.timeoutFor('POST', where + '/unknown'), 120000);
+  }
   assert.equal(r.timeoutFor('POST', '/sonos/playlists/play'), 600000);
   assert.equal(r.timeoutFor('POST', '/sonos/playlists/play?scope=current'), 600000);
   assert.equal(r.timeoutFor('POST', '/sonos/playlists/tracks'), 600000);

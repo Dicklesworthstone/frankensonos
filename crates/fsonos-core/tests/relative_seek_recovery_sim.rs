@@ -12,8 +12,14 @@ use std::net::IpAddr;
 
 fn sim() -> SimHandle {
     SimHousehold::builder()
-        .s1([SimPlayerSpec::new("Test S1", SimModel::Play5Gen1)])
-        .s2([SimPlayerSpec::new("Test S2", SimModel::One)])
+        .s1([
+            SimPlayerSpec::new("Test S1", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Peer S1", SimModel::Play5Gen1),
+        ])
+        .s2([
+            SimPlayerSpec::new("Test S2", SimModel::One),
+            SimPlayerSpec::new("Peer S2", SimModel::One),
+        ])
         .spawn()
         .unwrap()
 }
@@ -37,6 +43,9 @@ enum LostReply {
     DuplicateTrack,
     SourceChanged,
     QueueChanged,
+    CoordinatorChanged,
+    ReadFailed,
+    RendererError,
 }
 
 struct LoseSeek {
@@ -53,7 +62,19 @@ impl Transport for LoseSeek {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        let answer = self.lan.soap_post(host, path, action, body)?;
+        if self.writes.get() > 0 && matches!(self.mode, LostReply::ReadFailed) {
+            return Err(ProtoError::Malformed("seek read-back unavailable".into()));
+        }
+        let mut answer = self.lan.soap_post(host, path, action, body)?;
+        if self.writes.get() > 0
+            && matches!(self.mode, LostReply::RendererError)
+            && action.ends_with("#GetTransportInfo\"")
+        {
+            answer = answer.replace(
+                "<CurrentTransportStatus>OK</CurrentTransportStatus>",
+                "<CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus>",
+            );
+        }
         if !action.ends_with("#Seek\"") {
             return Ok(answer);
         }
@@ -75,6 +96,15 @@ impl Transport for LoseSeek {
             // The selected occurrence is unchanged, but its queue proof is not.
             let (current, metadata) = soap::get_position_info_with_metadata(&self.lan, host)?;
             soap::enqueue_uri(&self.lan, host, &current.uri, &metadata, 0, false)?;
+        }
+        if matches!(self.mode, LostReply::CoordinatorChanged) {
+            let topology = get_zone_group_state(&self.lan, host)?;
+            let peer = topology
+                .groups
+                .iter()
+                .find(|group| group.members.iter().all(|member| member.ip() != Some(host)))
+                .expect("each synthetic household has a second room");
+            soap::join_group(&self.lan, host, &peer.coordinator)?;
         }
         if matches!(self.mode, LostReply::Malformed) {
             return Ok("a lost seek acknowledgement".into());
@@ -174,34 +204,66 @@ fn a_duplicate_track_in_a_different_slot_is_not_the_acknowledged_seek() {
 }
 
 #[test]
-fn absolute_seek_cannot_be_confirmed_by_a_different_occurrence_source_or_queue() {
-    for mode in [
-        LostReply::DuplicateTrack,
-        LostReply::SourceChanged,
-        LostReply::QueueChanged,
-    ] {
-        let sim = sim();
-        let houses = snapshot(&sim);
-        for room in ["Test S1", "Test S2"] {
-            prepare(&sim, &houses, room, true);
-            let target = resolve_room(&houses, room).unwrap();
-            let t = LoseSeek {
-                lan: sim.lan(),
-                mode,
-                writes: Cell::new(0),
-            };
-            let error = control::seek(&t, &houses, &target.coordinator.id, control::Seek::At(100))
-                .unwrap_err();
-            assert!(matches!(
-                error,
-                fsonos_core::CoreError::Proto(ProtoError::Network { .. })
-            ));
-            assert_eq!(t.writes.get(), 1, "an uncertain seek is never repeated");
-            if matches!(mode, LostReply::SourceChanged | LostReply::QueueChanged) {
-                let current = soap::get_position_info(&sim.lan(), target.coordinator.ip).unwrap();
-                assert_eq!(current.track, 1);
-                assert_eq!(current.position_secs, Some(100));
-                assert_eq!(current.duration_secs, Some(180));
+fn seeks_cannot_be_confirmed_by_a_different_occurrence_source_or_queue() {
+    for seek in [control::Seek::At(100), control::Seek::By(30)] {
+        for mode in [
+            LostReply::DuplicateTrack,
+            LostReply::SourceChanged,
+            LostReply::QueueChanged,
+        ] {
+            let sim = sim();
+            let houses = snapshot(&sim);
+            for room in ["Test S1", "Test S2"] {
+                prepare(&sim, &houses, room, true);
+                let target = resolve_room(&houses, room).unwrap();
+                let t = LoseSeek {
+                    lan: sim.lan(),
+                    mode,
+                    writes: Cell::new(0),
+                };
+                let error = control::seek(&t, &houses, &target.coordinator.id, seek).unwrap_err();
+                assert!(matches!(
+                    error,
+                    fsonos_core::CoreError::Proto(ProtoError::Network { .. })
+                ));
+                assert_eq!(t.writes.get(), 1, "an uncertain seek is never repeated");
+                if matches!(mode, LostReply::SourceChanged | LostReply::QueueChanged) {
+                    let current =
+                        soap::get_position_info(&sim.lan(), target.coordinator.ip).unwrap();
+                    assert_eq!(current.track, 1);
+                    assert_eq!(current.position_secs, Some(100));
+                    assert_eq!(current.duration_secs, Some(180));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn seeks_keep_the_lost_write_error_when_ownership_or_readback_is_unavailable() {
+    for seek in [control::Seek::At(100), control::Seek::By(30)] {
+        for mode in [
+            LostReply::CoordinatorChanged,
+            LostReply::ReadFailed,
+            LostReply::RendererError,
+        ] {
+            let sim = sim();
+            let houses = snapshot(&sim);
+            for room in ["Test S1", "Test S2"] {
+                prepare(&sim, &houses, room, true);
+                let target = resolve_room(&houses, room).unwrap();
+                let t = LoseSeek {
+                    lan: sim.lan(),
+                    mode,
+                    writes: Cell::new(0),
+                };
+                let error = control::seek(&t, &houses, &target.coordinator.id, seek).unwrap_err();
+                assert!(matches!(
+                    error,
+                    fsonos_core::CoreError::Proto(ProtoError::Network { detail, .. })
+                        if detail == "accepted seek lost its reply"
+                ));
+                assert_eq!(t.writes.get(), 1, "a failed proof never repeats a seek");
             }
         }
     }
@@ -210,6 +272,7 @@ fn absolute_seek_cannot_be_confirmed_by_a_different_occurrence_source_or_queue()
 struct ObserveSeek {
     lan: SimLan,
     unreadable_position: bool,
+    unreadable_source: bool,
     refused: bool,
     writes: Cell<usize>,
     reads_after_write: Cell<usize>,
@@ -237,6 +300,9 @@ impl Transport for ObserveSeek {
         if self.unreadable_position && action.ends_with("#GetPositionInfo\"") {
             return Err(ProtoError::Malformed("synthetic unavailable clock".into()));
         }
+        if self.unreadable_source && action.ends_with("#GetMediaInfo\"") {
+            return Err(ProtoError::Malformed("synthetic unavailable source".into()));
+        }
         self.lan.soap_post(host, path, action, body)
     }
 }
@@ -252,6 +318,7 @@ fn absolute_seek_remains_available_without_optional_observation_and_preserves_re
             let t = ObserveSeek {
                 lan: sim.lan(),
                 unreadable_position,
+                unreadable_source: false,
                 refused,
                 writes: Cell::new(0),
                 reads_after_write: Cell::new(0),
@@ -274,6 +341,42 @@ fn absolute_seek_remains_available_without_optional_observation_and_preserves_re
                 0,
                 "definite results need no recovery"
             );
+            let position = soap::get_position_info(&sim.lan(), target.coordinator.ip).unwrap();
+            assert_eq!(position.position_secs, Some(if refused { 70 } else { 100 }));
+        }
+    }
+}
+
+#[test]
+fn relative_seek_keeps_acknowledged_results_when_optional_source_evidence_fails() {
+    for refused in [false, true] {
+        let sim = sim();
+        let houses = snapshot(&sim);
+        for room in ["Test S1", "Test S2"] {
+            prepare(&sim, &houses, room, true);
+            let target = resolve_room(&houses, room).unwrap();
+            let t = ObserveSeek {
+                lan: sim.lan(),
+                unreadable_position: false,
+                unreadable_source: true,
+                refused,
+                writes: Cell::new(0),
+                reads_after_write: Cell::new(0),
+            };
+            let result = control::seek(&t, &houses, &target.coordinator.id, control::Seek::By(30));
+            if refused {
+                assert!(matches!(
+                    result,
+                    Err(fsonos_core::CoreError::Proto(ProtoError::SoapFault {
+                        code: 711,
+                        ..
+                    }))
+                ));
+            } else {
+                assert_eq!(result.unwrap(), 100);
+            }
+            assert_eq!(t.writes.get(), 1);
+            assert_eq!(t.reads_after_write.get(), 0);
             let position = soap::get_position_info(&sim.lan(), target.coordinator.ip).unwrap();
             assert_eq!(position.position_secs, Some(if refused { 70 } else { 100 }));
         }

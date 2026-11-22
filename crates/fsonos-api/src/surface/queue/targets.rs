@@ -1,4 +1,5 @@
-//! Add one source to independent group queues with one receipt and undo action.
+//! Add one source or an ordered selection to independent group queues with one
+//! receipt and undo action.
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, BeforeState, QueuedBefore};
@@ -6,7 +7,7 @@ use fsonos_core::control::TrackBatchDestination;
 use fsonos_core::favorites::{Favorite, FavoriteKind};
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, HouseholdState, control, favorite_queue};
-use fsonos_proto::ProtoError;
+use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,13 +15,17 @@ use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::sync::PoisonError;
 
-use super::{ADD, QueueAddedDto, QueueRequest, Surface};
+use super::{
+    ADD, QueueAddedDto, QueueRequest, QueueTracksRequest, Surface, confirm_destination_revision,
+};
 use crate::execute::spotify_failure;
 use crate::heal::Observed;
 use crate::plan::{Command, Rooms, resolve_set};
 use crate::request::PlayRequest;
 use crate::source::{SourceSelection, is_catalog_source};
+use crate::surface::audience::AudienceTransport;
 use crate::surface::room_view;
+use crate::surface::source_control::{confirm_revision, validate_revision};
 use crate::surface::source_selection::{NativeSource, native_sources};
 use crate::{ApiError, ErrorCode, Failure};
 
@@ -123,6 +128,15 @@ enum Source {
         selection: Option<SourceSelection>,
     },
     Native(HashMap<PlayerId, Favorite>),
+    Tracks(Vec<(String, String)>),
+}
+
+struct PreparedQueue {
+    groups: Vec<Prepared>,
+    source: Source,
+    next: bool,
+    reviewed: bool,
+    intent: String,
 }
 
 fn targets(rooms: &Rooms<'_>, zone: &str) -> Result<Vec<Target>, Failure> {
@@ -156,13 +170,41 @@ impl Surface {
         client: &Client,
         request: &QueueRequest,
     ) -> Result<QueueAddOutcome, Failure> {
+        self.queue_request_targets_bound(client, request, None)
+    }
+
+    /// Retain even a one-group alias's admitted destination. Source catalog
+    /// reads must never lead back through the single-target resolver.
+    pub(in crate::surface) fn queue_request_targets_reviewed(
+        &self,
+        client: &Client,
+        request: &QueueRequest,
+        revision: &str,
+    ) -> Result<QueueAddOutcome, Failure> {
+        self.queue_request_targets_bound(client, request, Some(revision))
+    }
+
+    fn queue_request_targets_bound(
+        &self,
+        client: &Client,
+        request: &QueueRequest,
+        revision: Option<&str>,
+    ) -> Result<QueueAddOutcome, Failure> {
         self.authorize_logged(client, ADD)?;
         request.validate()?;
+        if let Some(revision) = revision {
+            validate_revision(revision)?;
+        }
         let households = self.households()?;
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
+        if let Some(revision) = revision {
+            confirm_revision(&rooms, request.zone.trim(), revision)?;
+        }
         let targets = targets(&rooms, request.zone.trim()).map_err(|error| self.explain(error))?;
-        if let [target] = targets.as_slice() {
+        if revision.is_none()
+            && let [target] = targets.as_slice()
+        {
             // The alias may name two members of one group. Pin its first
             // requested room, rather than passing that alias to resolve_one.
             let request = QueueRequest {
@@ -173,10 +215,152 @@ impl Surface {
                 .queue_request(client, &request)
                 .map(QueueAddOutcome::Single);
         }
-        let prepared = targets
+        let prepared = self.prepare_queue_targets(&households, targets, revision.is_some())?;
+        // Every destination is retained before native or Spotify catalog I/O.
+        let source = self.queue_targets_source(&rooms, request, &prepared)?;
+        self.confirm_queue_targets(client, &households, &prepared, revision.is_some())?;
+        let source_label = request
+            .source_uri
+            .as_deref()
+            .or(request.favorite.as_deref())
+            .or(request.playlist.as_deref())
+            .unwrap_or_default();
+        let plan = PreparedQueue {
+            groups: prepared,
+            source,
+            next: request.next,
+            reviewed: revision.is_some(),
+            intent: format!(
+                "{ADD}: {} {source_label:?} next={}",
+                request.zone, request.next
+            ),
+        };
+        Ok(QueueAddOutcome::Groups(self.queue_targets_run(
+            client,
+            &households,
+            &plan,
+        )))
+    }
+
+    /// Queue the same ordered occurrences in each distinct selected group.
+    /// A single group retains the original insertion response and Rust engine.
+    pub fn queue_tracks_targets(
+        &self,
+        client: &Client,
+        request: &QueueTracksRequest,
+    ) -> Result<QueueAddOutcome, Failure> {
+        self.queue_tracks_targets_bound(client, request, None)
+    }
+
+    pub(in crate::surface) fn queue_tracks_targets_reviewed(
+        &self,
+        client: &Client,
+        request: &QueueTracksRequest,
+        revision: &str,
+    ) -> Result<QueueAddOutcome, Failure> {
+        self.queue_tracks_targets_bound(client, request, Some(revision))
+    }
+
+    fn queue_tracks_targets_bound(
+        &self,
+        client: &Client,
+        request: &QueueTracksRequest,
+        revision: Option<&str>,
+    ) -> Result<QueueAddOutcome, Failure> {
+        self.authorize_logged(client, ADD)?;
+        let request = request.normalized()?;
+        if let Some(revision) = revision {
+            validate_revision(revision)?;
+        }
+        let households = self.households()?;
+        let aliases = self.aliases();
+        let rooms = room_view(&households, aliases.as_ref(), client);
+        if let Some(revision) = revision {
+            confirm_revision(&rooms, &request.zone, revision)?;
+        }
+        let targets = targets(&rooms, &request.zone).map_err(|error| self.explain(error))?;
+        if targets.len() > 1 && request.expected_revision.is_some() {
+            return Err(Failure::invalid(
+                "expected_revision requires a target resolving to one group; read each group's queue and address it separately for revision-bound queueing",
+            ));
+        }
+        if revision.is_none()
+            && let [target] = targets.as_slice()
+        {
+            let request = QueueTracksRequest {
+                zone: target.member.0.clone(),
+                ..request
+            };
+            return self
+                .queue_tracks(client, &request)
+                .map(QueueAddOutcome::Single);
+        }
+        let prepared = self.prepare_queue_targets(&households, targets, revision.is_some())?;
+        for group in &prepared {
+            confirm_destination_revision(
+                &*self.transport,
+                group.target.host,
+                &group.target.coordinator,
+                request.expected_revision.as_deref(),
+            )?;
+        }
+        // Retain every queue before renderer discovery. Concrete occurrences
+        // need household rendering but no Spotify Web API catalog lookup.
+        // Tracks and episodes require the same complete renderer template.
+        for group in &prepared {
+            control::check_spotify_source(
+                &*self.transport,
+                &households,
+                &group.target.coordinator,
+                &request.tracks[0].source_uri,
+            )
+            .map_err(spotify_failure)?;
+        }
+        self.confirm_queue_targets(client, &households, &prepared, revision.is_some())?;
+        let source = Source::Tracks(
+            request
+                .tracks
+                .iter()
+                .map(|track| {
+                    (
+                        track.source_uri.clone(),
+                        track.title.as_ref().unwrap_or(&track.source_uri).clone(),
+                    )
+                })
+                .collect(),
+        );
+        let plan = PreparedQueue {
+            groups: prepared,
+            source,
+            next: request.next,
+            reviewed: revision.is_some(),
+            intent: format!(
+                "{ADD}: {} {} selected tracks next={}",
+                request.zone,
+                request.tracks.len(),
+                request.next
+            ),
+        };
+        Ok(QueueAddOutcome::Groups(self.queue_targets_run(
+            client,
+            &households,
+            &plan,
+        )))
+    }
+
+    fn prepare_queue_targets(
+        &self,
+        households: &[HouseholdState],
+        targets: Vec<Target>,
+        reviewed: bool,
+    ) -> Result<Vec<Prepared>, Failure> {
+        targets
             .into_iter()
             .map(|target| {
-                self.confirm_source_audience(&households, &target.coordinator)?;
+                self.confirm_source_audience(households, &target.coordinator)?;
+                if reviewed {
+                    self.confirm_reviewed_group(households, &target.coordinator)?;
+                }
                 let destination = TrackBatchDestination::read(
                     &*self.transport,
                     target.host,
@@ -187,20 +371,24 @@ impl Surface {
                     destination,
                 })
             })
-            .collect::<Result<Vec<_>, Failure>>()?;
-        // Every destination is retained before native or Spotify catalog I/O.
-        let source = self.queue_targets_source(&rooms, request, &prepared)?;
+            .collect()
+    }
+
+    fn confirm_queue_targets(
+        &self,
+        client: &Client,
+        households: &[HouseholdState],
+        prepared: &[Prepared],
+        reviewed: bool,
+    ) -> Result<(), Failure> {
         self.guard(client).authorize(ADD, false)?;
-        for group in &prepared {
-            self.confirm_queue_target(&households, group)?;
+        for group in prepared {
+            self.confirm_queue_target(households, group)?;
+            if reviewed {
+                self.confirm_reviewed_group(households, &group.target.coordinator)?;
+            }
         }
-        Ok(QueueAddOutcome::Groups(self.queue_targets_run(
-            client,
-            &households,
-            request,
-            &source,
-            &prepared,
-        )))
+        Ok(())
     }
 
     fn queue_targets_source(
@@ -288,9 +476,7 @@ impl Surface {
         &self,
         client: &Client,
         households: &[HouseholdState],
-        request: &QueueRequest,
-        source: &Source,
-        prepared: &[Prepared],
+        plan: &PreparedQueue,
     ) -> QueueAddedSetDto {
         let _changing = self
             .log
@@ -300,12 +486,22 @@ impl Surface {
         let mut failed = Vec::new();
         let mut undo = Vec::new();
         let mut uncertain = false;
-        for group in prepared {
+        for group in &plan.groups {
             let result = self
                 .guard(client)
                 .authorize(ADD, false)
                 .and_then(|()| self.confirm_queue_target(households, group))
-                .and_then(|()| source.enqueue(self, households, group, request.next));
+                .and_then(|()| {
+                    if plan.reviewed {
+                        let fence =
+                            AudienceTransport::new(self, households, &group.target.coordinator);
+                        fence.check()?;
+                        fence.finish(plan.source.enqueue(&fence, households, group, plan.next))
+                    } else {
+                        plan.source
+                            .enqueue(&*self.transport, households, group, plan.next)
+                    }
+                });
             match result {
                 Ok(queued) => {
                     added.push(group.receipt(&queued));
@@ -333,18 +529,9 @@ impl Surface {
                 .is_ok_and(|before| before.not_undoable.is_none() && !before.queued.is_empty())
         });
         let done = summary(added.len(), &failed);
-        let source_label = request
-            .source_uri
-            .as_deref()
-            .or(request.favorite.as_deref())
-            .or(request.playlist.as_deref())
-            .unwrap_or_default();
         let logged = self.record(
             client,
-            format!(
-                "{ADD}: {} {source_label:?} next={}",
-                request.zone, request.next
-            ),
+            plan.intent.clone(),
             "allow".into(),
             details(&done, &added, &failed),
             before,
@@ -363,12 +550,12 @@ impl Surface {
 impl Source {
     fn enqueue(
         &self,
-        surface: &Surface,
+        transport: &dyn Transport,
         households: &[HouseholdState],
         group: &Prepared,
         next: bool,
     ) -> Result<control::Queued, Failure> {
-        let watch = Observed::new(&*surface.transport);
+        let watch = Observed::new(transport);
         let coordinator = &group.target.coordinator;
         let result = match self {
             Self::Spotify {
@@ -385,11 +572,11 @@ impl Source {
                 &group.destination,
             ),
             Self::Spotify {
-                selection: Some(selection),
+                selection: Some(SourceSelection { tracks, .. }),
                 ..
-            } => {
-                let tracks: Vec<_> = selection
-                    .tracks
+            }
+            | Self::Tracks(tracks) => {
+                let tracks: Vec<_> = tracks
                     .iter()
                     .map(|(uri, title)| (uri.as_str(), title.as_str()))
                     .collect();

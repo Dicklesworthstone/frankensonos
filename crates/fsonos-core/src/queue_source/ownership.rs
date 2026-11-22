@@ -16,6 +16,7 @@ const OLD: [&str; 2] = [
     "x-file-cifs://example.invalid/original-b.flac",
 ];
 const SOURCE: &str = "x-file-cifs://example.invalid/owner-selection.flac";
+const OWNER_ADDITION: &str = "x-file-cifs://example.invalid/owner-addition.flac";
 const ALBUM: &str = "spotify:album:0000000000000000000123";
 
 struct Rig {
@@ -117,6 +118,11 @@ impl Rig {
                     "<DIDL-Lite><item><title>Owner choice</title></item></DIDL-Lite>",
                 )
             }
+            Edit::Queue => {
+                soap::add_uri_to_queue(&self.lan, self.host, OWNER_ADDITION, "", false)?;
+                Ok(())
+            }
+            Edit::Resume => soap::play(&self.lan, self.host),
         }
     }
 
@@ -167,12 +173,17 @@ enum Edit {
     Membership,
     Source,
     Metadata,
+    Queue,
+    Resume,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Phase {
     InitialQueue,
+    OwnerPreparation,
     Added,
+    OwnerCommit,
+    RemovalAdmission,
     StagedGuard,
     Removed,
 }
@@ -293,7 +304,25 @@ impl Transport for Replies<'_> {
                 Phase::InitialQueue => {
                     name == "Browse" && body.contains("<ObjectID>Q:0</ObjectID>")
                 }
+                Phase::OwnerPreparation => name == "GetPositionInfo" && !self.added.get(),
                 Phase::Added => name == "AddURIToQueue",
+                Phase::OwnerCommit => {
+                    name == "GetPositionInfo" && self.added.get() && !self.removed.get()
+                }
+                Phase::RemovalAdmission => {
+                    // Owner::confirm finishes by reading topology. The next
+                    // topology read is the removal helper's own admission.
+                    name == "GetZoneGroupState"
+                        && self.added.get()
+                        && !self.removed.get()
+                        && self
+                            .calls
+                            .borrow()
+                            .iter()
+                            .rev()
+                            .nth(1)
+                            .is_some_and(|action| action == "GetZoneGroupState")
+                }
                 Phase::StagedGuard => name == "GetMediaInfo" && self.media_after_add.get() == 1,
                 Phase::Removed => name == "RemoveTrackRangeFromQueue",
             };
@@ -496,6 +525,86 @@ fn source_and_group_changes_during_preflight_prevent_the_append() {
                 }
                 t.no_selection();
             }
+        }
+    }
+}
+
+#[test]
+fn changes_during_undo_preparation_prevent_pause_and_queue_append() {
+    for s2 in [false, true] {
+        for autoplay in [false, true] {
+            for edit in [
+                Edit::Coordinator,
+                Edit::Membership,
+                Edit::Source,
+                Edit::Metadata,
+                Edit::Queue,
+            ] {
+                let rig = Rig::new(s2, true);
+                let t = Replies::new(&rig, Some((Phase::OwnerPreparation, edit)), Fault::None);
+                assert!(rig.replace(&t, autoplay).is_err(), "{edit:?}");
+                assert!(t.changed.get(), "the change occurs during undo preparation");
+                assert_eq!(t.count("AddURIToQueue"), 0, "{edit:?}");
+                assert_eq!(t.count("Pause"), 0, "do not pause the owner's new source");
+                assert_eq!(t.count("RemoveTrackRangeFromQueue"), 0);
+                t.no_selection();
+                if !matches!(edit, Edit::Coordinator) {
+                    let mut expected = OLD.map(str::to_string).to_vec();
+                    if matches!(edit, Edit::Queue) {
+                        expected.push(OWNER_ADDITION.into());
+                    }
+                    assert_eq!(rig.queue(), expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn changes_during_commit_reads_preserve_the_original_queue_prefix() {
+    for s2 in [false, true] {
+        for autoplay in [false, true] {
+            for phase in [Phase::OwnerCommit, Phase::RemovalAdmission] {
+                for edit in [Edit::Membership, Edit::Source, Edit::Metadata] {
+                    let rig = Rig::new(s2, true);
+                    let t = Replies::new(&rig, Some((phase, edit)), Fault::None);
+                    let error = rig.replace(&t, autoplay).unwrap_err();
+                    assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
+                    assert!(t.changed.get(), "the change occurs during {phase:?}");
+                    assert_eq!(t.count("AddURIToQueue"), 1, "the new source was staged");
+                    assert_eq!(t.count("RemoveTrackRangeFromQueue"), 0, "{edit:?}");
+                    assert!(rig.queue().starts_with(&OLD.map(str::to_string)));
+                    t.no_selection();
+                    if matches!(edit, Edit::Source) {
+                        assert_eq!(
+                            soap::get_media_info(&rig.lan, rig.host).unwrap().uri,
+                            SOURCE
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn resumed_playback_during_commit_reads_stops_silent_load_before_prefix_removal() {
+    for s2 in [false, true] {
+        for phase in [Phase::OwnerCommit, Phase::RemovalAdmission] {
+            let rig = Rig::new(s2, true);
+            let t = Replies::new(&rig, Some((phase, Edit::Resume)), Fault::None);
+            let error = rig.replace(&t, false).unwrap_err();
+            assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
+            assert!(t.changed.get(), "playback resumes during {phase:?}");
+            assert_eq!(t.count("Pause"), 1, "only the intended initial pause");
+            assert_eq!(t.count("AddURIToQueue"), 1, "the new source was staged");
+            assert_eq!(t.count("RemoveTrackRangeFromQueue"), 0);
+            assert!(rig.queue().starts_with(&OLD.map(str::to_string)));
+            assert_eq!(
+                soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
+                TransportState::Playing
+            );
+            t.no_selection();
         }
     }
 }

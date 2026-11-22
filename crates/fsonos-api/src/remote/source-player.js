@@ -11,6 +11,7 @@ const SourcePlayerRemote = (() => {
     sourcePlaylistTracks: ['POST', '/sonos/playlists/tracks'],
     sourcePlaylistRename: ['POST', '/sonos/playlists/rename'], sourcePlaylistRemove: ['POST', '/sonos/playlists/remove'],
     sourcePlaylistRemoveTracks: ['POST', '/sonos/playlists/remove-tracks'],
+    sourcePlaylistAppendTracks: ['POST', '/sonos/playlists/append-tracks'],
     sourcePlaylistMoveTracks: ['POST', '/sonos/playlists/move-tracks'] };
   const modes = Object.freeze({ play: 'Play now', next: 'Queue next', end: 'Queue at end' });
   const MAX_BYTES = 2048, MAX_TITLE = 256, MAX_PLAYLIST_TRACKS = 10;
@@ -553,6 +554,33 @@ const SourcePlayerRemote = (() => {
     || reviewed.edit.insert_before > reviewed.edit.position + reviewed.edit.count;
   const editSignature = observed => JSON.stringify([observed.tracks, observed.anchor]);
 
+  function playlistAppendSelection(source, positions, catalog) {
+    if (typeof positions !== 'string' || positions.length > 100 || !/^\s*\d+(?:\s*,\s*\d+)*\s*$/.test(positions)) {
+      throw new Error('Enter 1–10 track numbers separated by commas, in the order to add them.');
+    }
+    const selected = positions.split(',').map(Number);
+    if (selected.length > 10 || selected.some(position => !Number.isSafeInteger(position) || position < 1 || position > 100000)) {
+      throw new Error('Choose 1–10 track numbers between 1 and 100,000. Repeated numbers add repeated copies.');
+    }
+    const playlist = source === '' ? null : playlists(catalog).find(item => item.id === source);
+    if (source !== '' && !playlist) throw new Error('Choose a source playlist in this household or the current group queue.');
+    return Object.freeze({ playlist: playlist ? Object.freeze({ ...playlist }) : null, positions: Object.freeze(selected) });
+  }
+
+  function appendedPlaylist(value, reviewed) {
+    const item = playlists([value?.playlist])[0], count = reviewed.append.positions.length;
+    if (!value || value.zone !== reviewed.group.coordinator || item.id !== reviewed.item.id || item.title !== reviewed.item.title
+        || !text(value.done) || typeof value.logged !== 'boolean' || value.added !== count
+        || value.previous_total !== reviewed.total || value.total !== reviewed.total + count
+        || !text(value.revision) || value.revision.length > 4096 || /[\p{Cc}]/u.test(value.revision) || value.revision === reviewed.revision
+        || JSON.stringify(value.positions) !== JSON.stringify(reviewed.append.positions)
+        || JSON.stringify(value.titles) !== JSON.stringify(reviewed.source.tracks.map(track => track.title))) {
+      throw new Error('The saved-playlist addition was not confirmed by a complete response.');
+    }
+    return Object.freeze({ ...value, playlist: item, changed: true, detail: value.done + (value.logged ? ''
+      : ' The additions were confirmed, but the action log could not be written. Do not repeat this operation.') });
+  }
+
   function managedPlaylist(value, reviewed) {
     const item = playlists([value?.playlist])[0];
     const trackEdit = editsTracks(reviewed.operation);
@@ -575,11 +603,12 @@ const SourcePlayerRemote = (() => {
   // One catalog-write workflow for both remotes. Its receipt survives source,
   // room and dialog changes; only an explicit original-household read resolves
   // an uncertain dispatch. Playback refreshes never acknowledge catalog edits.
-  function playlistManager({ call, selection, available, live, changed = () => {}, completed = () => {},
+  function playlistManager({ call, selection, available, live, catalog = () => [], changed = () => {}, completed = () => {},
     commit = (_, work) => work({ check() {}, send: (route, body) => call(route, { body }) }),
     readCatalog = (target, decode) => call('sourcePlaylists', { query: { zone: target } }).then(decode) }) {
     let epoch = 0;
     const state = { title: '', position: '1', count: '1', insert_before: '1', basis: null,
+      sourcePlaylist: '', sourcePositions: '1',
       pending: null, reading: false, writing: false, result: null, recovery: null, message: '' };
     const publish = () => { try { changed(state); } catch (_) { /* Presentation only. */ } };
     const busy = () => state.reading || state.writing;
@@ -625,19 +654,51 @@ const SourcePlayerRemote = (() => {
       }
       return Object.freeze({ tracks: Object.freeze(tracks), anchor });
     }
+    async function inspectAdditions(reviewed, valid, expected = null) {
+      const choice = reviewed.append, found = new Map();
+      let revision = expected?.revision, total = expected?.total;
+      for (const position of choice.positions) {
+        if (found.has(position)) continue;
+        valid();
+        let page;
+        if (choice.playlist) {
+          const query = { zone: reviewed.group.target, playlist: choice.playlist.id, offset: position - 1, limit: 1,
+            ...(revision ? { expected_revision: revision } : {}) };
+          page = playlistContents(await call('sourcePlaylistContents', { query }), query, choice.playlist, reviewed.group);
+        } else {
+          page = await call('sourceQueueState', { params: { room: reviewed.group.target }, query: { offset: position - 1, limit: 1 } });
+        }
+        valid();
+        const track = page?.items?.[0];
+        if (!page || page.zone !== reviewed.group.coordinator || !Number.isInteger(page.total) || page.total < position || page.total > 100000
+            || !text(page.revision) || page.revision.length > 4096 || /[\p{Cc}]/u.test(page.revision)
+            || (revision !== undefined && revision !== page.revision) || (total !== undefined && total !== page.total)
+            || !Array.isArray(page.items) || page.items.length !== 1 || track?.position !== position
+            || typeof track.title !== 'string' || !text(track.uri)
+            || ['creator', 'album'].some(key => track[key] != null && typeof track[key] !== 'string')) {
+          throw new Error('The source tracks changed or an occurrence is unavailable. Read the source and review the additions again.');
+        }
+        revision = page.revision; total = page.total;
+        found.set(position, Object.freeze({ position, title: track.title, uri: track.uri, creator: track.creator ?? null, album: track.album ?? null }));
+      }
+      const result = Object.freeze({ revision, total, tracks: Object.freeze(choice.positions.map(position => found.get(position))) });
+      if (expected && JSON.stringify(result) !== JSON.stringify(expected)) throw new Error('The reviewed source occurrences changed. Review the additions again.');
+      return result;
+    }
     async function review(operation) {
-      if (!live() || !available() || busy() || state.recovery || !['rename', 'remove', 'remove_tracks', 'move_tracks'].includes(operation)) return null;
+      if (!live() || !available() || busy() || state.recovery || !['rename', 'remove', 'remove_tracks', 'move_tracks', 'append_tracks'].includes(operation)) return null;
       const selected = selection();
       if (!selected) return null;
       const basis = state.basis;
       invalidate(); const version = epoch;
-      let title, edit;
+      let title, edit, append;
       try {
         title = operation === 'rename' ? nativePlaylistTitle(state.title) : selected.item.title;
         if (editsTracks(operation)) edit = playlistTrackEdit(operation, state);
+        if (operation === 'append_tracks') append = playlistAppendSelection(state.sourcePlaylist, state.sourcePositions, catalog());
       }
       catch (error) { state.message = problem(error); publish(); return null; }
-      const reviewed = { ...selected, operation, title };
+      const reviewed = { ...selected, operation, title, ...(append ? { append } : {}) };
       const valid = () => { if (!live() || version !== epoch || !same(reviewed)) throw new Error('This playlist review is no longer current. Review it again.'); };
       state.reading = true; state.message = 'Reading the selected playlist in its original household…'; publish();
       try {
@@ -648,9 +709,14 @@ const SourcePlayerRemote = (() => {
           observed.edit = playlistTrackEdit(operation, edit, page.total);
           tracks = await inspectTracks(observed, valid); valid();
         }
+        if (append) {
+          if (page.total + append.positions.length > 1000) throw new Error('The resulting saved playlist must contain at most 1,000 tracks.');
+          observed.source = await inspectAdditions(observed, valid); valid();
+        }
         state.pending = Object.freeze({ ...observed, ...(tracks || {}),
           body: Object.freeze({ zone: reviewed.group.target, playlist: reviewed.item.id, expected_revision: page.revision,
-            ...(operation === 'rename' ? { title } : edit || {}) }) });
+            ...(operation === 'rename' ? { title } : append ? { positions: append.positions, source_revision: observed.source.revision,
+              ...(append.playlist ? { source_playlist: append.playlist.id } : {}) } : edit || {}) }) });
         state.message = ''; return state.pending;
       } catch (error) { if (version === epoch) state.message = problem(error); return null; }
       finally { if (version === epoch) { state.reading = false; publish(); } }
@@ -668,12 +734,15 @@ const SourcePlayerRemote = (() => {
           if (editsTracks(reviewed.operation) && editSignature(await inspectTracks(reviewed, valid)) !== editSignature(reviewed)) {
             throw new Error('The reviewed saved tracks changed. Read tracks and review again.');
           }
+          if (reviewed.append) await inspectAdditions(reviewed, valid, reviewed.source);
           valid();
           if (sent) throw new Error('The playlist command was already dispatched.');
           sent = true;
           const route = { rename: 'sourcePlaylistRename', remove: 'sourcePlaylistRemove',
-            remove_tracks: 'sourcePlaylistRemoveTracks', move_tracks: 'sourcePlaylistMoveTracks' }[reviewed.operation];
-          receipt = managedPlaylist(await send(route, reviewed.body), reviewed);
+            remove_tracks: 'sourcePlaylistRemoveTracks', move_tracks: 'sourcePlaylistMoveTracks',
+            append_tracks: 'sourcePlaylistAppendTracks' }[reviewed.operation];
+          const value = await send(route, reviewed.body);
+          receipt = reviewed.append ? appendedPlaylist(value, reviewed) : managedPlaylist(value, reviewed);
           return receipt;
         });
         if (!receipt) throw new Error('The playlist command was not sent. Review it again.');
@@ -684,8 +753,9 @@ const SourcePlayerRemote = (() => {
         return true;
       } catch (error) {
         state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent', group: reviewed.group, item: reviewed.item,
-          operation: reviewed.operation, detail: problem(error) + (sent
-            ? ' The household catalog may have changed. Read the original household catalog before another edit; nothing was retried.'
+          operation: reviewed.operation, ...(reviewed.append ? { previous_total: reviewed.total } : {}), detail: problem(error) + (sent
+            ? reviewed.append ? ' Some tracks may already have been added. Read the original playlist before another addition; nothing was retried.'
+              : ' The household catalog may have changed. Read the original household catalog before another edit; nothing was retried.'
             : ' No catalog edit was sent.') });
         if (sent) state.recovery = state.result;
         state.message = ''; return false;
@@ -698,18 +768,41 @@ const SourcePlayerRemote = (() => {
       state.message = 'Reading saved playlists for ' + result.group.target + '…'; publish();
       const valid = () => { if (!live() || version !== epoch || state.recovery !== result) throw new Error('Read the original household catalog again.'); };
       try {
-        const catalog = await readCatalog(result.group.target, value => { valid(); return playlists(value); }); valid();
+        let observed = null, addition = '';
+        if (result.operation === 'append_tracks') {
+          // Inspect the original destination's tail before acknowledging its
+          // catalog lane. A list of playlist names cannot reveal partial adds.
+          const initial = playlists(await call('sourcePlaylists', { query: { zone: result.group.target } })); valid();
+          observed = initial.find(item => item.id === result.item.id) || false;
+          if (observed) {
+            const query = { zone: result.group.target, playlist: observed.id, offset: 0, limit: 1 };
+            const first = playlistContents(await call('sourcePlaylistContents', { query }), query, observed, result.group); valid();
+            const tailQuery = { ...query, offset: Math.min(result.previous_total, first.total), limit: 10, expected_revision: first.revision };
+            const tail = playlistContents(await call('sourcePlaylistContents', { query: tailQuery }), tailQuery, observed, result.group); valid();
+            if (tail.total !== first.total) throw new Error('The original saved playlist changed during recovery. Read it again.');
+            addition = ` It currently has ${tail.total} tracks.` + (tail.items.length
+              ? ' Tracks at the original append boundary: ' + tail.items.map(track => `${track.position}: ${track.title || 'Untitled track'}`).join('; ') + '.'
+              : ' No tracks remain after the original append boundary.');
+          }
+        }
+        const catalog = await readCatalog(result.group.target, value => {
+          valid(); const items = playlists(value);
+          if (observed !== null && JSON.stringify(items.find(item => item.id === result.item.id) || false) !== JSON.stringify(observed)) {
+            throw new Error('The original saved playlist changed during recovery. Read it again.');
+          }
+          return items;
+        }); valid();
         if (catalog === null) throw new Error('The original household catalog was not refreshed.');
         const found = catalog.find(item => item.id === result.item.id);
         state.recovery = null;
         state.result = Object.freeze({ ...result, status: 'observed', detail: result.detail + ' Current observation in '
           + result.group.target + ': ' + (found ? `${found.title} (${found.id}) is present.` : `${result.item.id} is absent.`)
-          + ' This observation does not prove how the earlier request finished. Review any new edit separately.' });
+          + addition + ' This observation does not prove how the earlier request finished. Review any new edit separately.' });
         state.message = ''; return catalog;
       } catch (error) { if (version === epoch) state.message = problem(error); return null; }
       finally { if (version === epoch) { state.reading = false; publish(); } }
     }
-    return { state, busy, review, confirm, recover, invalidate,
+    return { state, busy, review, confirm, recover, invalidate, sources: catalog,
       catalogChanged(change = null) {
         if (change?.playlists === false) return;
         const group = state.recovery?.group || state.pending?.group || selection()?.group;
@@ -727,6 +820,12 @@ const SourcePlayerRemote = (() => {
             || typeof value !== 'string' || value.length > 10) return false;
         const basis = state.basis; invalidate(); state.basis = basis;
         state[field] = value; state.message = ''; publish(); return true;
+      },
+      editAppend(field, value) {
+        if (!live() || !available() || busy() || !['sourcePlaylist', 'sourcePositions'].includes(field)
+            || typeof value !== 'string' || value.length > 100) return false;
+        if (field === 'sourcePlaylist' && value !== '' && !catalog().some(item => item.id === value)) return false;
+        invalidate(); state[field] = value; state.message = ''; publish(); return true;
       },
       chooseTrack(position, page) {
         const current = selection();
@@ -765,6 +864,16 @@ const SourcePlayerRemote = (() => {
     const removeTracks = el('button', 'Review track removal'), moveTracks = el('button', 'Review track move');
     const trackActions = el('div', null, 'row'); trackActions.append(removeTracks, moveTracks); trackFields.append(trackActions);
     fields.append(trackFields);
+    const appendFields = el('div', null, 'source-playlist-track-edit'), source = el('select'), positions = el('input');
+    const sourceLabel = el('label', 'Tracks from '), positionsLabel = el('label', 'Track numbers in order ');
+    source.setAttribute('aria-label', 'Playlist addition source');
+    positions.type = 'text'; positions.inputMode = 'text'; positions.maxLength = 100; positions.autocomplete = 'off';
+    positions.placeholder = '2,4,2'; positions.setAttribute('aria-label', 'Track numbers to add');
+    sourceLabel.append(source); positionsLabel.append(positions);
+    const add = el('button', 'Review additions'); add.type = 'button';
+    appendFields.append(el('h4', 'Add tracks to this playlist'), sourceLabel, positionsLabel,
+      el('p', 'Choose the current group queue or a saved playlist in this household. Enter up to 10 numbered tracks in the order you want; 2,4,2 adds the second track twice. Review shows their titles before adding them. Playback continues as it is.'), add);
+    fields.append(appendFields);
     const message = el('p'), consent = el('div', null, 'source-review'), result = el('p'), recovery = el('button', 'Read original household catalog');
     for (const item of [message, result]) { item.setAttribute('role', 'status'); item.setAttribute('aria-live', 'polite'); }
     for (const button of [rename, remove, removeTracks, moveTracks, recovery]) button.type = 'button';
@@ -774,8 +883,11 @@ const SourcePlayerRemote = (() => {
     remove.addEventListener('click', () => { void manager.review('remove'); });
     removeTracks.addEventListener('click', () => { void manager.review('remove_tracks'); });
     moveTracks.addEventListener('click', () => { void manager.review('move_tracks'); });
+    source.addEventListener('change', () => manager.editAppend('sourcePlaylist', source.value));
+    positions.addEventListener('input', () => manager.editAppend('sourcePositions', positions.value));
+    add.addEventListener('click', () => { void manager.review('append_tracks'); });
     recovery.addEventListener('click', () => { void manager.recover(); });
-    let shown = null, confirm = null;
+    let shown = null, confirm = null, shownSources = null;
     return { node, render(selected) {
       const s = manager.state;
       node.hidden = !selected && !s.result && !s.message && !s.pending;
@@ -787,14 +899,33 @@ const SourcePlayerRemote = (() => {
         input.disabled = !manager.canReview();
       }
       removeTracks.disabled = moveTracks.disabled = !manager.canReview();
+      const choices = manager.sources();
+      if (shownSources !== choices) {
+        shownSources = choices;
+        const queue = el('option', 'Current group queue'); queue.value = ''; source.replaceChildren(queue);
+        for (const item of choices) { const option = el('option', `${item.title} (${item.id})`); option.value = item.id; source.append(option); }
+      }
+      if (source.value !== s.sourcePlaylist) source.value = s.sourcePlaylist;
+      if (positions.value !== s.sourcePositions) positions.value = s.sourcePositions;
+      source.disabled = positions.disabled = add.disabled = !manager.canReview();
       message.textContent = s.message; result.textContent = s.result ? `${s.result.group.target}: ${s.result.detail}` : '';
       recovery.hidden = !s.recovery; recovery.disabled = manager.busy();
+      recovery.textContent = s.recovery?.operation === 'append_tracks' ? 'Read original playlist contents' : 'Read original household catalog';
       consent.hidden = !s.pending;
       if (shown !== s.pending) {
         shown = s.pending; consent.replaceChildren(); confirm = null;
         if (shown) {
           const pending = shown;
-          if (editsTracks(pending.operation)) {
+          if (pending.append) {
+            const list = el('ol', null, 'source-playlist-edit-preview');
+            const from = pending.append.playlist ? `“${pending.append.playlist.title}” (${pending.append.playlist.id})` : 'the current group queue';
+            consent.append(el('p', `Add ${pending.append.positions.length} track(s) from ${from} to “${pending.item.title}” (${pending.item.id}) in ${pending.group.label}?`));
+            for (const track of pending.source.tracks) {
+              list.append(el('li', `Source track ${track.position}: ${track.title || 'Untitled track'}${track.creator ? ' · ' + track.creator : ''}`));
+            }
+            consent.append(list, el('p', `Add these tracks in the order shown after the existing ${pending.total} tracks; ${pending.total + pending.append.positions.length} tracks in total. Repeated selections add repeated copies. Playback continues, and the existing saved tracks retain their order.`));
+            confirm = el('button', 'Add selected tracks to playlist');
+          } else if (editsTracks(pending.operation)) {
             const edit = pending.edit, removing = pending.operation === 'remove_tracks', list = el('ol', null, 'source-playlist-edit-preview');
             consent.append(el('p', `${removing ? 'Remove' : 'Move'} ${edit.count} saved track(s) in “${pending.item.title}” (${pending.item.id}) in ${pending.group.label}?`));
             for (const track of pending.tracks) {
@@ -845,6 +976,7 @@ const SourcePlayerRemote = (() => {
     const selected = () => state.groups.find((group) => group.target === state.target);
     const collective = () => state.targetMode === 'set' || state.sourceType === 'favorite';
     const manager = playlistManager({ call,
+      catalog: () => state.playlists,
       selection: () => {
         const group = selected(), item = state.playlists.find(item => item.id === state.playlist);
         return !collective() && state.sourceType === 'playlist' && state.playlistStatus === 'ready'
@@ -1082,7 +1214,7 @@ const SourcePlayerRemote = (() => {
               if (!current(version)) throw new Error('The source draft changed. Review it again.');
             } });
           if (!current(version)) return false;
-          const request = targets().request(prepared, reviewed.target, SourcePlayerRemote);
+          const request = targets().request(prepared, reviewed, SourcePlayerRemote);
           state.pending = Object.freeze({ ...prepared, targets: reviewed, body: request.body, route: request.route });
           return true;
         } catch (error) { if (current(version)) state.message = problem(error); return false; }
@@ -1186,7 +1318,8 @@ const SourcePlayerRemote = (() => {
         });
         if (!sent && current(version)) state.result = Object.freeze({ status: 'not_sent', detail: 'No command was sent. Review the source again.' });
       } catch (error) {
-        if (!accepted) state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent',
+        if (!accepted) state.result = (sent && pending.targets && targets().failure(error, pending.targets, SourcePlayerRemote))
+          || Object.freeze({ status: sent ? 'uncertain' : 'not_sent',
           detail: `${problem(error)} ${sent
             ? 'Playback or the queue may have changed, or the request may still finish. Check the room before another action; this request was not repeated.'
             : 'No playback command was sent.'}` });
@@ -1525,7 +1658,7 @@ const SourcePlayerRemote = (() => {
   }
 
   return { source, prepare, playlists, preparePlaylist, verifyPlaylist, contentsRequest, playlistContents, contentsSummary, renderContents,
-    nativePlaylistTitle, playlistTrackEdit, managedPlaylist, playlistManager, playlistManagerPanel,
+    nativePlaylistTitle, playlistTrackEdit, playlistAppendSelection, appendedPlaylist, managedPlaylist, playlistManager, playlistManagerPanel,
     lineInSources, lineInLabel, lineInHelp, prepareLineIn, verifyLineIn,
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
     preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,

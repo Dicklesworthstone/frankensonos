@@ -99,7 +99,13 @@ impl Surface {
         tool: &str,
         prepared: PreparedDj,
     ) -> Result<OutcomeDto, Failure> {
-        self.control_prepared_set(client, tool, &prepared.households, prepared.commands, true)
+        self.control_prepared_set(
+            client,
+            tool,
+            &prepared.households,
+            prepared.commands,
+            super::set_runs::Execution::Dj,
+        )
     }
 
     /// A batch keeps its audience through cap reads and engine lock waits.

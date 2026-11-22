@@ -18,18 +18,21 @@ use std::sync::{Arc, Mutex};
 fn requests() -> [SleepRequest; 3] {
     [
         SleepRequest {
+            expected_revision: None,
             zone: "SleepA".into(),
             duration: Some("20m".into()),
             extend: false,
             cancel: false,
         },
         SleepRequest {
+            expected_revision: None,
             zone: "SleepA".into(),
             duration: Some("5m".into()),
             extend: true,
             cancel: false,
         },
         SleepRequest {
+            expected_revision: None,
             zone: "SleepA".into(),
             duration: None,
             extend: false,

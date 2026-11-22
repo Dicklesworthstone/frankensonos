@@ -3,13 +3,14 @@
 //! destructive operation; an unplayable item must not silently shift positions.
 
 use super::{MoveError, ip};
+use crate::queue_source::native;
 use crate::snapshot::{SnapshotSource, ZoneSnapshot};
 use crate::{HouseholdState, control};
-use fsonos_proto::content::{self, QUEUE};
+use fsonos_proto::content;
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::{
-    DidlKind, DidlObject, SpotifyBare, SpotifyRenderParams, item_metadata, parse_didl,
-    spotify_bare_didl, spotify_bare_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
+    DidlKind, NativeDidlObject, SpotifyBare, SpotifyRenderParams, parse_didl, spotify_bare_didl,
+    spotify_bare_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
     spotify_uri_from_renderer_uri,
 };
 use fsonos_proto::{ProtoError, Transport};
@@ -23,9 +24,24 @@ mod owner;
 mod staging;
 mod verify;
 
+// Preserve the existing complete-queue occurrence limit while bounding the
+// additional native XML retained for relocation, including repeated roots.
+const MAX_NATIVE_QUEUE_BYTES: usize = 64 * 1024 * 1024;
+
 struct Item {
     uri: String,
     metadata: String,
+}
+
+struct QueueOrigin {
+    host: IpAddr,
+    snapshot: native::Snapshot,
+}
+
+impl QueueOrigin {
+    fn confirm<T: Transport + ?Sized>(&self, t: &T) -> Result<(), ProtoError> {
+        self.snapshot.confirm(t, self.host)
+    }
 }
 
 enum Source {
@@ -43,6 +59,7 @@ enum Source {
 
 pub(super) struct Prepared {
     source: Source,
+    origin: Option<QueueOrigin>,
     transport: TransportState,
     /// Unknown and direct-source settings are not replaced with NORMAL.
     play_mode: Option<PlayMode>,
@@ -57,6 +74,7 @@ impl Prepared {
         snap: &ZoneSnapshot,
         target: &PlayerId,
     ) -> Result<Self, MoveError> {
+        let mut origin = None;
         let source = match &snap.source {
             SnapshotSource::Nothing => Source::Nothing,
             SnapshotSource::Uri {
@@ -99,7 +117,9 @@ impl Prepared {
                 position_secs,
                 update_id,
             } => {
-                let queue = content::browse_snapshot(t, ip(households, &snap.coordinator)?, QUEUE)?;
+                let host = ip(households, &snap.coordinator)?;
+                let queue =
+                    native::snapshot(t, host, content::MAX_BROWSE_OBJECTS, MAX_NATIVE_QUEUE_BYTES)?;
                 if queue.update_id != *update_id {
                     return Err(MoveError::SourceChanged(
                         "the source queue changed while preparing the move".into(),
@@ -110,6 +130,7 @@ impl Prepared {
                     // is nothing to move, as with no source at all.
                     return Ok(Self {
                         source: Source::Nothing,
+                        origin: None,
                         transport: snap.transport_state,
                         play_mode: None,
                         origin_verified_at: Instant::now(),
@@ -125,6 +146,10 @@ impl Prepared {
                     ));
                 }
                 let items = queue_items(t, households, target, &queue.objects)?;
+                origin = Some(QueueOrigin {
+                    host,
+                    snapshot: queue,
+                });
                 Source::Queue {
                     items,
                     track: *track,
@@ -139,6 +164,7 @@ impl Prepared {
         };
         let mut prepared = Self {
             source,
+            origin,
             transport: snap.transport_state,
             play_mode,
             origin_verified_at: Instant::now(),
@@ -154,6 +180,7 @@ impl Prepared {
         snap: &ZoneSnapshot,
     ) -> Result<(), MoveError> {
         if !self.is_empty() {
+            self.confirm_queue(t)?;
             let host = ip(households, &snap.coordinator)?;
             let revision = match snap.source {
                 SnapshotSource::Queue { update_id, .. } => Some(update_id),
@@ -209,6 +236,18 @@ impl Prepared {
         Ok(())
     }
 
+    /// Native metadata is part of the retained source, even when the player
+    /// reuses its queue counter. Recheck before regrouping or releasing it.
+    pub(super) fn confirm_queue<T: Transport + ?Sized>(&self, t: &T) -> Result<(), MoveError> {
+        if let Some(origin) = &self.origin {
+            origin.confirm(t).map_err(|error| match error {
+                ProtoError::Malformed(message) => MoveError::SourceChanged(message),
+                other => other.into(),
+            })?;
+        }
+        Ok(())
+    }
+
     /// Destination preparation can take long enough for a newer owner action
     /// to land on the source. Before releasing it, prove that its source,
     /// selected queue occurrence, queue revision, transport state and ordering
@@ -223,6 +262,7 @@ impl Prepared {
         if self.is_empty() {
             return Ok(());
         }
+        self.confirm_queue(t)?;
         let host = ip(households, &snap.coordinator)?;
         let revision = match snap.source {
             SnapshotSource::Queue { update_id, .. } => Some(update_id),
@@ -271,8 +311,16 @@ impl Prepared {
             Source::Nothing => Ok(None),
             Source::Uri { .. } => direct::apply(t, host, target, self).map(|()| None),
             Source::Queue { items, .. } => {
-                let (revision, owner) =
-                    staging::replace(t, host, target, items, self.play_mode.is_some())?;
+                let (revision, owner) = staging::replace(
+                    t,
+                    host,
+                    target,
+                    items,
+                    self.play_mode.is_some(),
+                    self.origin
+                        .as_ref()
+                        .expect("a queue retains its native origin"),
+                )?;
                 staging::finish(t, host, target, self, revision, owner)?;
                 Ok(Some(revision))
             }
@@ -367,11 +415,12 @@ fn queue_items<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     target: &PlayerId,
-    objects: &[DidlObject],
+    objects: &[NativeDidlObject],
 ) -> Result<Vec<Item>, MoveError> {
     let mut learned = None;
     let mut items = Vec::with_capacity(objects.len());
-    for object in objects {
+    for native in objects {
+        let object = &native.object;
         let res = object
             .res
             .as_ref()
@@ -409,7 +458,7 @@ fn queue_items<T: Transport + ?Sized>(
         } else {
             Item {
                 uri: res.uri.clone(),
-                metadata: item_metadata(object),
+                metadata: native.metadata.clone(),
             }
         };
         items.push(item);
@@ -424,6 +473,7 @@ fn invalid(message: &str) -> MoveError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fsonos_proto::didl::parse_didl_with_metadata;
 
     #[test]
     fn native_metadata_round_trips_resource_and_service_fields() {
@@ -438,7 +488,9 @@ mod tests {
             <desc id="cdudn" nameSpace="urn:test">synthetic-service</desc>
             </item></DIDL-Lite>"#;
         let original = parse_didl(input).unwrap().remove(0);
-        assert_eq!(parse_didl(&item_metadata(&original)).unwrap(), [original]);
+        let retained = parse_didl_with_metadata(input, 1, 4096).unwrap().remove(0);
+        assert_eq!(retained.object, original);
+        assert_eq!(parse_didl(&retained.metadata).unwrap(), [original]);
     }
 }
 
@@ -447,6 +499,8 @@ mod simulator_tests {
     use super::*;
     use crate::moving::{MoveMethod, copy_playback};
     use crate::{resolve_room, snapshot};
+    use fsonos_proto::content::QUEUE;
+    use fsonos_proto::didl::parse_didl_with_metadata;
     use fsonos_proto::topology::get_zone_group_state;
     use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 
@@ -641,9 +695,11 @@ mod simulator_tests {
         let sim = fixture();
         let households = houses(&sim);
         let to = resolve_room(&households, "Den").unwrap();
-        let objects = parse_didl(
+        let objects = parse_didl_with_metadata(
             r#"<DIDL-Lite><item id="one"><res>x-file-cifs://example.invalid/one.flac</res></item>
             <item id="two"><res/></item></DIDL-Lite>"#,
+            2,
+            4096,
         )
         .unwrap();
         let calls = sim.soap_log().len();

@@ -68,6 +68,7 @@ pub mod spotify_auth;
 pub mod spotify_search;
 
 pub mod announce;
+mod audience;
 mod bridge;
 mod dj_caps;
 pub mod dj_control;
@@ -82,6 +83,7 @@ mod replacement_undo;
 mod search_play;
 mod set_runs;
 mod shared_store;
+pub mod source_control;
 mod source_selection;
 
 pub mod art;
@@ -1033,18 +1035,24 @@ impl Surface {
             .prepare_sources(&households, commands)
             .inspect_err(|failure| self.notice(failure))?;
         self.prepare_dj_set(&households, &guard, &commands)?;
-        self.control_prepared_set(client, tool, &households, commands, false)
+        self.control_prepared_set(
+            client,
+            tool,
+            &households,
+            commands,
+            set_runs::Execution::Ordinary,
+        )
     }
 
-    /// Execute already resolved commands. A scheduled or reviewed DJ request
-    /// keeps its admission snapshot and fences even a single selected group.
+    /// Execute already resolved commands. Reviewed requests keep their
+    /// admission snapshot and fence even a single selected group.
     fn control_prepared_set(
         &self,
         client: &Client,
         tool: &str,
         households: &[HouseholdState],
         commands: Vec<Command>,
-        pinned_dj: bool,
+        execution: set_runs::Execution,
     ) -> Result<OutcomeDto, Failure> {
         let guard = self.guard(client);
         guard.authorize(tool, false).inspect_err(|denied| {
@@ -1085,7 +1093,7 @@ impl Surface {
         let regroups = commands.iter().any(regroups);
         // No action log: the per-command path is enough.
         if self.log.is_none() {
-            let outcome = self.execute_set(households, &guard, &commands, pinned_dj);
+            let outcome = self.execute_set(households, &guard, &commands, execution);
             if regroups {
                 self.invalidate();
             }
@@ -1101,9 +1109,15 @@ impl Surface {
             .collect();
         // One before-state across every affected zone, so one undo restores
         // the whole set.
-        let run = self.run_set(households, &guard, &commands, true, pinned_dj);
-        let incomplete_dj =
-            (pinned_dj || dj_targets::is_set(&commands)) && run.outcomes.iter().any(Result::is_err);
+        let run = self.run_set(households, &guard, &commands, true, execution);
+        let incomplete_dj = (execution == set_runs::Execution::Dj || dj_targets::is_set(&commands))
+            && run.outcomes.iter().any(Result::is_err);
+        let uncertain_source = execution == set_runs::Execution::ReviewedSource
+            && run.outcomes.iter().any(|result| {
+                result
+                    .as_ref()
+                    .is_err_and(|failure| failure.code == ErrorCode::OutcomeUncertain)
+            });
         let unsafe_undo = run.unsafe_undo;
         let (snaps, missed) = (run.snaps, run.missed);
         let attempted: Vec<_> = commands
@@ -1127,7 +1141,11 @@ impl Surface {
         let before = level_undo::scope(before, households, &guard, &attempted, &snaps);
         let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = recovery::protect(before, unsafe_undo);
-        let before = if incomplete_dj {
+        let before = if uncertain_source {
+            Some(actions::before_state_not_undoable(
+                "uncertain reviewed source command",
+            ))
+        } else if incomplete_dj {
             Some(actions::before_state_not_undoable(
                 if dj_targets::is_set(&commands) {
                     "incomplete multi-group DJ command"
@@ -1199,9 +1217,9 @@ impl Surface {
         households: &[HouseholdState],
         guard: &Guard<'_>,
         commands: &[Command],
-        pinned_dj: bool,
+        execution: set_runs::Execution,
     ) -> Result<OutcomeDto, Failure> {
-        let run = self.run_set(households, guard, commands, false, pinned_dj);
+        let run = self.run_set(households, guard, commands, false, execution);
         set_runs::merged(households, commands, run.outcomes)
     }
 

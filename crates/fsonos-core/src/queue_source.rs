@@ -15,6 +15,7 @@ use fsonos_types::{PlayerId, TransportState};
 use std::time::Instant;
 
 pub(crate) mod destination;
+pub(crate) mod native;
 mod recovery;
 
 use destination::Destination;
@@ -113,6 +114,21 @@ fn appended(before: &Queue, after: &Queue, added: Enqueued) -> bool {
         && old_len.checked_add(added.count) == Some(new_len)
         && before.revision != after.revision
         && after.uris.starts_with(&before.uris)
+}
+
+fn confirm_preparation<T: Transport + ?Sized>(
+    t: &T,
+    host: std::net::IpAddr,
+    coordinator: &PlayerId,
+    destination: &Destination,
+    before: &Queue,
+) -> Result<(), ProtoError> {
+    if read(t, host)? != *before {
+        return Err(ProtoError::Malformed(
+            "the queue changed while preparing its replacement".into(),
+        ));
+    }
+    destination.confirm(t, host, coordinator)
 }
 
 /// A check before any write failed: nothing was written.
@@ -243,6 +259,9 @@ fn replace_once<T: Transport + ?Sized>(
             .flatten()
     };
     if !autoplay {
+        // Undo preparation performs its own network reads. It may fail open
+        // for receipt eligibility, but cannot authorize pausing a new source.
+        confirm_preparation(t, host, coordinator, &destination, &before).map_err(unconfirmed)?;
         // This is not a source-parameter refusal: do not retry the whole
         // replacement when pausing or its read-back fails.
         control::pause_confirmed(t, households, coordinator).map_err(uncertain)?;
@@ -256,6 +275,15 @@ fn replace_once<T: Transport + ?Sized>(
         // freshly observed owner or queue may replace it before another add.
         boundary.confirm(t, host, coordinator)?;
     }
+    // Keep the original queue and destination through every optional receipt
+    // read and pause confirmation, including when undo evidence was discarded.
+    confirm_preparation(t, host, coordinator, &destination, &before).map_err(|error| {
+        if autoplay {
+            unconfirmed(error)
+        } else {
+            uncertain(error)
+        }
+    })?;
     let added = match soap::enqueue_uri(t, host, uri, metadata, 0, false) {
         Ok(added) => added,
         Err(error @ ProtoError::SoapFault { code: 800, .. }) if recovery.is_some() => {
@@ -354,7 +382,24 @@ fn commit_recoverable<T: Transport + ?Sized>(
     } else {
         owner.and_then(|owner| owner.confirmed(t, host, coordinator))
     };
+    let before_removal = || {
+        // Receipt confirmation is optional and can observe a takeover while
+        // returning None. Recheck the execution prerequisites after those reads
+        // and after the removal helper's own final coordinator observation.
+        if !autoplay
+            && !matches!(
+                soap::get_transport_info(t, host)?.state,
+                TransportState::Paused | TransportState::Stopped
+            )
+        {
+            return Err(ProtoError::Malformed(
+                "playback resumed while the replacement was staged".into(),
+            ));
+        }
+        destination.confirm(t, host, coordinator)
+    };
     let revision = if before.uris.is_empty() {
+        before_removal().map_err(uncertain)?;
         after.revision
     } else {
         if after.revision == 0 {
@@ -364,7 +409,7 @@ fn commit_recoverable<T: Transport + ?Sized>(
         // A refused removal is not a rejected source and cannot authorize
         // another append through render-parameter recovery. The shared
         // verifier also fences coordinator changes and lost acknowledgements.
-        queue_removal::remove(t, host, coordinator, after, 1, count)
+        queue_removal::remove_checked(t, host, coordinator, after, 1, count, before_removal)
             .map_err(uncertain)?
             .revision
     };

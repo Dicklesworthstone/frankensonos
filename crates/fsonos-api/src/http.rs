@@ -48,6 +48,7 @@
 //! | `GET /rooms/configuration` | | [`crate::surface::room_config::RoomConfigurationDto`]: all saved aliases/defaults and their revision |
 //! | `POST /rooms/configuration` | [`crate::surface::room_config::RoomConfigureRequest`] | [`crate::surface::room_config::RoomConfiguredDto`]: one revision-bound alias/default edit without speaker I/O |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
+//! | `POST /sources/control` | [`crate::surface::source_control::ReviewedSourceRequest`] | playback or insertion receipts for the exact audience reviewed with `/rooms/resolve` |
 //! | `POST /play/tracks` | [`crate::surface::queue::PlayTracksRequest`] | [`OutcomeDto`]: replace the queue with 1–10 ordered tracks or episodes and start at the first |
 //! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
 //! | `POST /queue/tracks` | [`crate::surface::queue::QueueTracksRequest`] | quietly inserts 1–10 ordered tracks or episodes next or at the end |
@@ -600,6 +601,25 @@ fn house(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// The speaker controls and the DJ.
 fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = vec![
+        cx.route(
+            &Op::post(
+                "/sources/control",
+                "control_source",
+                CONTROL,
+                "Play or queue one source in the exact room set reviewed with /rooms/resolve",
+            ),
+            |s, c, req| {
+                answer(
+                    body::<crate::surface::source_control::ReviewedSourceRequest>(req)
+                        .and_then(|request| s.control_reviewed_source(c, &request)),
+                )
+            },
+        )
+        .request_schema::<crate::surface::source_control::ReviewedSourceRequest>(true)
+        .response_schema::<crate::surface::source_control::ReviewedSourceOutcome>(
+            200,
+            "Per-group playback or queue insertion results for the reviewed audience",
+        ),
         cx.control_set(
             Op::post(
                 "/play",

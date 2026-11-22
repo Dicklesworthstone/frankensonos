@@ -7,12 +7,11 @@
 //! unacknowledged speaker mutation.
 
 use super::{
-    Ran, Schedule, ScheduleAction, Scheduler, Surface, Tick, announcements, client_of,
-    core_schedule, dj_start_commands, fire, room_view, span, summary,
+    PreparedRun, Ran, Schedule, ScheduleAction, Scheduler, Surface, Tick, announcements, bedtime,
+    client_of, core_schedule, dj_start_commands, fire, room_view, span, summary,
 };
 use crate::failure::{ErrorCode, Failure};
 use crate::plan;
-use crate::surface::dj_targets::PreparedDj;
 use crate::surface::scenes::scene_failure;
 use chrono::{DateTime, TimeZone, Utc};
 use fsonos_core::rooms::{Matched, ResolveContext, named_room, resolve_targets};
@@ -192,7 +191,7 @@ fn claim_current(
 /// Readiness is checked before the durable claim, never by retrying a failed
 /// action. A scheduled scene waits for all its named rooms instead of partially
 /// applying while another household is still being discovered.
-fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedDj>, Failure> {
+fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedRun>, Failure> {
     let households = surface.households()?;
     if households.iter().all(|house| house.rooms.is_empty()) {
         return Err(Failure::new(ErrorCode::NotReady, "no Sonos rooms answered"));
@@ -225,7 +224,12 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedDj>, F
         ScheduleAction::Pause { room, fade_secs: 0 } | ScheduleAction::Volume { room, .. } => {
             targets_ready(&rooms, room, false)
         }
-        ScheduleAction::Pause { room, .. } => targets_ready(&rooms, room, true),
+        ScheduleAction::Pause { room, .. } => {
+            targets_ready(&rooms, room, false)?;
+            let prepared = bedtime::prepare(&rooms, room, None)?;
+            surface.bedtime_ready(&prepared)?;
+            return Ok(Some(PreparedRun::Fade(prepared)));
+        }
         ScheduleAction::DjStart {
             room,
             mood,
@@ -245,7 +249,7 @@ fn ready(surface: &Surface, schedule: &Schedule) -> Result<Option<PreparedDj>, F
                         surface.mood_lasts(),
                     )
                 })
-                .map(Some);
+                .map(|prepared| Some(PreparedRun::Dj(prepared)));
         }
     }?;
     Ok(None)
@@ -347,7 +351,7 @@ fn launch(
                 Admission::Run
             }
         };
-        let prepared_dj = if admission() == Admission::Run {
+        let prepared = if admission() == Admission::Run {
             match ready(&surface, &schedule) {
                 Ok(prepared) => prepared,
                 Err(failure) => {
@@ -395,7 +399,7 @@ fn launch(
                 return;
             }
         }
-        match fire(&surface, &schedule, announcement, prepared_dj) {
+        match fire(&surface, &schedule, announcement, prepared) {
             Ok(done) => tracing::info!("schedule #{id} ({}): {done}", summary(&schedule.action)),
             Err(failure) => tracing::warn!(
                 "schedule #{id} ({}): {}",

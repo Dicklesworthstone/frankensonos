@@ -79,6 +79,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public let preferences: DJPreferencesWorkflow
     public let playlistManagement: SonosPlaylistManagementWorkflow
+    public let favoriteManagement: FavoriteManagementWorkflow
 
     private let client: DaemonClient
     private let live: LiveHouse
@@ -124,7 +125,7 @@ public struct RemoteResult: Identifiable, Sendable {
         return client.artworkURL(in: zone, track: selectedState?.track)
     }
     public var canPrepare: Bool { canSchedule && selectedZone != nil }
-    public var canSchedule: Bool { active && !stopped && !preferences.isEngaged && !playlistManagement.isEngaged && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil && sceneMutationReview == nil }
+    public var canSchedule: Bool { active && !stopped && !preferences.isEngaged && !playlistManagement.isEngaged && !favoriteManagement.isEngaged && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil && sceneMutationReview == nil }
     public var canManageSchedules: Bool { canSchedule && panel == .schedules && schedulesObservedAt != nil && !panelLoading }
     public var canManageScenes: Bool { canSchedule && panel == .scenes && scenesObservedAt != nil && !panelLoading }
     public var undoInProgress: Bool { undoAction }
@@ -135,6 +136,7 @@ public struct RemoteResult: Identifiable, Sendable {
         commands = CommandReviewSession(client: client)
         preferences = DJPreferencesWorkflow(client: client, commands: commands)
         playlistManagement = SonosPlaylistManagementWorkflow(client: client, commands: commands)
+        favoriteManagement = FavoriteManagementWorkflow(client: client, commands: commands)
         preferences.canBegin = { [weak self] in self?.canSchedule == true }
         preferences.awaitBarrier = { [weak self] in
             let barrier = self?.cancellation
@@ -154,12 +156,25 @@ public struct RemoteResult: Identifiable, Sendable {
                 self.invalidatePanel(); self.refreshPanel()
             }
         }
+        favoriteManagement.canBegin = { [weak self] in self?.canSchedule == true }
+        favoriteManagement.awaitBarrier = { [weak self] in
+            let barrier = self?.cancellation
+            await barrier?.value
+        }
+        favoriteManagement.onChange = { [weak self] in self?.onChange?() }
+        favoriteManagement.didChangeCatalog = { [weak self] in
+            guard let self else { return }
+            if self.panel == .favorites || self.panel == .library {
+                self.invalidatePanel(); self.refreshPanel()
+            }
+        }
     }
 
     public func resume() {
         guard !active && !stopped else { return }
         active = true
         playlistManagement.resume()
+        favoriteManagement.resume()
         if observer == nil {
             let stream = live.updates
             observer = Task { [weak self] in
@@ -180,6 +195,7 @@ public struct RemoteResult: Identifiable, Sendable {
         active = false
         preferences.suspend()
         playlistManagement.suspend()
+        favoriteManagement.suspend()
         cancelReview()
         invalidatePanel()
         invalidateSceneChoices()
@@ -192,6 +208,7 @@ public struct RemoteResult: Identifiable, Sendable {
         suspend(); stopped = true
         preferences.stop()
         playlistManagement.stop()
+        favoriteManagement.stop()
         observer?.cancel(); observer = nil
         let previous = lifecycle, live = live
         lifecycle = Task { await previous?.value; await live.stop() }
@@ -201,6 +218,7 @@ public struct RemoteResult: Identifiable, Sendable {
         guard house?.snapshot?.zones.contains(where: { $0.rooms.contains(room) }) == true else { return }
         guard selectedRoom != room else { return }
         playlistManagement.close()
+        favoriteManagement.close()
         cancelReview()
         selectedRoom = room; choseInitialRoom = true
         timelineFrozenAt = selectedPlaybackIsFresh ? nil : Date()
@@ -211,6 +229,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public func show(_ panel: Panel) {
         guard self.panel != panel else { return }
         playlistManagement.close()
+        favoriteManagement.close()
         if self.panel == .schedules || self.panel == .scenes { cancelReview() }
         if self.panel == .scenes { invalidateSceneChoices() }
         if self.panel == .dj { preferences.suspend() }
@@ -331,6 +350,20 @@ public struct RemoteResult: Identifiable, Sendable {
         else { playlistManagement.openRename(playlist, in: zone) }
     }
 
+    public func openFavoriteSave(in expectedZone: Zone) {
+        guard canPrepare && panel == .favorites && !panelLoading,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone) else { return }
+        favoriteManagement.openSave(in: zone)
+    }
+
+    public func openFavoriteManagement(_ favorite: Favorite, in expectedZone: Zone, removing: Bool) {
+        guard canPrepare && panel == .favorites && !panelLoading && panelProblem == nil,
+              let zone = selectedZone, expectedZone.sameGroup(as: zone),
+              favorites.contains(where: { $0.sameSelection(as: favorite) }) else { return }
+        if removing { favoriteManagement.openRemove(favorite, in: zone) }
+        else { favoriteManagement.openRename(favorite, in: zone) }
+    }
+
     public func prepareLineIn(_ source: LineInSource, in expectedZone: Zone) {
         guard canPrepare && panel == .lineIn && !panelLoading && panelProblem == nil,
               let zone = selectedZone, expectedZone.sameGroup(as: zone),
@@ -390,6 +423,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public func cancelReview() {
         preferences.cancel()
         playlistManagement.cancel()
+        favoriteManagement.cancel()
         epoch &+= 1; review = nil; preparingCommand = nil
         scheduleReview = nil; undoReview = nil; sceneMutationReview = nil
         actionTask?.cancel()
@@ -420,7 +454,8 @@ public struct RemoteResult: Identifiable, Sendable {
             // acknowledgement. Do not cancel that very write on its own event.
             // Explicit selection changes and suspension still cancel requests.
             if playlistManagement.phase != .confirming { playlistManagement.cancel() }
-            if !preferences.isEngaged && !playlistManagement.isEngaged && actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
+            if favoriteManagement.phase != .confirming { favoriteManagement.cancel() }
+            if !preferences.isEngaged && !playlistManagement.isEngaged && !favoriteManagement.isEngaged && actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
             queueOffset = 0
             invalidatePanel(); refreshPanel()
         } else if active && value.panelRevision != (previous?.panelRevision ?? 0) {
@@ -442,6 +477,7 @@ public struct RemoteResult: Identifiable, Sendable {
     private func observeCatalogs(_ current: NativeCatalogRevisions, since previous: NativeCatalogRevisions) {
         guard active else { return }
         playlistManagement.observeCatalogs(current, since: previous)
+        favoriteManagement.observeCatalogs(current, since: previous)
         if let zone = selectedZone {
             let favoritesChanged = current.favoritesChanged(in: zone.household, since: previous)
             let playlistsChanged = current.playlistsChanged(in: zone.household, since: previous)
@@ -572,7 +608,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     /// Edits only the unsent form. Selection and refresh never rewrite it.
     public func updateScheduleForm(_ value: ScheduleForm) {
-        guard active && !stopped && !preferences.isEngaged && !playlistManagement.isEngaged && actionPhase == .idle && review == nil && undoReview == nil && sceneMutationReview == nil else { return }
+        guard active && !stopped && !preferences.isEngaged && !playlistManagement.isEngaged && !favoriteManagement.isEngaged && actionPhase == .idle && review == nil && undoReview == nil && sceneMutationReview == nil else { return }
         if scheduleReview != nil { cancelReview() }
         scheduleForm = value; scheduleFormProblem = nil
     }

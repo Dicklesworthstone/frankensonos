@@ -11,11 +11,15 @@ use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::dj::DjDirectionDto;
 use fsonos_api::surface::announce::AnnounceRequest;
 use fsonos_api::surface::schedules::{
-    FadePauseRequest, FadeVolumeRequest, ScheduleDto, ScheduleRequest, SleepRequest, SleepTimerDto,
+    FadePauseRequest, FadeVolumeRequest, ScheduleDto, ScheduleRequest, SleepOutcome, SleepRequest,
+    SleepTimerDto,
 };
 use serde::Serialize;
 
-use super::{Backend, from_daemon, respond, said, segment, sentence, with_backend_off_thread};
+use super::{Backend, from_daemon, respond, said, segment, with_backend_off_thread};
+
+#[cfg(test)]
+mod tests;
 
 /// `list_sleep_timers` structured content.
 #[derive(Serialize)]
@@ -45,34 +49,44 @@ impl Backend {
     /// The `fade_volume` tool: on the daemon when one runs, so the fade
     /// gives way to (and ends) its other fades of those rooms, else here.
     pub fn fade_volume(&self, req: &FadeVolumeRequest) -> McpResult<FinalCallToolResult> {
-        let body = serde_json::to_value(req).ok();
-        if let Some(answer) = self.on_daemon("POST", "/volume/fade", body.as_ref(), sentence) {
-            return answer;
-        }
-        respond(|| Ok(said(self.surface.fade_volume_to(&self.client, req)?)))
+        self.write("/volume/fade", req, || {
+            respond(|| Ok(said(self.surface.fade_volume_to(&self.client, req)?)))
+        })
     }
 
     /// The `fade_and_pause` tool, on the daemon when one runs.
     pub fn fade_and_pause(&self, req: &FadePauseRequest) -> McpResult<FinalCallToolResult> {
-        let body = serde_json::to_value(req).ok();
-        if let Some(answer) = self.on_daemon("POST", "/pause/fade", body.as_ref(), sentence) {
-            return answer;
-        }
-        respond(|| Ok(said(self.surface.fade_out(&self.client, req)?)))
+        self.write("/pause/fade", req, || {
+            respond(|| Ok(said(self.surface.fade_out(&self.client, req)?)))
+        })
     }
 
     /// The `set_sleep_timer` tool.
     pub fn set_sleep_timer(&self, req: &SleepRequest) -> McpResult<FinalCallToolResult> {
-        // The daemon's timers fade out; the speaker's own do not.
-        let body = serde_json::to_value(req).ok();
-        let done = |t: &SleepTimerDto| t.done.clone();
-        if let Some(answer) = self.on_daemon("POST", "/sleep", body.as_ref(), done) {
-            return answer;
-        }
-        respond(|| {
-            let timer = self.surface.set_sleep_timer(&self.client, req)?;
-            Ok((timer.done.clone(), timer))
-        })
+        req.zone().map_err(|failure| crate::tool_error(&failure))?;
+        req.change()
+            .map_err(|failure| crate::tool_error(&failure))?;
+        let body = serde_json::to_value(req).map_err(|error| {
+            crate::tool_error(&fsonos_api::Failure::new(
+                fsonos_api::ErrorCode::Internal,
+                error.to_string(),
+            ))
+        })?;
+        let mut complete = false;
+        let mut result = respond(|| {
+            let timers = match self
+                .daemon
+                .as_ref()
+                .and_then(|daemon| daemon.call("POST", "/sleep", Some(&body)))
+            {
+                Some(answer) => from_daemon::<SleepOutcome>(answer, "POST", "/sleep")?,
+                None => self.surface.set_sleep_timers(&self.client, req)?,
+            };
+            complete = timers.complete();
+            Ok((timers.text(), timers))
+        })?;
+        result.is_error = !complete;
+        Ok(result)
     }
 
     /// The `list_sleep_timers` tool.
@@ -190,22 +204,24 @@ async fn fade_volume(
 }
 
 #[tool(
-    description = "Fade the group a room plays in out over `seconds` (1-60), pause it, and put its volumes back, so the next play starts at the old level; answers when done. `zone` is a room name (Room@S1 / Room@S2 picks a household; aliases work)."
+    description = "Fade every distinct group selected by `zone` out over `seconds` (1-60), pause it, and put its volumes back, so the next play starts at the old level; answers when done. `zone` accepts a room, saved alias, all/everywhere, all@S1 or all@S2. Independent groups fade concurrently. Manual changes win in their own group. Partial results retain every target and are tool errors; inspect them before another command, without replaying the batch. Optional expected_revision is the audience revision from resolve_rooms."
 )]
 async fn fade_and_pause(
     ctx: &McpContext,
     zone: String,
     seconds: u32,
+    expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = FadePauseRequest {
         zone,
         fade_secs: seconds,
+        expected_revision,
     };
     with_backend_off_thread(ctx, move |b| b.fade_and_pause(&req)).await
 }
 
 #[tool(
-    description = "Sleep timer: pause the group a room plays in after `duration` ('45m', '1h30m', '90s', or minutes as '45'; at most 23h), fading it out over the last two minutes when the daemon runs. With `extend` true, push the running timer `duration` later instead; with `cancel` true (and no duration), cancel it. `zone` is a room name (Room@S1 / Room@S2 picks a household; aliases work)."
+    description = "Sleep timers: pause each distinct group selected by `zone` after `duration` ('45m', '1h30m', '90s', or minutes as '45'; at most 23h), fading out over the last two minutes when the daemon runs. With extend true, push each running timer duration later; a group without a timer reports its own failure. With cancel true and no duration, cancel each selected timer. zone accepts a room, saved alias, all/everywhere, all@S1 or all@S2. Room-set results retain every group's timer or failure; an incomplete result is a tool error and must not be replayed as a batch. Optional expected_revision is the audience revision from resolve_rooms."
 )]
 async fn set_sleep_timer(
     ctx: &McpContext,
@@ -213,18 +229,20 @@ async fn set_sleep_timer(
     duration: Option<String>,
     extend: Option<bool>,
     cancel: Option<bool>,
+    expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = SleepRequest {
         zone,
         duration,
         extend: extend.unwrap_or(false),
         cancel: cancel.unwrap_or(false),
+        expected_revision,
     };
     with_backend_off_thread(ctx, move |b| b.set_sleep_timer(&req)).await
 }
 
 #[tool(
-    description = "List the sleep timers that run: when each group pauses and whether it fades out first. Give `zone` for one room's group only.",
+    description = "List the sleep timers that run: when each group pauses and whether it fades out first. Give zone to select a room, saved alias, all/everywhere, all@S1 or all@S2; omit it to list every running timer.",
     annotations(read_only, idempotent)
 )]
 async fn list_sleep_timers(

@@ -73,6 +73,7 @@ fn a_top_up_that_fails_says_why_in_the_status_until_a_command() {
         let didl = spotify_track_didl(uri, "Movement", &params);
         control::add_uri_to_queue(&lan, host, &spotify_queue_uri(uri), &didl, false).unwrap();
     }
+    fsonos_core::control::play_queue_from(&lan, &households, &den, 2).unwrap();
     // No library: the next work can't be picked, so the top-up fails.
     let dj = SpotifyDj::new(None);
     dj.state().feeds.insert(
@@ -90,6 +91,7 @@ fn a_top_up_that_fails_says_why_in_the_status_until_a_command() {
     playback.media_uri = Some(format!("x-rincon-queue:{}#0", den.0));
     playback.queue_position = Some(2);
     playback.queue_length = Some(2);
+    playback.track_uri = Some(control::get_position_info(&lan, host).unwrap().uri);
     dj.on_playback(at, &mut store, &playback, &clock);
     let status = dj.status(at, &store, Some(2), &clock).unwrap();
     assert!(status.running, "{status:?}");

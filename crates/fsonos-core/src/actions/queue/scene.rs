@@ -75,6 +75,11 @@ pub fn capture_scene_queue_undo<T: Transport + ?Sized>(
                 start,
                 ..
             }
+            | SceneOp::Tracks {
+                coordinator: id,
+                start,
+                ..
+            }
             | SceneOp::QueueBackup {
                 coordinator: id,
                 start,

@@ -36,11 +36,13 @@ pub mod clip;
 mod continuity;
 mod recovery;
 pub mod speech;
+mod topology;
 mod turns;
 mod watch;
 
 pub use cancellation::{AnnouncementControl, AnnouncementPhase, AnnouncementProgress};
 use recovery::Effects;
+use topology::refreshed;
 
 use crate::control;
 use crate::live::Live;
@@ -49,7 +51,6 @@ use crate::{ControlTarget, CoreError, HouseholdState, Room};
 use fsonos_proto::Transport;
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::xml_escape;
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::PlayerId;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -510,7 +511,12 @@ impl Announcer {
         };
         let selected: Option<Vec<&Room>> = rooms
             .iter()
-            .map(|old| fresh.rooms.iter().find(|r| r.primary == old.primary))
+            .map(|old| {
+                fresh
+                    .rooms
+                    .iter()
+                    .find(|room| topology::same_room(old, room))
+            })
             .collect();
         let Some(selected) = selected else {
             report.outcome = Err("a target room changed or disappeared; nothing was played".into());
@@ -670,16 +676,14 @@ impl Announcer {
             effects.sources.push(plan.lead.clone());
             effects.clip = Some(clip.url.clone());
             events = playback.live.map(Live::subscribe);
-            control::play_uri(
-                &cancellation::Starting {
-                    transport: t,
-                    control: playback.control(),
-                },
+            let starting = cancellation::Starting::new(t, playback.control());
+            starting.finish(control::play_uri(
+                &starting,
                 hs,
                 &plan.lead,
                 &clip.url,
                 &clip.didl(),
-            )?;
+            ))?;
             effects.installed = true;
             playback.phase(AnnouncementPhase::Playing);
             Ok(())
@@ -719,26 +723,6 @@ fn cancelled_report(rooms: &[&Room]) -> HouseholdAnnouncement {
         restored: Vec::new(),
         restore_failed: Vec::new(),
     }
-}
-
-/// `household` with its topology read afresh from the first player that
-/// answers.
-fn refreshed<T: Transport + ?Sized>(
-    t: &T,
-    household: &HouseholdState,
-) -> Result<HouseholdState, CoreError> {
-    let mut last = CoreError::UnknownHousehold("a household with no players".into());
-    for player in &household.players {
-        match get_zone_group_state(t, player.ip) {
-            Ok(zgs) => {
-                let mut now = household.clone();
-                now.apply_topology(&zgs);
-                return Ok(now);
-            }
-            Err(e) => last = e.into(),
-        }
-    }
-    Err(last)
 }
 
 /// Announcements queue per household id (or, without one, per first player).

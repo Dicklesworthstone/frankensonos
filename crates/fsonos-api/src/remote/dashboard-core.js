@@ -88,7 +88,7 @@ const DashboardCore = (() => {
       }
       const write = method !== 'GET', abort = new AbortController();
       const budget = method === 'POST' && url === '/announce' ? 1200000
-        : write && (url === '/queue' || url === '/queue/tracks' || url === '/play/tracks' || url === '/sonos/playlists/play' || url === '/sonos/playlists/tracks'
+        : write && (url === '/queue' || url === '/queue/tracks' || url === '/play/tracks' || url === '/sources/control' || url === '/sleep' || url === '/pause/fade' || url === '/sonos/playlists/play' || url === '/sonos/playlists/tracks'
         || /^\/sonos\/playlists\/(?:remove-tracks|move-tracks)(?:\?|$)/.test(url) || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
         || (method === 'PUT' && /^\/scenes\/[^/]+$/.test(url) && body?.backup_queues === true)) ? 600000
         : write ? 120000 : /^\/(?:spotify\/search|zones\/[^/]+\/queue\/search)(?:\?|$)/.test(url) ? 60000 : 10000;
@@ -123,6 +123,9 @@ const DashboardCore = (() => {
           if (!response.ok) {
             const e = new Error(data?.detail || `Request failed (${response.status}).`);
             if (typeof data?.code === 'string') e.code = data.code;
+            // The source controller validates this receipt against the groups
+            // it reviewed; a non-2xx response must not discard their outcomes.
+            if (data && Object.hasOwn(data, 'batch')) e.batch = data.batch;
             e.hint = data?.hint; e.status = response.status;
             const retry = response.headers?.get('retry-after');
             e.retryAfter = retry && /^\d+$/.test(retry) ? Number(retry) * 1000
@@ -158,7 +161,7 @@ const DashboardCore = (() => {
       roomConfiguration: { path: '/rooms/configuration', label: 'room configuration', observed: 'saved aliases and defaults', route: /^\/rooms\/configuration$/ },
       preferences: { path: '/dj/preferences', label: 'preferences', observed: 'standing taste', route: /^\/dj\/preferences$/ },
       playlists: { path: target => `/sonos/playlists?zone=${encodeURIComponent(target)}`, scoped: true,
-        label: 'saved playlists', observed: 'original household catalog', route: /^\/sonos\/playlists\/(?:save|rename|remove|remove-tracks|move-tracks)$/ },
+        label: 'saved playlists', observed: 'original household catalog', route: /^\/sonos\/playlists\/(?:save|rename|remove|remove-tracks|move-tracks|append-tracks)$/ },
       favorites: { path: target => `/favorites?zone=${encodeURIComponent(target)}`, scoped: true,
         label: 'favorites', observed: 'original household catalog', route: /^\/favorites\/(?:save|rename|remove)$/ },
     };

@@ -5,6 +5,58 @@ mod model;
 use model::{Effect, Model, coordinator};
 
 #[test]
+fn retained_positions_require_a_known_unchanged_owner_and_native_revision() {
+    for change in [
+        "none",
+        "revision",
+        "boot",
+        "unknown boot",
+        "unknown generation",
+    ] {
+        let transport = Model::new(2);
+        let mut first = Batch::new(&coordinator()).retaining(None, true);
+        transport
+            .add(&mut first, TRACK, 0, Effect::Healthy)
+            .unwrap();
+        let retained = first.continuity().expect("a confirmed native generation");
+        {
+            let mut state = transport.state.borrow_mut();
+            match change {
+                "revision" => state.revision += 1,
+                "boot" => state.boot = Some(4),
+                "unknown boot" => state.boot = None,
+                "unknown generation" => state.generation = None,
+                _ => {}
+            }
+        }
+        let mut next = Batch::on_queue(&coordinator()).retaining(Some(retained), false);
+        transport.add(&mut next, TRACK, 0, Effect::Healthy).unwrap();
+        assert_eq!(next.continuity().is_some(), change == "none", "{change}");
+    }
+}
+
+#[test]
+fn an_irregular_append_revision_cannot_extend_retained_position_evidence() {
+    let transport = Model::new(2);
+    let mut batch = Batch::new(&coordinator()).retaining(None, true);
+    transport
+        .add(&mut batch, TRACK, 0, Effect::Healthy)
+        .unwrap();
+    assert!(batch.continuity().is_some());
+    transport
+        .add(&mut batch, TRACK, 0, Effect::SkipRevision)
+        .unwrap();
+    assert!(batch.continuity().is_none());
+    transport
+        .add(&mut batch, TRACK, 0, Effect::Healthy)
+        .unwrap();
+    assert!(
+        batch.continuity().is_none(),
+        "later appends cannot restore old proof"
+    );
+}
+
+#[test]
 fn five_thousand_items_and_twelve_movements_need_only_one_full_snapshot() {
     let transport = Model::new(5_000);
     let mut batch = Batch::new(&coordinator());
@@ -420,4 +472,48 @@ fn readiness_rejects_missing_source_and_unidentifiable_queue_entries_without_wri
     let error = ready(&transport, model::host(), &coordinator(), 2).unwrap_err();
     assert!(error.to_string().contains("no identity"), "{error}");
     assert_eq!(transport.writes.get(), 0);
+}
+
+#[test]
+fn automatic_batches_require_the_coordinators_queue_before_any_write() {
+    for source in [
+        "",
+        "http://example.invalid/radio.mp3",
+        "x-rincon-queue:RINCON_OTHER#0",
+    ] {
+        let transport = Model::new(3);
+        transport.state.borrow_mut().source = source.into();
+        let before = transport.state.borrow().uris.clone();
+        let mut batch = Batch::on_queue(&coordinator());
+        assert!(matches!(
+            transport.add(&mut batch, TRACK, 0, Effect::Healthy),
+            Err(FeedError::Proto(ProtoError::Malformed(_)))
+        ));
+        assert_eq!(transport.writes.get(), 0);
+        assert_eq!(transport.pages.get(), 0);
+        assert_eq!(transport.state.borrow().uris, before);
+        assert!(batch.queue.is_none());
+
+        transport.state.borrow_mut().source = "x-rincon-queue:RINCON_COORDINATOR#0".into();
+        transport
+            .add(&mut batch, TRACK, 0, Effect::Healthy)
+            .unwrap();
+        assert_eq!(transport.writes.get(), 1);
+        assert_eq!(&transport.state.borrow().uris[..before.len()], before);
+    }
+}
+
+#[test]
+fn explicit_start_batches_can_append_while_another_source_plays() {
+    let transport = Model::new(3);
+    transport.state.borrow_mut().source = "http://example.invalid/radio.mp3".into();
+    let mut batch = Batch::new(&coordinator());
+    transport
+        .add(&mut batch, TRACK, 0, Effect::Healthy)
+        .unwrap();
+    assert_eq!(transport.writes.get(), 1);
+    assert_eq!(
+        transport.state.borrow().source,
+        "http://example.invalid/radio.mp3"
+    );
 }

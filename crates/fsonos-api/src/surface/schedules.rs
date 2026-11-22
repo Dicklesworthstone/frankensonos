@@ -49,10 +49,12 @@ use crate::plan::{self, TransportAction, resolve};
 use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, zone_name};
 
 mod announcements;
+mod bedtime;
 mod dispatch;
 mod recovery;
 mod sleep_dispatch;
 mod update;
+pub use bedtime::{SleepAppliedDto, SleepOutcome, SleepSetDto, SleepTargetFailureDto};
 pub use update::UpdateScheduleRequest;
 
 #[cfg(test)]
@@ -145,14 +147,17 @@ pub struct FadeVolumeRequest {
     pub fade_secs: u32,
 }
 
-/// `POST /pause/fade` / the `fade_and_pause` tool: fade the group a room
-/// plays in out over `fade_secs`, pause it, and put its volumes back.
+/// `POST /pause/fade` / the `fade_and_pause` tool: fade every selected group
+/// out over `fade_secs`, pause it, and put its volumes back.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FadePauseRequest {
     pub zone: String,
     /// How long the fade takes, 1-60 seconds.
     pub fade_secs: u32,
+    /// Optional audience revision from `/rooms/resolve`, not a queue token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
 }
 
 /// The house policy's fade for scheduled changes, when it has one.
@@ -224,13 +229,15 @@ fn about(secs: u32) -> String {
     format!(" (about {})", span(Duration::from_secs(u64::from(secs))))
 }
 
-/// `POST /sleep` body (the `set_sleep_timer` tool): pause the group a room
-/// plays in after `duration`, push its timer `duration` later (`extend`),
-/// or cancel it.
+/// `POST /sleep` body (the `set_sleep_timer` tool): pause every selected group
+/// after `duration`, push its timer `duration` later (`extend`), or cancel it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SleepRequest {
     pub zone: String,
+    /// Optional audience revision from `/rooms/resolve`, not a timer token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
     /// How long until it pauses: `45m`, `1h30m`, `90s`, or minutes (`45`);
     /// at most 23 hours.
     #[serde(default)]
@@ -271,6 +278,9 @@ impl SleepRequest {
 
     /// The change asked for, or why it is unusable.
     pub fn change(&self) -> Result<SleepChange, Failure> {
+        if let Some(revision) = &self.expected_revision {
+            super::source_control::validate_revision(revision)?;
+        }
         let duration = || -> Result<Duration, Failure> {
             let raw = self.duration.as_deref().unwrap_or_default().trim();
             let d = parse_duration(raw).ok_or_else(|| {
@@ -339,7 +349,7 @@ pub struct ScheduleRequest {
     /// `volume` (zone, volume), `apply_scene` (scene), or `announce` (announcement).
     pub action: String,
     /// Its room target (every action but apply_scene and announce). DJ starts,
-    /// immediate pauses and volume also accept an alias or `all` / `all@S2`.
+    /// pauses (including fades) and volume accept an alias or `all` / `all@S2`.
     #[serde(default)]
     pub zone: Option<String>,
     /// apply_scene: the scene's name.
@@ -813,6 +823,7 @@ fn groups_of(households: &[HouseholdState], players: &[PlayerId]) -> Vec<PlayerI
 }
 
 /// A group, as a sleep timer addresses it.
+#[derive(Debug)]
 struct Zone {
     coordinator: PlayerId,
     ip: IpAddr,
@@ -1220,6 +1231,12 @@ impl Surface {
         client: &Client,
         req: &SleepRequest,
     ) -> Result<SleepTimerDto, Failure> {
+        if req.expected_revision.is_some() {
+            return match self.change_sleep_timers(client, req, true)? {
+                SleepOutcome::Single(timer) => Ok(timer),
+                SleepOutcome::Groups(_) => unreachable!("single-group request was checked"),
+            };
+        }
         self.authorize_write(client, "set_sleep_timer")?;
         let change = req.change()?;
         let (households, zone) = self.zone_of(client, req.zone()?)?;
@@ -1231,8 +1248,10 @@ impl Surface {
             .inspect_err(|failure| self.notice(failure))?;
         let now = self.clock.now();
         let result = match &self.sleep {
-            Some(sleep) => self.sleep_in_daemon(sleep, &households, &zone, change, now),
-            None => self.sleep_on_speaker(&zone, change, now),
+            Some(sleep) => {
+                Self::sleep_in_daemon(&*self.transport, sleep, &households, &zone, change, now)
+            }
+            None => Self::sleep_on_speaker(&*self.transport, &zone, change, now),
         };
         if let Err(f) = &result {
             self.notice(f);
@@ -1265,14 +1284,14 @@ impl Surface {
     }
 
     fn sleep_in_daemon(
-        &self,
+        t: &dyn Transport,
         sleep: &Sleep,
         households: &[HouseholdState],
         zone: &Zone,
         change: SleepChange,
         now: DateTime<FixedOffset>,
     ) -> Result<SleepTimerDto, Failure> {
-        let (t, fader, utc) = (&*self.transport, &sleep.fader, now.to_utc());
+        let (fader, utc) = (&sleep.fader, now.to_utc());
         let at = &zone.coordinator;
         let timer = match change {
             SleepChange::Set(after) => {
@@ -1348,12 +1367,11 @@ impl Surface {
     }
 
     fn sleep_on_speaker(
-        &self,
+        t: &dyn Transport,
         zone: &Zone,
         change: SleepChange,
         now: DateTime<FixedOffset>,
     ) -> Result<SleepTimerDto, Failure> {
-        let t = &*self.transport;
         let after = match change {
             SleepChange::Set(after) => after,
             SleepChange::Extend(by) => {
@@ -1390,16 +1408,20 @@ impl Surface {
         })
     }
 
-    /// The sleep timers that run (`list_sleep_timers`, read-only): of the
-    /// group `zone` plays in, or of every group.
+    /// The sleep timers that run (`list_sleep_timers`, read-only): of every
+    /// group selected by `zone`, or of every group when omitted.
     pub fn sleep_timers(
         &self,
         client: &Client,
         zone: Option<&str>,
     ) -> Result<Vec<SleepTimerDto>, Failure> {
         self.guard(client).authorize("list_sleep_timers", true)?;
-        let zones = if let Some(z) = zone {
-            vec![self.zone_of(client, z)?.1]
+        let zones: Vec<Zone> = if let Some(z) = zone {
+            self.bedtime_targets(client, z, None)?
+                .1
+                .into_iter()
+                .map(|target| target.zone)
+                .collect()
         } else {
             let households = self.households()?;
             households
@@ -1552,13 +1574,9 @@ impl Surface {
                     self.check_mood(client, room, mood)?;
                 }
             }
-            // An immediate pause or a volume may name a set of rooms.
-            ScheduleAction::Pause { room, fade_secs: 0 } | ScheduleAction::Volume { room, .. } => {
+            // Pauses, including faded pauses, and volume may name room sets.
+            ScheduleAction::Pause { room, .. } | ScheduleAction::Volume { room, .. } => {
                 self.rooms_of(client, room)?;
-            }
-            // A faded pause fades one group.
-            ScheduleAction::Pause { room, .. } => {
-                self.zone_of(client, room)?;
             }
         }
         Ok(())
@@ -1828,6 +1846,17 @@ impl Surface {
         room: &str,
         over: Duration,
     ) -> Result<OutcomeDto, Failure> {
+        self.fade_bedtime_groups(client, tool, room, over, None)
+    }
+
+    /// The original unreviewed one-group path retains its response and reads.
+    fn fade_one_group(
+        &self,
+        client: &Client,
+        tool: &str,
+        room: &str,
+        over: Duration,
+    ) -> Result<OutcomeDto, Failure> {
         self.authorize_write(client, tool)?;
         let (households, zone) = self.zone_of(client, room)?;
         let own;
@@ -1888,11 +1917,16 @@ impl Surface {
         self.fade_volume(client, "fade_volume", &req.zone, level, over)
     }
 
-    /// Fade the group a room plays in out over its fade, pause it, and put its
-    /// volumes back (the `fade_and_pause` tool). The call answers when done.
+    /// Fade every selected group out together, pause it, and put its volumes
+    /// back (the `fade_and_pause` tool). The call answers when done.
     pub fn fade_out(&self, client: &Client, req: &FadePauseRequest) -> Result<OutcomeDto, Failure> {
         let over = call_fade(req.fade_secs)?;
-        self.fade_and_pause(client, "fade_and_pause", &req.zone, over)
+        match req.expected_revision.as_deref() {
+            Some(revision) => {
+                self.fade_bedtime_groups(client, "fade_and_pause", &req.zone, over, Some(revision))
+            }
+            None => self.fade_and_pause(client, "fade_and_pause", &req.zone, over),
+        }
     }
 }
 
@@ -1926,13 +1960,19 @@ fn scheduled_control_result(outcome: OutcomeDto) -> Result<String, Failure> {
     ))
 }
 
-/// Carry `schedule` out as its creator, through the surface's one control
-/// path; answers what was done.
+/// The exact audience admitted before a schedule's durable occurrence claim.
+#[derive(Debug)]
+enum PreparedRun {
+    Dj(PreparedDj),
+    Fade(bedtime::PreparedBedtime),
+}
+
+/// Carry `schedule` out as its creator through the surface's one control path.
 fn fire(
     surface: &Surface,
     schedule: &Schedule,
     announcement: Option<AnnouncementPermit>,
-    prepared_dj: Option<PreparedDj>,
+    prepared: Option<PreparedRun>,
 ) -> Result<String, Failure> {
     let client = client_of(&schedule.creator);
     let zone = |room: &str| ZoneRequest { zone: room.into() };
@@ -1941,12 +1981,12 @@ fn fire(
             if direction.is_some() {
                 surface.authorize_write(&client, "dj_steer")?;
             }
-            let prepared = prepared_dj.ok_or_else(|| {
-                Failure::new(
+            let Some(PreparedRun::Dj(prepared)) = prepared else {
+                return Err(Failure::new(
                     ErrorCode::Internal,
                     "scheduled DJ dispatch has no admitted audience",
-                )
-            })?;
+                ));
+            };
             surface
                 .control_prepared_dj(&client, "dj_start", prepared)
                 .and_then(scheduled_control_result)
@@ -1956,14 +1996,22 @@ fn fire(
                 plan::plan_transport_set(rooms, &zone(room), TransportAction::Pause)
             })
             .and_then(scheduled_control_result),
-        ScheduleAction::Pause { room, fade_secs } => surface
-            .fade_and_pause(
-                &client,
-                "pause",
-                room,
-                Duration::from_secs(u64::from(*fade_secs)),
-            )
-            .and_then(scheduled_control_result),
+        ScheduleAction::Pause { fade_secs, .. } => {
+            let Some(PreparedRun::Fade(prepared)) = prepared else {
+                return Err(Failure::new(
+                    ErrorCode::Internal,
+                    "scheduled faded pause has no admitted audience",
+                ));
+            };
+            surface
+                .fade_prepared_groups(
+                    &client,
+                    "pause",
+                    prepared,
+                    Duration::from_secs(u64::from(*fade_secs)),
+                )
+                .and_then(scheduled_control_result)
+        }
         ScheduleAction::Volume { room, level } if surface.policy().defaults.fade_secs > 0 => {
             let over = Duration::from_secs(u64::from(surface.policy().defaults.fade_secs));
             surface
@@ -2308,6 +2356,7 @@ mod tests {
 
     fn sleep_req(duration: Option<&str>, extend: bool, cancel: bool) -> SleepRequest {
         SleepRequest {
+            expected_revision: None,
             zone: "Patio".into(),
             duration: duration.map(Into::into),
             extend,
@@ -2557,6 +2606,7 @@ mod tests {
         let denied = s.fade_volume_to(&agent, &ramp).unwrap_err();
         assert_eq!(denied.code, ErrorCode::PolicyDenied, "{denied:?}");
         let out = FadePauseRequest {
+            expected_revision: None,
             zone: "Patio".into(),
             fade_secs: 2,
         };

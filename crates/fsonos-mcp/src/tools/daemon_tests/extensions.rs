@@ -32,7 +32,7 @@ fn definition() -> Value {
 
 fn schedule(enabled: bool) -> Value {
     json!({
-        "id": 17, "when": "weekdays 07:30", "action": "apply_scene",
+        "id": 17, "revision": "a".repeat(64), "when": "weekdays 07:30", "action": "apply_scene",
         "scene": NAME, "summary": "apply the evening scene",
         "creator": "mcp-stdio", "enabled": enabled
     })
@@ -47,7 +47,7 @@ fn announcement_recipe() -> Value {
 
 fn announcement_schedule() -> Value {
     json!({
-        "id": 18, "when": "weekdays 08:15", "action": "announce",
+        "id": 18, "revision": "b".repeat(64), "when": "weekdays 08:15", "action": "announce",
         "announcement": announcement_recipe(), "summary": "speak in Kitchen and Office",
         "creator": "mcp-stdio", "enabled": true
     })

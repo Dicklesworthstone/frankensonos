@@ -29,6 +29,12 @@ enum Fault {
     Regroup,
     Metadata,
     Paused,
+    AcknowledgedTakeover,
+    AcknowledgedRegroup,
+    AcknowledgedMetadata,
+    AcknowledgedDuringRead,
+    AcknowledgedNormalizedMetadata,
+    AcknowledgedAccountChange,
 }
 
 struct Replies {
@@ -105,15 +111,27 @@ impl Transport for Replies {
         }
         let mut response = self.inner.soap_post(host, path, action, body)?;
         if self.failed.get() && name == "GetMediaInfo" {
-            if matches!(self.fault, Fault::DuringRead) && !self.switched.replace(true) {
+            if matches!(
+                self.fault,
+                Fault::DuringRead | Fault::AcknowledgedDuringRead
+            ) && !self.switched.replace(true)
+            {
                 // Return the old read after an independent owner's switch.
                 self.takeover(host)?;
             }
-            if matches!(self.fault, Fault::Metadata) {
+            if matches!(self.fault, Fault::Metadata | Fault::AcknowledgedMetadata) {
                 let open = "<CurrentURIMetaData>";
                 let start = response.find(open).unwrap() + open.len();
                 let end = response.find("</CurrentURIMetaData>").unwrap();
-                response.replace_range(start..end, "");
+                let metadata = if matches!(self.fault, Fault::AcknowledgedMetadata) {
+                    "&lt;DIDL-Lite/&gt;"
+                } else {
+                    ""
+                };
+                response.replace_range(start..end, metadata);
+            }
+            if matches!(self.fault, Fault::AcknowledgedAccountChange) {
+                response = response.replace("SA_RINCON", "OTHER_ACCOUNT_");
             }
         }
         if !selected || matches!(self.fault, Fault::None) {
@@ -121,6 +139,32 @@ impl Transport for Replies {
         }
         self.failed.set(true);
         match self.fault {
+            Fault::AcknowledgedTakeover => {
+                soap::set_av_transport_uri(&self.inner, host, OTHER, "")?;
+                return Ok(response);
+            }
+            Fault::AcknowledgedRegroup => {
+                soap::join_group(&self.inner, host, &self.peer)?;
+                return Ok(response);
+            }
+            Fault::AcknowledgedMetadata | Fault::AcknowledgedAccountChange => return Ok(response),
+            Fault::AcknowledgedNormalizedMetadata => {
+                let selected = soap::get_media_info(&self.inner, host)?;
+                let metadata = selected
+                    .uri_metadata
+                    .replace("xmlns:dc=", "xmlns:title=")
+                    .replace("<dc:", "<title:")
+                    .replace("</dc:", "</title:")
+                    .replace(
+                        " parentID=\"-1\" restricted=\"true\"",
+                        " restricted='true' parentID='-1'",
+                    )
+                    .replace("><", ">\n  <");
+                assert_ne!(metadata, selected.uri_metadata);
+                soap::set_av_transport_uri(&self.inner, host, &selected.uri, &metadata)?;
+                return Ok(response);
+            }
+            Fault::AcknowledgedDuringRead => return Ok(response),
             Fault::Malformed => return Ok("<incomplete-reply>".into()),
             Fault::Takeover => self.takeover(host)?,
             Fault::Regroup => soap::join_group(&self.inner, host, &self.peer)?,
@@ -227,10 +271,117 @@ fn successful_replies_confirm_ownership_then_keep_the_two_write_path() {
     let f = Fixture::new(2);
     let replies = Replies::new(&f.sim, Fault::None, None);
     f.start(&replies, NEW, "").unwrap();
-    assert_eq!(
-        *replies.calls.borrow(),
-        ["GetZoneGroupState", "SetAVTransportURI", "Play"]
-    );
+    assert_eq!(replies.writes(), WRITES);
+    let calls = replies.calls.borrow();
+    assert_eq!(calls.first().map(String::as_str), Some("GetZoneGroupState"));
+    let selected = calls
+        .iter()
+        .position(|name| name == "SetAVTransportURI")
+        .unwrap();
+    let played = calls.iter().position(|name| name == "Play").unwrap();
+    let between = &calls[selected + 1..played];
+    assert!(between.iter().any(|name| name == "GetMediaInfo"));
+    assert!(between.iter().any(|name| name == "GetZoneGroupState"));
+}
+
+#[test]
+fn acknowledged_source_readback_accepts_xml_normalization_but_not_another_account() {
+    for generation in [1, 2] {
+        for fault in [
+            Fault::AcknowledgedNormalizedMetadata,
+            Fault::AcknowledgedAccountChange,
+        ] {
+            let f = Fixture::new(generation);
+            let (uri, metadata) = f.spotify();
+            let replies = Replies::new(&f.sim, fault, Some("SetAVTransportURI"));
+            let result = f.start(&replies, &uri, &metadata);
+            if matches!(fault, Fault::AcknowledgedNormalizedMetadata) {
+                result.unwrap();
+                assert_eq!(replies.writes(), WRITES);
+                assert_eq!(
+                    soap::get_transport_info(&f.sim.lan(), f.host)
+                        .unwrap()
+                        .state,
+                    TransportState::Playing
+                );
+            } else {
+                assert!(matches!(result, Err(CoreError::Uncertain(_))));
+                assert_eq!(replies.writes(), WRITES[..1]);
+                assert_eq!(
+                    soap::get_transport_info(&f.sim.lan(), f.host)
+                        .unwrap()
+                        .state,
+                    TransportState::Stopped
+                );
+            }
+            f.assert_queue_preserved();
+        }
+    }
+}
+
+#[test]
+fn acknowledged_source_selection_does_not_play_a_new_source_or_group() {
+    for generation in [1, 2] {
+        for fault in [
+            Fault::AcknowledgedTakeover,
+            Fault::AcknowledgedRegroup,
+            Fault::AcknowledgedDuringRead,
+        ] {
+            let f = Fixture::new(generation);
+            let replies = Replies::new(&f.sim, fault, Some("SetAVTransportURI"));
+            assert!(matches!(
+                f.start(&replies, NEW, ""),
+                Err(CoreError::Uncertain(_))
+            ));
+            assert_eq!(
+                replies.writes(),
+                WRITES[..1],
+                "no dependent Play or source replay"
+            );
+            if matches!(fault, Fault::AcknowledgedTakeover) {
+                assert_eq!(
+                    soap::get_media_info(&f.sim.lan(), f.host).unwrap().uri,
+                    OTHER
+                );
+                assert_eq!(
+                    soap::get_transport_info(&f.sim.lan(), f.host)
+                        .unwrap()
+                        .state,
+                    TransportState::Stopped,
+                    "a newly selected source stays silent"
+                );
+            }
+            f.assert_queue_preserved();
+        }
+    }
+}
+
+#[test]
+fn acknowledged_selection_preserves_requested_metadata_but_allows_unspecified_metadata() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation);
+        let replies = Replies::new(
+            &f.sim,
+            Fault::AcknowledgedMetadata,
+            Some("SetAVTransportURI"),
+        );
+        let (uri, metadata) = f.spotify();
+        assert!(matches!(
+            f.start(&replies, &uri, &metadata),
+            Err(CoreError::Uncertain(_))
+        ));
+        assert_eq!(replies.writes(), WRITES[..1]);
+
+        let f = Fixture::new(generation);
+        let replies = Replies::new(
+            &f.sim,
+            Fault::AcknowledgedMetadata,
+            Some("SetAVTransportURI"),
+        );
+        f.start(&replies, NEW, "").unwrap();
+        assert_eq!(replies.writes(), WRITES);
+        assert_eq!(soap::get_media_info(&f.sim.lan(), f.host).unwrap().uri, NEW);
+    }
 }
 
 #[test]
@@ -253,10 +404,9 @@ fn unapplied_requests_and_definite_refusals_never_advance_or_repeat() {
                 assert!(detail.contains(cause), "{detail}");
                 if matches!(fault, Fault::Rejected) {
                     assert_eq!(
-                        *replies.calls.borrow(),
-                        std::iter::once("GetZoneGroupState")
-                            .chain(WRITES[..=index].iter().copied())
-                            .collect::<Vec<_>>()
+                        replies.calls.borrow().last().map(String::as_str),
+                        Some(*stage),
+                        "a definite refusal adds no recovery reads"
                     );
                 }
             } else if matches!(fault, Fault::Rejected) {

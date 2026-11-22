@@ -3,7 +3,7 @@
 const DashboardLibraryPanel = (() => {
   const C = typeof DashboardCore !== 'undefined' ? DashboardCore : require('./dashboard-core.js');
   const L = typeof DashboardLibrary !== 'undefined' ? DashboardLibrary : require('./dashboard-library.js');
-  function create({ call, controller, session, doc = document, schedule = setTimeout, cancel = clearTimeout }) {
+  function create({ call, controller, session, offerScene, doc = document, schedule = setTimeout, cancel = clearTimeout }) {
     const dialog = doc.getElementById('search-dialog');
     if (!dialog) return null;
     const el = (tag, text, cls) => {
@@ -39,23 +39,39 @@ const DashboardLibraryPanel = (() => {
     form.append(categoryLabel, filterLabel, refresh, back);
     const navigation = el('nav', null, 'dashboard-library-pages'); navigation.setAttribute('aria-label', 'Cached library pages');
     const range = el('span'); navigation.append(previous, range, next);
+    let trackDestination = 'group', trackTarget = '', reviewing = false;
+    const destinationMode = el('select'); destinationMode.setAttribute('aria-label', 'Selected track destination');
+    for (const [value, label] of [['group', 'Current listening group'], ['set', 'Rooms or saved room set']]) {
+      const option = el('option', label); option.value = value; destinationMode.append(option);
+    }
+    const destinationInput = el('input'); destinationInput.type = 'text'; destinationInput.maxLength = 128;
+    destinationInput.setAttribute('aria-label', 'Rooms or room set for selected tracks');
+    destinationInput.placeholder = 'Saved alias, everywhere, all@S1 or all@S2';
+    const destinationLabel = el('label', 'Selected tracks in'); destinationLabel.append(destinationMode);
+    const targetLabel = el('label', 'Rooms or room set'); targetLabel.append(destinationInput);
+    const destinations = el('div', null, 'dashboard-library-tools'); destinations.append(destinationLabel, targetLabel);
     const selectedCount = el('span');
     const selectedPlay = button('Play selected now', () => { void selectTracks('play'); });
     const selectedNext = button('Queue selected next', () => { void selectTracks('next'); });
     const selectedEnd = button('Add selected to end', () => { void selectTracks('append'); });
+    const selectedScene = button('Save selection as scene', () => { void selectScene(); });
+    selectedScene.hidden = typeof offerScene !== 'function';
     const selectedClear = button('Clear selection', () => control.clearSelection());
     const selectedActions = el('div', null, 'dashboard-library-actions');
     selectedActions.setAttribute('role', 'group'); selectedActions.setAttribute('aria-label', 'Selected track actions');
-    selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedClear);
-    const selectionHelp = el('p', `Select up to ${L.MAX_TRACKS} tracks on this page to play now or add to the queue. The shown order and repeated occurrences are preserved. Changing the page or filter clears the selection.`, 'small-note');
+    selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedScene, selectedClear);
+    const selectionHelp = el('p', `Build a selection of up to ${L.MAX_TRACKS} tracks from different cached albums, playlists and filters. Keep browsing, then move, repeat or remove tracks below before review. Refresh listing, Clear selection or closing this browser clears it.`, 'small-note');
+    const selectionNotice = el('p', '', 'small-note'); selectionNotice.setAttribute('role', 'status');
+    const basket = el('ol', null, 'dashboard-library-selection');
+    basket.setAttribute('aria-label', 'Selected tracks in playback order');
     body.append(el('p', 'Browse the daemon’s saved cache. It may be older or incomplete; browsing does not sync Spotify.', 'small-note'),
-      scope, form, status, selectionHelp, selectedActions, rows, navigation); node.append(body);
+      scope, form, status, selectionHelp, selectionNotice, destinations, selectedActions, basket, rows, navigation); node.append(body);
     (doc.getElementById('search-results') || dialog.lastElementChild)?.before(node);
     let disposed = false, timer = null, focusAlbum = false, lastPage = null;
     const visible = () => !disposed && !doc.hidden && dialog.open && node.open && node.isConnected && !node.closest('[hidden], [inert]');
     const control = L.model({ call, changed: render });
     function clearTimer() { if (timer !== null) cancel(timer); timer = null; }
-    function close() { clearTimer(); node.open = false; control.close(); }
+    function close() { clearTimer(); if (reviewing) session.cancel(); node.open = false; control.close(); }
     function select(item, action, destination) {
       if (!visible() || !destination || !controller.canControl() || session.state.pending) return;
       const selected = controller.selected(), choice = control.choose(item);
@@ -70,14 +86,56 @@ const DashboardLibraryPanel = (() => {
       }
     }
     async function selectTracks(action) {
-      if (!visible() || !controller.canControl() || session.state.pending) return;
+      if (!visible() || reviewing || !controller.canControl() || session.state.pending) return;
       const selected = controller.selected(), choice = control.chooseTracks();
       if (!selected || !choice) return;
-      const destination = Object.freeze({ target: C.key(selected.zone), shape: C.shape(selected.zone) });
-      close(); dialog.close();
-      if (!await session.reviewLibraryTracks(choice, action, destination) && !disposed && !doc.hidden) {
-        dialog.showModal(); node.open = true;
-        status.textContent = session.state.error || 'The destination changed. Refresh before reviewing the selected tracks.';
+      const destination = Object.freeze(trackDestination === 'set' ? { target: trackTarget, set: true }
+        : { target: C.key(selected.zone), shape: C.shape(selected.zone) });
+      reviewing = true; render(control.state);
+      try {
+        const reviewed = await session.reviewLibraryTracks(choice, action, destination);
+        if (!visible()) { if (reviewed === session.state.pending) session.cancel(); return; }
+        if (reviewed) {
+          // Keep the basket through asynchronous review. Only a valid review
+          // consumes this chooser; failed reads leave the selection editable.
+          reviewing = false; close(); dialog.close();
+        } else {
+          reviewing = false; render(control.state);
+          status.textContent = session.state.error || 'The destination changed. Review the selected tracks again.';
+        }
+      } finally {
+        reviewing = false;
+        if (!disposed) {
+          render(control.state);
+          if (visible() && session.state.error) status.textContent = session.state.error;
+        }
+      }
+    }
+    async function selectScene() {
+      if (!visible() || reviewing || trackDestination !== 'group' || !controller.canControl()
+          || session.state.pending || typeof offerScene !== 'function') return;
+      const selected = controller.selected(), choice = control.chooseTracks();
+      if (!selected || !choice) return;
+      const shape = C.shape(selected.zone), target = C.key(selected.zone);
+      const valid = () => {
+        if (!visible() || !controller.canControl() || session.state.pending
+            || target !== controller.state.selected || shape !== C.shape(controller.selected().zone)) {
+          throw new Error('The selected group changed. Review the music and group again.');
+        }
+      };
+      let problem = '';
+      reviewing = true; render(control.state);
+      try {
+        await L.verifySelection(call, choice, valid); valid();
+        const Q = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote : require('./queue-tracks.js');
+        const selection = Object.freeze({ kind: 'tracks', tracks: Q.tracksOf(choice.rows.map(row => row.item)),
+          group: Object.freeze({ target, members: Object.freeze(selected.zone.members.map(room => `${room}@${selected.zone.household}`).sort()) }) });
+        if (offerScene(selection) !== true) throw new Error('Close any unfinished scene draft, then choose Save selection as scene again.');
+        reviewing = false; close(); dialog.close();
+      } catch (error) { problem = C.problem(error); }
+      finally {
+        reviewing = false;
+        if (!disposed) { render(control.state); if (visible() && problem) status.textContent = problem; }
       }
     }
     function render(state) {
@@ -88,15 +146,48 @@ const DashboardLibraryPanel = (() => {
         : 'You can browse without speakers. Choose a listening group before playing or queueing.';
       kind.value = state.kind; if (filter.value !== state.filter) filter.value = state.filter;
       body.setAttribute('aria-busy', String(state.loading));
-      refresh.disabled = !visible() || state.loading;
+      refresh.disabled = !visible() || state.loading || reviewing;
       back.hidden = !state.album && !state.playlist;
       back.textContent = state.playlist ? 'Back to playlists' : 'Back to albums';
-      const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired;
-      selectionHelp.hidden = selectedActions.hidden = state.kind !== 'tracks';
-      selectedCount.textContent = `${state.selected.length} selected`;
-      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !usable || !state.selected.length || !destination
+      kind.disabled = filter.disabled = reviewing;
+      const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired && !reviewing;
+      const basketUsable = visible() && !state.loading && !reviewing;
+      destinations.hidden = !state.basket.length;
+      destinationMode.value = trackDestination; destinationMode.disabled = reviewing || controller.state.busy;
+      if (destinationInput.value !== trackTarget) destinationInput.value = trackTarget;
+      targetLabel.hidden = trackDestination !== 'set'; destinationInput.disabled = reviewing || controller.state.busy;
+      selectionHelp.hidden = selectedActions.hidden = state.kind !== 'tracks' && !state.basket.length;
+      selectionNotice.textContent = state.selectionNotice; selectionNotice.hidden = !state.selectionNotice;
+      selectedCount.textContent = `${state.basket.length} selected`;
+      selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !basketUsable || !state.basket.length || (trackDestination === 'set' ? !trackTarget.trim() : !destination)
         || !controller.canControl() || !!session.state.pending;
-      selectedClear.disabled = !usable || !state.selected.length;
+      selectedScene.disabled = selectedPlay.disabled || trackDestination !== 'group';
+      selectedClear.disabled = !visible() || reviewing || !state.basket.length;
+      const basketFocus = basket.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
+      basket.hidden = !state.basket.length;
+      basket.replaceChildren();
+      for (const [index, selectedRow] of state.basket.entries()) {
+        const item = selectedRow.item, name = item.title || 'Untitled track';
+        const row = el('li'), info = el('div');
+        info.append(el('strong', name));
+        const location = item.position ? `Playlist position ${item.position}`
+          : selectedRow.page.query.album_uri ? `Disc ${item.disc_number ?? '?'}, track ${item.track_number ?? '?'}`
+          : `Listing position ${selectedRow.page.query.offset + selectedRow.index + 1}`;
+        info.append(el('p', [item.subtitle, L.selectionOrigin(selectedRow.page), location,
+          item.explicit_known === false ? 'Explicit-content metadata unavailable' : item.explicit ? 'Explicit' : ''].filter(Boolean).join(' · '), 'small-note'));
+        const actions = el('div', null, 'dashboard-library-actions');
+        for (const [label, operation, disabled] of [
+          ['Move earlier', () => control.moveTrack(selectedRow.id, -1), index === 0],
+          ['Move later', () => control.moveTrack(selectedRow.id, 1), index === state.basket.length - 1],
+          ['Repeat track', () => control.repeatTrack(selectedRow.id), state.basket.length >= L.MAX_TRACKS],
+          ['Remove selection', () => control.removeTrack(selectedRow.id), false],
+        ]) {
+          const edit = button(label, () => { if (visible()) operation(); }, `basket:${selectedRow.id}:${label}`);
+          edit.setAttribute('aria-label', `${label}: selection ${index + 1}, ${name}`);
+          edit.disabled = !basketUsable || disabled; actions.append(edit);
+        }
+        row.append(info, actions); basket.append(row);
+      }
       previous.disabled = !usable || !p || p.query.offset === 0;
       next.disabled = !usable || !p || p.next === null;
       range.textContent = p?.total ? `${p.query.offset + 1}–${p.query.offset + p.items.length} of ${p.total}` : '';
@@ -120,7 +211,7 @@ const DashboardLibraryPanel = (() => {
           const checkbox = el('input'); checkbox.type = 'checkbox'; checkbox.checked = state.selected.includes(index);
           checkbox.dataset.catalogKey = `select:${index}`;
           checkbox.setAttribute('aria-label', `Select ${item.position ? `playlist position ${item.position}, ` : ''}${name}`);
-          checkbox.disabled = !usable || (!checkbox.checked && state.selected.length >= L.MAX_TRACKS);
+          checkbox.disabled = !usable || (!checkbox.checked && state.basket.length >= L.MAX_TRACKS);
           checkbox.addEventListener('change', () => { if (visible()) control.selectTrack(item, checkbox.checked); });
           const label = el('label', null, 'dashboard-library-select-track'); label.append(checkbox, doc.createTextNode('Select track'));
           info.append(label);
@@ -149,19 +240,32 @@ const DashboardLibraryPanel = (() => {
       rows.scrollTop = scroll;
       if (focusAlbum && !state.loading) { focusAlbum = false; if (visible()) status.focus({ preventScroll: true }); }
       else if (focus && visible()) [...rows.querySelectorAll('[data-catalog-key]')].find(b => b.dataset.catalogKey === focus)?.focus({ preventScroll: true });
+      else if (basketFocus && visible()) {
+        const replacement = [...basket.querySelectorAll('[data-catalog-key]')].find(b => b.dataset.catalogKey === basketFocus);
+        if (replacement && !replacement.disabled) replacement.focus({ preventScroll: true });
+        else status.focus({ preventScroll: true });
+      }
     }
     const toggle = () => {
       clearTimer();
       if (visible()) void control.open(); else control.close();
     };
     node.addEventListener('toggle', toggle); dialog.addEventListener('close', close);
+    destinationMode.addEventListener('change', () => {
+      if (!visible() || reviewing || controller.state.busy) return;
+      trackDestination = destinationMode.value; session.cancel(); render(control.state);
+    });
+    destinationInput.addEventListener('input', () => {
+      if (!visible() || reviewing || controller.state.busy) return;
+      trackTarget = destinationInput.value; session.cancel(); render(control.state);
+    });
     kind.addEventListener('change', () => { if (visible()) { clearTimer(); void control.browse(kind.value); } });
     filter.addEventListener('input', () => {
       if (!visible()) return;
       clearTimer(); control.edit(filter.value);
-      timer = schedule(() => { timer = null; if (visible()) void control.refresh(); }, 300);
+      timer = schedule(() => { timer = null; if (visible()) void control.applyFilter(); }, 300);
     });
-    form.addEventListener('submit', e => { e.preventDefault(); if (visible()) { clearTimer(); void control.refresh(); } });
+    form.addEventListener('submit', e => { e.preventDefault(); if (visible()) { clearTimer(); void control.applyFilter(); } });
     render(control.state);
     return { node, model: control, open() {
       if (disposed || doc.hidden || !dialog.open) return;

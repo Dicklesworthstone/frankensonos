@@ -1087,12 +1087,23 @@ outside the music library and DJ selection pool.
 Explicit ordered selections now share `POST /queue/tracks`, CLI `queue-tracks`
 and MCP `add_tracks_to_queue`. One request inserts 1–10 concrete Spotify tracks
 or episodes next or at the end, retaining intentional duplicates and current
-playback. The phone and dashboard select exact entries from one cached page,
-review the ordered list and destination, then recheck catalog, group, playback
-and queue before submission. The optional destination revision is separate from
-the library revision. One successful batch has one inserted-range undo record;
-an uncertain partial batch is not replayed and leaves an undo barrier. The
-existing `add_to_queue` policy and bounded insertion engine apply throughout.
+playback. The phone and dashboard retain exact entries across cached albums,
+playlists, filters and their pages, with explicit move, repeat and removal
+controls and visible source origins. Every distinct selected page is rechecked
+against its own listing revision before review and again at confirmation;
+the final command retains the chosen order and intentional duplicates.
+Changed selected-source evidence blocks submission. Explicit refreshes, clearing
+or closing the chooser retire the selection; browsing another collection retains it.
+Group, playback and queue are also checked before submission. Quiet ordered
+queue additions accept saved aliases and all/everywhere through CLI, HTTP and
+MCP, deduplicating groups and retaining every destination before renderer
+reads. Each group receives the same sequence. Complete and partial receipts
+retain each insertion range and failure; incomplete CLI/MCP results signal an
+error while preserving those receipts. The optional direct destination queue
+revision is separate from the library revision and applies to one group only.
+A confirmed batch can share one inserted-range undo; any uncertain insertion
+leaves a whole-action barrier. The existing `add_to_queue` policy and bounded
+insertion engine apply throughout.
 See [`docs/QUEUE_TRACK_SELECTIONS.md`](docs/QUEUE_TRACK_SELECTIONS.md).
 
 Explicit selections also support **Play selected now** in both cached-library
@@ -1104,7 +1115,23 @@ permission/caps, then reuses staged queue replacement to start the first item
 in NORMAL order. Full replacement undo is available only with the existing
 complete original queue proof; other starts retain the action-history barrier.
 Browser review makes replacement explicit and rechecks the selected cached
-occurrences, playback and destination queue before one command.
+occurrences, playback and destination queues before one command. Ordered
+playback accepts aliases and all/everywhere through CLI, HTTP and MCP,
+deduplicating existing groups and retaining every original destination before
+renderer learning. Each group receives the same order and intentional
+duplicates; a scalar destination queue revision remains valid only for a
+one-group selection. Multi-group results retain individual receipts and offer
+one undo only with complete replacement proof for every affected group.
+
+Both cached-library baskets expose **Rooms or saved room set** for ordered
+playback and quiet queueing. Destination edits retain the basket's order and
+repeats while retiring its review. The review shows every affected group and
+its source/queue effect. Confirmation rechecks each selected source page and
+destination, reserves the existing command lanes, and sends one
+`POST /sources/control` with `source.kind = "tracks"` and the resolver's
+whole-audience revision. Partial and uncertain results remain visible without
+replay. A failed dashboard review leaves the chooser and basket editable;
+closing it during a pending read cancels the review.
 
 [`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
 own household, so playing one needs no render-param learning. That makes it the
@@ -1174,6 +1201,16 @@ and suspension until an explicit original-household catalog read. No Swift
 toolchain was available for local execution; see
 [Native playlist management](docs/NATIVE_SONOS_PLAYLIST_MANAGEMENT.md).
 
+The native Apple app now also authors My Sonos favorites in **Music → Favorites**:
+save the current native track or station, inspect and rename an exact saved
+entry, or remove it. Source and catalog revisions are reread at confirmation;
+all changes share the playback command session and retain original-household
+results through navigation and suspension. Uncertain outcomes require an
+explicit original-household catalog read before another favorite edit, with no
+automatic replay. Swift fixture coverage is included; local Swift execution
+requires an unavailable toolchain, so the Apple SDK workflow remains the runtime
+gate. See [favorite management](docs/FAVORITES_MANAGEMENT.md).
+
 Native queue creation is available through `fsonos playlist-save <room> <title>`,
 `POST /sonos/playlists/save`, MCP `save_sonos_playlist`, the phone's
 **Queue → Save queue as playlist**, and the dashboard's **Speaker queue →
@@ -1224,6 +1261,21 @@ intact. Future scene recalls use edited contents. Lost or unconfirmed replies
 are never replayed. Browser review names the exact occurrences and destination,
 rechecks them before dispatch, and retains uncertain results in their original
 household. See [Saved Sonos playlists](docs/SONOS_PLAYLISTS.md).
+
+Existing native playlists can now receive 1–10 selected occurrences from a
+retained group queue or another saved playlist through `playlist-append-tracks`,
+HTTP `/sonos/playlists/append-tracks`, MCP `append_sonos_playlist_tracks`, and
+the shared phone/dashboard editor. Separate source and destination revisions
+bind the selection; deliberate repeats and supplied order survive. Native
+`AddURIToSavedQueue` preserves the destination identity and playing queue.
+Every append must confirm the full saved prefix and retained track metadata
+before the next write. A batch that stops after partial progress reports its
+confirmed count without replay or automatic rollback. Original-household
+recovery reads the destination contents, including the append boundary.
+Browser model regressions and pinned nightly workspace formatting pass locally.
+The new protocol/core/API/simulator Rust regressions still require execution;
+earlier dependency builds were killed before project tests ran. Physical S1/S2
+acceptance remains separate.
 
 The phone and Listening room source editors expose these catalog edits through
 a shared **Manage saved playlist** review. Both read the exact saved contents
@@ -1328,6 +1380,29 @@ mood). `scene apply` diffs current state against the scene and issues only the
 operations needed. One call replaces five to ten, and it matches how people
 describe what they want ("dinner", "work").
 
+Authored `kind: tracks` sources now retain 1–10 concrete Spotify track or
+episode identities with exact order, repeated occurrences and optional titles.
+CLI, HTTP and MCP author and expose the full sequence; the web custom scene
+editor accepts ordered links and titles and its scene and routine reviews
+recheck every occurrence. Recall and scheduled ApplyScene share the existing
+bound ordered writer, all-destination readiness, caller/writer permissions,
+prospective audience caps and actual replacement receipts. Silent loads never
+start the requested queue. Full audience checks bracket destination capture
+after intentional regrouping, including for existing artist/show sources.
+Complete recalls on unchanged groups can retain queue-content and scoped-level
+undo; partial or unproved outcomes remain barriers. MCP marks an incomplete
+apply as a tool error while preserving its full receipt. See
+`docs/ORDERED_TRACK_SCENES.md`. Focused browser regressions pass; the newly
+authored Rust regressions still await execution because local dependency
+compilation is terminated before project code is reached.
+
+Both browser library baskets now hand their exact ordered selection to reviewed
+scene authoring. The phone opens its custom editor with the complete selected
+group; the dashboard reuses its scene-save dialog with a name and explicit
+playing/silent intent. Saving performs no queue or playback mutation, retains
+order and repeats, and rechecks the saved name and physical grouping before
+storage. These reusable scenes can then be selected by ordinary routines.
+
 Authored Spotify artist and show sources are resolved on each recall, including
 scheduled scenes. Saving retains the canonical URI without a catalog lookup.
 A readiness phase resolves every permitted source, deduplicates repeated URIs,
@@ -1408,6 +1483,14 @@ before readiness reads, while independently permitted room changes remain.
 answers (`zones` in under 100 ms) and otherwise falls back to direct LAN mode
 with the cached inventory. Every command takes `--json`; shell completions
 complete room names; `--daemon` and `--direct` force a mode.
+
+Local daemon replies are decoded incrementally. CLI and forwarded stdio MCP
+calls finish when a complete length-delimited or chunked response arrives,
+without waiting for socket closure. Header/trailer metadata is bounded to
+64 KiB and decoded response bodies to 16 MiB; chunk framing is discarded as it
+is consumed. Unframed replies still require EOF. Truncated, oversized or
+ambiguous replies retain the existing uncertain-mutation result and never
+authorize a retry. The total request deadline remains in force throughout.
 
 ### 12.9 A DJ that learns
 
@@ -1493,6 +1576,26 @@ environment becoming unavailable.
 `schedule add "weekdays 07:30" dj start Kitchen --mood bright` or a scene.
 Device alarms can't start the DJ or a scene and differ between S1 and S2, so the
 daemon owns scheduling. A run missed by more than 10 minutes is skipped.
+
+Sleep set, extend, cancel and read operations now accept saved room aliases,
+`all` / `everywhere`, and `all@S1` / `all@S2`. Each distinct existing group
+retains its own timer and returns its confirmed result or failure; grouped
+rooms act once and cross-household targets do not regroup speakers. Immediate
+and scheduled faded pauses use the same resolved audiences, with bounded
+concurrent fades, unchanged inactive groups, per-group receipts and one
+non-undoable action-history boundary. A scheduled fade retains its admitted
+physical audience through the durable occurrence claim. CLI, HTTP and MCP
+preserve partial results without replay, and the phone and dashboard expose
+reviewed bedtime actions through their shared room-set panel. Reviews include
+each group's current timer and playback, tolerate ordinary countdown progress,
+and invalidate after changed targets or timer edits. See
+[Multi-room bedtime](docs/MULTI_ROOM_BEDTIME.md).
+
+The phone and dashboard routine forms also create and edit pause routines for
+saved aliases and household targets, including fades up to 600 seconds. They
+review complete physical groups and recheck the resolver revision before
+saving, preserve an edited routine's target expression and creator, and send no
+immediate playback command. Future occurrences resolve the saved target anew.
 
 Run and skip admission atomically compare the stored schedule definition,
 enabled state and prior occurrence while recording the new occurrence. A pause,
@@ -1687,6 +1790,15 @@ SOAP code and enters the existing one-budget, original-room recovery path. A lat
 ownership mismatch cannot replay a partially completed operation. S1/S2 simulator
 regressions cover wrong-endpoint rejection and successful intended-room recovery.
 
+Acknowledged starts now recheck their completed stages too. Direct sources
+must still match their requested URI and supplied metadata before Play. Queue
+starts retain the original requested occurrence and revision before source
+selection, then check that proof and the preceding stage before each dependent
+write. Ordered starts retain NORMAL through the final Play admission. An absent
+occurrence fails before source interruption; a later takeover or unreadable
+proof leaves an uncertain partial result without restarting completed writes.
+These observations do not lock another controller out between reads and writes.
+
 The daemon supervises its live inventory/event worker, DJ queue follower,
 listening-history follower and configured Spotify refresh watcher alongside
 required HTTP/MCP listeners and the scheduler. An unexpected worker return or
@@ -1718,8 +1830,13 @@ engines. Single-group responses keep their shape; multi-group receipts report
 each confirmed range and failure, completion, logging and verified undo
 availability. Definite refusals can leave confirmed additions undoable together;
 any uncertain insertion leaves a whole-action barrier. CLI prints the complete
-receipt and exits nonzero on incomplete batches. Search picks, line-in and
-revision-bound ordered track selections keep their single-group contracts.
+receipt and exits nonzero on incomplete batches. Ordered track playback also
+uses the set executor, with the same sequence in each group and per-group
+replacement proof. Ordered queue additions use the same retained-target
+insertion path, preserving next/append behavior and per-group receipts. Both
+browser baskets use the reviewed source endpoint for all three ordered-track
+modes, binding the exact selection to the resolver's whole-audience revision.
+Search picks and line-in keep their single-group contracts.
 See [Multi-room playback](docs/MULTI_ROOM_PLAYBACK.md)
 for the interface, restoration limits and validation status.
 

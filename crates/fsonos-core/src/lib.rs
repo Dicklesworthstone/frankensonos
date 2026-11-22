@@ -117,6 +117,9 @@ pub enum CoreError {
     /// contents observation the caller is continuing. Read again from zero.
     #[error("{0}")]
     PlaylistChanged(String),
+    /// An observed queue selection no longer names the same occurrences.
+    #[error("{0}")]
+    QueueChanged(String),
     /// A reviewed favorite or current source no longer has its original identity.
     #[error("{0}")]
     FavoriteChanged(String),

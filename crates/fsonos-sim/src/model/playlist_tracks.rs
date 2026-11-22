@@ -1,12 +1,110 @@
-//! One native CSV edit addresses original saved-playlist occurrences and
-//! their final positions. The playing queue is a separate copy.
+//! Native saved-playlist appends and CSV edits retain original occurrences.
+//! The playing queue is a separate copy.
 
 use super::{
-    Args, Fault, INVALID_ARGS, Out, QueueItem, STALE_UPDATE_ID, State, TRANSITION_NOT_AVAILABLE,
+    Args, Fault, INVALID_ARGS, Out, QueueItem, SONOS_FAILURE, STALE_UPDATE_ID, State,
+    TRANSITION_NOT_AVAILABLE,
 };
+use fsonos_proto::didl::{DidlKind, parse_didl};
+use fsonos_proto::queue::{MAX_SAVED_TRACK_METADATA_BYTES, MAX_SAVED_TRACK_URI_BYTES};
 use std::collections::HashSet;
 
+const TRACK_CLASS: &str = "object.item.audioItem.musicTrack";
+
+#[cfg(test)]
+mod append_tests;
+
 impl State {
+    /// The append-only native operation used by the controller. Its saved
+    /// catalog is independent of every player's retained queue and source.
+    pub(super) fn append_saved_track(
+        &mut self,
+        player: usize,
+        args: &Args<'_>,
+    ) -> Result<Out, Fault> {
+        self.require_coordinator(player)?;
+        if args.num::<u32>("InstanceID")? != 0 || args.num::<u32>("AddAtIndex")? != u32::MAX {
+            return Err(INVALID_ARGS);
+        }
+        let id = args
+            .get("ObjectID")?
+            .strip_prefix("SQ:")
+            .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|id| id.parse::<u32>().ok())
+            .ok_or(INVALID_ARGS)?;
+        let revision = args.num::<u32>("UpdateID")?;
+        let uri = args.get("EnqueuedURI")?;
+        let metadata = args.get("EnqueuedURIMetaData")?;
+        if uri.is_empty()
+            || uri.len() > MAX_SAVED_TRACK_URI_BYTES
+            || uri.chars().any(|c| c.is_control() || c.is_whitespace())
+            || metadata.len() > MAX_SAVED_TRACK_METADATA_BYTES
+        {
+            return Err(INVALID_ARGS);
+        }
+        let objects = parse_didl(metadata).map_err(|_| INVALID_ARGS)?;
+        let [item] = objects.as_slice() else {
+            return Err(INVALID_ARGS);
+        };
+        if item.kind != DidlKind::Item
+            || !(item.class == TRACK_CLASS
+                || item
+                    .class
+                    .strip_prefix(TRACK_CLASS)
+                    .is_some_and(|suffix| suffix.starts_with('.')))
+            || item.res.as_ref().is_none_or(|resource| resource.uri != uri)
+        {
+            return Err(INVALID_ARGS);
+        }
+        if let Err(fault) = self.check_renderable(player, uri, metadata) {
+            // Queue Browse omits the service descriptor in this fixture.
+            // A saved-catalog copy retains that metadata without inventing a
+            // descriptor; its full Spotify resource still pins the account.
+            let params = &self.households[self.players[player].household].params;
+            let account_matches = uri.starts_with("x-sonos-spotify:")
+                && uri.split_once('?').is_some_and(|(_, query)| {
+                    [format!("sid={}", params.sid), format!("sn={}", params.sn)]
+                        .iter()
+                        .all(|parameter| query.split('&').any(|part| part == parameter.as_str()))
+                });
+            if fault != SONOS_FAILURE || item.desc.is_some() || !account_matches {
+                return Err(fault);
+            }
+        }
+        let track = QueueItem {
+            uri: self.queued_uri(player, uri),
+            metadata: metadata.to_owned(),
+            title: item.title.clone(),
+            creator: item.creator.clone(),
+            album: item.album.clone(),
+            duration_ms: item
+                .res
+                .as_ref()
+                .and_then(|resource| resource.duration_secs())
+                .map_or(180_000, |seconds| u64::from(seconds) * 1000),
+        };
+        let house = &mut self.households[self.players[player].household];
+        if revision != 0 && revision != house.saved_playlists_update_id {
+            return Err(STALE_UPDATE_ID);
+        }
+        let saved = house
+            .saved_playlists
+            .iter_mut()
+            .find(|saved| saved.id == id)
+            .ok_or(TRANSITION_NOT_AVAILABLE)?;
+        let total = u32::try_from(saved.tracks.len())
+            .map_err(|_| INVALID_ARGS)?
+            .checked_add(1)
+            .ok_or(INVALID_ARGS)?;
+        saved.tracks.push(track);
+        house.saved_playlists_update_id = house.saved_playlists_update_id.wrapping_add(1);
+        Ok(vec![
+            ("NumTracksAdded", "1".into()),
+            ("NewQueueLength", total.to_string()),
+            ("NewUpdateID", house.saved_playlists_update_id.to_string()),
+        ])
+    }
+
     pub(super) fn reorder_saved_tracks(
         &mut self,
         player: usize,

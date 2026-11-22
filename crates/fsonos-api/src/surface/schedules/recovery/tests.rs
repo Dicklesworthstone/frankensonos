@@ -178,6 +178,7 @@ fn set(surface: &Surface, room: &str, duration: &str, extend: bool) {
         .set_sleep_timer(
             &Client::Cli,
             &SleepRequest {
+                expected_revision: None,
                 zone: room.into(),
                 duration: Some(duration.into()),
                 extend,
@@ -192,6 +193,7 @@ fn cancel_timer(surface: &Surface, room: &str) {
         .set_sleep_timer(
             &Client::Cli,
             &SleepRequest {
+                expected_revision: None,
                 zone: room.into(),
                 duration: None,
                 extend: false,
@@ -343,6 +345,7 @@ fn an_invalid_extension_does_not_consume_the_pending_timer() {
             .set_sleep_timer(
                 &Client::Cli,
                 &SleepRequest {
+                    expected_revision: None,
                     zone: "RecoverA".into(),
                     duration: Some("23h".into()),
                     extend: true,
@@ -484,6 +487,7 @@ fn recovery_is_single_flight_and_does_not_block_the_tick_thread() {
 fn a_former_coordinator_is_not_adopted_into_its_new_group() {
     let h = House::new(true);
     let original = h.seed();
+    let reads = h.replies.count.load(Ordering::SeqCst);
     let id = h.id("RecoverA");
     h.rooms.lock().unwrap()[0]
         .groups
@@ -491,7 +495,7 @@ fn a_former_coordinator_is_not_adopted_into_its_new_group() {
     let surface = h.surface();
     assert_eq!(surface.adopt_sleep_timers(), 0);
     assert_eq!(h.saved(), [original]);
-    assert_eq!(h.replies.count.load(Ordering::SeqCst), 0);
+    assert_eq!(h.replies.count.load(Ordering::SeqCst), reads);
 }
 
 #[test]

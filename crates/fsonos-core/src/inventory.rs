@@ -142,10 +142,17 @@ fn read_players<T: Transport + ?Sized>(
     mut out: Observations,
 ) -> Observations {
     let first_new = out.described.len();
+    let urls: Vec<_> = found
+        .iter()
+        .map(|(ip, _)| ssdp::description_url(*ip))
+        .collect();
+    let mut descriptions = t.http_get_many(&urls, &|| false).into_iter();
     for (ip, household) in found {
-        let url = ssdp::description_url(ip);
-        match t
-            .http_get(&url)
+        match descriptions
+            .next()
+            .unwrap_or(Err(ProtoError::NotWired(
+                "description batch omitted a result",
+            )))
             .and_then(|body| parse_device_description(&body))
         {
             Ok(desc) => out.described.push((ip, desc, household)),
@@ -579,6 +586,58 @@ impl HouseholdState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Descriptions;
+
+    impl Transport for Descriptions {
+        fn soap_post(
+            &self,
+            _host: IpAddr,
+            _path: &str,
+            _action: &str,
+            _body: &str,
+        ) -> Result<String, ProtoError> {
+            panic!("unread descriptions cannot authorize topology requests")
+        }
+
+        fn http_get_many(
+            &self,
+            urls: &[String],
+            _cancelled: &(dyn Fn() -> bool + Sync),
+        ) -> Vec<Result<String, ProtoError>> {
+            assert_eq!(urls.len(), 3);
+            vec![
+                Err(ProtoError::Network {
+                    target: urls[0].clone(),
+                    detail: "timeout".into(),
+                }),
+                Ok("invalid XML".into()),
+                // A broken wrapper cannot silently drop the remaining address.
+            ]
+        }
+    }
+
+    #[test]
+    fn description_batches_keep_every_failure_attached_to_its_discovery_address() {
+        let addresses = ["192.0.2.3", "192.0.2.1", "192.0.2.2"];
+        let found = addresses
+            .iter()
+            .map(|address| (address.parse().unwrap(), None))
+            .collect();
+        let observations = read_players(&Descriptions, found, &[], Observations::default());
+        assert!(observations.described.is_empty());
+        let failures = observations.report.unreachable;
+        assert_eq!(
+            failures
+                .iter()
+                .map(|(address, _)| address.as_str())
+                .collect::<Vec<_>>(),
+            addresses
+        );
+        assert!(failures[0].1.contains("timeout"));
+        assert!(failures[1].1.contains("malformed"));
+        assert!(failures[2].1.contains("omitted a result"));
+    }
 
     fn desc(model_number: &str, sw_gen: Option<u8>) -> DeviceDescription {
         DeviceDescription {

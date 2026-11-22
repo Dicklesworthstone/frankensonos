@@ -192,12 +192,30 @@ fn topology(coordinator: &str) -> Step {
             &format!(
                 "<ZoneGroupState>&lt;ZoneGroups&gt;\
                  &lt;ZoneGroup Coordinator=\"{coordinator}\" ID=\"group\"&gt;\
-                 &lt;ZoneGroupMember UUID=\"{coordinator}\" ZoneName=\"Test\" \
+                 &lt;ZoneGroupMember UUID=\"{coordinator}\" ZoneName=\"Test\" BootSeq=\"7\" \
                  Location=\"http://127.0.0.1:1400/xml/device_description.xml\"/&gt;\
                  &lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;</ZoneGroupState>"
             ),
         )),
     )
+}
+
+fn media() -> Step {
+    (
+        "GetMediaInfo",
+        Ok(reply(
+            "GetMediaInfo",
+            "<CurrentURI>synthetic:source</CurrentURI><CurrentURIMetaData/>",
+        )),
+    )
+}
+
+fn preparation() -> Vec<Step> {
+    vec![
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        topology("synthetic-player"),
+        media(),
+    ]
 }
 
 fn recovery(last: String) -> Vec<Step> {
@@ -211,18 +229,19 @@ fn recovery(last: String) -> Vec<Step> {
             )),
         ),
         topology("synthetic-player"),
+        media(),
         ("GetPositionInfo", Ok(last)),
     ]
 }
 
 #[test]
 fn normal_success_checks_the_endpoint_between_position_and_seek() {
-    let script = Script::new(vec![
-        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+    let mut steps = preparation();
+    steps.extend([
         topology("synthetic-player"),
         ("Seek", Ok(reply("Seek", ""))),
     ]);
-    assert_eq!(script.seek().unwrap(), 100);
+    assert_eq!(Script::new(steps).seek().unwrap(), 100);
 }
 
 #[test]
@@ -238,11 +257,8 @@ fn unreported_clock_prevents_the_write() {
 #[test]
 fn lost_and_malformed_acknowledgements_can_complete_without_a_second_seek() {
     for answer in [Err(lost()), Ok("unreadable reply".into())] {
-        let mut replies = vec![
-            ("GetPositionInfo", Ok(clock("00:01:10", 2))),
-            topology("synthetic-player"),
-            ("Seek", answer),
-        ];
+        let mut replies = preparation();
+        replies.extend([topology("synthetic-player"), ("Seek", answer)]);
         replies.extend(recovery(clock("00:01:40", 2)));
         assert_eq!(Script::new(replies).seek().unwrap(), 100);
     }
@@ -250,8 +266,8 @@ fn lost_and_malformed_acknowledgements_can_complete_without_a_second_seek() {
 
 #[test]
 fn a_definite_fault_is_not_disguised_by_the_current_position() {
-    let script = Script::new(vec![
-        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+    let mut steps = preparation();
+    steps.extend([
         topology("synthetic-player"),
         (
             "Seek",
@@ -262,15 +278,15 @@ fn a_definite_fault_is_not_disguised_by_the_current_position() {
         ),
     ]);
     assert!(matches!(
-        script.seek(),
+        Script::new(steps).seek(),
         Err(CoreError::Proto(ProtoError::SoapFault { code: 711, .. }))
     ));
 }
 
 #[test]
 fn failed_readback_keeps_the_original_write_failure_without_replay() {
-    let script = Script::new(vec![
-        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+    let mut steps = preparation();
+    steps.extend([
         topology("synthetic-player"),
         ("Seek", Err(lost())),
         (
@@ -279,7 +295,7 @@ fn failed_readback_keeps_the_original_write_failure_without_replay() {
         ),
     ]);
     assert!(matches!(
-        script.seek(),
+        Script::new(steps).seek(),
         Err(CoreError::Proto(ProtoError::Network { detail, .. }))
             if detail == "seek reply lost"
     ));
@@ -287,11 +303,8 @@ fn failed_readback_keeps_the_original_write_failure_without_replay() {
 
 #[test]
 fn a_track_changing_during_readback_is_not_confirmed() {
-    let mut replies = vec![
-        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
-        topology("synthetic-player"),
-        ("Seek", Err(lost())),
-    ];
+    let mut replies = preparation();
+    replies.extend([topology("synthetic-player"), ("Seek", Err(lost()))]);
     replies.extend(recovery(clock("00:01:40", 3)));
     assert!(matches!(
         Script::new(replies).seek(),
@@ -301,28 +314,60 @@ fn a_track_changing_during_readback_is_not_confirmed() {
 
 #[test]
 fn an_endpoint_change_after_the_position_read_prevents_the_relative_write() {
-    let script = Script::new(vec![
-        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
-        topology("another-player"),
-    ]);
-    assert!(matches!(script.seek(), Err(CoreError::TargetChanged(_))));
+    let mut steps = preparation();
+    steps.push(topology("another-player"));
+    assert!(matches!(
+        Script::new(steps).seek(),
+        Err(CoreError::TargetChanged(_))
+    ));
 }
 
 #[test]
 fn unavailable_ownership_prevents_the_relative_write() {
-    let script = Script::new(vec![
-        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
-        (
-            "GetZoneGroupState",
-            Err(ProtoError::Network {
-                target: "synthetic player".into(),
-                detail: "ownership unavailable".into(),
-            }),
-        ),
-    ]);
+    let mut steps = preparation();
+    steps.push((
+        "GetZoneGroupState",
+        Err(ProtoError::Network {
+            target: "synthetic player".into(),
+            detail: "ownership unavailable".into(),
+        }),
+    ));
     assert!(matches!(
-        script.seek(),
+        Script::new(steps).seek(),
         Err(CoreError::Proto(ProtoError::Network { detail, .. }))
             if detail == "ownership unavailable"
+    ));
+}
+
+#[test]
+fn unavailable_recovery_evidence_keeps_acknowledged_relative_seeks_available() {
+    let steps = vec![
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        topology("synthetic-player"),
+        (
+            "GetMediaInfo",
+            Err(ProtoError::NotWired("optional source read")),
+        ),
+        topology("synthetic-player"),
+        ("Seek", Ok(reply("Seek", ""))),
+    ];
+    assert_eq!(Script::new(steps).seek().unwrap(), 100);
+}
+
+#[test]
+fn missing_boot_evidence_does_not_claim_a_lost_reply_succeeded() {
+    let (action, response) = topology("synthetic-player");
+    let old_topology = response.unwrap().replace(" BootSeq=\"7\"", "");
+    let steps = vec![
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        (action, Ok(old_topology)),
+        media(),
+        topology("synthetic-player"),
+        ("Seek", Err(lost())),
+    ];
+    assert!(matches!(
+        Script::new(steps).seek(),
+        Err(CoreError::Proto(ProtoError::Network { detail, .. }))
+            if detail == "seek reply lost"
     ));
 }

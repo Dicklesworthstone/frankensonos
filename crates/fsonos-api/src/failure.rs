@@ -23,7 +23,7 @@ use fsonos_proto::ProtoError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use crate::ApiError;
+use crate::{ApiError, ControlBatchDto};
 
 /// Stable, documented failure codes. Never rename one; add new ones.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -399,6 +399,8 @@ pub struct Failure {
     /// The room the request named, for [`ErrorCode::UnknownRoom`] (a surface
     /// with a live model checks it against the vanished players).
     pub room: Option<String>,
+    /// An entirely failed multi-target operation still retains every result.
+    pub batch: Option<Box<ControlBatchDto>>,
 }
 
 impl Failure {
@@ -412,6 +414,7 @@ impl Failure {
             suggestions: Vec::new(),
             upnp_code: None,
             room: None,
+            batch: None,
         }
     }
 
@@ -454,7 +457,10 @@ impl Failure {
     /// Whether retrying unchanged can succeed.
     #[must_use]
     pub fn retryable(&self) -> bool {
-        self.code.retryable()
+        // A batch can contain a lost write reply as well as a definite refusal.
+        // Each target must be inspected before another action, even when the
+        // representative error code is normally safe to retry on its own.
+        self.batch.is_none() && self.code.retryable()
     }
 
     /// The JSON body both the API and MCP structured content carry.
@@ -467,6 +473,7 @@ impl Failure {
             suggestions: self.suggestions.clone(),
             retryable: self.retryable(),
             upnp_code: self.upnp_code,
+            batch: self.batch.as_deref().cloned(),
         }
     }
 
@@ -491,6 +498,7 @@ impl Failure {
             text.push_str(&self.suggestions.join(", "));
             text.push('?');
         }
+        self.append_receipt(&mut text);
         text
     }
 
@@ -505,7 +513,17 @@ impl Failure {
             text.push_str("\n  did you mean: ");
             text.push_str(&self.suggestions.join(", "));
         }
+        self.append_receipt(&mut text);
         text
+    }
+
+    /// Legacy MCP and CLI stderr have no structured-error field. Preserve the
+    /// same machine-readable receipt there instead of only naming one failure.
+    fn append_receipt(&self, text: &mut String) {
+        if self.batch.is_some() {
+            text.push_str("\n\nReceipt: ");
+            text.push_str(&serde_json::to_string(&self.body()).expect("ApiError serializes"));
+        }
     }
 }
 
@@ -567,6 +585,9 @@ impl From<CoreError> for Failure {
             ),
             CoreError::PlaylistChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
                 "Read the saved Sonos playlist again from offset 0 without expected_revision; do not combine old and new pages.",
+            ),
+            CoreError::QueueChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
+                "Read the source queue again and review its current track positions and revision before another request.",
             ),
             CoreError::FavoriteChanged(_) => Self::new(ErrorCode::QueueChanged, detail).with_hint(
                 "Read the original household's favorite or current source again and review its new revision before another edit.",
@@ -801,6 +822,38 @@ mod tests {
         };
         let parsed: ApiError = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed, f.body());
+    }
+
+    #[test]
+    fn failed_batches_keep_the_receipt_in_http_cli_and_legacy_tool_errors() {
+        let mut failure = Failure::new(ErrorCode::PlayerUnreachable, "both groups refused");
+        failure.batch = Some(Box::new(ControlBatchDto {
+            complete: false,
+            results: vec![crate::ControlTargetDto {
+                household: "S1".into(),
+                target: "RINCON_TEST".into(),
+                zone: "Kitchen".into(),
+                result: crate::ControlResultDto::Failed {
+                    error: (&failure).into(),
+                },
+            }],
+        }));
+        let expected = failure.body();
+        assert!(!expected.retryable);
+        for text in [failure.cli_text(), failure.tool_text()] {
+            let receipt: ApiError =
+                serde_json::from_str(text.split_once("\n\nReceipt: ").unwrap().1).unwrap();
+            assert_eq!(receipt, expected);
+        }
+        let (status, _, body) = failure.http_response().into_parts();
+        assert_eq!(status.as_u16(), 503);
+        let ResponseBody::Bytes(bytes) = body else {
+            panic!("JSON error body")
+        };
+        assert_eq!(
+            serde_json::from_slice::<ApiError>(&bytes).unwrap(),
+            expected
+        );
     }
 
     #[test]

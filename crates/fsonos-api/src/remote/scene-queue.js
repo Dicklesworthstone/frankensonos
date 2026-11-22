@@ -1,10 +1,34 @@
-// Shared decoding and explanation of captured queue bookmarks and backups.
+// Shared decoding and explanation of saved queue sources and authored selections.
 'use strict';
 const SceneQueue = (() => {
   const modes = ['NORMAL', 'REPEAT_ALL', 'REPEAT_ONE', 'SHUFFLE_NOREPEAT', 'SHUFFLE', 'SHUFFLE_REPEAT_ONE'];
   const uint = value => Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
   const identity = value => typeof value === 'string' && value.trim() !== '' && value.length <= 1024
     && !/[\x00-\x1f\x7f]/.test(value);
+  const MAX_TRACKS = 10;
+
+  function readTracks(value) {
+    if (!Array.isArray(value) || !value.length || value.length > MAX_TRACKS) {
+      throw new Error(`A scene selection needs 1 to ${MAX_TRACKS} Spotify tracks or episodes.`);
+    }
+    return Object.freeze(value.map(track => {
+      if (!track || typeof track !== 'object' || Array.isArray(track)
+          || Object.keys(track).some(key => !['source_uri', 'title'].includes(key))
+          || typeof track.source_uri !== 'string' || !/^spotify:(track|episode):[A-Za-z0-9]{22}$/.test(track.source_uri)
+          || (track.title != null && (typeof track.title !== 'string' || !track.title.trim()
+            || [...track.title].length > 256 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/u.test(track.title)))) {
+        throw new Error('Each scene selection entry needs a complete Spotify track or episode URI and an optional title of 1 to 256 characters.');
+      }
+      return Object.freeze({ source_uri: track.source_uri, ...(track.title != null ? { title: track.title } : {}) });
+    }));
+  }
+
+  const tracksSignature = value => readTracks(value).map(track => [track.source_uri, track.title ?? null]);
+  function describeTracks(value) {
+    const tracks = readTracks(value);
+    return `Ordered Spotify selection (${tracks.length} ${tracks.length === 1 ? 'entry' : 'entries'}; replaces the queue on recall):\n`
+      + tracks.map((track, index) => `${index + 1}. ${track.title ? track.title + ' · ' : ''}${track.source_uri}`).join('\n');
+  }
 
   function read(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -33,6 +57,6 @@ const SceneQueue = (() => {
     return `Saved queue, track #${q.track} at ${position}${q.play_mode ? ` · ${q.play_mode.replaceAll('_', ' ')}` : ''}. Requires the original player and unchanged queue. Queue contents are not saved.`;
   }
 
-  return { read, signature, describe };
+  return { read, signature, describe, MAX_TRACKS, readTracks, tracksSignature, describeTracks };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SceneQueue;

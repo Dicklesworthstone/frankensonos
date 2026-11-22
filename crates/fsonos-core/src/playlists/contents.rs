@@ -5,8 +5,8 @@
 use super::{GroupProof, MAX_PLAYLIST_EDIT_BYTES, MAX_PLAYLIST_EDIT_TRACKS, native_id, playlist};
 use crate::favorites::Favorite;
 use crate::{CoreError, HouseholdState, control};
-use fsonos_proto::content::{self, BrowseFlag, BrowsePage};
-use fsonos_proto::didl::DidlObject;
+use fsonos_proto::content::{self, BrowseFlag, BrowsePage, NativeBrowsePage};
+use fsonos_proto::didl::{DidlObject, NativeDidlObject};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
@@ -50,7 +50,7 @@ pub(super) fn complete<T: Transport + ?Sized>(
                 "editing a saved playlist requires at most 1000 tracks",
             ));
         }
-        let current = observation.revision(&before);
+        let current = observation.revision(before.update_id, before.total_matches);
         if expected_revision.is_some_and(|expected| expected != current)
             || revision
                 .as_ref()
@@ -62,10 +62,7 @@ pub(super) fn complete<T: Transport + ?Sized>(
         for item in &before.objects {
             // Account for every retained string, including unavailable native
             // items: removal must not require their resources to be playable.
-            let size = fsonos_proto::didl::item_metadata(item).len()
-                + item.res_md.as_ref().map_or(0, String::len)
-                + item.favorite_type.as_ref().map_or(0, String::len)
-                + item.favorite_description.as_ref().map_or(0, String::len);
+            let size = evidence_bytes(item);
             bytes = bytes.saturating_add(size);
             if bytes > MAX_PLAYLIST_EDIT_BYTES {
                 return Err(invalid("saved playlist edit evidence exceeds 4 MiB"));
@@ -104,6 +101,19 @@ pub(super) fn complete<T: Transport + ?Sized>(
         total,
         items,
     })
+}
+
+pub(super) fn evidence_bytes(item: &DidlObject) -> usize {
+    fsonos_proto::didl::item_metadata(item).len()
+        + item.res_md.as_ref().map_or(0, String::len)
+        + item.favorite_type.as_ref().map_or(0, String::len)
+        + item.favorite_description.as_ref().map_or(0, String::len)
+}
+
+pub(super) fn native_evidence_bytes(item: &NativeDidlObject) -> usize {
+    item.metadata
+        .len()
+        .saturating_add(evidence_bytes(&item.object))
 }
 
 /// At most one Sonos page is requested at a time. A short page is continued
@@ -148,7 +158,7 @@ pub fn contents<T: Transport + ?Sized>(
     validate_request(playlist_id, offset, limit, expected_revision)?;
     let observation = Observation::read(transport, households, coordinator, playlist_id)?;
     let before = page(transport, observation.host, playlist_id, offset, limit)?;
-    let revision = observation.revision(&before);
+    let revision = observation.revision(before.update_id, before.total_matches);
     if expected_revision.is_some_and(|expected| expected != revision) {
         return Err(changed(
             "the saved playlist observation is no longer current",
@@ -183,7 +193,7 @@ pub(super) fn selected_items<T: Transport + ?Sized>(
     playlist_id: &str,
     positions: &[u32],
     expected_revision: &str,
-) -> Result<Vec<DidlObject>, CoreError> {
+) -> Result<Vec<NativeDidlObject>, CoreError> {
     validate_request(playlist_id, 0, 1, Some(expected_revision))?;
     let observation = Observation::read(transport, households, coordinator, playlist_id)?;
     let mut pending = positions.to_vec();
@@ -191,6 +201,7 @@ pub(super) fn selected_items<T: Transport + ?Sized>(
     pending.dedup();
     let mut selected = std::collections::BTreeMap::new();
     let mut pages = Vec::new();
+    let mut bytes = 0_usize;
     while let Some(&first) = pending.first() {
         let last = pending
             .iter()
@@ -200,8 +211,15 @@ pub(super) fn selected_items<T: Transport + ?Sized>(
             .expect("a nonempty selection includes its first occurrence");
         let offset = first - 1;
         let limit = last - first + 1;
-        let before = page(transport, observation.host, playlist_id, offset, limit)?;
-        if observation.revision(&before) != expected_revision {
+        let before = native_page(
+            transport,
+            observation.host,
+            playlist_id,
+            offset,
+            limit,
+            MAX_PLAYLIST_EDIT_BYTES.saturating_sub(bytes),
+        )?;
+        if observation.revision(before.update_id, before.total_matches) != expected_revision {
             return Err(changed(
                 "the saved playlist observation is no longer current",
             ));
@@ -210,6 +228,12 @@ pub(super) fn selected_items<T: Transport + ?Sized>(
             return Err(invalid(
                 "the saved playlist has no track at a selected position",
             ));
+        }
+        for item in &before.objects {
+            bytes = bytes.saturating_add(native_evidence_bytes(item));
+            if bytes > MAX_PLAYLIST_EDIT_BYTES {
+                return Err(invalid("saved playlist selection evidence exceeds 4 MiB"));
+            }
         }
         let end = first + before.number_returned;
         for &position in pending.iter().take_while(|&&position| position < end) {
@@ -221,7 +245,14 @@ pub(super) fn selected_items<T: Transport + ?Sized>(
         pages.push((offset, limit, before));
     }
     for (offset, limit, before) in pages {
-        let after = page(transport, observation.host, playlist_id, offset, limit)?;
+        let after = native_page(
+            transport,
+            observation.host,
+            playlist_id,
+            offset,
+            limit,
+            MAX_PLAYLIST_EDIT_BYTES,
+        )?;
         if before != after {
             return Err(changed(
                 "the selected saved playlist occurrences changed while they were read",
@@ -229,6 +260,12 @@ pub(super) fn selected_items<T: Transport + ?Sized>(
         }
     }
     observation.confirm(transport, playlist_id)?;
+    let selected_bytes = positions.iter().fold(0_usize, |bytes, position| {
+        bytes.saturating_add(native_evidence_bytes(&selected[position]))
+    });
+    if selected_bytes > MAX_PLAYLIST_EDIT_BYTES {
+        return Err(invalid("repeated saved playlist selections exceed 4 MiB"));
+    }
     Ok(positions
         .iter()
         .map(|position| selected[position].clone())
@@ -292,14 +329,15 @@ impl<'a> Observation<'a> {
         })
     }
 
-    fn revision(&self, page: &BrowsePage) -> String {
+    fn revision(&self, update_id: u32, total_matches: u32) -> String {
         revision(
             self.house,
             self.coordinator,
             &self.group,
             &self.playlist,
             self.metadata.update_id,
-            page,
+            update_id,
+            total_matches,
         )
     }
 
@@ -379,10 +417,54 @@ fn page<T: Transport + ?Sized>(
         offset,
         limit,
     )?;
-    let returned = u32::try_from(page.objects.len()).unwrap_or(u32::MAX);
-    let available = page.total_matches.saturating_sub(offset);
-    if page.total_matches > content::MAX_BROWSE_OBJECTS
-        || returned != page.number_returned
+    validate_page(
+        page.objects.len(),
+        page.number_returned,
+        page.total_matches,
+        offset,
+        limit,
+    )?;
+    Ok(page)
+}
+
+fn native_page<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    playlist_id: &str,
+    offset: u32,
+    limit: u32,
+    max_bytes: usize,
+) -> Result<NativeBrowsePage, CoreError> {
+    let page = content::browse_with_metadata(
+        transport,
+        host,
+        playlist_id,
+        BrowseFlag::DirectChildren,
+        offset,
+        limit,
+        max_bytes,
+    )?;
+    validate_page(
+        page.objects.len(),
+        page.number_returned,
+        page.total_matches,
+        offset,
+        limit,
+    )?;
+    Ok(page)
+}
+
+fn validate_page(
+    objects: usize,
+    number_returned: u32,
+    total_matches: u32,
+    offset: u32,
+    limit: u32,
+) -> Result<(), CoreError> {
+    let returned = u32::try_from(objects).unwrap_or(u32::MAX);
+    let available = total_matches.saturating_sub(offset);
+    if total_matches > content::MAX_BROWSE_OBJECTS
+        || returned != number_returned
         || returned > limit
         || returned > available
         || (returned == 0 && available > 0)
@@ -391,7 +473,7 @@ fn page<T: Transport + ?Sized>(
             "saved playlist returned inconsistent paging counters",
         ));
     }
-    Ok(page)
+    Ok(())
 }
 
 fn revision(
@@ -400,7 +482,8 @@ fn revision(
     group: &GroupProof,
     playlist: &Favorite,
     catalog_update: u32,
-    page: &BrowsePage,
+    update_id: u32,
+    total_matches: u32,
 ) -> String {
     // Explicit field order plus a fixed hash keeps this equality token stable
     // across processes without disclosing native account descriptors. It does
@@ -417,8 +500,8 @@ fn revision(
         &playlist.metadata,
         &playlist.art_uri,
         catalog_update,
-        page.update_id,
-        page.total_matches,
+        update_id,
+        total_matches,
     ))
     .expect("saved playlist observation fields serialize to JSON");
     let digest = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {

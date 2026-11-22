@@ -102,6 +102,9 @@ enum Fault {
     MembershipBeforeFirstRead,
     QueueBeforeFirstRead,
     QueueBeforePreparation,
+    SourceDuringOwnerPreparation,
+    MembershipDuringOwnerPreparation,
+    QueueDuringOwnerPreparation,
     SourceAfterLearning,
     MembershipAfterFirst,
     RebootAfterFirst,
@@ -136,6 +139,30 @@ impl<'a> Replies<'a> {
             target: self.rig.host.to_string(),
             detail: "injected missing reply".into(),
         }
+    }
+
+    fn edit_during_owner_preparation(&self, host: IpAddr, name: &str) -> Result<(), ProtoError> {
+        if name == "GetPositionInfo"
+            && matches!(
+                self.fault,
+                Fault::SourceDuringOwnerPreparation
+                    | Fault::MembershipDuringOwnerPreparation
+                    | Fault::QueueDuringOwnerPreparation
+            )
+            && !self.edited.replace(true)
+        {
+            match self.fault {
+                Fault::SourceDuringOwnerPreparation => {
+                    soap::set_av_transport_uri(&self.lan, host, RADIO, "")?;
+                    soap::play(&self.lan, host)?;
+                }
+                Fault::QueueDuringOwnerPreparation => {
+                    soap::enqueue_uri(&self.lan, host, OWNER_TRACK, "", 0, false)?;
+                }
+                _ => soap::join_group(&self.lan, self.rig.peer_host, &self.rig.id)?,
+            }
+        }
+        Ok(())
     }
 
     fn only_adds(&self, count: usize) {
@@ -179,6 +206,7 @@ impl Transport for Replies<'_> {
         {
             soap::enqueue_uri(&self.lan, host, OWNER_TRACK, "", 0, false)?;
         }
+        self.edit_during_owner_preparation(host, name)?;
         if !name.starts_with("Get") && name != "Browse" {
             self.writes.borrow_mut().push(name.into());
         }
@@ -319,6 +347,59 @@ fn loading_a_batch_pauses_the_old_source_and_never_sends_play() {
             TransportState::Paused | TransportState::Stopped
         ));
         assert_eq!(after.position.track, 1);
+    }
+}
+
+#[test]
+fn listener_changes_during_undo_preparation_prevent_silent_batch_pause() {
+    for s2 in [false, true] {
+        for fault in [
+            Fault::SourceDuringOwnerPreparation,
+            Fault::MembershipDuringOwnerPreparation,
+            Fault::QueueDuringOwnerPreparation,
+        ] {
+            let rig = Rig::new(s2, true);
+            let destination =
+                control::TrackBatchDestination::read(&rig.sim.lan(), rig.host, &rig.id).unwrap();
+            let t = Replies::new(&rig, fault);
+            assert!(
+                control::load_spotify_tracks_bound_with_receipt(
+                    &t,
+                    &rig.houses,
+                    &rig.id,
+                    &TRACKS,
+                    &destination,
+                )
+                .is_err(),
+                "{fault:?} must not adopt the changed destination"
+            );
+            assert!(
+                t.edited.get(),
+                "the takeover happened during undo preparation"
+            );
+            assert!(
+                t.writes.borrow().is_empty(),
+                "{fault:?}: do not pause or replace"
+            );
+            let mut expected: Vec<_> = OLD.iter().map(|uri| (*uri).to_owned()).collect();
+            if fault == Fault::QueueDuringOwnerPreparation {
+                expected.push(OWNER_TRACK.into());
+            }
+            assert_eq!(rig.queue(), expected);
+            assert_eq!(
+                soap::get_transport_info(&rig.sim.lan(), rig.host)
+                    .unwrap()
+                    .state,
+                TransportState::Playing,
+                "the listener's music must keep playing"
+            );
+            if fault == Fault::SourceDuringOwnerPreparation {
+                assert_eq!(
+                    soap::get_media_info(&rig.sim.lan(), rig.host).unwrap().uri,
+                    RADIO
+                );
+            }
+        }
     }
 }
 

@@ -7,13 +7,14 @@ const T = require('../crates/fsonos-api/src/remote/source-targets.js');
 const R = require('../crates/fsonos-api/src/remote/room-sets.js');
 const ID = '0123456789ABCDEFGHIJKL';
 const target = 'Evening & upstairs/#';
+const REVISION = 'a'.repeat(64);
 const room = (household, name, player, coordinator = player) => ({ household, room: name, player, coordinator });
 const defer = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const settle = async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); };
 function fixture() {
   const rooms = [room('S1', 'Den', 'S1_DEN'), room('S1', 'Office', 'S1_OFFICE', 'S1_DEN'),
     room('S2', 'Den', 'S2_DEN'), room('S2', 'Kitchen', 'S2_KITCHEN')];
-  const resolution = { target, matched: 'alias', rooms, groups: [
+  const resolution = { target, revision: REVISION, matched: 'alias', rooms, groups: [
     { household: 'S1', coordinator: 'S1_DEN', coordinator_room: 'Den', members: rooms.slice(0, 2) },
     { household: 'S2', coordinator: 'S2_DEN', coordinator_room: 'Den', members: [rooms[2]] },
     { household: 'S2', coordinator: 'S2_KITCHEN', coordinator_room: 'Kitchen', members: [rooms[3]] },
@@ -35,6 +36,10 @@ function fixture() {
       return { household: g.household, coordinator: g.coordinator,
         queue: { zone: g.coordinator_room, done: 'Added music', first: q.playing === null ? q.total + 1 : q.playing + 1,
           count: 2, playing_queue: q.playing !== null } }; }), failed: [], logged: true, undoable: true });
+  h.playbackReceipt = () => ({ done: 'Playback accepted in all groups', changed: true,
+    ...(h.resolution.groups.length > 1 ? { batch: { complete: true,
+      results: h.resolution.groups.map(g => ({ household: g.household, target: g.coordinator, zone: g.coordinator_room,
+        result: { status: 'succeeded', done: 'Started the selected source', changed: true } })) } } : {}) });
   h.call = async (name, args = {}) => {
     h.calls.push([name, args]);
     if (h.custom) { const value = h.custom(name, args); if (value !== undefined) return value; }
@@ -46,14 +51,14 @@ function fixture() {
     else if (name === 'sourceQueueState') value = h.queues.get(args.params.room);
     else if (name === 'sourcePlaylists') value = h.playlists.get(args.query.zone.split('@').at(-1));
     else if (name === 'sourceFavorites') value = h.favorites.get(args.query.zone.split('@').at(-1));
-    else if (name === 'sourceQueue') value = h.response || h.receipt();
-    else if (['sourcePlay', 'sourcePlaylistPlay', 'sourceFavoritePlay'].includes(name)) value = h.response || { done: 'Playback accepted in all groups', changed: true };
+    else if (name === 'sourceControl') value = h.response || (args.body.mode === 'play'
+      ? h.playbackReceipt() : h.receipt());
     else throw new Error('Unexpected route ' + name);
     return structuredClone(value);
   };
   h.executeSet = async (groups, work) => { h.executions++; h.held = groups; return work(); };
   h.api = P.model({ call: h.call, executeSet: (...args) => h.executeSet(...args) });
-  h.writes = () => h.calls.filter(([name]) => ['sourceQueue', 'sourcePlay', 'sourcePlaylistPlay', 'sourceFavoritePlay'].includes(name));
+  h.writes = () => h.calls.filter(([name]) => name === 'sourceControl');
   h.open = async (kind = 'album', mode = 'next') => {
     await h.api.refresh(); h.api.edit('targetMode', 'set'); h.api.edit('targetQuery', target);
     h.api.edit('input', kind === 'stream' ? 'https://audio.example/live?Signature=a%2Bb' : `spotify:${kind}:${ID}`);
@@ -70,8 +75,9 @@ for (const mode of ['play', 'next', 'end']) for (const kind of ['track', 'album'
     assert.ok(Object.isFrozen(p.targets.entries)); assert.equal(h.writes().length, 0);
     assert.equal(await h.api.confirm(p), true); assert.equal(h.executions, 1); assert.equal(h.held.length, 3);
     assert.equal(h.writes().length, 1); assert.equal(await h.api.confirm(p), false);
-    assert.deepEqual(h.writes()[0], [mode === 'play' ? 'sourcePlay' : 'sourceQueue', { body: {
-      zone: target, source_uri: `spotify:${kind}:${ID}`, ...(mode === 'play' ? {} : { next: mode === 'next' }),
+    assert.deepEqual(h.writes()[0], ['sourceControl', { body: {
+      zone: target, expected_revision: REVISION, mode: mode === 'end' ? 'append' : mode,
+      source: { kind: 'uri', source_uri: `spotify:${kind}:${ID}` },
     } }]);
     assert.equal(h.api.state.result.complete, true);
     if (mode !== 'play') {
@@ -85,7 +91,7 @@ for (const mode of ['play', 'next', 'end']) for (const kind of ['track', 'album'
 test('HTTP stream fanout keeps its exact address and rejects queue modes before reads', async () => {
   const h = fixture(), p = await h.review('stream', 'play');
   assert.equal(await h.api.confirm(p), true);
-  assert.equal(h.writes()[0][1].body.source_uri, 'https://audio.example/live?Signature=a%2Bb');
+  assert.equal(h.writes()[0][1].body.source.source_uri, 'https://audio.example/live?Signature=a%2Bb');
   await h.open('stream', 'next'); const n = h.calls.length;
   assert.equal(await h.api.review(), false); assert.equal(h.calls.length, n); assert.equal(h.writes().length, 1);
 });
@@ -101,8 +107,9 @@ for (const kind of ['playlist', 'favorite']) for (const mode of ['play', 'next',
     assert.equal(h.calls.filter(([name]) => name === route).length, 2);
     assert.equal(await h.api.confirm(p), true);
     assert.equal(h.calls.filter(([name]) => name === route).length, 4);
-    assert.deepEqual(h.writes()[0], [mode !== 'play' ? 'sourceQueue' : kind === 'playlist' ? 'sourcePlaylistPlay' : 'sourceFavoritePlay',
-      { body: { zone: target, [kind]: 'evening friends', ...(mode === 'play' ? {} : { next: mode === 'next' }) } }]);
+    assert.deepEqual(h.writes()[0], ['sourceControl',
+      { body: { zone: target, expected_revision: REVISION, mode: mode === 'end' ? 'append' : mode,
+        source: { kind, [kind]: 'evening friends' } } }]);
   });
 }
 
@@ -189,12 +196,87 @@ test('queue receipts cannot hide a missing group, repeat a group, invent success
   }
 });
 
-test('a valid partial playback outcome preserves skipped groups and cap notes', async () => {
-  const h = fixture(), p = await h.review('track', 'play');
-  h.response = { done: 'Playback accepted', changed: true, notes: [{ code: 'SKIPPED', detail: 'Den@S2 could not play' },
-    { code: 'VOLUME_CAPPED', detail: 'Den@S1 was capped to 30' }] };
+test('a valid partial playback receipt keeps per-group outcomes even without legacy skipped notes', async () => {
+  const h = fixture(), p = await h.review('track', 'play'), value = h.playbackReceipt();
+  value.batch.complete = false;
+  value.batch.results[0].result.notes = [{ code: 'VOLUME_CLAMPED', detail: 'Den@S1 was capped to 30' }];
+  value.batch.results[1].result = { status: 'failed', error: { code: 'UPNP_FAULT',
+    detail: 'Speaker refused playback', hint: 'Check this speaker before another command.', retryable: false } };
+  value.batch.results[2].result = { status: 'not_attempted' };
+  value.notes = [{ code: 'NOT_LOGGED', detail: 'This action could not be logged or undone.' }];
+  h.response = value;
   assert.equal(await h.api.confirm(p), true); assert.equal(h.api.state.result.partial, true);
-  assert.match(h.api.state.result.detail, /Den@S2/); assert.match(h.api.state.result.detail, /capped to 30/);
+  assert.equal(h.api.state.result.complete, false);
+  assert.match(h.api.state.result.detail, /Den@S2: Failed: UPNP_FAULT: Speaker refused playback/);
+  assert.match(h.api.state.result.detail, /capped to 30/);
+  assert.match(h.api.state.result.detail, /Kitchen@S2: Not attempted/);
+  assert.match(h.api.state.result.detail, /could not be logged or undone/);
+  assert.deepEqual(h.api.state.result.targets.map(row => row.status), ['confirmed', 'failed', 'not_attempted']);
+  assert.deepEqual(h.api.state.result.targets.map(row => [row.household, row.coordinator, row.zone]),
+    [['S1', 'S1_DEN', 'Den'], ['S2', 'S2_DEN', 'Den'], ['S2', 'S2_KITCHEN', 'Kitchen']]);
+  assert.equal(await h.api.confirm(p), false); assert.equal(h.writes().length, 1);
+});
+
+test('all-failed playback errors preserve failures and unattempted groups without acknowledging success', async () => {
+  for (const uncertain of [false, true]) {
+    const h = fixture(), p = await h.review('track', 'play'), value = h.playbackReceipt();
+    value.batch.complete = false;
+    value.batch.results[0].result = { status: 'failed', error: { code: 'PLAYER_UNREACHABLE',
+      detail: 'First speaker is unreachable', retryable: true } };
+    value.batch.results[1].result = { status: 'failed', error: { code: uncertain ? 'OUTCOME_UNCERTAIN' : 'UPNP_FAULT',
+      detail: uncertain ? 'The speaker reply was lost' : 'Speaker refused playback', retryable: false } };
+    value.batch.results[2].result = { status: 'not_attempted' };
+    h.custom = name => { if (name === 'sourceControl') throw Object.assign(new Error('The first failure'), { batch: value.batch }); };
+    assert.equal(await h.api.confirm(p), false);
+    assert.equal(h.api.state.result.status, uncertain ? 'uncertain' : 'failed');
+    assert.equal(h.api.state.result.complete, false); assert.equal(h.api.state.result.uncertain, uncertain);
+    assert.deepEqual(h.api.state.result.targets.map(row => row.status), ['failed', uncertain ? 'uncertain' : 'failed', 'not_attempted']);
+    assert.match(h.api.state.result.detail, /Den@S1: Failed: PLAYER_UNREACHABLE/);
+    assert.match(h.api.state.result.detail, uncertain ? /Den@S2: Outcome uncertain: OUTCOME_UNCERTAIN/ : /Den@S2: Failed: UPNP_FAULT/);
+    assert.match(h.api.state.result.detail, /Kitchen@S2: Not attempted/);
+    assert.match(h.api.state.result.detail, /Do not repeat the whole batch/);
+    assert.equal(await h.api.confirm(p), false); assert.equal(h.writes().length, 1);
+  }
+});
+
+test('playback receipts reject absent, duplicate, renamed and contradictory target results', async () => {
+  for (const corrupt of [v => { delete v.batch; }, v => v.batch.results.pop(),
+    v => { v.batch.results[1] = v.batch.results[0]; }, v => { v.batch.results[0].target = 'UNREVIEWED'; },
+    v => { v.batch.results[0].household = 'S2'; }, v => { v.batch.results[0].zone = 'Other'; },
+    v => { v.batch.complete = false; }, v => { v.batch.results[0].result = { status: 'not_attempted' }; },
+    v => { v.notes = [{ code: 'SKIPPED', detail: 'A group was skipped' }]; },
+    v => { v.batch.results[0].result.status = 'invented'; }, v => { v.batch.results[0].result.changed = 'yes'; },
+    v => { v.batch.results[0].result.notes = [{ code: 'SKIPPED', detail: 'A member was skipped' }]; }]) {
+    const h = fixture(), p = await h.review('track', 'play'), value = h.playbackReceipt(); corrupt(value); h.response = value;
+    assert.equal(await h.api.confirm(p), false); assert.equal(h.api.state.result.status, 'uncertain');
+    assert.equal(await h.api.confirm(p), false); assert.equal(h.writes().length, 1);
+  }
+});
+
+test('invalid error receipts cannot attribute another speaker response to a reviewed group', async () => {
+  const h = fixture(), p = await h.review('track', 'play'), value = h.playbackReceipt();
+  value.batch.complete = false; value.batch.results[0].target = 'UNREVIEWED_PLAYER';
+  value.batch.results[0].result = { status: 'failed', error: { code: 'UPNP_FAULT',
+    detail: 'Unrelated speaker failure', retryable: false } };
+  h.custom = name => { if (name === 'sourceControl') throw Object.assign(new Error('Playback failed'), { batch: value.batch }); };
+  assert.equal(await h.api.confirm(p), false); assert.equal(h.api.state.result.status, 'uncertain');
+  assert.equal(h.api.state.result.targets, undefined);
+  for (const label of ['Den@S1', 'Den@S2', 'Kitchen@S2']) assert.ok(h.api.state.result.detail.includes(label));
+  assert.doesNotMatch(h.api.state.result.detail, /Unrelated speaker failure/);
+  assert.equal(await h.api.confirm(p), false); assert.equal(h.writes().length, 1);
+});
+
+test('a late all-failed playback receipt survives closing its source view', async () => {
+  const h = fixture(), p = await h.review('track', 'play'), gate = defer(), value = h.playbackReceipt();
+  value.batch.complete = false;
+  for (const row of value.batch.results) row.result = { status: 'failed',
+    error: { code: 'UPNP_FAULT', detail: 'Speaker refused playback', retryable: false } };
+  h.custom = name => name === 'sourceControl' ? gate.promise : undefined;
+  const sending = h.api.confirm(p); await settle(); assert.equal(h.writes().length, 1); h.api.close();
+  gate.reject(Object.assign(new Error('Playback failed'), { batch: value.batch }));
+  assert.equal(await sending, false); assert.equal(h.api.state.result.status, 'failed');
+  assert.equal(h.api.state.result.targets.length, 3);
+  assert.equal(await h.api.confirm(p), false); assert.equal(h.writes().length, 1);
 });
 
 test('closing or editing during set preflight prevents sending and invalidates stale handlers', async () => {
@@ -212,7 +294,7 @@ test('closing or editing during set preflight prevents sending and invalidates s
 });
 
 test('one sent set action stays single-flight through close/reopen and preserves its late receipt', async () => {
-  const h = fixture(), p = await h.review(), gate = defer(); h.custom = name => name === 'sourceQueue' ? gate.promise : undefined;
+  const h = fixture(), p = await h.review(), gate = defer(); h.custom = name => name === 'sourceControl' ? gate.promise : undefined;
   const sending = h.api.confirm(p); await settle(); assert.equal(h.writes().length, 1);
   h.api.close(); assert.equal(await h.api.refresh(), false); assert.equal(await h.api.confirm(p), false);
   gate.resolve(h.receipt()); assert.equal(await sending, true); assert.equal(h.writes().length, 1);
@@ -220,7 +302,7 @@ test('one sent set action stays single-flight through close/reopen and preserves
 });
 
 test('lost acknowledgements are never retried and duplicated lane callbacks cannot resend', async () => {
-  const h = fixture(), p = await h.review(); h.custom = name => { if (name === 'sourceQueue') throw new Error('Reply lost'); };
+  const h = fixture(), p = await h.review(); h.custom = name => { if (name === 'sourceControl') throw new Error('Reply lost'); };
   assert.equal(await h.api.confirm(p), false); assert.equal(h.api.state.result.status, 'uncertain'); assert.equal(h.writes().length, 1);
   const other = fixture(), q = await other.review(); other.executeSet = async (_, work) => { await work(); await work(); };
   assert.equal(await other.api.confirm(q), true); assert.equal(other.writes().length, 1);
@@ -248,4 +330,41 @@ test('a source handoff cannot overwrite an unfinished household-title draft', as
   assert.equal(await h.api.offer({ source_uri: `spotify:track:${ID}` }), false);
   assert.equal(h.api.state.nativeQuery, 'Evening & Friends'); assert.equal(h.api.state.targetMode, 'set');
   assert.equal(h.writes().length, 0);
+});
+
+test('missing, malformed or physical-only changed target revisions cannot authorize a source request', async () => {
+  for (const revision of [undefined, '', 'a'.repeat(63), 'G'.repeat(64)]) {
+    const h = fixture(); h.resolution.revision = revision; await h.open();
+    assert.equal(await h.api.review(), false);
+    assert.equal(h.writes().length, 0); assert.match(h.api.state.message, /reviewed room identities/);
+  }
+  for (const phase of ['review', 'confirm']) {
+    const h = fixture(); let resolves = 0;
+    if (phase === 'review') {
+      h.custom = name => {
+        if (name === 'sourceTargetResolve' && ++resolves === 2) h.resolution.revision = 'b'.repeat(64);
+      };
+      await h.open(); assert.equal(await h.api.review(), false);
+    } else {
+      const reviewed = await h.review();
+      h.resolution.revision = 'b'.repeat(64);
+      assert.equal(await h.api.confirm(reviewed), false);
+    }
+    assert.equal(h.writes().length, 0);
+  }
+});
+
+test('a one-group alias retains its revision and cosmetic source title in the sole request', async () => {
+  const h = fixture();
+  h.resolution.groups = h.resolution.groups.slice(0, 1);
+  h.resolution.rooms = h.resolution.rooms.slice(0, 2);
+  await h.open('track', 'play'); h.api.edit('title', 'Evening track');
+  assert.equal(await h.api.review(), true, h.api.state.message);
+  const reviewed = h.api.state.pending;
+  assert.equal(reviewed.targets.groups.length, 1);
+  assert.equal(reviewed.body.expected_revision, REVISION);
+  assert.equal(reviewed.body.source.title, 'Evening track');
+  assert.equal(await h.api.confirm(reviewed), true);
+  assert.equal(h.writes().length, 1);
+  assert.equal(h.writes()[0][1].body.expected_revision, REVISION);
 });

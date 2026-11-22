@@ -2,10 +2,12 @@
 //! check is an observation, not a lock: execution still resolves the source
 //! again after grouping, and never replays an uncertain playback write.
 
-use super::{SceneError, SceneOp, ScenePlan, check_playlist_sources};
+use super::{SceneError, SceneOp, ScenePlan, check_playlist_sources, validate_track_selection};
 use crate::favorites::{self, Favorite, FavoriteError, FavoriteKind};
 use crate::{CoreError, HouseholdState, control};
-use fsonos_proto::Transport;
+use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::{ProtoError, Transport};
+use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
@@ -19,6 +21,14 @@ pub fn check_sources<T: Transport + ?Sized>(
     households: &[HouseholdState],
     plan: &ScenePlan,
 ) -> Result<(), SceneError> {
+    // Invalid retained selections fail before any catalog lookup, including
+    // lookups for earlier groups in the scene.
+    for op in &plan.ops {
+        if let SceneOp::Tracks { tracks, .. } = op {
+            validate_track_selection(tracks)
+                .map_err(|why| CoreError::from(ProtoError::Malformed(why)))?;
+        }
+    }
     check_playlist_sources(t, households, plan)?;
     let mut catalogs = HashMap::new();
     for op in &plan.ops {
@@ -49,8 +59,65 @@ pub fn check_sources<T: Transport + ?Sized>(
             } if uri.starts_with("spotify:") => {
                 control::check_spotify_source(t, households, coordinator, uri)?;
             }
+            SceneOp::Tracks { coordinator, .. } => {
+                control::spotify_params(t, households, coordinator)?
+                    .ok_or(CoreError::NoSpotifyFavorite)?;
+            }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn audience<'a>(
+    households: &'a [HouseholdState],
+    coordinator: &PlayerId,
+) -> Result<Vec<&'a str>, CoreError> {
+    let mut groups = households
+        .iter()
+        .flat_map(|house| &house.groups)
+        .filter(|group| group.coordinator == *coordinator);
+    let group = groups
+        .next()
+        .filter(|group| group.members.contains(coordinator))
+        .ok_or_else(|| invalid_audience("the selected room no longer leads its confirmed group"))?;
+    if groups.next().is_some() {
+        return Err(invalid_audience("the selected room's group is ambiguous"));
+    }
+    let mut members: Vec<_> = group
+        .members
+        .iter()
+        .map(|player| player.0.as_str())
+        .collect();
+    members.sort_unstable();
+    members.dedup();
+    Ok(members)
+}
+
+fn invalid_audience(detail: &str) -> CoreError {
+    ProtoError::Malformed(format!("scene source refused: {detail}")).into()
+}
+
+/// A source load must retain the execution engine's confirmed audience,
+/// including every member whose playback caps were checked before dispatch.
+pub(super) fn confirm_audience<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+) -> Result<(), CoreError> {
+    let host = control::locate(households, coordinator)?.ip;
+    let topology = get_zone_group_state(transport, host)?;
+    if !crate::topology::coordinator_at(&topology, host, coordinator)? {
+        return Err(invalid_audience(
+            "the selected room no longer owns its control address; refresh and apply again",
+        ));
+    }
+    let mut live = HouseholdState::default();
+    live.apply_topology(&topology);
+    if audience(households, coordinator)? != audience(&[live], coordinator)? {
+        return Err(invalid_audience(
+            "the group's audience changed after scene preparation; refresh and apply again",
+        ));
     }
     Ok(())
 }

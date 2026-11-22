@@ -164,9 +164,19 @@ const DashboardSleep = (() => {
 
   function panel({ call, controller, document: doc = document, now }) {
     const $ = id => doc.getElementById(id), dialog = $('sleep-dialog'), trigger = $('open-sleep');
-    let opener = null, shown = null, reviewFocus = null;
+    let opener = null, shown = null, reviewFocus = null, roomSets = null;
     const control = model({ call, controller, now, changed: render });
+    const host = $('sleep-room-sets');
+    if (host?.append && typeof doc.createElement === 'function') {
+      roomSets = collective({ call, controller, document: doc, available: () => control.state.open && controller.canControl() });
+      host.append(roomSets.node);
+    }
     function render(s) {
+      if (roomSets) {
+        if (!s.open) roomSets.close();
+        else if (roomSets.node.querySelector('details')?.open && !roomSets.state.open) roomSets.open();
+        else roomSets.observe();
+      }
       trigger.disabled = !controller.selected() || !controller.state.active || controller.state.busy;
       trigger.setAttribute('aria-expanded', String(s.open));
       if (s.open && !dialog.open) dialog.showModal();
@@ -212,8 +222,58 @@ const DashboardSleep = (() => {
     dialog.addEventListener('cancel', event => { event.preventDefault(); control.close(); });
     dialog.addEventListener('close', () => { if (control.state.open) control.close(); });
     render(control.state);
-    return control;
+    return { ...control, roomSets, dispose() { roomSets?.dispose(); control.dispose(); } };
   }
-  return { MAX_AGE, MAX_MINUTES, PRESETS, minutesOf, timerOf, confirmed, model, panel };
+
+  // The same room-set controls serve both browser remotes. This adapter owns
+  // no second writer: its one POST must pass through the dashboard's lane.
+  function collective({ call, controller, document: doc = document, available = () => controller.canControl() }) {
+    const R = typeof RoomSetsRemote !== 'undefined' ? RoomSetsRemote : require('./room-sets.js');
+    const Panel = typeof RoomSetsPanel !== 'undefined' ? RoomSetsPanel : require('./room-sets-panel.js');
+    const routes = { state: ['GET', '/zones/{room}/state'], ...R.routes };
+    const el = (name, attrs = {}, ...children) => {
+      const node = doc.createElement(name);
+      for (const [key, value] of Object.entries(attrs)) {
+        if (key === 'text') node.textContent = value;
+        else if (key === 'class') node.className = value;
+        else if (typeof value === 'boolean') node[key] = value;
+        else node.setAttribute(key, String(value));
+      }
+      node.append(...children.filter(child => child != null)); return node;
+    };
+    let dispatch = null, checkLane = null, controls;
+    const adapter = async (name, args = {}) => {
+      const route = routes[name];
+      if (!route) fail('Unknown room-set bedtime operation.');
+      const url = route[1].replace(/\{([^}]+)\}/g, (_, key) => encodeURIComponent(args.params?.[key] || ''))
+        + (args.query ? '?' + new URLSearchParams(args.query) : '');
+      if (route[0] === 'POST') {
+        if (!dispatch) fail('Review the complete room set before sending a bedtime action.');
+        return dispatch(url, args.body);
+      }
+      checkLane?.();
+      const result = await call(url, undefined, { signal: args.signal });
+      checkLane?.(); return result;
+    };
+    controls = Panel.mount({ api: R, call: adapter, el, document: doc, available,
+      actions: Object.fromEntries(Object.entries(R.actions).filter(([action]) => R.bedtime(action))),
+      initialAction: 'sleep_set', id: 'sleep-room-set-controls', title: 'Bedtime across rooms or a saved room set',
+      execute: async (_, work) => {
+        let error = null, entered = false;
+        const accepted = await controller.mutate(async ({ check, send }) => {
+          entered = true; dispatch = send; checkLane = check;
+          try {
+            check(); await work();
+            const result = controls.state.result;
+            return { done: result?.detail || 'No bedtime command was sent.', changed: result?.changed ?? false };
+          } catch (failure) { error = failure; throw failure; }
+          finally { dispatch = null; checkLane = null; }
+        }, { wholeHouse: true });
+        if (error) throw error;
+        if (!entered || !accepted) fail(controller.state.message || 'Another action owns the command lane. Review the room set again.');
+      } });
+    return controls;
+  }
+  return { MAX_AGE, MAX_MINUTES, PRESETS, minutesOf, timerOf, confirmed, model, panel, collective };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardSleep;

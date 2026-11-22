@@ -112,6 +112,16 @@ owns the announcement source and group, then uses the normal restoration path.
 It does not overwrite a newer manual source, pause, regrouping, or other
 ownership change.
 
+Announcement preparation, group confirmation, and restoration require coherent
+topology from a player identified at the address that answered. An empty,
+inconsistent, or wrongly addressed response yields to another known household
+player. If no player can establish that view, preparation leaves playback and its admission callbacks
+untouched. The retained targets include each room's bonded speakers, including
+missing stereo halves or home-theater members. Changed room membership cannot
+inherit an admitted announcement, authorize its deadline Stop, or continue an
+obsolete restoration. Room renames and ordinary coordinator changes retain their
+existing behavior. The final receipt identifies anything left unrestored.
+
 The final `result.households` entries retain each household's `outcome`,
 applied `levels`, `error`, and `not_restored` reasons. A cancelled clip is not
 a successfully heard announcement, so its report can have `clean: false`

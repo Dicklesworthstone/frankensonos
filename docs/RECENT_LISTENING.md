@@ -22,6 +22,15 @@ retries still apply. The worker shares Spotify cooldowns and authentication
 backoff with library reads. Admission and retry deadlines survive restart.
 Long-running work or a cooldown can delay a check; this is not a real-time feed.
 
+All library and enrichment refreshes share a nonblocking operating-system lock
+for their data directory, including a direct CLI sync beside a running daemon.
+The lock covers rereading progress, admission, network work and checkpoint
+publication. A competing direct sync reports that another refresh is busy;
+the background watcher waits for its next check without changing saved progress.
+After admission becomes available, the next reader uses the latest persisted
+cooldown. Checkpoints use private, synced staging files and atomic replacement;
+status reads remain available without waiting for the writer.
+
 ## Coverage and retention
 
 Each pass reads **at most the latest 50 history rows**. It never follows a

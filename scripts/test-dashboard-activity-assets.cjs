@@ -9,12 +9,15 @@ const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 const asset = (name) => read(`crates/fsonos-api/src/remote/${name}`);
 const rust = read('crates/fsonos-api/src/http/remote/dashboard.rs');
 const preview = read('scripts/dashboard-preview.py');
+const browser = read('scripts/test-dashboard-browser.py');
 const definitions = new Map([...rust.matchAll(/const (\w+): &str = include_str!\("\.\.\/\.\.\/remote\/([^"]+)"\);/g)].map(m => [m[1], m[2]]));
 const shipped = (first) => [...rust.match(new RegExp(`"(\\{${first}\\}[^";]+)"`))[1].matchAll(/\{(\w+)\}/g)].map(m => definitions.get(m[1]));
-const previews = (name) => [...preview.match(new RegExp(`${name} = \\[([\\s\\S]*?)\\]`))[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
+const inventory = (source, name) => [...source.match(new RegExp(`${name} = \\[([\\s\\S]*?)\\]`))[1].matchAll(/["']([^"']+)["']/g)].map(m => m[1]);
+const previews = (name) => inventory(preview, name);
 
 test('the served and preview scripts share the complete ordered asset list', () => {
   const scripts = shipped('EVENTS'); assert.deepEqual(scripts, previews('SCRIPTS'));
+  assert.deepEqual(scripts, inventory(browser, 'SCRIPTS'));
   assert.equal(new Set(scripts).size, scripts.length);
   const order = ['dashboard-core.js','dashboard-activity.js','dashboard-activity-panel.js','dashboard-workspace.js','dashboard.js'];
   assert.deepEqual(scripts.filter(s => order.includes(s)), order);

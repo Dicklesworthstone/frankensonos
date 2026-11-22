@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:vendor="urn:example:native-service" xml:base="https://example.invalid/media/" vendor:context="source &amp; account">
+  <!-- Synthetic interoperability fixture; contains no device or account data. -->
+  <item id="SQ:7/1" parentID="SQ:7" restricted="true" refID="service-original-1" vendor:license="account-token">
+    <dc:title>Native &amp; complete</dc:title>
+    <upnp:class>object.item.audioItem.musicTrack</upnp:class>
+    <dc:creator>Fixture artist</dc:creator>
+    <res protocolInfo="http-get:*:audio/flac:*" duration="0:03:00" bitrate="320000" sampleFrequency="48000" vendor:codec="lossless">https://example.invalid/primary.flac</res>
+    <res protocolInfo="http-get:*:audio/flac:*" vendor:variant="fallback">https://example.invalid/alternate.flac</res>
+    <desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">fixture-service</desc>
+    <desc id="extra" nameSpace="urn:example:native-service"><vendor:route priority="2">local</vendor:route></desc>
+    <vendor:playback mode="native"><vendor:value><![CDATA[retained <payload> & context]]></vendor:value></vendor:playback>
+  </item>
+  <item id="SQ:7/2" parentID="SQ:7" restricted="true">
+    <dc:title>Other occurrence</dc:title>
+    <upnp:class>object.item.audioItem.musicTrack</upnp:class>
+    <res protocolInfo="http-get:*:audio/flac:*">https://example.invalid/second.flac</res>
+    <vendor:playback mode="second"/>
+  </item>
+</DIDL-Lite>

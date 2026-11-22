@@ -48,6 +48,26 @@ function acknowledgement(body, queue) {
 }
 const playedSelection = () => ({ done: 'Playing the ordered selection', changed: true,
   notes: [{ code: 'VOLUME_CAPPED', detail: 'The selected room was capped to 30.' }] });
+function targetResolution(value, target) {
+  const groups = value.zones.filter(zone => !target.startsWith('all@') || zone.household === target.slice(4)).map(zone => {
+    const coordinator = `fixture-${zone.household}-Room`;
+    return { household: zone.household, coordinator, coordinator_room: 'Room',
+      members: zone.members.map(room => ({ household: zone.household, room,
+        player: room === 'Room' ? coordinator : `fixture-${zone.household}-${room}`, coordinator })) };
+  });
+  return { target, revision: 'a'.repeat(64), matched: target.startsWith('all') ? 'everywhere' : 'alias',
+    groups, rooms: groups.flatMap(group => group.members) };
+}
+function sourceReceipt(value, body) {
+  const groups = targetResolution(value, body.zone).groups;
+  return body.mode === 'play' ? { done: 'Started selected tracks in every reviewed group', changed: true,
+    ...(groups.length > 1 ? { batch: { complete: true, results: groups.map(group => ({
+      household: group.household, target: group.coordinator, zone: 'Room',
+      result: { status: 'succeeded', done: 'Playing ordered tracks', changed: true } })) } } : {}) }
+    : { done: 'Queued selected tracks in every reviewed group', complete: true, logged: true, undoable: true, failed: [],
+      added: groups.map(group => ({ household: group.household, coordinator: group.coordinator,
+        queue: acknowledgement({ tracks: body.source.tracks, next: body.mode === 'next' }, value.queue) })) };
+}
 async function phone({ collection = 'album', callWrapper } = {}) {
   const value = data(), calls = []; let hook;
   const backend = async (name, args = {}) => {
@@ -55,7 +75,9 @@ async function phone({ collection = 'album', callWrapper } = {}) {
     const override = hook?.(name, args); if (override !== undefined) return override;
     if (name === 'zones') return copy(value.zones);
     if (name === 'state') return { ...copy(value.playback), zone: copy(value.zones.find(z => `${z.coordinator_room}@${z.household}` === args.params.room)) };
-    if (name === 'queue') return copy(value.queue);
+    if (name === 'queue' || name === 'sourceQueueState') return copy(value.queue);
+    if (name === 'sourceTargetResolve') return targetResolution(value, args.query.target);
+    if (name === 'sourceControl') return sourceReceipt(value, args.body);
     if (name === 'libraryBrowse' || name === 'libraryPlaylist') return catalog(args.query);
     if (name === 'libraryTracks') return acknowledgement(args.body, value.queue);
     if (name === 'libraryPlayTracks') return playedSelection();
@@ -76,6 +98,8 @@ async function dashboard({ collection = 'album', callWrapper } = {}) {
     calls.push({ url, body: copy(body) });
     const override = hook?.(url, body); if (override !== undefined) return override;
     if (url === '/zones') return copy(value.zones);
+    if (url.startsWith('/rooms/resolve?')) return targetResolution(value, new URL(url, 'http://localhost').searchParams.get('target'));
+    if (url === '/sources/control') return sourceReceipt(value, body);
     if (url.endsWith('/state')) return { ...copy(value.playback), zone: copy(value.zones.find(z => url.includes(encodeURIComponent(`${z.coordinator_room}@${z.household}`)))) };
     if (url.endsWith('/dj')) return { zone: 'Room', running: false, steering: { source: 'none' }, next: [] };
     if (url.includes('/queue?')) return copy(value.queue);
@@ -135,7 +159,7 @@ for (const collection of ['album', 'playlist']) for (const action of ['play', 'a
 }
 
 for (const kind of ['phone', 'dashboard']) {
-  test(`${kind}: page selection is bounded, works offline, and clears on catalog context changes`, async () => {
+  test(`${kind}: selection is bounded, survives a filter draft, and clears on explicit refresh`, async () => {
     const f = await (kind === 'phone' ? phone : dashboard)({ collection: 'tracks' });
     f.select(Array.from({ length: 10 }, (_, i) => 9 - i));
     const model = f.control || f.library;
@@ -143,8 +167,11 @@ for (const kind of ['phone', 'dashboard']) {
     assert.deepEqual(model.state.selected, Array.from({ length: 10 }, (_, i) => i));
     if (kind === 'phone') model.query('different'); else model.edit('different');
     assert.deepEqual(model.state.selected, []);
-    assert.equal(kind === 'phone' ? await model.chooseTracks('next') : model.chooseTracks(), kind === 'phone' ? false : null);
-    await model.refresh(); f.select([0]); model.close(); assert.deepEqual(model.state.selected, []);
+    assert.equal(model.state.basket.length, 10, 'filter edits retain the chosen tracks while the new page is unread');
+    assert.ok(kind === 'phone' ? await model.chooseTracks('next') : model.chooseTracks(),
+      'the basket reviews its retained sources independently of an unfinished filter draft');
+    await model.refresh(); assert.deepEqual(model.state.basket, []);
+    f.select([0]); model.close(); assert.deepEqual(model.state.selected, []);
   });
 }
 
@@ -268,7 +295,12 @@ test('both served assets include the batch contract before library consumers and
   const budgets = [], call = C.request({ fetcher: async () => new Response('{}'), schedule(fn, ms) { budgets.push(ms); return 1; }, cancel() {} });
   await call('/queue/tracks', { zone: 'Room@S2', tracks: [{ source_uri: uri(1) }] });
   await call('/play/tracks', { zone: 'Room@S2', tracks: [{ source_uri: uri(1) }] });
-  assert.deepEqual(budgets, [600000, 600000]);
+  await call('/sources/control', { zone: 'all', expected_revision: 'a'.repeat(64), mode: 'next',
+    source: { kind: 'tracks', tracks: [{ source_uri: uri(1) }] } });
+  assert.deepEqual(budgets, [600000, 600000, 600000]);
+  const phone = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const requests = vm.runInNewContext(phone.replace(/\nstart\(\);\s*$/, '') + '\nRequestRemote;', { setTimeout, clearTimeout });
+  assert.equal(requests.timeoutFor('POST', '/sources/control'), 600000);
 });
 
 function documentFixture() {
@@ -322,7 +354,7 @@ for (const action of ['play', 'next']) test(`phone checkbox controls review ${ac
   const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
   const el = vm.runInNewContext(source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer')) + '\nel;', { document: doc });
   panel = R.panel({ call: f.backend, el });
-  panel.node.open = true; panel.node.fire('toggle'); await settled(() => panel.node.querySelectorAll('option').length === 3);
+  panel.node.open = true; panel.node.fire('toggle'); await settled(() => panel.node.querySelector('select').querySelectorAll('option').length === 3);
   const group = panel.node.querySelector('select'); group.value = 'Room@S1'; group.fire('change');
   findButton(panel.node, 'Browse albums').fire('click'); await settled(() => !!findButton(panel.node, 'View cached tracks'));
   findButton(panel.node, 'View cached tracks').fire('click');
@@ -373,4 +405,278 @@ for (const surface of ['phone', 'dashboard']) test(`${surface}: cached tracks ca
   if (surface === 'phone') assert.equal(await f.control.chooseTracks('next'), false);
   else assert.equal(await f.session.reviewLibraryTracks(f.library.chooseTracks(), 'next', null), null);
   assert.equal(f.writes().length, 0);
+});
+
+test('phone basket controls keep pages, reorder and repeat exact occurrences before one reviewed batch', async t => {
+  const f = await phone({ collection: 'tracks' }), doc = documentFixture(), previous = global.document;
+  global.document = doc;
+  let panel;
+  t.after(() => { panel?.dispose(); global.document = previous; });
+  f.hook((name, args) => {
+    if (name !== 'libraryBrowse') return;
+    const offset = Number(args.query.offset || 0), total = 52;
+    return { ...catalog(args.query), total, next_offset: offset === 0 ? 50 : null,
+      items: Array.from({ length: Math.min(50, total - offset) }, (_, index) => ({ kind: 'track',
+        source_uri: uri(offset + index + 1), title: `Track ${offset + index + 1}`, subtitle: 'Synthetic artist', explicit: false })) };
+  });
+  const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const el = vm.runInNewContext(source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer')) + '\nel;', { document: doc });
+  panel = R.panel({ call: f.backend, el }); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => panel.node.querySelector('select').querySelectorAll('option').length === 3);
+  const group = panel.node.querySelector('select'); group.value = 'Room@S2'; group.fire('change');
+  findButton(panel.node, 'Browse tracks').fire('click');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 50);
+  checks()[0].checked = true; checks()[0].fire('change');
+  findButton(panel.node, 'Next page').fire('click'); await settled(() => checks().length === 2);
+  checks()[1].checked = true; checks()[1].fire('change');
+  assert.match(panel.node.textContent, /2 selected/);
+  const basket = () => panel.node.querySelectorAll('ol').find(node => node.getAttribute('aria-label') === 'Selected tracks in playback order');
+  const rowButton = (index, label) => findButton(basket().children[index], label);
+  rowButton(0, 'Repeat track').fire('click'); assert.equal(basket().children.length, 3);
+  rowButton(2, 'Earlier').fire('click'); rowButton(1, 'Earlier').fire('click');
+  assert.match(basket().children[0].textContent, /^Track 52/);
+  rowButton(1, 'Remove selection').fire('click'); assert.equal(basket().children.length, 2);
+  assert.match(rowButton(0, 'Repeat track').getAttribute('aria-label'), /selected track 1, Track 52/);
+  findButton(panel.node, 'Previous page').fire('click'); await settled(() => checks().length === 50);
+  assert.equal(checks()[0].checked, true); assert.match(basket().children[0].textContent, /^Track 52/);
+  findButton(panel.node, 'Queue selected next').fire('click');
+  await settled(() => !!findButton(panel.node, 'Confirm queue selected next'));
+  assert.match(panel.node.querySelector('ol').children[0].textContent, /^Track 52/);
+  const confirm = findButton(panel.node, 'Confirm queue selected next'); confirm.fire('click'); confirm.fire('click');
+  await settled(() => f.writes().length === 1 && panel.node.textContent.includes('Current playback was preserved.'));
+  assert.deepEqual(f.writes()[0].args.body.tracks.map(item => item.source_uri), [uri(52), uri(1)]);
+});
+
+test('dashboard basket controls keep the chosen order and occurrences through page navigation and review', async t => {
+  const f = await dashboard({ collection: 'tracks' }), doc = documentFixture();
+  f.hook(url => {
+    if (!url.startsWith('/library/')) return;
+    const query = Object.fromEntries(new URL(url, 'http://localhost').searchParams);
+    if (query.kind !== 'tracks') return;
+    const offset = Number(query.offset || 0), total = 52;
+    return { ...catalog(query), total, next_offset: offset === 0 ? 50 : null,
+      items: Array.from({ length: Math.min(50, total - offset) }, (_, index) => ({ kind: 'track',
+        source_uri: uri(offset + index + 1), title: `Track ${offset + index + 1}`, subtitle: 'Synthetic artist', explicit: false })) };
+  });
+  const panel = Panel.create({ call: f.call, controller: f.controller, session: f.session, doc });
+  t.after(() => panel.dispose()); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => !!findButton(panel.node, 'View cached tracks'));
+  const category = panel.node.querySelector('select'); category.value = 'tracks'; category.fire('change');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 50);
+  checks()[0].checked = true; checks()[0].fire('change');
+  findButton(panel.node, 'Next page').fire('click'); await settled(() => checks().length === 2);
+  checks()[1].checked = true; checks()[1].fire('change');
+  const basket = () => panel.node.querySelectorAll('ol').find(node => node.getAttribute('aria-label') === 'Selected tracks in playback order');
+  const rowButton = (index, label) => findButton(basket().children[index], label);
+  assert.match(panel.node.textContent, /2 selected/);
+  rowButton(0, 'Repeat track').fire('click'); assert.equal(basket().children.length, 3);
+  rowButton(2, 'Move earlier').fire('click'); rowButton(1, 'Move earlier').fire('click');
+  assert.match(basket().children[0].textContent, /^Track 52/);
+  rowButton(1, 'Remove selection').fire('click'); assert.equal(basket().children.length, 2);
+  assert.match(rowButton(0, 'Repeat track').getAttribute('aria-label'), /selection 1, Track 52/);
+  findButton(panel.node, 'Previous page').fire('click'); await settled(() => checks().length === 50);
+  assert.equal(checks()[0].checked, true); assert.match(basket().children[0].textContent, /^Track 52/);
+  findButton(panel.node, 'Play selected now').fire('click'); await settled(() => !!f.session.state.pending);
+  const review = f.session.state.pending;
+  assert.equal(doc.getElementById('search-dialog').open, false);
+  assert.match(review.trackSelection[0], /^Track 52/);
+  assert.equal(await f.session.confirm(review), true); assert.equal(await f.session.confirm(review), false);
+  assert.equal(f.writes().length, 1);
+  assert.deepEqual(f.writes()[0].body.tracks.map(item => item.source_uri), [uri(52), uri(1)]);
+});
+
+test('dashboard music browsing composes album and playlist tracks without discarding either selection', async t => {
+  const f = await dashboard(), doc = documentFixture();
+  const panel = Panel.create({ call: f.call, controller: f.controller, session: f.session, doc });
+  t.after(() => panel.dispose()); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => !!findButton(panel.node, 'View cached tracks'));
+  findButton(panel.node, 'View cached tracks').fire('click');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 3);
+  checks()[0].checked = true; checks()[0].fire('change');
+  findButton(panel.node, 'Back to albums').fire('click');
+  await settled(() => panel.model.state.kind === 'albums' && !panel.model.state.loading);
+  assert.equal(panel.model.state.basket.length, 1);
+  assert.equal(findButton(panel.node, 'Play selected now').disabled, false, 'the basket can be reviewed from a collection directory');
+  const kind = panel.node.querySelector('select'); kind.value = 'playlists'; kind.fire('change');
+  await settled(() => panel.model.state.kind === 'playlists' && !panel.model.state.loading);
+  findButton(panel.node, 'View cached tracks').fire('click'); await settled(() => checks().length === 3);
+  checks()[1].checked = true; checks()[1].fire('change');
+  const basket = panel.node.querySelector('ol');
+  assert.equal(basket.children.length, 2);
+  assert.match(basket.children[0].textContent, /Album:.*Disc 1, track 1/);
+  assert.match(basket.children[1].textContent, /Playlist:.*Playlist position 4/);
+  findButton(basket.children[1], 'Move earlier').fire('click');
+  findButton(panel.node, 'Queue selected next').fire('click'); await settled(() => !!f.session.state.pending);
+  const review = f.session.state.pending;
+  assert.match(review.trackSelection[0], /Playlist:/); assert.match(review.trackSelection[1], /Album:/);
+  assert.equal(await f.session.confirm(review), true); assert.equal(f.writes().length, 1);
+  assert.deepEqual(f.writes()[0].body.tracks.map(item => item.source_uri), [uri(2), uri(1)]);
+});
+
+test('phone music browsing composes album and playlist tracks with visible origins and one confirmation', async t => {
+  const f = await phone(), doc = documentFixture(), previous = global.document; global.document = doc;
+  let panel;
+  t.after(() => { panel?.dispose(); global.document = previous; });
+  const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const el = vm.runInNewContext(source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer')) + '\nel;', { document: doc });
+  panel = R.panel({ call: f.backend, el }); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => panel.node.querySelector('select').querySelectorAll('option').length === 3);
+  const group = panel.node.querySelector('select'); group.value = 'Room@S1'; group.fire('change');
+  findButton(panel.node, 'Browse albums').fire('click'); await settled(() => !!findButton(panel.node, 'View cached tracks'));
+  findButton(panel.node, 'View cached tracks').fire('click');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 3); checks()[0].checked = true; checks()[0].fire('change');
+  findButton(panel.node, 'Back to albums').fire('click'); await settled(() => !!findButton(panel.node, 'View cached tracks'));
+  assert.equal(findButton(panel.node, 'Play selected now').disabled, false);
+  findButton(panel.node, 'Browse playlists').fire('click'); await settled(() => panel.node.textContent.includes('Cached playlists:'));
+  findButton(panel.node, 'View cached tracks').fire('click'); await settled(() => checks().length === 3);
+  checks()[1].checked = true; checks()[1].fire('change');
+  const basket = panel.node.querySelector('ol'); assert.equal(basket.children.length, 2);
+  assert.match(basket.children[0].textContent, /Album:/); assert.match(basket.children[1].textContent, /Playlist:/);
+  findButton(basket.children[1], 'Earlier').fire('click');
+  findButton(panel.node, 'Add selected to end').fire('click'); await settled(() => !!findButton(panel.node, 'Confirm add selected to end'));
+  const review = panel.node.querySelector('ol');
+  assert.match(review.children[0].textContent, /Playlist:/); assert.match(review.children[1].textContent, /Album:/);
+  const confirm = findButton(panel.node, 'Confirm add selected to end'); confirm.fire('click'); confirm.fire('click');
+  await settled(() => f.writes().length === 1 && panel.node.textContent.includes('Current playback was preserved.'));
+  assert.equal(f.writes()[0].args.body.zone, 'Room@S1');
+  assert.deepEqual(f.writes()[0].args.body.tracks.map(item => item.source_uri), [uri(2), uri(1)]);
+});
+
+const labeled = (node, tag, label) => node.querySelectorAll(tag).find(entry => entry.getAttribute('aria-label') === label);
+
+for (const action of ['play', 'next', 'append']) test(`phone selected-track destination controls send reviewed ${action} to a room set`, async t => {
+  const f = await phone(), doc = documentFixture(), previous = global.document; global.document = doc;
+  let panel;
+  t.after(() => { panel?.dispose(); global.document = previous; });
+  const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const el = vm.runInNewContext(source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer')) + '\nel;', { document: doc });
+  let held;
+  panel = R.panel({ call: f.backend, el, executeSet: async (groups, work) => { held = groups; return work(); } });
+  panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => panel.node.querySelector('select').querySelectorAll('option').length === 3);
+  findButton(panel.node, 'Browse albums').fire('click'); await settled(() => !!findButton(panel.node, 'View cached tracks'));
+  findButton(panel.node, 'View cached tracks').fire('click');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 3);
+  for (const index of [0, 2]) { checks()[index].checked = true; checks()[index].fire('change'); }
+  const mode = labeled(panel.node, 'select', 'Selected track destination');
+  const target = labeled(panel.node, 'input', 'Rooms or room set for selected tracks');
+  mode.value = 'set'; mode.fire('change');
+  for (const value of ['all@S1', 'Evening & rooms/#']) { target.value = value; target.fire('input'); }
+  assert.equal(panel.node.querySelector('ol').children.length, 2);
+  assert.equal(f.calls.filter(call => call.name === 'sourceTargetResolve').length, 0);
+  const label = { play: 'Play selected now', next: 'Queue selected next', append: 'Add selected to end' }[action];
+  findButton(panel.node, label).fire('click');
+  await settled(() => !!findButton(panel.node, 'Confirm ' + label.toLowerCase()));
+  assert.match(panel.node.textContent, /Room@S1/); assert.match(panel.node.textContent, /Room@S2/);
+  assert.match(panel.node.textContent, /Movement 1/); assert.match(panel.node.textContent, /Movement 3/);
+  const confirm = findButton(panel.node, 'Confirm ' + label.toLowerCase()); confirm.fire('click'); confirm.fire('click');
+  await settled(() => f.writes().length === 1 && panel.node.textContent.includes('every reviewed group'));
+  assert.equal(held.length, 2); assert.equal(f.writes()[0].name, 'sourceControl');
+  assert.equal(f.writes()[0].args.body.zone, 'Evening & rooms/#'); assert.equal(f.writes()[0].args.body.mode, action);
+  assert.deepEqual(f.writes()[0].args.body.source.tracks.map(track => track.source_uri), [uri(1), uri(1)]);
+  assert.equal(f.writes()[0].args.body.expected_revision, 'a'.repeat(64));
+});
+
+for (const action of ['play', 'next', 'append']) test(`dashboard selected-track destination controls hand reviewed ${action} to the shared lane`, async t => {
+  const f = await dashboard(), doc = documentFixture();
+  const panel = Panel.create({ call: f.call, controller: f.controller, session: f.session, doc });
+  t.after(() => panel.dispose()); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => !!findButton(panel.node, 'View cached tracks')); findButton(panel.node, 'View cached tracks').fire('click');
+  const checks = () => panel.node.querySelectorAll('input').filter(input => input.type === 'checkbox');
+  await settled(() => checks().length === 3);
+  for (const index of [0, 2]) { checks()[index].checked = true; checks()[index].fire('change'); }
+  const basket = panel.model.state.basket;
+  const mode = labeled(panel.node, 'select', 'Selected track destination');
+  const target = labeled(panel.node, 'input', 'Rooms or room set for selected tracks');
+  mode.value = 'set'; mode.fire('change');
+  for (const value of ['all@S1', 'all']) { target.value = value; target.fire('input'); }
+  assert.equal(panel.model.state.basket, basket);
+  const label = { play: 'Play selected now', next: 'Queue selected next', append: 'Add selected to end' }[action];
+  findButton(panel.node, label).fire('click'); await settled(() => !!f.session.state.pending);
+  const review = f.session.state.pending;
+  assert.equal(doc.getElementById('search-dialog').open, false);
+  panel.node.fire('toggle'); doc.getElementById('search-dialog').fire('close');
+  assert.equal(f.session.state.pending, review, 'queued close/toggle notifications cannot cancel the new review');
+  assert.equal(review.targetGroups.length, 2); assert.match(review.targetGroups.join(' '), /Room@S1.*Room@S2/);
+  assert.deepEqual(review.body.source.tracks.map(track => track.source_uri), [uri(1), uri(1)]);
+  assert.equal(await f.session.confirm(review), true);
+  assert.equal(await f.session.confirm(review), false); assert.equal(f.writes().length, 1);
+  assert.equal(f.writes()[0].url, '/sources/control'); assert.equal(f.writes()[0].body.mode, action);
+});
+
+test('dashboard failed asynchronous target review preserves the editable basket', async t => {
+  const f = await dashboard(), doc = documentFixture();
+  const panel = Panel.create({ call: f.call, controller: f.controller, session: f.session, doc });
+  t.after(() => panel.dispose()); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => !!findButton(panel.node, 'View cached tracks')); findButton(panel.node, 'View cached tracks').fire('click');
+  await settled(() => panel.model.state.kind === 'tracks' && !panel.model.state.loading);
+  const check = panel.node.querySelectorAll('input').find(input => input.type === 'checkbox');
+  check.checked = true; check.fire('change'); const basket = panel.model.state.basket;
+  const mode = labeled(panel.node, 'select', 'Selected track destination'); mode.value = 'set'; mode.fire('change');
+  const target = labeled(panel.node, 'input', 'Rooms or room set for selected tracks'); target.value = 'all'; target.fire('input');
+  f.hook(url => { if (url.startsWith('/rooms/resolve?')) throw new Error('The saved room set is unavailable'); });
+  findButton(panel.node, 'Play selected now').fire('click');
+  await settled(() => panel.node.textContent.includes('saved room set is unavailable'));
+  assert.equal(panel.model.state.basket, basket); assert.equal(doc.getElementById('search-dialog').open, true);
+  assert.equal(findButton(panel.node, 'Play selected now').disabled, false);
+  assert.equal(f.session.state.pending, null); assert.equal(f.writes().length, 0);
+});
+
+test('closing the dashboard chooser while target review waits cannot open a late confirmation', async t => {
+  const f = await dashboard(), doc = documentFixture(), entered = deferred(), reply = deferred();
+  const panel = Panel.create({ call: f.call, controller: f.controller, session: f.session, doc });
+  t.after(() => panel.dispose()); panel.node.open = true; panel.node.fire('toggle');
+  await settled(() => !!findButton(panel.node, 'View cached tracks')); findButton(panel.node, 'View cached tracks').fire('click');
+  await settled(() => panel.model.state.kind === 'tracks' && !panel.model.state.loading);
+  const check = panel.node.querySelectorAll('input').find(input => input.type === 'checkbox');
+  check.checked = true; check.fire('change');
+  const mode = labeled(panel.node, 'select', 'Selected track destination'); mode.value = 'set'; mode.fire('change');
+  const target = labeled(panel.node, 'input', 'Rooms or room set for selected tracks'); target.value = 'all'; target.fire('input');
+  f.hook(url => { if (url.startsWith('/rooms/resolve?')) { entered.resolve(); return reply.promise; } });
+  findButton(panel.node, 'Play selected now').fire('click'); await entered.promise;
+  doc.getElementById('search-dialog').close(); reply.resolve(targetResolution(f.value, 'all')); await tick(); await tick();
+  assert.equal(f.session.state.pending, null); assert.equal(f.writes().length, 0); assert.deepEqual(panel.model.state.basket, []);
+});
+
+test('phone bundle mounts before room-set modules and replacement cards inherit its pending volume lease', async () => {
+  const doc = documentFixture(), host = doc.createElement('div'), originalGet = doc.getElementById;
+  doc.getElementById = id => id === 'music-library' ? host : originalGet(id);
+  const remote = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const el = vm.runInNewContext(remote.slice(remote.indexOf('function el('), remote.indexOf('\nlet toastTimer')) + '\nel;', { document: doc });
+  const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/library.js'), 'utf8');
+  const split = source.indexOf("\nif (typeof module");
+  let cardHook;
+  const group = { household: 'S1', coordinator_room: 'Room', members: ['Room', 'Study'] };
+  const shape = zone => JSON.stringify([zone.household, zone.coordinator_room, [...zone.members].sort()]);
+  const card = () => ({ zone: group, writing: false, sliders: new Map(group.members.map(room => [room,
+    { room: room + '@S1', version: 0, timer: null, pendingVolume: null, volumeWriting: false, mutedPending: false,
+      input: { disabled: false }, mute: { disabled: false } }])) });
+  const original = card(), cards = new Map([['S1', original]]), flights = new Map();
+  const context = vm.createContext({ document: doc, QueueTracksRemote: Q,
+    PlaylistContents: require('../crates/fsonos-api/src/remote/playlist-contents.js'),
+    ROUTES: {}, call: async () => [], el, loadZones: async () => {}, house: { cards }, volumeFlights: flights,
+    groupShape: shape, beginAction(parts) { if (parts.writing) return false; parts.writing = true; return true; },
+    endAction(parts) { parts.writing = false; },
+    registerCardPanel(hook) { cardHook = hook; hook(original); } });
+  vm.runInContext(source.slice(0, split)
+    + '\nconst originalPanel = LibraryRemote.panel; LibraryRemote.panel = options => { globalThis.mountedOptions = options; return originalPanel(options); };\n'
+    + source.slice(split), context);
+  assert.equal(host.children.length, 1, 'the panel mounted without eager room-set module access');
+  context.RoomSetsRemote = require('../crates/fsonos-api/src/remote/room-sets.js');
+  const replacement = card();
+  await context.mountedOptions.executeSet([{ shape: shape(group),
+    members: group.members.map(room => ({ household: 'S1', room })) }], async () => {
+    cards.set('S1', replacement); cardHook(replacement);
+    for (const entry of replacement.sliders.values()) {
+      assert.equal(entry.input.disabled, true); assert.equal(entry.mute.disabled, true); assert.equal(entry.mutedPending, true);
+    }
+    assert.equal(flights.size, 2);
+  });
+  assert.equal(flights.size, 0); assert.equal(original.writing, false);
+  assert.ok([...replacement.sliders.values()].every(entry => !entry.mutedPending));
 });

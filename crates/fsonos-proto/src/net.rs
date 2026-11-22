@@ -18,6 +18,9 @@
 //! server's, without nesting `block_on`. A discovery is one request: its
 //! SSDP and mDNS searches listen side by side, so a survey waits once for
 //! both.
+//! Device-description batches admit at most [`MAX_DESCRIPTION_READS`] reads
+//! at once through those same lanes. Slow players no longer serialize a survey;
+//! the results keep discovery order and cancellation stops further admissions.
 
 use crate::gena::{self, Notify, Subscription};
 use crate::mdns;
@@ -45,6 +48,8 @@ pub use inbox::{CallbackEvent, EVENT_BACKLOG, EVENT_BACKLOG_BYTES};
 
 #[cfg(test)]
 mod deadline_tests;
+#[cfg(test)]
+mod description_tests;
 
 /// The port every player serves its UPnP control and description on.
 pub const PLAYER_PORT: u16 = 1400;
@@ -52,6 +57,10 @@ pub const PLAYER_PORT: u16 = 1400;
 /// How long one HTTP request, including its wait in a lane, may take before
 /// it fails as [`ProtoError::Network`]. Discovery uses its own listening window.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Maximum concurrent description reads in one discovery pass. The existing
+/// address lanes still serialize requests to the same player and bound deadlines.
+pub const MAX_DESCRIPTION_READS: usize = 8;
 
 /// The most lanes a [`Lan`] runs; requests to further addresses share them.
 const MAX_LANES: usize = 64;
@@ -581,6 +590,69 @@ impl Transport for Lan {
         } else {
             Err(network(url, format!("HTTP {}", reply.status)))
         }
+    }
+
+    fn http_get_many(
+        &self,
+        urls: &[String],
+        cancelled: &(dyn Fn() -> bool + Sync),
+    ) -> Vec<Result<String, ProtoError>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let next = AtomicUsize::new(0);
+        let (finished, answers) = mpsc::channel();
+        let read = || {
+            while !cancelled() {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(url) = urls.get(index) else { break };
+                if cancelled() {
+                    break;
+                }
+                // Reuse routing, per-address ordering, deadlines and transcript
+                // taps. A batch never sends around the normal HTTP transport.
+                let result = self.http_get(url);
+                let result = if cancelled() {
+                    Err(ProtoError::NotWired("description read cancelled"))
+                } else {
+                    result
+                };
+                let _ = finished.send((index, result));
+            }
+        };
+        thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for _ in 1..urls.len().min(MAX_DESCRIPTION_READS) {
+                match thread::Builder::new()
+                    .name("fsonos-descriptions".into())
+                    .spawn_scoped(scope, read)
+                {
+                    Ok(worker) => workers.push(worker),
+                    // Fewer workers still finish the same batch. Thread pressure
+                    // must not panic the inventory worker or lose URLs.
+                    Err(_) => break,
+                }
+            }
+            read();
+            for worker in workers {
+                let _ = worker.join();
+            }
+        });
+        let mut ordered: Vec<_> = (0..urls.len()).map(|_| None).collect();
+        for (index, result) in answers.try_iter() {
+            ordered[index] = Some(result);
+        }
+        ordered
+            .into_iter()
+            .map(|answer| {
+                answer.unwrap_or_else(|| {
+                    Err(ProtoError::NotWired(if cancelled() {
+                        "description read cancelled"
+                    } else {
+                        "description read worker failed"
+                    }))
+                })
+            })
+            .collect()
     }
 
     /// Like [`Self::http_get`], routed the same way; a body over

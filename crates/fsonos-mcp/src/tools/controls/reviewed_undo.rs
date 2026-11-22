@@ -1,6 +1,6 @@
 //! Agent-native recovery through the same action log that runs the controls.
 
-use crate::tools::{Backend, from_daemon, respond};
+use crate::tools::{Backend, from_daemon, respond, undo_outcome, undo_text};
 use fastmcp::FinalCallToolResult;
 use fastmcp::prelude::*;
 use fsonos_api::{ActionDto, ErrorCode, Failure, UndoDto};
@@ -10,18 +10,6 @@ use serde::de::DeserializeOwned;
 #[derive(Serialize)]
 struct PreviewDto {
     action: Option<ActionDto>,
-}
-
-fn undo_text(undone: &UndoDto) -> String {
-    std::iter::once(undone.summary.clone())
-        .chain(
-            undone
-                .failures
-                .iter()
-                .map(|why| format!("Not restored: {why}")),
-        )
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 impl Backend {
@@ -113,6 +101,7 @@ impl Backend {
             }
             Ok((undo_text(&undone), undone))
         })
+        .map(undo_outcome)
     }
 }
 

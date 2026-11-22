@@ -3,12 +3,12 @@
 mod untouched;
 pub(super) use untouched::Origin;
 
-use super::{GroupPlan, HouseholdAnnouncement, continuity, refreshed};
+use super::{GroupPlan, HouseholdAnnouncement, continuity, refreshed, topology};
 use crate::snapshot::{self, Aspect, RestoreOp, RestoreReport, SnapshotSource, ZoneSnapshot};
 use crate::{CoreError, HouseholdState, control, heal};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 const CLIP_SETTLE: Duration = Duration::from_millis(750);
@@ -23,34 +23,28 @@ pub(super) fn wait_for_group<T: Transport + ?Sized>(
     before: &HouseholdState,
     plan: &GroupPlan,
 ) -> Result<(), CoreError> {
-    let lead = control::locate(std::slice::from_ref(before), &plan.lead)?.ip;
-    let other = before
-        .rooms
-        .iter()
-        .find(|room| room.primary != plan.lead)
-        .and_then(|room| before.player(&room.primary))
-        .map(|player| player.ip);
-    let hosts = [Some(lead), other];
+    let lead = control::locate(std::slice::from_ref(before), &plan.lead)?;
+    let mut tried = std::collections::HashSet::new();
+    let witnesses: Vec<_> = std::iter::once(lead)
+        .chain(&before.players)
+        .filter(|player| tried.insert(player.ip))
+        .collect();
     let started = Instant::now();
     let wait = Duration::from_secs(3);
     let mut read_any = false;
     let mut last = ProtoError::Malformed("the announcement group was not confirmed".into()).into();
     loop {
-        for host in hosts.into_iter().flatten() {
+        for player in &witnesses {
             if read_any && started.elapsed() >= wait {
                 return Err(last);
             }
             read_any = true;
-            match get_zone_group_state(t, host) {
-                Ok(topology) => {
-                    let mut now = before.clone();
-                    now.apply_topology(&topology);
-                    match check_group(&now, before, plan) {
-                        Ok(()) => return Ok(()),
-                        Err(why) => last = ProtoError::Malformed(why).into(),
-                    }
-                }
-                Err(error) => last = error.into(),
+            match topology::read(t, before, player) {
+                Ok(now) => match check_group(&now, before, plan) {
+                    Ok(()) => return Ok(()),
+                    Err(why) => last = ProtoError::Malformed(why).into(),
+                },
+                Err(error) => last = error,
             }
         }
         let remaining = wait.saturating_sub(started.elapsed());
@@ -97,9 +91,19 @@ pub(super) fn check_group(
         .rooms
         .iter()
         .filter(|r| r.coordinator == plan.lead)
-        .map(|r| &r.primary)
         .collect();
-    if expected.iter().all(|p| actual.contains(&p)) && actual.iter().all(|p| expected.contains(p)) {
+    if expected.iter().all(|player| {
+        before
+            .rooms
+            .iter()
+            .find(|room| room.primary == *player)
+            .is_some_and(|room| {
+                actual
+                    .iter()
+                    .any(|current| topology::same_room(room, current))
+            })
+    }) && actual.iter().all(|room| expected.contains(&room.primary))
+    {
         Ok(())
     } else {
         Err("announcement grouping changed; newer playback and grouping were left alone".into())
@@ -429,7 +433,7 @@ fn put_zone_back<T: Transport + ?Sized>(
             if let Some((entry, proof)) = continuation.zip(returned.as_ref()) {
                 proof.check(t, entry).map_err(|error| error.to_string())?;
             }
-            vet(t, &now, &changed, effects, op)
+            vet(t, household, &now, &changed, effects, op)
         })
     };
     let owned = || match continuation.zip(returned.as_ref()) {
@@ -497,16 +501,31 @@ fn changed_aspects(snap: &ZoneSnapshot, effects: &Effects, continuing: bool) -> 
 
 fn vet<T: Transport + ?Sized>(
     t: &T,
-    household: &HouseholdState,
+    before: &HouseholdState,
+    dispatch: &HouseholdState,
     snap: &ZoneSnapshot,
     effects: &Effects,
     op: &RestoreOp,
 ) -> Result<RestoreOp, String> {
-    let host = |p: &PlayerId| {
-        control::locate(std::slice::from_ref(household), p)
-            .map(|p| p.ip)
-            .map_err(|e| e.to_string())
-    };
+    let household = refreshed(t, before).map_err(|error| error.to_string())?;
+    if !snap.members.iter().all(|primary| {
+        before
+            .rooms
+            .iter()
+            .find(|room| room.primary == *primary)
+            .is_some_and(|room| {
+                household
+                    .rooms
+                    .iter()
+                    .any(|current| topology::same_room(room, current))
+            })
+    }) {
+        return Err(
+            "announcement room membership changed during restoration; newer intent was left alone"
+                .into(),
+        );
+    }
+    let host = |id: &PlayerId| bound_host(dispatch, &household, id);
     match op {
         RestoreOp::SetVolume { player, level } => {
             let expected = effects
@@ -542,5 +561,54 @@ fn vet<T: Transport + ?Sized>(
         }
         _ => {}
     }
+    require_dispatch(t, dispatch, &household, &snap.coordinator, op)?;
     Ok(op.clone())
+}
+
+fn bound_host(
+    dispatch: &HouseholdState,
+    current: &HouseholdState,
+    player: &PlayerId,
+) -> Result<IpAddr, String> {
+    let bound = control::locate(std::slice::from_ref(dispatch), player)
+        .map_err(|error| error.to_string())?
+        .ip;
+    let observed = control::locate(std::slice::from_ref(current), player)
+        .map_err(|error| error.to_string())?
+        .ip;
+    if bound == observed {
+        Ok(bound)
+    } else {
+        Err("announcement player address changed during restoration; the old endpoint was left alone".into())
+    }
+}
+
+/// The snapshot executor uses its retained dispatch addresses. A fresh read
+/// at a moved player's new address cannot authorize a write at the old one.
+/// Recheck actual endpoint ownership after the aspect reads too.
+fn require_dispatch<T: Transport + ?Sized>(
+    t: &T,
+    dispatch: &HouseholdState,
+    current: &HouseholdState,
+    lead: &PlayerId,
+    op: &RestoreOp,
+) -> Result<(), String> {
+    let host = |id: &PlayerId| bound_host(dispatch, current, id);
+    let player = |id: &PlayerId| {
+        control::require_player(t, host(id)?, id).map_err(|error| error.to_string())
+    };
+    let coordinator =
+        || control::require_coordinator(t, host(lead)?, lead).map_err(|error| error.to_string());
+    match op {
+        RestoreOp::Join { player: id } => {
+            coordinator()?;
+            player(id)?;
+        }
+        RestoreOp::Leave { player: id }
+        | RestoreOp::SetVolume { player: id, .. }
+        | RestoreOp::SetMute { player: id, .. }
+        | RestoreOp::RestoreQueue { player: id, .. } => player(id)?,
+        _ => coordinator()?,
+    }
+    Ok(())
 }

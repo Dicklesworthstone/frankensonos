@@ -21,6 +21,8 @@ use std::time::Duration;
 mod room_configuration;
 #[path = "http_api/schedule_update.rs"]
 mod schedule_update;
+#[path = "http_api/source_control.rs"]
+mod source_control;
 
 fn runtime() -> Runtime {
     RuntimeBuilder::current_thread()

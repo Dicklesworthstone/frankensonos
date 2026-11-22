@@ -135,10 +135,10 @@ const DashboardRoutines = (() => {
       try {
         const planned = state.editing ? S.updatePlan(state.editing, state.draft, state.options, state.rows) : S.creation(state.draft, state.options);
         if (!state.editing) S.noDuplicate(state.rows, planned);
-        if (planned.body.action === 'dj_start') {
+        if (S.resolvesGroups(planned.body.action)) {
           const v = ++version, abort = new AbortController();
           reading = abort; state.pending = null; state.loading = true;
-          state.message = 'Reading every group in the scheduled DJ target…'; publish();
+          state.message = 'Reading every group affected by this routine…'; publish();
           return S.reviewTargets((name, args) => route(name, { ...args, signal: abort.signal }), planned).then(reviewed => {
             if (!live() || v !== version || !controller.canManage() || now() - readAt >= MAX_AGE
                 || now() - choicesAt >= MAX_AGE) return false;
@@ -190,7 +190,7 @@ const DashboardRoutines = (() => {
             if (updating) S.editUnchanged(rows.find(row => row.id === reviewed.row.id), reviewed.row);
             S.noDuplicate(rows.filter(row => !updating || row.id !== reviewed.row.id), reviewed);
             const options = await S.choices((name, args) => route(name, { ...args, signal: abort.signal }), reviewed.body.action,
-              updating ? reviewed.row : null, reviewed.body.action === 'dj_start' ? reviewed.body.zone : null); valid();
+              updating ? reviewed.row : null, S.resolvesGroups(reviewed.body.action) ? reviewed.body.zone : null); valid();
             S.targetsUnchanged(reviewed, options, 'The saved scene, group or DJ mood changed. Refresh and review it again.');
             valid(); sent = true;
             result = updating ? S.updatedOf(await send('/schedules/update', reviewed.request), reviewed)

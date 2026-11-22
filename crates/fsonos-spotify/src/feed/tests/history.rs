@@ -4,6 +4,117 @@ use super::*;
 use fsonos_proto::control as transport;
 
 #[test]
+fn consecutive_song_skips_before_playing_events_do_not_repeat_the_selected_song() {
+    for s2 in [false, true] {
+        let rig = Rig::generation(s2);
+        // Two songs by one artist make the work cooldown decisive, without
+        // artist spacing or a later movement hiding the selected song.
+        let pool = works_of(&song_items()[..2]);
+        assert_eq!(pool.len(), 2);
+        assert!(pool.works().iter().all(|work| work.movements.len() == 1));
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let mut selected = feed.current().unwrap().clone();
+        for step in 1..=8 {
+            // No GENA observations reach the feed between commands. A skip
+            // still reads and confirms the real selected queue occurrence.
+            let next = feed
+                .skip(
+                    &rig.speakers(&rig.lan),
+                    plan(&pool, MIDNIGHT + step),
+                    &mut store,
+                )
+                .unwrap()
+                .clone();
+            assert_ne!(
+                next.work_key, selected.work_key,
+                "S2={s2}, skip {step} must leave the selected song"
+            );
+            assert!(next.first() > selected.last());
+            assert_eq!(rig.position(), next.first().unwrap());
+            assert!(plays(&store).is_empty(), "selection is not listening");
+            assert!(feed.recorded.is_none());
+            selected = next;
+        }
+    }
+}
+
+#[test]
+fn a_single_song_still_rotates_without_fabricating_a_listen() {
+    for s2 in [false, true] {
+        let rig = Rig::generation(s2);
+        let pool = works_of(&song_items()[..1]);
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let selected = feed.current().unwrap().clone();
+        for step in 1..=3 {
+            let next = feed
+                .skip(
+                    &rig.speakers(&rig.lan),
+                    plan(&pool, MIDNIGHT + step),
+                    &mut store,
+                )
+                .unwrap()
+                .clone();
+            assert_eq!(next.work_key, selected.work_key);
+            assert_eq!(rig.position(), next.first().unwrap());
+        }
+        assert!(feed.is_active());
+        assert!(plays(&store).is_empty());
+        assert!(feed.recorded.is_none());
+    }
+}
+
+#[test]
+fn a_recorded_song_keeps_its_play_time_without_hiding_future_occurrences() {
+    for s2 in [false, true] {
+        let mut rig = Rig::generation(s2);
+        let lan = rig.lan.clone();
+        let pool = works_of(&song_items()[..2]);
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let selected = feed.current().unwrap().movements[0].clone();
+        let heard_at = MIDNIGHT + 10;
+        rig.pump(&lan, &mut feed, plan(&pool, heard_at), &mut store)
+            .unwrap();
+        assert_eq!(plays(&store), [selected.uri.clone()]);
+
+        let now = MIDNIGHT + 300;
+        let reserved = feed.on_or_ahead(now);
+        assert_eq!(reserved.len(), 2, "one current song and one waiting song");
+        assert_eq!(reserved[0].source_uri, selected.uri);
+        assert_ne!(reserved[1].source_uri, selected.uri);
+        assert_eq!(
+            feed.history(&store, now).unwrap(),
+            [
+                PlayRecord::at(selected.uri.clone(), heard_at),
+                reserved[1].clone()
+            ],
+            "the current song must not add a synthetic row or refresh its timestamp"
+        );
+
+        // The same URI can be queued again at a different occurrence. The
+        // old recorded cursor must not hide the new selection or future copy.
+        feed.skip(&rig.speakers(&lan), plan(&pool, now), &mut store)
+            .unwrap();
+        feed.top_up(&rig.speakers(&lan), plan(&pool, now), &mut store)
+            .unwrap();
+        let reserved = feed.on_or_ahead(now);
+        assert!(reserved.iter().any(|play| play.source_uri == selected.uri));
+        let mut expected = vec![PlayRecord::at(selected.uri, heard_at)];
+        expected.extend(reserved);
+        assert_eq!(feed.history(&store, now).unwrap(), expected);
+        assert_eq!(plays(&store).len(), 1, "the new selection is still unheard");
+    }
+}
+
+#[test]
 fn a_refused_play_waits_for_playing_before_recording_history() {
     for s2 in [false, true] {
         let mut rig = Rig::generation(s2);

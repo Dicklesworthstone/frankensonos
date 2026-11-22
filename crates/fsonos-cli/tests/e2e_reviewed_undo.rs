@@ -7,7 +7,7 @@ mod e2e;
 
 use e2e::{Run, Scenario};
 use fsonos_proto::control::{get_volume, set_volume};
-use fsonos_sim::SimHousehold;
+use fsonos_sim::{SimHousehold, SimModel, SimPlayerSpec};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -155,4 +155,137 @@ fn the_owners_forced_undo_reaches_through_the_daemon() {
         format!("exit {code:?}"),
     );
     s.finish();
+}
+
+fn exercise_partial_undo(s: &mut Scenario, route: &str, checked: bool) {
+    let kitchen = s.ip("Kitchen");
+    let office = s.ip("Office");
+    let step = if checked { "checked" } else { "latest" };
+    set_volume(&s.lan(), kitchen, 10).unwrap();
+    set_volume(&s.lan(), office, 15).unwrap();
+    let set = s.cli(&format!("{step}-volume"), &[route, "volume", "all", "20"]);
+    s.check(
+        &format!("{step}-volume"),
+        "cli",
+        "both rooms change",
+        set.ok(),
+        &set.stderr,
+    );
+    let preview = s.cli(
+        &format!("{step}-preview"),
+        &[route, "undo", "--preview", "--json"],
+    );
+    let id = json(&preview)["id"].as_i64().unwrap_or_default();
+    s.check(
+        &format!("{step}-preview"),
+        "cli",
+        "an own action is available",
+        preview.ok() && id > 0,
+        &preview.stdout,
+    );
+    s.sim_handle()
+        .unwrap()
+        .upnp_fault("Office", "SetVolume", 701)
+        .unwrap();
+    let before = s.sim_handle().unwrap().soap_log().len();
+    let id_text = id.to_string();
+    let args = if checked {
+        vec![route, "undo", "--id", &id_text, "--json"]
+    } else {
+        vec![route, "undo", "--mine", "--json"]
+    };
+    let run = s.cli(step, &args);
+    let receipt = json(&run);
+    s.check(
+        step,
+        "cli",
+        "partial restoration exits 1 and retains its exact action and failures on stdout",
+        run.code == Some(1)
+            && receipt["undone"] == id
+            && receipt["failures"]
+                .as_array()
+                .is_some_and(|failures| !failures.is_empty())
+            && run.stderr.contains("undo incomplete")
+            && run.stderr.contains("do not replay")
+            && get_volume(&s.lan(), kitchen).ok() == Some(10)
+            && get_volume(&s.lan(), office).ok() == Some(20),
+        format!("{run:?}"),
+    );
+    let mut writes: Vec<_> = s.sim_handle().unwrap().soap_log()[before..]
+        .iter()
+        .filter(|call| call.action == "SetVolume")
+        .map(|call| call.room.clone())
+        .collect();
+    writes.sort();
+    s.check(
+        &format!("{step}-once"),
+        "speaker",
+        "each restoration is attempted only once",
+        writes == ["Kitchen", "Office"],
+        format!("{writes:?}"),
+    );
+
+    s.sim_handle().unwrap().clear_faults("Office").unwrap();
+    let before = s.sim_handle().unwrap().soap_log().len();
+    let noop = s.cli(
+        &format!("{step}-consumed"),
+        &[route, "undo", "--mine", "--json"],
+    );
+    let wrote = s.sim_handle().unwrap().soap_log()[before..]
+        .iter()
+        .any(|call| call.action == "SetVolume");
+    s.check(
+        &format!("{step}-consumed"),
+        "cli",
+        "the partial action was consumed and is not replayed after the speaker recovers",
+        noop.ok()
+            && json(&noop)["undone"].is_null()
+            && !wrote
+            && get_volume(&s.lan(), office).ok() == Some(20),
+        format!("{noop:?}"),
+    );
+}
+
+#[test]
+fn partial_undo_keeps_its_receipt_and_exits_nonzero_direct_and_through_the_daemon() {
+    for remote in [false, true] {
+        let name = if remote {
+            "partial_undo_daemon"
+        } else {
+            "partial_undo_direct"
+        };
+        let route = if remote { "--daemon" } else { "--direct" };
+        let mut s = Scenario::start(name);
+        s.sim(SimHousehold::builder().s1([
+            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+        ]));
+        let mut daemon = remote.then(|| s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]));
+        if let Some(daemon) = daemon.as_mut() {
+            let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
+            s.check(
+                "live",
+                "daemon",
+                "serve is up",
+                live.is_some(),
+                daemon.seen.join("\n"),
+            );
+        }
+
+        for checked in [false, true] {
+            exercise_partial_undo(&mut s, route, checked);
+        }
+
+        if let Some(daemon) = daemon.as_mut() {
+            let code = daemon.interrupt(Duration::from_secs(10));
+            s.check(
+                "stop",
+                "daemon",
+                "SIGINT stops serve cleanly",
+                code == Some(0),
+                format!("exit {code:?}"),
+            );
+        }
+        s.finish();
+    }
 }

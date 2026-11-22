@@ -2,6 +2,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const P = require('../crates/fsonos-api/src/remote/source-player.js');
+const T = require('../crates/fsonos-api/src/remote/source-targets.js');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -25,8 +27,8 @@ async function serve(t, handler) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 function client(base, options = {}) {
-  return vm.runInNewContext(source.replace(/\nstart\(\);\s*$/, '') + '\ncall;', {
-    AbortController, URLSearchParams, setTimeout, clearTimeout,
+  return vm.runInNewContext(source.replace(/\nstart\(\);\s*$/, '') + '\nObject.assign(ROUTES, SourceTargetsRemote.routes); call;', {
+    AbortController, URLSearchParams, setTimeout, clearTimeout, SourceTargetsRemote: T,
     fetch: (where, init) => fetch(`${base}${where}`, init), ...options,
   });
 }
@@ -104,4 +106,28 @@ test('a real HTTP redirect cannot relocate or replay a music command', { timeout
   await assert.rejects(client(base)('next', { body: { zone: 'Den@S2' } }),
     (error) => error.code === 'REMOTE_OUTCOME_UNKNOWN' && error.uncertain);
   assert.deepEqual(paths, ['/next']);
+});
+
+test('a real source-control HTTP error preserves every playback target without retrying', { timeout: 5000 }, async (t) => {
+  const groups = ['S1', 'S2', 'S3'].map(household => ({ household, coordinator_id: 'fixture-' + household, coordinator: 'Den' }));
+  const batch = { complete: false, results: groups.map(g => ({ household: g.household, target: g.coordinator_id, zone: g.coordinator,
+    result: { status: 'not_attempted' } })) };
+  batch.results[0].result = { status: 'failed', error: { code: 'PLAYER_UNREACHABLE', detail: 'First speaker is offline.', retryable: true } };
+  batch.results[1].result = { status: 'failed', error: { code: 'OUTCOME_UNCERTAIN', detail: 'Playback may already have started.', retryable: false } };
+  let writes = 0;
+  const base = await serve(t, (req, res) => {
+    writes++; assert.equal(req.method, 'POST'); assert.equal(req.url, '/sources/control'); req.resume();
+    res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '1' });
+    res.end(JSON.stringify({ code: 'PLAYER_UNREACHABLE', detail: 'First speaker is offline.', retryable: false, batch }));
+  });
+  await assert.rejects(client(base)('sourceControl', { body: { zone: 'everywhere', mode: 'play' } }), error => {
+    assert.deepEqual(JSON.parse(JSON.stringify(error.batch)), batch);
+    const receipt = T.failure(error, { mode: 'play', groups }, P);
+    assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.complete, false);
+    assert.deepEqual(receipt.targets.map(row => row.status), ['failed', 'uncertain', 'not_attempted']);
+    for (const label of ['Den@S1', 'Den@S2', 'Den@S3']) assert.ok(receipt.detail.includes(label));
+    assert.match(receipt.detail, /Do not repeat the whole batch/);
+    return true;
+  });
+  assert.equal(writes, 1);
 });

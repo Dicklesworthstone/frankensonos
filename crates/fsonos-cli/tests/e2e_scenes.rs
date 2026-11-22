@@ -6,6 +6,9 @@
 
 mod e2e;
 
+#[path = "e2e_scenes/tracks.rs"]
+mod tracks;
+
 use e2e::{Scenario, http};
 use fsonos_proto::control::{get_position_info, get_transport_info, get_volume};
 use fsonos_proto::topology::get_zone_group_state;

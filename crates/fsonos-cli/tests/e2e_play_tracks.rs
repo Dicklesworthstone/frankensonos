@@ -195,6 +195,70 @@ fn cli_preserves_order_repeated_occurrences_revision_and_daemon_outcome() {
 }
 
 #[test]
+fn room_set_partial_delivery_keeps_json_receipts_and_exits_unsuccessfully_without_replay() {
+    let mut s = Scenario::start("play-tracks-cli-partial-room-set");
+    s.sim(SimHousehold::standard());
+    let reply = json!({
+        "done": "played in one of two groups", "changed": true,
+        "batch": {
+            "complete": false,
+            "results": [
+                {
+                    "household": "S1", "target": "fixture-s1-lead", "zone": "Lead",
+                    "result": {
+                        "status": "succeeded", "done": "playing selected tracks",
+                        "changed": true
+                    }
+                },
+                {
+                    "household": "S2", "target": "fixture-s2-lead", "zone": "Lead",
+                    "result": {
+                        "status": "failed",
+                        "error": {
+                            "detail": "speaker refused the selection", "code": "UPNP_FAULT",
+                            "hint": "Inspect the queue before another command.",
+                            "suggestions": [], "retryable": false
+                        }
+                    }
+                }
+            ]
+        }
+    });
+    let before = s.sim_handle().unwrap().soap_log().len();
+    let (run, requests) = through_daemon(
+        &mut s,
+        "partial-room-set",
+        &["--json", "play-tracks", "everywhere", TRACK, EPISODE, TRACK],
+        Reply::Json(200, reply.clone()),
+    );
+    assert!(!run.ok(), "{run:?}");
+    assert_eq!(serde_json::from_str::<Value>(&run.stdout).unwrap(), reply);
+    assert!(run.stderr.contains("command incomplete"), "{run:?}");
+    assert_eq!(requests.len(), 2, "one health probe and one mutation");
+    assert_eq!(requests[0].line, "GET /health HTTP/1.1");
+    assert_eq!(requests[1].line, "POST /play/tracks HTTP/1.1");
+    assert_eq!(
+        requests[1].body,
+        json!({
+            "zone": "everywhere",
+            "tracks": [
+                {"source_uri": TRACK},
+                {"source_uri": EPISODE},
+                {"source_uri": TRACK},
+            ],
+        }),
+    );
+    s.check(
+        "partial-room-set",
+        "cli",
+        "partial delivery retains every target receipt and never falls back to local playback",
+        s.sim_handle().unwrap().soap_log().len() == before,
+        format!("{run:?}; {requests:?}"),
+    );
+    s.finish();
+}
+
+#[test]
 fn invalid_selections_reject_before_daemon_probe_or_speaker_contact() {
     let mut s = Scenario::start("play-tracks-cli-invalid");
     s.sim(SimHousehold::standard());

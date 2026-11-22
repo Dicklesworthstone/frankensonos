@@ -19,10 +19,11 @@ from playwright.sync_api import expect, sync_playwright
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "crates/fsonos-api/src/remote"
 TRACK = "spotify:track:1000000000000000000001"
+TARGET_REVISION = "a" * 64
 
 FIXTURE = r"""
 window.fixture = {
-  calls: [], writes: [], result: 'complete', hold: '', release: null,
+  calls: [], writes: [], result: 'complete', hold: '', release: null, targetRevision: 'a'.repeat(64),
   refreshed: [], errors: [], api: null, controller: null,
   groups: [
     {household:'S1', coordinator:'fixture-s1-den', coordinator_room:'Den', members:[
@@ -50,7 +51,7 @@ f.resolve = target => {
   else if(target==='everywhere'||target==='all') { selected=f.groups; matched='everywhere'; }
   else { selected=f.groups.filter(g=>g.members.some(r=>`${r.room}@${r.household}`===target)); matched='room'; }
   if(!selected.length)throw new Error('Unknown fixture target '+target);
-  return clone({target,matched,rooms:selected.flatMap(g=>g.members),groups:selected});
+  return clone({target,matched,revision:f.targetRevision,rooms:selected.flatMap(g=>g.members),groups:selected});
 };
 f.state = target => {
   const g=f.group(target); if(!g)throw new Error('Unknown fixture state '+target);
@@ -71,12 +72,11 @@ f.catalog = (kind,target) => {
   return [{id,title:f.titles[g.household],...(kind==='favorite'?{kind:'track',description:'Fixture native source'}:{})}];
 };
 f.receipt = body => {
-  const groups=f.resolve(body.zone).groups, count=body.playlist?3:1;
+  const groups=f.resolve(body.zone).groups, count=body.source?.kind==='playlist'?3:1;
   const added=groups.map(g=>({household:g.household,coordinator:g.coordinator,
     queue:{done:`Added ${count} source track(s)`,zone:g.coordinator_room,
-      first:body.next&&g.household==='S1'?3:g.household==='S1'?4:8,
+      first:body.mode==='next'&&g.household==='S1'?3:g.household==='S1'?4:8,
       count,playing_queue:g.household==='S1'}}));
-  if(groups.length===1)return added[0].queue;
   const failed=[];
   if(f.result==='partial'||f.result==='uncertain') {
     const g=groups.at(-1);added.pop();
@@ -91,14 +91,31 @@ f.receipt = body => {
   if(f.result==='malformed')result.added[1].coordinator=result.added[0].coordinator;
   return result;
 };
+f.playbackReceipt = body => {
+  const groups=f.resolve(body.zone).groups;
+  const results=groups.map(g=>({household:g.household,target:g.coordinator,zone:g.coordinator_room,
+    result:{status:'succeeded',done:'Started the selected music',changed:true}}));
+  if(f.result==='partial')results.at(-1).result={status:'failed',
+    error:{code:'UPNP_FAULT',detail:'Speaker refused playback.',retryable:false}};
+  if(['all_failed','playback_uncertain'].includes(f.result)) {
+    results[0].result={status:'failed',error:{code:f.result==='playback_uncertain'?'OUTCOME_UNCERTAIN':'UPNP_FAULT',
+      detail:f.result==='playback_uncertain'?'Playback may already have started.':'Speaker refused playback.',retryable:false}};
+    results.at(-1).result={status:'not_attempted'};
+  }
+  const batch={complete:results.every(row=>row.result.status==='succeeded'),results};
+  if(f.result==='malformed')results[1].target=results[0].target;
+  if(['all_failed','playback_uncertain'].includes(f.result))throw Object.assign(new Error('A representative playback error'),{batch});
+  return {done:'Playback request returned',changed:true,notes:[],...(groups.length>1?{batch}:{})};
+};
 f.call = async (url,body,options={}) => {
   f.calls.push({url,body:body===undefined?null:clone(body)});
   if(body!==undefined) {
     f.writes.push({url,body:clone(body)});
     if(f.hold==='write')await new Promise(resolve=>{f.release=resolve;});
     if(f.result==='lost')throw new Error('Fixture lost acknowledgement');
-    if(url==='/queue')return clone(f.receipt(body));
-    if(!['/play','/play/favorite','/sonos/playlists/play','/pause'].includes(url))throw new Error('Unexpected write '+url);
+    if(url==='/sources/control'&&body.mode!=='play')return clone(f.receipt(body));
+    if(url==='/sources/control')return clone(f.playbackReceipt(body));
+    if(!['/sources/control','/pause'].includes(url))throw new Error('Unexpected write '+url);
     return {done:'Source accepted once for the selected groups',changed:true,notes:[]};
   }
   const parsed=new URL(url,'http://fixture.invalid'),query=parsed.searchParams;
@@ -275,7 +292,38 @@ def playback(page, kind):
     confirm(page, kind)
     result = settled(page)
     assert result["status"] == "accepted" and not result.get("partial", False), result
-    assert writes(page) == [{"url": "/play", "body": {"zone": "downstairs", "source_uri": TRACK}}]
+    assert writes(page) == [{"url": "/sources/control", "body": {"zone": "downstairs",
+        "expected_revision": TARGET_REVISION, "mode": "play", "source": {"kind": "uri", "source_uri": TRACK}}}]
+
+
+def playback_results(page, kind, result_kind="partial"):
+    choose(page, kind)
+    review(page, kind)
+    page.evaluate("value => {fixture.result=value;}", result_kind)
+    confirm(page, kind)
+    result = settled(page)
+    expected = "accepted" if result_kind == "partial" else "failed" if result_kind == "all_failed" else "uncertain"
+    assert result["status"] == expected, result
+    if result_kind != "malformed":
+        assert result["complete"] is False, result
+    detail = result["detail"]
+    assert "Den@S1" in detail and "Den@S2" in detail, detail
+    if result_kind == "partial":
+        assert "Den@S1: Confirmed" in detail and "Den@S2: Failed" in detail, detail
+    elif result_kind in ["all_failed", "playback_uncertain"]:
+        assert "Den@S2: Not attempted" in detail, detail
+        label = "Outcome uncertain" if result_kind == "playback_uncertain" else "Failed"
+        assert f"Den@S1: {label}" in detail, detail
+    else:
+        assert "consistent playback receipt" in detail and "targets" not in result, result
+    assert "not repeated" in detail or "Do not repeat the whole batch" in detail, detail
+    receipt = page.locator("#source-result-detail") if kind == "dashboard" else scope(page, kind).get_by_text(detail, exact=True)
+    expect(receipt).to_be_visible()
+    expect(receipt).to_have_text(detail)
+    if kind == "dashboard" and result_kind == "all_failed":
+        expect(page.locator("#source-result-title")).to_contain_text("Playback failed")
+    assert len(writes(page)) == 1, writes(page)
+    assert page.evaluate("fixture.api.state.pending === null")
 
 
 def queue_results(page, kind, result_kind="complete"):
@@ -297,7 +345,8 @@ def queue_results(page, kind, result_kind="complete"):
         assert "whole batch" in detail, detail
         if result_kind == "uncertain":
             assert "No safe batch undo" in detail, detail
-    assert writes(page) == [{"url": "/queue", "body": {"zone": "downstairs", "source_uri": TRACK, "next": True}}]
+    assert writes(page) == [{"url": "/sources/control", "body": {"zone": "downstairs",
+        "expected_revision": TARGET_REVISION, "mode": "next", "source": {"kind": "uri", "source_uri": TRACK}}}]
 
 
 def native_titles(page, kind, native="playlist"):
@@ -311,7 +360,8 @@ def native_titles(page, kind, native="playlist"):
     confirm(page, kind)
     assert settled(page)["status"] == "accepted"
     sent = writes(page)
-    assert sent == [{"url": "/queue", "body": {"zone": "downstairs", native: "Evening mix", "next": False}}], sent
+    assert sent == [{"url": "/sources/control", "body": {"zone": "downstairs",
+        "expected_revision": TARGET_REVISION, "mode": "append", "source": {"kind": native, native: "Evening mix"}}}], sent
     assert not any(native_id in str(sent[0]["body"]) for native_id in expected_ids), "An opaque household ID was transplanted."
 
 
@@ -320,6 +370,8 @@ def stale_review(page, kind, change="identity"):
     review(page, kind)
     if change == "identity":
         page.evaluate("fixture.replaceIdentity()")
+    elif change == "revision":
+        page.evaluate("fixture.targetRevision = 'b'.repeat(64)")
     else:
         page.evaluate("fixture.sources['Den@S2']='fixture:another-controller'")
     confirm(page, kind)
@@ -396,7 +448,8 @@ def single_group_alias(page, kind):
     result = settled(page)
     assert result["status"] == "accepted", result
     assert "position 4" in result["detail"], result
-    assert writes(page) == [{"url": "/queue", "body": {"zone": "single", "source_uri": TRACK, "next": False}}]
+    assert writes(page) == [{"url": "/sources/control", "body": {"zone": "single",
+        "expected_revision": TARGET_REVISION, "mode": "append", "source": {"kind": "uri", "source_uri": TRACK}}}]
 
 
 def main():
@@ -412,6 +465,10 @@ def main():
             for kind in ["phone", "dashboard"]:
                 cases = [
                     ("reviewed alias playback", playback),
+                    ("partial playback receipts", playback_results),
+                    ("failed playback and unattempted groups", lambda p, k: playback_results(p, k, "all_failed")),
+                    ("uncertain playback receipt", lambda p, k: playback_results(p, k, "playback_uncertain")),
+                    ("invalid playback receipt", lambda p, k: playback_results(p, k, "malformed")),
                     ("per-group queue positions", queue_results),
                     ("definite partial receipt", lambda p, k: queue_results(p, k, "partial")),
                     ("uncertain partial receipt", lambda p, k: queue_results(p, k, "uncertain")),
@@ -419,6 +476,7 @@ def main():
                     ("household favorite titles", lambda p, k: native_titles(p, k, "favorite")),
                     ("changed coordinator identity", stale_review),
                     ("changed playback source", lambda p, k: stale_review(p, k, "source")),
+                    ("changed physical audience revision", lambda p, k: stale_review(p, k, "revision")),
                     ("lost reply without replay", uncertain_reply),
                     ("contradictory receipt without replay", lambda p, k: uncertain_reply(p, k, "malformed")),
                     ("source reserves existing lanes", shared_lanes),

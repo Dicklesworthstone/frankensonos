@@ -97,6 +97,7 @@ const DashboardSource = (() => {
     const clearPlaylists = () => { state.playlists = []; state.playlist = ''; state.playlistTarget = ''; state.playlistStatus = 'idle'; clearContents(); };
     const clearLineIn = () => { state.lineInSources = []; state.lineInUnavailable = []; state.lineIn = ''; state.lineInTarget = ''; state.lineInStatus = 'idle'; };
     const manager = P.playlistManager({ call: targetCall, live,
+      catalog: () => state.playlists,
       selection: () => {
         const item = state.playlists.find(item => item.id === state.playlist);
         return matching() && state.group && !targetSet() && state.sourceType === 'playlist'
@@ -301,7 +302,7 @@ const DashboardSource = (() => {
       };
       try {
         const before = await inspect(proposed, { signal: abort.signal }, valid); valid();
-        const request = proposed.expanded ? T.request(proposed, proposed.target, P) : null;
+        const request = proposed.expanded ? T.request(proposed, before, P) : null;
         const body = request ? request.body : P.commandBody(proposed, proposed.target);
         if (proposed.item.kind === 'sonos_playlist_tracks') body.expected_queue_revision = before.queue.revision;
         state.pending = Object.freeze({ ...proposed, before, targets: proposed.expanded ? before : null,
@@ -371,7 +372,13 @@ const DashboardSource = (() => {
           if (reviewed.targets) {
             const route = { ...P.routes, ...T.routes }[reviewed.request.route];
             if (!route || route[0] !== 'POST') fail('The source command is unavailable.');
-            const value = await send(route[1], reviewed.body);
+            let value;
+            try { value = await send(route[1], reviewed.body); }
+            catch (error) {
+              receipt = T.failure(error, reviewed.targets, P);
+              if (receipt) throw Object.assign(new Error(receipt.detail), { code: error.code });
+              throw error;
+            }
             receipt = T.result(value, reviewed.targets, P); detail = receipt.detail;
             return { done: detail, changed: reviewed.mode === 'play' ? value.changed : value.added ? value.added.length > 0 : true };
           }
@@ -387,11 +394,12 @@ const DashboardSource = (() => {
           return { done: detail, changed: true };
         }, { wholeHouse: !!reviewed.targets });
         if (!disposed) {
-          state.result = Object.freeze({ status: ok ? 'accepted' : controller.state.uncertain ? 'uncertain' : 'not_sent',
+          state.result = Object.freeze({ ...(receipt || {}),
+            status: ok ? 'accepted' : receipt?.status || (controller.state.uncertain ? 'uncertain' : 'not_sent'),
             partial: receipt?.partial || false, complete: receipt?.complete,
             mode: reviewed.mode, target: reviewed.targets ? reviewed.target : reviewed.group.label,
             source: reviewed.item.player || reviewed.item.id || reviewed.item.uri || reviewed.item.query, title: reviewed.title,
-            detail: ok ? detail : controller.state.message || 'No command was sent. Review the source again.' });
+            detail: ok ? detail : receipt?.detail || controller.state.message || 'No command was sent. Review the source again.' });
           state.message = state.result.detail;
         }
       } finally {
@@ -612,7 +620,8 @@ const DashboardSource = (() => {
       $('source-confirm').disabled = !control.canApply(); $('source-back').disabled = s.writing;
       $('source-result').hidden = !s.result;
       $('source-result-title').textContent = s.result
-        ? (s.result.status === 'accepted' ? s.result.partial ? 'Incomplete request' : 'Command accepted' : s.result.status === 'uncertain' ? 'Check the command outcome' : 'No command sent')
+        ? (s.result.status === 'accepted' ? s.result.partial ? 'Incomplete request' : 'Command accepted'
+          : s.result.status === 'failed' ? 'Playback failed' : s.result.status === 'uncertain' ? 'Check the command outcome' : 'No command sent')
           + ' · ' + s.result.target : '';
       $('source-result-detail').textContent = s.result ? s.result.detail : '';
       if (s.pending && s.pending !== shown) { reviewFocus = doc.activeElement; preview.focus(); }

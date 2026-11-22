@@ -347,4 +347,5 @@ fn aliases_and_client_defaults_wait_for_every_explicit_member() {
 }
 
 mod batches;
+mod bedtime;
 mod dj;

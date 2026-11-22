@@ -30,10 +30,28 @@ impl QueueFixture {
         self.rows.borrow().first().cloned()
     }
 
-    pub(super) fn browse(&self) -> String {
+    pub(super) fn at(&self, position: u32) -> Option<String> {
+        let offset = usize::try_from(position.checked_sub(1)?).ok()?;
+        self.rows.borrow().get(offset).cloned()
+    }
+
+    pub(super) fn browse(&self, body: &str) -> String {
+        let number = |name: &str| {
+            body.split_once(&format!("<{name}>"))
+                .unwrap()
+                .1
+                .split_once('<')
+                .unwrap()
+                .0
+                .parse::<usize>()
+                .unwrap()
+        };
+        let start = number("StartingIndex");
+        let requested = number("RequestedCount");
         let rows = self.rows.borrow();
         let mut items = String::new();
-        for (index, uri) in rows.iter().enumerate() {
+        let mut returned = 0;
+        for (index, uri) in rows.iter().enumerate().skip(start).take(requested) {
             write!(
                 items,
                 "<item id=\"Q:0/{}\"><res>{}</res></item>",
@@ -41,10 +59,11 @@ impl QueueFixture {
                 xml_escape(uri)
             )
             .unwrap();
+            returned += 1;
         }
         let out = soap::args_xml(&[
             ("Result", &format!("<DIDL-Lite>{items}</DIDL-Lite>")),
-            ("NumberReturned", &rows.len().to_string()),
+            ("NumberReturned", &returned.to_string()),
             ("TotalMatches", &rows.len().to_string()),
             ("UpdateID", &self.revision.get().to_string()),
         ]);

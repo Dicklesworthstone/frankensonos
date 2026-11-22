@@ -6,15 +6,20 @@ occurrence can have been skipped; it is not a claim that playback succeeded.
 
 Choose **New routine**, then choose an action and an explicit destination:
 
-- **Start the DJ:** a group and an optional mood; leaving the mood automatic
-  uses the daemon's time-of-day program.
+- **Start the DJ:** a room, saved alias, `all` / `everywhere`, or `all@S1` /
+  `all@S2`, with an optional mood; leaving the mood automatic uses the daemon's
+  time-of-day program.
 - **Apply a scene:** an existing scene, including one that loads a native saved
-  Sonos playlist. The review includes the scene's group, source, volume and mute
-  definition, and a native playlist's pinned household, `SQ:` id and title.
+  Sonos playlist or an ordered selection of tracks and episodes. The review
+  includes the scene's group, source, volume and mute definition, a native
+  playlist's pinned household, `SQ:` id and title, and every authored selection
+  occurrence with its complete URI and playback intent.
 - **Set room volume:** one physical room, including a member of a larger group,
   and a level from 0 to 100, still subject to house safety limits.
-- **Pause a group:** optionally fade first, over 0 to 600 seconds. Zero pauses
-  immediately when the routine runs, not when it is saved.
+- **Pause rooms:** a room, saved alias, `all` / `everywhere`, or `all@S1` /
+  `all@S2`; optionally fade first, over 0 to 600 seconds. Zero pauses immediately
+  when the routine runs, not when it is saved. Each distinct existing group
+  acts once and keeps its grouping.
 
 Choose daily, weekdays, weekends or particular weekdays and a house time.
 Recurring wall times use the **daemon host's local time zone**, not the phone's
@@ -44,6 +49,16 @@ routine before sending. Creation and management share a single in-flight write
 limit in the panel. Editing, refreshing or closing invalidates unsent reviews;
 a stale confirmation button cannot approve a newer review.
 
+DJ starts and pauses, including faded pauses, resolve their target into its
+complete physical groups for review in both the phone and dashboard routine
+forms. The review includes members outside a named alias when they share a
+selected group's playback. Confirmation checks the resolver revision again;
+changed alias contents or physical membership require a new review. Editing an
+existing routine preserves its saved target expression and creator. These
+checks send no immediate playback commands. Future occurrences resolve the
+saved target afresh, so a later alias edit can change the groups selected for a
+later run. The daemon retains the admitted audience through each claimed fade.
+
 Native playlist scenes appear alongside other saved scenes in both the phone
 remote and dashboard routine choosers. Choosing one and creating its routine
 reads the stored scene, so no online speaker or Spotify session is needed to
@@ -51,6 +66,13 @@ complete this form. A changed saved playlist binding requires a new review.
 When the routine runs, the daemon checks the destination and native catalog,
 then loads that playlist's current contents with the scene's playback intent.
 See [Saved Sonos playlist scenes](SONOS_PLAYLIST_SCENES.md) for recall behavior.
+
+[Ordered-track scenes](ORDERED_TRACK_SCENES.md) also work in both routine forms,
+including when editing an existing routine. Their stored order, repeats, titles
+and playback intent are included in review and confirmation checks. Recall
+reloads those exact concrete selections using each destination household's own
+Spotify renderer, without requiring a Spotify Web API lookup. A paused scene
+loads the queue silently.
 
 These are preflight checks, **not an atomic cross-client lock**. Another client
 can change a definition between the read and write. Schedules refer to rooms,

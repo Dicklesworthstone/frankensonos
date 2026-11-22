@@ -33,7 +33,7 @@
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
 use fsonos_api::surface::queue::{QueueAddOutcome, QueueDto};
-use fsonos_api::surface::schedules::{FadePauseRequest, SleepTimerDto};
+use fsonos_api::surface::schedules::{FadePauseRequest, SleepOutcome, SleepTimerDto};
 use fsonos_api::surface::sonos_playlists::{self, PlaySonosPlaylistRequest, SonosPlaylistDto};
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, LineInSourcesDto,
@@ -54,7 +54,11 @@ use crate::config::GlobalArgs;
 use crate::dj_cmd::DjAction;
 use crate::{Command, Switch, announce_cmd, direct, emit, schedule_cmd};
 
+mod response;
 mod transport;
+
+#[cfg(test)]
+use response::parse_response;
 
 /// The daemon's address file in the data directory.
 pub const DAEMON_FILE: &str = "daemon.json";
@@ -91,10 +95,14 @@ fn command_timeout(path: &str) -> Duration {
     if path == "/queue"
         || path == "/queue/tracks"
         || path == "/play/tracks"
+        || path == "/sources/control"
+        || path == "/sleep"
+        || path == "/pause/fade"
         || path == "/sonos/playlists/play"
         || path == "/sonos/playlists/tracks"
         || path == "/sonos/playlists/remove-tracks"
         || path == "/sonos/playlists/move-tracks"
+        || path == "/sonos/playlists/append-tracks"
         || path.starts_with("/dj/")
         || scene_apply
     {
@@ -510,8 +518,7 @@ impl Daemon {
             }
         };
         let request = self.request(method, path, body.unwrap_or_default(), "application/json");
-        let raw = transport::exchange(*addr, request.as_bytes(), timeout, PROBE)?;
-        parse_response(&raw)
+        transport::exchange(*addr, request.as_bytes(), timeout, PROBE)
     }
 
     /// The HTTP/1.1 request: its head, as the CLI (or the stdio MCP
@@ -594,6 +601,7 @@ fn refused(method: &str, path: &str, status: u16, text: &str) -> Failure {
                 .with_hint(api.hint)
                 .with_suggestions(api.suggestions);
             failure.upnp_code = api.upnp_code;
+            failure.batch = api.batch.map(Box::new);
             failure
         }
         Err(_) => unconfirmed(
@@ -649,91 +657,6 @@ fn refuse(require: bool, why: &str) -> Result<Option<Daemon>, Failure> {
     } else {
         Ok(None)
     }
-}
-
-/// A response head's status, and whether its body comes chunked.
-fn parse_head(head: &str) -> Option<(u16, bool)> {
-    let mut lines = head.lines();
-    let status = lines
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|c| c.parse().ok())?;
-    let chunked = lines.any(|l| {
-        l.split_once(':').is_some_and(|(k, v)| {
-            k.trim().eq_ignore_ascii_case("transfer-encoding")
-                && v.trim().eq_ignore_ascii_case("chunked")
-        })
-    });
-    Some((status, chunked))
-}
-
-/// Status and body of a raw HTTP/1.1 response (`Content-Length` or chunked).
-fn parse_response(raw: &[u8]) -> io::Result<(u16, String)> {
-    let bad = |why: &str| io::Error::new(io::ErrorKind::InvalidData, why.to_string());
-    let split = raw
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| bad("no end of headers"))?;
-    let head = String::from_utf8_lossy(&raw[..split]);
-    let mut rest = &raw[split + 4..];
-    let (status, chunked) = parse_head(&head).ok_or_else(|| bad("no status line"))?;
-    if !chunked {
-        let mut length = None;
-        for line in head.lines().skip(1) {
-            if let Some((name, value)) = line.split_once(':')
-                && name.trim().eq_ignore_ascii_case("content-length")
-            {
-                let value = value
-                    .trim()
-                    .parse::<usize>()
-                    .map_err(|_| bad("invalid Content-Length"))?;
-                if length
-                    .replace(value)
-                    .is_some_and(|previous| previous != value)
-                {
-                    return Err(bad("conflicting Content-Length headers"));
-                }
-            }
-        }
-        if length.is_some_and(|length| length != rest.len()) {
-            return Err(bad("incomplete or overlong response body"));
-        }
-        let body = std::str::from_utf8(rest).map_err(|_| bad("response body is not UTF-8"))?;
-        return Ok((status, body.to_owned()));
-    }
-    let mut body = Vec::new();
-    loop {
-        let end = rest
-            .windows(2)
-            .position(|w| w == b"\r\n")
-            .ok_or_else(|| bad("truncated chunk"))?;
-        let size = usize::from_str_radix(
-            String::from_utf8_lossy(&rest[..end])
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim(),
-            16,
-        )
-        .map_err(|_| bad("bad chunk size"))?;
-        rest = &rest[end + 2..];
-        if size == 0 {
-            // The terminating chunk is followed by trailers and a final
-            // empty line. A lost terminator is not a complete acknowledgement.
-            if rest != b"\r\n" && !rest.ends_with(b"\r\n\r\n") {
-                return Err(bad("truncated chunk trailers"));
-            }
-            break;
-        }
-        let chunk = rest.get(..size).ok_or_else(|| bad("truncated chunk"))?;
-        body.extend_from_slice(chunk);
-        rest = rest
-            .get(size..)
-            .and_then(|after| after.strip_prefix(b"\r\n"))
-            .ok_or_else(|| bad("missing chunk delimiter"))?;
-    }
-    let body = String::from_utf8(body).map_err(|_| bad("response body is not UTF-8"))?;
-    Ok((status, body))
 }
 
 /// Percent-encode a path segment or query value.
@@ -821,7 +744,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         Command::Undo { id: Some(id), .. } => {
             let undone: UndoDto =
                 daemon.post("/undo/checked", &serde_json::json!({ "expected_id": id }))?;
-            emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
+            crate::emit_undo_outcome(json, &undone)?;
         }
         Command::Undo { mine, force, .. } => {
             // `force` goes only when asked, so a plain undo still reaches a
@@ -831,7 +754,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
                 body["force"] = serde_json::Value::Bool(true);
             }
             let undone: UndoDto = daemon.post("/undo", &body)?;
-            emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
+            crate::emit_undo_outcome(json, &undone)?;
         }
         Command::Play {
             zone,
@@ -1012,8 +935,8 @@ fn sleep(daemon: &Daemon, json: bool, args: &schedule_cmd::SleepArgs) -> anyhow:
             })
         }
         Some(req) => {
-            let timer: SleepTimerDto = daemon.post("/sleep", &req)?;
-            emit(json, &timer, schedule_cmd::timer_text)
+            let timers: SleepOutcome = daemon.post("/sleep", &req)?;
+            schedule_cmd::emit_sleep_outcome(json, &timers)
         }
     }
 }
@@ -1054,6 +977,7 @@ fn fade_request(command: &Command) -> Result<Option<(&'static str, serde_json::V
             serde_json::to_value(FadePauseRequest {
                 zone: zone.clone(),
                 fade_secs: *secs,
+                expected_revision: None,
             }),
         ),
         Command::Volume {
@@ -1207,8 +1131,16 @@ mod tests {
             "/sonos/playlists/remove-tracks?trace=1",
             "/sonos/playlists/move-tracks",
             "/sonos/playlists/move-tracks?trace=1",
+            "/sonos/playlists/append-tracks",
+            "/sonos/playlists/append-tracks?trace=1",
             "/play/tracks",
             "/play/tracks?trace=1",
+            "/sources/control",
+            "/sources/control?trace=1",
+            "/sleep",
+            "/sleep?trace=1",
+            "/pause/fade",
+            "/pause/fade?trace=1",
             "/dj/start",
             "/dj/skip",
             "/dj/rehearse",
@@ -1231,6 +1163,9 @@ mod tests {
             "/scenes//apply",
             "/dj",
             "/djs/start",
+            "/sources/control/extra",
+            "/sleep/extra",
+            "/pause/fade/extra",
         ] {
             assert_eq!(command_timeout(path), CALL, "{path}");
         }
@@ -1408,6 +1343,8 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n{}".to_vec(),
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n".to_vec(),
             b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n\"\xff\"".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 16777217\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n".to_vec(),
             json_response(200, "{\"incomplete\":"),
             json_response(502, "upstream connection closed"),
         ];
@@ -1456,6 +1393,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn daemon_errors_retain_all_targets_and_cannot_become_retryable() {
+        let body = serde_json::json!({
+            "code": "PLAYER_UNREACHABLE", "detail": "neither target completed",
+            "hint": "Inspect each target; do not replay the batch.",
+            "suggestions": [], "retryable": false,
+            "batch": {"complete": false, "results": [
+                {"household": "S1", "target": "FIRST", "zone": "Kitchen",
+                 "result": {"status": "failed", "error": {
+                     "code": "PLAYER_UNREACHABLE", "detail": "no answer",
+                     "hint": "Check power.", "suggestions": [], "retryable": true
+                 }}},
+                {"household": "S2", "target": "SECOND", "zone": "Study",
+                 "result": {"status": "not_attempted"}}
+            ]}
+        });
+        let failure = daemon_reply("POST", &json_response(503, &body.to_string())).unwrap_err();
+        assert_eq!(failure.status(), 503);
+        assert!(!failure.retryable());
+        assert_eq!(serde_json::to_value(failure.body()).unwrap(), body);
+        assert!(failure.cli_text().contains("SECOND"));
     }
 
     /// What a daemon at a fresh listener receives for `forward(method, ...)`:

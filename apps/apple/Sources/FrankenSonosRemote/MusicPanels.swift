@@ -194,9 +194,18 @@ private enum MusicLibraryMode: String, CaseIterable {
     @ViewBuilder private var favoritesPanel: some View {
         Text("The music and stations saved to this household.")
             .font(.subheadline).foregroundStyle(.secondary)
+        if let zone = model.selectedZone {
+            Button {
+                model.openFavoriteSave(in: zone)
+            } label: {
+                Label("Save current track or station", systemImage: "heart")
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+            }.buttonStyle(.bordered).disabled(!ready)
+                .accessibilityHint("Read the current source and review saving it to this household's My Sonos favorites. Playback continues.")
+        }
         if model.favorites.isEmpty && !model.panelLoading && model.panelProblem == nil {
             EmptyMusicState(title: "Keep your favorites close", systemImage: "heart",
-                            detail: "Favorites saved in Sonos appear here for this household. Refresh after adding one.")
+                            detail: "Start a track or station, then save it here. Favorites belong to this household.")
         }
         Text("Queue tracks, albums and playlists without replacing current music. Stations play directly.")
             .font(.caption).foregroundStyle(.secondary)
@@ -215,7 +224,7 @@ private enum MusicLibraryMode: String, CaseIterable {
             } label: { favoriteLabel(favorite) }
                 .buttonStyle(.plain).disabled(!ready || !favorite.playable)
                 .accessibilityHint("Review playing this favorite in the selected group.")
-            if FavoriteQueue.canQueue(favorite) { favoriteQueueMenu(favorite, in: zone) }
+            favoriteMenu(favorite, in: zone)
         }.remoteCard()
     }
 
@@ -238,21 +247,30 @@ private enum MusicLibraryMode: String, CaseIterable {
         }.frame(minHeight: 44).contentShape(Rectangle())
     }
 
-    private func favoriteQueueMenu(_ favorite: Favorite, in zone: Zone) -> some View {
+    private func favoriteMenu(_ favorite: Favorite, in zone: Zone) -> some View {
         let next = try? FavoriteQueue(favorite, in: zone, next: true)
         let append = try? FavoriteQueue(favorite, in: zone, next: false)
         return Menu {
-            Button("Queue next", systemImage: "text.line.first.and.arrowtriangle.forward") {
-                if let next { prepareFavoriteQueue(next) }
-            }.disabled(next == nil)
-            Button("Add to end of queue", systemImage: "text.append") {
-                if let append { prepareFavoriteQueue(append) }
-            }.disabled(append == nil)
+            if FavoriteQueue.canQueue(favorite) {
+                Button("Queue next", systemImage: "text.line.first.and.arrowtriangle.forward") {
+                    if let next { prepareFavoriteQueue(next) }
+                }.disabled(next == nil)
+                Button("Add to end of queue", systemImage: "text.append") {
+                    if let append { prepareFavoriteQueue(append) }
+                }.disabled(append == nil)
+                Divider()
+            }
+            Button("Rename favorite", systemImage: "pencil") {
+                model.openFavoriteManagement(favorite, in: zone, removing: false)
+            }
+            Button("Remove favorite", systemImage: "trash", role: .destructive) {
+                model.openFavoriteManagement(favorite, in: zone, removing: true)
+            }
         } label: {
-            Image(systemName: "text.badge.plus").frame(width: 44, height: 44)
-        }.buttonStyle(.bordered).disabled(!ready)
-            .accessibilityLabel("Queue options for \(favorite.title)")
-            .accessibilityHint("Review adding this favorite without starting playback.")
+            Image(systemName: "ellipsis.circle").font(.title2).frame(width: 44, height: 44)
+        }.buttonStyle(.bordered).disabled(!ready || model.panelProblem != nil)
+            .accessibilityLabel("Options for \(favorite.title)")
+            .accessibilityHint("Review queue options, renaming or removal of this exact favorite.")
     }
 
     private func prepareFavoriteQueue(_ selection: FavoriteQueue) {

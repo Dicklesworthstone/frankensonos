@@ -94,6 +94,91 @@ const B: &str = "spotify:track:OwnershipB";
 const C: &str = "spotify:track:OwnershipC";
 const D: &str = "spotify:track:OwnershipD";
 
+fn repeated_start(s2: bool) -> (Rig, WorkPool, MemStore, QueueFeed) {
+    let rig = Rig::generation(s2);
+    let pool = multi_movement_pool();
+    let mut store = MemStore::default();
+    let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+    feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+        .unwrap();
+    let older = rig.queue();
+    feed.stop(&rig.speakers(&rig.lan)).unwrap();
+    let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+    feed.start(&rig.speakers(&rig.lan), plan(&pool, MIDNIGHT), &mut store)
+        .unwrap();
+    assert_eq!(rig.queue(), [older.clone(), older].concat());
+    assert!(feed.queued()[0].first().unwrap() > 1);
+    (rig, pool, store, feed)
+}
+
+#[test]
+fn repeated_starts_keep_their_new_occurrences_through_notifications_skip_and_refill() {
+    for s2 in [false, true] {
+        let (rig, pool, mut store, mut feed) = repeated_start(s2);
+        let selected = feed.queued().to_vec();
+        let before = rig.queue();
+        // ContentDirectory can deliver our own enqueue notification after
+        // Start returns, before a scene or the next playback event is handled.
+        feed.invalidate_queue();
+        observe(&rig, &mut feed, &pool, &mut store);
+        assert!(feed.is_active());
+        assert_eq!(feed.queued(), selected);
+        assert_eq!(rig.queue(), before);
+        assert_eq!(plays(&store), [selected[0].movements[0].uri.clone()]);
+        let next = feed
+            .skip(
+                &rig.speakers(&rig.lan),
+                plan(&pool, MIDNIGHT + 1),
+                &mut store,
+            )
+            .unwrap();
+        assert_eq!(next.first(), selected[1].first());
+        assert_eq!(rig.position(), selected[1].first().unwrap());
+        observe(&rig, &mut feed, &pool, &mut store);
+        assert!(rig.queue().len() > before.len(), "the successor refilled");
+        let refilled = feed.queued().to_vec();
+        feed.invalidate_queue();
+        observe(&rig, &mut feed, &pool, &mut store);
+        assert!(feed.is_active());
+        assert_eq!(feed.queued(), refilled, "the append advanced its witness");
+        assert_eq!(&rig.queue()[..before.len()], before);
+    }
+}
+
+#[test]
+fn identical_contents_do_not_preserve_duplicate_claims_across_edits_reboots_or_restart() {
+    for s2 in [false, true] {
+        for change in ["edit", "reboot", "restart"] {
+            let (rig, pool, mut store, mut feed) = repeated_start(s2);
+            let queue = rig.queue();
+            match change {
+                "edit" => {
+                    let position = feed.queued()[0].first().unwrap();
+                    let uri = queue[usize::try_from(position - 1).unwrap()].clone();
+                    rig.owner_removes(position);
+                    insert(&rig, s2, &uri, position);
+                }
+                "reboot" => rig.sim.reboot(ROOM, Duration::ZERO).unwrap(),
+                _ => {
+                    feed = QueueFeed::restore(feed.snapshot().unwrap(), DjConfig::default(), 7);
+                }
+            }
+            assert_eq!(rig.queue(), queue, "{change} left identical contents");
+            let marker = rig.sim.soap_log().len();
+            feed.invalidate_queue();
+            observe(&rig, &mut feed, &pool, &mut store);
+            assert!(!feed.is_active(), "{change} cannot retain exact ownership");
+            assert!(plays(&store).is_empty());
+            assert_eq!(rig.queue(), queue);
+            assert!(
+                rig.sim.soap_log()[marker..]
+                    .iter()
+                    .all(|entry| { entry.action == "Browse" || entry.action.starts_with("Get") })
+            );
+        }
+    }
+}
+
 #[test]
 fn an_inserted_copy_of_a_waiting_song_cannot_capture_the_dj_skip() {
     for s2 in [false, true] {

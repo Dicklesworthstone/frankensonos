@@ -14,5 +14,8 @@
 .dashboard-library [hidden] { display: none; }
 .dashboard-library-select-track { display: flex; align-items: center; gap: .6rem; min-height: 2.75rem; cursor: pointer; }
 .dashboard-library-select-track input { width: 1.25rem; height: 1.25rem; }
+.dashboard-library-selection { margin: 0; padding-inline-start: 1.6rem; max-height: 24rem; overflow-y: auto; }
+.dashboard-library-selection li { margin-block: .8rem; padding-inline-start: .3rem; overflow-wrap: anywhere; }
+.dashboard-library-selection p { margin-block: .3rem; }
 .review-track-selection { padding-inline-start: 1.5rem; overflow-wrap: anywhere; }
 .review-track-selection li { margin-block: .7rem; }

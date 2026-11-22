@@ -172,13 +172,7 @@ mod tests {
             state.feeds.insert(id.clone(), feed);
             state.planned = true;
         }
-        (sim, vec![house], id, dj)
-    }
-
-    #[test]
-    fn failed_stop_keeps_the_feed_for_a_successful_retry() {
-        let (sim, households, id, dj) = household();
-        let lan = sim.lan();
+        let households = vec![house];
         let host = sim.player("Den").unwrap().ip;
         let uri = "spotify:track:0OwnedDjTrack000000001";
         let (renderer, metadata) =
@@ -212,6 +206,13 @@ mod tests {
                 QueueFeed::restore(snapshot, DjConfig::default(), 1),
             );
         }
+        (sim, households, id, dj)
+    }
+
+    #[test]
+    fn failed_stop_keeps_the_feed_for_a_successful_retry() {
+        let (sim, households, id, dj) = household();
+        let lan = sim.lan();
         let at = DjSpeakers {
             transport: &lan,
             households: &households,
@@ -263,6 +264,12 @@ mod tests {
         let mut store = MemStore::default();
         let mut playback = PlayerPlayback::default();
         playback.media_uri = Some(format!("x-rincon-queue:{}#0", id.0));
+        let playing = control::playback(&lan, &households, &id).unwrap();
+        playback.transport = Some(playing.transport.state);
+        playback.transport_status = Some(playing.transport.status);
+        playback.track_uri = Some(playing.position.uri);
+        playback.queue_position = Some(playing.position.track);
+        playback.queue_length = Some(1);
         dj.on_playback(at, &mut store, &playback, &SystemClock);
         let (due, calls) = {
             let state = dj.state();

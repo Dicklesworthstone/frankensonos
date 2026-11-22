@@ -31,9 +31,8 @@ fn load_queue(
     set_play_mode(&lan, player.ip, mode).unwrap();
     soap::seek_track(&lan, player.ip, track).unwrap();
     soap::seek_position(&lan, player.ip, seconds).unwrap();
-    if playing {
-        soap::play(&lan, player.ip).unwrap();
-    } else {
+    soap::play(&lan, player.ip).unwrap();
+    if !playing {
         soap::pause(&lan, player.ip).unwrap();
     }
 }
@@ -590,7 +589,9 @@ fn new_policy_denial_prevents_backup_undo_writes_and_consumes_the_attempt_withou
     std::fs::write(&policy, "[defaults]\nmax_volume = 25\n").unwrap();
     let mut f = fixture(2);
     f.surface = f.surface.with_policy_file(directory.path().to_path_buf());
-    prepare(&f, false, false, false);
+    // Every captured group must require queue restoration: independent
+    // reference-only groups may still restore their permitted room levels.
+    prepare(&f, false, false, true);
     assert!(
         f.surface
             .apply_scene(&Client::LoopbackHttp, NAME)
@@ -605,7 +606,7 @@ fn new_policy_denial_prevents_backup_undo_writes_and_consumes_the_attempt_withou
     assert!(preview.undoable);
     std::fs::write(
         &policy,
-        "[defaults]\nmax_volume = 25\n[clients.\"loopback-http\"]\ndeny = [\"clear_queue\"]\n",
+        "[defaults]\nmax_volume = 25\n[clients.\"loopback-http\"]\ndeny = [\"remove_from_queue\"]\n",
     )
     .unwrap();
     let queue = f.queue();
@@ -619,7 +620,7 @@ fn new_policy_denial_prevents_backup_undo_writes_and_consumes_the_attempt_withou
         undone
             .failures
             .iter()
-            .any(|failure| failure.contains("clear_queue"))
+            .any(|failure| failure.contains("remove_from_queue"))
     );
     assert!(f.writes_since(start).is_empty());
     assert_eq!(f.queue(), queue);

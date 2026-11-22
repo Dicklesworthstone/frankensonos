@@ -63,7 +63,7 @@ const RequestRemote = (() => {
     // Queue expansion, scene fades and spoken announcements can legitimately
     // outlast ordinary controls. Do not interrupt them at a read's deadline.
     if (pathname === '/announce') return ANNOUNCE_TIMEOUT;
-    if (pathname === '/queue' || pathname === '/queue/tracks' || pathname === '/play/tracks' || pathname === '/sonos/playlists/play' || pathname === '/sonos/playlists/tracks'
+    if (pathname === '/queue' || pathname === '/queue/tracks' || pathname === '/play/tracks' || pathname === '/sources/control' || pathname === '/sleep' || pathname === '/pause/fade' || pathname === '/sonos/playlists/play' || pathname === '/sonos/playlists/tracks'
         || pathname === '/sonos/playlists/remove-tracks' || pathname === '/sonos/playlists/move-tracks' || pathname.startsWith('/dj/')
         || /^\/scenes\/[^/]+\/apply$/.test(pathname)) return LONG_WRITE_TIMEOUT;
     return WRITE_TIMEOUT;
@@ -144,6 +144,9 @@ const RequestRemote = (() => {
               const error = failure(data && typeof data.code === 'string' ? data.code : 'HTTP_ERROR',
                 detail, !read && (answer.status >= 500 || answer.status === 408));
               error.status = answer.status;
+              // Preserve per-target failures for the reviewed source controller.
+              // It validates every returned identity against its original review.
+              if (data && Object.hasOwn(data, 'batch')) error.batch = data.batch;
               const hint = data && typeof data.hint === 'string' ? data.hint : '';
               error.hint = [hint, error.hint].filter(Boolean).join(' ');
               error.retryAfter = retryAfter(answer.headers?.get('retry-after'), now());

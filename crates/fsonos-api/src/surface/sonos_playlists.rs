@@ -35,6 +35,9 @@ pub use edit::{
     SonosPlaylistEditOperation,
 };
 
+mod append;
+pub use append::{AppendSonosPlaylistTracksRequest, AppendedSonosPlaylistDto};
+
 /// Saving a queue changes the household's catalog, not playback.
 pub const SAVE: &str = "save_sonos_playlist";
 

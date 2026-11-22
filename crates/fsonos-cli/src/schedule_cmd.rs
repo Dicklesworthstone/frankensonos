@@ -17,8 +17,8 @@ use fsonos_api::Failure;
 use fsonos_api::dj::DjDirectionDto;
 use fsonos_api::surface::Surface;
 use fsonos_api::surface::schedules::{
-    ScheduleDto, ScheduleIdRequest, ScheduleRequest, Sleep, SleepRequest, SleepTimerDto,
-    parse_duration,
+    ScheduleDto, ScheduleIdRequest, ScheduleRequest, Sleep, SleepOutcome, SleepRequest,
+    SleepTimerDto, parse_duration,
 };
 use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::policy::Client;
@@ -34,7 +34,7 @@ mod edit;
 /// `fsonos sleep [<room> [duration] [--extend <duration>] [--cancel]]`.
 #[derive(Args)]
 pub struct SleepArgs {
-    /// Room name: its group pauses (`Room@S1` / `Room@S2` picks a household).
+    /// Room, saved alias, all/everywhere, all@S1 or all@S2: each group pauses.
     /// Without one, every timer that runs is listed.
     pub zone: Option<String>,
     /// How long until it pauses: 45m, 1h30m, 90s, or minutes (45). Without
@@ -106,14 +106,14 @@ pub fn sleep(global: &GlobalArgs, args: &SleepArgs) -> anyhow::Result<()> {
             })
         }
         Some(req) => {
-            let timer = surface.set_sleep_timer(&Client::Cli, &req)?;
-            crate::emit(global.json, &timer, timer_text)
+            let timers = surface.set_sleep_timers(&Client::Cli, &req)?;
+            emit_sleep_outcome(global.json, &timers)
         }
     }
 }
 
 /// What `fsonos sleep` asks for: a timer set, extended or cancelled; `None`
-/// to show the timers. A change names its room.
+/// to show the timers. A change names its room or room set.
 pub fn sleep_request(args: &SleepArgs) -> Result<Option<SleepRequest>, Failure> {
     let (duration, extend) = match (&args.duration, &args.extend) {
         (_, Some(by)) => (Some(by.clone()), true),
@@ -122,14 +122,16 @@ pub fn sleep_request(args: &SleepArgs) -> Result<Option<SleepRequest>, Failure> 
         (None, None) => (None, false),
     };
     let zone = args.zone.clone().ok_or_else(|| {
-        Failure::invalid("name the room whose sleep timer to change")
-            .with_hint("fsonos sleep Bedroom 45m; fsonos sleep alone lists the timers.")
+        Failure::invalid("name the room or room set whose sleep timers to change").with_hint(
+            "fsonos sleep Bedroom 45m; fsonos sleep all 45m; fsonos sleep alone lists the timers.",
+        )
     })?;
     Ok(Some(SleepRequest {
         zone,
         duration,
         extend,
         cancel: args.cancel,
+        expected_revision: None,
     }))
 }
 
@@ -150,9 +152,16 @@ pub fn timers_text(zone: Option<&str>, timers: &[SleepTimerDto]) -> String {
     text
 }
 
-/// What a set, extended or cancelled timer did.
-pub fn timer_text(timer: &SleepTimerDto) -> String {
-    format!("{}\n", timer.done)
+/// Print every timer result before reporting incomplete delivery. A partial
+/// extension or cancellation must never be replayed as a whole room set.
+pub fn emit_sleep_outcome(json: bool, outcome: &SleepOutcome) -> anyhow::Result<()> {
+    crate::emit(json, outcome, SleepOutcome::text)?;
+    if !outcome.complete() {
+        anyhow::bail!(
+            "sleep timer change incomplete; inspect each group's timer before another command; do not replay the batch"
+        );
+    }
+    Ok(())
 }
 
 /// `fsonos schedule ...`.
@@ -438,6 +447,58 @@ mod tests {
             timers_text(Some("Bedroom"), &[]),
             "no sleep timer runs in Bedroom's group\n"
         );
+    }
+
+    #[test]
+    fn sleep_room_sets_keep_the_selector_for_set_extend_cancel_and_reads() {
+        for zone in ["downstairs", "all", "everywhere", "all@S1", "all@S2"] {
+            for (duration, extend, cancel) in [
+                (Some("45m"), None, false),
+                (None, Some("15m"), false),
+                (None, None, true),
+                (None, None, false),
+            ] {
+                let args = SleepArgs {
+                    zone: Some(zone.into()),
+                    duration: duration.map(String::from),
+                    extend: extend.map(String::from),
+                    cancel,
+                };
+                let request = sleep_request(&args).unwrap();
+                if duration.is_none() && extend.is_none() && !cancel {
+                    assert!(request.is_none());
+                } else {
+                    let request = request.unwrap();
+                    assert_eq!(request.zone, zone);
+                    assert_eq!(request.duration.as_deref(), duration.or(extend));
+                    assert_eq!(request.extend, extend.is_some());
+                    assert_eq!(request.cancel, cancel);
+                    assert!(request.expected_revision.is_none());
+                    request.change().unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_partial_sleep_receipt_exits_unsuccessfully_after_emitting_its_results() {
+        let outcome: SleepOutcome = serde_json::from_value(serde_json::json!({
+            "done": "one group accepted its timer", "complete": false, "changed": true,
+            "applied": [{"household": "S1", "coordinator": "fixture-kitchen", "timer": {
+                "zone": "Kitchen", "ends": "2026-11-22T23:15:00Z", "remaining_secs": 2700,
+                "fades": true, "fading": false, "done": "Kitchen pauses in 45m", "changed": true
+            }}],
+            "failed": [{"household": "S2", "coordinator": "fixture-den", "zone": "Den", "error": {
+                "code": "UPNP_FAULT", "detail": "timer refused", "hint": "Read the timer.",
+                "suggestions": [], "retryable": false
+            }}]
+        }))
+        .unwrap();
+        let error = emit_sleep_outcome(true, &outcome).unwrap_err();
+        assert!(error.to_string().contains("sleep timer change incomplete"));
+        assert!(error.to_string().contains("do not replay the batch"));
+        assert!(outcome.text().contains("Kitchen"));
+        assert!(outcome.text().contains("Den"));
     }
 
     fn add(when: &str, words: &str) -> Result<ScheduleRequest, Failure> {

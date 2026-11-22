@@ -85,6 +85,26 @@ policy, actual-audience and progress checks still apply. A mismatch detected
 after a write is an uncertain result; it cannot authorize restarting completed
 stages. Lost-reply confirmation also requires this exact endpoint ownership.
 
+Successful acknowledgements retain the same ownership boundary. Before Play
+after selecting a direct source, the controller rereads that source and the
+coordinator. Supplied source metadata must remain equivalent XML, preserving
+service/account descriptors and unknown extensions while accepting namespace
+prefix, attribute-order and indentation changes. An unspecified metadata
+document does not require the speaker to return an empty document. A source
+replacement, regrouping or failed prerequisite read stops before Play and
+reports `OUTCOME_UNCERTAIN` for the already completed source selection.
+
+Queue starts retain the requested occurrence and queue revision before selecting
+the queue. Each later stage verifies that original observation and the preceding
+stage before changing the play mode, seeking or playing. Ordered starts also
+confirm NORMAL mode before Play; an acknowledged mode change may continue
+while playing or transitioning, while silent loading still requires inactivity.
+A missing occurrence fails before the source
+is interrupted; a later queue replacement, reorder, selected-track change or
+ownership loss cannot authorize a command against the new music. These bounded
+reads apply to acknowledged replies as well as lost replies, without repeating
+completed writes. A change after the final read remains possible.
+
 Pause and stop confirm a lost reply only when the expected coordinator still
 owns the endpoint before and after the state observation. A stopped or paused
 unrelated player cannot confirm success. A definite Pause/701 refusal can fall
@@ -104,6 +124,9 @@ Focused regressions: `cargo test --locked -p fsonos-core --test control
 --test control_endpoint_sim --test navigation_recovery_sim` and
 `cargo test --locked -p fsonos-api --test preflight_recovery_sim
 --test navigation_preflight_sim --test command_recovery_sim --test heal_sim`.
+Acknowledged source/queue-stage regressions are in `source_start_sim`,
+`queue_start_sim` and `ordered_mode_recovery_sim` in `fsonos-core`, with the outer
+retry boundary exercised by `fsonos-api`'s `command_recovery_sim`.
 
 ## Grouping keeps both physical destinations
 

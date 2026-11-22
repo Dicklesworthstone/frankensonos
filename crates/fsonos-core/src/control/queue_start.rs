@@ -1,7 +1,8 @@
-//! Finish an explicit queue start when a stage's reply, not its effect, was
-//! lost. Source selection, ordered mode, track selection and Play are sent once.
+//! Complete an explicit queue start without replaying completed stages.
+//! Source selection, ordered mode, track selection and Play are sent once.
 //! Starts confirm endpoint ownership before writing; ordered starts set NORMAL after
-//! selecting the queue and before seeking or playing. Ambiguous failures
+//! selecting the queue and before seeking or playing. Dependent writes recheck
+//! the retained selection even after acknowledged stages. Ambiguous failures
 //! permit read-back only; a confirmed stage advances to the next one rather
 //! than resetting the source or seeking again. Definite SOAP refusals retain
 //! their original meaning (including render-parameter recovery upstream).
@@ -41,7 +42,7 @@ pub(super) fn play<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), CoreError> {
-    start(transport, host, coordinator, position, false, true)
+    start(transport, host, coordinator, position, false, true).map(drop)
 }
 
 pub(super) fn play_in_order<T: Transport + ?Sized>(
@@ -50,7 +51,7 @@ pub(super) fn play_in_order<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), CoreError> {
-    start(transport, host, coordinator, position, true, true)
+    start(transport, host, coordinator, position, true, true).map(drop)
 }
 
 /// Select a queue slot while stopped. Retain the pre-load revision so a
@@ -65,24 +66,18 @@ pub(super) fn load<T: Transport + ?Sized>(
     let offset = position
         .checked_sub(1)
         .ok_or_else(|| ProtoError::Malformed("queue positions start at one".into()))?;
-    let before = browse_range_snapshot(transport, host, QUEUE, offset, 1)?;
-    let [item] = before.objects.as_slice() else {
-        return Err(ProtoError::Malformed("the requested queue slot is absent".into()).into());
-    };
-    if item
-        .res
-        .as_ref()
-        .is_none_or(|res| res.uri.trim().is_empty() || res.uri == "NOT_IMPLEMENTED")
-    {
-        return Err(ProtoError::Malformed("the queue slot has no identity".into()).into());
-    }
-    start(transport, host, coordinator, position, in_order, false)?;
-    if !confirmed(transport, host, coordinator, position, Stage::Track)?
-        || !matches!(
-            soap::get_transport_info(transport, host)?.state,
-            TransportState::Paused | TransportState::Stopped
-        )
-        || before != browse_range_snapshot(transport, host, QUEUE, offset, 1)?
+    let before = start(transport, host, coordinator, position, in_order, false)?;
+    if !confirmed(
+        transport,
+        host,
+        coordinator,
+        position,
+        Stage::Track,
+        &before,
+    )? || !matches!(
+        soap::get_transport_info(transport, host)?.state,
+        TransportState::Paused | TransportState::Stopped
+    ) || before != browse_range_snapshot(transport, host, QUEUE, offset, 1)?
     {
         return Err(ProtoError::Malformed(
             "the requested queue slot was not confirmed loaded without playback".into(),
@@ -99,14 +94,41 @@ fn start<T: Transport + ?Sized>(
     position: u32,
     in_order: bool,
     autoplay: bool,
-) -> Result<(), CoreError> {
+) -> Result<BrowseSnapshot, CoreError> {
     if position == 0 {
         return Err(ProtoError::Malformed("queue positions start at one".into()).into());
     }
     super::require_coordinator(transport, host, coordinator)?;
+    // Retain the selected occurrence before changing the source. A later
+    // read must not silently adopt a replacement queue at the same position.
+    let before = browse_range_snapshot(transport, host, QUEUE, position - 1, 1)?;
+    let [item] = before.objects.as_slice() else {
+        return Err(ProtoError::Malformed("the requested queue slot is absent".into()).into());
+    };
+    if item
+        .res
+        .as_ref()
+        .is_none_or(|res| res.uri.trim().is_empty() || res.uri == "NOT_IMPLEMENTED")
+    {
+        return Err(ProtoError::Malformed("the queue slot has no identity".into()).into());
+    }
+    // The bounded queue read can outlive the endpoint's group membership.
+    // A mismatch before our first write may still use ordinary target recovery.
+    super::require_coordinator(transport, host, coordinator)?;
     for stage in [Stage::Source, Stage::Mode, Stage::Track, Stage::Play] {
         if (stage == Stage::Mode && !in_order) || (stage == Stage::Play && !autoplay) {
             continue;
+        }
+        if stage != Stage::Source {
+            require_previous_stage(
+                transport,
+                host,
+                coordinator,
+                position,
+                stage,
+                &before,
+                in_order,
+            )?;
         }
         let result = match stage {
             Stage::Source => soap::play_from_queue(transport, host, coordinator),
@@ -121,7 +143,8 @@ fn start<T: Transport + ?Sized>(
             if matches!(
                 &error,
                 ProtoError::Network { .. } | ProtoError::Malformed(_)
-            ) && confirmed(transport, host, coordinator, position, stage).unwrap_or(false)
+            ) && confirmed(transport, host, coordinator, position, stage, &before)
+                .unwrap_or(false)
             {
                 tracing::warn!(
                     action = stage.name(),
@@ -140,7 +163,7 @@ fn start<T: Transport + ?Sized>(
                 fsonos_proto::play_mode::get_play_mode(transport, host)?
                     == fsonos_types::PlayMode::Normal
             } else {
-                confirmed(transport, host, coordinator, position, stage)?
+                confirmed(transport, host, coordinator, position, stage, &before)?
             };
             if !selected
                 || !matches!(
@@ -156,7 +179,58 @@ fn start<T: Transport + ?Sized>(
             }
         }
     }
-    Ok(())
+    Ok(before)
+}
+
+/// An acknowledgement proves a completed write, not continued ownership of
+/// the source. Bind each dependent write to the retained selection and stage.
+fn require_previous_stage<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    position: u32,
+    next: Stage,
+    before: &BrowseSnapshot,
+    in_order: bool,
+) -> Result<(), CoreError> {
+    let previous = match next {
+        Stage::Mode => Stage::Source,
+        Stage::Track if in_order => Stage::Mode,
+        Stage::Track => Stage::Source,
+        Stage::Play => Stage::Track,
+        Stage::Source => return Ok(()),
+    };
+    let current = (|| {
+        if in_order
+            && matches!(next, Stage::Track | Stage::Play)
+            && fsonos_proto::play_mode::get_play_mode(transport, host)? != PlayMode::Normal
+        {
+            return Ok(false);
+        }
+        // An acknowledged mode write need not leave playback stopped: a
+        // native queue reselection may remain active or transitioning. Only
+        // ambiguous mode replies need the stricter stopped/stable proof.
+        let proof = if previous == Stage::Mode {
+            Stage::Source
+        } else {
+            previous
+        };
+        confirmed(transport, host, coordinator, position, proof, before)
+    })();
+    match current {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(after_selection(
+            "the source, queue, coordinator or completed stage changed",
+        )),
+        Err(error) => Err(after_selection(error)),
+    }
+}
+
+fn after_selection(error: impl std::fmt::Display) -> CoreError {
+    CoreError::Uncertain(format!(
+        "queue source selection completed but a later stage was not sent: \
+         {error}; completed writes were not replayed; read the current queue before trying again"
+    ))
 }
 
 /// Check only the state promised by this stage. Reads are bounded, and no
@@ -168,6 +242,7 @@ fn confirmed<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
     stage: Stage,
+    before: &BrowseSnapshot,
 ) -> Result<bool, ProtoError> {
     let own_queue = format!("x-rincon-queue:{}#0", coordinator.0);
     if soap::get_media_info(transport, host)?.uri != own_queue {
@@ -178,11 +253,13 @@ fn confirmed<T: Transport + ?Sized>(
         return Ok(false);
     }
     if stage == Stage::Source {
-        return Ok(true);
+        return Ok(
+            *before == browse_range_snapshot(transport, host, QUEUE, position - 1, 1)?
+                && soap::get_media_info(transport, host)?.uri == own_queue,
+        );
     }
-    // Retain this original revision through every transitioning observation.
-    // Replacing it on each pass could accept an owner's newly edited queue.
-    let before = browse_range_snapshot(transport, host, QUEUE, position - 1, 1)?;
+    // Keep the original pre-selection revision through every observation,
+    // including ordinary acknowledged stages and lost-reply recovery.
     let [item] = before.objects.as_slice() else {
         return Ok(false);
     };
@@ -193,19 +270,30 @@ fn confirmed<T: Transport + ?Sized>(
         if resource.uri.trim().is_empty() || resource.uri == "NOT_IMPLEMENTED" {
             return Ok(false);
         }
-        return mode_confirmed(transport, host, coordinator, position, &before);
+        return mode_confirmed(transport, host, coordinator, position, before);
     }
     let unchanged = || {
         let current = soap::get_position_info(transport, host)?;
         if current.track != position || !same_track(&current.uri, &resource.uri) {
             return Ok(false);
         }
-        let after = browse_range_snapshot(transport, host, QUEUE, position - 1, 1)?;
-        if before != after || soap::get_media_info(transport, host)?.uri != own_queue {
+        if soap::get_media_info(transport, host)?.uri != own_queue {
             return Ok(false);
         }
         let topology = get_zone_group_state(transport, host)?;
-        crate::topology::coordinator_at(&topology, host, coordinator)
+        if !crate::topology::coordinator_at(&topology, host, coordinator)? {
+            return Ok(false);
+        }
+        // Topology reads can outlive a listener's source or occurrence
+        // selection. Bracket that read before allowing the dependent write;
+        // elapsed playback time is deliberately not part of identity.
+        if *before != browse_range_snapshot(transport, host, QUEUE, position - 1, 1)? {
+            return Ok(false);
+        }
+        let current = soap::get_position_info(transport, host)?;
+        Ok(current.track == position
+            && same_track(&current.uri, &resource.uri)
+            && soap::get_media_info(transport, host)?.uri == own_queue)
     };
     if stage == Stage::Play {
         wait_for_playing(transport, host, unchanged)

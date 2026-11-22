@@ -255,11 +255,12 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
         public let queue: QueueReference?
         public let direction: DJDirection?
         public let playlist: PlaylistReference?
+        public let tracks: [Track]?
 
         public init(kind: String, name: String?, uri: String?, mood: String?, queue: QueueReference? = nil,
-                    direction: DJDirection? = nil, playlist: PlaylistReference? = nil) {
+                    direction: DJDirection? = nil, playlist: PlaylistReference? = nil, tracks: [Track]? = nil) {
             self.kind = kind; self.name = name; self.uri = uri; self.mood = mood; self.queue = queue
-            self.direction = direction; self.playlist = playlist
+            self.direction = direction; self.playlist = playlist; self.tracks = tracks
         }
     }
     /// Read-only identity pinned when the daemon saves a native Sonos playlist

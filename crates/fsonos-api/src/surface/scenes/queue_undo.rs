@@ -39,7 +39,8 @@ impl Recording {
                 let coordinator = match op {
                     SceneOp::Favorite { coordinator, .. }
                     | SceneOp::SonosPlaylist { coordinator, .. }
-                    | SceneOp::QueueBackup { coordinator, .. } => coordinator,
+                    | SceneOp::QueueBackup { coordinator, .. }
+                    | SceneOp::Tracks { coordinator, .. } => coordinator,
                     SceneOp::Uri {
                         coordinator, uri, ..
                     } if SpotifyContainer::of(uri).is_some() || is_catalog_source(uri) => {

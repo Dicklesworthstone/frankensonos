@@ -62,6 +62,36 @@ test('scene and mood catalogs reject incomplete shapes and duplicated names',()=
 });
 const nativePlaylistSource = () => ({ kind: 'sonos_playlist', name: 'SQ:9',
   playlist: { household: 'SIM_HOUSEHOLD_S1', id: 'SQ:9', title: 'Saved evening playlist' } });
+const selectedTracksSource = () => ({ kind: 'tracks', tracks: [
+  { source_uri: `spotify:track:${'A'.repeat(22)}`, title: 'First and third' },
+  { source_uri: `spotify:episode:${'B'.repeat(22)}`, title: 'Second' },
+  { source_uri: `spotify:track:${'A'.repeat(22)}`, title: 'First and third' },
+] });
+test('dashboard loads and reviews concrete ordered scenes for playing and silent staging', async () => {
+  for (const playing of [true, false]) {
+    const f = fixture(); f.data.scene.groups[0].source = selectedTracksSource(); f.data.scene.groups[0].playing = playing;
+    await f.ready(); assert.equal(f.session.state.catalogError, '');
+    const pending = await f.session.reviewScene('Dinner'); assert.ok(pending);
+    assert.deepEqual(pending.scene.groups[0].source, selectedTracksSource());
+    assert.equal(pending.scene.groups[0].playing, playing);
+    assert.match(S.sceneSource(pending.scene.groups[0].source), /1\. First and third[\s\S]*2\. Second[\s\S]*3\. First and third/);
+    assert.deepEqual(f.writes(), []);
+    assert.equal(await f.session.confirm(pending), true);
+    assert.equal(await f.session.confirm(pending), false);
+    assert.deepEqual(f.writes(), [{ url: '/scenes/Dinner/apply', body: {} }]);
+  }
+});
+test('dashboard rejects reordered, edited or shortened track scenes before recalling them', async () => {
+  for (const change of ['order', 'title', 'repeat']) {
+    const f = fixture(); f.data.scene.groups[0].source = selectedTracksSource(); await f.ready();
+    const pending = await f.session.reviewScene('Dinner'); assert.ok(pending);
+    const tracks = f.data.scene.groups[0].source.tracks;
+    if (change === 'order') [tracks[0], tracks[1]] = [tracks[1], tracks[0]];
+    if (change === 'title') tracks[0].title = 'Changed';
+    if (change === 'repeat') tracks.pop();
+    assert.equal(await f.session.confirm(pending), false); assert.deepEqual(f.writes(), []);
+  }
+});
 test('a native playlist scene remains selectable alongside the rest of the dashboard catalog', async () => {
   for (const playing of [true, false]) {
     const f = fixture(); f.data.scene.groups[0].source = nativePlaylistSource(); f.data.scene.groups[0].playing = playing;

@@ -47,6 +47,37 @@ hardware check; the loopback server does not emulate the Rust daemon.
 The new artist selection path has simulator coverage but still requires
 real-device qualification; accepting a command does not establish audibility.
 
+## Playback results across rooms
+
+Both browser remotes can play a source in an existing room set, as described in
+[Multi-room playback](MULTI_ROOM_PLAYBACK.md). The result keeps one entry for
+every reviewed group, matched by household, coordinator identity and room name.
+Each entry says whether playback was confirmed, failed, was not attempted, or
+has an uncertain outcome. A failure in one room does not hide successful music
+in another, and a lost speaker reply is not presented as a definite refusal.
+
+These entries also survive an HTTP error when no group reported success. The
+source panel retains the complete receipt after dispatch, including when the
+view closes before the reply arrives. The dashboard labels a returned failure
+as **Playback failed**, rather than claiming that no command was sent.
+
+Missing groups, duplicate or mismatched identities, and contradictory completion
+flags leave the result unconfirmed. A multi-group summary without individual
+receipts also needs an explicit state check; single-group responses keep their
+existing shape. Every confirmation is consumed once. Read the affected groups
+before deciding on a new targeted command, and never repeat the whole batch.
+
+Validation uses the shipped clients and panels:
+
+```bash
+node --test scripts/test-source-targets.cjs scripts/test-dashboard-source-targets.cjs scripts/test-remote-http.cjs scripts/test-dashboard-http.cjs
+python3 scripts/test-source-targets-browser.py
+```
+
+The HTTP cases use real loopback sockets; the browser cases use synthetic
+observations with the production components. Neither claims physical playback
+or audibility.
+
 ## Add Spotify music without interrupting the current source
 
 Select **Queue next** or **Queue at end** in the Action field, then **Review

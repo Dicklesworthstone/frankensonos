@@ -10,6 +10,10 @@ use std::net::IpAddr;
 
 mod saved;
 pub use saved::{MAX_SAVED_QUEUE_EDIT_TRACKS, SavedQueueChange, reorder_saved_tracks};
+mod saved_append;
+pub use saved_append::{
+    MAX_SAVED_TRACK_METADATA_BYTES, MAX_SAVED_TRACK_URI_BYTES, SavedQueueAppend, append_saved_track,
+};
 
 /// The UPnP fault a Sonos player answers `ReorderTracksInQueue` or
 /// `RemoveTrackRangeFromQueue` with when the `UpdateID` it carries is not the
