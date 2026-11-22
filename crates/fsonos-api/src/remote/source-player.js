@@ -1318,7 +1318,8 @@ const SourcePlayerRemote = (() => {
         });
         if (!sent && current(version)) state.result = Object.freeze({ status: 'not_sent', detail: 'No command was sent. Review the source again.' });
       } catch (error) {
-        if (!accepted) state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent',
+        if (!accepted) state.result = (sent && pending.targets && targets().failure(error, pending.targets, SourcePlayerRemote))
+          || Object.freeze({ status: sent ? 'uncertain' : 'not_sent',
           detail: `${problem(error)} ${sent
             ? 'Playback or the queue may have changed, or the request may still finish. Check the room before another action; this request was not repeated.'
             : 'No playback command was sent.'}` });

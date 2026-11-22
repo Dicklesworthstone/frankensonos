@@ -91,6 +91,22 @@ f.receipt = body => {
   if(f.result==='malformed')result.added[1].coordinator=result.added[0].coordinator;
   return result;
 };
+f.playbackReceipt = body => {
+  const groups=f.resolve(body.zone).groups;
+  const results=groups.map(g=>({household:g.household,target:g.coordinator,zone:g.coordinator_room,
+    result:{status:'succeeded',done:'Started the selected music',changed:true}}));
+  if(f.result==='partial')results.at(-1).result={status:'failed',
+    error:{code:'UPNP_FAULT',detail:'Speaker refused playback.',retryable:false}};
+  if(['all_failed','playback_uncertain'].includes(f.result)) {
+    results[0].result={status:'failed',error:{code:f.result==='playback_uncertain'?'OUTCOME_UNCERTAIN':'UPNP_FAULT',
+      detail:f.result==='playback_uncertain'?'Playback may already have started.':'Speaker refused playback.',retryable:false}};
+    results.at(-1).result={status:'not_attempted'};
+  }
+  const batch={complete:results.every(row=>row.result.status==='succeeded'),results};
+  if(f.result==='malformed')results[1].target=results[0].target;
+  if(['all_failed','playback_uncertain'].includes(f.result))throw Object.assign(new Error('A representative playback error'),{batch});
+  return {done:'Playback request returned',changed:true,notes:[],...(groups.length>1?{batch}:{})};
+};
 f.call = async (url,body,options={}) => {
   f.calls.push({url,body:body===undefined?null:clone(body)});
   if(body!==undefined) {
@@ -98,6 +114,7 @@ f.call = async (url,body,options={}) => {
     if(f.hold==='write')await new Promise(resolve=>{f.release=resolve;});
     if(f.result==='lost')throw new Error('Fixture lost acknowledgement');
     if(url==='/sources/control'&&body.mode!=='play')return clone(f.receipt(body));
+    if(url==='/sources/control')return clone(f.playbackReceipt(body));
     if(!['/sources/control','/pause'].includes(url))throw new Error('Unexpected write '+url);
     return {done:'Source accepted once for the selected groups',changed:true,notes:[]};
   }
@@ -279,6 +296,36 @@ def playback(page, kind):
         "expected_revision": TARGET_REVISION, "mode": "play", "source": {"kind": "uri", "source_uri": TRACK}}}]
 
 
+def playback_results(page, kind, result_kind="partial"):
+    choose(page, kind)
+    review(page, kind)
+    page.evaluate("value => {fixture.result=value;}", result_kind)
+    confirm(page, kind)
+    result = settled(page)
+    expected = "accepted" if result_kind == "partial" else "failed" if result_kind == "all_failed" else "uncertain"
+    assert result["status"] == expected, result
+    if result_kind != "malformed":
+        assert result["complete"] is False, result
+    detail = result["detail"]
+    assert "Den@S1" in detail and "Den@S2" in detail, detail
+    if result_kind == "partial":
+        assert "Den@S1: Confirmed" in detail and "Den@S2: Failed" in detail, detail
+    elif result_kind in ["all_failed", "playback_uncertain"]:
+        assert "Den@S2: Not attempted" in detail, detail
+        label = "Outcome uncertain" if result_kind == "playback_uncertain" else "Failed"
+        assert f"Den@S1: {label}" in detail, detail
+    else:
+        assert "consistent playback receipt" in detail and "targets" not in result, result
+    assert "not repeated" in detail or "Do not repeat the whole batch" in detail, detail
+    receipt = page.locator("#source-result-detail") if kind == "dashboard" else scope(page, kind).get_by_text(detail, exact=True)
+    expect(receipt).to_be_visible()
+    expect(receipt).to_have_text(detail)
+    if kind == "dashboard" and result_kind == "all_failed":
+        expect(page.locator("#source-result-title")).to_contain_text("Playback failed")
+    assert len(writes(page)) == 1, writes(page)
+    assert page.evaluate("fixture.api.state.pending === null")
+
+
 def queue_results(page, kind, result_kind="complete"):
     choose(page, kind, mode="next")
     review(page, kind)
@@ -418,6 +465,10 @@ def main():
             for kind in ["phone", "dashboard"]:
                 cases = [
                     ("reviewed alias playback", playback),
+                    ("partial playback receipts", playback_results),
+                    ("failed playback and unattempted groups", lambda p, k: playback_results(p, k, "all_failed")),
+                    ("uncertain playback receipt", lambda p, k: playback_results(p, k, "playback_uncertain")),
+                    ("invalid playback receipt", lambda p, k: playback_results(p, k, "malformed")),
                     ("per-group queue positions", queue_results),
                     ("definite partial receipt", lambda p, k: queue_results(p, k, "partial")),
                     ("uncertain partial receipt", lambda p, k: queue_results(p, k, "uncertain")),

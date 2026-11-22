@@ -123,6 +123,9 @@ const DashboardCore = (() => {
           if (!response.ok) {
             const e = new Error(data?.detail || `Request failed (${response.status}).`);
             if (typeof data?.code === 'string') e.code = data.code;
+            // The source controller validates this receipt against the groups
+            // it reviewed; a non-2xx response must not discard their outcomes.
+            if (data && Object.hasOwn(data, 'batch')) e.batch = data.batch;
             e.hint = data?.hint; e.status = response.status;
             const retry = response.headers?.get('retry-after');
             e.retryAfter = retry && /^\d+$/.test(retry) ? Number(retry) * 1000

@@ -33,6 +33,9 @@ async function fixture() {
     failed: failed ? [{ household: 'S1', coordinator: player('S1', 'Den'), zone: 'Den',
       error: { code: 'UPNP_FAULT', detail: 'The S1 speaker refused the addition', retryable: false, hint: 'Read this queue before another add.' } }] : [],
     logged: true, undoable: true });
+  const playbackBatch = () => ({ done: 'Started both groups', changed: true, notes: [], batch: { complete: true,
+    results: zones.map(z => ({ household: z.household, target: player(z.household, 'Den'), zone: 'Den',
+      result: { status: 'succeeded', done: 'Started selected music', changed: true } })) } });
   const read = url => {
     if (url === '/zones') return copy(zones);
     if (url.startsWith('/rooms/resolve?')) return resolution(new URLSearchParams(url.split('?')[1]).get('target'));
@@ -46,14 +49,14 @@ async function fixture() {
   };
   const call = async (url, body, options) => {
     calls.push({ url, body, options });
-    if (body !== undefined) return writer ? writer(url, body) : body.mode !== 'play' ? batch(false) : { done: 'Started both groups', changed: true, notes: [] };
+    if (body !== undefined) return writer ? writer(url, body) : body.mode !== 'play' ? batch(false) : playbackBatch();
     const override = reader?.(url, options);
     return override === undefined ? read(url) : override;
   };
   const controller = C.model({ call, changed: () => source?.observe() });
   source = Source.model({ call, controller, completed: result => { completed.push(result); } });
   await controller.refresh(); controller.connection(true);
-  return { source, controller, calls, completed, zones, rows, queues, catalogs, favorites, batch, resolution,
+  return { source, controller, calls, completed, zones, rows, queues, catalogs, favorites, batch, playbackBatch, resolution,
     write(fn) { writer = fn; }, read(fn) { reader = fn; }, writes: () => calls.filter(c => c.body !== undefined),
     async review(mode = 'play', kind = 'link') {
       source.open(); source.edit('destinationMode', 'set'); source.edit('destinationInput', 'downstairs');
@@ -104,6 +107,55 @@ test('dashboard retains partial and all-failed receipts without repeating or gue
     assert.match(f.source.state.result.detail, /speaker refused/);
     assert.match(f.source.state.result.detail, /Do not repeat/);
     assert.equal(f.controller.state.uncertain, false); assert.equal(f.writes().length, 1);
+  }
+});
+
+test('dashboard playback retains each structured partial outcome without legacy skipped notes', async () => {
+  const f = await fixture(), review = await f.review('play');
+  f.write(() => {
+    const result = f.playbackBatch(); result.batch.complete = false;
+    result.batch.results[1].result = { status: 'failed', error: { code: 'OUTCOME_UNCERTAIN',
+      detail: 'The speaker reply was lost', retryable: false, hint: 'Read this group before another action.' } };
+    return result;
+  });
+  assert.equal(await f.source.apply(review), true);
+  assert.equal(f.source.state.result.partial, true); assert.equal(f.source.state.result.complete, false);
+  assert.equal(f.source.state.result.uncertain, true);
+  assert.deepEqual(f.source.state.result.targets.map(row => row.status), ['uncertain', 'confirmed']);
+  assert.match(f.source.state.result.detail, /Den@S2: Confirmed/);
+  assert.match(f.source.state.result.detail, /Den@S1: Outcome uncertain: OUTCOME_UNCERTAIN/);
+  assert.match(f.source.state.result.detail, /Do not repeat the whole batch/);
+  assert.equal(await f.source.apply(review), false); assert.equal(f.writes().length, 1);
+});
+
+test('dashboard all-failed playback retains every failed or unattempted group on HTTP error', async () => {
+  for (const uncertain of [false, true]) {
+    const f = await fixture(), review = await f.review('play'), result = f.playbackBatch();
+    result.batch.complete = false;
+    result.batch.results[0].result = { status: 'failed', error: { code: uncertain ? 'OUTCOME_UNCERTAIN' : 'UPNP_FAULT',
+      detail: uncertain ? 'The speaker reply was lost' : 'Speaker refused playback', retryable: false } };
+    result.batch.results[1].result = { status: 'not_attempted' };
+    f.write(() => { throw Object.assign(new Error('The first failure'), { code: 'UPNP_FAULT', batch: result.batch }); });
+    assert.equal(await f.source.apply(review), false);
+    assert.equal(f.source.state.result.status, uncertain ? 'uncertain' : 'failed');
+    assert.equal(f.source.state.result.complete, false);
+    assert.deepEqual(f.source.state.result.targets.map(row => [row.household, row.coordinator, row.status]),
+      [['S1', 'fixture-S1-Den', 'not_attempted'], ['S2', 'fixture-S2-Den', uncertain ? 'uncertain' : 'failed']]);
+    assert.match(f.source.state.result.detail, /Den@S1: Not attempted/);
+    assert.match(f.source.state.result.detail, /Do not repeat the whole batch/);
+    assert.equal(f.controller.state.uncertain, true); assert.equal(f.completed.length, 0);
+    assert.equal(await f.source.apply(review), false); assert.equal(f.writes().length, 1);
+  }
+});
+
+test('dashboard malformed playback receipts stay unconfirmed after one mutation', async () => {
+  for (const corrupt of [v => { delete v.batch; }, v => v.batch.results.pop(),
+    v => { v.batch.results[0].target = 'OTHER_PLAYER'; }, v => { v.batch.complete = false; }]) {
+    const f = await fixture(), review = await f.review('play'), result = f.playbackBatch(); corrupt(result);
+    f.write(() => result);
+    assert.equal(await f.source.apply(review), false);
+    assert.equal(f.source.state.result.status, 'uncertain'); assert.equal(f.controller.state.uncertain, true);
+    assert.equal(await f.source.apply(review), false); assert.equal(f.writes().length, 1);
   }
 });
 

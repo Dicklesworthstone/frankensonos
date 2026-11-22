@@ -131,12 +131,90 @@ const SourceTargetsRemote = (() => {
       source: Object.freeze(source) }) });
   }
 
-  function result(value, reviewed, player) {
-    if (reviewed.mode === 'play') {
-      const detail = player.outcome(value);
+  const groupLabel = group => `${group.coordinator}@${group.household}`;
+  const receiptText = value => typeof value === 'string' && value.trim() !== '' && value.length <= 65536
+    && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(value);
+  function playbackReceipt(batch, reviewed, player) {
+    const groups = reviewed.groups;
+    const bad = () => fail(`The daemon did not return a consistent playback receipt for every reviewed group (${groups.map(groupLabel).join(', ')}). Read their current state before another action; this request was not repeated.`);
+    if (!batch || typeof batch.complete !== 'boolean' || !Array.isArray(batch.results)
+        || !groups.length || batch.results.length !== groups.length) bad();
+    const expected = new Map(groups.map(group => [key(group.household, group.coordinator_id), group])), found = new Map();
+    const notes = value => {
+      if (value == null) return [];
+      if (!Array.isArray(value) || value.length > 1024 || value.some(note => !note || !text(note.code, 256) || !receiptText(note.detail))) bad();
+      return value;
+    };
+    for (const row of batch.results) {
+      if (!row || !text(row.household, 4096) || !text(row.target, 256)) bad();
+      const id = key(row.household, row.target), group = expected.get(id), result = row.result;
+      if (!group || found.has(id) || row.zone !== group.coordinator || !result) bad();
+      let status, detail, complete = false;
+      if (result.status === 'succeeded') {
+        if (!receiptText(result.done) || typeof result.changed !== 'boolean' || result.error != null
+            || (result.volume != null && (!Number.isInteger(result.volume) || result.volume < 0 || result.volume > 100))) bad();
+        const observedNotes = notes(result.notes);
+        complete = !observedNotes.some(note => note.code === 'SKIPPED');
+        status = complete ? 'confirmed' : 'incomplete';
+        detail = `${complete ? 'Confirmed' : 'Incomplete'}: ${player.outcome(result)}`;
+      } else if (result.status === 'failed') {
+        const error = result.error;
+        if (!error || !text(error.code, 256) || !receiptText(error.detail) || typeof error.retryable !== 'boolean'
+            || (error.hint != null && (typeof error.hint !== 'string' || error.hint.length > 65536))
+            || error.batch != null) bad();
+        status = error.code === 'OUTCOME_UNCERTAIN' ? 'uncertain' : 'failed';
+        detail = `${status === 'uncertain' ? 'Outcome uncertain' : 'Failed'}: ${error.code}: ${error.detail}${error.hint ? ' ' + error.hint : ''}`;
+      } else if (result.status === 'not_attempted') {
+        status = 'not_attempted'; detail = 'Not attempted after an earlier failure.';
+      } else bad();
+      found.set(id, Object.freeze({ household: group.household, coordinator: group.coordinator_id,
+        zone: group.coordinator, status, complete, detail: `${groupLabel(group)}: ${detail}` }));
+    }
+    const targets = Object.freeze(groups.map(group => found.get(key(group.household, group.coordinator_id))));
+    const complete = targets.every(target => target.complete);
+    if (batch.complete !== complete) bad();
+    return Object.freeze({ targets, complete, partial: !complete, uncertain: targets.some(target => target.status === 'uncertain') });
+  }
+
+  function playbackResult(value, reviewed, player) {
+    const detail = player.outcome(value);
+    if (reviewed.groups.length === 1 && value.batch == null) {
       const partial = (value.notes || []).some(note => note.code === 'SKIPPED');
       return Object.freeze({ status: 'accepted', detail, partial, complete: !partial });
     }
+    const receipt = playbackReceipt(value.batch, reviewed, player);
+    if (receipt.complete && (value.notes || []).some(note => note.code === 'SKIPPED')) {
+      fail('The playback summary and group receipts disagree. Read every reviewed group before another action; this request was not repeated.');
+    }
+    // Target notes contain their own caps and recovery details. Keep extra
+    // action-wide notes (including logging/undo barriers) without doubling them.
+    const targetNotes = new Set(value.batch.results.flatMap(row => (row.result.status === 'succeeded' ? row.result.notes || [] : [])
+      .map(note => JSON.stringify([note.code, note.detail]))));
+    const extra = (value.notes || []).filter(note => note.code !== 'SKIPPED'
+      && !targetNotes.has(JSON.stringify([note.code, note.detail]))).map(note => note.detail);
+    return Object.freeze({ status: 'accepted', ...receipt,
+      detail: [value.done, ...receipt.targets.map(target => target.detail), ...extra,
+        ...(!receipt.complete ? ['Read the failed or unattempted groups before another action. Do not repeat the whole batch.'] : [])].join('\n') });
+  }
+
+  // An error response can still prove which commands failed or never ran.
+  // Malformed receipts remain uncertain; never present a mismatched row as the
+  // result of a reviewed group, or turn the error into a successful mutation.
+  function failure(error, reviewed, player) {
+    if (reviewed.mode !== 'play' || error?.batch == null) return null;
+    try {
+      const receipt = playbackReceipt(error.batch, reviewed, player);
+      if (receipt.complete) fail('The failed request contradicts its playback receipts. Read every reviewed group before another action; this request was not repeated.');
+      return Object.freeze({ ...receipt, status: receipt.uncertain ? 'uncertain' : 'failed',
+        detail: ['Playback did not complete in every reviewed group.', ...receipt.targets.map(target => target.detail),
+          'Read each failed or unattempted group before another action. Do not repeat the whole batch.'].join('\n') });
+    } catch (invalid) {
+      return Object.freeze({ status: 'uncertain', complete: false, partial: true, uncertain: true, detail: invalid.message });
+    }
+  }
+
+  function result(value, reviewed, player) {
+    if (reviewed.mode === 'play') return playbackResult(value, reviewed, player);
     const groups = reviewed.groups;
     if (groups.length === 1 && value && !Object.hasOwn(value, 'added') && !Object.hasOwn(value, 'failed')) {
       return Object.freeze({ status: 'accepted', detail: player.queued(value, groups[0]), partial: false, complete: true });
@@ -169,6 +247,6 @@ const SourceTargetsRemote = (() => {
     return Object.freeze({ status: 'accepted', detail: details.join('\n'), partial: !value.complete, complete: value.complete,
       logged: value.logged, undoable: value.undoable });
   }
-  return { routes, query, nameKey, prepareNative, inspect, request, result, suggestions: R.suggestionsOf };
+  return { routes, query, nameKey, prepareNative, inspect, request, result, failure, suggestions: R.suggestionsOf };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SourceTargetsRemote;

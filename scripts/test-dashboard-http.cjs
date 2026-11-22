@@ -1,6 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const P = require('../crates/fsonos-api/src/remote/source-player.js');
+const T = require('../crates/fsonos-api/src/remote/source-targets.js');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -157,4 +159,33 @@ test('only native announcement POST receives the synthesis, playback and restora
   await call('/announce-more', {});
   await call('/schedules', {});
   assert.deepEqual(budgets, [1200000, 10000, 120000, 120000, 120000]);
+});
+
+test('real loopback HTTP: playback errors retain all target receipts and never replay the write', async (t) => {
+  const groups = ['S1', 'S2'].map(household => ({ household, coordinator_id: 'fixture-' + household, coordinator: 'Den' }));
+  const batch = { complete: false, results: [
+    { household: 'S1', target: 'fixture-S1', zone: 'Den', result: { status: 'failed',
+      error: { code: 'OUTCOME_UNCERTAIN', detail: 'Playback may already have started.', retryable: false } } },
+    { household: 'S2', target: 'fixture-S2', zone: 'Den', result: { status: 'not_attempted' } },
+  ] };
+  let writes = 0;
+  const server = http.createServer((req, res) => {
+    writes++; assert.equal(req.method, 'POST'); assert.equal(req.url, '/sources/control'); req.resume();
+    res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ code: 'OUTCOME_UNCERTAIN', detail: 'Playback may already have started.', retryable: false, batch }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const call = C.request({ fetcher: (url, init) => fetch(base + url, init) });
+  await assert.rejects(call('/sources/control', { zone: 'everywhere', mode: 'play' }), error => {
+    assert.deepEqual(error.batch, batch);
+    const receipt = T.failure(error, { mode: 'play', groups }, P);
+    assert.equal(receipt.status, 'uncertain'); assert.equal(receipt.complete, false);
+    assert.deepEqual(receipt.targets.map(row => row.status), ['uncertain', 'not_attempted']);
+    assert.match(receipt.detail, /Den@S1: Outcome uncertain/); assert.match(receipt.detail, /Den@S2: Not attempted/);
+    assert.match(receipt.detail, /Do not repeat the whole batch/);
+    return true;
+  });
+  assert.equal(writes, 1);
 });
