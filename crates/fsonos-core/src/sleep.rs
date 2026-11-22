@@ -253,12 +253,16 @@ impl SleepTimers {
     ) -> Result<Option<SleepTimer>, CoreError> {
         let operation = self.operations.get(coordinator);
         let mut active = operation.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(mut timer) = self
-            .lock()
-            .get(coordinator)
-            .map(|entry| entry.timer.clone())
-        else {
-            return Ok(None);
+        let mut timer = {
+            let armed = self.lock();
+            let Some(entry) = armed.get(coordinator) else {
+                // The interrupted worker may already have retired its timer.
+                // This explicit extension still ends the announcement's old
+                // right to restart that fade after its clip finishes.
+                self.resumes.supersede(coordinator);
+                return Ok(None);
+            };
+            entry.timer.clone()
         };
         timer.ends = timer.ends.max(now) + delta(by);
         timer.fading = false;
