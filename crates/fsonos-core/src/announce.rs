@@ -676,16 +676,14 @@ impl Announcer {
             effects.sources.push(plan.lead.clone());
             effects.clip = Some(clip.url.clone());
             events = playback.live.map(Live::subscribe);
-            control::play_uri(
-                &cancellation::Starting {
-                    transport: t,
-                    control: playback.control(),
-                },
+            let starting = cancellation::Starting::new(t, playback.control());
+            starting.finish(control::play_uri(
+                &starting,
                 hs,
                 &plan.lead,
                 &clip.url,
                 &clip.didl(),
-            )?;
+            ))?;
             effects.installed = true;
             playback.phase(AnnouncementPhase::Playing);
             Ok(())

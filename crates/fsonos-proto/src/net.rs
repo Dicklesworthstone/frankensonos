@@ -624,7 +624,7 @@ impl Transport for Lan {
             for _ in 1..urls.len().min(MAX_DESCRIPTION_READS) {
                 match thread::Builder::new()
                     .name("fsonos-descriptions".into())
-                    .spawn_scoped(scope, &read)
+                    .spawn_scoped(scope, read)
                 {
                     Ok(worker) => workers.push(worker),
                     // Fewer workers still finish the same batch. Thread pressure

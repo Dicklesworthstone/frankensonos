@@ -372,6 +372,9 @@ pub struct QueueFeed {
     /// How long the feed believes the queue is; an event reporting another
     /// length means the queue changed under it.
     queue_len: Option<u32>,
+    /// Exact-position evidence for the current live native queue generation.
+    /// Never restored from disk or transferred to another coordinator.
+    queue_continuity: Option<enqueue::Continuity>,
     /// Why the last trim failed, until it is taken.
     trim_error: Option<String>,
     /// The queue's end when it ran dry, until the feed plays on past it
@@ -427,6 +430,7 @@ impl QueueFeed {
             playing: None,
             recorded: None,
             queue_len: None,
+            queue_continuity: None,
             trim_error: None,
             dry_end: None,
             jumped: false,
@@ -472,6 +476,7 @@ impl QueueFeed {
             playing: snapshot.playing,
             recorded: snapshot.recorded,
             queue_len: None,
+            queue_continuity: None,
             trim_error: None,
             dry_end: snapshot.dry_end,
             jumped: false,
@@ -530,6 +535,8 @@ impl QueueFeed {
         let old = std::mem::replace(&mut self.zone, coordinator.0.clone());
         self.earlier.retain(|z| *z != old && *z != self.zone);
         self.earlier.push(old);
+        self.queue_continuity = None;
+        self.invalidate_queue();
     }
 
     /// Whether the feed is running: started, not stopped, and not let go
@@ -593,7 +600,10 @@ impl QueueFeed {
         // An explicit start authorizes a new set even if reconciliation
         // relinquished every old occurrence. Automatic callers stay released.
         self.active = true;
-        let mut proof = enqueue::Batch::new(at.coordinator);
+        let mut proof = enqueue::Batch::new(at.coordinator).retaining(
+            self.queue_continuity.clone(),
+            self.played.is_empty() && self.queued.is_empty(),
+        );
         self.finish_partial(at, store, plan.now, &mut proof)?;
         let want = 1 + self.lookahead();
         if self.queued.len() < want {
@@ -994,7 +1004,8 @@ impl QueueFeed {
             return Err(FeedError::Inactive);
         }
         navigation::prepare_skip(self, at)?;
-        let mut proof = enqueue::Batch::on_queue(at.coordinator);
+        let mut proof = enqueue::Batch::on_queue(at.coordinator)
+            .retaining(self.queue_continuity.clone(), false);
         let playing = self.playing.unwrap_or(0);
         let waiting = self
             .queued
@@ -1053,7 +1064,11 @@ impl QueueFeed {
     fn add_result(
         &mut self,
         result: Result<(u32, Option<u32>), FeedError>,
+        proof: &enqueue::Batch,
     ) -> Result<(u32, Option<u32>), FeedError> {
+        if result.is_ok() {
+            self.queue_continuity = proof.continuity();
+        }
         if result.is_err() {
             self.queue_len = None;
         }
@@ -1073,6 +1088,7 @@ impl QueueFeed {
         self.playing = None;
         self.recorded = None;
         self.queue_len = None;
+        self.queue_continuity = None;
         self.dry_end = None;
         self.jumped = false;
         self.recovery = RecoveryBudget::default();
@@ -1101,25 +1117,47 @@ impl QueueFeed {
         }
     }
 
-    /// Re-place retained movements by reading the complete queue. An occurrence
-    /// must be identical in every maximum ordered matching of the retained DJ
-    /// sequence. Legitimate repetitions constrain each other; ambiguous works
-    /// and definitely removed movements are retired without touching music.
+    /// Re-place retained movements by reading the complete queue. An unchanged
+    /// live native generation preserves its proven positions, including newly
+    /// queued repetitions of older music. Otherwise an occurrence must agree
+    /// in every maximum ordered matching; ambiguous works are retired.
     /// Returns the queue as read: each item's Spotify track, if it is one.
     fn resync<T: Transport + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
     ) -> Result<Vec<Option<String>>, FeedError> {
         let host = host_of(at)?;
-        let queue: Vec<Option<String>> = browse_all(at.transport, host, QUEUE)?
-            .iter()
-            .map(|o| {
-                o.res
-                    .as_ref()
-                    .and_then(|r| spotify_uri_from_renderer_uri(&r.uri))
-            })
-            .collect();
-        let positions =
+        let observed = enqueue::observation(at.transport, host, at.coordinator)?;
+        let queue = observed.tracks;
+        let unchanged = self
+            .queue_continuity
+            .as_ref()
+            .zip(observed.continuity.as_ref())
+            .is_some_and(|(before, after)| before.same_generation(after))
+            && self.played.iter().chain(&self.queued).all(|work| {
+                work.movements.iter().all(|movement| {
+                    movement.position.is_none_or(|position| {
+                        position
+                            .checked_sub(1)
+                            .and_then(|index| usize::try_from(index).ok())
+                            .and_then(|index| queue.get(index))
+                            .and_then(Option::as_deref)
+                            == Some(movement.uri.as_str())
+                    })
+                })
+            });
+        let positions = if unchanged {
+            self.played
+                .iter()
+                .chain(&self.queued)
+                .map(|work| {
+                    work.movements
+                        .iter()
+                        .map(|movement| movement.position)
+                        .collect()
+                })
+                .collect()
+        } else {
             reconcile::positions(&self.played, &self.queued, &queue).unwrap_or_else(|| {
                 tracing::warn!(
                     "DJ queue ownership exceeds the bounded reconciliation proof; retiring claims"
@@ -1129,7 +1167,8 @@ impl QueueFeed {
                     .chain(&self.queued)
                     .map(|work| vec![None; work.movements.len()])
                     .collect()
-            });
+            })
+        };
         let recorded = self.recorded.as_ref().and_then(|(position, uri)| {
             self.played
                 .iter()
@@ -1161,6 +1200,7 @@ impl QueueFeed {
             self.release();
         } else {
             self.queue_len = Some(u32::try_from(queue.len()).unwrap_or(u32::MAX));
+            self.queue_continuity = observed.continuity;
         }
         Ok(queue)
     }
@@ -1178,7 +1218,8 @@ impl QueueFeed {
         if self.queue_len.is_none() {
             return Ok(0);
         }
-        let mut proof = enqueue::Batch::on_queue(at.coordinator);
+        let mut proof = enqueue::Batch::on_queue(at.coordinator)
+            .retaining(self.queue_continuity.clone(), false);
         self.finish_partial(at, store, plan.now, &mut proof)?;
         let playing = self.playing.unwrap_or(0);
         let ahead = self
@@ -1246,7 +1287,7 @@ impl QueueFeed {
                 proof,
             )
             .map_err(|e| render_refused(at, e));
-            let (position, len) = self.add_result(result)?;
+            let (position, len) = self.add_result(result, proof)?;
             // Inserted ahead of something (rather than appended): that
             // something moved down one.
             let before = len.map(|len| len.saturating_sub(1)).or(self.queue_len);
@@ -1369,7 +1410,7 @@ impl QueueFeed {
     ) -> Result<(), FeedError> {
         for m in work.movements.iter_mut().filter(|m| !m.added) {
             let result = add_movement(t, host, params, m, 0, proof);
-            let (position, len) = self.add_result(result)?;
+            let (position, len) = self.add_result(result, proof)?;
             m.position = Some(position);
             m.added = true;
             self.queue_len = len.or(Some(position));
@@ -1741,11 +1782,25 @@ mod tests {
         }
 
         fn generation(s2: bool) -> Self {
+            Self::rooms(s2, &[ROOM])
+        }
+
+        fn rooms(s2: bool, rooms: &[&str]) -> Self {
             let builder = SimHousehold::builder();
+            let players = rooms.iter().map(|room| {
+                SimPlayerSpec::new(
+                    *room,
+                    if s2 {
+                        SimModel::One
+                    } else {
+                        SimModel::Play5Gen1
+                    },
+                )
+            });
             let sim = if s2 {
-                builder.s2([SimPlayerSpec::new(ROOM, SimModel::One)])
+                builder.s2(players)
             } else {
-                builder.s1([SimPlayerSpec::new(ROOM, SimModel::Play5Gen1)])
+                builder.s1(players)
             }
             .spawn()
             .unwrap();
@@ -2397,7 +2452,7 @@ mod tests {
 
     #[test]
     fn a_rekeyed_feed_plays_on_under_its_new_coordinator() {
-        let mut rig = Rig::new();
+        let mut rig = Rig::rooms(true, &[ROOM, "Study"]);
         let lan = rig.lan.clone();
         let pool = works_of(&shelf_items(1));
         let mut store = MemStore::default();
@@ -2406,14 +2461,36 @@ mod tests {
             .unwrap();
         rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
             .unwrap();
-        // The music moved: the group plays on under another coordinator.
-        let moved = PlayerId("RINCON_000E58A0MOVED01400".into());
+        // Transfer the actual source and queue, then follow its new topology
+        // and event subscription, just as the daemon does after a move.
+        let original = rig.coordinator.clone();
+        let moved = moving::move_playback(
+            &lan,
+            &rig.houses,
+            &resolve_room(&rig.houses, ROOM).unwrap(),
+            &resolve_room(&rig.houses, "Study").unwrap(),
+        )
+        .unwrap()
+        .new_coordinator;
+        let successor = rig.sim.player("Study").unwrap();
+        rig.houses[0].apply_topology(&get_zone_group_state(&lan, successor.ip).unwrap());
+        rig.sid = rig
+            ._events
+            .subscribe_at(
+                &format!("{}{}", successor.base_url, AV_TRANSPORT.event_path),
+                &rig.sink.callback_url("successor"),
+                600,
+            )
+            .unwrap()
+            .sid;
+        rig.coordinator = moved.clone();
+        rig.playback = Playback::default();
         feed.rekey(&moved);
         rig.next();
         rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT + 300), &mut store)
             .unwrap();
         let under = |zone: &PlayerId| store.recent_plays(Some(&zone.0), 500).unwrap().len();
-        assert_eq!((under(&rig.coordinator), under(&moved)), (1, 1));
+        assert_eq!((under(&original), under(&moved)), (1, 1));
         assert!(feed.is_active());
         // Both plays still count against repeats, oldest first.
         let heard: Vec<String> = feed
@@ -2425,7 +2502,7 @@ mod tests {
             .collect();
         assert_eq!(heard, plays(&store));
         // Moving back keeps one key per zone.
-        feed.rekey(&rig.coordinator);
+        feed.rekey(&original);
         assert_eq!(feed.earlier, [moved.0.as_str()]);
     }
 

@@ -6,7 +6,7 @@ use fsonos_proto::{ProtoError, Transport, soap};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Group {
     id: String,
     members: Vec<String>,
@@ -14,7 +14,7 @@ struct Group {
     generation: Option<u8>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Owner {
     host: IpAddr,
     group: Group,
@@ -114,6 +114,12 @@ impl Owner {
 
     pub(super) fn reusable(&self) -> bool {
         self.group.boot.is_some() && matches!(self.group.generation, Some(1 | 2))
+    }
+
+    /// Selecting a temporary source does not replace the player's queue.
+    /// Each maintenance command separately requires that queue to be active.
+    pub(super) fn same_queue_owner(&self, other: &Self) -> bool {
+        self.reusable() && other.reusable() && self.host == other.host && self.group == other.group
     }
 }
 

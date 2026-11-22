@@ -166,8 +166,32 @@ pub(super) fn requested(error: &CoreError) -> bool {
 /// prevent the subsequent Play; this local refusal is deliberately definite,
 /// so source-start reconciliation cannot mistake it for a lost reply.
 pub(super) struct Starting<'a, T: Transport + ?Sized> {
-    pub transport: &'a T,
-    pub control: Option<&'a AnnouncementControl>,
+    transport: &'a T,
+    control: Option<&'a AnnouncementControl>,
+    refused: AtomicBool,
+}
+
+impl<'a, T: Transport + ?Sized> Starting<'a, T> {
+    pub fn new(transport: &'a T, control: Option<&'a AnnouncementControl>) -> Self {
+        Self {
+            transport,
+            control,
+            refused: AtomicBool::new(false),
+        }
+    }
+
+    /// Source-start wraps failures after SetURI to prevent replaying that
+    /// completed mutation. Retain the announcer's typed cancellation only
+    /// when this wrapper actually refused a write before sending it. A late
+    /// cancellation flag alone cannot turn an ambiguous network failure into
+    /// a confirmed cancellation.
+    pub fn finish(&self, result: Result<(), CoreError>) -> Result<(), CoreError> {
+        if self.refused.load(Ordering::Acquire) {
+            Err(ProtoError::NotWired(CANCELLED).into())
+        } else {
+            result
+        }
+    }
 }
 
 impl<T: Transport + ?Sized> Transport for Starting<'_, T> {
@@ -181,6 +205,7 @@ impl<T: Transport + ?Sized> Transport for Starting<'_, T> {
         if self.control.is_some_and(AnnouncementControl::is_cancelled)
             && (action.contains("#SetAVTransportURI") || action.contains("#Play\""))
         {
+            self.refused.store(true, Ordering::Release);
             return Err(ProtoError::NotWired(CANCELLED));
         }
         self.transport.soap_post(host, path, action, body)
@@ -217,5 +242,42 @@ mod tests {
             control.begin(&[]),
             Err(AnnounceError::ControlReused)
         ));
+    }
+
+    struct LostReply;
+
+    impl Transport for LostReply {
+        fn soap_post(&self, _: IpAddr, _: &str, _: &str, _: &str) -> Result<String, ProtoError> {
+            Err(ProtoError::Network {
+                target: "synthetic speaker".into(),
+                detail: "reply was lost".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_locally_refused_play_retains_cancellation_after_source_start_wraps_it() {
+        let control = AnnouncementControl::default();
+        let starting = Starting::new(&LostReply, Some(&control));
+        assert!(control.cancel());
+        let refused =
+            fsonos_proto::control::play(&starting, "127.0.0.1".parse().unwrap()).unwrap_err();
+        assert!(matches!(refused, ProtoError::NotWired(reason) if reason == CANCELLED));
+        let wrapped = CoreError::Uncertain(format!("source selection completed: {refused}"));
+        assert!(requested(&starting.finish(Err(wrapped)).unwrap_err()));
+    }
+
+    #[test]
+    fn a_late_cancel_does_not_hide_an_unconfirmed_write_or_other_failure() {
+        let control = AnnouncementControl::default();
+        let starting = Starting::new(&LostReply, Some(&control));
+        let lost =
+            fsonos_proto::control::play(&starting, "127.0.0.1".parse().unwrap()).unwrap_err();
+        assert!(matches!(lost, ProtoError::Network { .. }));
+        assert!(control.cancel());
+        let uncertain = CoreError::Uncertain(format!("source selection completed: {lost}"));
+        let result = starting.finish(Err(uncertain)).unwrap_err();
+        assert!(!requested(&result));
+        assert!(matches!(result, CoreError::Uncertain(_)));
     }
 }

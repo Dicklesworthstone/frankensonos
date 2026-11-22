@@ -105,6 +105,65 @@ fn current<T: Transport + ?Sized>(
     }
 }
 
+/// Runtime evidence for exact owned positions, never a persisted ownership
+/// claim. Native revisions are meaningful only within the same player boot
+/// and group. A zero counter cannot establish continuity across its wrap.
+#[derive(Debug, Clone)]
+pub(super) struct Continuity {
+    owner: Owner,
+    revision: u32,
+    length: usize,
+}
+
+impl Continuity {
+    fn new(owner: &Owner, revision: u32, length: usize) -> Option<Self> {
+        (owner.reusable() && revision != 0).then(|| Self {
+            owner: owner.clone(),
+            revision,
+            length,
+        })
+    }
+
+    fn matches(&self, owner: &Owner, revision: u32, length: usize) -> bool {
+        self.owner.same_queue_owner(owner) && self.revision == revision && self.length == length
+    }
+
+    pub(super) fn same_generation(&self, other: &Self) -> bool {
+        self.matches(&other.owner, other.revision, other.length)
+    }
+}
+
+pub(super) struct Observation {
+    pub(super) tracks: Vec<Option<String>>,
+    pub(super) continuity: Option<Continuity>,
+}
+
+/// Bind a complete Browse to one live owner before retaining any positions.
+/// Unknown boot/generation still permits conservative sequence reconciliation.
+pub(super) fn observation<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+) -> Result<Observation, FeedError> {
+    let owner = Owner::read(transport, host, coordinator)?;
+    let snapshot = browse_snapshot(transport, host, QUEUE)?;
+    owner.confirm(transport, host, coordinator)?;
+    let continuity = Continuity::new(&owner, snapshot.update_id, snapshot.objects.len());
+    Ok(Observation {
+        tracks: snapshot
+            .objects
+            .iter()
+            .map(|object| {
+                object
+                    .res
+                    .as_ref()
+                    .and_then(|res| spotify_uri_from_renderer_uri(&res.uri))
+            })
+            .collect(),
+        continuity,
+    })
+}
+
 /// Validate the reads and capacity a new append would require. This evidence
 /// is discarded: the real batch must establish its owner and queue again after
 /// admission, especially when a scene has regrouped the players.
@@ -174,13 +233,15 @@ fn recover<T: Transport + ?Sized>(
     })
 }
 
-/// Evidence is local to one start, skip or automatic top-up, never serialized,
-/// cloned with a feed, or carried across coordinator handoff or restart.
+/// Full queue evidence is local to one start, skip or automatic top-up. Only
+/// its small, boot-bound revision witness may continue in the live feed.
 pub(super) struct Batch {
     coordinator: PlayerId,
     queue_source: bool,
     owner: Option<Owner>,
     queue: Option<Queue>,
+    continuity: Option<Continuity>,
+    unowned: bool,
 }
 
 impl Batch {
@@ -190,6 +251,8 @@ impl Batch {
             queue_source: false,
             owner: None,
             queue: None,
+            continuity: None,
+            unowned: false,
         }
     }
 
@@ -200,6 +263,16 @@ impl Batch {
             queue_source: true,
             ..Self::new(coordinator)
         }
+    }
+
+    pub(super) fn retaining(mut self, continuity: Option<Continuity>, unowned: bool) -> Self {
+        self.continuity = continuity;
+        self.unowned = unowned;
+        self
+    }
+
+    pub(super) fn continuity(&self) -> Option<Continuity> {
+        self.continuity.clone()
     }
 
     /// Send at most once. A preflight failure sends nothing; any uncertainty
@@ -214,6 +287,8 @@ impl Batch {
     ) -> Result<(u32, Option<u32>), FeedError> {
         // Taking the cached observation first invalidates it on every error.
         let retained = self.queue.take();
+        let continuity = self.continuity.take();
+        let unowned = std::mem::take(&mut self.unowned);
         let observed_owner = Owner::read(transport, host, &self.coordinator)?;
         if self.queue_source && !observed_owner.is_queue(&self.coordinator) {
             return Err(invalid("the DJ queue is not the active source"));
@@ -235,6 +310,11 @@ impl Batch {
                 queue
             }
         };
+        let continuous = unowned
+            || continuity
+                .as_ref()
+                .is_some_and(|proof| proof.matches(owner, before.revision, before.uris.len()));
+        let next_revision = before.revision.checked_add(1);
         let expected = before
             .expected(desired)
             .filter(|expected| expected.length <= MAX_BROWSE_OBJECTS)
@@ -273,6 +353,13 @@ impl Batch {
             .map_err(|error| uncertain(read_back.rejection.as_ref(), error))?;
         if let Some(error) = read_back.rejection {
             return Err(error);
+        }
+        // A full read-back can confirm the added item after an irregular
+        // revision jump, but cannot carry older occurrence ownership through
+        // those unobserved mutations (including identical replacements).
+        if continuous && next_revision == Some(read_back.queue.revision) {
+            self.continuity =
+                Continuity::new(owner, read_back.queue.revision, read_back.queue.uris.len());
         }
         if owner.reusable() && read_back.queue.cacheable() {
             self.queue = Some(read_back.queue);
