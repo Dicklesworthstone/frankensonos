@@ -62,7 +62,7 @@ fn request(mode: ReviewedSourceMode, source: ReviewedSource) -> ReviewedSourceRe
     }
 }
 
-fn sources() -> [ReviewedSource; 3] {
+fn sources() -> [ReviewedSource; 4] {
     [
         ReviewedSource::Uri {
             source_uri: "spotify:track:1000000000000000000001".into(),
@@ -73,6 +73,21 @@ fn sources() -> [ReviewedSource; 3] {
         },
         ReviewedSource::Playlist {
             playlist: "Evening playlist".into(),
+        },
+        ReviewedSource::Tracks {
+            tracks: [
+                ("spotify:track:1000000000000000000001", "First movement"),
+                (
+                    "https://open.spotify.com/episode/1000000000000000000002?si=fixture",
+                    "Selected episode",
+                ),
+                ("spotify:track:1000000000000000000001", "Repeated movement"),
+            ]
+            .map(|(source_uri, title)| QueueTrackInput {
+                source_uri: source_uri.into(),
+                title: Some(title.into()),
+            })
+            .to_vec(),
         },
     ]
 }
@@ -284,13 +299,66 @@ fn malformed_input_fails_before_the_daemon_is_contacted() {
                 uri.map(str::to_owned),
                 favorite.map(str::to_owned),
                 playlist.map(str::to_owned),
-                title.map(str::to_owned)
+                title.map(str::to_owned),
+                None,
             )
             .is_err()
         );
     }
     for value in ["", "queue", "PLAY", "play "] {
         assert!(checked_mode(value).is_err());
+    }
+}
+
+#[test]
+fn reviewed_track_choices_preserve_order_and_reject_ambiguous_or_invalid_inputs() {
+    let track = json!({
+        "source_uri": "spotify:track:1000000000000000000001",
+        "title": "Selected first"
+    });
+    let episode = json!({
+        "source_uri": "https://open.spotify.com/episode/1000000000000000000002?si=fixture",
+        "title": "Selected episode"
+    });
+    let selected = json!([track, episode, track]);
+    let tracks = serde_json::from_value(selected.clone()).unwrap();
+    let chosen = source(None, None, None, None, Some(tracks)).unwrap();
+    assert_eq!(
+        serde_json::to_value(chosen).unwrap(),
+        json!({"kind": "tracks", "tracks": selected})
+    );
+    for (uri, favorite, playlist, title) in [
+        (Some("spotify:track:1000000000000000000001"), None, None, None),
+        (None, Some("Evening"), None, None),
+        (None, None, Some("Evening"), None),
+        (None, None, None, Some("Shared title")),
+    ] {
+        assert!(
+            source(
+                uri.map(str::to_owned),
+                favorite.map(str::to_owned),
+                playlist.map(str::to_owned),
+                title.map(str::to_owned),
+                Some(serde_json::from_value(selected.clone()).unwrap()),
+            )
+            .is_err()
+        );
+    }
+    for tracks in [
+        json!([]),
+        json!([{"source_uri": "spotify:album:1000000000000000000001"}]),
+        json!([{"source_uri": "spotify:track:short"}]),
+        json!(vec![track; 11]),
+    ] {
+        let request = request(
+            ReviewedSourceMode::Append,
+            ReviewedSource::Tracks {
+                tracks: serde_json::from_value(tracks).unwrap(),
+            },
+        );
+        let (backend, reply) = fixture(Some(Ok(queued(true))));
+        assert!(backend.control_source(&request).is_err());
+        assert!(reply.calls.lock().unwrap().is_empty());
     }
 }
 
@@ -311,7 +379,10 @@ fn standalone_reviews_enforce_read_permissions_and_each_actual_write_permission(
     for mode in modes() {
         for source in sources() {
             let permission = match (mode, &source) {
-                (ReviewedSourceMode::Play, ReviewedSource::Uri { .. }) => "play",
+                (
+                    ReviewedSourceMode::Play,
+                    ReviewedSource::Uri { .. } | ReviewedSource::Tracks { .. },
+                ) => "play",
                 (ReviewedSourceMode::Play, _) => "play_favorite",
                 _ => "add_to_queue",
             };
@@ -349,7 +420,7 @@ fn the_registered_review_workflow_requires_the_target_revision_and_marks_only_re
     for field in ["zone", "expected_revision", "mode"] {
         assert!(required.contains(&json!(field)), "{control}");
     }
-    for field in ["source_uri", "favorite", "playlist", "title"] {
+    for field in ["source_uri", "favorite", "playlist", "title", "tracks"] {
         assert!(control["inputSchema"]["properties"].get(field).is_some());
         assert!(!required.contains(&json!(field)));
     }

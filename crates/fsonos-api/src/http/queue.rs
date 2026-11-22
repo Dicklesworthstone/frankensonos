@@ -3,7 +3,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddOutcome`] |
-//! | `POST /queue/tracks` | [`crate::surface::queue::QueueTracksRequest`] | [`crate::surface::queue::QueueAddedDto`] |
+//! | `POST /queue/tracks` | [`crate::surface::queue::QueueTracksRequest`] | [`crate::surface::queue::QueueAddOutcome`] |
 //! | `POST /play/tracks` | [`crate::surface::queue::PlayTracksRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /queue/remove` | [`crate::surface::queue::QueueRemoveRequest`] | [`crate::surface::queue::QueueRemovedDto`] |
 //! | `POST /queue/play` | [`crate::surface::queue::QueuePlayRequest`] | [`crate::OutcomeDto`] |
@@ -13,7 +13,7 @@ use fastapi::core::RouteEntry;
 use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
-    ADD, MOVE, PLAY, PlayTracksRequest, QueueAddOutcome, QueueAddedDto, QueueMoveRequest,
+    ADD, MOVE, PLAY, PlayTracksRequest, QueueAddOutcome, QueueMoveRequest,
     QueueMovedDto, QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, QueueRequest,
     QueueTracksRequest, REMOVE,
 };
@@ -40,12 +40,12 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/queue/tracks",
                 "add_tracks_to_queue",
                 CONTROL,
-                "Queue an ordered selection of 1-10 Spotify tracks or episodes next or at the end, preserving duplicates and playback (one undoable range)",
+                "Queue an ordered selection of 1-10 Spotify tracks or episodes in each selected group, next or at the end; preserve duplicates and playback with per-group receipts and one undo action",
             ),
-            |s, c, req| answer(body::<QueueTracksRequest>(req).and_then(|r| s.queue_tracks(c, &r))),
+            |s, c, req| answer(body::<QueueTracksRequest>(req).and_then(|r| s.queue_tracks_targets(c, &r))),
         )
         .request_schema::<QueueTracksRequest>(true)
-        .response_schema::<QueueAddedDto>(200, "The complete ordered selection was queued"),
+        .response_schema::<QueueAddOutcome>(200, "Single-group insertion or complete/partial set receipt; never replay the whole batch"),
         cx.route(
             &Op::post(
                 "/play/tracks",

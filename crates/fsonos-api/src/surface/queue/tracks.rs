@@ -5,7 +5,7 @@ use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, control};
-use fsonos_proto::ProtoError;
+use fsonos_proto::{ProtoError, Transport};
 use serde::{Deserialize, Serialize};
 
 use super::{ADD, QueueAddedDto, Surface, confirm_destination_revision};
@@ -13,7 +13,7 @@ use crate::OutcomeDto;
 use crate::execute::spotify_failure;
 use crate::failure::{ErrorCode, Failure};
 use crate::heal::Observed;
-use crate::plan::Command;
+use crate::plan::{Command, Rooms};
 use crate::request::{PlayRequest, zone_name};
 
 /// The existing core batch bound, shared with all queue-selection surfaces.
@@ -38,8 +38,8 @@ pub struct QueueTracksRequest {
     /// Add after the current queue occurrence; otherwise add to the end.
     #[serde(default)]
     pub next: bool,
-    /// Optional destination queue revision from `get_queue`, not a library
-    /// observation. A changed queue or coordinator rejects the whole request.
+    /// Optional destination queue revision from `get_queue`, valid only when
+    /// zone resolves to one group. A changed queue or coordinator rejects it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_revision: Option<String>,
 }
@@ -106,7 +106,7 @@ impl QueueTracksRequest {
         self.normalized().map(|_| ())
     }
 
-    fn normalized(&self) -> Result<Self, Failure> {
+    pub(super) fn normalized(&self) -> Result<Self, Failure> {
         let (zone, tracks) =
             normalized_selection(&self.zone, &self.tracks, self.expected_revision.as_deref())?;
         Ok(Self {
@@ -146,56 +146,68 @@ impl Surface {
     ) -> Result<OutcomeDto, Failure> {
         let asked = req.normalized()?;
         self.control_set_io(client, "play", |transport, rooms| {
-            let mut targets: Vec<fsonos_core::ControlTarget<'_>> = Vec::new();
-            for target in crate::plan::resolve_set(rooms, &asked.zone)? {
-                if !targets
-                    .iter()
-                    .any(|known| known.coordinator.id == target.coordinator.id)
-                {
-                    targets.push(target);
-                }
-            }
-            // Queue revisions are coordinator-bound. Never apply one group's
-            // token to another, or silently discard a caller's precondition.
-            if targets.len() > 1 && asked.expected_revision.is_some() {
-                return Err(Failure::invalid(
-                    "expected_revision requires a target resolving to one group; read each group's queue and address it separately for revision-bound playback",
-                ));
-            }
-            let tracks: Vec<_> = asked
-                .tracks
-                .iter()
-                .map(|track| {
-                    (
-                        track.source_uri.clone(),
-                        track.title.as_ref().unwrap_or(&track.source_uri).clone(),
-                    )
-                })
-                .collect();
-            let mut commands = Vec::with_capacity(targets.len());
-            for target in targets {
-                let coordinator = &target.coordinator.id;
-                let host = target.coordinator.ip;
-                self.confirm_source_audience(rooms.households, coordinator)?;
-                // Retain every destination before any household's renderer
-                // learning. The set executor rechecks the complete selection
-                // before caps, snapshots or playback writes and again per group.
-                let destination =
-                    control::TrackBatchDestination::read(transport, host, coordinator)?;
-                confirm_destination_revision(
-                    transport,
-                    host,
-                    coordinator,
-                    asked.expected_revision.as_deref(),
-                )?;
-                commands.push(Command::PlaySelection {
-                    coordinator: coordinator.clone(),
-                    tracks: tracks.clone(),
-                    destination,
-                });
-            }
-            Ok(commands)
+            self.plan_play_tracks(transport, rooms, &asked)
         })
+    }
+
+    /// Ordinary and reviewed playback retain the same original queues before
+    /// renderer discovery, using the already admitted room snapshot.
+    pub(in crate::surface) fn plan_play_tracks(
+        &self,
+        transport: &dyn Transport,
+        rooms: &Rooms<'_>,
+        req: &PlayTracksRequest,
+    ) -> Result<Vec<Command>, Failure> {
+        let asked = req.normalized()?;
+        let mut targets: Vec<fsonos_core::ControlTarget<'_>> = Vec::new();
+        for target in crate::plan::resolve_set(rooms, &asked.zone)? {
+            if !targets
+                .iter()
+                .any(|known| known.coordinator.id == target.coordinator.id)
+            {
+                targets.push(target);
+            }
+        }
+        // Queue revisions are coordinator-bound. Never apply one group's
+        // token to another, or silently discard a caller's precondition.
+        if targets.len() > 1 && asked.expected_revision.is_some() {
+            return Err(Failure::invalid(
+                "expected_revision requires a target resolving to one group; read each group's queue and address it separately for revision-bound playback",
+            ));
+        }
+        let tracks: Vec<_> = asked
+            .tracks
+            .iter()
+            .map(|track| {
+                (
+                    track.source_uri.clone(),
+                    track.title.as_ref().unwrap_or(&track.source_uri).clone(),
+                )
+            })
+            .collect();
+        let mut commands = Vec::with_capacity(targets.len());
+        for target in targets {
+            let coordinator = &target.coordinator.id;
+            let host = target.coordinator.ip;
+            self.confirm_source_audience(rooms.households, coordinator)?;
+            // Retain every destination before any household's renderer
+            // learning. The set executor rechecks the complete selection
+            // before caps, snapshots or playback writes and again per group.
+            let destination =
+                control::TrackBatchDestination::read(transport, host, coordinator)?;
+            confirm_destination_revision(
+                transport,
+                host,
+                coordinator,
+                asked.expected_revision.as_deref(),
+            )?;
+            commands.push(Command::PlaySelection {
+                coordinator: coordinator.clone(),
+                tracks: tracks.clone(),
+                destination,
+            });
+        }
+        Ok(commands)
     }
 
     /// Queue a reviewed ordered selection without starting, pausing or

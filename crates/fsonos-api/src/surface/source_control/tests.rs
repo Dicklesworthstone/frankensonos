@@ -3,7 +3,7 @@ use crate::zones::fixtures::households;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::Policy;
 use fsonos_core::rooms::Aliases;
-use fsonos_proto::ProtoError;
+use fsonos_proto::{ProtoError, Transport};
 use serde_json::json;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -24,6 +24,15 @@ fn uri() -> ReviewedSource {
     ReviewedSource::Uri {
         source_uri: "spotify:track:1000000000000000000001".into(),
         title: Some("Evening recording".into()),
+    }
+}
+
+fn tracks() -> ReviewedSource {
+    ReviewedSource::Tracks {
+        tracks: vec![QueueTrackInput {
+            source_uri: "spotify:track:1000000000000000000001".into(),
+            title: Some("Selected occurrence".into()),
+        }],
     }
 }
 
@@ -65,10 +74,8 @@ fn one_snapshot_checks_the_revision_and_deduplicates_the_reviewed_groups() {
         client: None,
     };
     let request = request(&rooms, "set");
-    let reads = Arc::new(AtomicUsize::new(0));
-    let commands = request
-        .plan(&NoSpeakerIo(Arc::clone(&reads)), &rooms)
-        .unwrap();
+    let (surface, _, reads) = surface(Policy::default());
+    let commands = request.plan(&surface, &rooms).unwrap();
     assert_eq!(commands.len(), 2);
     assert!(commands.iter().all(|command| matches!(
         command, Command::Play { title: Some(title), .. } if title == "Evening recording"
@@ -88,13 +95,12 @@ fn alias_expansion_client_defaults_and_target_substitution_invalidate_the_review
         aliases: Some(&original),
         client: None,
     };
-    let reads = Arc::new(AtomicUsize::new(0));
-    let wire = NoSpeakerIo(Arc::clone(&reads));
+    let (surface, _, reads) = surface(Policy::default());
     let selected = request(&rooms, "set");
     assert_eq!(
         selected
             .plan(
-                &wire,
+                &surface,
                 &Rooms {
                     aliases: Some(&expanded),
                     ..rooms
@@ -108,7 +114,7 @@ fn alias_expansion_client_defaults_and_target_substitution_invalidate_the_review
     assert_eq!(
         default
             .plan(
-                &wire,
+                &surface,
                 &Rooms {
                     client: Some("guest"),
                     ..rooms
@@ -120,7 +126,7 @@ fn alias_expansion_client_defaults_and_target_substitution_invalidate_the_review
     );
     default.zone = "all".into();
     assert_eq!(
-        default.plan(&wire, &rooms).unwrap_err().code,
+        default.plan(&surface, &rooms).unwrap_err().code,
         ErrorCode::NotCoordinator
     );
     assert_eq!(reads.load(Ordering::SeqCst), 0);
@@ -135,6 +141,7 @@ fn every_source_and_mode_rejects_stale_reviews_before_catalog_caps_or_queue_read
     ] {
         for source in [
             uri(),
+            tracks(),
             ReviewedSource::Favorite {
                 favorite: "Morning".into(),
             },
@@ -170,6 +177,7 @@ fn reviewed_sources_keep_existing_tool_permissions_before_discovery() {
     ] {
         for source in [
             uri(),
+            tracks(),
             ReviewedSource::Favorite {
                 favorite: "Morning".into(),
             },
@@ -308,4 +316,83 @@ fn unchanged_physical_members_cannot_hide_a_renamed_policy_audience() {
         0,
         "no stale room-name cap or playback step may run"
     );
+}
+
+#[test]
+fn reviewed_tracks_validate_every_occurrence_and_use_play_or_queue_permission() {
+    let h = households();
+    let mut request = request(&Rooms::from(&h), "Den");
+    request.source = tracks();
+    for mode in [
+        ReviewedSourceMode::Play,
+        ReviewedSourceMode::Next,
+        ReviewedSourceMode::Append,
+    ] {
+        request.mode = mode;
+        request.validate().unwrap();
+        assert_eq!(
+            request.tool(),
+            if mode == ReviewedSourceMode::Play {
+                "play"
+            } else {
+                super::super::queue::ADD
+            }
+        );
+        let selected = request.tracks_request().unwrap();
+        assert_eq!(selected.next, mode == ReviewedSourceMode::Next);
+        assert!(selected.expected_revision.is_none());
+    }
+    let value = serde_json::json!({
+        "zone":"Den",
+        "expected_revision":request.expected_revision,
+        "mode":"append",
+        "source":{"kind":"tracks","tracks":[
+            {"source_uri":"spotify:track:1000000000000000000001","title":"First"},
+            {"source_uri":"https://open.spotify.com/episode/1000000000000000000002"},
+            {"source_uri":"spotify:track:1000000000000000000001","title":"Repeated"}
+        ]}
+    });
+    let parsed: ReviewedSourceRequest = serde_json::from_value(value.clone()).unwrap();
+    parsed.validate().unwrap();
+    let selected = parsed.tracks_request().unwrap();
+    assert_eq!(selected.tracks.len(), 3);
+    assert_eq!(selected.tracks[0].source_uri, selected.tracks[2].source_uri);
+    assert_ne!(selected.tracks[0].title, selected.tracks[2].title);
+    let (surface, surveys, reads) = surface(Policy::default());
+    for tracks in [
+        Vec::new(),
+        vec![selected.tracks[0].clone(); super::super::queue::MAX_QUEUE_TRACKS + 1],
+        vec![QueueTrackInput {
+            source_uri: "spotify:album:1000000000000000000001".into(),
+            title: None,
+        }],
+        vec![QueueTrackInput {
+            source_uri: "spotify:track:invalid".into(),
+            title: None,
+        }],
+    ] {
+        let invalid = ReviewedSourceRequest {
+            source: ReviewedSource::Tracks { tracks },
+            ..parsed.clone()
+        };
+        assert_eq!(
+            surface
+                .control_reviewed_source(&Client::LoopbackHttp, &invalid)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+    }
+    assert_eq!(surveys.load(Ordering::SeqCst), 0);
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    for source in [
+        json!({"kind":"tracks"}),
+        json!({"kind":"tracks","tracks":[{"source_uri":"spotify:track:1000000000000000000001","metadata":"raw"}]}),
+        json!({"kind":"tracks","tracks":[],"source_uri":"discarded"}),
+        json!({"kind":"tracks","tracks":[],"expected_revision":"queue-token"}),
+    ] {
+        let mut invalid = value.clone();
+        invalid["source"] = source;
+        assert!(serde_json::from_value::<ReviewedSourceRequest>(invalid).is_err());
+    }
 }

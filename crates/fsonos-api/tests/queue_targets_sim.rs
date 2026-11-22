@@ -2,7 +2,9 @@
 //! alone, and record one action. All speaker I/O uses real simulator sockets.
 
 use fsonos_api::source::{SourceSelection, SourceSelectionKind, SpotifySources};
-use fsonos_api::surface::queue::{QueueAddOutcome, QueueAddedSetDto, QueueRequest};
+use fsonos_api::surface::queue::{
+    QueueAddOutcome, QueueAddedSetDto, QueueRequest, QueueTrackInput, QueueTracksRequest,
+};
 use fsonos_api::{ErrorCode, Failure, Surface};
 use fsonos_core::actions::BeforeState;
 use fsonos_core::clock::SystemClock;
@@ -29,6 +31,7 @@ const ORIGINAL: [&str; 3] = [
     "x-file-cifs://example.invalid/last.flac",
 ];
 const TRACK: &str = "spotify:track:1000000000000000000001";
+const EPISODE: &str = "spotify:episode:1000000000000000000002";
 const ARTIST: &str = "spotify:artist:2000000000000000000001";
 const SHOW: &str = "spotify:show:3000000000000000000001";
 const EXTERNAL: &str = "x-file-cifs://example.invalid/external.flac";
@@ -708,4 +711,317 @@ fn all_failed_dispatch_still_returns_each_target_and_no_undo_claim() {
         assert_eq!(house.queue(zone), ORIGINAL);
     }
     house.playback_unchanged();
+}
+
+fn selected_tracks(zone: &str, next: bool) -> QueueTracksRequest {
+    QueueTracksRequest {
+        zone: zone.into(),
+        tracks: [
+            (TRACK, "First occurrence"),
+            (
+                "https://open.spotify.com/episode/1000000000000000000002?si=fixture",
+                "Episode",
+            ),
+            (TRACK, "Repeated occurrence"),
+        ]
+        .map(|(uri, title)| QueueTrackInput {
+            source_uri: uri.into(),
+            title: Some(title.into()),
+        })
+        .to_vec(),
+        next,
+        expected_revision: None,
+    }
+}
+
+fn assert_selected_queue(house: &House, zone: &str, next: bool) {
+    let mut entries = browse_all(&house.sim.lan(), house.target(zone).coordinator.ip, QUEUE)
+        .unwrap();
+    let first = if next { 2 } else { 3 };
+    let inserted: Vec<_> = entries
+        .drain(first..first + 3)
+        .map(|item| {
+            (
+                spotify_uri_from_renderer_uri(&item.res.unwrap().uri).unwrap(),
+                item.title,
+            )
+        })
+        .collect();
+    assert_eq!(
+        inserted,
+        [
+            (TRACK, "First occurrence"),
+            (EPISODE, "Episode"),
+            (TRACK, "Repeated occurrence"),
+        ]
+        .map(|(uri, title)| (uri.to_owned(), title.to_owned())),
+        "{zone}: every occurrence keeps its own order and title"
+    );
+    assert_eq!(
+        entries
+            .into_iter()
+            .map(|item| item.res.unwrap().uri)
+            .collect::<Vec<_>>(),
+        ORIGINAL,
+        "{zone}: existing entries are retained"
+    );
+}
+
+#[test]
+fn ordered_tracks_queue_across_aliases_and_households_without_changing_playback() {
+    for next in [false, true] {
+        for (selector, selected) in [
+            ("selected", vec!["Lead@S1", "Lead@S2"]),
+            ("everywhere", GROUPS.to_vec()),
+            ("all@S2", vec!["Lead@S2", "Guest@S2"]),
+        ] {
+            let house = House::new();
+            let surface = house.surface();
+            let start = house.sim.soap_log().len();
+            let result = batch(
+                surface
+                    .queue_tracks_targets(&Client::McpStdio, &selected_tracks(selector, next))
+                    .unwrap(),
+            );
+            assert!(result.complete && result.logged && result.undoable);
+            assert!(result.failed.is_empty());
+            assert_eq!(result.added.len(), selected.len());
+            let writes = house.writes(start);
+            assert_eq!(writes.len(), selected.len() * 3);
+            assert!(writes.iter().all(|call| call.action == "AddURIToQueue"));
+            for zone in GROUPS {
+                let coordinator = &house.target(zone).coordinator.id;
+                if selected.contains(&zone) {
+                    let rows: Vec<_> = result
+                        .added
+                        .iter()
+                        .filter(|row| row.coordinator == coordinator.0)
+                        .collect();
+                    assert_eq!(rows.len(), 1, "{zone}: grouped members act once");
+                    assert_eq!(
+                        (rows[0].queue.first, rows[0].queue.count),
+                        (if next { 3 } else { 4 }, 3)
+                    );
+                    assert_selected_queue(&house, zone, next);
+                } else {
+                    assert_eq!(house.queue(zone), ORIGINAL);
+                    assert!(writes.iter().all(|call| call.player != coordinator.0));
+                }
+            }
+            house.playback_unchanged();
+            let action = logged(&surface);
+            let before =
+                BeforeState::parse(action.action.before_state.as_deref().unwrap()).unwrap();
+            assert_eq!(before.queued.len(), selected.len());
+            assert!(before.queued.iter().all(|queued| queued.proof.is_some()));
+            undo(&surface);
+            for zone in GROUPS {
+                assert_eq!(house.queue(zone), ORIGINAL);
+            }
+            house.playback_unchanged();
+        }
+    }
+}
+
+#[test]
+fn ordered_queue_revisions_bind_one_group_and_its_alias_keeps_the_single_wire_shape() {
+    for generation in [1, 2] {
+        let house = House::new();
+        let member = format!("Member@S{generation}");
+        let lead = format!("Lead@S{generation}");
+        std::fs::write(
+            house.directory.path().join("aliases.toml"),
+            format!("[aliases]\nsingle = [\"{member}\", \"{lead}\"]\n"),
+        )
+        .unwrap();
+        let surface = house.surface();
+        let revision = surface
+            .queue(&Client::Cli, &member, 0, 1)
+            .unwrap()
+            .revision
+            .unwrap();
+        let start = house.sim.soap_log().len();
+        let mut invalid = selected_tracks("all", false);
+        invalid.expected_revision = Some(revision.clone());
+        assert_eq!(
+            surface
+                .queue_tracks_targets(&Client::McpStdio, &invalid)
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(house.sim.soap_log().len(), start);
+        let mut request = selected_tracks("single", true);
+        request.expected_revision = Some(revision);
+        let result = surface
+            .queue_tracks_targets(&Client::McpStdio, &request)
+            .unwrap();
+        let value = serde_json::to_value(&result).unwrap();
+        assert!(matches!(result, QueueAddOutcome::Single(_)));
+        assert_eq!(value["first"], 3);
+        assert_eq!(value["count"], 3);
+        assert!(value.get("added").is_none() && value.get("failed").is_none());
+        assert_selected_queue(&house, &lead, true);
+        for zone in GROUPS {
+            if zone != lead.as_str() {
+                assert_eq!(house.queue(zone), ORIGINAL);
+            }
+        }
+        assert_eq!(house.writes(start).len(), 3);
+        house.playback_unchanged();
+        undo(&surface);
+        assert_eq!(house.queue(&lead), ORIGINAL);
+    }
+}
+
+#[test]
+fn episode_first_selections_prepare_every_households_renderer_before_any_add() {
+    let house = House::new();
+    house
+        .sim
+        .retain_favorites(2, |uri| uri.starts_with("x-rincon-mp3radio:"))
+        .unwrap();
+    let surface = house.surface();
+    let mut request = selected_tracks("everywhere", false);
+    request.tracks.rotate_left(1);
+    let start = house.sim.soap_log().len();
+    let error = surface
+        .queue_tracks_targets(&Client::McpStdio, &request)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::RenderParamsMissing);
+    assert!(house.writes(start).is_empty());
+    for zone in GROUPS {
+        assert_eq!(house.queue(zone), ORIGINAL);
+    }
+    house.playback_unchanged();
+}
+
+#[test]
+fn ordered_queue_refusals_and_lost_replies_preserve_each_groups_actual_result() {
+    for lost_reply in [false, true] {
+        let house = House::new();
+        let failed = house.target("Guest@S2").coordinator;
+        let adds = Arc::new(AtomicUsize::new(0));
+        let surface = if lost_reply {
+            house.over(Box::new(LostReply {
+                lan: house.sim.lan(),
+                host: failed.ip,
+                adds: Arc::clone(&adds),
+            }))
+        } else {
+            house
+                .sim
+                .upnp_fault(&failed.id.0, "AddURIToQueue", 701)
+                .unwrap();
+            house.surface()
+        };
+        let result = batch(
+            surface
+                .queue_tracks_targets(&Client::McpStdio, &selected_tracks("all", false))
+                .unwrap(),
+        );
+        assert_eq!(result.complete, lost_reply);
+        assert!(result.logged && result.undoable);
+        assert_eq!(result.added.len(), if lost_reply { 4 } else { 3 });
+        assert_eq!(result.failed.len(), usize::from(!lost_reply));
+        if lost_reply {
+            assert_eq!(
+                adds.load(Ordering::SeqCst),
+                12,
+                "each occurrence is sent once, including the lost replies"
+            );
+        } else {
+            assert_eq!(result.failed[0].coordinator, failed.id.0);
+            assert!(!result.failed[0].error.retryable);
+            assert_eq!(house.queue("Guest@S2"), ORIGINAL);
+            house.sim.clear_faults(&failed.id.0).unwrap();
+        }
+        for zone in GROUPS {
+            if lost_reply || zone != "Guest@S2" {
+                assert_selected_queue(&house, zone, false);
+            }
+        }
+        house.playback_unchanged();
+        logged(&surface);
+        undo(&surface);
+        for zone in GROUPS {
+            assert_eq!(house.queue(zone), ORIGINAL);
+        }
+        house.playback_unchanged();
+    }
+}
+
+struct RefuseSecondSelectedTrack {
+    sim: Arc<SimHandle>,
+    lan: SimLan,
+    host: IpAddr,
+    player: String,
+    adds: AtomicUsize,
+}
+
+impl Transport for RefuseSecondSelectedTrack {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if host == self.host
+            && action.contains("#AddURIToQueue")
+            && self.adds.fetch_add(1, Ordering::SeqCst) == 1
+        {
+            self.sim
+                .upnp_fault(&self.player, "AddURIToQueue", 701)
+                .unwrap();
+        }
+        self.lan.soap_post(host, path, action, body)
+    }
+}
+
+#[test]
+fn a_partially_inserted_selection_blocks_aggregate_undo_without_replaying_the_group() {
+    let house = House::new();
+    let partial = house.target("Guest@S2").coordinator;
+    let surface = house.over(Box::new(RefuseSecondSelectedTrack {
+        sim: Arc::clone(&house.sim),
+        lan: house.sim.lan(),
+        host: partial.ip,
+        player: partial.id.0.clone(),
+        adds: AtomicUsize::new(0),
+    }));
+    let start = house.sim.soap_log().len();
+    let result = batch(
+        surface
+            .queue_tracks_targets(&Client::McpStdio, &selected_tracks("all", false))
+            .unwrap(),
+    );
+    assert!(!result.complete && result.logged && !result.undoable);
+    assert_eq!((result.added.len(), result.failed.len()), (3, 1));
+    assert_eq!(result.failed[0].coordinator, partial.id.0);
+    assert_eq!(result.failed[0].error.code, ErrorCode::OutcomeUncertain);
+    assert!(!result.failed[0].error.retryable);
+    assert_eq!(
+        house
+            .writes(start)
+            .iter()
+            .filter(|call| call.player == partial.id.0 && call.action == "AddURIToQueue")
+            .count(),
+        2
+    );
+    let queue = house.queue("Guest@S2");
+    assert_eq!(&queue[..3], &ORIGINAL[..]);
+    assert_eq!(queue.len(), 4);
+    assert_eq!(spotify_uri_from_renderer_uri(&queue[3]).unwrap(), TRACK);
+    for zone in ["Lead@S1", "Guest@S1", "Lead@S2"] {
+        assert_selected_queue(&house, zone, false);
+    }
+    house.playback_unchanged();
+    let action = logged(&surface);
+    assert!(!fsonos_core::actions::undoable(
+        action.action.before_state.as_deref()
+    ));
+    let start = house.sim.soap_log().len();
+    assert!(surface.undo(&Client::McpStdio, false).is_err());
+    assert!(house.writes(start).is_empty());
 }

@@ -26,7 +26,8 @@ to group one household before playback when that is the intended arrangement.
 | Operation | CLI | HTTP | MCP |
 |---|---|---|---|
 | Spotify or stream source | `play <target> <source>` | `POST /play` | `play` |
-| Ordered tracks or episodes | `play-tracks <target> <URI>...` | `POST /play/tracks` | `play_tracks` |
+| Play ordered tracks or episodes | `play-tracks <target> <URI>...` | `POST /play/tracks` | `play_tracks` |
+| Queue ordered tracks or episodes | `queue-tracks <target> <URI>... [--next]` | `POST /queue/tracks` | `add_tracks_to_queue` |
 | Sonos favorite | `play <target> --favorite <query>` | `POST /play/favorite` | `play_favorite` |
 | Saved Sonos playlist | `play <target> --playlist <query>` | `POST /sonos/playlists/play` | `play_sonos_playlist` |
 | Add a source next or at the end | `play <target> <source> --next` / `--queue` (also `--favorite` / `--playlist`) | `POST /queue` | `add_to_queue` |
@@ -39,15 +40,14 @@ The phone remote and desktop dashboard use the reviewed source endpoint below
 for room sets and favorite-title selections. It retains the same underlying
 source preparation, policy tools, action logging and per-group receipts.
 
-Ordered playback sends the same 1–10 tracks or episodes to each group,
+Ordered playback and quiet queueing send the same 1–10 tracks or episodes to each group,
 preserving order and intentional repeats. It requires no Spotify Web API lookup
 for concrete track identities. An optional `expected_revision` queue token
 requires a selector resolving to one distinct group; one group's token cannot
 be used for a whole room set. See [ordered track selections](QUEUE_TRACK_SELECTIONS.md).
 
-Search-and-play picks, line-in playback, ordered queue additions
-(`queue-tracks` / `POST /queue/tracks`), the browser's ordered-track review, and
-the legacy `/sonos` compatibility bridge retain their single-group contracts. They do not silently choose one room
+Search-and-play picks, line-in playback, and the legacy `/sonos`
+compatibility bridge retain their single-group contracts. They do not silently choose one room
 from a multi-room alias.
 
 ## Phone and desktop controls
@@ -99,10 +99,17 @@ After reviewing that observation, send the exact target and revision to
 
 The mode is `play`, `next` or `append`. The source is exactly one of
 `{"kind":"uri","source_uri":"...","title":"..."}`,
-`{"kind":"favorite","favorite":"Morning"}` or
-`{"kind":"playlist","playlist":"Evening Mix"}`; `title` is optional for
-URI sources. Streams support `play` only. Unknown fields, unsupported modes
-and malformed revisions are rejected before discovery or speaker reads.
+`{"kind":"favorite","favorite":"Morning"}`,
+`{"kind":"playlist","playlist":"Evening Mix"}`, or
+`{"kind":"tracks","tracks":[{"source_uri":"spotify:track:<id>","title":"First"}]}`.
+`title` is optional for URI sources and individual selected tracks.
+An ordered selection contains 1–10 concrete Spotify tracks or episodes, retains
+repeated occurrences, and supports all three modes. It needs the target's
+Spotify renderer linkage but no Web API catalog lookup. The outer revision
+is always the reviewed audience token, including for ordered selections;
+it is never a queue revision. Streams support `play` only. Unknown fields,
+unsupported modes and malformed revisions are rejected before discovery or
+speaker reads.
 
 A revision that no longer matches the planning snapshot returns
 `NOT_COORDINATOR` before source preparation or speaker writes. A target that

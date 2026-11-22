@@ -3,9 +3,8 @@
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::queue::{
-    PlayTracksRequest, QueueAddedDto, QueueTrackInput, QueueTracksRequest,
+    PlayTracksRequest, QueueTrackInput, QueueTracksRequest,
 };
-use fsonos_api::{ErrorCode, Failure};
 
 use super::{Backend, respond, said, with_backend_off_thread};
 
@@ -13,10 +12,19 @@ use super::{Backend, respond, said, with_backend_off_thread};
 /// its typed input here, then use the shared request validation and execution.
 #[derive(Debug, serde::Deserialize, fastmcp::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct SelectedTrack {
+pub(super) struct SelectedTrack {
     source_uri: String,
     #[serde(default)]
     title: Option<String>,
+}
+
+impl From<SelectedTrack> for QueueTrackInput {
+    fn from(track: SelectedTrack) -> Self {
+        Self {
+            source_uri: track.source_uri,
+            title: track.title,
+        }
+    }
 }
 
 impl Backend {
@@ -38,20 +46,8 @@ impl Backend {
         request
             .validate()
             .map_err(|error| crate::tool_error(&error))?;
-        let body = serde_json::to_value(request).map_err(|error| {
-            crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
-        })?;
-        if let Some(answer) = self.on_daemon(
-            "POST",
-            "/queue/tracks",
-            Some(&body),
-            |added: &QueueAddedDto| added.done.clone(),
-        ) {
-            return answer;
-        }
-        respond(|| {
-            let added = self.surface.queue_tracks(&self.client, request)?;
-            Ok((added.done.clone(), added))
+        self.write_queue("/queue/tracks", request, || {
+            self.surface.queue_tracks_targets(&self.client, request)
         })
     }
 }
@@ -67,20 +63,14 @@ async fn play_tracks(
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let request = PlayTracksRequest {
         zone,
-        tracks: tracks
-            .into_iter()
-            .map(|track| QueueTrackInput {
-                source_uri: track.source_uri,
-                title: track.title,
-            })
-            .collect(),
+        tracks: tracks.into_iter().map(QueueTrackInput::from).collect(),
         expected_revision,
     };
     with_backend_off_thread(ctx, move |backend| backend.play_tracks(&request)).await
 }
 
 #[tool(
-    description = "Quietly append an ordered selection of 1-10 Spotify tracks or episodes to a room's group queue in one request. Each tracks entry has source_uri (a Spotify track/episode URI or share link) and optional title. Preserve the caller's order and intentional duplicates; albums, artists, playlists and shows are not accepted here. next=true inserts the entire selection after the current item when the queue is selected, otherwise it appends; neither mode starts playback or changes the selected source. Optional expected_revision must be the destination queue revision from get_queue, not a cached library revision; a changed queue is refused. Uses the same add_to_queue permission and successful additions can be undone with undo_last. On an uncertain failure, inspect the queue and action log before another action; never automatically replay the selection."
+    description = "Quietly add the same ordered selection of 1-10 Spotify tracks or episodes to every selected group's queue in one request. zone accepts a room, saved alias, here, all/everywhere, all@S1 or all@S2. Grouped rooms queue once and keep their current members. Each tracks entry has source_uri (a Spotify track/episode URI or share link) and optional title. Preserve the caller's order and intentional duplicates; albums, artists, playlists and shows are not accepted here. next=true inserts the entire selection after the current item when the queue is selected, otherwise it appends; neither mode starts playback or changes the selected source. Optional expected_revision must be the destination queue revision from get_queue, not a cached library revision, and requires a selector resolving to one group; a changed queue is refused. Uses the same add_to_queue permission. Single-group replies retain zone/first/count/playing_queue; multi-group receipts include complete, added and failed entries, logged and undoable. Incomplete delivery sets the tool-error flag while retaining every target receipt. Confirmed additions share one undo when every possible effect is proved; any uncertain insertion blocks batch undo. Inspect failed groups before another action; never automatically replay the whole selection."
 )]
 async fn add_tracks_to_queue(
     ctx: &McpContext,
@@ -91,13 +81,7 @@ async fn add_tracks_to_queue(
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let request = QueueTracksRequest {
         zone,
-        tracks: tracks
-            .into_iter()
-            .map(|track| QueueTrackInput {
-                source_uri: track.source_uri,
-                title: track.title,
-            })
-            .collect(),
+        tracks: tracks.into_iter().map(QueueTrackInput::from).collect(),
         next: next.unwrap_or(false),
         expected_revision,
     };

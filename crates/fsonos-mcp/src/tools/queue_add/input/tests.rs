@@ -221,6 +221,7 @@ fn complete_and_incomplete_queue_receipts_keep_every_group_without_local_replay(
             ..request()
         };
         let result = backend(&reply).queue_request(&req).unwrap();
+        assert_eq!(result.is_error, !complete);
         assert_eq!(result.structured_content, Some(receipt));
         assert_eq!(
             *reply.calls.lock().unwrap(),
@@ -245,5 +246,23 @@ fn a_malformed_batch_receipt_is_terminal_even_if_it_says_incomplete() {
         ..request()
     };
     assert!(backend(&reply).queue_request(&req).is_err());
+    assert_eq!(reply.calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn contradictory_queue_summaries_keep_the_failed_target_and_signal_tool_error() {
+    let mut receipt = batch_outcome(false, true);
+    receipt["complete"] = json!(true);
+    let reply = Arc::new(Reply {
+        calls: Mutex::default(),
+        answer: Some(Ok(receipt.clone())),
+    });
+    let req = QueueRequest {
+        zone: "everywhere".into(),
+        ..request()
+    };
+    let result = backend(&reply).queue_request(&req).unwrap();
+    assert!(result.is_error);
+    assert_eq!(result.structured_content, Some(receipt));
     assert_eq!(reply.calls.lock().unwrap().len(), 1);
 }

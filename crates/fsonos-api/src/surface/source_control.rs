@@ -6,13 +6,14 @@ use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::HouseholdState;
 use fsonos_core::actions::QueueUndo;
 use fsonos_core::policy::Client;
-use fsonos_proto::Transport;
 use serde::{Deserialize, Serialize};
 use std::sync::PoisonError;
 
 use super::audience::AudienceTransport;
 use super::players::targets::resolve_view;
-use super::queue::{QueueAddOutcome, QueueRequest};
+use super::queue::{
+    PlayTracksRequest, QueueAddOutcome, QueueRequest, QueueTrackInput, QueueTracksRequest,
+};
 use super::source_selection::{NativeSource, native_sources};
 use super::{Surface, affected, replacement_undo, room_view, set_runs};
 use crate::execute::{self, Executed, OutcomeDto};
@@ -38,6 +39,10 @@ pub enum ReviewedSource {
         source_uri: String,
         #[serde(default)]
         title: Option<String>,
+    },
+    /// Concrete Spotify tracks and episodes, preserving order and repeats.
+    Tracks {
+        tracks: Vec<QueueTrackInput>,
     },
     Favorite {
         favorite: String,
@@ -114,6 +119,9 @@ impl ReviewedSourceRequest {
     pub fn validate(&self) -> Result<(), Failure> {
         zone_name("zone", &self.zone)?;
         validate_revision(&self.expected_revision)?;
+        if let Some(request) = self.tracks_request() {
+            return request.validate();
+        }
         if self.mode == ReviewedSourceMode::Play
             && let ReviewedSource::Uri { source_uri, title } = &self.source
         {
@@ -125,18 +133,35 @@ impl ReviewedSourceRequest {
             .normalized()?;
             return Ok(());
         }
-        self.queue_request().validate()
+        self.queue_request()?.validate()
     }
 
     fn tool(&self) -> &'static str {
         match (&self.mode, &self.source) {
-            (ReviewedSourceMode::Play, ReviewedSource::Uri { .. }) => "play",
+            (
+                ReviewedSourceMode::Play,
+                ReviewedSource::Uri { .. } | ReviewedSource::Tracks { .. },
+            ) => "play",
             (ReviewedSourceMode::Play, _) => "play_favorite",
             _ => super::queue::ADD,
         }
     }
 
-    fn queue_request(&self) -> QueueRequest {
+    fn tracks_request(&self) -> Option<QueueTracksRequest> {
+        let ReviewedSource::Tracks { tracks } = &self.source else {
+            return None;
+        };
+        Some(QueueTracksRequest {
+            zone: self.zone.clone(),
+            tracks: tracks.clone(),
+            next: self.mode == ReviewedSourceMode::Next,
+            // The enclosing revision describes the reviewed audience. It must
+            // never be passed off as one coordinator's queue revision.
+            expected_revision: None,
+        })
+    }
+
+    fn queue_request(&self) -> Result<QueueRequest, Failure> {
         let mut request = QueueRequest {
             zone: self.zone.clone(),
             next: self.mode == ReviewedSourceMode::Next,
@@ -149,11 +174,18 @@ impl ReviewedSourceRequest {
             }
             ReviewedSource::Favorite { favorite } => request.favorite = Some(favorite.clone()),
             ReviewedSource::Playlist { playlist } => request.playlist = Some(playlist.clone()),
+            ReviewedSource::Tracks { .. } => {
+                return Err(Failure::new(
+                    ErrorCode::Internal,
+                    "ordered tracks require their selection queue path",
+                ));
+            }
         }
-        request
+        Ok(request)
     }
 
-    fn plan(&self, transport: &dyn Transport, rooms: &Rooms<'_>) -> Result<Vec<Command>, Failure> {
+    fn plan(&self, surface: &Surface, rooms: &Rooms<'_>) -> Result<Vec<Command>, Failure> {
+        let transport = &*surface.transport;
         let target = zone_name("zone", &self.zone)?;
         confirm_revision(rooms, target, &self.expected_revision)?;
         match &self.source {
@@ -163,6 +195,15 @@ impl ReviewedSourceRequest {
                     zone: target.into(),
                     source_uri: source_uri.clone(),
                     title: title.clone(),
+                },
+            ),
+            ReviewedSource::Tracks { tracks } => surface.plan_play_tracks(
+                transport,
+                rooms,
+                &PlayTracksRequest {
+                    zone: target.into(),
+                    tracks: tracks.clone(),
+                    expected_revision: None,
                 },
             ),
             ReviewedSource::Favorite { favorite } => native_sources(
@@ -191,13 +232,19 @@ impl Surface {
     ) -> Result<ReviewedSourceOutcome, Failure> {
         request.validate()?;
         if request.mode != ReviewedSourceMode::Play {
-            return self
-                .queue_request_targets_reviewed(
+            let result = match request.tracks_request() {
+                Some(tracks) => self.queue_tracks_targets_reviewed(
                     client,
-                    &request.queue_request(),
+                    &tracks,
                     &request.expected_revision,
-                )
-                .map(ReviewedSourceOutcome::Queue);
+                ),
+                None => self.queue_request_targets_reviewed(
+                    client,
+                    &request.queue_request()?,
+                    &request.expected_revision,
+                ),
+            };
+            return result.map(ReviewedSourceOutcome::Queue);
         }
         let tool = request.tool();
         self.authorize_logged(client, tool)?;
@@ -205,7 +252,7 @@ impl Surface {
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
         let commands = request
-            .plan(&*self.transport, &rooms)
+            .plan(self, &rooms)
             .map_err(|failure| self.explain(failure))?;
         let commands = self
             .prepare_sources(&households, commands)

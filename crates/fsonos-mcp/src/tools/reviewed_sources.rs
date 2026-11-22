@@ -3,12 +3,13 @@
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::players::targets::ResolvedRoomsDto;
-use fsonos_api::surface::queue::QueueAddOutcome;
+use fsonos_api::surface::queue::{QueueAddOutcome, QueueTrackInput};
 use fsonos_api::surface::source_control::{
     ReviewedSource, ReviewedSourceMode, ReviewedSourceOutcome, ReviewedSourceRequest,
 };
 use fsonos_api::{ErrorCode, Failure, OutcomeDto, ZoneRequest};
 
+use super::queue_tracks::SelectedTrack;
 use super::{Backend, from_daemon, respond, segment, sentence, with_backend_off_thread};
 
 fn resolution_text(view: &ResolvedRoomsDto) -> String {
@@ -50,7 +51,18 @@ fn source(
     favorite: Option<String>,
     playlist: Option<String>,
     title: Option<String>,
+    tracks: Option<Vec<SelectedTrack>>,
 ) -> Result<ReviewedSource, Failure> {
+    if let Some(tracks) = tracks {
+        if source_uri.is_some() || favorite.is_some() || playlist.is_some() || title.is_some() {
+            return Err(Failure::invalid(
+                "tracks cannot be combined with another source or a shared title; set each track's title separately",
+            ));
+        }
+        return Ok(ReviewedSource::Tracks {
+            tracks: tracks.into_iter().map(QueueTrackInput::from).collect(),
+        });
+    }
     match (source_uri, favorite, playlist) {
         (Some(source_uri), None, None) => Ok(ReviewedSource::Uri { source_uri, title }),
         (None, Some(favorite), None) if title.is_none() => {
@@ -63,7 +75,7 @@ fn source(
             "title is only valid with source_uri; native sources retain their own metadata",
         )),
         _ => Err(Failure::invalid(
-            "give exactly one of source_uri, favorite or playlist",
+            "give exactly one of source_uri, favorite, playlist or tracks",
         )),
     }
 }
@@ -171,7 +183,7 @@ async fn resolve_rooms(
 }
 
 #[tool(
-    description = "Play or queue one source in the exact audience reviewed with resolve_rooms. Pass its target as zone and its revision as REQUIRED expected_revision; never invent, drop or silently refresh the revision. mode is play (start/replace playback), next (insert after the current queue track), or append (add at the queue end); queue modes preserve playback. Give exactly one of source_uri, favorite or playlist. source_uri accepts a Spotify URI/link or, for play only, a renderer/stream URI; title is optional for URI sources only. favorite and playlist use each household's own Sonos catalog; prefer an unambiguous shared title across households, since FV:/SQ: ids are household-local. Artist/show links require Spotify catalog sign-in. Existing groups stay independent and grouped rooms act once. A changed target or physical group is refused; inspect again before a new reviewed request. Permissions, caps, logging and verified undo follow the existing play/play_favorite/add_to_queue operations. Inspect every per-group result even on a tool error: confirmed or uncertain writes may already exist. Never automatically replay an incomplete, lost or malformed response or switch to ordinary playback to bypass its review."
+    description = "Play or queue one source in the exact audience reviewed with resolve_rooms. Pass its target as zone and its revision as REQUIRED expected_revision; never invent, drop or silently refresh the revision. mode is play (start/replace playback), next (insert after the current queue track), or append (add at the queue end); queue modes preserve playback. Give exactly one of source_uri, favorite, playlist or tracks. tracks is an ordered array of 1-10 objects with source_uri (a Spotify track/episode URI or share link) and optional title; repeats and mixed tracks/episodes are preserved. It supports play, next and append with the same selection in every reviewed group and no Web API catalog lookup. For tracks, the outer expected_revision is the audience token from resolve_rooms, not a queue token. source_uri accepts a Spotify URI/link or, for play only, a renderer/stream URI; title is optional for URI sources only. favorite and playlist use each household's own Sonos catalog; prefer an unambiguous shared title across households, since FV:/SQ: ids are household-local. Artist/show links require Spotify catalog sign-in. Existing groups stay independent and grouped rooms act once. A changed target or physical group is refused; inspect again before a new reviewed request. Permissions, caps, logging and verified undo follow the existing play/play_favorite/add_to_queue operations. Inspect every per-group result even on a tool error: confirmed or uncertain writes may already exist. Never automatically replay an incomplete, lost or malformed response or switch to ordinary playback to bypass its review."
 )]
 #[allow(clippy::too_many_arguments)] // explicit source alternatives and review fields on the tool
 async fn control_source(
@@ -183,12 +195,13 @@ async fn control_source(
     favorite: Option<String>,
     playlist: Option<String>,
     title: Option<String>,
+    tracks: Option<Vec<SelectedTrack>>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let request = ReviewedSourceRequest {
         zone,
         expected_revision,
         mode: checked_mode(&mode).map_err(|failure| crate::tool_error(&failure))?,
-        source: source(source_uri, favorite, playlist, title)
+        source: source(source_uri, favorite, playlist, title, tracks)
             .map_err(|failure| crate::tool_error(&failure))?,
     };
     with_backend_off_thread(ctx, move |backend| backend.control_source(&request)).await

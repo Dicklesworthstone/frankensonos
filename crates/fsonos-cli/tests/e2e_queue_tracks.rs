@@ -3,7 +3,7 @@
 mod e2e;
 
 use e2e::Scenario;
-use fsonos_api::surface::queue::{QueueAddedDto, QueueDto};
+use fsonos_api::surface::queue::{QueueAddOutcome, QueueAddedDto, QueueDto};
 use fsonos_api::{ActionDto, UndoDto};
 use fsonos_proto::content::{QUEUE, browse_snapshot};
 use fsonos_proto::control as soap;
@@ -211,4 +211,210 @@ fn daemon_and_mcp_share_the_same_ordered_queue_operation() {
     drop(mcp);
     drop(daemon);
     s.finish();
+}
+
+fn selected_queue(s: &Scenario, room: &str) -> Vec<String> {
+    browse_snapshot(&s.lan(), s.ip(room), QUEUE)
+        .unwrap()
+        .objects
+        .into_iter()
+        .map(|item| item.res.unwrap().uri)
+        .collect()
+}
+
+fn room_set_scenario(name: &str) -> Scenario {
+    let mut s = Scenario::start(name);
+    s.sim(SimHousehold::standard());
+    std::fs::write(
+        s.dir().join("data/aliases.toml"),
+        "[aliases]\nselected = [\"Kitchen\", \"Living Room\"]\n",
+    )
+    .unwrap();
+    for room in ["Kitchen", "Living Room"] {
+        for uri in [
+            "x-file-cifs://example.invalid/first.flac",
+            "x-file-cifs://example.invalid/last.flac",
+        ] {
+            soap::add_uri_to_queue(&s.lan(), s.ip(room), uri, "", false).unwrap();
+        }
+        let uuid = s.sim_handle().unwrap().player(room).unwrap().uuid.clone();
+        soap::set_av_transport_uri(
+            &s.lan(),
+            s.ip(room),
+            &format!("x-rincon-queue:{uuid}#0"),
+            "",
+        )
+        .unwrap();
+        soap::seek_track(&s.lan(), s.ip(room), 1).unwrap();
+        soap::play(&s.lan(), s.ip(room)).unwrap();
+        soap::pause(&s.lan(), s.ip(room)).unwrap();
+    }
+    s
+}
+
+fn assert_partial_queue(outcome: &QueueAddOutcome) {
+    let QueueAddOutcome::Groups(batch) = outcome else {
+        panic!("both groups need their own receipt")
+    };
+    assert!(!batch.complete);
+    assert_eq!(batch.added.len(), 1);
+    assert_eq!(batch.added[0].household, "S1");
+    assert_eq!(batch.added[0].queue.zone, "Kitchen");
+    assert_eq!(batch.added[0].queue.count, 3);
+    assert_eq!(batch.failed.len(), 1);
+    assert_eq!(batch.failed[0].household, "S2");
+    assert_eq!(batch.failed[0].zone, "Living Room");
+}
+
+fn assert_one_selection_dispatch(s: &Scenario, start: usize) {
+    let log = s.sim_handle().unwrap().soap_log();
+    let writes: Vec<_> = log[start..]
+        .iter()
+        .filter(|call| call.action != "Browse" && !call.action.starts_with("Get"))
+        .collect();
+    for (room, expected) in [("Kitchen", 3), ("Living Room", 1)] {
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|call| call.room == room && call.action == "AddURIToQueue")
+                .count(),
+            expected,
+            "{room}: each selected occurrence is sent at most once"
+        );
+    }
+    assert!(writes.iter().all(|call| call.action == "AddURIToQueue"));
+}
+
+#[test]
+fn room_set_selections_are_quiet_undo_together_and_keep_partial_cli_and_mcp_receipts() {
+    for via_daemon in [false, true] {
+        let mut s = room_set_scenario(if via_daemon {
+            "queue-tracks-room-set-daemon"
+        } else {
+            "queue-tracks-room-set-direct"
+        });
+        let daemon = via_daemon.then(|| {
+            let mut daemon = s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
+            assert!(
+                daemon
+                    .wait_line("fsonos serve: live", Duration::from_secs(30))
+                    .is_some()
+            );
+            daemon
+        });
+        let mode = if via_daemon { "--daemon" } else { "--direct" };
+        let original: Vec<_> = ["Kitchen", "Living Room"]
+            .into_iter()
+            .map(|room| {
+                (
+                    room,
+                    selected_queue(&s, room),
+                    soap::get_transport_info(&s.lan(), s.ip(room)).unwrap(),
+                    soap::get_position_info(&s.lan(), s.ip(room)).unwrap(),
+                )
+            })
+            .collect();
+        let run = s.cli(
+            "selected-next",
+            &[
+                mode, "--json", "queue-tracks", "selected", TRACK, EPISODE, TRACK, "--next",
+            ],
+        );
+        assert!(run.ok(), "{run:?}");
+        let outcome: QueueAddOutcome = serde_json::from_str(&run.stdout).unwrap();
+        let QueueAddOutcome::Groups(batch) = outcome else {
+            panic!("a room set returns every group's range")
+        };
+        assert!(batch.complete && batch.logged && batch.undoable);
+        assert_eq!(batch.added.len(), 2);
+        assert!(batch.failed.is_empty());
+        for (room, before, transport, position) in &original {
+            let after = selected_queue(&s, room);
+            assert_eq!(after.len(), before.len() + 3, "{room}");
+            assert_eq!(after[0], before[0]);
+            assert_eq!(after[4], before[1]);
+            assert!(after[1].contains("4uLU6hMCjMI75M1A2tKUQC"));
+            assert!(after[2].contains("512ojhOuo1ktJprKbVcKyQ"));
+            assert_eq!(after[1], after[3]);
+            assert_eq!(
+                soap::get_transport_info(&s.lan(), s.ip(room)).unwrap(),
+                *transport
+            );
+            assert_eq!(
+                soap::get_position_info(&s.lan(), s.ip(room)).unwrap(),
+                *position
+            );
+        }
+        let log = s.cli("selection-log", &[mode, "--json", "log"]);
+        assert!(log.ok(), "{log:?}");
+        let actions: Vec<ActionDto> = serde_json::from_str(&log.stdout).unwrap();
+        assert_eq!(actions.len(), 1);
+        assert!(actions[0].undoable);
+        let undone = s.cli("undo-room-set", &[mode, "--json", "undo"]);
+        assert!(undone.ok(), "{undone:?}");
+        let undo: UndoDto = serde_json::from_str(&undone.stdout).unwrap();
+        assert_eq!(undo.undone, Some(actions[0].id));
+        assert!(undo.failures.is_empty());
+        for (room, before, _, _) in &original {
+            assert_eq!(selected_queue(&s, room), *before);
+        }
+
+        s.sim_handle()
+            .unwrap()
+            .upnp_fault("Living Room", "AddURIToQueue", 701)
+            .unwrap();
+        let start = s.sim_handle().unwrap().soap_log().len();
+        let partial = s.cli(
+            "partial-selection",
+            &[mode, "--json", "queue-tracks", "selected", TRACK, EPISODE, TRACK],
+        );
+        assert!(!partial.ok(), "{partial:?}");
+        assert!(partial.stderr.contains("queue addition incomplete"));
+        let receipt: QueueAddOutcome = serde_json::from_str(&partial.stdout).unwrap();
+        assert_partial_queue(&receipt);
+        assert_one_selection_dispatch(&s, start);
+
+        for modern in [false, true] {
+            let mut mcp = s.mcp_with(&[mode]);
+            if modern {
+                mcp.use_modern_protocol();
+            } else {
+                mcp.initialize();
+            }
+            let start = s.sim_handle().unwrap().soap_log().len();
+            let answer = mcp.request(
+                "tools/call",
+                &json!({
+                    "name": "add_tracks_to_queue",
+                    "arguments": {
+                        "zone": "selected",
+                        "tracks": [
+                            {"source_uri": TRACK},
+                            {"source_uri": EPISODE},
+                            {"source_uri": TRACK}
+                        ]
+                    }
+                }),
+            );
+            assert!(answer.get("error").is_none(), "{answer}");
+            assert_eq!(answer["result"]["isError"], true, "{answer}");
+            let receipt: QueueAddOutcome = if modern {
+                serde_json::from_value(answer["result"]["structuredContent"].clone()).unwrap()
+            } else {
+                let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+                serde_json::from_str(text.split_once("\n\nReceipt: ").unwrap().1).unwrap()
+            };
+            assert_partial_queue(&receipt);
+            assert_one_selection_dispatch(&s, start);
+        }
+        s.check(
+            "room-set-selection",
+            "cli+mcp",
+            "ordered multi-room queueing preserves playback, aggregate undo and every partial receipt",
+            true,
+            "direct and daemon paths send each selected occurrence at most once",
+        );
+        drop(daemon);
+        s.finish();
+    }
 }

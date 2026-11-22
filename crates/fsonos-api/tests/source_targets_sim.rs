@@ -1553,3 +1553,240 @@ fn a_partial_track_set_preserves_every_receipt_without_offering_partial_queue_un
     assert!(surface.undo(&Client::McpStdio, false).is_err());
     assert!(house.writes_since(start).is_empty());
 }
+
+fn assert_reviewed_queue_tracks(house: &House, zone: &str, next: bool) {
+    let host = house.target(zone).coordinator.ip;
+    let mut queue = house.queue(zone);
+    let first = if next { 2 } else { 3 };
+    let selected: Vec<_> = queue
+        .drain(first..first + 3)
+        .map(|uri| spotify_uri_from_renderer_uri(&uri).unwrap())
+        .collect();
+    assert_eq!(selected, [TRACK, EPISODE, TRACK]);
+    assert_eq!(queue, ORIGINAL);
+    let position = soap::get_position_info(&house.sim.lan(), host).unwrap();
+    assert_eq!((position.track, position.position_secs), (2, Some(17)));
+    assert_eq!(position.uri, ORIGINAL[1]);
+    assert_eq!(
+        soap::get_transport_info(&house.sim.lan(), host)
+            .unwrap()
+            .state,
+        TransportState::Paused
+    );
+    assert_eq!(
+        get_play_mode(&house.sim.lan(), host).unwrap(),
+        PlayMode::ShuffleRepeatOne
+    );
+}
+
+#[test]
+fn reviewed_ordered_tracks_play_or_queue_in_every_admitted_group_with_one_undo() {
+    for mode in [
+        ReviewedSourceMode::Play,
+        ReviewedSourceMode::Next,
+        ReviewedSourceMode::Append,
+    ] {
+        let house = House::new();
+        let surface = house.surface();
+        let request = reviewed_source(
+            &surface,
+            "selected",
+            mode,
+            ReviewedSource::Tracks {
+                tracks: selected_tracks("selected").tracks,
+            },
+        );
+        let start = house.sim.soap_log().len();
+        let outcome = surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .unwrap();
+        match outcome {
+            ReviewedSourceOutcome::Play(outcome) => {
+                assert_eq!(mode, ReviewedSourceMode::Play);
+                assert!(outcome.changed && outcome.complete());
+                assert_eq!(outcome.batch.unwrap().results.len(), 2);
+                for zone in ["Lead@S1", "Lead@S2"] {
+                    assert_selected_tracks(&house, zone);
+                }
+            }
+            ReviewedSourceOutcome::Queue(fsonos_api::surface::queue::QueueAddOutcome::Groups(
+                outcome,
+            )) => {
+                assert_ne!(mode, ReviewedSourceMode::Play);
+                assert!(outcome.complete && outcome.logged && outcome.undoable);
+                assert!(outcome.failed.is_empty());
+                assert_eq!(outcome.added.len(), 2);
+                for added in &outcome.added {
+                    assert_eq!(
+                        (added.queue.first, added.queue.count),
+                        (if mode == ReviewedSourceMode::Next { 3 } else { 4 }, 3)
+                    );
+                }
+                for zone in ["Lead@S1", "Lead@S2"] {
+                    assert_reviewed_queue_tracks(&house, zone, mode == ReviewedSourceMode::Next);
+                }
+                let writes = house.writes_since(start);
+                assert_eq!(writes.len(), 6);
+                assert!(writes.iter().all(|call| call.action == "AddURIToQueue"));
+            }
+            other => panic!("reviewed selections retain their group receipts: {other:?}"),
+        }
+        for zone in ["Guest@S1", "Guest@S2"] {
+            house.original_playback(zone);
+        }
+        for zone in ROOMS {
+            let target = house.target(zone);
+            let selected = ["Lead@S1", "Lead@S2"]
+                .iter()
+                .any(|zone| house.target(zone).coordinator.id == target.coordinator.id);
+            assert_eq!(
+                soap::get_volume(&house.sim.lan(), target.player.ip).unwrap(),
+                if selected && mode == ReviewedSourceMode::Play {
+                    CAP
+                } else {
+                    80
+                },
+                "{zone}: only playback applies caps"
+            );
+        }
+        let action = one_action(&surface);
+        let before = BeforeState::parse(action.action.before_state.as_deref().unwrap()).unwrap();
+        assert!(before.not_undoable.is_none());
+        if mode == ReviewedSourceMode::Play {
+            assert_eq!(before.queue_undo.len(), 2);
+        } else {
+            assert_eq!(before.queued.len(), 2);
+        }
+        undo(&surface, &house, &[]);
+        for zone in GROUPS {
+            if mode == ReviewedSourceMode::Play && ["Lead@S1", "Lead@S2"].contains(&zone) {
+                house.restored_playback(zone);
+            } else {
+                house.original_playback(zone);
+            }
+        }
+    }
+}
+
+struct RetargetDuringTrackRenderer {
+    lan: SimLan,
+    aliases: std::path::PathBuf,
+    changed: Arc<AtomicBool>,
+}
+
+impl Transport for RetargetDuringTrackRenderer {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let response = self.lan.soap_post(host, path, action, body)?;
+        if action.contains("#Browse")
+            && body.contains("<ObjectID>FV:2</ObjectID>")
+            && !self.changed.swap(true, Ordering::SeqCst)
+        {
+            std::fs::write(&self.aliases, "[aliases]\nselected = ['Guest@S2']\n").unwrap();
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn reviewed_track_baskets_keep_a_single_groups_identity_through_renderer_time_alias_edits() {
+    for mode in [
+        ReviewedSourceMode::Play,
+        ReviewedSourceMode::Next,
+        ReviewedSourceMode::Append,
+    ] {
+        let house = House::new();
+        let aliases = house.directory.path().join("aliases.toml");
+        std::fs::write(&aliases, "[aliases]\nselected = ['Member@S1', 'Lead@S1']\n").unwrap();
+        let changed = Arc::new(AtomicBool::new(false));
+        let surface = house.surface_over(Box::new(RetargetDuringTrackRenderer {
+            lan: house.sim.lan(),
+            aliases,
+            changed: Arc::clone(&changed),
+        }));
+        let request = reviewed_source(
+            &surface,
+            "selected",
+            mode,
+            ReviewedSource::Tracks {
+                tracks: selected_tracks("selected").tracks,
+            },
+        );
+        let start = house.sim.soap_log().len();
+        let outcome = surface
+            .control_reviewed_source(&Client::McpStdio, &request)
+            .unwrap();
+        assert!(changed.load(Ordering::SeqCst));
+        match outcome {
+            ReviewedSourceOutcome::Play(outcome) => {
+                assert_eq!(mode, ReviewedSourceMode::Play);
+                assert!(outcome.changed && outcome.complete() && outcome.batch.is_none());
+                assert_selected_tracks(&house, "Lead@S1");
+            }
+            ReviewedSourceOutcome::Queue(fsonos_api::surface::queue::QueueAddOutcome::Groups(
+                outcome,
+            )) => {
+                assert_ne!(mode, ReviewedSourceMode::Play);
+                assert!(outcome.complete && outcome.logged && outcome.undoable);
+                assert_eq!(outcome.added.len(), 1);
+                assert_eq!(
+                    outcome.added[0].coordinator,
+                    house.target("Lead@S1").coordinator.id.0
+                );
+                assert_reviewed_queue_tracks(
+                    &house,
+                    "Lead@S1",
+                    mode == ReviewedSourceMode::Next,
+                );
+                assert!(
+                    house
+                        .writes_since(start)
+                        .iter()
+                        .all(|call| call.action == "AddURIToQueue")
+                );
+            }
+            other => panic!("one reviewed group keeps its admitted receipt: {other:?}"),
+        }
+        let allowed = [
+            house.target("Lead@S1").player.id.0.clone(),
+            house.target("Member@S1").player.id.0.clone(),
+        ];
+        assert!(
+            house
+                .writes_since(start)
+                .iter()
+                .all(|call| allowed.contains(&call.player))
+        );
+        for zone in ["Guest@S1", "Lead@S2", "Guest@S2"] {
+            house.original_playback(zone);
+        }
+        assert_ne!(
+            surface
+                .resolve_rooms(&Client::McpStdio, "selected")
+                .unwrap()
+                .revision,
+            request.expected_revision
+        );
+        let start = house.sim.soap_log().len();
+        assert_eq!(
+            surface
+                .control_reviewed_source(&Client::McpStdio, &request)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotCoordinator
+        );
+        assert_eq!(house.sim.soap_log().len(), start);
+        one_action(&surface);
+        undo(&surface, &house, &[]);
+        if mode == ReviewedSourceMode::Play {
+            house.restored_playback("Lead@S1");
+        } else {
+            house.original_playback("Lead@S1");
+        }
+    }
+}

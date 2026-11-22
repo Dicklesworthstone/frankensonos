@@ -5,8 +5,8 @@ or individual library tracks and play or queue them in one action.
 The selection contains **1–10 tracks or episodes**, preserves their supplied
 order and repeated occurrences. **Play selected now** replaces the selected
 group's queue and starts the first track in normal order. CLI, HTTP and MCP
-ordered playback can also address a saved room set or every existing group,
-with the same selection in each. Queue-next and append
+ordered playback and quiet queueing can also address a saved room set or every
+existing group, with the same selection in each. Queue-next and append
 leave current playback alone. All three operations share the existing policy,
 action history and verified undo boundaries.
 
@@ -101,8 +101,8 @@ groups is rejected before speaker mutation; read and address each group
 separately when revision-bound playback is required. Without this caller token,
 the server still retains and rechecks each original queue, source and group.
 
-The browser's ordered-selection review and `POST /queue/tracks` continue to use
-one explicit destination group.
+The browser's ordered-selection review uses its own explicit destination
+review. Both direct track endpoints accept the same room-set selectors.
 
 ### Add without changing playback
 
@@ -136,15 +136,30 @@ When supplied, a different queue revision or coordinator produces
 `QUEUE_CHANGED` before any insertion. Omitting it deliberately acts on the
 freshly observed current queue.
 
-The answer is the existing `QueueAddedDto`: `done`, coordinator room `zone`,
-1-based `first`, exact inserted `count`, and `playing_queue`. A success confirms
-the complete contiguous range. The server resolves member room names to their
-current coordinator and uses the existing `add_to_queue` permission; there is
-no separate policy grant that bypasses queue controls.
+For one distinct group, the answer keeps the existing `QueueAddedDto`:
+`done`, coordinator room `zone`, 1-based `first`, exact inserted `count`, and
+`playing_queue`. An alias naming several members of that group receives the
+same response.
+
+For multiple groups, `zone` accepts a saved alias, `all`/`everywhere`,
+`all@S1` or `all@S2`. Each group receives the complete selection once.
+The response is the existing room-set queue receipt: `complete`, `added`
+with each household/coordinator and exact inserted range, `failed` with each
+target's error, `logged`, and `undoable`. All-failed batches also retain
+every target. There is no aggregate queue position because groups own separate
+queues. A scalar `expected_revision` requires one distinct group.
+
+The server retains every destination before renderer learning and checks the
+complete set before additions. Next inserts after each group's current queue
+occurrence; a group currently using radio or another source receives an append
+without activating its queue. The existing `add_to_queue` permission applies
+throughout.
 
 MCP exposes **`add_tracks_to_queue`** in the Full tool profile with the same
 `zone`, ordered `tracks`, `next` and `expected_revision` fields. It delegates to
 the same surface and permission. HTTP's OpenAPI operation has the same name.
+MCP retains every group receipt and sets its tool-error flag for incomplete
+delivery, including definite refusals and uncertain insertions.
 
 ## CLI
 
@@ -179,9 +194,11 @@ selection; `queue-tracks` adds it quietly. Omit `--next` on `queue-tracks` to ap
 `--json`, `--daemon`, `--daemon-url` and `--direct` use the usual CLI routing and
 output rules. A daemon request is one native batch request; a failed response
 does not fall back to repeated single-source requests or local playback.
-Partial multi-group delivery exits unsuccessfully and keeps the complete
-receipt in output, including under `--json`; inspect failed targets before
-issuing another command.
+Partial multi-group delivery from either command exits unsuccessfully and
+keeps the complete receipt in output, including under `--json`; inspect failed
+targets before issuing another command. To add the same reviewed list quietly
+to every group, use `queue-tracks everywhere <URI>... --next` or omit `--next`
+to append.
 
 ## Failure and undo
 
@@ -209,7 +226,10 @@ Inspect the actual queues and action log before deciding on another request.
 
 The server reuses the existing bounded core insertion. It verifies the exact
 inserted range as it proceeds and does not start, pause, seek, replace the queue,
-or expand service containers. It supports S1 and S2 through their native queue
+or expand service containers. Room sets share the existing aggregate executor
+and one action log. Definite refusals retain other groups' confirmed ranges;
+one undo can remove those proved additions together. Any uncertain effect
+creates a whole-action undo barrier. It supports S1 and S2 through their native queue
 controls and learned Spotify renderer context.
 
 An individual lost acknowledgement can be confirmed from the speaker queue
@@ -240,6 +260,8 @@ cargo test --locked -p fsonos-api --lib surface::queue::tracks::tests
 cargo test --locked -p fsonos-api --test queue_tracks_sim
 cargo test --locked -p fsonos-api --test play_tracks_sim
 cargo test --locked -p fsonos-api --test source_targets_sim
+cargo test --locked -p fsonos-api --test queue_targets_sim
+cargo test --locked -p fsonos-cli --test e2e_queue_tracks
 cargo test --locked -p fsonos-cli --test e2e_play_tracks
 ```
 

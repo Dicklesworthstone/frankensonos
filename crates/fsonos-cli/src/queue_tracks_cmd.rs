@@ -3,17 +3,18 @@
 use clap::Args;
 use fsonos_api::Failure;
 use fsonos_api::surface::queue::{
-    MAX_QUEUE_TRACKS, QueueAddedDto, QueueTrackInput, QueueTracksRequest,
+    MAX_QUEUE_TRACKS, QueueAddOutcome, QueueTrackInput, QueueTracksRequest,
 };
 use fsonos_core::policy::Client;
 
 use crate::config::GlobalArgs;
 use crate::remote::Daemon;
-use crate::{daemon, emit};
+use crate::{daemon, emit_queue_outcome};
 
 #[derive(Debug, Args)]
 pub struct QueueTracksArgs {
-    /// A room, Room@S1 / Room@S2, here, or a single-room alias.
+    /// A room, saved alias, here, all/everywhere, all@S1, or all@S2.
+    /// Each distinct group receives the same ordered selection once.
     #[arg(value_parser = nonblank)]
     zone: String,
     /// Spotify track or episode URIs or share links, in the desired order.
@@ -24,8 +25,8 @@ pub struct QueueTracksArgs {
     /// append. Neither mode starts playback or changes the selected source.
     #[arg(long)]
     next: bool,
-    /// Exact destination queue revision from `queue --json`. Refuse if that
-    /// queue changed; this is not a library or playlist revision.
+    /// Exact destination queue revision from `queue --json`, for one group.
+    /// Refuse if that queue changed; not a library or playlist revision.
     #[arg(long, value_name = "REVISION", value_parser = nonblank)]
     expected_revision: Option<String>,
 }
@@ -61,16 +62,16 @@ impl QueueTracksArgs {
 pub fn run(global: &GlobalArgs, args: &QueueTracksArgs) -> anyhow::Result<()> {
     // Reject the whole selection before probing a daemon or the LAN.
     let request = args.request()?;
-    let added: QueueAddedDto = if let Some(remote) = Daemon::find(global, global.daemon)? {
+    let added: QueueAddOutcome = if let Some(remote) = Daemon::find(global, global.daemon)? {
         // A selected daemon owns the mutation, including ambiguous failures.
         remote.post("/queue/tracks", &request)?
     } else {
         let dir = daemon::data_dir(global)?;
         let surface = daemon::surface(global, daemon::policy(&dir)?)?;
         let surface = daemon::with_action_log(surface, &dir, "cli");
-        surface.queue_tracks(&Client::Cli, &request)?
+        surface.queue_tracks_targets(&Client::Cli, &request)?
     };
-    emit(global.json, &added, QueueAddedDto::text)
+    emit_queue_outcome(global.json, &added)
 }
 
 #[cfg(test)]
