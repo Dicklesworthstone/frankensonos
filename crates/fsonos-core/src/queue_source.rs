@@ -15,6 +15,7 @@ use fsonos_types::{PlayerId, TransportState};
 use std::time::Instant;
 
 pub(crate) mod destination;
+pub(crate) mod native;
 mod recovery;
 
 use destination::Destination;

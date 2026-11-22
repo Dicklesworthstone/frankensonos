@@ -2,7 +2,7 @@
 //! can leave a suffix, but never authorizes clearing the original prefix.
 
 use super::{
-    Item, MoveError, Prepared, Source, invalid, mode,
+    Item, MoveError, Prepared, QueueOrigin, Source, invalid, mode,
     owner::{Action, Owner},
     verify,
 };
@@ -42,6 +42,7 @@ struct Fenced<'a, T: ?Sized> {
     revision: u32,
     count: usize,
     action: &'a str,
+    origin: Option<&'a QueueOrigin>,
     blocked: Cell<bool>,
     sent: Cell<bool>,
 }
@@ -67,7 +68,15 @@ impl<T: Transport + ?Sized> Transport for Fenced<'_, T> {
                     ));
                 }
                 self.owner.confirm(self.inner, host, self.target)?;
-                head(self.inner, host, self.revision, self.count)
+                head(self.inner, host, self.revision, self.count)?;
+                if let Some(origin) = self.origin {
+                    origin.confirm(self.inner)?;
+                    // Reading a complete source can take time. Keep the
+                    // destination's original audience and queue current too.
+                    self.owner.confirm(self.inner, host, self.target)?;
+                    head(self.inner, host, self.revision, self.count)?;
+                }
+                Ok(())
             })();
             if proof.is_err() {
                 self.blocked.set(true);
@@ -107,6 +116,7 @@ impl<T: Transport + ?Sized> Stage<'_, T> {
             revision,
             count,
             action,
+            origin: None,
             blocked: Cell::new(false),
             sent: Cell::new(false),
         }
@@ -211,6 +221,7 @@ pub(super) fn replace<T: Transport + ?Sized>(
     target: &PlayerId,
     items: &[Item],
     mode_known: bool,
+    origin: &QueueOrigin,
 ) -> Result<(u32, Owner), MoveError> {
     let owner = Owner::read(t, host, target, mode_known)?;
     let before = queue_removal::read(t, host)?;
@@ -234,6 +245,7 @@ pub(super) fn replace<T: Transport + ?Sized>(
         revision: before.revision,
         count: before.uris.len(),
         action: "Stop",
+        origin: Some(origin),
         blocked: Cell::new(false),
         sent: Cell::new(false),
     };
@@ -301,6 +313,7 @@ impl<T: Transport + ?Sized> Finishing<'_, T> {
                 revision: self.revision,
                 count: self.count,
                 action: action.name(),
+                origin: None,
                 blocked: Cell::new(false),
                 sent: Cell::new(false),
             };

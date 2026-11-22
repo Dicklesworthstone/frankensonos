@@ -263,6 +263,7 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
         return Ok(false);
     }
     layout.require_unchanged(&get_zone_group_state(t, source_host)?)?;
+    prepared.confirm_queue(t)?;
     control::leave(t, households, target)?;
     let revision = prepared.apply(t, target_host, target)?;
     for member in snap
