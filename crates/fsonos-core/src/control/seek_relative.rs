@@ -1,8 +1,9 @@
 //! A relative seek uses a real clock sample and never repeats its offset.
+//! Lost replies use the same source, boot and queue proof as an absolute seek.
 
+use super::seek_absolute::Observation;
 use crate::CoreError;
 use fsonos_proto::control::{self as soap, PositionInfo};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
@@ -16,8 +17,10 @@ pub(super) fn seek<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     by: i64,
 ) -> Result<u32, CoreError> {
+    let observed = Instant::now();
     let before = soap::get_position_info(t, host)?;
     let target = destination(&before, by)?;
+    let proof = Observation::for_relative(t, host, coordinator, before, observed);
     super::require_coordinator(t, host, coordinator)?;
     let started = Instant::now();
     match soap::seek_position(t, host, target) {
@@ -28,7 +31,7 @@ pub(super) fn seek<T: Transport + ?Sized>(
                 ProtoError::Network { .. } | ProtoError::Malformed(_)
             );
             if ambiguous
-                && confirmed(t, host, coordinator, &before, target, started).unwrap_or(false)
+                && proof.is_some_and(|proof| proof.recovered(t, host, coordinator, target, started))
             {
                 tracing::warn!(
                     cause = %error,
@@ -101,34 +104,6 @@ pub(super) fn reached(
         }
         TransportState::Transitioning | TransportState::Unknown => false,
     }
-}
-
-/// One read-back batch, with identity checked across the intervening reads.
-/// Each request retains the transport's timeout; this adds no sleep or polling.
-fn confirmed<T: Transport + ?Sized>(
-    t: &T,
-    host: IpAddr,
-    coordinator: &PlayerId,
-    before: &PositionInfo,
-    target: u32,
-    started: Instant,
-) -> Result<bool, ProtoError> {
-    if started.elapsed() > MAX_CONFIRM_AGE {
-        return Ok(false);
-    }
-    let first = soap::get_position_info(t, host)?;
-    if !same_track(before, &first) || first.position_secs.is_none() {
-        return Ok(false);
-    }
-    let state = soap::get_transport_info(t, host)?.state;
-    if !reached(before, &first, target, state, started.elapsed()) {
-        return Ok(false);
-    }
-    if !crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)? {
-        return Ok(false);
-    }
-    let last = soap::get_position_info(t, host)?;
-    Ok(reached(before, &last, target, state, started.elapsed()))
 }
 
 #[cfg(test)]

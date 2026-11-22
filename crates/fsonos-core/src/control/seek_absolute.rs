@@ -1,6 +1,7 @@
-//! Observe an absolute seek's effect without applying its time to a new track.
-//! Preparation is optional and bounded; the native request is still sent once
-//! when a player cannot provide enough evidence to recover a lost reply.
+//! Observe a seek's effect against its original source and queue occurrence.
+//! Absolute and relative seeks share this bounded recovery proof. Preparation
+//! is optional; the native request is still sent once when a player cannot
+//! provide enough evidence to recover a lost reply.
 
 use super::{SourceDestination, seek_relative::reached};
 use crate::CoreError;
@@ -58,16 +59,8 @@ pub(super) fn seek<T: Transport + ?Sized>(
     if matches!(
         &error,
         ProtoError::Network { .. } | ProtoError::Malformed(_)
-    ) && proof.is_some_and(|proof| {
-        let confirmation = Reads {
-            inner: t,
-            until: Instant::now() + CONFIRM_BUDGET,
-        };
-        proof
-            .confirmed(&confirmation, host, coordinator, target, sent)
-            .unwrap_or(false)
-            && Instant::now() < confirmation.until
-    }) {
+    ) && proof.is_some_and(|proof| proof.recovered(t, host, coordinator, target, sent))
+    {
         tracing::warn!(cause = %error, "absolute seek confirmed without repeating its write");
         Ok(target)
     } else {
@@ -76,7 +69,7 @@ pub(super) fn seek<T: Transport + ?Sized>(
     }
 }
 
-struct Observation {
+pub(super) struct Observation {
     position: PositionInfo,
     destination: SourceDestination,
     queue: Option<BrowsePage>,
@@ -91,6 +84,36 @@ impl Observation {
     ) -> Result<Option<Self>, ProtoError> {
         let observed = Instant::now();
         let position = soap::get_position_info(t, host)?;
+        Self::from_position(t, host, coordinator, position, observed)
+    }
+
+    /// A relative seek already needs a real clock to compute its target.
+    /// Retain that exact sample, rather than rereading and applying the offset
+    /// to a different track. Missing optional evidence still allows one write.
+    pub(super) fn for_relative<T: Transport + ?Sized>(
+        t: &T,
+        host: IpAddr,
+        coordinator: &PlayerId,
+        position: PositionInfo,
+        observed: Instant,
+    ) -> Option<Self> {
+        let preparation = Reads {
+            inner: t,
+            until: observed + PREPARE_BUDGET,
+        };
+        Self::from_position(&preparation, host, coordinator, position, observed)
+            .ok()
+            .flatten()
+            .filter(|_| Instant::now() < preparation.until)
+    }
+
+    fn from_position<T: Transport + ?Sized>(
+        t: &T,
+        host: IpAddr,
+        coordinator: &PlayerId,
+        position: PositionInfo,
+        observed: Instant,
+    ) -> Result<Option<Self>, ProtoError> {
         if position.uri.trim().is_empty() || position.uri == "NOT_IMPLEMENTED" {
             return Ok(None);
         }
@@ -131,6 +154,23 @@ impl Observation {
             queue,
             observed,
         }))
+    }
+
+    pub(super) fn recovered<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        host: IpAddr,
+        coordinator: &PlayerId,
+        target: u32,
+        sent: Instant,
+    ) -> bool {
+        let confirmation = Reads {
+            inner: t,
+            until: Instant::now() + CONFIRM_BUDGET,
+        };
+        self.confirmed(&confirmation, host, coordinator, target, sent)
+            .unwrap_or(false)
+            && Instant::now() < confirmation.until
     }
 
     fn confirmed<T: Transport + ?Sized>(
