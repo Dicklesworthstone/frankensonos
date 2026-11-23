@@ -19,10 +19,13 @@ use std::ops::Range;
 struct ObservedStore {
     inner: RefCell<MemStore>,
     library_reads: Cell<usize>,
+    feedback_reads: Cell<usize>,
     fail_library: Cell<bool>,
     fail_receipt: Cell<bool>,
     revision_supported: Cell<bool>,
     publish_while_reading: Cell<bool>,
+    publish_while_reading_feedback: Cell<bool>,
+    configuration_edit: RefCell<Option<(std::path::PathBuf, String)>>,
 }
 
 // Inject failures and a publication between snapshot reads using the real
@@ -45,12 +48,28 @@ macro_rules! forward {
 }
 
 impl Store for ObservedStore {
+    fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError> {
+        self.feedback_reads.set(self.feedback_reads.get() + 1);
+        let feedback = self.inner.borrow().feedback_between(window)?;
+        if self.publish_while_reading_feedback.replace(false) {
+            let mut inner = self.inner.borrow_mut();
+            inner.adopt_spotify_library_owner("replacement-owner")?;
+            apply_library_read(&mut *inner, &[song(2)])
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
+        }
+        Ok(feedback)
+    }
+
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError> {
         self.library_reads.set(self.library_reads.get() + 1);
         if self.fail_library.get() {
             return Err(StoreError::Backend("injected library read failure".into()));
         }
         let entries = self.inner.borrow().library()?;
+        if let Some((path, text)) = self.configuration_edit.borrow_mut().take() {
+            std::fs::write(path, text)
+                .map_err(|error| StoreError::Backend(error.to_string()))?;
+        }
         if self.publish_while_reading.replace(false) {
             let mut inner = self.inner.borrow_mut();
             inner.adopt_spotify_library_owner("replacement-owner")?;
@@ -109,7 +128,6 @@ impl Store for ObservedStore {
         fn delete_dj_session(&mut self, coordinator: &str) -> Result<(), StoreError>;
         fn record_feedback(&mut self, feedback: &Feedback) -> Result<(), StoreError>;
         fn feedback( &self, key: FeedbackKey<'_>, window: Range<i64>, ) -> Result<Vec<Feedback>, StoreError>;
-        fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError>;
         fn save_album_tracks( &mut self, album_uri: &str, tracks: &[AlbumTrack], fetched_at: i64, ) -> Result<(), StoreError>;
         fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError>;
         fn save_album_misses(&mut self, misses: &[(String, i64)]) -> Result<(), StoreError>;
@@ -259,6 +277,16 @@ fn an_unreadable_account_receipt_defers_selection_until_it_can_be_verified() {
 }
 
 #[test]
+fn a_publication_during_feedback_refresh_cannot_reuse_the_old_account() {
+    let (store, mut state) = fixture();
+    let reads = store.library_reads.get();
+    store.publish_while_reading_feedback.set(true);
+    state.refresh(&store, None, 1).unwrap();
+    assert!(store.library_reads.get() > reads);
+    assert_eq!(state.pool.works()[0].composer, "Artist 2");
+}
+
+#[test]
 fn stores_without_revision_support_rebuild_instead_of_reusing_unproved_music() {
     let (mut store, mut state) = fixture();
     store.revision_supported.set(false);
@@ -270,4 +298,220 @@ fn stores_without_revision_support_rebuild_instead_of_reusing_unproved_music() {
     apply_library_read(&mut store, &[song(2)]).unwrap();
     state.refresh(&store, None, 3).unwrap();
     assert_eq!(state.pool.works()[0].composer, "Artist 2");
+}
+
+#[test]
+fn starting_and_checking_another_room_reuses_music_but_rereads_feedback() {
+    use super::super::SpotifyDj;
+    use fsonos_api::dj::{DjEngine, DjSpeakers};
+    use fsonos_api::plan::DjAction;
+    use fsonos_core::HouseholdState;
+    use fsonos_core::clock::{Clock, FakeClock};
+    use fsonos_proto::topology::get_zone_group_state;
+    use fsonos_sim::{SimHousehold, SimModel, SimPlayerSpec};
+    use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
+    use fsonos_types::PlayerId;
+
+    for s1 in [true, false] {
+        let builder = SimHousehold::builder();
+        let sim = if s1 {
+            builder.s1([
+                SimPlayerSpec::new("Den", SimModel::Play5Gen1),
+                SimPlayerSpec::new("Study", SimModel::Play5Gen1),
+            ])
+        } else {
+            builder.s2([
+                SimPlayerSpec::new("Den", SimModel::One),
+                SimPlayerSpec::new("Study", SimModel::One),
+            ])
+        }
+        .spawn()
+        .unwrap();
+        let lan = sim.lan();
+        let mut household = HouseholdState::default();
+        household.apply_topology(
+            &get_zone_group_state(&lan, sim.player("Den").unwrap().ip).unwrap(),
+        );
+        let households = vec![household];
+        let first = PlayerId(sim.player("Den").unwrap().uuid.clone());
+        let second = PlayerId(sim.player("Study").unwrap().uuid.clone());
+        let first_at = DjSpeakers {
+            transport: &lan,
+            households: &households,
+            coordinator: &first,
+        };
+        let second_at = DjSpeakers {
+            coordinator: &second,
+            ..first_at
+        };
+        let clock = FakeClock::new(
+            chrono::DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z").unwrap(),
+        );
+        let dj = SpotifyDj::new(None);
+        let (mut store, _) = fixture();
+        apply_library_read(&mut store, &(1..=12).map(song).collect::<Vec<_>>()).unwrap();
+        dj.act(first_at, &mut store, DjAction::Start, &clock)
+            .unwrap();
+        let first_feed = dj.state().feeds[&first].snapshot();
+        let reads = store.library_reads.get();
+        let feedback_reads = store.feedback_reads.get();
+        store
+            .record_feedback(&Feedback {
+                at: clock.now().timestamp(),
+                artist_key: Some("artist 1".into()),
+                signal: 1,
+                ..Feedback::default()
+            })
+            .unwrap();
+
+        dj.start_ready(second_at, &store, None, &clock)
+            .unwrap();
+        assert_eq!(store.library_reads.get(), reads);
+        assert!(store.feedback_reads.get() > feedback_reads);
+        assert_eq!(dj.state().feeds[&first].snapshot(), first_feed);
+        assert!(!dj.feeds(&second), "a readiness read cannot start a feed");
+
+        let feedback_reads = store.feedback_reads.get();
+        dj.act(second_at, &mut store, DjAction::Start, &clock)
+            .unwrap();
+        assert_eq!(
+            store.library_reads.get(),
+            reads,
+            "another room must not scan and regroup the entire library"
+        );
+        assert!(store.feedback_reads.get() > feedback_reads);
+        assert_eq!(
+            dj.state().feedback,
+            FeedbackModel::load(&StoreFeedback(&store), clock.now().timestamp()).ok()
+        );
+        assert_eq!(dj.state().feeds[&first].snapshot(), first_feed);
+        assert!(dj.feeds(&first) && dj.feeds(&second));
+
+        // Receipt changes from an independent importer defeat both reuse paths.
+        apply_library_read(&mut store, &[song(20), song(21)]).unwrap();
+        dj.start_ready(second_at, &store, None, &clock)
+            .unwrap();
+        assert!(store.library_reads.get() > reads);
+        assert_eq!(dj.state().pool.len(), 12, "readiness cannot publish a plan");
+        dj.act(second_at, &mut store, DjAction::Start, &clock)
+            .unwrap();
+        assert_eq!(dj.state().pool.len(), 2);
+        assert!(dj.state().pool.work_of(&song(20).source_uri).is_some());
+        assert_eq!(dj.state().feeds[&first].snapshot(), first_feed);
+    }
+}
+
+#[test]
+fn readiness_reuse_requires_readable_current_catalog_and_configuration() {
+    let (store, state) = fixture();
+    assert!(state.plan_is_current(&store, None).unwrap());
+    store.fail_receipt.set(true);
+    assert!(state.plan_is_current(&store, None).is_err());
+    store.fail_receipt.set(false);
+    store.revision_supported.set(false);
+    assert!(!state.plan_is_current(&store, None).unwrap());
+    store.revision_supported.set(true);
+
+    let dir = tempfile::tempdir().unwrap();
+    let moods = dir.path().join("moods.toml");
+    let mut state = State::default();
+    state.reload(&store, Some(&moods), 0).unwrap();
+    assert!(state.plan_is_current(&store, Some(&moods)).unwrap());
+    std::fs::write(moods.with_file_name("preferences.toml"), "energy = 20\n").unwrap();
+    assert!(!state.plan_is_current(&store, Some(&moods)).unwrap());
+    state.refresh(&store, Some(&moods), 1).unwrap();
+    assert_eq!(state.pool.preferences().energy, Some(20));
+    assert!(state.plan_is_current(&store, Some(&moods)).unwrap());
+    std::fs::write(&moods, "[moods.fixture]\ninclude_genres = ['jazz']\n").unwrap();
+    assert!(!state.plan_is_current(&store, Some(&moods)).unwrap());
+}
+
+#[test]
+fn unreadable_configuration_cannot_reuse_a_plan_built_from_absent_files() {
+    let (store, _) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let moods = dir.path().join("moods.toml");
+    let mut state = State::default();
+    state.reload(&store, Some(&moods), 0).unwrap();
+    // A directory produces a deterministic read error, including when tests
+    // run as root and chmod would not make a file unreadable.
+    std::fs::create_dir(moods.with_file_name("preferences.toml")).unwrap();
+    assert!(!state.plan_is_current(&store, Some(&moods)).unwrap());
+    assert!(state.refresh(&store, Some(&moods), 1).is_err());
+    assert!(!state.planned);
+}
+
+#[test]
+fn configuration_edits_during_pool_construction_cannot_publish_a_mismatched_fingerprint() {
+    let (store, _) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let moods = dir.path().join("moods.toml");
+    let preferences = moods.with_file_name("preferences.toml");
+    let mut state = State::default();
+    *store.configuration_edit.borrow_mut() = Some((preferences, "energy = 20\n".into()));
+    let failure = state.reload(&store, Some(&moods), 0).unwrap_err();
+    assert_eq!(failure.code, fsonos_api::ErrorCode::NotReady);
+    assert!(!state.planned);
+    assert!(state.pool.is_empty());
+    assert!(state.plan_inputs.is_none());
+
+    state.refresh(&store, Some(&moods), 1).unwrap();
+    assert_eq!(state.pool.preferences().energy, Some(20));
+    assert!(state.plan_is_current(&store, Some(&moods)).unwrap());
+}
+
+#[test]
+fn direction_readiness_needs_configuration_but_never_scans_the_library() {
+    use super::super::SpotifyDj;
+    use fsonos_api::ErrorCode;
+    use fsonos_api::dj::{DjEngine, DjSpeakers, DjSteer, SteerConstraints};
+    use fsonos_core::clock::FakeClock;
+    use fsonos_proto::{ProtoError, Transport};
+    use fsonos_types::PlayerId;
+
+    struct NoSpeakerIo;
+    impl Transport for NoSpeakerIo {
+        fn soap_post(
+            &self,
+            _host: std::net::IpAddr,
+            _path: &str,
+            _action: &str,
+            _body: &str,
+        ) -> Result<String, ProtoError> {
+            panic!("direction validation must not contact speakers")
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let moods = dir.path().join("moods.toml");
+    let dj = SpotifyDj::new(Some(moods.clone()));
+    let (store, _) = fixture();
+    store.fail_library.set(true);
+    let reads = store.library_reads.get();
+    let transport = NoSpeakerIo;
+    let coordinator = PlayerId("synthetic-direction-room".into());
+    let at = DjSpeakers {
+        transport: &transport,
+        households: &[],
+        coordinator: &coordinator,
+    };
+    let clock = FakeClock::new(
+        chrono::DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z").unwrap(),
+    );
+    let direction = DjSteer::Set {
+        mood: Some("focus".into()),
+        constraints: SteerConstraints::default(),
+        for_secs: Some(600),
+    };
+    dj.steer_ready(at, &store, &direction, &clock).unwrap();
+    assert_eq!(store.library_reads.get(), reads);
+    assert!(store.dj_sessions().unwrap().is_empty());
+    assert!(!dj.state().planned);
+
+    std::fs::write(moods.with_file_name("preferences.toml"), "energy = 'invalid'\n")
+        .unwrap();
+    assert_eq!(
+        dj.steer_ready(at, &store, &direction, &clock).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
+    assert_eq!(store.library_reads.get(), reads);
 }

@@ -5,9 +5,9 @@
 //! and the owner's feedback, queues the first works and plays them. The pool
 //! is kept while its account and catalog revision remain current. Publications
 //! from another process and account adoption invalidate it before the next
-//! selection, including when the rest of a library sync fails. Each start
-//! rebuilds it; a skip also rebuilds after preferences.toml or moods.toml
-//! changes (a full library read can take seconds for a large library).
+//! selection, including when the rest of a library sync fails. Starts and
+//! skips reuse it while its receipt and configuration remain current (a
+//! full library read can take seconds for a large library).
 //! Automatic feeding checks those files at most once every 30 seconds,
 //! so external edits apply to future picks without a restart or skip.
 //!
@@ -302,6 +302,7 @@ impl State {
         moods_file: Option<&PathBuf>,
         now: i64,
     ) -> Result<Self, Failure> {
+        let inputs = plan_inputs(moods_file);
         let catalog = catalog::Receipt::read(store)?;
         let mut next = Self {
             pool: works_from_store(store)
@@ -313,7 +314,11 @@ impl State {
         };
         prefs::apply(&mut next, moods_file)?;
         catalog.confirm(store)?;
+        if inputs != plan_inputs(moods_file) {
+            return Err(configuration_changed());
+        }
         next.catalog = Some(catalog);
+        next.plan_inputs = Some(inputs);
         Ok(next)
     }
 
@@ -325,7 +330,6 @@ impl State {
         moods_file: Option<&PathBuf>,
         now: i64,
     ) -> Result<(), Failure> {
-        let inputs = plan_inputs(moods_file);
         let candidate = self
             .check_catalog(store)
             .and_then(|()| Self::read_plan(store, moods_file, now));
@@ -337,7 +341,7 @@ impl State {
                 self.feedback = next.feedback;
                 self.moods = next.moods;
                 self.planned = true;
-                self.plan_inputs = Some(inputs);
+                self.plan_inputs = next.plan_inputs;
                 self.plan_retry_at = None;
                 self.refill_retries.clear();
                 Ok(())
@@ -359,7 +363,6 @@ impl State {
     /// or preferences.toml. Otherwise it is kept and only the feedback, which
     /// moves with every listen, is read again. A rebuild reads the whole
     /// library cache under the DJ's lock: seconds, for a large library.
-    /// A start always rebuilds.
     fn refresh(
         &mut self,
         store: &dyn Store,
@@ -370,8 +373,13 @@ impl State {
         if self.planned && self.plan_inputs == Some(plan_inputs(moods_file)) {
             // Feedback only weights the picks; without it the DJ still plays.
             self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
-            self.plan_check_at = Some(Instant::now() + PLAN_CHECK);
-            return Ok(());
+            // A publication can race the feedback read just as it can a full
+            // rebuild. Reuse needs the same ending catalog confirmation.
+            self.check_catalog(store)?;
+            if self.planned && self.plan_inputs == Some(plan_inputs(moods_file)) {
+                self.plan_check_at = Some(Instant::now() + PLAN_CHECK);
+                return Ok(());
+            }
         }
         self.reload(store, moods_file, now)
     }
@@ -439,14 +447,22 @@ fn read_moods(moods_file: Option<&PathBuf>) -> Result<Moods, Failure> {
 }
 
 /// A hash of what the plan is built from beyond the library cache:
-/// moods.toml and preferences.toml as they read now (an absent file hashes
-/// as absent).
+/// moods.toml and preferences.toml as they read now. Read failures are distinct
+/// from absence, so an unreadable new configuration cannot reuse defaults.
 fn plan_inputs(moods_file: Option<&PathBuf>) -> u64 {
     let mut hasher = DefaultHasher::new();
     for path in [moods_file.cloned(), prefs::file(moods_file)] {
-        path.and_then(|p| std::fs::read(p).ok()).hash(&mut hasher);
+        path.map(|p| std::fs::read(p).map_err(|error| error.kind()))
+            .hash(&mut hasher);
     }
     hasher.finish()
+}
+
+fn configuration_changed() -> Failure {
+    Failure::new(
+        ErrorCode::NotReady,
+        "the DJ's moods or preferences changed while its selection plan was being read; retry with the current configuration",
+    )
 }
 
 fn plan<'a>(
@@ -818,10 +834,10 @@ impl SpotifyDj {
         let now = clock.now().timestamp();
         match action {
             DjAction::Start => {
-                // Always: a library written by another process (`fsonos
-                // setup`) raises no notice here.
+                // Receipt checks also see publications from another process.
+                // Starting another room need not rebuild the entire library.
                 self.take_library_fresh(state);
-                state.reload(store, self.moods_file.as_ref(), now)?;
+                state.refresh(store, self.moods_file.as_ref(), now)?;
                 let cx = state.context(store, at.coordinator, clock)?;
                 let State {
                     feeds,

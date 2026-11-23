@@ -3,11 +3,13 @@
 
 use super::{
     Context, DjConfig, DjSession, DjSpeakers, DjSteer, Failure, QueueFeed, SpotifyDj, State,
-    directed_session, failure, plan, queued_elsewhere, speakers, steer_failure,
+    configuration_changed, directed_session, failure, plan, plan_inputs, prefs, queued_elsewhere,
+    read_moods, speakers, steer_failure,
 };
 use chrono::{Datelike, Timelike};
 use fsonos_core::clock::Clock;
 use fsonos_core::store::Store;
+use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
 use fsonos_types::PlayerId;
 
 pub(super) fn direction(
@@ -25,7 +27,13 @@ pub(super) fn direction(
             .map_err(super::store_failure)?;
         return Ok(());
     }
-    let candidate = State::read_plan(store, dj.moods_file.as_ref(), clock.now().timestamp())?;
+    // Validating a direction only needs the owner's configuration, not every
+    // track in the library. This also works before the first library sync.
+    let mut candidate = State {
+        moods: read_moods(dj.moods_file.as_ref())?,
+        ..State::default()
+    };
+    prefs::apply(&mut candidate, dj.moods_file.as_ref())?;
     context(&candidate, store, at.coordinator, Some(steer), clock).map(|_| ())
 }
 
@@ -36,9 +44,36 @@ pub(super) fn check(
     steer: Option<&DjSteer>,
     clock: &dyn Clock,
 ) -> Result<(), Failure> {
+    {
+        let state = dj.state();
+        if state.plan_is_current(store, dj.moods_file.as_ref())? {
+            return check_plan(&state, &state, dj, at, store, steer, clock);
+        }
+    }
     let candidate = State::read_plan(store, dj.moods_file.as_ref(), clock.now().timestamp())?;
-    let context = context(&candidate, store, at.coordinator, steer, clock)?;
     let state = dj.state();
+    check_plan(&candidate, &state, dj, at, store, steer, clock)
+}
+
+fn check_plan(
+    candidate: &State,
+    state: &State,
+    dj: &SpotifyDj,
+    at: DjSpeakers<'_>,
+    store: &dyn Store,
+    steer: Option<&DjSteer>,
+    clock: &dyn Clock,
+) -> Result<(), Failure> {
+    let context = context(candidate, store, at.coordinator, steer, clock)?;
+    // Feedback and listening change without changing the catalog receipt.
+    // Refresh the former here; start_ready reads current history itself.
+    let feedback = FeedbackModel::load(&StoreFeedback(store), context.now).ok();
+    if let Some(receipt) = &candidate.catalog {
+        receipt.confirm(store)?;
+    }
+    if candidate.plan_inputs != Some(plan_inputs(dj.moods_file.as_ref())) {
+        return Err(configuration_changed());
+    }
     let elsewhere = queued_elsewhere(&state.feeds, at.coordinator, context.now);
     let fresh = QueueFeed::new(
         at.coordinator,
@@ -50,7 +85,7 @@ pub(super) fn check(
         &speakers(at),
         plan(
             &candidate.pool,
-            candidate.feedback.as_ref(),
+            feedback.as_ref(),
             &context,
             &elsewhere,
         ),

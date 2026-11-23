@@ -45,6 +45,23 @@ impl Receipt {
 }
 
 impl State {
+    /// Read-only readiness may borrow the live pool only while both its
+    /// catalog proof and configuration still match. It must not retire or
+    /// publish a live plan, consume a sync notice, or alter a feed's RNG.
+    pub(super) fn plan_is_current(
+        &self,
+        store: &dyn Store,
+        moods_file: Option<&std::path::PathBuf>,
+    ) -> Result<bool, Failure> {
+        if !self.planned || self.plan_inputs != Some(super::plan_inputs(moods_file)) {
+            return Ok(false);
+        }
+        let Some(previous) = &self.catalog else {
+            return Ok(false);
+        };
+        Ok(previous.permits_reuse(&Receipt::read(store)?))
+    }
+
     /// Ordinary listening/feedback writes do not change this receipt. When
     /// catalog evidence changes or cannot be read, a failed rebuild must never
     /// fall back to the previous account's or retired music. Existing queued

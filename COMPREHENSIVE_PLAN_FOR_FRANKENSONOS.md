@@ -713,6 +713,13 @@ their standing preferences on every surface and in the daemon. What is on
   from the retired account. Existing queued works remain intact. Unchanged
   receipts reuse the pool without rereading the full library, and ordinary
   listening and feedback do not invalidate that receipt.
+  Explicit starts and read-only readiness now reuse that current live pool too,
+  while rereading feedback and retaining per-group history and queue checks.
+  Direction-only validation reads configuration without scanning the library.
+  Catalog checks and configuration fingerprints bracket reused or rebuilt plans,
+  so observed account changes, edits during construction and unreadable files
+  cannot publish a mismatched candidate. Cold readiness without a live plan
+  still builds independently; the optimization targets the warmed daemon.
 - A full-read attempt also returns a compact account-bound progress report:
   retained pages and track rows, rechecked pages, and reading/verifying/ready
   phase. The daemon persists this report with admission, retry deadlines and
