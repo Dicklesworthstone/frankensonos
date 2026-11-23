@@ -530,6 +530,8 @@ const DashboardSource = (() => {
       for (const id of ['source-catalog-query', 'source-catalog-kind']) $(id).disabled = !catalogReady;
       $('source-catalog-search').disabled = !catalogReady || s.catalog.status === 'loading';
       $('source-catalog-cancel').hidden = s.catalog.status !== 'loading';
+      $('source-catalog-previous').disabled = !catalogReady || s.catalog.status !== 'ready' || !s.catalog.previousOffsets.length;
+      $('source-catalog-next').disabled = !catalogReady || s.catalog.status !== 'ready' || s.catalog.nextOffset === null;
       $('source-catalog-message').textContent = s.catalog.message;
       $('source-online').setAttribute('aria-busy', String(s.catalog.status === 'loading'));
       if (shownCatalog !== s.catalog.items || shownCatalogReady !== catalogReady) {
@@ -667,6 +669,8 @@ const DashboardSource = (() => {
     $('source-catalog-kind').addEventListener('change', event => control.catalog.edit('kind', event.target.value));
     $('source-catalog-form').addEventListener('submit', event => { event.preventDefault(); void control.catalog.search(); });
     $('source-catalog-cancel').addEventListener('click', () => control.catalog.cancel());
+    $('source-catalog-previous').addEventListener('click', () => { void control.catalog.previous(); });
+    $('source-catalog-next').addEventListener('click', () => { void control.catalog.next(); });
     $('source-playlist').addEventListener('change', event => control.edit('playlist', event.target.value));
     $('source-playlist-refresh').addEventListener('click', () => { void control.loadPlaylists(); });
     $('source-line-in').addEventListener('change', event => control.edit('lineIn', event.target.value));

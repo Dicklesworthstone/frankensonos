@@ -11,6 +11,14 @@ send requests. Select a result to put its canonical source into the link draft,
 then review the target group and **Play now**, **Play next**, or **Add to queue**.
 Selecting a result alone never writes to a speaker.
 
+Use **Next results** and **Previous results** in either browser selector to read
+another page. Paging keeps the same query and category and retires prior result
+buttons while the read is pending. Empty pages can still offer a next page when
+Spotify returned unavailable entries. Backward navigation rereads the provider;
+it does not restore stale selection authority. Editing the query or category,
+changing the destination, cancelling or closing retires paging and late replies.
+There is no automatic catalog crawl or background paging.
+
 ### Native iPhone and Mac app
 
 Open **Spotify online** in the **Music** library panel. Choose one of the same six categories,
@@ -146,17 +154,22 @@ cargo test -p fsonos-cli spotify_sources
 cargo test -p fsonos-cli --test e2e_spotify_search
 ~~~
 
-Validation during implementation: 247 source-controller, queue, browser-request
-and recovery tests passed under Node, including all 49 new catalog controller
-cases and regression coverage for slow search responses, cancellation and the
-60-second browser deadline. The pinned workspace formatting check passed.
+Focused browser command:
 
-The Rust commands above remain verification targets, not a claim that Rust tests
-passed. Both local Cargo-check attempts were killed while compiling dependencies;
-the recovered attempt stopped in asupersync 0.5.0 before project typechecking.
-No physical-speaker or live Spotify acceptance is claimed by the browser tests.
+~~~bash
+node --test scripts/test-remote-source-player.cjs scripts/test-dashboard-source.cjs
+~~~
 
-Pagination regression sources additionally cover filtered/duplicate raw positions,
-empty filtered pages with continuation, the provider offset bound, later-page
-counter mismatches, HTTP and CLI parameter validation, and MCP forwarding that
-refuses a stale first-page reply. These cases exercise the provider, API, CLI and MCP continuation boundaries.
+Pagination regressions cover filtered and duplicate raw positions, empty filtered
+pages with continuation, the provider offset bound, later-page counter mismatches,
+HTTP and CLI parameter validation, and MCP forwarding that refuses a stale
+first-page reply.
+
+The browser tests cover explicit next/previous navigation, legacy first-page
+replies, query and kind changes, cancellation, stale item selection, and bounded
+raw progress. Phone and dashboard DOM-fixture tests exercise their actual paging
+buttons and verify that browsing pages only reads catalog data, without preparing
+a playback action or sending speaker writes.
+
+These fixture-based checks do not establish live Spotify or physical-speaker
+acceptance. Native Apple catalog search retains its existing first-page workflow.

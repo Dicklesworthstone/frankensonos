@@ -18,7 +18,7 @@ const SourcePlayerRemote = (() => {
   const MAX_BYTES = 2048, MAX_TITLE = 256, MAX_PLAYLIST_TRACKS = 10;
   const catalogKinds = Object.freeze({ track: 'Tracks', album: 'Albums', artist: 'Artists',
     playlist: 'Playlists', show: 'Podcast shows', episode: 'Episodes' });
-  const CATALOG_LIMIT = 10, MAX_QUERY_BYTES = 256;
+  const CATALOG_LIMIT = 10, MAX_QUERY_BYTES = 256, MAX_CATALOG_OFFSET = 1000;
   const text = (v) => typeof v === 'string' && v.trim() !== '';
   const problem = (e) => [e?.message || 'The request failed.', e?.hint].filter(Boolean).join(' ');
 
@@ -97,6 +97,12 @@ const SourcePlayerRemote = (() => {
     const fail = () => { throw new Error('The Spotify catalog reply is incomplete. Search again before choosing a source.'); };
     if (!value || value.query !== query.q || value.kind !== query.kind || typeof value.more !== 'boolean'
         || !Array.isArray(value.items) || value.items.length > query.limit) fail();
+    const offset = value.offset === undefined ? 0 : value.offset, expectedOffset = query.offset ?? 0;
+    const nextOffset = value.next_offset ?? null;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAX_CATALOG_OFFSET || offset !== expectedOffset
+        || (nextOffset !== null && (!Number.isSafeInteger(nextOffset) || !value.more
+          || nextOffset <= offset || nextOffset > MAX_CATALOG_OFFSET
+          || nextOffset > offset + query.limit || nextOffset - offset < value.items.length))) fail();
     const validText = v => typeof v === 'string' && new TextEncoder().encode(v).length <= 4096 && !/[\p{Cc}]/u.test(v);
     const seen = new Set();
     const items = value.items.map(item => {
@@ -107,34 +113,40 @@ const SourcePlayerRemote = (() => {
       seen.add(parsed.uri);
       return Object.freeze({ source_uri: parsed.uri, title: item.title, subtitle: item.subtitle || '' });
     });
-    return Object.freeze({ query: query.q, kind: query.kind, items: Object.freeze(items), more: value.more });
+    return Object.freeze({ query: query.q, kind: query.kind, items: Object.freeze(items), more: value.more,
+      offset, nextOffset });
   }
 
   // Both surfaces use the same read-only search lane. Editing, changing rooms
   // or closing retires an outstanding read even if the provider ignores abort.
   function catalogModel({ call, available, changed = () => {} }) {
-    let version = 0, reading = null;
-    const state = { query: '', kind: 'track', status: 'idle', items: [], more: false, message: '' };
+    let version = 0, reading = null, observedQuery = null;
+    const state = { query: '', kind: 'track', status: 'idle', items: [], more: false, message: '',
+      offset: 0, nextOffset: null, previousOffsets: [] };
     function retire() {
-      ++version; reading?.abort(); reading = null;
+      ++version; reading?.abort(); reading = null; observedQuery = null;
       state.status = 'idle'; state.items = []; state.more = false; state.message = '';
+      state.offset = 0; state.nextOffset = null; state.previousOffsets = [];
     }
-    async function search() {
-      if (!available()) return false;
+    async function readPage(query, offset, previousOffsets) {
       retire();
-      let query;
-      try { query = catalogQuery(state.query, state.kind); }
-      catch (error) { state.status = 'error'; state.message = problem(error); changed(); return false; }
+      const request = offset === 0 ? query : Object.freeze({ ...query, offset });
       const v = version, abort = new AbortController();
       reading = abort; state.status = 'loading'; state.message = 'Searching the Spotify catalog…'; changed();
       const current = () => v === version && !abort.signal.aborted && available();
       try {
-        const value = await call(query, { signal: abort.signal });
         if (!current()) return false;
-        const page = catalogPage(value, query);
+        const value = await call(request, { signal: abort.signal });
+        if (!current()) return false;
+        const page = catalogPage(value, request);
+        observedQuery = query;
         state.items = page.items; state.more = page.more; state.status = 'ready';
-        state.message = !page.items.length ? 'No matching Spotify results. Try another search or category.'
-          : `${page.items.length} Spotify result(s). Choose a source, then review its destination and action.${page.more ? ' More matches are available; refine your search.' : ''}`;
+        state.offset = page.offset; state.nextOffset = page.nextOffset; state.previousOffsets = previousOffsets;
+        const summary = !page.items.length ? 'No matching Spotify results on this page.'
+          : `${page.items.length} Spotify result(s). Choose a source, then review its destination and action.`;
+        state.message = `${summary} Search offset ${page.offset}.${page.nextOffset !== null
+          ? ' Read the next page for more matches.' : page.more ? ' No further page is available; refine your search.'
+            : ' End of the current results.'}`;
         return true;
       } catch (error) {
         if (current()) { state.status = 'error'; state.message = problem(error); }
@@ -147,7 +159,24 @@ const SourcePlayerRemote = (() => {
         }
       }
     }
-    return { state, search, retire,
+    async function search() {
+      if (!available()) return false;
+      let query;
+      try { query = catalogQuery(state.query, state.kind); }
+      catch (error) { retire(); state.status = 'error'; state.message = problem(error); changed(); return false; }
+      return readPage(query, 0, []);
+    }
+    const pageable = () => available() && state.status === 'ready' && observedQuery !== null
+      && observedQuery.q === state.query.trim() && observedQuery.kind === state.kind;
+    function next() {
+      if (!pageable() || state.nextOffset === null) return Promise.resolve(false);
+      return readPage(observedQuery, state.nextOffset, [...state.previousOffsets, state.offset]);
+    }
+    function previous() {
+      if (!pageable() || !state.previousOffsets.length) return Promise.resolve(false);
+      return readPage(observedQuery, state.previousOffsets.at(-1), state.previousOffsets.slice(0, -1));
+    }
+    return { state, search, next, previous, retire,
       edit(field, value) {
         if (!available() || !['query', 'kind'].includes(field) || typeof value !== 'string'
             || (field === 'kind' && !Object.hasOwn(catalogKinds, value))) return false;
@@ -1507,12 +1536,15 @@ const SourcePlayerRemote = (() => {
     const catalogCancel = el('button', { type: 'button', text: 'Cancel search', hidden: true });
     const catalogMessage = el('p', { class: 'source-help', role: 'status', 'aria-live': 'polite' });
     const catalogList = el('ol', { class: 'source-online-results', 'aria-label': 'Spotify catalog results' });
+    const catalogPrevious = el('button', { type: 'button', text: 'Previous results', disabled: true });
+    const catalogNext = el('button', { type: 'button', text: 'Next results', disabled: true });
+    const catalogPaging = el('div', { class: 'row', 'aria-label': 'Spotify result pages' }, catalogPrevious, catalogNext);
     const catalogForm = el('form', { class: 'source-online-form' },
       el('label', {}, 'Spotify catalog search ', catalogInput), el('label', {}, 'Category ', catalogKind),
       el('div', { class: 'row' }, catalogSearch, catalogCancel));
     const catalogFields = el('section', { class: 'source-online', hidden: true, 'aria-label': 'Spotify catalog search' },
       el('p', { class: 'source-help', text: 'Search Spotify online using the owner’s connected account. Your cached library and saved Sonos playlists are separate. Choosing a result prepares a source for review.' }),
-      catalogForm, catalogMessage, catalogList);
+      catalogForm, catalogMessage, catalogList, catalogPaging);
     const playlist = el('select', { 'aria-label': 'Saved Sonos playlist' });
     const refreshPlaylists = el('button', { type: 'button', text: 'Refresh playlists' });
     const playlistHelp = el('p', { class: 'source-help', role: 'status' });
@@ -1589,6 +1621,8 @@ const SourcePlayerRemote = (() => {
       catalogInput.disabled = busy; catalogKind.disabled = busy;
       catalogSearch.disabled = busy || state.catalog.status === 'loading';
       catalogCancel.hidden = state.catalog.status !== 'loading';
+      catalogPrevious.disabled = busy || state.catalog.status !== 'ready' || !state.catalog.previousOffsets.length;
+      catalogNext.disabled = busy || state.catalog.status !== 'ready' || state.catalog.nextOffset === null;
       catalogMessage.textContent = state.catalog.message;
       catalogFields.setAttribute('aria-busy', String(state.catalog.status === 'loading'));
       if (shownCatalog !== state.catalog.items || shownCatalogBusy !== busy) {
@@ -1732,6 +1766,8 @@ const SourcePlayerRemote = (() => {
     catalogKind.addEventListener('change', () => control.catalog.edit('kind', catalogKind.value));
     catalogForm.addEventListener('submit', event => { event.preventDefault(); void control.catalog.search(); });
     catalogCancel.addEventListener('click', () => control.catalog.cancel());
+    catalogPrevious.addEventListener('click', () => { void control.catalog.previous(); });
+    catalogNext.addEventListener('click', () => { void control.catalog.next(); });
     playlist.addEventListener('change', () => control.edit('playlist', playlist.value));
     refreshPlaylists.addEventListener('click', () => { void control.loadPlaylists(); });
     lineIn.addEventListener('change', () => control.edit('lineIn', lineIn.value));
@@ -1799,7 +1835,7 @@ const SourcePlayerRemote = (() => {
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
     preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,
     commandBody, offeredSource, groups, playback, queue, queued, outcome, model, panel, routes, modes, MAX_BYTES, MAX_TITLE,
-    catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, CATALOG_LIMIT, MAX_QUERY_BYTES };
+    catalogKinds, catalogQuery, catalogPage, catalogModel, renderCatalog, CATALOG_LIMIT, MAX_QUERY_BYTES, MAX_CATALOG_OFFSET };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SourcePlayerRemote;

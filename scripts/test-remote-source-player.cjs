@@ -594,3 +594,146 @@ test('phone catalog malformed replies do not expose an old result or source choi
   assert.deepEqual(h.api.state.catalog.items, []); assert.equal(h.api.chooseCatalog(items[0], items), false);
   assert.equal(h.writes().length, 0);
 });
+
+function catalogPagingFixture() {
+  const calls = [];
+  let receive = query => ({
+    query: query.q, kind: query.kind, offset: query.offset ?? 0,
+    items: [{ source_uri: `spotify:${query.kind}:${ID}`, title: `At ${query.offset ?? 0}` }],
+    more: (query.offset ?? 0) < 7, next_offset: (query.offset ?? 0) === 0 ? 3 : (query.offset ?? 0) === 3 ? 7 : null,
+  });
+  const model = Player.catalogModel({ available: () => true, call: async (query, options) => {
+    calls.push({ query, signal: options.signal }); return receive(query);
+  } });
+  model.edit('query', '  Artist & friends  '); model.edit('kind', 'album');
+  return { model, calls, receive(fn) { receive = fn; } };
+}
+
+test('catalog pagination uses raw next offsets and rereads previous pages with the exact query', async () => {
+  const f = catalogPagingFixture(), m = f.model;
+  assert.equal(await m.search(), true);
+  const first = m.state.items;
+  assert.equal(await m.next(), true); assert.equal(m.state.offset, 3);
+  assert.equal(m.select(first[0], first), null);
+  assert.equal(await m.next(), true); assert.equal(m.state.offset, 7);
+  assert.equal(await m.next(), false);
+  assert.equal(await m.previous(), true); assert.equal(m.state.offset, 3);
+  assert.equal(await m.previous(), true); assert.equal(m.state.offset, 0);
+  assert.equal(await m.previous(), false);
+  assert.deepEqual(f.calls.map(({ query }) => query), [
+    { q: 'Artist & friends', kind: 'album', limit: 10 },
+    { q: 'Artist & friends', kind: 'album', limit: 10, offset: 3 },
+    { q: 'Artist & friends', kind: 'album', limit: 10, offset: 7 },
+    { q: 'Artist & friends', kind: 'album', limit: 10, offset: 3 },
+    { q: 'Artist & friends', kind: 'album', limit: 10 },
+  ]);
+});
+
+test('catalog pagination advances through an entirely filtered page without inventing a count', async () => {
+  const f = catalogPagingFixture(), m = f.model;
+  f.receive(query => ({ query: query.q, kind: query.kind, offset: query.offset ?? 0,
+    items: [], more: true, next_offset: (query.offset ?? 0) === 0 ? 8 : 10 }));
+  assert.equal(await m.search(), true); assert.equal(m.state.items.length, 0);
+  assert.equal(m.state.nextOffset, 8);
+  assert.equal(await m.next(), true); assert.equal(f.calls.at(-1).query.offset, 8);
+});
+
+test('catalog pagination refuses malformed positions and nonadvancing continuations', () => {
+  const query = { ...Player.catalogQuery('Music', 'track'), offset: 7 };
+  const reply = { query: 'Music', kind: 'track', offset: 7, next_offset: 9, more: true,
+    items: [{ source_uri: `spotify:track:${ID}`, title: 'A result' }] };
+  assert.equal(Player.catalogPage(reply, query).nextOffset, 9);
+  for (const patch of [{ offset: 0 }, { offset: null }, { offset: '7' }, { offset: 7.5 },
+    { next_offset: 7 }, { next_offset: 0 }, { next_offset: 18 }, { next_offset: 1001 },
+    { next_offset: '9' }, { next_offset: 9.5 }, { more: false }]) {
+    assert.throws(() => Player.catalogPage({ ...reply, ...patch }, query), undefined, JSON.stringify(patch));
+  }
+});
+
+test('catalog pagination accepts the provider offset cap but cannot page beyond it', () => {
+  const query = { ...Player.catalogQuery('Music', 'track'), offset: 1000 };
+  const reply = { query: 'Music', kind: 'track', offset: 1000, next_offset: null, more: true, items: [] };
+  assert.equal(Player.catalogPage(reply, query).nextOffset, null);
+  assert.throws(() => Player.catalogPage({ ...reply, next_offset: 1001 }, query));
+});
+
+test('catalog pagination keeps legacy first pages readable without guessing continuation', async () => {
+  const f = catalogPagingFixture(), m = f.model;
+  f.receive(query => ({ query: query.q, kind: query.kind, items: [], more: true }));
+  assert.equal(await m.search(), true); assert.equal(m.state.nextOffset, null);
+  assert.equal(await m.next(), false); assert.equal(f.calls.length, 1);
+  assert.match(m.state.message, /refine/);
+});
+
+test('catalog pagination retires choices during reads and cannot submit a second page twice', async () => {
+  const f = catalogPagingFixture(), m = f.model;
+  await m.search(); const items = m.state.items, gate = defer();
+  f.receive(() => gate.promise);
+  const next = m.next();
+  assert.equal(m.select(items[0], items), null);
+  assert.equal(await m.next(), false); assert.equal(await m.previous(), false);
+  assert.equal(f.calls.length, 2);
+  gate.resolve({ query: 'Artist & friends', kind: 'album', offset: 3, next_offset: null, more: false,
+    items: [{ source_uri: `spotify:album:${ID}`, title: 'Later result' }] });
+  assert.equal(await next, true); assert.equal(m.state.offset, 3);
+});
+
+test('catalog pagination ignores late continuation after a query edit or cancellation', async () => {
+  for (const retire of [m => m.edit('query', 'Other'), m => m.edit('kind', 'show'), m => m.cancel(), m => m.retire()]) {
+    const f = catalogPagingFixture(), m = f.model; await m.search();
+    const gate = defer(); f.receive(() => gate.promise); const next = m.next();
+    retire(m); assert.equal(f.calls.at(-1).signal.aborted, true);
+    gate.resolve({ query: 'Artist & friends', kind: 'album', offset: 3, next_offset: 7, more: true, items: [] });
+    assert.equal(await next, false); assert.deepEqual(m.state.items, []);
+    assert.equal(await m.next(), false); assert.equal(await m.previous(), false);
+  }
+});
+
+test('catalog pagination refuses a stale first page or changed query on continuation', async () => {
+  for (const patch of [{ offset: 0 }, { query: 'Other music' }, { kind: 'track' }]) {
+    const f = catalogPagingFixture(), m = f.model; await m.search();
+    f.receive(query => ({ query: query.q, kind: query.kind, offset: query.offset,
+      items: [], more: false, next_offset: null, ...patch }));
+    assert.equal(await m.next(), false); assert.equal(m.state.status, 'error');
+    assert.deepEqual(m.state.items, []); assert.equal(f.calls.length, 2);
+  }
+});
+
+test('catalog pagination restarts at zero after explicit search or kind edits', async () => {
+  const f = catalogPagingFixture(), m = f.model;
+  await m.search(); await m.next(); assert.equal(m.state.offset, 3);
+  await m.search(); assert.equal(m.state.offset, 0); assert.equal(await m.previous(), false);
+  m.edit('kind', 'show'); await m.search();
+  assert.deepEqual(f.calls.at(-1).query, { q: 'Artist & friends', kind: 'show', limit: 10 });
+});
+
+test('catalog pagination requires enough raw progress for every displayed item', () => {
+  const query = Player.catalogQuery('Music', 'track');
+  const items = [ID, ID.slice(0, -1) + 'Z'].map(id => ({ source_uri: `spotify:track:${id}`, title: id }));
+  assert.throws(() => Player.catalogPage({ query: 'Music', kind: 'track', offset: 0,
+    next_offset: 1, more: true, items }, query));
+});
+
+test('phone catalog pagination buttons read pages without preparing or playing a source', async () => {
+  const calls = [];
+  const ui = panelFixture(async (name, args) => {
+    calls.push([name, args]);
+    if (name === 'zones') return [zone()];
+    if (name === 'sourceSpotifySearch') return { query: args.query.q, kind: args.query.kind,
+      offset: args.query.offset ?? 0, next_offset: args.query.offset ? null : 5, more: !args.query.offset,
+      items: [{ source_uri: `spotify:track:${ID}`, title: 'Page result' }] };
+    throw new Error('Paging must only read the catalog');
+  });
+  await ui.panel.refresh(); ui.panel.edit('sourceType', 'catalog');
+  const input = ui.field('Search the Spotify catalog'); input.value = 'Music'; input.emit('input');
+  descendants(ui.panel.node).find(n => n.tag === 'form').emit('submit'); await settle();
+  assert.equal(ui.find('Previous results').disabled, true); assert.equal(ui.find('Next results').disabled, false);
+  ui.find('Next results').emit('click'); await settle();
+  assert.equal(ui.panel.state.catalog.offset, 5); assert.equal(ui.find('Next results').disabled, true);
+  assert.equal(ui.find('Previous results').disabled, false);
+  ui.find('Previous results').emit('click'); await settle();
+  assert.equal(ui.panel.state.catalog.offset, 0);
+  assert.equal(ui.panel.state.pending, null); assert.equal(ui.panel.state.input, '');
+  assert.deepEqual(calls.filter(([name]) => name === 'sourceSpotifySearch').map(([, args]) => args.query.offset ?? 0), [0, 5, 0]);
+  ui.panel.dispose();
+});

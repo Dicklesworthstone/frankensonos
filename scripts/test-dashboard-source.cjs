@@ -518,3 +518,29 @@ test('dashboard catalog DOM submits once and treats provider metadata only as te
   assert.equal(f.source.state.sourceType,'link');assert.equal([...f.source.state.title].length,256);
   assert.equal(f.source.state.pending,null);assert.equal(f.writes().length,0);
 });
+
+test('dashboard catalog pagination buttons keep pages read-only until a source is chosen', async () => {
+  const f = await fixture({ dom: true }).ready(), $ = id => f.doc.getElementById(id);
+  f.read((url, options, read) => {
+    if (!url.startsWith('/spotify/search?')) return read(url);
+    const query = new URLSearchParams(url.split('?')[1]), offset = Number(query.get('offset') || 0);
+    return { query: query.get('q'), kind: query.get('kind'), offset,
+      next_offset: offset ? null : 4, more: !offset,
+      items: [{ source_uri: uri('track'), title: 'Found page ' + offset }] };
+  });
+  $('open-source').fire('click'); $('source-type').value = 'catalog'; $('source-type').fire('change');
+  $('source-catalog-query').value = 'Music & guests'; $('source-catalog-query').fire('input');
+  $('source-catalog-form').fire('submit'); await settled(() => f.source.state.catalog.status === 'ready');
+  assert.equal($('source-catalog-next').disabled, false); assert.equal($('source-catalog-previous').disabled, true);
+  $('source-catalog-next').fire('click'); await settled(() => f.source.state.catalog.offset === 4);
+  assert.equal($('source-catalog-next').disabled, true); assert.equal($('source-catalog-previous').disabled, false);
+  $('source-catalog-previous').fire('click'); await settled(() => f.source.state.catalog.offset === 0 && f.source.state.catalog.status === 'ready');
+  const paths = f.calls.filter(({ url }) => url.startsWith('/spotify/search?')).map(({ url }) => url);
+  assert.deepEqual(paths, [
+    '/spotify/search?q=Music+%26+guests&kind=track&limit=10',
+    '/spotify/search?q=Music+%26+guests&kind=track&limit=10&offset=4',
+    '/spotify/search?q=Music+%26+guests&kind=track&limit=10',
+  ]);
+  assert.equal(f.writes().length, 0); assert.equal(f.source.state.input, '');
+  assert.equal(f.source.state.pending, null);
+});
