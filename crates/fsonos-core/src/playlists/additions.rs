@@ -192,14 +192,38 @@ fn appended(
             .iter()
             .zip(&after.items)
             .all(|(expected, actual)| expected == actual)
-        && after.items.last().is_some_and(|actual| {
-            // A copy has a new saved occurrence id and parent, but retains
-            // all represented playback metadata and its exact native resource.
-            let mut expected = incoming.clone();
-            expected.id.clone_from(&actual.id);
-            expected.parent_id.clone_from(&before.playlist.id);
-            expected == *actual
-        })
+        && after
+            .items
+            .last()
+            .is_some_and(|actual| appended_track(incoming, actual, &before.playlist.id))
+}
+
+/// A newly rendered Spotify item has no catalog duration or artwork yet.
+/// Sonos can enrich those unknown fields when it saves the track. Retain every
+/// supplied value, the exact resource and account descriptor, while allowing
+/// only absent descriptive/resource fields to acquire observed values.
+fn appended_track(incoming: &DidlObject, actual: &DidlObject, parent: &str) -> bool {
+    let mut expected = incoming.clone();
+    expected.id.clone_from(&actual.id);
+    parent.clone_into(&mut expected.parent_id);
+    if expected.creator.is_none() {
+        expected.creator.clone_from(&actual.creator);
+    }
+    if expected.album.is_none() {
+        expected.album.clone_from(&actual.album);
+    }
+    if expected.album_art_uri.is_none() {
+        expected.album_art_uri.clone_from(&actual.album_art_uri);
+    }
+    if let (Some(resource), Some(observed)) = (&mut expected.res, &actual.res) {
+        if resource.protocol_info.is_none() {
+            resource.protocol_info.clone_from(&observed.protocol_info);
+        }
+        if resource.duration.is_none() {
+            resource.duration.clone_from(&observed.duration);
+        }
+    }
+    expected == *actual
 }
 
 fn after_progress(error: CoreError, confirmed: u32, requested: u32) -> CoreError {
@@ -216,4 +240,104 @@ fn uncertain(confirmed: u32, requested: u32, detail: impl std::fmt::Display) -> 
          an unconfirmed append may also have applied; inspect the original saved playlist before \
          another edit; no append was replayed"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fsonos_proto::didl::{DidlDesc, parse_didl};
+
+    fn track() -> DidlObject {
+        parse_didl(concat!(
+            "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" ",
+            "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">",
+            "<item id=\"source\" parentID=\"-1\" restricted=\"true\">",
+            "<dc:title>Selected track</dc:title>",
+            "<upnp:class>object.item.audioItem.musicTrack</upnp:class>",
+            "<res>https://example.invalid/selected.flac</res></item></DIDL-Lite>",
+        ))
+        .unwrap()
+        .remove(0)
+    }
+
+    fn enriched(source: &DidlObject) -> DidlObject {
+        let mut actual = source.clone();
+        actual.id = "SQ:7/4".into();
+        actual.parent_id = "SQ:7".into();
+        actual.creator = Some("Catalog artist".into());
+        actual.album = Some("Catalog album".into());
+        actual.album_art_uri = Some("https://example.invalid/art.jpg".into());
+        let resource = actual.res.as_mut().unwrap();
+        resource.protocol_info = Some("http-get:*:audio/flac:*".into());
+        resource.duration = Some("0:03:00".into());
+        actual
+    }
+
+    #[test]
+    fn a_saved_append_accepts_enrichment_of_unknown_metadata() {
+        let incoming = track();
+        let actual = enriched(&incoming);
+        assert!(appended_track(&incoming, &actual, "SQ:7"));
+        assert!(appended_track(&actual, &actual, "SQ:7"));
+        assert_eq!(incoming, track(), "confirmation does not alter its input");
+    }
+
+    #[test]
+    fn enrichment_never_replaces_supplied_metadata() {
+        let incoming = enriched(&track());
+        for field in 0..5 {
+            let mut actual = incoming.clone();
+            match field {
+                0 => actual.creator = Some("Different artist".into()),
+                1 => actual.album = Some("Different album".into()),
+                2 => actual.album_art_uri = Some("https://example.invalid/other.jpg".into()),
+                3 => {
+                    actual.res.as_mut().unwrap().protocol_info =
+                        Some("http-get:*:audio/mpeg:*".into());
+                }
+                _ => actual.res.as_mut().unwrap().duration = Some("0:04:00".into()),
+            }
+            assert!(!appended_track(&incoming, &actual, "SQ:7"), "field {field}");
+        }
+        let mut missing = incoming.clone();
+        missing.res.as_mut().unwrap().duration = None;
+        assert!(!appended_track(&incoming, &missing, "SQ:7"));
+    }
+
+    #[test]
+    fn enrichment_cannot_hide_a_changed_source_account_or_saved_parent() {
+        let incoming = track();
+        let actual = enriched(&incoming);
+        assert!(!appended_track(&incoming, &actual, "SQ:8"));
+        for field in 0..6 {
+            let mut changed = actual.clone();
+            match field {
+                0 => {
+                    changed.res.as_mut().unwrap().uri = "https://example.invalid/other.flac".into();
+                }
+                1 => changed.res = None,
+                2 => changed.title = "Different track".into(),
+                3 => changed.class = "object.item.audioItem.audioBroadcast".into(),
+                4 => changed.restricted = false,
+                _ => {
+                    changed.desc = Some(DidlDesc {
+                        id: "cdudn".into(),
+                        name_space: "urn:schemas-rinconnetworks-com:metadata-1-0/".into(),
+                        value: "different-service-account".into(),
+                    });
+                }
+            }
+            assert!(!appended_track(&incoming, &changed, "SQ:7"), "field {field}");
+        }
+        let mut supplied = incoming;
+        supplied.desc = Some(DidlDesc {
+            id: "cdudn".into(),
+            name_space: "urn:schemas-rinconnetworks-com:metadata-1-0/".into(),
+            value: "synthetic-service-account".into(),
+        });
+        assert!(!appended_track(&supplied, &actual, "SQ:7"));
+        let mut retained = actual;
+        retained.desc.clone_from(&supplied.desc);
+        assert!(appended_track(&supplied, &retained, "SQ:7"));
+    }
 }

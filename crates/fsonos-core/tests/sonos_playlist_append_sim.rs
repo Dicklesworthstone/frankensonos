@@ -665,9 +665,24 @@ fn explicit_spotify_tracks_and_episodes_compose_saved_playlists_without_touching
             let start = f.sim.soap_log().len();
             let result = f.append(&lan, &before.revision, &tracks).unwrap();
             let after = f.contents(DESTINATION);
-            let mut expected = before.items.clone();
-            expected.extend(retained(&tracks));
-            assert_eq!(normalized(&after.items), normalized(&expected));
+            assert_eq!(
+                &after.items[..before.items.len()],
+                before.items.as_slice(),
+                "the previously saved occurrences remain exact"
+            );
+            let additions = &after.items[before.items.len()..];
+            assert_eq!(additions.len(), tracks.len());
+            for (actual, supplied) in additions.iter().zip(retained(&tracks)) {
+                assert_eq!(actual.parent_id, DESTINATION);
+                assert_eq!(actual.title, supplied.title);
+                assert_eq!(actual.class, supplied.class);
+                assert_eq!(actual.desc, supplied.desc, "the service account is retained");
+                let resource = actual.res.as_ref().unwrap();
+                assert_eq!(resource.uri, supplied.res.as_ref().unwrap().uri);
+                assert!(resource.protocol_info.is_some(), "Sonos enriches the resource");
+                assert!(resource.duration.is_some(), "Sonos supplies its duration");
+                assert!(actual.album_art_uri.is_some(), "Sonos supplies catalog art");
+            }
             assert_eq!(result.playlist, before.playlist);
             assert_eq!(result.revision, after.revision);
             assert_eq!(result.total, before.total + 4);

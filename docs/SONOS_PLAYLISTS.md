@@ -496,6 +496,13 @@ renderer metadata from this household's own favorites. A Spotify Web API sign-in
 is unnecessary for these concrete sources, but the household needs its existing
 Sonos Spotify linkage and a favorite from which to learn the renderer.
 
+A speaker may fill in previously unknown artist, album, artwork, duration and
+resource-protocol metadata when saving a concrete selection. Append confirmation
+accepts those additions while still requiring every supplied field, the exact
+resource URI and service-account descriptor, the original saved prefix, and the
+expected new count and native revision. It does not treat changed supplied
+metadata or another saved parent as the requested addition.
+
 The `add_tracks_to_sonos_playlist` permission belongs to `house-config`.
 Playback permission is unnecessary: the operation leaves current queues,
 playback, volume, grouping and DJ ownership unchanged. The same complete
@@ -730,3 +737,9 @@ the runtime transport module, passes 127 protocol tests. The three exact-source
 simulator ordering tests also pass. These partial checks do not establish full
 daemon, storage or physical-speaker acceptance: the full workspace build was
 killed while compiling the existing `asupersync` dependency.
+
+The saved-append confirmation regressions distinguish newly enriched metadata
+from changed supplied values and retain exact source/account checks. The S1/S2
+explicit-selection case now checks the untouched prefix, ordered resources and
+new catalog metadata. The starting revision failed this workflow in macOS CI;
+execution of this fix remains pending while the local executor is unavailable.
