@@ -560,10 +560,15 @@ from a genre the DJ was built around.
   tracks to pin or ban. Precedence, strongest first: an active `dj steer` on
   the group (until it expires or is cleared), then the persistent preferences,
   then learned feedback (§12.9), then the raw account signals. A hard "avoid"
-  is never outweighed by a learned or account weight. *As built:* when the
-  avoids alone would leave nothing to play, the DJ relaxes them rather than
-  stop (`fsonos-spotify/src/dj.rs`); whether it should stop, relax and say
-  so, or relax only a steer is the owner's open decision (bead sp4f.15). The soft rungs are
+  is never outweighed by a learned or account weight. By default, when avoids
+  alone would leave nothing to play, the DJ relaxes them and explains why.
+  Owners can now choose `strict_avoids = true` through `dj prefs`, HTTP, MCP
+  and both browser preference editors to retain those avoids and explain the
+  empty pool instead. Pins and explicitly named steering keep their precedence;
+  already queued music and current playback remain intact. Existing files and
+  unset use false. This makes the exhausted-avoid choice from bead sp4f.15 an
+  explicit standing preference while preserving the established default. See
+  [standing DJ preferences](docs/DJ_PREFERENCES.md). The soft rungs are
   bounded so each outweighs every rung below it together: the account's
   signals at most ×1.25 (a liked track ×1.1 times its taste weight), learned
   feedback ×0.25 – ×1.6 (one fresh dislike, ×0.71 or less, cancels a like and

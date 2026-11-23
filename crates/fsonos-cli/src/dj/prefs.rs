@@ -23,11 +23,13 @@ use crate::remote::Daemon;
 pub enum PrefsAction {
     /// The standing preferences.
     Show,
-    /// Add to a list, or set energy (0-100) or explicit (true/false): `set
-    /// favor.genres jazz`, `set ban.artists Nickelback`, `set energy 30`.
+    /// Add to a list, set energy (0-100), or set explicit or strict_avoids
+    /// (true/false): `set favor.genres jazz`, `set strict_avoids true`.
+    /// Strict avoids disable the empty-pool fallback to avoided music;
+    /// pins and explicitly named steers still take precedence.
     Set { key: String, value: String },
-    /// Drop one item from a list, or the whole list without a value; energy
-    /// and explicit go back to their defaults.
+    /// Drop one item from a list, or the whole list without a value; scalar
+    /// settings return to their defaults (strict_avoids returns to false).
     Unset { key: String, value: Option<String> },
 }
 
@@ -232,6 +234,7 @@ mod tests {
         for (key, value) in [
             ("energy", "30"),
             ("explicit", "true"),
+            ("strict_avoids", "true"),
             ("favor.genres", "jazz"),
             ("favor.eras", "1960s"),
             ("avoid.moods", "calm"),
@@ -243,6 +246,7 @@ mod tests {
         let shown = dto(&prefs);
         assert_eq!(shown.energy, Some(30));
         assert!(shown.explicit);
+        assert!(shown.strict_avoids);
         assert_eq!(shown.favor.genres, ["jazz"]);
         assert_eq!(shown.favor.eras, ["1960s"]);
         assert_eq!(shown.avoid.moods, ["calm"]);
@@ -294,6 +298,47 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidArgument, "{}", err.detail);
         assert!(!moods_file.with_file_name(PREFERENCES_FILE).exists());
         assert!(matches!(show(None), Err(f) if f.code == ErrorCode::NotImplemented));
+    }
+
+    #[test]
+    fn strict_avoids_persists_applies_and_unsets_without_losing_the_avoid_list() {
+        let (mut state, moods_file) = fresh("strict-avoids");
+        let moods = Some(&moods_file);
+        change(&mut state, moods, &set("avoid.artists", "Fixture Artist")).unwrap();
+        assert!(!show(moods).unwrap().strict_avoids);
+        let enabled = change(&mut state, moods, &set("strict_avoids", "true")).unwrap();
+        assert!(enabled.changed && enabled.preferences.strict_avoids);
+        assert!(state.pool.preferences().strict_avoids);
+        assert!(show(moods).unwrap().strict_avoids);
+
+        let path = moods_file.with_file_name(PREFERENCES_FILE);
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !change(&mut state, moods, &set("strict_avoids", "true"))
+                .unwrap()
+                .changed
+        );
+        let invalid = change(&mut state, moods, &set("strict_avoids", "sometimes")).unwrap_err();
+        assert_eq!(invalid.code, ErrorCode::InvalidArgument);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        assert!(state.pool.preferences().strict_avoids);
+
+        let mut reopened = State {
+            moods: Moods::builtin(),
+            ..State::default()
+        };
+        apply(&mut reopened, moods).unwrap();
+        assert!(reopened.pool.preferences().strict_avoids);
+        let unset = PrefChange::Unset {
+            key: "strict_avoids".into(),
+            value: None,
+        };
+        let disabled = change(&mut reopened, moods, &unset).unwrap();
+        assert!(disabled.changed && !disabled.preferences.strict_avoids);
+        assert_eq!(disabled.preferences.avoid.artists, ["Fixture Artist"]);
+        assert!(!reopened.pool.preferences().strict_avoids);
+        assert!(!show(moods).unwrap().strict_avoids);
+        assert!(!change(&mut reopened, moods, &unset).unwrap().changed);
     }
 
     #[test]

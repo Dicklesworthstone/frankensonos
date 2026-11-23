@@ -20,10 +20,11 @@ const DjPreferencesRemote = (() => {
 
   function preferencesOf(value) {
     if (!value || typeof value !== 'object' || typeof value.explicit !== 'boolean'
+        || ('strict_avoids' in value && typeof value.strict_avoids !== 'boolean')
         || !(value.energy === null || (Number.isInteger(value.energy) && value.energy >= 0 && value.energy <= 100))) {
       throw new Error('The DJ preferences are unreadable. Refresh before editing.');
     }
-    const result = { energy: value.energy, explicit: value.explicit };
+    const result = { energy: value.energy, explicit: value.explicit, strict_avoids: value.strict_avoids === true };
     for (const [group, fields] of Object.entries(groups)) {
       if (!value[group] || typeof value[group] !== 'object') {
         throw new Error('The DJ preferences are incomplete. Refresh before editing.');
@@ -44,11 +45,11 @@ const DjPreferencesRemote = (() => {
   }
 
   function changeOf(key, raw, unset = false) {
-    if (key !== 'energy' && key !== 'explicit' && !listKeys.includes(key)) {
+    if (key !== 'energy' && key !== 'explicit' && key !== 'strict_avoids' && !listKeys.includes(key)) {
       throw new Error('Choose a known DJ preference.');
     }
     if (typeof unset !== 'boolean') throw new Error('Choose whether to add or remove a preference.');
-    const scalar = key === 'energy' || key === 'explicit';
+    const scalar = key === 'energy' || key === 'explicit' || key === 'strict_avoids';
     if (scalar && unset) return Object.freeze({ key, unset: true });
     if (typeof raw !== 'string') throw new Error('Enter one value, not a list of values.');
     const value = raw.trim();
@@ -59,6 +60,9 @@ const DjPreferencesRemote = (() => {
     if (key === 'explicit' && !['true', 'false'].includes(value)) {
       throw new Error('Choose whether explicit tracks are allowed.');
     }
+    if (key === 'strict_avoids' && !['true', 'false'].includes(value)) {
+      throw new Error('Choose whether avoids may relax when no other music fits.');
+    }
     // List removal always names one exact item, never the entire list.
     return Object.freeze({ key, value: key === 'energy' ? String(Number(value)) : value, unset });
   }
@@ -66,6 +70,10 @@ const DjPreferencesRemote = (() => {
   function description(body) {
     if (body.key === 'energy') return body.unset ? 'Use time-of-day energy again.' : `Set default energy to ${body.value}.`;
     if (body.key === 'explicit') return body.unset || body.value === 'false' ? 'Keep explicit tracks out.' : 'Allow explicit tracks.';
+    if (body.key === 'strict_avoids') return (body.unset || body.value === 'false'
+      ? 'Allow standing avoids to relax when no other permitted music fits.'
+      : 'Keep standing avoids and wait when no other permitted music fits.')
+      + ' Pins and explicitly named room steering keep their existing precedence. Already queued music keeps playing.';
     return `${body.unset ? 'Remove' : 'Add'} “${body.value}” ${body.unset ? 'from' : 'to'} ${label(body.key).toLowerCase()}.`;
   }
 
@@ -127,6 +135,10 @@ const DjPreferencesRemote = (() => {
           throw new Error('The save response is unreadable.');
         }
         const preferences = preferencesOf(answer.preferences);
+        if (expected.body.key === 'strict_avoids'
+            && preferences.strict_avoids !== (!expected.body.unset && expected.body.value === 'true')) {
+          throw new Error('The save response did not confirm the reviewed avoid setting.');
+        }
         if (disposed) return false;
         state.preferences = preferences;
         state.ready = state.open;
@@ -174,6 +186,10 @@ const DjPreferencesRemote = (() => {
       el('option', { value: 'false', text: 'Keep explicit tracks out' }),
       el('option', { value: 'true', text: 'Allow explicit tracks' }));
     const explicitSave = el('button', { type: 'button', text: 'Review explicit setting' });
+    const strictAvoids = el('select', { id: `${id}-strict-avoids`, 'aria-describedby': `${id}-strict-avoids-help` },
+      el('option', { value: 'false', text: 'Relax avoids when needed' }),
+      el('option', { value: 'true', text: 'Keep avoids and wait' }));
+    const strictAvoidsSave = el('button', { type: 'button', text: 'Review avoid setting' });
     const key = el('select', { id: `${id}-key` }, ...listKeys.map((item) => el('option', { value: item, text: label(item) })));
     const value = el('input', { type: 'text', id: `${id}-value`, maxlength: 512,
       placeholder: 'One genre, artist, era, mood, title or Spotify URI' });
@@ -184,7 +200,7 @@ const DjPreferencesRemote = (() => {
     const lists = el('div', { class: 'dj-taste-lists' });
     const reviewBox = el('div', { class: 'dj-taste-review', hidden: true, tabindex: -1 });
     let observed = null, reviewed = null;
-    const controls = [energy, energySave, energyReset, explicit, explicitSave, key, value, add];
+    const controls = [energy, energySave, energyReset, explicit, explicitSave, strictAvoids, strictAvoidsSave, key, value, add];
     const editor = model({ call, changed: render });
 
     function render(state) {
@@ -199,6 +215,7 @@ const DjPreferencesRemote = (() => {
         energy.value = observed.energy === null ? '' : String(observed.energy);
         energy.placeholder = 'Time of day';
         explicit.value = String(observed.explicit);
+        strictAvoids.value = String(observed.strict_avoids);
         lists.replaceChildren();
         for (const [group, fields] of Object.entries(groups)) {
           const section = el('section', {}, el('h3', { text: label(group) }));
@@ -242,24 +259,27 @@ const DjPreferencesRemote = (() => {
     energySave.addEventListener('click', () => editor.review('energy', energy.value));
     energyReset.addEventListener('click', () => editor.review('energy', null, true));
     explicitSave.addEventListener('click', () => editor.review('explicit', explicit.value));
+    strictAvoidsSave.addEventListener('click', () => editor.review('strict_avoids', strictAvoids.value));
     // Editing a draft invalidates a confirmation that described an older value.
-    for (const input of [energy, explicit, key, value]) {
+    for (const input of [energy, explicit, strictAvoids, key, value]) {
       input.addEventListener('input', () => editor.cancel());
       input.addEventListener('change', () => editor.cancel());
     }
     box.append(el('h2', { text: 'Your standing DJ taste' }),
-      el('p', { text: 'Favor nudges selection. Avoid can relax when nothing else is left; use Ban for a hard exclusion. Pins outweigh avoids, never bans. Per-room steering takes precedence over standing taste.' }),
+      el('p', { text: 'Favor nudges selection. Avoid sets music aside; choose below whether it may relax when nothing else is left. Use Ban for a hard exclusion. Pins outweigh avoids, never bans. Per-room steering takes precedence over standing taste.' }),
       el('div', { class: 'row' }, refresh, close), status,
       el('div', { class: 'dj-taste-defaults' },
         el('label', { for: energy.id, text: 'Default energy (0–100)' }), energy,
         el('div', { class: 'row' }, energySave, energyReset),
-        el('label', { for: explicit.id, text: 'Explicit tracks' }), explicit, explicitSave),
+        el('label', { for: explicit.id, text: 'Explicit tracks' }), explicit, explicitSave,
+        el('label', { for: strictAvoids.id, text: 'When all permitted music is avoided' }), strictAvoids,
+        el('p', { id: `${id}-strict-avoids-help`, text: 'Pins and explicitly named room steering keep their existing precedence over avoids. This setting changes future DJ picks; already queued music keeps playing.' }), strictAvoidsSave),
       form, reviewBox, lists);
     render(editor.state);
     return { node: el('div', { class: 'dj-taste' }, toggle, box), model: editor, dispose: editor.dispose };
   }
 
-  return { routes, listKeys: Object.freeze(listKeys), preferencesOf, changeOf, model, panel };
+  return { routes, listKeys: Object.freeze(listKeys), preferencesOf, changeOf, description, model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = DjPreferencesRemote;

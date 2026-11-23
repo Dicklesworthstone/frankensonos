@@ -8,7 +8,7 @@ const C = require('../crates/fsonos-api/src/remote/dashboard-core.js');
 const P = require('../crates/fsonos-api/src/remote/dj-preferences.js');
 const Taste = require('../crates/fsonos-api/src/remote/dashboard-preferences.js');
 const copy = value => structuredClone(value);
-const defaults = () => ({ energy: null, explicit: false,
+const defaults = () => ({ energy: null, explicit: false, strict_avoids: false,
   favor: { genres: [], artists: [], eras: [], moods: [] }, avoid: { genres: [], artists: [], eras: [], moods: [] },
   pin: { artists: [], albums: [], tracks: [] }, ban: { artists: [], albums: [], tracks: [] } });
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
@@ -51,7 +51,7 @@ function fixture({ speakers = false, demo = false, network, dom = false } = {}) 
     assert.equal(url, '/dj/preferences');
     const { key, value, unset } = body;
     if (key === 'energy') prefs.energy = unset ? null : Number(value);
-    else if (key === 'explicit') prefs.explicit = !unset && value === 'true';
+    else if (key === 'explicit' || key === 'strict_avoids') prefs[key] = !unset && value === 'true';
     else {
       const [group, field] = key.split('.');
       if (unset) prefs[group][field] = prefs[group][field].filter(item => item !== value);
@@ -109,20 +109,28 @@ test('single-item removal preserves other entries and refuses a whole-list unset
   assert.deepEqual(f.writes()[0].body, { key: 'ban.artists', value: 'One', unset: true });
 });
 
-test('energy bounds, time-of-day reset and explicit choices use the existing validated shapes', async () => {
+test('energy bounds, boolean settings and scalar resets use the existing validated shapes', async () => {
   const f = await fixture().ready();
   for (const [key, value, unset, expected] of [
     ['energy', '0', false, 0], ['energy', '100', false, 100], ['energy', null, true, null],
     ['explicit', 'true', false, true], ['explicit', 'false', false, false], ['explicit', null, true, false],
+    ['strict_avoids', 'true', false, true], ['strict_avoids', 'false', false, false], ['strict_avoids', null, true, false],
   ]) {
     const pending = f.taste.review(key, value, unset); assert.ok(pending);
     assert.equal(await f.taste.apply(pending), true); assert.equal(f.taste.state.preferences[key], expected);
   }
   for (const [key, value] of [['energy', '-1'], ['energy', '101'], ['energy', '1e2'], ['energy', '1.5'],
-    ['explicit', 'yes'], ['favor.genres', ' '], ['ban.tracks', 'x'.repeat(257)], ['unknown', 'anything']]) {
+    ['explicit', 'yes'], ['strict_avoids', 'yes'], ['strict_avoids', true], ['favor.genres', ' '], ['ban.tracks', 'x'.repeat(257)], ['unknown', 'anything']]) {
     assert.equal(f.taste.review(key, value), null);
   }
-  assert.equal(f.writes().length, 6);
+  assert.equal(f.writes().length, 9);
+});
+
+test('an older preference snapshot defaults avoids to relaxed but a supplied nonboolean stays read-only', async () => {
+  const f = fixture(); delete f.prefs.strict_avoids; await f.ready();
+  assert.equal(f.taste.state.preferences.strict_avoids, false); assert.equal(f.taste.state.draft.strict_avoids, 'false');
+  f.prefs.strict_avoids = 'false';
+  assert.equal(await f.taste.read(), false); assert.equal(f.taste.editable(), false); assert.equal(f.writes().length, 0);
 });
 
 test('the preflight preserves changes to unrelated preferences without submitting an old snapshot', async () => {
@@ -135,9 +143,11 @@ test('the preflight preserves changes to unrelated preferences without submittin
 });
 
 test('a changed reviewed key or scalar stops before sending and requires another review', async () => {
-  for (const key of ['favor.artists', 'energy']) {
-    const f = await fixture().ready(), pending = f.taste.review(key, key === 'energy' ? '80' : 'Reviewed artist');
-    if (key === 'energy') f.prefs.energy = 10; else f.prefs.favor.artists = ['Added elsewhere'];
+  for (const key of ['favor.artists', 'energy', 'strict_avoids']) {
+    const f = await fixture().ready(), pending = f.taste.review(key, key === 'energy' ? '80' : key === 'strict_avoids' ? 'true' : 'Reviewed artist');
+    if (key === 'energy') f.prefs.energy = 10;
+    else if (key === 'strict_avoids') f.prefs.strict_avoids = true;
+    else f.prefs.favor.artists = ['Added elsewhere'];
     assert.equal(await f.taste.apply(pending), false); assert.equal(f.writes().length, 0);
     assert.equal(f.controller.state.uncertain, false); assert.equal(f.taste.editable(), false);
     assert.match(f.taste.state.message, /changed since you reviewed/);
@@ -256,6 +266,19 @@ test('malformed acknowledgements and policy failures do not create successful pr
   assert.match(f.taste.state.message, /Ask the owner to grant dj_prefer/); assert.equal(f.writes().length, 1);
 });
 
+test('contradictory or old strict-avoid save receipts remain uncertain until explicitly refreshed', async () => {
+  for (const strict_avoids of [undefined, false, 'true']) {
+    const f = await fixture().ready(), answer = defaults();
+    if (strict_avoids === undefined) delete answer.strict_avoids; else answer.strict_avoids = strict_avoids;
+    f.writer(() => ({ done: 'Saved.', changed: true, preferences: answer }));
+    const pending = f.taste.review('strict_avoids', 'true');
+    assert.equal(await f.taste.apply(pending), false); assert.equal(f.controller.state.uncertain, true);
+    assert.equal(f.taste.state.result, null); assert.equal(f.taste.editable(), false);
+    assert.equal(await f.taste.apply(pending), false); assert.equal(f.writes().length, 1);
+    await f.taste.read(true); assert.equal(f.controller.state.uncertain, false);
+  }
+});
+
 test('the preferences storage lane cannot send speaker, routine, PUT or empty-body mutations', async () => {
   const cases = [['/play', {}, undefined], ['/schedules', {}, undefined], ['/dj/preferences', {}, { method: 'PUT' }],
     ['/dj/preferences', undefined, undefined], ['/dj/preferences?key=energy', {}, undefined]];
@@ -309,6 +332,30 @@ test('the rendered panel preserves literal metadata, permits scalar reset and re
   get('preferences-confirm').fire('click'); await settled(() => f.writes().length === 2 && !f.taste.state.writing);
   assert.equal(f.taste.state.preferences.explicit, true);
   f.panel.suspend(); assert.equal(get('preferences-dialog').open, false); assert.equal(f.taste.state.loaded, false);
+});
+
+test('dashboard avoid fallback control shows precedence, consumes edited reviews and saves once through the writer lane', async () => {
+  const f = fixture({ dom: true }), get = id => f.doc.getElementById(id), wait = deferred();
+  const choice = get('preferences-strict-avoids'); assert.equal(choice.disabled, true);
+  get('open-preferences').fire('click'); await settled(() => f.taste.state.loaded);
+  assert.equal(choice.value, 'false'); choice.value = 'true'; choice.fire('change');
+  get('preferences-strict-avoids-save').fire('click'); const stale = f.taste.state.pending;
+  assert.match(get('preferences-preview-title').textContent, /Keep standing avoids and wait.*Pins and explicitly named room steering.*queued music keeps playing/);
+  assert.match(get('preferences-preview-before').textContent, /Currently allowing avoids to relax/);
+  assert.equal(f.writes().length, 0);
+  choice.value = 'false'; choice.fire('change'); assert.equal(f.taste.state.pending, null);
+  assert.equal(await f.taste.apply(stale), false);
+  choice.value = 'true'; choice.fire('change'); get('preferences-strict-avoids-save').fire('click');
+  f.writer(async (url, body, options, write) => { const answer = write(url, body); await wait.promise; return answer; });
+  get('preferences-confirm').fire('click'); get('preferences-confirm').fire('click');
+  await settled(() => f.writes().length === 1);
+  assert.equal(choice.disabled, true); assert.equal(f.controller.state.busy, true);
+  wait.resolve(); await settled(() => !f.taste.state.writing);
+  assert.equal(f.taste.state.preferences.strict_avoids, true); assert.equal(choice.value, 'true');
+  assert.deepEqual(f.writes()[0].body, { key: 'strict_avoids', value: 'true', unset: false });
+  assert.ok(f.calls.every(row => row.url === '/dj/preferences'), 'standing preference leaves queued music alone');
+  assert.match(get('preferences-result').textContent, /queued music keeps playing/);
+  f.panel.dispose();
 });
 
 test('real loopback HTTP carries the reviewed literal value once, with JSON and no playback request', async t => {

@@ -19,8 +19,9 @@
 //! 4. **The account's own signals**: a track the owner liked on Spotify
 //!    weighs a little more than one on a saved album.
 //!
-//! A ban never relaxes. Avoids relax only when every work left is avoided,
-//! so the DJ never silently plays nothing; the reason says so.
+//! A ban never relaxes. By default, avoids relax only when every work left
+//! is avoided, and the reason says so. `strict_avoids` keeps those works out
+//! instead; pins and a steer asking for music by name retain their precedence.
 
 use std::io;
 use std::path::Path;
@@ -53,6 +54,9 @@ pub struct Preferences {
     pub energy: Option<u8>,
     /// Whether explicit tracks may play (default: no).
     pub explicit: bool,
+    /// Keep standing avoids when they would leave no new work to select
+    /// (default: no). Pins and explicit named steering still outrank avoids.
+    pub strict_avoids: bool,
     /// Lean toward these: a work matching any weighs ×2.
     pub favor: Taste,
     /// Never these, whatever feedback or the account says.
@@ -140,10 +144,11 @@ const PERIODS: &[(&str, Period)] = &[
 ];
 
 /// The list keys [`Preferences::add`] and [`Preferences::remove`] take, and
-/// the two plain ones.
+/// the three plain ones.
 pub const KEYS: &[&str] = &[
     "energy",
     "explicit",
+    "strict_avoids",
     "favor.genres",
     "favor.artists",
     "favor.eras",
@@ -294,8 +299,8 @@ impl Preferences {
     }
 
     /// Set a preference: append `value` to a list key (once), or set
-    /// `energy` (`0`–`100`) or `explicit` (`true`/`false`). The result is
-    /// validated against `moods`; on an error nothing changes.
+    /// `energy` (`0`–`100`), `explicit` or `strict_avoids` (`true`/`false`).
+    /// The result is validated against `moods`; on an error nothing changes.
     pub fn add(&mut self, key: &str, value: &str, moods: &Moods) -> Result<(), String> {
         let mut next = self.clone();
         match key {
@@ -313,6 +318,12 @@ impl Preferences {
                     .parse()
                     .map_err(|_| format!("explicit {value:?} is not true or false"))?;
             }
+            "strict_avoids" => {
+                next.strict_avoids = value
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("strict_avoids {value:?} is not true or false"))?;
+            }
             _ => {
                 let list = next.list_mut(key).ok_or_else(|| unknown_key(key))?;
                 let value = value.trim();
@@ -327,13 +338,15 @@ impl Preferences {
     }
 
     /// Unset a preference: drop `value` from a list key, or the whole list
-    /// with `None`; `energy` and `explicit` go back to their defaults.
+    /// with `None`; `energy`, `explicit` and `strict_avoids` go back to their
+    /// defaults.
     /// Returns whether anything changed.
     pub fn remove(&mut self, key: &str, value: Option<&str>) -> Result<bool, String> {
         let before = self.clone();
         match key {
             "energy" => self.energy = None,
             "explicit" => self.explicit = false,
+            "strict_avoids" => self.strict_avoids = false,
             _ => {
                 let list = self.list_mut(key).ok_or_else(|| unknown_key(key))?;
                 match value {

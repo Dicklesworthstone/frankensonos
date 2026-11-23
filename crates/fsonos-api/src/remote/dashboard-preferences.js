@@ -6,7 +6,7 @@ const DashboardPreferences = (() => {
   const MAX_AGE = 60000;
   const groups = [
     ['favor', 'Favor', 'Give these more weight.'],
-    ['avoid', 'Avoid', 'Set these aside when other music fits. Avoids can relax if nothing else is left.'],
+    ['avoid', 'Avoid', 'Set these aside when other music fits. Your avoid setting controls whether they may relax.'],
     ['pin', 'Pin', 'Keep these strongly favored. Pins outweigh avoids.'],
     ['ban', 'Ban', 'Exclude these from ordinary selection. Bans do not relax.'],
   ];
@@ -18,12 +18,13 @@ const DashboardPreferences = (() => {
   function description(body) {
     if (body.key === 'energy') return body.unset ? 'Follow time-of-day energy.' : `Set default energy to ${body.value} out of 100.`;
     if (body.key === 'explicit') return body.unset || body.value === 'false' ? 'Keep explicit tracks out.' : 'Allow explicit tracks.';
+    if (body.key === 'strict_avoids') return P.description(body);
     return `${body.unset ? 'Remove' : 'Add'} “${body.value}” ${body.unset ? 'from' : 'to'} ${label(body.key).toLowerCase()}.`;
   }
   function model({ call, controller, changed = () => {}, now = () => performance.now() }) {
     let version = 0, active = true, disposed = false, reading = null, readAt = 0;
     const state = { open: false, loaded: false, loading: false, writing: false, preferences: null,
-      pending: null, result: null, message: '', draft: { key: 'favor.genres', value: '', energy: '', explicit: 'false' } };
+      pending: null, result: null, message: '', draft: { key: 'favor.genres', value: '', energy: '', explicit: 'false', strict_avoids: 'false' } };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const live = () => !disposed && active && state.open && controller.state.active;
     const canRead = () => live() && !state.loading && !state.writing && !controller.state.busy;
@@ -45,6 +46,7 @@ const DashboardPreferences = (() => {
       state.preferences = preferences;
       state.draft.energy = preferences.energy === null ? '' : String(preferences.energy);
       state.draft.explicit = String(preferences.explicit);
+      state.draft.strict_avoids = String(preferences.strict_avoids);
     }
     async function read(explicit = true) {
       if (!canRead()) return false;
@@ -71,7 +73,7 @@ const DashboardPreferences = (() => {
       }
     }
     function edit(field, value) {
-      if (!editable() || !['key', 'value', 'energy', 'explicit'].includes(field) || typeof value !== 'string'
+      if (!editable() || !['key', 'value', 'energy', 'explicit', 'strict_avoids'].includes(field) || typeof value !== 'string'
           || value.length > 512 || (field === 'key' && !P.listKeys.includes(value))) return false;
       state.draft[field] = value; state.pending = null; state.message = ''; publish(); return true;
     }
@@ -111,6 +113,10 @@ const DashboardPreferences = (() => {
             fail('The preference save response was incomplete.');
           }
           receipt = { done: answer.done, changed: answer.changed, preferences: P.preferencesOf(answer.preferences) };
+          if (reviewed.body.key === 'strict_avoids'
+              && receipt.preferences.strict_avoids !== (!reviewed.body.unset && reviewed.body.value === 'true')) {
+            fail('The save response did not confirm the reviewed avoid setting.');
+          }
           return { done: receipt.done, changed: receipt.changed };
         }, { stored: 'preferences' });
         if (!disposed) {
@@ -139,7 +145,8 @@ const DashboardPreferences = (() => {
   function panel({ call, controller, document: doc = document, now }) {
     const $ = id => doc.getElementById(id), dialog = $('preferences-dialog');
     const trigger = $('open-preferences'), lists = $('preferences-lists');
-    const input = Object.fromEntries(['key', 'value', 'energy', 'explicit'].map(field => [field, $('preferences-' + field)]));
+    const input = Object.fromEntries(['key', 'value', 'energy', 'explicit', 'strict_avoids']
+      .map(field => [field, $('preferences-' + field.replace('_', '-'))]));
     let observed = null, renderedReady = null, shown = null, previousFocus = null;
     const el = (tag, cls, text) => {
       const node = doc.createElement(tag);
@@ -157,7 +164,7 @@ const DashboardPreferences = (() => {
       else if (!state.open && dialog.open) { dialog.close(); if (!trigger.disabled) trigger.focus(); }
       $('preferences-read').disabled = !control.canRead();
       for (const [field, node] of Object.entries(input)) { node.disabled = !ready; if (node.value !== state.draft[field]) node.value = state.draft[field]; }
-      for (const name of ['energy-save', 'energy-reset', 'explicit-save', 'add']) $('preferences-' + name).disabled = !ready;
+      for (const name of ['energy-save', 'energy-reset', 'explicit-save', 'strict-avoids-save', 'add']) $('preferences-' + name).disabled = !ready;
       $('preferences-message').textContent = state.message;
       $('preferences-freshness').textContent = state.loading ? 'Reading the daemon’s current preferences…'
         : state.loaded ? 'Standing taste · applies to every group’s next DJ selections.'
@@ -193,6 +200,7 @@ const DashboardPreferences = (() => {
         $('preferences-preview-before').textContent = pending.body.key === 'energy'
           ? `Current default: ${before === null ? 'time of day' : before + ' out of 100'}.`
           : pending.body.key === 'explicit' ? `Currently ${before ? 'allowing' : 'excluding'} explicit tracks.`
+            : pending.body.key === 'strict_avoids' ? `Currently ${before ? 'keeping avoids and waiting' : 'allowing avoids to relax'} when no other permitted music fits.`
             : `Current ${label(pending.body.key).toLowerCase()}: ${before.length ? before.join(' · ') : 'none'}.`;
       }
       $('preferences-confirm').disabled = !control.canApply(); $('preferences-back').disabled = state.writing;
@@ -208,7 +216,7 @@ const DashboardPreferences = (() => {
     $('close-preferences').addEventListener('click', control.close);
     $('preferences-read').addEventListener('click', () => void control.read(true));
     for (const [field, node] of Object.entries(input)) {
-      node.addEventListener(field === 'key' || field === 'explicit' ? 'change' : 'input', () => control.edit(field, node.value));
+      node.addEventListener(['key', 'explicit', 'strict_avoids'].includes(field) ? 'change' : 'input', () => control.edit(field, node.value));
     }
     $('preferences-form').addEventListener('submit', event => {
       event.preventDefault(); control.review(control.state.draft.key, control.state.draft.value);
@@ -216,6 +224,7 @@ const DashboardPreferences = (() => {
     $('preferences-energy-save').addEventListener('click', () => control.review('energy', control.state.draft.energy));
     $('preferences-energy-reset').addEventListener('click', () => control.review('energy', null, true));
     $('preferences-explicit-save').addEventListener('click', () => control.review('explicit', control.state.draft.explicit));
+    $('preferences-strict-avoids-save').addEventListener('click', () => control.review('strict_avoids', control.state.draft.strict_avoids));
     $('preferences-back').addEventListener('click', control.cancel);
     $('preferences-confirm').addEventListener('click', () => void control.apply());
     dialog.addEventListener('cancel', event => { event.preventDefault(); control.close(); });

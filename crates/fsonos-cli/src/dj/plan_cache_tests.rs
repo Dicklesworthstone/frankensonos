@@ -629,6 +629,81 @@ fn strict_empty_selection_has_the_same_typed_error_in_readiness_start_and_rehear
 }
 
 #[test]
+fn strict_avoids_refuse_an_empty_pool_without_changing_playback_and_unset_recovers() {
+    use fsonos_api::surface::dj_prefs::PrefChange;
+    use fsonos_proto::content::{QUEUE, browse_snapshot};
+
+    let house = House::new();
+    let lan = house.sim.lan();
+    let at = house.speakers(&lan);
+    let host = house.sim.player("Den").unwrap().ip;
+    let dj = SpotifyDj::new(Some(data_dir()));
+    let clock = clock();
+    let mut store = MemStore::default();
+    apply_library_read(&mut store, &[song(1, "Fixture Artist")]).unwrap();
+    control::set_av_transport_uri(
+        &lan,
+        host,
+        "x-rincon-mp3radio://example.invalid/strict-avoids.mp3",
+        "",
+    )
+    .unwrap();
+    control::play(&lan, host).unwrap();
+    control::set_volume(&lan, host, 67).unwrap();
+    let queue = browse_snapshot(&lan, host, QUEUE).unwrap();
+    let playback =
+        fsonos_core::control::playback(&lan, &house.households, &house.coordinator).unwrap();
+    let calls = house.sim.soap_log().len();
+    dj.prefer(&PrefChange::Set {
+        key: "avoid.artists".into(),
+        value: "Fixture Artist".into(),
+    })
+    .unwrap();
+    dj.start_ready(at, &store, None, &clock).unwrap();
+    dj.prefer(&PrefChange::Set {
+        key: "strict_avoids".into(),
+        value: "true".into(),
+    })
+    .unwrap();
+
+    let ready = dj.start_ready(at, &store, None, &clock).unwrap_err();
+    let preview = dj
+        .rehearse(at, &store, &rehearsal(&clock), &clock)
+        .unwrap_err();
+    let started = dj.act(at, &mut store, DjAction::Start, &clock).unwrap_err();
+    for error in [ready, preview, started] {
+        assert_eq!(error.code, fsonos_api::ErrorCode::DjPoolEmpty, "{error:?}");
+        assert!(error.detail.contains("strict avoids"), "{error:?}");
+    }
+    assert!(dj.state().feeds.is_empty());
+    assert!(store.dj_session(&house.coordinator.0).unwrap().is_none());
+    assert!(store.recent_plays(None, 100).unwrap().is_empty());
+    assert!(
+        house.sim.soap_log()[calls..]
+            .iter()
+            .all(|call| call.action == "Browse" || call.action.starts_with("Get"))
+    );
+    assert_eq!(browse_snapshot(&lan, host, QUEUE).unwrap(), queue);
+    assert_eq!(
+        fsonos_core::control::playback(&lan, &house.households, &house.coordinator).unwrap(),
+        playback
+    );
+    assert_eq!(control::get_volume(&lan, host).unwrap(), 67);
+
+    let reset = dj
+        .prefer(&PrefChange::Unset {
+            key: "strict_avoids".into(),
+            value: None,
+        })
+        .unwrap();
+    assert!(reset.changed && !reset.preferences.strict_avoids);
+    assert_eq!(reset.preferences.avoid.artists, ["Fixture Artist"]);
+    dj.start_ready(at, &store, None, &clock).unwrap();
+    dj.act(at, &mut store, DjAction::Start, &clock).unwrap();
+    assert!(dj.feeds(&house.coordinator));
+}
+
+#[test]
 #[allow(clippy::field_reassign_with_default)] // Core keeps its interpolation clock private.
 fn invalid_steering_defers_refills_without_touching_the_queue_and_clear_recovers() {
     for malformed in [false, true] {

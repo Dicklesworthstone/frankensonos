@@ -1470,6 +1470,59 @@ mod tests {
     }
 
     #[test]
+    fn strict_standing_avoids_survive_mcp_reads_sets_and_unsets_without_speaker_io() {
+        use fsonos_api::surface::dj_prefs::{DjPreferRequest, PreferencesDto};
+
+        for (value, unset) in [(Some("true"), false), (Some("false"), false), (None, true)] {
+            let request = DjPreferRequest {
+                key: "strict_avoids".into(),
+                value: value.map(str::to_owned),
+                unset,
+            };
+            let preferences = PreferencesDto {
+                strict_avoids: value == Some("true") && !unset,
+                ..PreferencesDto::default()
+            };
+            let receipt = serde_json::json!({
+                "done": "Standing avoid policy saved; the next pick follows it",
+                "changed": true,
+                "preferences": preferences,
+            });
+            let daemon = fake(Some(receipt.clone()));
+            let (writer, sent, surveys) = backend("", Client::McpStdio);
+            let writer = writer.with_daemon(daemon.clone());
+            let result = writer.dj_prefer(&request).unwrap();
+            assert!(!result.is_error);
+            assert_eq!(result.structured_content, Some(receipt));
+            assert_eq!(
+                *daemon.calls.lock().unwrap(),
+                [(
+                    "POST".into(),
+                    "/dj/preferences".into(),
+                    Some(serde_json::to_value(&request).unwrap())
+                )]
+            );
+            assert!(sent.lock().unwrap().is_empty());
+            assert_eq!(surveys.load(Ordering::SeqCst), 0);
+
+            let daemon = fake(Some(serde_json::to_value(&preferences).unwrap()));
+            let (reader, sent, surveys) = backend("", Client::McpStdio);
+            let result = reader.with_daemon(daemon.clone()).dj_preferences().unwrap();
+            assert!(!result.is_error);
+            assert_eq!(
+                result.structured_content,
+                Some(serde_json::to_value(&preferences).unwrap())
+            );
+            assert_eq!(
+                *daemon.calls.lock().unwrap(),
+                [("GET".into(), "/dj/preferences".into(), None)]
+            );
+            assert!(sent.lock().unwrap().is_empty());
+            assert_eq!(surveys.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
     fn partial_dj_results_keep_all_receipts_and_never_fall_back_or_replay() {
         let receipt = serde_json::json!({
             "done": "Den@S2: the DJ is playing",

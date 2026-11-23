@@ -52,7 +52,8 @@
 //!   works leave the pool before steering (a steer asking for one by name
 //!   brings it back), explicit ones stay out unless allowed, favored works
 //!   weigh ×2 and pinned ones ×3, and feedback can't push those below
-//!   neutral. A preferred energy replaces the time-of-day curve.
+//!   neutral. Avoids relax when every remaining work is avoided unless
+//!   `strict_avoids` is enabled. A preferred energy replaces the time-of-day curve.
 //! * **Precedence.** Each soft rung outweighs every rung below it together.
 //!   The account's signals, the lowest, are a liked work's ×1.1 times its
 //!   taste weight ([`crate::taste`]), at most ×1.25 together
@@ -437,8 +438,8 @@ impl WorkPool {
 
     /// The works the preferences let play, before steering: no explicit
     /// ones unless allowed, nothing banned or avoided, except what an active
-    /// steer asks for by name. Avoids relax (the flag) only when they would
-    /// leave nothing.
+    /// steer asks for by name. Unless strict avoids are enabled, avoids relax
+    /// (the flag) only when they would leave nothing.
     fn allowed(&self, steer: Option<&Steer>, unavailable: &HashSet<&str>) -> (Vec<usize>, bool) {
         let named = |w: usize| steer.is_some_and(|s| names(&self.works[w], &s.constraints));
         let playable: Vec<usize> = (0..self.len())
@@ -457,7 +458,7 @@ impl WorkPool {
             .copied()
             .filter(|&w| !self.verdicts[w].avoids() || named(w))
             .collect();
-        if kept.is_empty() && !playable.is_empty() {
+        if kept.is_empty() && !playable.is_empty() && !self.preferences.strict_avoids {
             (playable, true)
         } else {
             (kept, false)
@@ -496,16 +497,25 @@ impl WorkPool {
             ));
         }
         let named = |w: usize| steer.is_some_and(|s| names(&self.works[w], &s.constraints));
-        let banned = (0..self.len())
-            .filter(|&w| self.verdicts[w].banned && !named(w))
-            .count();
-        let explicit = self.len() - banned;
+        let (mut banned, mut explicit, mut avoided) = (0_usize, 0_usize, 0_usize);
+        for (w, verdict) in self.verdicts.iter().enumerate() {
+            if verdict.banned && !named(w) {
+                banned += 1;
+            } else if verdict.explicit && !self.preferences.explicit {
+                explicit += 1;
+            } else if self.preferences.strict_avoids && verdict.avoids() && !named(w) {
+                avoided += 1;
+            }
+        }
         let mut why = Vec::new();
         if banned > 0 {
             why.push(format!("{banned} banned"));
         }
         if explicit > 0 {
             why.push(format!("{explicit} explicit while explicit tracks are off"));
+        }
+        if avoided > 0 {
+            why.push(format!("{avoided} avoided while strict avoids are on"));
         }
         Some(format!(
             "your preferences keep all {} works out: {}",
@@ -1363,6 +1373,9 @@ mod ladder_tests;
 
 #[cfg(test)]
 mod recording_tests;
+
+#[cfg(test)]
+mod strict_avoids_tests;
 
 /// Direct factor/precedence tests score an unfiltered catalogue. Production
 /// uses the distinct counts after admission, passed through `Scoring` above.

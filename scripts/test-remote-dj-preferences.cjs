@@ -3,6 +3,9 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const { once } = require('node:events');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const prefs = require('../crates/fsonos-api/src/remote/dj-preferences.js');
 
 function defaults() {
@@ -62,6 +65,45 @@ test('explicit tracks require a boolean choice, not a truthy string', () => {
   assert.deepEqual(prefs.changeOf('explicit', 'true'), { key: 'explicit', value: 'true', unset: false });
   assert.deepEqual(prefs.changeOf('explicit', null, true), { key: 'explicit', unset: true });
   for (const value of ['yes', '0', 'TRUE', true, false]) assert.throws(() => prefs.changeOf('explicit', value));
+});
+
+test('strict avoids defaults off only when absent and requires exact boolean snapshots and choices', () => {
+  assert.equal(prefs.preferencesOf(defaults()).strict_avoids, false, 'older daemon snapshots remain readable');
+  for (const value of [false, true]) {
+    assert.equal(prefs.preferencesOf({ ...defaults(), strict_avoids: value }).strict_avoids, value);
+    assert.deepEqual(prefs.changeOf('strict_avoids', String(value)), { key: 'strict_avoids', value: String(value), unset: false });
+  }
+  assert.deepEqual(prefs.changeOf('strict_avoids', null, true), { key: 'strict_avoids', unset: true });
+  for (const value of [null, undefined, 'false', 'true', 0, 1, [], {}]) {
+    assert.throws(() => prefs.preferencesOf({ ...defaults(), strict_avoids: value }));
+  }
+  for (const value of ['yes', '0', 'TRUE', '', true, false, null]) assert.throws(() => prefs.changeOf('strict_avoids', value));
+});
+
+test('strict avoids enable, disable and reset save only the reviewed key once', async () => {
+  for (const [value, unset, expected] of [['true', false, true], ['false', false, false], [null, true, false]]) {
+    const { editor, calls, reads, writes } = fixture();
+    const current = { ...defaults(), strict_avoids: !expected }; current.pin.artists = ['Pinned artist'];
+    reads.push(current); writes.push(saved({ ...current, strict_avoids: expected }));
+    await editor.load(); const pending = editor.review('strict_avoids', value, unset);
+    assert.match(pending.description, expected ? /Keep standing avoids and wait/ : /Allow standing avoids to relax/);
+    assert.match(pending.description, /Pins and explicitly named room steering.*queued music keeps playing/);
+    assert.equal(calls.length, 1); assert.equal(await editor.confirm(pending), true);
+    assert.equal(await editor.confirm(pending), false);
+    assert.deepEqual(calls[1], ['djPreferencesWrite', { body: { key: 'strict_avoids', ...(unset ? {} : { value }), unset } }]);
+    assert.equal(editor.state.preferences.strict_avoids, expected);
+    assert.deepEqual(editor.state.preferences.pin.artists, ['Pinned artist']);
+  }
+});
+
+test('strict avoids cannot report success from an old, contradictory or malformed receipt', async () => {
+  for (const returned of [defaults(), { ...defaults(), strict_avoids: false }, { ...defaults(), strict_avoids: 'true' }]) {
+    const { editor, writes, calls } = fixture(); writes.push(saved(returned));
+    await editor.load(); const pending = editor.review('strict_avoids', 'true');
+    assert.equal(await editor.confirm(pending), false); assert.equal(editor.state.ready, false);
+    assert.match(editor.state.message, /do not resend an uncertain save/);
+    assert.equal(await editor.confirm(pending), false); assert.equal(calls.length, 2);
+  }
 });
 
 test('value bounds count Unicode characters rather than UTF-16 units', () => {
@@ -264,4 +306,47 @@ test('the shipped route map dispatches an exact JSON preference over a real loop
   assert.equal(received[1].contentType, 'application/json');
   assert.deepEqual(JSON.parse(received[1].body), { key: 'favor.artists', value: 'Earth, Wind & Fire', unset: false });
   assert.deepEqual(editor.state.preferences.favor.artists, ['Earth, Wind & Fire']);
+});
+
+test('phone avoid fallback controls review explicitly, retire changed drafts and dispatch once', async () => {
+  const descendants = node => [node, ...node.children.flatMap(child => typeof child === 'object' ? descendants(child) : [])];
+  const doc = { activeElement: null, createElement(tag) {
+    const listeners = new Map();
+    return { tagName: tag.toUpperCase(), children: [], attributes: {}, value: '', disabled: false, hidden: false, _text: '',
+      get textContent() { return this._text + this.children.map(child => typeof child === 'string' ? child : child.textContent).join(' '); },
+      set textContent(value) { this._text = String(value); this.children = []; },
+      set innerHTML(_) { assert.fail('Preferences must render as text'); },
+      setAttribute(key, value) { this.attributes[key] = String(value); if (['id', 'value'].includes(key)) this[key] = String(value); if (['hidden', 'disabled'].includes(key)) this[key] = true; },
+      append(...children) { this.children.push(...children); }, replaceChildren(...children) { this._text = ''; this.children = children; },
+      querySelectorAll(selector) { return descendants(this).slice(1).filter(node => node.tagName === selector.toUpperCase()); },
+      addEventListener(key, fn) { listeners.set(key, [...listeners.get(key) || [], fn]); },
+      fire(key) { if (!this.disabled) for (const fn of listeners.get(key) || []) fn({ target: this, preventDefault() {} }); },
+      focus() { doc.activeElement = this; },
+    };
+  } };
+  const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const el = vm.runInNewContext(source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer')) + '\nel;', { document: doc });
+  const calls = [], wait = deferred(); let current = defaults();
+  const panel = prefs.panel({ el, call: async (name, args) => {
+    calls.push([name, args]);
+    if (name === 'djPreferencesRead') return current;
+    current = { ...current, strict_avoids: args.body.value === 'true' };
+    await wait.promise; return saved(current);
+  } });
+  const find = text => descendants(panel.node).find(node => node.tagName === 'BUTTON' && node.textContent === text);
+  const choice = descendants(panel.node).find(node => node.tagName === 'SELECT' && node.id.endsWith('-strict-avoids'));
+  assert.equal(choice.disabled, true); await panel.model.load(); assert.equal(choice.value, 'false');
+  assert.deepEqual(choice.children.map(node => node.textContent), ['Relax avoids when needed', 'Keep avoids and wait']);
+  choice.value = 'true'; choice.fire('change'); find('Review avoid setting').fire('click');
+  const stale = panel.model.state.pending; assert.match(stale.description, /Keep standing avoids and wait/);
+  assert.equal(calls.length, 1); choice.value = 'false'; choice.fire('change');
+  assert.equal(panel.model.state.pending, null); assert.equal(await panel.model.confirm(stale), false);
+  choice.value = 'true'; choice.fire('change'); find('Review avoid setting').fire('click');
+  const confirm = find('Save for every DJ'); confirm.fire('click'); confirm.fire('click');
+  assert.equal(choice.disabled, true); assert.equal(calls.length, 2);
+  wait.resolve(); for (let i = 0; i < 30 && panel.model.state.writing; ++i) await Promise.resolve();
+  assert.equal(panel.model.state.writing, false); assert.equal(panel.model.state.preferences.strict_avoids, true);
+  assert.deepEqual(calls[1][1].body, { key: 'strict_avoids', value: 'true', unset: false });
+  assert.match(panel.node.textContent, /Pins and explicitly named room steering.*queued music keeps playing/);
+  panel.dispose();
 });

@@ -7,7 +7,9 @@
 //! artists, eras and moods to favor or avoid, a default energy, whether
 //! explicit tracks may play, and artists, albums or tracks to pin or ban.
 //! Steering a group outranks them, and they outrank learned feedback. A ban
-//! never relaxes; an avoid relaxes only when nothing else is left.
+//! never relaxes; an avoid relaxes only when nothing else is left, unless
+//! strict_avoids is enabled. Pins and explicitly named steers still take
+//! precedence over avoids.
 //!
 //! fsonos-spotify keeps the model, behind the DJ engine. A change is
 //! checked before the file is written, applies from the DJ's next pick, and
@@ -22,10 +24,11 @@ use std::fmt::Write as _;
 use super::Surface;
 use crate::failure::Failure;
 
-/// The preference keys: two plain ones and the lists.
+/// The preference keys: three scalar settings and the lists.
 pub const PREFERENCE_KEYS: &[&str] = &[
     "energy",
     "explicit",
+    "strict_avoids",
     "favor.genres",
     "favor.artists",
     "favor.eras",
@@ -55,9 +58,12 @@ pub struct PreferencesDto {
     pub energy: Option<u8>,
     /// Whether explicit tracks may play.
     pub explicit: bool,
+    /// Keep avoids in force even when they leave no music to pick (default:
+    /// false). Pins and explicitly named steers still outrank avoids.
+    pub strict_avoids: bool,
     /// Lean toward these: a matching work weighs twice as much.
     pub favor: TasteDto,
-    /// Never these, unless nothing else is left.
+    /// Keep these out; the empty-pool fallback is disabled by strict_avoids.
     pub avoid: TasteDto,
     /// Always welcome and favored three times over; a pin outranks an avoid.
     pub pin: ItemsDto,
@@ -91,13 +97,14 @@ pub struct ItemsDto {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DjPreferRequest {
-    /// `energy`, `explicit`, or a list key: favor.genres, favor.artists,
+    /// `energy`, `explicit`, `strict_avoids`, or a list key: favor.genres, favor.artists,
     /// favor.eras, favor.moods, avoid.(same), pin.artists, pin.albums,
     /// pin.tracks, ban.(same).
     pub key: String,
-    /// What to add (a list key) or set (energy 0-100, explicit true or
-    /// false). With `unset`, the one item to drop; absent, the whole list
-    /// goes (energy and explicit go back to their defaults).
+    /// What to add (a list key) or set (energy 0-100, explicit or strict_avoids
+    /// true or false). With `unset`, the one item to drop; absent, the whole
+    /// list goes. Scalar settings return to their defaults, including false
+    /// for strict_avoids.
     #[serde(default)]
     pub value: Option<String>,
     /// Remove instead of add.
@@ -175,6 +182,11 @@ impl PreferencesDto {
             "Explicit tracks: {}.",
             if self.explicit { "allowed" } else { "kept out" }
         );
+        if self.strict_avoids {
+            text.push_str(
+                "Strict avoids: on (no fallback to avoided music; pins and named steers still take precedence).\n",
+            );
+        }
         for (label, taste) in [("Favor", &self.favor), ("Avoid", &self.avoid)] {
             let lists = [
                 ("genres", &taste.genres),
@@ -269,6 +281,21 @@ mod tests {
                 value: None
             }
         );
+        assert_eq!(
+            change(" Strict_Avoids ", Some(" true "), false).unwrap(),
+            PrefChange::Set {
+                key: "strict_avoids".into(),
+                value: "true".into()
+            }
+        );
+        assert_eq!(
+            change("strict_avoids", None, true).unwrap(),
+            PrefChange::Unset {
+                key: "strict_avoids".into(),
+                value: None
+            }
+        );
+        assert!(change("strict_avoids", None, false).is_err());
         let unknown = change("favour.genres", Some("jazz"), false).unwrap_err();
         assert_eq!(unknown.code, ErrorCode::InvalidArgument);
         assert!(unknown.suggestions.iter().any(|s| s == "favor.genres"));
@@ -312,5 +339,29 @@ mod tests {
              Favor: genres jazz, soul.\n\
              Ban: artists Johannes Brahms.\n"
         );
+    }
+
+    #[test]
+    fn older_preferences_keep_fallback_and_strict_readback_explains_precedence() {
+        let legacy: PreferencesDto = serde_json::from_value(serde_json::json!({
+            "explicit": true,
+            "avoid": { "artists": ["Fixture Artist"] }
+        }))
+        .unwrap();
+        assert!(!legacy.strict_avoids);
+        let strict = PreferencesDto {
+            strict_avoids: true,
+            ..legacy
+        };
+        let value = serde_json::to_value(&strict).unwrap();
+        assert_eq!(value["strict_avoids"], true);
+        assert_eq!(
+            serde_json::from_value::<PreferencesDto>(value).unwrap(),
+            strict
+        );
+        let text = strict.text();
+        assert!(text.contains("no fallback to avoided music"));
+        assert!(text.contains("pins and named steers still take precedence"));
+        assert!(text.contains("Avoid: artists Fixture Artist."));
     }
 }

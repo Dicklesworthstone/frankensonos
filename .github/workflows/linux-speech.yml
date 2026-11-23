@@ -56,6 +56,7 @@ on:
       - "scripts/test-remote-group-volume-relative.cjs"
       - "scripts/test-remote-announcements.cjs"
       - "scripts/test-remote-dj-preferences.cjs"
+      - "scripts/test-dashboard-preferences.cjs"
       - "scripts/test-remote-dj-session.cjs"
       - "scripts/test-remote-dj-rehearsal.cjs"
       - "scripts/test-remote-dj-handoff.cjs"
@@ -189,7 +190,7 @@ jobs:
         run: node --test scripts/test-remote-announcements.cjs
       - name: Web DJ taste regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs scripts/test-remote-dj-rehearsal.cjs scripts/test-remote-dj-handoff.cjs scripts/test-dj-targets.cjs scripts/test-dj-targets-panel.cjs
+        run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-dashboard-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs scripts/test-remote-dj-rehearsal.cjs scripts/test-remote-dj-handoff.cjs scripts/test-dj-targets.cjs scripts/test-dj-targets-panel.cjs
       - name: Web scheduled routine regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-schedules.cjs scripts/test-schedule-editing.cjs scripts/test-scheduled-dj-targets.cjs

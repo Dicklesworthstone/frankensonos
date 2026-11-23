@@ -715,6 +715,12 @@ and `fsonos dj sync` refreshes it on demand.
 The graphical [Listening Studio](docs/DASHBOARD.md) at `/dashboard` also offers
 **Standing taste** for persistent DJ preferences across every group, including
 favored and avoided music, default energy, explicit content, pins and bans.
+Choose **Keep avoids and wait**, or run `fsonos dj prefs set strict_avoids true`,
+to keep avoided genres, artists, eras and moods excluded when no permitted
+candidate remains. The DJ explains the empty pool; queued music keeps playing.
+Pins and explicitly named steering retain their precedence. The option defaults
+to false and can be unset independently of the avoided lists. See
+[standing DJ preferences](docs/DJ_PREFERENCES.md).
 **Rehearse a set** uses the real planner to preview whole works, reasons and
 hourly energy and variety for a chosen group and start time. Its temporary mood
 and filters affect only that preview; rehearsing never starts music, edits a
