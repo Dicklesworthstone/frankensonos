@@ -14,6 +14,9 @@ use std::collections::HashSet;
 use std::iter;
 use std::net::IpAddr;
 
+mod endpoint;
+pub(crate) use endpoint::read_at;
+
 fn invalid(detail: &str) -> ProtoError {
     ProtoError::Malformed(format!("incoherent topology: {detail}"))
 }

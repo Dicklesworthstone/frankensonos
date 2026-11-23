@@ -73,8 +73,8 @@ resume, pause, stop, next, previous, and both absolute and relative seeks.
 Silent loads and their prerequisite pause use the same check. Navigation and
 seek verify ownership after their preparatory reads, immediately before the
 write. A household-wide topology listing the coordinator somewhere else is
-insufficient: the coordinator's own advertised address must match the endpoint,
-and the topology must be coherent. An address now belonging to another group
+insufficient: coherent topology and the coordinator's own endpoint identity
+must agree. A stale advertised address needs the fresh description proof below. An address now belonging to another group
 therefore cannot receive a command intended for the old player, even when it
 already has the same source or queue track.
 
@@ -127,6 +127,47 @@ Focused regressions: `cargo test --locked -p fsonos-core --test control
 Acknowledged source/queue-stage regressions are in `source_start_sim`,
 `queue_start_sim` and `ordered_mode_recovery_sim` in `fsonos-core`, with the outer
 retry boundary exercised by `fsonos-api`'s `command_recovery_sim`.
+
+## Recover while a player still advertises its old address
+
+Discovery can identify a player's new DHCP address before its own topology
+advertises that address. The shared command proof now accepts this bounded
+case: coherent topology still contains the requested physical player, no other
+member or direct satellite claims the contacted address, and a fresh GET of
+that address's fixed device-description path identifies the exact same renderer.
+
+The description read is bracketed by coherent topology reads. Comparison repairs
+only the requested player's Location; its identity, group, coordinator, boot
+sequence, membership and all other addresses must remain unchanged. The advertised
+address may stay old or catch up to the contacted address. A third address means
+the player moved again and is refused. Missing, duplicate, conflicting or
+unsupported nested-player evidence cannot authorize repair.
+
+Device descriptions require one unambiguous root UDN. SOAP, descriptions and
+GENA refuse HTTP redirects, so a different endpoint cannot lend its identity or
+receive a control request. Artwork byte reads retain their redirect support.
+Ordinary matching topology requires no additional description read. A fallback
+adds one description GET and one topology read, and the evidence is never
+reused for a later command.
+
+Direct-source and queue starts, their confirmations, scene/source restoration,
+and own-player cleanup use the same repaired binding. Group roles and the
+paired grouping checks remain unchanged; identifying a group member never
+promotes it to coordinator. Peer-witness reads retain their existing checks.
+Repair adds no retry budget and cannot replay a possibly completed write.
+
+The S1/S2 regressions in `endpoint_readdressing_sim` cover DHCP recovery,
+direct and ordered queue starts, stale Location catch-up, unavailable or
+ambiguous descriptions, reused addresses, conflicting members, coordinator
+roles, and topology changes during verification. The protocol redirect tests
+use real localhost servers and assert that redirected endpoints receive no
+speaker control or description request.
+
+~~~bash
+cargo test --locked -p fsonos-core --test endpoint_readdressing_sim
+cargo test --locked -p fsonos-proto --lib net::redirect_tests
+cargo test --locked -p fsonos-proto --lib description::tests
+~~~
 
 ## Grouping keeps both physical destinations
 

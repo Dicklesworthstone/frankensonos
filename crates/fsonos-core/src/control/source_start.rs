@@ -7,8 +7,8 @@
 //! must not replay the already completed source change.
 
 use crate::CoreError;
+use crate::topology::read_at;
 use fsonos_proto::control::{self as soap, MediaInfo};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
@@ -155,7 +155,7 @@ fn confirmed<T: Transport + ?Sized>(
         if !source.matches(&soap::get_media_info(transport, host)?) {
             return Ok(false);
         }
-        let topology = get_zone_group_state(transport, host)?;
+        let topology = read_at(transport, host, coordinator)?;
         crate::topology::coordinator_at(&topology, host, coordinator)
     };
     match stage {

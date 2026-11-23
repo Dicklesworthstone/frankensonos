@@ -6,10 +6,10 @@
 use super::queue_removal::{Snapshot, read};
 use super::{Queued, TrackBatchDestination};
 use crate::CoreError;
+use crate::topology::read_at;
 use fsonos_proto::content::{BrowseFlag, MAX_BROWSE_OBJECTS, QUEUE, browse};
 use fsonos_proto::control::{self as soap, Enqueued};
 use fsonos_proto::didl::{SpotifyBare, SpotifyContainer, spotify_uri_from_renderer_uri};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
@@ -41,7 +41,7 @@ fn leads<T: Transport + ?Sized>(
     host: IpAddr,
     expected: &PlayerId,
 ) -> Result<bool, ProtoError> {
-    crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, expected)
+    crate::topology::coordinator_at(&read_at(t, host, expected)?, host, expected)
 }
 
 fn same_track(left: &str, right: &str) -> bool {

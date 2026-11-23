@@ -3,8 +3,8 @@
 
 use super::source_start;
 use crate::CoreError;
+use crate::topology::read_at;
 use fsonos_proto::control as soap;
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
@@ -19,7 +19,7 @@ pub(super) fn play<T: Transport + ?Sized>(
     super::require_coordinator(t, host, coordinator)?;
     Ok(complete("Play", soap::play(t, host), || {
         source_start::wait_for_playing(t, host, || {
-            crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)
+            crate::topology::coordinator_at(&read_at(t, host, coordinator)?, host, coordinator)
         })
     })?)
 }
@@ -87,7 +87,7 @@ fn same_coordinator<T: Transport + ?Sized>(
     let Some(coordinator) = coordinator else {
         return Ok(true);
     };
-    crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)
+    crate::topology::coordinator_at(&read_at(t, host, coordinator)?, host, coordinator)
 }
 
 fn complete(

@@ -3,9 +3,9 @@
 //! Play can run. A changed source, group or queue during settling cancels it.
 
 use super::{RestoreOp, SnapshotSource, ZoneSnapshot, queue_update_id, run};
+use crate::topology::read_at;
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::control::{self as soap, MediaInfo};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
@@ -107,7 +107,7 @@ fn group<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
 ) -> Result<Vec<PlayerId>, CoreError> {
-    let topology = get_zone_group_state(t, host)?;
+    let topology = read_at(t, host, coordinator)?;
     if !crate::topology::coordinator_at(&topology, host, coordinator)? {
         return Err(unproven(
             "the snapshot player no longer owns its control address",

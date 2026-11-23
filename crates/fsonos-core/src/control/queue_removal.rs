@@ -2,8 +2,8 @@
 //! One native removal is followed by a complete observation, never a replay.
 
 use crate::CoreError;
+use crate::topology::read_at;
 use fsonos_proto::content::{MAX_BROWSE_OBJECTS, QUEUE, browse_snapshot};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
@@ -109,7 +109,7 @@ fn coordinator<T: Transport + ?Sized>(
     host: IpAddr,
     expected: &PlayerId,
 ) -> Result<bool, ProtoError> {
-    crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, expected)
+    crate::topology::coordinator_at(&read_at(t, host, expected)?, host, expected)
 }
 
 fn uncertain(write: Option<&ProtoError>, detail: impl std::fmt::Display) -> RemovalError {

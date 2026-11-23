@@ -1,7 +1,7 @@
 //! Keep one staged replacement addressed to the original group and source.
 
+use crate::topology::read_at;
 use fsonos_proto::soap::{self, AV_TRANSPORT};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ impl Destination {
         host: IpAddr,
         coordinator: &PlayerId,
     ) -> Result<Self, ProtoError> {
-        let topology = get_zone_group_state(t, host)?;
+        let topology = read_at(t, host, coordinator)?;
         if !crate::topology::coordinator_at(&topology, host, coordinator)? {
             return Err(ProtoError::Malformed(
                 "the replacement target's address no longer identifies its coordinator".into(),

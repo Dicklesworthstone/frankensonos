@@ -2,11 +2,11 @@
 
 use crate::control::{self, Queued, TrackBatchDestination};
 use crate::favorites::{Favorite, FavoriteKind};
+use crate::topology::read_at;
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::content::{QUEUE, browse_snapshot};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
@@ -225,7 +225,7 @@ fn enqueue_observed<T: Transport + ?Sized>(
     };
     // Undo evidence above is optional; endpoint ownership is not. An old
     // address can now answer for another group in the same household.
-    if !crate::topology::coordinator_at(&get_zone_group_state(t, host)?, host, coordinator)? {
+    if !crate::topology::coordinator_at(&read_at(t, host, coordinator)?, host, coordinator)? {
         return Err(ProtoError::Malformed(
             "the favorite enqueue target's address no longer identifies its coordinator".into(),
         )
@@ -233,7 +233,7 @@ fn enqueue_observed<T: Transport + ?Sized>(
     }
     let sent = soap::enqueue_uri(t, host, uri, &favorite.metadata, at, next && playing_queue);
     let after = read(t, host).map_err(|_| uncertain("the post-add queue could not be read"))?;
-    let owns_queue = get_zone_group_state(t, host)
+    let owns_queue = read_at(t, host, coordinator)
         .and_then(|topology| crate::topology::coordinator_at(&topology, host, coordinator))
         .map_err(|_| uncertain("the post-add coordinator could not be verified"))?;
     if !owns_queue {

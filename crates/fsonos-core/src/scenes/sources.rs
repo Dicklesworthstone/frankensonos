@@ -4,8 +4,8 @@
 
 use super::{SceneError, SceneOp, ScenePlan, check_playlist_sources, validate_track_selection};
 use crate::favorites::{self, Favorite, FavoriteError, FavoriteKind};
+use crate::topology::read_at;
 use crate::{CoreError, HouseholdState, control};
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
@@ -106,7 +106,7 @@ pub(super) fn confirm_audience<T: Transport + ?Sized>(
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
     let host = control::locate(households, coordinator)?.ip;
-    let topology = get_zone_group_state(transport, host)?;
+    let topology = read_at(transport, host, coordinator)?;
     if !crate::topology::coordinator_at(&topology, host, coordinator)? {
         return Err(invalid_audience(
             "the selected room no longer owns its control address; refresh and apply again",

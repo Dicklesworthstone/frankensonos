@@ -2,12 +2,12 @@
 //! A reference is valid only on its original coordinator and queue revision.
 
 use crate::snapshot::{self, Aspect, SnapshotSource, ZoneSnapshot};
+use crate::topology::read_at;
 use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::content::{self, BrowseFlag, QUEUE};
 use fsonos_proto::control::{self as soap, MediaInfo, PositionInfo};
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_proto::play_mode::get_play_mode;
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{HouseholdId, PlayMode, PlayerId, TransportState};
 use serde::{Deserialize, Serialize};
@@ -68,7 +68,7 @@ pub(super) fn group<T: Transport + ?Sized>(
     host: IpAddr,
     coordinator: &PlayerId,
 ) -> Result<Group, ProtoError> {
-    let topology = get_zone_group_state(t, host)?;
+    let topology = read_at(t, host, coordinator)?;
     if !crate::topology::coordinator_at(&topology, host, coordinator)? {
         return Err(invalid(
             "the original player no longer owns its control address",

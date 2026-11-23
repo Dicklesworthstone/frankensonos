@@ -57,8 +57,15 @@ impl DeviceDescription {
 /// Parse a device description document.
 pub fn parse_device_description(doc_text: &str) -> Result<DeviceDescription, ProtoError> {
     let doc = xml::parse(doc_text)?;
-    let device = xml::child(doc.root_element(), "device")
+    let mut devices = xml::children(doc.root_element(), "device");
+    let device = devices
+        .next()
         .ok_or_else(|| ProtoError::Malformed("device description has no <device>".into()))?;
+    if devices.next().is_some() {
+        return Err(ProtoError::Malformed(
+            "device description has more than one root device".into(),
+        ));
+    }
     let required = |name: &str| {
         xml::child_text_nonempty(device, name)
             .map(|t| t.trim().to_string())
@@ -66,11 +73,31 @@ pub fn parse_device_description(doc_text: &str) -> Result<DeviceDescription, Pro
     };
     let optional =
         |name: &str| xml::child_text_nonempty(device, name).map(|t| t.trim().to_string());
-    let udn = required("UDN")?;
+    let mut identities = xml::children(device, "UDN");
+    let identity = identities
+        .next()
+        .ok_or_else(|| ProtoError::Malformed("device description has no <UDN>".into()))?;
+    if identities.next().is_some() || identity.children().any(|child| child.is_element()) {
+        return Err(ProtoError::Malformed(
+            "device description has an ambiguous root UDN".into(),
+        ));
+    }
+    let udn: String = identity
+        .children()
+        .filter(|child| child.is_text())
+        .filter_map(|child| child.text())
+        .collect();
+    let udn = udn.trim();
+    let udn = udn.strip_prefix("uuid:").unwrap_or(udn);
+    if udn.trim().is_empty() {
+        return Err(ProtoError::Malformed(
+            "device description has an empty root UDN".into(),
+        ));
+    }
     let mut services = Vec::new();
     collect_services(device, &mut services);
     Ok(DeviceDescription {
-        udn: PlayerId(udn.strip_prefix("uuid:").unwrap_or(&udn).to_string()),
+        udn: PlayerId(udn.to_string()),
         room_name: optional("roomName").unwrap_or_default(),
         display_name: optional("displayName"),
         model_name: required("modelName")?,
@@ -122,6 +149,34 @@ mod tests {
         assert_eq!(d.sw_gen, None);
         assert_eq!(d.services.len(), 0);
         assert!(!d.is_renderer());
+    }
+
+    #[test]
+    fn root_identity_must_be_unique_and_unambiguous() {
+        for identity in [
+            "<UDN>uuid:A</UDN><UDN>uuid:A</UDN>",
+            "<UDN>uuid:A</UDN><UDN>uuid:B</UDN>",
+            "<UDN> </UDN>",
+            "<UDN>uuid:</UDN>",
+            "<UDN>uuid:A<other>uuid:B</other></UDN>",
+        ] {
+            let doc =
+                format!("<root><device>{identity}<modelName>Sonos</modelName></device></root>");
+            assert!(parse_device_description(&doc).is_err(), "{identity}");
+        }
+        let device = "<device><UDN>uuid:A</UDN><modelName>Sonos</modelName></device>";
+        assert!(parse_device_description(&format!("<root>{device}{device}</root>")).is_err());
+    }
+
+    #[test]
+    fn root_identity_uses_all_text_and_keeps_embedded_device_ids_separate() {
+        let doc = "<root><device><UDN>uuid:Root<!-- split -->Player</UDN>\
+                   <modelName>Sonos</modelName><deviceList><device>\
+                   <UDN>uuid:EmbeddedRenderer</UDN></device></deviceList></device></root>";
+        assert_eq!(
+            parse_device_description(doc).unwrap().udn,
+            PlayerId("RootPlayer".into())
+        );
     }
 
     #[test]

@@ -1059,6 +1059,15 @@ cannot silently receive the old fade. If a listener interrupts a fade-to-pause,
 rooms still owned by that fade return to their original levels, the listener's
 new level is preserved, and playback stays running.
 
+Shared command proofs also tolerate an advertised address that lags a verified
+DHCP move. Only the requested renderer's fresh, unambiguous description can
+repair its Location, with unchanged topology before and after that read. A
+reused address, conflicting member, changed group/boot or further address move
+remains a refusal. SOAP, GENA and description HTTP cannot redirect to another
+endpoint; artwork retains its redirect behavior. Source/queue confirmations and
+own-player cleanup keep the same verified binding. See
+`docs/COMMAND_RECOVERY.md` for the bounded proof and regression coverage.
+
 New volume, mute, group-volume and volume-fade actions retain the exact room
 players and level fields they changed. Their undo restores those fields while
 preserving the current source, queue occurrence, playback state, grouping and

@@ -79,13 +79,15 @@ fn addr(households: &[HouseholdState], id: &PlayerId) -> Result<IpAddr, CoreErro
 /// Verify that the addressed endpoint still belongs to the requested player
 /// before a room-addressed read or mutation. Group members and bonded
 /// satellites remain valid targets; bridges cannot render audio. Unavailable
-/// or incoherent topology retains its protocol error. This sends no writes.
+/// or incoherent topology retains its protocol error. A stale Location needs
+/// the endpoint's own matching device description and stable topology.
+/// This sends no writes.
 pub fn require_player<T: Transport + ?Sized>(
     transport: &T,
     host: IpAddr,
     player: &PlayerId,
 ) -> Result<(), CoreError> {
-    let topology = get_zone_group_state(transport, host)?;
+    let topology = crate::topology::read_at(transport, host, player)?;
     crate::topology::validate(&topology)?;
     if topology
         .groups
@@ -106,13 +108,15 @@ pub fn require_player<T: Transport + ?Sized>(
 /// coordinator before a coordinator-addressed mutation. A household-wide
 /// topology merely naming the player is not proof that it owns this address.
 /// A known mismatch returns [`CoreError::TargetChanged`]; unavailable or
-/// incoherent topology retains its protocol error. This function sends no writes.
+/// incoherent topology retains its protocol error. A stale Location needs
+/// independent endpoint identity, without changing the coordinator or group.
+/// This function sends no writes.
 pub fn require_coordinator<T: Transport + ?Sized>(
     transport: &T,
     host: IpAddr,
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    let topology = get_zone_group_state(transport, host)?;
+    let topology = crate::topology::read_at(transport, host, coordinator)?;
     if crate::topology::coordinator_at(&topology, host, coordinator)? {
         Ok(())
     } else {
@@ -146,7 +150,7 @@ pub(crate) fn require_coordinator_after_leave<T: Transport + ?Sized>(
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
     let until = Instant::now() + LEAVE_WAIT;
-    let topology = get_zone_group_state(transport, host)?;
+    let topology = crate::topology::read_at(transport, host, coordinator)?;
     if crate::topology::coordinator_at(&topology, host, coordinator)? {
         return Ok(());
     }
@@ -1017,7 +1021,7 @@ fn wait_until_alone<T: Transport + ?Sized>(
     loop {
         // Alone: it leads its group, with nobody visible but itself (a
         // stereo pair's other half and a sub are invisible members).
-        let current = get_zone_group_state(t, host)?;
+        let current = crate::topology::read_at(t, host, member)?;
         crate::topology::validate(&current)?;
         if !topology_player_at(&current, host, member) {
             return Err(coordinator_changed());
@@ -1072,7 +1076,7 @@ fn reunite_room<T: Transport + ?Sized>(
     else {
         return;
     };
-    let Ok(now) = get_zone_group_state(t, host) else {
+    let Ok(now) = crate::topology::read_at(t, host, member) else {
         return;
     };
     if crate::topology::validate(&now).is_err() || !topology_player_at(&now, host, member) {

@@ -9,10 +9,10 @@
 
 use super::source_start::wait_for_playing;
 use crate::CoreError;
+use crate::topology::read_at;
 use fsonos_proto::content::{BrowseSnapshot, QUEUE, browse_range_snapshot};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayMode, PlayerId, TransportState};
 use std::net::IpAddr;
@@ -248,7 +248,7 @@ fn confirmed<T: Transport + ?Sized>(
     if soap::get_media_info(transport, host)?.uri != own_queue {
         return Ok(false);
     }
-    if !crate::topology::coordinator_at(&get_zone_group_state(transport, host)?, host, coordinator)?
+    if !crate::topology::coordinator_at(&read_at(transport, host, coordinator)?, host, coordinator)?
     {
         return Ok(false);
     }
@@ -280,7 +280,7 @@ fn confirmed<T: Transport + ?Sized>(
         if soap::get_media_info(transport, host)?.uri != own_queue {
             return Ok(false);
         }
-        let topology = get_zone_group_state(transport, host)?;
+        let topology = read_at(transport, host, coordinator)?;
         if !crate::topology::coordinator_at(&topology, host, coordinator)? {
             return Ok(false);
         }
@@ -336,7 +336,7 @@ fn mode_confirmed<T: Transport + ?Sized>(
     let own_queue = format!("x-rincon-queue:{}#0", coordinator.0);
     Ok(
         crate::topology::coordinator_at(
-            &get_zone_group_state(transport, host)?,
+            &read_at(transport, host, coordinator)?,
             host,
             coordinator,
         )? && soap::get_media_info(transport, host)?.uri == own_queue
