@@ -26,6 +26,7 @@ mod contents;
 mod management;
 mod queue_selection;
 mod selection;
+mod spotify;
 mod tracks;
 
 pub use additions::append_tracks;
@@ -34,6 +35,7 @@ pub use management::{PlaylistChange, remove, rename};
 pub use queue_selection::{queue_selection_revision, select_queue_tracks};
 pub(crate) use selection::validate_native_track;
 pub use selection::{select_track, select_tracks};
+pub use spotify::prepare_spotify_tracks;
 pub use tracks::{
     MAX_PLAYLIST_EDIT_BYTES, MAX_PLAYLIST_EDIT_TRACKS, PlaylistTrackChange, move_tracks,
     remove_tracks,

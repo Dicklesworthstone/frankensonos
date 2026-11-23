@@ -422,6 +422,66 @@ The operation requires `append_sonos_playlist_tracks` in the `house-config`
 class. CLI uses the selected daemon when available, supports explicit
 `--direct` / `--daemon`, and never retries an answered daemon failure locally.
 
+## Add Spotify selections directly
+
+Add **1–10 Spotify tracks or episodes** to an existing saved Sonos playlist
+without first loading them into the playing queue. This is useful for curating
+music found in the cached library, online catalog search, or shared links while
+the house keeps listening to something else. Order and deliberate repetitions
+are retained; album, artist, playlist and show containers are not expanded.
+
+Read the destination's exact native id and contents revision first:
+
+```sh
+fsonos --json playlist-contents 'Kitchen@S1' SQ:7 --limit 1
+fsonos playlist-add-tracks 'Kitchen@S1' SQ:7 \
+  spotify:track:0000000000000000000001 \
+  spotify:episode:0000000000000000000002 \
+  spotify:track:0000000000000000000001 \
+  --expected-revision '<destination contents revision>'
+```
+
+Replace the illustrative source identities with actual Spotify URIs or share
+links. `--json`, `--daemon`, `--daemon-url` and `--direct` use the ordinary CLI
+routing rules. A failed selected-daemon request never falls back to local
+speaker writes.
+
+HTTP uses `POST /sonos/playlists/add-tracks`; the Full-profile MCP tool is
+`add_tracks_to_sonos_playlist`, with the same request:
+
+```json
+{
+  "zone": "Kitchen@S1",
+  "playlist": "SQ:7",
+  "expected_revision": "copy-the-saved-playlist-contents-revision",
+  "tracks": [
+    {"source_uri": "spotify:track:0000000000000000000001", "title": "First track"},
+    {"source_uri": "spotify:episode:0000000000000000000002"},
+    {"source_uri": "spotify:track:0000000000000000000001", "title": "First track"}
+  ]
+}
+```
+
+The destination revision belongs to the **native saved playlist**, independent
+of the current queue or cached-library listing. Titles are optional and cosmetic;
+source links normalize to canonical identities. The server learns Spotify's
+renderer metadata from this household's own favorites. A Spotify Web API sign-in
+is unnecessary for these concrete sources, but the household needs its existing
+Sonos Spotify linkage and a favorite from which to learn the renderer.
+
+The `add_tracks_to_sonos_playlist` permission belongs to `house-config`.
+Playback permission is unnecessary: the operation leaves current queues,
+playback, volume, grouping and DJ ownership unchanged. The same complete
+destination bounds, native update checks and per-append confirmation described
+above apply. The result contains `playlist`, `zone`, `revision`,
+`previous_total`, `total`, `added`, canonical `source_uris`, `titles`, `done`
+and `logged`. There is no playback undo for this catalog edit.
+
+A batch can stop after some additions have succeeded. Its uncertain error
+retains the confirmed count; it is never automatically replayed. Inspect the
+original household's destination contents before deciding on another edit.
+A stale destination revision rejects the operation before any saved addition.
+
 ## Phone remote and desktop dashboard
 
 Open **Play a link or Sonos playlist** in the phone remote, or the source dialog

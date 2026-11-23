@@ -245,6 +245,7 @@ fn configured_server(
             .tool(tools::RemoveSonosPlaylistTracks)
             .tool(tools::MoveSonosPlaylistTracks)
             .tool(tools::AppendSonosPlaylistTracks)
+            .tool(tools::AddTracksToSonosPlaylist)
             .tool(tools::CurrentFavorite)
             .tool(tools::InspectFavorite)
             .tool(tools::SaveFavorite)

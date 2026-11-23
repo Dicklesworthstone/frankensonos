@@ -11,7 +11,8 @@ use fsonos_mcp::tools::dj_prefs::{DjPrefer, DjPreferences};
 use fsonos_mcp::tools::dj_rehearse::DjRehearse;
 use fsonos_mcp::tools::dj_sync::DjSyncStatus;
 use fsonos_mcp::tools::{
-    AddToQueue, AddTracksToQueue, Backend, Daemon, DjStart, DjSteer, SearchQueue, install,
+    AddToQueue, AddTracksToQueue, AddTracksToSonosPlaylist, Backend, Daemon, DjStart, DjSteer,
+    SearchQueue, install,
 };
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
@@ -180,6 +181,20 @@ fn cases() -> Vec<Case> {
             }),
             method: "POST",
             path: "/queue/tracks",
+        },
+        Case {
+            handler: Box::new(AddTracksToSonosPlaylist),
+            arguments: json!({
+                "zone": "Kitchen@S2", "playlist": "SQ:7",
+                "expected_revision": "saved-revision",
+                "tracks": [
+                    {"source_uri": "spotify:track:0000000000000000000001"},
+                    {"source_uri": "spotify:episode:0000000000000000000002"},
+                    {"source_uri": "spotify:track:0000000000000000000001"}
+                ]
+            }),
+            method: "POST",
+            path: "/sonos/playlists/add-tracks",
         },
         Case {
             handler: Box::new(DjFeedback),

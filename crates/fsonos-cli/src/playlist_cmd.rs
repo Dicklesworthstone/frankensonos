@@ -9,6 +9,9 @@ pub use edit::{PlaylistMoveTracksArgs, PlaylistRemoveTracksArgs, move_tracks, re
 mod append;
 pub use append::{PlaylistAppendTracksArgs, append_tracks};
 
+mod add;
+pub use add::{PlaylistAddTracksArgs, add_tracks};
+
 use clap::Args;
 use fsonos_api::Failure;
 use fsonos_api::surface::sonos_playlists::{

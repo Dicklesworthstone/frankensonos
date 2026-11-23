@@ -9,6 +9,9 @@ pub use edit::{MoveSonosPlaylistTracks, RemoveSonosPlaylistTracks};
 mod append;
 pub use append::AppendSonosPlaylistTracks;
 
+mod add;
+pub use add::AddTracksToSonosPlaylist;
+
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::sonos_playlists::{

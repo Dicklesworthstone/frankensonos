@@ -5,6 +5,7 @@ use fastapi::{JsonSchema, Request, fastapi_openapi};
 
 use super::{Ctx, Op, answer, body, query_param, whole_number};
 use crate::surface::sonos_playlists::{
+    AddTracksToSonosPlaylistRequest, AddedTracksToSonosPlaylistDto,
     AppendSonosPlaylistTracksRequest, AppendedSonosPlaylistDto, EditedSonosPlaylistDto,
     ManagedSonosPlaylistDto, MoveSonosPlaylistTracksRequest, PlaySonosPlaylistRequest,
     RemoveSonosPlaylistRequest, RemoveSonosPlaylistTracksRequest, RenameSonosPlaylistRequest,
@@ -103,6 +104,16 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 
 fn edit_routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     vec![
+        cx.route(
+            &Op::post(
+                "/sonos/playlists/add-tracks", "add_tracks_to_sonos_playlist", TAG,
+                "Add 1-10 explicit Spotify tracks or episodes to a reviewed native playlist without changing playback (house-config permission)",
+            ),
+            |s, c, req| answer(body::<AddTracksToSonosPlaylistRequest>(req)
+                .and_then(|r| s.add_tracks_to_sonos_playlist(c, &r))),
+        )
+        .request_schema::<AddTracksToSonosPlaylistRequest>(true)
+        .response_schema::<AddedTracksToSonosPlaylistDto>(200, "The saved playlist confirmed with the ordered Spotify selection added"),
         cx.route(
             &Op::post(
                 "/sonos/playlists/append-tracks", "append_sonos_playlist_tracks", TAG,

@@ -90,6 +90,7 @@ fn op_name(op: &SceneOp) -> &'static str {
         SceneOp::Favorite { .. } => "favorite",
         SceneOp::SonosPlaylist { .. } => "sonos_playlist",
         SceneOp::Uri { .. } => "uri",
+        SceneOp::Tracks { .. } => "tracks",
         SceneOp::Queue { .. } => "queue",
         SceneOp::QueueBackup { .. } => "queue_backup",
         SceneOp::Dj { .. } => "dj",

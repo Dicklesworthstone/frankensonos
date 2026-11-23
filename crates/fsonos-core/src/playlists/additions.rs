@@ -15,8 +15,9 @@ use fsonos_types::PlayerId;
 
 /// Append 1–10 retained native tracks in the supplied order, including repeats.
 /// The exact destination SQ: id and its current contents revision are required.
-/// Callers obtain the tracks from a checked queue or saved-playlist selection;
-/// no Spotify account lookup or renderer substitution takes place here.
+/// Callers obtain the tracks from a checked queue or saved-playlist selection,
+/// or render explicit Spotify identities with [`super::prepare_spotify_tracks`].
+/// No Spotify account lookup or renderer substitution takes place here.
 ///
 /// The complete destination and incoming metadata must fit the saved-edit
 /// bounds before any write. Each native append is confirmed against the full

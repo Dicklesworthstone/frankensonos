@@ -145,6 +145,102 @@ fn http_native_occurrence_batches_retain_order_and_distinguish_queue_and_playlis
     }
 }
 
+#[test]
+fn http_explicit_spotify_additions_preserve_playback_and_require_the_saved_revision() {
+    const PATH: &str = "/sonos/playlists/add-tracks";
+    for s2 in [false, true] {
+        let sim = sim(s2);
+        let api = Api::start(&sim, Client::LoopbackHttp);
+        let before = api.get(CONTENTS);
+        let queue = api.get("/zones/Room/queue");
+        let body = json!({
+            "zone": "Room", "playlist": "SQ:7", "expected_revision": before["revision"],
+            "tracks": [
+                {"source_uri": "https://open.spotify.com/track/0000000000000000000001", "title": "First"},
+                {"source_uri": "spotify:episode:0000000000000000000002", "title": "Episode"},
+                {"source_uri": "spotify:track:0000000000000000000001", "title": "First"}
+            ]
+        });
+        let start = sim.soap_log().len();
+        let (status, added) = api.call(PATH, Some(&body));
+        assert_eq!(status, 200, "{added}");
+        assert_eq!(added["playlist"], before["playlist"]);
+        assert_eq!(added["previous_total"], before["total"]);
+        assert_eq!(added["added"], 3);
+        assert_eq!(
+            added["source_uris"],
+            json!([
+                "spotify:track:0000000000000000000001",
+                "spotify:episode:0000000000000000000002",
+                "spotify:track:0000000000000000000001"
+            ])
+        );
+        assert_eq!(added["titles"], json!(["First", "Episode", "First"]));
+        assert_eq!(added["logged"], true);
+        let after = api.get(CONTENTS);
+        assert_eq!(after["revision"], added["revision"]);
+        assert_eq!(after["total"], before["total"].as_u64().unwrap() + 3);
+        assert_eq!(api.get("/zones/Room/queue"), queue);
+        let (status, error) = api.call(PATH, Some(&body));
+        assert_eq!(status, 409, "{error}");
+        assert_eq!(error["code"], "QUEUE_CHANGED");
+        let writes: Vec<_> = sim.soap_log()[start..]
+            .iter()
+            .filter(|call| call.action != "Browse" && !call.action.starts_with("Get"))
+            .map(|call| call.action.clone())
+            .collect();
+        assert_eq!(writes, ["AddURIToSavedQueue"; 3]);
+        let doc = api.get("/openapi.json");
+        let operation = &doc["paths"][PATH]["post"];
+        assert_eq!(operation["operationId"], "add_tracks_to_sonos_playlist");
+        let input = schema(
+            &doc,
+            &operation["requestBody"]["content"]["application/json"]["schema"],
+        );
+        for field in ["zone", "playlist", "expected_revision", "tracks"] {
+            assert!(
+                input["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(field)),
+                "{input}"
+            );
+        }
+        let denied = Api::start(&sim, Client::Unknown);
+        let (status, error) = denied.call(PATH, Some(&body));
+        assert_eq!(status, 403, "{error}");
+    }
+}
+
+#[test]
+fn http_explicit_saved_additions_reject_bad_selections_without_speaker_io() {
+    const PATH: &str = "/sonos/playlists/add-tracks";
+    let sim = sim(true);
+    let api = Api::start(&sim, Client::LoopbackHttp);
+    let original = json!({
+        "zone": "Room", "playlist": "SQ:7", "expected_revision": "observed",
+        "tracks": [{"source_uri": "spotify:track:0000000000000000000001"}]
+    });
+    let start = sim.soap_log().len();
+    for field in ["zone", "playlist", "expected_revision", "tracks"] {
+        let mut body = original.clone();
+        body.as_object_mut().unwrap().remove(field);
+        let (status, failure) = api.call(PATH, Some(&body));
+        assert_eq!(status, 422, "{failure}");
+    }
+    for tracks in [
+        json!([]),
+        json!([{"source_uri": "spotify:album:0000000000000000000001"}]),
+        json!([{"source_uri": "spotify:track:0000000000000000000001", "metadata": "supplied"}]),
+    ] {
+        let mut body = original.clone();
+        body["tracks"] = tracks;
+        let (status, failure) = api.call(PATH, Some(&body));
+        assert_eq!(status, 422, "{failure}");
+    }
+    assert_eq!(sim.soap_log().len(), start);
+}
+
 fn runtime() -> Runtime {
     RuntimeBuilder::current_thread()
         .with_reactor(create_reactor().unwrap())

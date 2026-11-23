@@ -1,9 +1,10 @@
 //! Compose native saved playlists through the policy, group and action-log
 //! boundary, using the simulator's real sockets on both Sonos generations.
 
+use fsonos_api::surface::queue::QueueTrackInput;
 use fsonos_api::surface::sonos_playlists::{
-    AppendSonosPlaylistTracksRequest, PlaySonosPlaylistRequest, RenameSonosPlaylistRequest,
-    SonosPlaylistContentsDto, SonosPlaylistContentsRequest,
+    AddTracksToSonosPlaylistRequest, AppendSonosPlaylistTracksRequest, PlaySonosPlaylistRequest,
+    RenameSonosPlaylistRequest, SonosPlaylistContentsDto, SonosPlaylistContentsRequest,
 };
 use fsonos_api::{ErrorCode, Surface};
 use fsonos_core::clock::SystemClock;
@@ -357,5 +358,214 @@ fn composition_requires_catalog_permission_for_queue_and_saved_sources_before_io
                 .unwrap_err();
             assert_eq!(denied.code, ErrorCode::PolicyDenied);
         }
+    }
+}
+
+fn spotify_selection() -> Vec<QueueTrackInput> {
+    vec![
+        QueueTrackInput {
+            source_uri: "https://open.spotify.com/track/0000000000000000000001?si=fixture".into(),
+            title: Some("  First & last  ".into()),
+        },
+        QueueTrackInput {
+            source_uri: "spotify:episode:0000000000000000000002".into(),
+            title: Some("Episode <two>".into()),
+        },
+        QueueTrackInput {
+            source_uri: "spotify:track:0000000000000000000001".into(),
+            title: Some("First & last".into()),
+        },
+    ]
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // Keep the preserved playback and native append proof together.
+fn explicit_spotify_selections_compose_saved_playlists_without_staging_in_the_live_queue() {
+    for generation in ["S1", "S2"] {
+        let sim = sim();
+        let initial = households(&sim);
+        let zone = format!("Den@{generation}");
+        let member_zone = format!("Office@{generation}");
+        let other = if generation == "S1" {
+            "Den@S2"
+        } else {
+            "Den@S1"
+        };
+        let lead = resolve_room(&initial, &zone).unwrap();
+        let member = resolve_room(&initial, &member_zone).unwrap();
+        soap::join_group(&sim.lan(), member.player.ip, &lead.coordinator.id).unwrap();
+        let houses = households(&sim);
+        let target = resolve_room(&houses, &member_zone).unwrap();
+        let host = target.coordinator.ip;
+        let mut policy = Policy::default();
+        policy.defaults.max_volume = 25;
+        let s = surface(Box::new(sim.lan()), &houses, policy);
+        play(&s, &zone);
+        let undo = s.preview_undo(&Client::McpStdio).unwrap().unwrap().id;
+        soap::pause(&sim.lan(), host).unwrap();
+        soap::seek_position(&sim.lan(), host, 17).unwrap();
+        set_play_mode(&sim.lan(), host, PlayMode::ShuffleRepeatOne).unwrap();
+        soap::set_volume(&sim.lan(), host, 80).unwrap();
+        let queue = browse_all(&sim.lan(), host, QUEUE).unwrap();
+        let playback = control::playback(&sim.lan(), &houses, &target.coordinator.id).unwrap();
+        let before = contents(&s, &member_zone, "SQ:7");
+        let other_before = contents(&s, other, "SQ:7");
+        let start = sim.soap_log().len();
+        let receipt = s
+            .add_tracks_to_sonos_playlist(
+                &Client::McpStdio,
+                &AddTracksToSonosPlaylistRequest {
+                    zone: member_zone.clone(),
+                    playlist: before.playlist.id.clone(),
+                    expected_revision: before.revision.clone(),
+                    tracks: spotify_selection(),
+                },
+            )
+            .unwrap();
+        let after = contents(&s, &member_zone, "SQ:7");
+        assert_eq!(receipt.zone, "Den");
+        assert_eq!(receipt.playlist, before.playlist);
+        assert_eq!(
+            (receipt.previous_total, receipt.total, receipt.added),
+            (before.total, before.total + 3, 3)
+        );
+        assert_eq!(receipt.revision, after.revision);
+        assert_ne!(receipt.revision, before.revision);
+        assert_eq!(
+            receipt.source_uris,
+            [
+                "spotify:track:0000000000000000000001",
+                "spotify:episode:0000000000000000000002",
+                "spotify:track:0000000000000000000001",
+            ]
+        );
+        assert_eq!(
+            receipt.titles,
+            ["First & last", "Episode <two>", "First & last"]
+        );
+        assert!(receipt.logged && receipt.text().contains(&receipt.revision));
+        assert!(after.items.starts_with(&before.items));
+        let appended = &after.items[before.items.len()..];
+        let identities: Vec<_> = appended
+            .iter()
+            .map(|item| {
+                item.uri
+                    .as_deref()
+                    .unwrap()
+                    .strip_prefix("x-sonos-spotify:")
+                    .unwrap()
+                    .split('?')
+                    .next()
+                    .unwrap()
+                    .replace("%3a", ":")
+                    .replace("%3A", ":")
+            })
+            .collect();
+        assert_eq!(identities, receipt.source_uris);
+        assert_eq!(
+            appended
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            receipt.titles
+        );
+        let calls = sim.soap_log();
+        let writes: Vec<_> = calls[start..]
+            .iter()
+            .filter(|entry| entry.action != "Browse" && !entry.action.starts_with("Get"))
+            .collect();
+        assert_eq!(writes.len(), 3);
+        assert!(writes.iter().all(|entry| {
+            entry.action == "AddURIToSavedQueue" && entry.player == target.coordinator.id.0
+        }));
+        assert_eq!(browse_all(&sim.lan(), host, QUEUE).unwrap(), queue);
+        assert_eq!(
+            control::playback(&sim.lan(), &houses, &target.coordinator.id).unwrap(),
+            playback
+        );
+        assert_eq!(
+            get_play_mode(&sim.lan(), host).unwrap(),
+            PlayMode::ShuffleRepeatOne
+        );
+        assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 80);
+        assert_eq!(contents(&s, other, "SQ:7"), other_before);
+        assert_eq!(s.preview_undo(&Client::McpStdio).unwrap().unwrap().id, undo);
+        let actions = s
+            .recent_actions(&Client::Cli, &ActionFilter::default())
+            .unwrap();
+        let action = actions
+            .iter()
+            .find(|row| {
+                row.action
+                    .intent
+                    .starts_with("add_tracks_to_sonos_playlist:")
+            })
+            .unwrap();
+        assert_eq!(action.action.client, "mcp-stdio");
+        assert_eq!(action.action.decision, "allow");
+        assert!(action.action.before_state.is_none());
+    }
+}
+
+#[test]
+fn explicit_selection_requires_current_destination_and_house_config_permission() {
+    let sim = sim();
+    let houses = households(&sim);
+    let s = surface(Box::new(sim.lan()), &houses, Policy::default());
+    let before = contents(&s, "Den@S2", "SQ:7");
+    let foreign = contents(&s, "Den@S1", "SQ:7");
+    let request = AddTracksToSonosPlaylistRequest {
+        zone: "Den@S2".into(),
+        playlist: before.playlist.id,
+        expected_revision: before.revision,
+        tracks: spotify_selection(),
+    };
+    s.add_tracks_to_sonos_playlist(&Client::McpStdio, &request)
+        .unwrap();
+    let current = contents(&s, "Den@S2", "SQ:7");
+    let start = sim.soap_log().len();
+    for expected_revision in [request.expected_revision.clone(), foreign.revision] {
+        let failure = s
+            .add_tracks_to_sonos_playlist(
+                &Client::McpStdio,
+                &AddTracksToSonosPlaylistRequest {
+                    expected_revision,
+                    ..request.clone()
+                },
+            )
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::QueueChanged);
+    }
+    assert!(
+        sim.soap_log()[start..]
+            .iter()
+            .all(|call| call.action == "Browse" || call.action.starts_with("Get"))
+    );
+    assert_eq!(contents(&s, "Den@S2", "SQ:7"), current);
+    let catalog_only = Policy::from_toml(
+        "[clients.\"mcp-stdio\"]\nallow = ['house-config', 'read']\ndeny = ['play', 'add_to_queue', 'set_volume']\n",
+    )
+    .unwrap();
+    let composer = surface(Box::new(sim.lan()), &houses, catalog_only);
+    let added = composer
+        .add_tracks_to_sonos_playlist(
+            &Client::McpStdio,
+            &AddTracksToSonosPlaylistRequest {
+                expected_revision: current.revision,
+                ..request.clone()
+            },
+        )
+        .unwrap();
+    assert_eq!(added.added, 3);
+    for rule in [
+        "deny = ['add_tracks_to_sonos_playlist']",
+        "deny = ['house-config']",
+        "allow = ['read']",
+    ] {
+        let policy = Policy::from_toml(&format!("[clients.\"mcp-stdio\"]\n{rule}\n")).unwrap();
+        let denied = surface(Box::new(NoSpeakerIo), &[], policy)
+            .add_tracks_to_sonos_playlist(&Client::McpStdio, &request)
+            .unwrap_err();
+        assert_eq!(denied.code, ErrorCode::PolicyDenied);
     }
 }

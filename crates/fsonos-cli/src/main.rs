@@ -178,6 +178,9 @@ enum Command {
     /// Append reviewed queue or saved-playlist occurrences to a native saved playlist.
     /// Requires source and destination revisions; preserves their order and repeats.
     PlaylistAppendTracks(playlist_cmd::PlaylistAppendTracksArgs),
+    /// Add 1-10 Spotify tracks or episodes directly to a saved Sonos playlist.
+    /// Preserves their order and repeats without changing the playing queue.
+    PlaylistAddTracks(playlist_cmd::PlaylistAddTracksArgs),
     /// What played lately, newest first: when, the room whose group played
     /// it, and what.
     History {
@@ -632,6 +635,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::PlaylistRemoveTracks(args) => playlist_cmd::remove_tracks(global, &args),
         Command::PlaylistMoveTracks(args) => playlist_cmd::move_tracks(global, &args),
         Command::PlaylistAppendTracks(args) => playlist_cmd::append_tracks(global, &args),
+        Command::PlaylistAddTracks(args) => playlist_cmd::add_tracks(global, &args),
         Command::PlaylistContents(args) => playlist_cmd::contents(global, &args),
         Command::PlaylistTrack(args) => playlist_cmd::track(global, &args),
         Command::PlaylistTracks(args) => playlist_cmd::tracks(global, &args),
@@ -1134,6 +1138,7 @@ fn plan_for<'a>(
         | Command::PlaylistRemoveTracks(_)
         | Command::PlaylistMoveTracks(_)
         | Command::PlaylistAppendTracks(_)
+        | Command::PlaylistAddTracks(_)
         | Command::PlaylistContents(_)
         | Command::PlaylistTrack(_)
         | Command::PlaylistTracks(_)

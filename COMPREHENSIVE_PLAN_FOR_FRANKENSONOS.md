@@ -1281,6 +1281,16 @@ The new protocol/core/API/simulator Rust regressions still require execution;
 earlier dependency builds were killed before project tests ran. Physical S1/S2
 acceptance remains separate.
 
+Explicit Spotify selections can also add 1–10 track or episode occurrences
+directly to an existing native saved playlist, without staging them in the
+playing queue. CLI `playlist-add-tracks`, HTTP `/sonos/playlists/add-tracks`
+and MCP `add_tracks_to_sonos_playlist` retain the reviewed destination revision,
+order and repeats. The destination household supplies renderer metadata;
+house-config permission and the existing complete-prefix append confirmation
+apply. No Web API lookup, playback permission or queue mutation is needed.
+Partial additions remain visible and are never replayed automatically. See
+[direct saved-playlist selections](docs/SONOS_PLAYLISTS.md#add-spotify-selections-directly).
+
 The phone and Listening room source editors expose these catalog edits through
 a shared **Manage saved playlist** review. Both read the exact saved contents
 before review and again inside their existing command lane before dispatch.

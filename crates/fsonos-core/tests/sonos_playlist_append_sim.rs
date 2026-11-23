@@ -595,3 +595,176 @@ fn invalid_native_selections_fail_before_discovery_or_saved_writes() {
         .is_err()
     );
 }
+
+const SPOTIFY_SELECTION: [(&str, &str); 4] = [
+    ("spotify:track:0000000000000000000701", "Song & friends"),
+    ("spotify:episode:0000000000000000000702", "Episode <two>"),
+    ("spotify:track:0000000000000000000701", "Song & friends"),
+    ("spotify:track:0000000000000000000703", "Découverte"),
+];
+
+#[test]
+fn explicit_spotify_tracks_and_episodes_compose_saved_playlists_without_touching_playback() {
+    use fsonos_proto::didl::{spotify_bare_uri, spotify_track_uri, spotify_uri_from_renderer_uri};
+
+    for s2 in [false, true] {
+        for radio in [false, true] {
+            let f = Fixture::new(s2);
+            let lan = f.sim.lan();
+            if radio {
+                soap::set_av_transport_uri(&lan, f.host, RADIO, "").unwrap();
+                soap::play(&lan, f.host).unwrap();
+            }
+            let before = f.contents(DESTINATION);
+            let playing = f.playback();
+            let params = control::spotify_params(&lan, &f.houses, &f.coordinator)
+                .unwrap()
+                .unwrap();
+            let start = f.sim.soap_log().len();
+            let tracks = playlists::prepare_spotify_tracks(
+                &lan,
+                &f.houses,
+                &f.coordinator,
+                &SPOTIFY_SELECTION,
+            )
+            .unwrap();
+            assert_eq!(tracks.len(), SPOTIFY_SELECTION.len());
+            assert_eq!(tracks[0], tracks[2], "repeated tracks stay repeated");
+            let preparation = f.sim.soap_log();
+            assert!(
+                preparation[start..].iter().all(|entry| {
+                    entry.action == "GetZoneGroupState"
+                        || (entry.action == "Browse"
+                            && entry
+                                .args
+                                .iter()
+                                .any(|(key, value)| key == "ObjectID" && value == "FV:2"))
+                }),
+                "preparation reads only topology and household favorites"
+            );
+            assert!(f.writes_since(start).is_empty());
+            for (track, (source, title)) in tracks.iter().zip(SPOTIFY_SELECTION) {
+                let item = parse_didl(&track.metadata).unwrap().remove(0);
+                let uri = track.uri.as_deref().unwrap();
+                assert_eq!(track.kind, FavoriteKind::Track);
+                assert_eq!(track.title, title);
+                assert_eq!(item.res.as_ref().unwrap().uri, uri);
+                assert_eq!(spotify_uri_from_renderer_uri(uri).as_deref(), Some(source));
+                if source.starts_with("spotify:episode:") {
+                    assert_eq!(uri, spotify_bare_uri(source, params.sid));
+                    assert!(
+                        item.desc.is_none(),
+                        "episodes have no track account descriptor"
+                    );
+                    assert!(!uri.contains("flags=") && !uri.contains("sn="));
+                } else {
+                    assert_eq!(uri, spotify_track_uri(source, &params));
+                    assert_eq!(item.desc.unwrap().value, params.cdudn);
+                }
+            }
+            let start = f.sim.soap_log().len();
+            let result = f.append(&lan, &before.revision, &tracks).unwrap();
+            let after = f.contents(DESTINATION);
+            let mut expected = before.items.clone();
+            expected.extend(retained(&tracks));
+            assert_eq!(normalized(&after.items), normalized(&expected));
+            assert_eq!(result.playlist, before.playlist);
+            assert_eq!(result.revision, after.revision);
+            assert_eq!(result.total, before.total + 4);
+            assert_eq!(f.writes_since(start), [ACTION; 4]);
+            assert_eq!(f.playback(), playing);
+        }
+    }
+}
+
+#[test]
+fn malformed_spotify_selections_fail_before_household_or_playlist_reads() {
+    let id = PlayerId("synthetic-player".into());
+    let oversized = "x".repeat(playlists::MAX_PLAYLIST_EDIT_BYTES + 1);
+    for tracks in [
+        vec![],
+        vec![SPOTIFY_SELECTION[0]; 11],
+        vec![("spotify:album:0000000000000000000701", "Container")],
+        vec![("spotify:artist:0000000000000000000701", "Unresolved artist")],
+        vec![("spotify:show:0000000000000000000701", "Unresolved show")],
+        vec![("spotify:track:short", "Short")],
+        vec![("spotify:episode:00000000000000000007?1", "Invalid")],
+        vec![(SPOTIFY_SELECTION[0].0, "Invalid\0title")],
+        vec![(SPOTIFY_SELECTION[0].0, oversized.as_str())],
+    ] {
+        assert!(playlists::prepare_spotify_tracks(&NoRequests, &[], &id, &tracks).is_err());
+    }
+}
+
+struct NoLinkedSpotify(SimLan);
+
+impl Transport for NoLinkedSpotify {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if action.contains("#Browse") && body.contains("<ObjectID>FV:2</ObjectID>") {
+            return Ok(fsonos_proto::soap::envelope(
+                &fsonos_proto::soap::CONTENT_DIRECTORY,
+                "BrowseResponse",
+                "<Result>&lt;DIDL-Lite/&gt;</Result><NumberReturned>0</NumberReturned>\
+                 <TotalMatches>0</TotalMatches><UpdateID>1</UpdateID>",
+            ));
+        }
+        self.0.soap_post(host, path, action, body)
+    }
+}
+
+#[test]
+fn missing_household_renderer_stops_saved_playlist_preparation_without_mutation() {
+    for s2 in [false, true] {
+        let f = Fixture::new(s2);
+        let playing = f.playback();
+        let before = f.contents(DESTINATION);
+        let start = f.sim.soap_log().len();
+        assert!(matches!(
+            playlists::prepare_spotify_tracks(
+                &NoLinkedSpotify(f.sim.lan()),
+                &f.houses,
+                &f.coordinator,
+                &SPOTIFY_SELECTION,
+            ),
+            Err(CoreError::NoSpotifyFavorite)
+        ));
+        assert!(f.writes_since(start).is_empty());
+        assert_eq!(f.contents(DESTINATION).items, before.items);
+        assert_eq!(f.playback(), playing);
+    }
+}
+
+#[test]
+fn prepared_spotify_selection_cannot_append_to_a_renamed_saved_playlist() {
+    for s2 in [false, true] {
+        let f = Fixture::new(s2);
+        let lan = f.sim.lan();
+        let before = f.contents(DESTINATION);
+        let playing = f.playback();
+        let tracks =
+            playlists::prepare_spotify_tracks(&lan, &f.houses, &f.coordinator, &SPOTIFY_SELECTION)
+                .unwrap();
+        content::rename_object(
+            &lan,
+            f.host,
+            DESTINATION,
+            &before.playlist.title,
+            "Another saved title",
+        )
+        .unwrap();
+        let start = f.sim.soap_log().len();
+        assert!(matches!(
+            f.append(&lan, &before.revision, &tracks),
+            Err(CoreError::PlaylistChanged(_))
+        ));
+        assert!(f.writes_since(start).is_empty());
+        assert_eq!(f.contents(DESTINATION).items, before.items);
+        assert_eq!(f.playback(), playing);
+    }
+}
