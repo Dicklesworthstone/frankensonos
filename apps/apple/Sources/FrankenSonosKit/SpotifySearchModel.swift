@@ -16,6 +16,7 @@ import Foundation
     private let now: @Sendable () -> Date
     private var task: Task<Void, Never>?
     private var epoch: UInt64 = 0
+    private var previousOffsets: [UInt32] = []
     private var stopped = false
 
     public init(read: @escaping Reader, now: @escaping @Sendable () -> Date = { Date() }) {
@@ -27,6 +28,8 @@ import Foundation
         active && !stopped && !loading && (try? SpotifySearchRequest(query: query, kind: kind)) != nil
     }
     public var canChoose: Bool { active && !stopped && !loading && isCurrent && observation != nil }
+    public var canNextPage: Bool { canChoose && observation?.page.nextOffset != nil }
+    public var canPreviousPage: Bool { canChoose && !previousOffsets.isEmpty }
 
     public func resume() { if !stopped { active = true } }
     public func edit(_ value: String) {
@@ -48,23 +51,47 @@ import Foundation
         guard canSearch, task == nil else { return }
         do {
             let request = try SpotifySearchRequest(query: query, kind: kind)
-            invalidate(); loading = true; problem = nil
-            let token = epoch, read = read, now = now
-            task = Task { [weak self] in
-                defer { self?.task = nil; self?.loading = false }
-                do {
-                    try Task.checkCancellation()
-                    let page = try await read(request).validated(for: request)
-                    try Task.checkCancellation()
-                    guard let self, self.active && !self.stopped && self.epoch == token else { return }
-                    self.observation = SpotifySearchObservation(request: request, page: page, receivedAt: now())
-                    self.isCurrent = true
-                } catch {
-                    guard let self, self.active && !self.stopped && self.epoch == token && !Task.isCancelled else { return }
-                    self.problem = error.localizedDescription
-                }
-            }
+            load(request, previousOffsets: [])
         } catch { problem = error.localizedDescription }
+    }
+
+    public func nextPage() {
+        guard canNextPage, let observed = observation, let offset = observed.page.nextOffset else { return }
+        do {
+            let request = try SpotifySearchRequest(query: observed.request.query, kind: observed.request.kind,
+                                                   limit: observed.request.limit, offset: offset)
+            load(request, previousOffsets: previousOffsets + [observed.request.offset])
+        } catch { problem = error.localizedDescription }
+    }
+
+    public func previousPage() {
+        guard canPreviousPage, let observed = observation, let offset = previousOffsets.last else { return }
+        do {
+            let request = try SpotifySearchRequest(query: observed.request.query, kind: observed.request.kind,
+                                                   limit: observed.request.limit, offset: offset)
+            load(request, previousOffsets: Array(previousOffsets.dropLast()))
+        } catch { problem = error.localizedDescription }
+    }
+
+    private func load(_ request: SpotifySearchRequest, previousOffsets: [UInt32]) {
+        guard active && !stopped && !loading && task == nil else { return }
+        invalidate(); loading = true; problem = nil
+        let token = epoch, read = read, now = now
+        task = Task { [weak self] in
+            defer { self?.task = nil; self?.loading = false }
+            do {
+                try Task.checkCancellation()
+                let page = try await read(request).validated(for: request)
+                try Task.checkCancellation()
+                guard let self, self.active && !self.stopped && self.epoch == token else { return }
+                self.previousOffsets = previousOffsets
+                self.observation = SpotifySearchObservation(request: request, page: page, receivedAt: now())
+                self.isCurrent = true
+            } catch {
+                guard let self, self.active && !self.stopped && self.epoch == token && !Task.isCancelled else { return }
+                self.problem = error.localizedDescription
+            }
+        }
     }
 
     public func selection(_ item: SpotifySearchItem, from id: UUID, in zone: Zone,
@@ -78,7 +105,7 @@ import Foundation
     }
 
     private func invalidate() {
-        epoch &+= 1; isCurrent = false; task?.cancel()
+        epoch &+= 1; isCurrent = false; previousOffsets = []; task?.cancel()
     }
     deinit { task?.cancel() }
 }

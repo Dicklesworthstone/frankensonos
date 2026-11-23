@@ -28,11 +28,19 @@ separate Spotify sign-in. Ordinary local reads retain their usual deadline,
 while this online search allows 60 seconds for the daemon's 45-second worker.
 
 Results retain the exact query, kind, canonical source URI and observation time.
-The first page contains at most ten results; a `more` response asks the user to
-refine the query. Search is explicit and single-flight. Changing the query or
-category, cancelling, leaving the view or suspending the app retires selection
-authority. A cancelled request keeps its slot until it drains, and late replies
-cannot overwrite a newer draft.
+Each page contains at most ten results. Use **Next results** and **Previous
+results** to read another page while keeping the same query, category and limit.
+Navigation follows the daemon's raw positions, so a page containing only
+unavailable entries can still lead to more results. Previous results rereads the
+provider at the earlier observed position. A missing continuation asks the user
+to refine the query when more results exist beyond the provider's bound.
+
+Search and paging are explicit and single-flight. Changing the query or
+category, cancelling, leaving the view or suspending the app retires paging and
+selection authority. A cancelled request keeps its slot until it drains, and
+late replies cannot overwrite a newer draft. Starting a new search begins again
+at the first page. Older daemons remain usable for their first page without
+guessing a continuation from their displayed item count.
 
 **Play now**, **Queue next** and **Add to end of queue** enter the same one-use
 review as a pasted source. Review binds the chosen source to the selected group;
@@ -171,5 +179,16 @@ raw progress. Phone and dashboard DOM-fixture tests exercise their actual paging
 buttons and verify that browsing pages only reads catalog data, without preparing
 a playback action or sending speaker writes.
 
+Focused native command:
+
+~~~bash
+swift test --package-path apps/apple --filter SpotifySearch
+~~~
+
+Native pagination regression sources cover request and response bounds, exact
+query/category/position matching, legacy first-page replies, raw previous/next
+history, empty filtered pages, stale replies, cancellation during a pending page,
+and selected-daemon reads that retain the explicitly chosen later-page source.
+
 These fixture-based checks do not establish live Spotify or physical-speaker
-acceptance. Native Apple catalog search retains its existing first-page workflow.
+acceptance.

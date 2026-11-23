@@ -695,6 +695,10 @@ their standing preferences on every surface and in the daemon. What is on
   intact; resumed reads detect availability changes, and a malformed
   restriction response cannot replace the last accepted library. Album-track
   responses without album metadata use only the availability evidence returned.
+  Fully observed saved albums also remain authoritative during whole-work
+  completion: stale album caches cannot restore movements omitted as unavailable.
+  Liked-only and taste-only work completion remains available; persistent negative
+  availability evidence for those sources remains a separate gap.
 - The library cache records, per track, whether it is a DJ candidate, its
   genres, release year, explicit flag and taste weight (migration 7), and
   caches each artist's genres (migration 8). `is_classical` again means "judged
@@ -1049,6 +1053,11 @@ unsupported-action response keeps its original intent through fallback reads;
 a newer listener volume supersedes it before any old fallback writes. An
 ambiguous native reply never authorizes a second ramp. This also keeps a slow
 older manual SetVolume from landing after a newer manual or native-ramp start.
+Every Fader admission, timed volume step and restoration also verifies the
+retained physical player before writing, so an address reused by another speaker
+cannot silently receive the old fade. If a listener interrupts a fade-to-pause,
+rooms still owned by that fade return to their original levels, the listener's
+new level is preserved, and playback stays running.
 
 New volume, mute, group-volume and volume-fade actions retain the exact room
 players and level fields they changed. Their undo restores those fields while
@@ -1293,7 +1302,10 @@ the shared phone/dashboard editor. Separate source and destination revisions
 bind the selection; deliberate repeats and supplied order survive. Native
 `AddURIToSavedQueue` preserves the destination identity and playing queue.
 Every append must confirm the full saved prefix and retained track metadata
-before the next write. A batch that stops after partial progress reports its
+before the next write. Confirmation accepts Sonos-enriched fields only when the
+incoming track did not supply them, including duration, protocol, album art and
+optional creator/album labels. Supplied metadata, source URI, renderer-account
+descriptor, original prefix and occurrence order still have to match. A batch that stops after partial progress reports its
 confirmed count without replay or automatic rollback. Original-household
 recovery reads the destination contents, including the append boundary.
 Browser model regressions and pinned nightly workspace formatting pass locally.
@@ -1397,9 +1409,15 @@ show or episode kind. Query validation, canonical source identities, bounded
 metadata, permission checks and the existing sign-in/cooldown contract are
 shared. Search does not discover speakers, update the library or change the DJ.
 Results can feed the existing play and queue commands; choosing a result never
-starts playback by itself. The phone and dashboard source selectors offer
-explicit search, result choice, then the usual room/action review. See
-`docs/SPOTIFY_SEARCH.md` for the request contract and validation coverage.
+starts playback by itself. Explicit `offset` and `next_offset` continuations
+now expose later results through CLI, HTTP and MCP. The phone, dashboard and
+shared native iPhone/Mac search panel offer Next/Previous results, then source
+choice and the usual room/action review. Continuation advances by raw provider
+rows before unavailable or duplicate results are filtered. Query/category edits
+and cancellation retire old selection authority; previous navigation rereads
+the requested page. Older first-page daemon responses remain readable without
+guessing another offset. See `docs/SPOTIFY_SEARCH.md` for the request contract
+and validation coverage.
 
 Native physical inputs are also available as explicit sources. `fsonos line-in
 <room>`, HTTP `GET /line-in`, MCP `list_line_in`, both browser source selectors,

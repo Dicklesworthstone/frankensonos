@@ -70,16 +70,20 @@ import FrankenSonosKit
         VStack(alignment: .leading, spacing: 14) {
             Text(search.isCurrent ? "Spotify results" : "Previous results · search again before choosing")
                 .font(.headline)
-            Text("\(observed.page.kind.title) for “\(observed.page.query)” · \(observed.page.items.count) results")
+            Text("\(observed.page.kind.title) for “\(observed.page.query)” · \(observed.page.items.count) results · starting at result \(observed.page.offset + 1)")
                 .font(.subheadline).foregroundStyle(.secondary)
             Text("Read \(observed.receivedAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption).foregroundStyle(.secondary)
-            if observed.page.more {
-                Text("More matches exist. Refine the query to narrow this first page.")
+            if observed.page.nextOffset != nil {
+                Text("More matches are available. Next results reads another page from Spotify.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else if observed.page.more {
+                Text("No further continuation is available. Refine the query to find other matches.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             if observed.page.items.isEmpty {
-                Text("No matches in this category. Try another search or category.").font(.callout)
+                Text("No available matches on this page. Continue if another page is available, or refine the search.")
+                    .font(.callout)
             }
             if let zone = remote.selectedZone {
                 Text("Playback destination: \(zone.title) · \(zone.household)").font(.callout)
@@ -91,6 +95,14 @@ import FrankenSonosKit
                 ForEach(observed.page.items) { item in
                     resultRow(item, observed: observed, target: remote.selectedZone)
                 }
+            }
+            HStack(spacing: 12) {
+                Button("Previous results", systemImage: "chevron.left") {
+                    selectionProblem = nil; search.previousPage()
+                }.buttonStyle(.bordered).disabled(!search.canPreviousPage)
+                Button("Next results", systemImage: "chevron.right") {
+                    selectionProblem = nil; search.nextPage()
+                }.buttonStyle(.bordered).disabled(!search.canNextPage)
             }
         }
     }
