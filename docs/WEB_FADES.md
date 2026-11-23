@@ -61,6 +61,14 @@ These browser checks are **not an atomic lock** on the speaker or group.
 Another controller can change state between a read and the native command.
 Policy and fade orchestration remain the server's responsibility.
 
+The daemon also verifies that the addressed endpoint still belongs to the
+original physical speaker before admitting manual/ramp changes, reading a fade's
+initial level, sending each timed volume step and restoring a saved level.
+Reassigning an old IP address to another room cannot redirect those writes.
+A moved or unreadable target reports an error; the fade does not replay itself
+against a different room. These checks do not lock out address changes between
+a read and a subsequent speaker command.
+
 No write is automatically replayed. An unreadable reply or lost connection
 may mean a partial fade, a completed fade, or an action still running on the
 daemon. Closing the browser does not cancel it. Read current state and check
@@ -88,3 +96,8 @@ at its final frame, checking restored peer levels, preserved manual levels and
 continued playback without Pause. The new cases are included in
 `cargo test -p fsonos-core --lib fade::tests`; execution remains pending after
 the editing environment became unavailable.
+
+`cargo test -p fsonos-core --lib fade::endpoint_tests` covers all eight Fader
+entry paths on S1/S2, valid grouped targets, stale addresses, and address reuse
+during a read or between the final fade and restoration. These new Rust cases
+also remain pending execution.

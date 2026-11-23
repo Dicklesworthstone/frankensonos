@@ -17,6 +17,10 @@
 //! ramp is stopped the only way a player allows, by sending SetVolume. The
 //! daemon cancels a fade on Cx cancellation by superseding it. A stopping
 //! daemon finishes its fades at once ([`Fader::finish_all`]).
+//!
+//! Initial volume reads and every volume/ramp mutation verify the retained
+//! player's identity at its original address. Address reuse during a fade or
+//! its restoration cannot redirect that intent to another room.
 
 use crate::snapshot::member_rooms;
 use crate::{CoreError, HouseholdState};
@@ -34,6 +38,8 @@ use timing::Timing;
 
 #[cfg(test)]
 mod device_ramp_tests;
+#[cfg(test)]
+mod endpoint_tests;
 
 /// Time between the steps of a fade.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
@@ -221,6 +227,7 @@ impl Fader {
         // intent cannot start until this older write has landed.
         let step = self.step(player);
         let _writing = step.lock().unwrap_or_else(PoisonError::into_inner);
+        crate::control::require_player(t, host, player)?;
         self.next_intent(player);
         Ok(soap::set_volume(t, host, level)?)
     }
@@ -369,7 +376,8 @@ impl Fader {
                 continue;
             }
             let host = ip(households, player)?;
-            let read = soap::get_volume(t, host);
+            let read = crate::control::require_player(t, host, player)
+                .and_then(|()| soap::get_volume(t, host).map_err(CoreError::from));
             // A superseded room no longer needs a state read to succeed.
             if self.current(player) != intent {
                 left.push(player.clone());
@@ -393,6 +401,7 @@ impl Fader {
                 let frame = timing.frame(Instant::now(), self.finishing.load(Ordering::Acquire));
                 let level = frame.level(*from, *to);
                 if level != *last || frame.complete {
+                    crate::control::require_player(t, *host, player)?;
                     soap::set_volume(t, *host, level)?;
                     *last = level;
                 }
@@ -430,6 +439,7 @@ impl Fader {
         let mut lanes = Vec::with_capacity(claimed.len());
         for (p, intent) in claimed {
             let host = ip(households, p)?;
+            crate::control::require_player(t, host, p)?;
             let from = soap::get_volume(t, host)?;
             lanes.push((p, host, *intent, from, from));
         }
@@ -445,6 +455,7 @@ impl Fader {
                 let frame = timing.frame(Instant::now(), self.finishing.load(Ordering::Acquire));
                 let level = frame.level(*from, to);
                 if level != *last || frame.complete {
+                    crate::control::require_player(t, *host, player)?;
                     checkpoint(player, *last, level)?;
                     soap::set_volume(t, *host, level)?;
                     *last = level;
@@ -479,6 +490,7 @@ impl Fader {
             // room whose owner set a newer level while the speaker replied.
             let step = self.step(player);
             let _starting = step.lock().unwrap_or_else(PoisonError::into_inner);
+            crate::control::require_player(t, host, player)?;
             let intent = self.next_intent(player);
             let refused = self.no_device_ramp.lock().is_ok_and(|s| s.contains(player));
             if !refused {
@@ -537,11 +549,9 @@ impl Fader {
         let before = claimed
             .iter()
             .map(|(player, intent)| {
-                Ok((
-                    player.clone(),
-                    *intent,
-                    soap::get_volume(t, ip(households, player)?)?,
-                ))
+                let host = ip(households, player)?;
+                crate::control::require_player(t, host, player)?;
+                Ok((player.clone(), *intent, soap::get_volume(t, host)?))
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
         // Restore rooms this fade still owns, including after a failed step
@@ -588,8 +598,7 @@ impl Fader {
             if self.current(room) != *intent {
                 continue;
             }
-            let done = ip(households, room)
-                .and_then(|host| soap::set_volume(t, host, *level).map_err(CoreError::from));
+            let done = crate::control::set_volume(t, households, room, *level).map(|_| ());
             if first.is_ok() {
                 first = done;
             }
