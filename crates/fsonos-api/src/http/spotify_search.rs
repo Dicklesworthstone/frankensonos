@@ -5,8 +5,8 @@ use fastapi::{JsonSchema, Request, fastapi_openapi};
 
 use super::{Ctx, Op, answer, query_param, whole_number};
 use crate::source::CatalogKind;
-use crate::surface::spotify_search::MAX_RESULTS;
-use crate::{Failure, SpotifySearchDto, SpotifySearchQuery};
+use crate::surface::spotify_search::{MAX_RESULTS, SpotifySearchPageDto, validate_offset};
+use crate::{Failure, SpotifySearchQuery};
 
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     vec![
@@ -18,13 +18,13 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "Search Spotify's online catalog without changing playback or the saved library",
             ),
             |surface, client, req| {
-                answer(query(req).and_then(|q| {
-                    surface.search_spotify(client, &q.query, q.kind, q.limit)
+                answer(query(req).and_then(|(query, offset)| {
+                    surface.search_spotify_page(client, &query, offset)
                 }))
             },
         )
         .query_schema::<SearchQuery>(true)
-        .response_schema::<SpotifySearchDto>(
+        .response_schema::<SpotifySearchPageDto>(
             200,
             "A bounded page of canonical sources in Spotify's order; playing or queueing is a separate request",
         ),
@@ -39,9 +39,11 @@ struct SearchQuery {
     kind: CatalogKind,
     /// Maximum results, 1-10 (default 10).
     limit: Option<u32>,
+    /// Raw result offset, 0-1000 (default 0); use the prior next_offset.
+    offset: Option<u32>,
 }
 
-fn query(req: &Request) -> Result<SpotifySearchQuery, Failure> {
+fn query(req: &Request) -> Result<(SpotifySearchQuery, u32), Failure> {
     let raw = req.query().unwrap_or_default();
     if raw.len() > 4096 {
         return Err(Failure::invalid("the Spotify search query is too long"));
@@ -51,7 +53,7 @@ fn query(req: &Request) -> Result<SpotifySearchQuery, Failure> {
         let (name, _) = pair
             .split_once('=')
             .ok_or_else(|| Failure::invalid("search parameters must be name=value pairs"))?;
-        if !["q", "kind", "limit"].contains(&name) || !seen.insert(name) {
+        if !["q", "kind", "limit", "offset"].contains(&name) || !seen.insert(name) {
             return Err(Failure::invalid(
                 "unknown or repeated Spotify search parameter",
             ));
@@ -69,6 +71,12 @@ fn query(req: &Request) -> Result<SpotifySearchQuery, Failure> {
                     .map_err(|_| Failure::invalid("Spotify search limit is too large"))
             })
             .transpose()?,
+        offset: whole_number(req, "offset")?
+            .map(|offset| {
+                u32::try_from(offset)
+                    .map_err(|_| Failure::invalid("Spotify search offset is too large"))
+            })
+            .transpose()?,
     };
     let request = SpotifySearchQuery {
         query: query.q,
@@ -76,5 +84,7 @@ fn query(req: &Request) -> Result<SpotifySearchQuery, Failure> {
         limit: query.limit.unwrap_or(MAX_RESULTS),
     };
     request.validate()?;
-    Ok(request)
+    let offset = query.offset.unwrap_or(0);
+    validate_offset(offset)?;
+    Ok((request, offset))
 }

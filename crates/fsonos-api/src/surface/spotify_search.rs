@@ -12,6 +12,8 @@ use crate::{ErrorCode, Failure};
 
 /// Spotify's bounded search page size, shared by every caller.
 pub const MAX_RESULTS: u32 = 10;
+/// Largest explicit Spotify search offset.
+pub const MAX_OFFSET: u32 = 1000;
 /// Maximum UTF-8 bytes of query text after trimming outer spaces.
 pub const MAX_QUERY_BYTES: usize = 256;
 const MAX_LABEL_BYTES: usize = 4096;
@@ -38,6 +40,17 @@ impl SpotifySearchQuery {
             return Err(Failure::invalid("Spotify search limit must be 1 to 10"));
         }
         Ok(())
+    }
+
+    /// Request a later page with the exact same query, kind and limit.
+    pub fn path_at(&self, offset: u32) -> Result<String, Failure> {
+        validate_offset(offset)?;
+        let path = self.path()?;
+        Ok(if offset == 0 {
+            path
+        } else {
+            format!("{path}&offset={offset}")
+        })
     }
 
     /// Query text is encoded as one value; it cannot introduce URL parameters.
@@ -134,6 +147,82 @@ impl SpotifySearchDto {
     }
 }
 
+/// Search results with an explicit continuation. Existing first-page fields
+/// retain their wire shape, so older consumers can still read these results.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SpotifySearchPageDto {
+    pub query: String,
+    pub kind: CatalogKind,
+    pub items: Vec<CatalogItem>,
+    pub more: bool,
+    /// Raw provider position, before unavailable rows or duplicates are removed.
+    #[serde(default)]
+    pub offset: u32,
+    /// Continue this query/kind/limit at this exact offset; never derive it
+    /// from the number of visible items. None also covers the provider bound.
+    #[serde(default)]
+    pub next_offset: Option<u32>,
+}
+
+impl SpotifySearchPageDto {
+    #[must_use]
+    pub fn into_results(self) -> SpotifySearchDto {
+        SpotifySearchDto {
+            query: self.query,
+            kind: self.kind,
+            items: self.items,
+            more: self.more,
+        }
+    }
+
+    /// A later request must not accept a stale first-page daemon response.
+    pub fn validate_for(&self, request: &SpotifySearchQuery, offset: u32) -> Result<(), Failure> {
+        validate_offset(offset)?;
+        self.clone().into_results().validate_for(request)?;
+        if self.offset != offset
+            || self.next_offset.is_some_and(|next| {
+                !self.more
+                    || next <= offset
+                    || next > MAX_OFFSET
+                    || next > offset + request.limit
+                    || usize::try_from(next - offset)
+                        .is_ok_and(|received| received < self.items.len())
+            })
+        {
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "Spotify returned an inconsistent search continuation",
+            ));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn text(&self) -> String {
+        let mut result = self.clone().into_results();
+        result.more = false;
+        let mut text = result.text();
+        let _ = write!(text, "\nSearch offset: {}.", self.offset);
+        if let Some(next) = self.next_offset {
+            let _ = write!(
+                text,
+                "\nMore results: repeat the same query, kind and limit with --offset {next} (MCP/HTTP offset={next})."
+            );
+        } else if self.more {
+            text.push_str("\nNo further continuation is available; refine the query.");
+        }
+        text
+    }
+}
+
+pub fn validate_offset(offset: u32) -> Result<(), Failure> {
+    if offset > MAX_OFFSET {
+        Err(Failure::invalid("Spotify search offset must be 0 to 1000"))
+    } else {
+        Ok(())
+    }
+}
+
 fn valid_label(text: &str) -> bool {
     text.len() <= MAX_LABEL_BYTES && !text.chars().any(char::is_control)
 }
@@ -148,13 +237,28 @@ impl Surface {
         kind: CatalogKind,
         limit: u32,
     ) -> Result<SpotifySearchDto, Failure> {
+        self.search_spotify_page(
+            client,
+            &SpotifySearchQuery {
+                query: query.to_owned(),
+                kind,
+                limit,
+            },
+            0,
+        )
+        .map(SpotifySearchPageDto::into_results)
+    }
+
+    /// Read exactly one explicit page using the selected session and policy.
+    pub fn search_spotify_page(
+        &self,
+        client: &Client,
+        request: &SpotifySearchQuery,
+        offset: u32,
+    ) -> Result<SpotifySearchPageDto, Failure> {
         self.guard(client).authorize("search_spotify", true)?;
-        let request = SpotifySearchQuery {
-            query: query.to_owned(),
-            kind,
-            limit,
-        };
         request.validate()?;
+        validate_offset(offset)?;
         let sources = self.spotify_sources.as_ref().ok_or_else(|| {
             Failure::new(
                 ErrorCode::SpotifyAuthRequired,
@@ -162,15 +266,22 @@ impl Surface {
             )
             .with_hint("Sign in with fsonos setup, then search Spotify again.")
         })?;
-        let page = sources.search_catalog(query.trim(), kind, limit)?;
+        let found = sources.search_catalog_page(
+            request.query.trim(),
+            request.kind,
+            request.limit,
+            offset,
+        )?;
         self.guard(client).authorize("search_spotify", true)?;
-        let response = SpotifySearchDto {
-            query: query.trim().to_owned(),
-            kind,
-            items: page.items,
-            more: page.more,
+        let response = SpotifySearchPageDto {
+            query: request.query.trim().to_owned(),
+            kind: request.kind,
+            items: found.page.items,
+            more: found.page.more,
+            offset: found.offset,
+            next_offset: found.next_offset,
         };
-        response.validate_for(&request)?;
+        response.validate_for(request, offset)?;
         Ok(response)
     }
 }

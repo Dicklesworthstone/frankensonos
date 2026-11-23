@@ -327,7 +327,10 @@ mod tests {
                     });
                 }
             }
-            assert!(!appended_track(&incoming, &changed, "SQ:7"), "field {field}");
+            assert!(
+                !appended_track(&incoming, &changed, "SQ:7"),
+                "field {field}"
+            );
         }
         let mut supplied = incoming;
         supplied.desc = Some(DidlDesc {

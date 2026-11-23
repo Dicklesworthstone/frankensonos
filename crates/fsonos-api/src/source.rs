@@ -37,6 +37,28 @@ pub trait SpotifySources: Send + Sync {
             "this Spotify catalog provider does not support search",
         ))
     }
+
+    /// Explicit paging. Older providers can still serve their first page,
+    /// without inventing a continuation from already-filtered result counts.
+    fn search_catalog_page(
+        &self,
+        query: &str,
+        kind: CatalogKind,
+        limit: u32,
+        offset: u32,
+    ) -> Result<CatalogSearchPage, Failure> {
+        if offset != 0 {
+            return Err(Failure::new(
+                ErrorCode::NotImplemented,
+                "this Spotify catalog provider does not support search continuation",
+            ));
+        }
+        Ok(CatalogSearchPage {
+            page: self.search_catalog(query, kind, limit)?,
+            offset,
+            next_offset: None,
+        })
+    }
 }
 
 /// One Spotify content kind requested explicitly by a catalog search.
@@ -113,6 +135,15 @@ pub struct CatalogItem {
 pub struct CatalogPage {
     pub items: Vec<CatalogItem>,
     pub more: bool,
+}
+
+/// Provider page plus its raw position. A missing continuation never means
+/// that callers should derive one from filtered display items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSearchPage {
+    pub page: CatalogPage,
+    pub offset: u32,
+    pub next_offset: Option<u32>,
 }
 
 /// How a bounded catalog selection was obtained.

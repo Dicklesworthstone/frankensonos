@@ -453,3 +453,120 @@ fn http_denial_prevents_provider_io_and_returns_the_policy_error() {
     assert_eq!(replies[0].1["code"], json!("POLICY_DENIED"));
     assert!(calls.0.lock().unwrap().is_empty());
 }
+
+struct PagedCatalog {
+    calls: Arc<Mutex<Vec<(String, CatalogKind, u32, u32)>>>,
+    reply: fsonos_api::source::CatalogSearchPage,
+}
+
+impl SpotifySources for PagedCatalog {
+    fn artist_tracks(&self, _: &str) -> Result<ArtistSelection, Failure> {
+        panic!("search must not resolve playback")
+    }
+
+    fn search_catalog_page(
+        &self,
+        query: &str,
+        kind: CatalogKind,
+        limit: u32,
+        offset: u32,
+    ) -> Result<fsonos_api::source::CatalogSearchPage, Failure> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((query.into(), kind, limit, offset));
+        Ok(self.reply.clone())
+    }
+}
+
+#[test]
+fn http_continuation_preserves_the_requested_offset_and_exposes_the_next_raw_position() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let provider = PagedCatalog {
+        calls: Arc::clone(&calls),
+        reply: fsonos_api::source::CatalogSearchPage {
+            page: page(CatalogKind::Artist),
+            offset: 7,
+            next_offset: Some(9),
+        },
+    };
+    let surface = base(Policy::default()).with_spotify_sources(Box::new(provider));
+    let replies = http(
+        surface,
+        &[
+            "/spotify/search?q=music&kind=artist&limit=2&offset=7",
+            "/spotify/search?q=music&kind=artist&offset=1001",
+            "/spotify/search?q=music&kind=artist&offset=-1",
+            "/spotify/search?q=music&kind=artist&offset=7&offset=9",
+        ],
+    );
+    assert_eq!(replies[0].0, 200);
+    assert_eq!(replies[0].1["offset"], 7);
+    assert_eq!(replies[0].1["next_offset"], 9);
+    assert_eq!(
+        replies[0].1["items"][0]["source_uri"],
+        "spotify:artist:0000000000000000000002"
+    );
+    assert!(replies[1..].iter().all(|(status, _)| *status == 422));
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [("music".into(), CatalogKind::Artist, 2, 7)]
+    );
+}
+
+#[test]
+fn page_validation_rejects_wrong_positions_backwards_and_oversized_continuations() {
+    use fsonos_api::surface::spotify_search::SpotifySearchPageDto;
+
+    let request = request();
+    let page = page(request.kind);
+    let valid = SpotifySearchPageDto {
+        query: request.query.trim().into(),
+        kind: request.kind,
+        items: page.items,
+        more: true,
+        offset: 7,
+        next_offset: Some(9),
+    };
+    valid.validate_for(&request, 7).unwrap();
+    assert!(valid.text().contains("--offset 9"));
+    assert_eq!(
+        request.path_at(7).unwrap(),
+        format!("{}&offset=7", request.path().unwrap())
+    );
+    for next in [0, 7, 8, 10, 1001] {
+        let invalid = SpotifySearchPageDto {
+            next_offset: Some(next),
+            ..valid.clone()
+        };
+        assert!(invalid.validate_for(&request, 7).is_err(), "{next}");
+    }
+    assert!(valid.validate_for(&request, 0).is_err());
+    let invalid = SpotifySearchPageDto {
+        more: false,
+        ..valid.clone()
+    };
+    assert!(invalid.validate_for(&request, 7).is_err());
+    let legacy: SpotifySearchPageDto = serde_json::from_value(json!({
+        "query": request.query.trim(), "kind": request.kind,
+        "items": valid.items, "more": true,
+    }))
+    .unwrap();
+    legacy.validate_for(&request, 0).unwrap();
+    assert!(legacy.validate_for(&request, 7).is_err());
+}
+
+#[test]
+fn a_provider_without_raw_paging_never_invents_a_continuation() {
+    let (surface, calls) = ready(Policy::default(), Ok(page(CatalogKind::Artist)));
+    let first = surface
+        .search_spotify_page(&Client::McpStdio, &request(), 0)
+        .unwrap();
+    assert!(first.more);
+    assert_eq!(first.next_offset, None);
+    let error = surface
+        .search_spotify_page(&Client::McpStdio, &request(), 2)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::NotImplemented);
+    assert_eq!(calls.0.lock().unwrap().len(), 1);
+}

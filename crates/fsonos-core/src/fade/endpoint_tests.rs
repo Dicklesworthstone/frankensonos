@@ -261,7 +261,11 @@ impl Transport for Reassigned {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        let name = action.trim_matches('"').rsplit('#').next().unwrap_or(action);
+        let name = action
+            .trim_matches('"')
+            .rsplit('#')
+            .next()
+            .unwrap_or(action);
         if !name.starts_with("Get") && !matches!(name, "Browse" | "Search") {
             self.writes.borrow_mut().push(name.into());
         }

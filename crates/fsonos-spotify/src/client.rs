@@ -665,8 +665,15 @@ impl Endpoints {
     /// or externally hosted audio capability is requested.
     #[must_use]
     pub fn search(&self, query: &str, kind: &str, limit: u32) -> String {
+        self.search_page(query, kind, limit, 0)
+    }
+
+    /// Build an explicit catalog page against this session's API. Callers
+    /// validate the offset; provider-supplied paging URLs are never followed.
+    #[must_use]
+    pub fn search_page(&self, query: &str, kind: &str, limit: u32, offset: u32) -> String {
         format!(
-            "{}/search?q={}&type={}&limit={}&offset=0",
+            "{}/search?q={}&type={}&limit={}&offset={offset}",
             self.api,
             percent_encode(query),
             percent_encode(kind),

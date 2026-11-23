@@ -562,3 +562,125 @@ fn an_expired_access_token_is_refreshed_through_the_existing_session() {
     assert_eq!(token.access_token, "access-r1");
     assert_eq!(token.refresh_token, "refresh-r1");
 }
+
+impl Server {
+    fn set_page(&self, kind: &str, limit: u32, offset: u32, document: &Value) {
+        let url = self
+            .fake()
+            .endpoints()
+            .search_page(QUERY, kind, limit, offset);
+        let path = url
+            .strip_prefix(&format!("http://{}", self.fake().addr))
+            .unwrap()
+            .to_owned();
+        self.fake()
+            .state
+            .lock()
+            .unwrap()
+            .library_pages
+            .insert(path, document.to_string());
+    }
+}
+
+#[test]
+fn continuation_advances_by_raw_entries_before_filtering_and_keeps_provider_order() {
+    let server = Server::new();
+    let mut first = response(
+        "track",
+        &[item("track", 2), Value::Null, item("track", 2)],
+        20,
+        3,
+    );
+    first["tracks"]["offset"] = json!(7);
+    server.set_page("track", 3, 7, &first);
+    let mut second = response("track", &[item("track", 9)], 11, 3);
+    second["tracks"]["offset"] = json!(10);
+    second["tracks"]["next"] = Value::Null;
+    server.set_page("track", 3, 10, &second);
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, true);
+        let first = search_page(&mut session, &cx, QUERY, "track", 3, 7)
+            .await
+            .unwrap();
+        assert_eq!(first.offset, 7);
+        assert_eq!(first.page.items.len(), 1);
+        assert_eq!(first.next_offset, Some(10));
+        let second = search_page(
+            &mut session,
+            &cx,
+            QUERY,
+            "track",
+            3,
+            first.next_offset.unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.page.items[0].source_uri, item_uri("track", 9));
+        assert_eq!(second.next_offset, None);
+        assert!(!second.page.more);
+    });
+    assert_eq!(
+        server.calls(),
+        [
+            "GET /v1/search?q=catalog&type=track&limit=3&offset=7",
+            "GET /v1/search?q=catalog&type=track&limit=3&offset=10",
+        ]
+    );
+}
+
+#[test]
+fn a_filtered_empty_page_can_continue_and_the_maximum_offset_is_bounded() {
+    let server = Server::new();
+    let mut empty = response("track", &[Value::Null, Value::Null], 30, 2);
+    empty["tracks"]["offset"] = json!(10);
+    server.set_page("track", 2, 10, &empty);
+    let mut last = response("track", &[item("track", 1)], 2000, 2);
+    last["tracks"]["offset"] = json!(MAX_OFFSET);
+    server.set_page("track", 2, MAX_OFFSET, &last);
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, true);
+        let empty = search_page(&mut session, &cx, QUERY, "track", 2, 10)
+            .await
+            .unwrap();
+        assert!(empty.page.items.is_empty());
+        assert_eq!(empty.next_offset, Some(12));
+        let last = search_page(&mut session, &cx, QUERY, "track", 2, MAX_OFFSET)
+            .await
+            .unwrap();
+        assert!(last.page.more);
+        assert_eq!(last.next_offset, None);
+        assert!(matches!(
+            search_page(&mut session, &cx, QUERY, "track", 2, MAX_OFFSET + 1).await,
+            Err(SpotifyError::Config(_))
+        ));
+    });
+    assert_eq!(server.calls().len(), 2);
+}
+
+#[test]
+fn malformed_later_pages_cannot_restart_or_skip_the_requested_search() {
+    for change in ["offset", "limit", "total", "empty"] {
+        let server = Server::new();
+        let mut page = response("track", &[item("track", 1)], 20, 2);
+        page["tracks"]["offset"] = json!(7);
+        match change {
+            "offset" => page["tracks"]["offset"] = json!(0),
+            "limit" => page["tracks"]["limit"] = json!(10),
+            "total" => page["tracks"]["total"] = json!(7),
+            "empty" => page["tracks"]["items"] = json!([]),
+            _ => unreachable!(),
+        }
+        server.set_page("track", 2, 7, &page);
+        runtime().block_on(async {
+            let cx = Cx::current().unwrap();
+            let mut session = server.session(&cx, true);
+            assert!(matches!(
+                search_page(&mut session, &cx, QUERY, "track", 2, 7).await,
+                Err(SpotifyError::Decode(_))
+            ));
+        });
+        assert_eq!(server.calls().len(), 1, "{change}");
+    }
+}

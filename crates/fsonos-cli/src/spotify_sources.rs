@@ -13,7 +13,8 @@ use asupersync::Cx;
 use asupersync::http::Client;
 use asupersync::time::{timeout, wall_now};
 use fsonos_api::source::{
-    CatalogItem, CatalogKind, CatalogPage, SourceSelection, SourceSelectionKind, SpotifySources,
+    CatalogItem, CatalogKind, CatalogPage, CatalogSearchPage, SourceSelection, SourceSelectionKind,
+    SpotifySources,
 };
 use fsonos_api::{ErrorCode, Failure, Surface};
 use fsonos_spotify::SpotifyError;
@@ -115,22 +116,38 @@ impl SpotifySources for Sources {
         kind: CatalogKind,
         limit: u32,
     ) -> Result<CatalogPage, Failure> {
+        Ok(self.search_catalog_page(query, kind, limit, 0)?.page)
+    }
+
+    fn search_catalog_page(
+        &self,
+        query: &str,
+        kind: CatalogKind,
+        limit: u32,
+        offset: u32,
+    ) -> Result<CatalogSearchPage, Failure> {
         let query = query.to_owned();
         self.request(move |session, cx| {
             Box::pin(async move {
-                let page =
-                    catalog_search::search(session, cx, &query, kind.as_str(), limit).await?;
-                Ok(CatalogPage {
-                    items: page
-                        .items
-                        .into_iter()
-                        .map(|item| CatalogItem {
-                            source_uri: item.source_uri,
-                            title: item.title,
-                            subtitle: item.subtitle,
-                        })
-                        .collect(),
-                    more: page.more,
+                let found =
+                    catalog_search::search_page(session, cx, &query, kind.as_str(), limit, offset)
+                        .await?;
+                Ok(CatalogSearchPage {
+                    page: CatalogPage {
+                        items: found
+                            .page
+                            .items
+                            .into_iter()
+                            .map(|item| CatalogItem {
+                                source_uri: item.source_uri,
+                                title: item.title,
+                                subtitle: item.subtitle,
+                            })
+                            .collect(),
+                        more: found.page.more,
+                    },
+                    offset: found.offset,
+                    next_offset: found.next_offset,
                 })
             })
         })

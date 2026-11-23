@@ -51,7 +51,10 @@ fn saved_items_without(missing: u32) -> Vec<LibraryItem> {
     read.ingest(&serde_json::to_vec(&albums).unwrap()).unwrap();
     read.ingest(br#"{"items":[],"offset":0,"limit":50,"total":0,"next":null}"#)
         .unwrap();
-    assert!(read.next_url().is_none(), "the saved album was read completely");
+    assert!(
+        read.next_url().is_none(),
+        "the saved album was read completely"
+    );
     read.into_items()
 }
 

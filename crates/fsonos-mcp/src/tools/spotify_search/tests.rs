@@ -250,3 +250,49 @@ fn full_profile_registers_the_read_only_search_with_explicit_query_and_kind() {
     assert_eq!(value["annotations"]["readOnlyHint"], true);
     assert_eq!(value["annotations"]["idempotentHint"], true);
 }
+
+#[test]
+fn page_forwarding_uses_exact_offset_and_refuses_an_old_first_page() {
+    let mut value = serde_json::to_value(response()).unwrap();
+    value["offset"] = json!(7);
+    value["next_offset"] = json!(9);
+    let daemon = remote(Some(Ok(value.clone())));
+    let (backend, calls) = local(Policy::default());
+    let result = backend
+        .with_daemon(daemon.clone())
+        .search_spotify_page(&request(), 7)
+        .unwrap();
+    assert_eq!(result.structured_content, Some(value));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        *daemon.calls.lock().unwrap(),
+        [json!([
+            "GET",
+            "/spotify/search?q=Bj%C3%B6rk%20%26%20100%25%20%2B%20%3F%2F%23&kind=artist&limit=2&offset=7",
+            null
+        ])]
+    );
+
+    let daemon = remote(Some(Ok(serde_json::to_value(response()).unwrap())));
+    let (backend, calls) = local(Policy::default());
+    assert!(
+        backend
+            .with_daemon(daemon)
+            .search_spotify_page(&request(), 7)
+            .is_err()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn out_of_range_page_offsets_are_refused_before_daemon_or_catalog_reads() {
+    let daemon = remote(Some(Ok(serde_json::to_value(response()).unwrap())));
+    let (backend, calls) = local(Policy::default());
+    let error = backend
+        .with_daemon(daemon.clone())
+        .search_spotify_page(&request(), 1001)
+        .unwrap_err();
+    assert_eq!(error.data.unwrap()["code"], "INVALID_ARGUMENT");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(daemon.calls.lock().unwrap().is_empty());
+}

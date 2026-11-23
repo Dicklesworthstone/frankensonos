@@ -15,6 +15,8 @@ use crate::session::Session;
 
 /// Spotify's current per-kind search page maximum.
 pub const MAX_RESULTS: u32 = 10;
+/// Largest explicit search offset accepted by Spotify.
+pub const MAX_OFFSET: u32 = 1000;
 /// Maximum trimmed UTF-8 query length, in bytes.
 pub const MAX_QUERY_BYTES: usize = 256;
 /// Display titles are accepted only within this UTF-8 byte bound.
@@ -35,6 +37,15 @@ pub struct CatalogItem {
 pub struct CatalogPage {
     pub items: Vec<CatalogItem>,
     pub more: bool,
+}
+
+/// A bounded page with a continuation measured before unavailable or duplicate
+/// rows are removed. Search results may change between explicit requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSearchPage {
+    pub page: CatalogPage,
+    pub offset: u32,
+    pub next_offset: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -97,23 +108,50 @@ pub async fn search(
     kind: &str,
     limit: u32,
 ) -> Result<CatalogPage, SpotifyError> {
+    Ok(search_page(session, cx, query, kind, limit, 0).await?.page)
+}
+
+/// Read one explicitly requested page. The offset is bounded, and continuation
+/// advances by raw provider rows, including unavailable and duplicate entries.
+pub async fn search_page(
+    session: &mut Session,
+    cx: &Cx,
+    query: &str,
+    kind: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<CatalogSearchPage, SpotifyError> {
     let query = validate_query(query, kind, limit)?;
-    let url = session.endpoints().search(query, kind, limit);
+    if offset > MAX_OFFSET {
+        return Err(SpotifyError::Config(
+            "catalog search offset must be between 0 and 1000".into(),
+        ));
+    }
+    let url = session.endpoints().search_page(query, kind, limit, offset);
     let body = session.get_brief(cx, &url).await?;
     let mut response: HashMap<String, Page> = decode(&body, "catalog search")?;
     let page = response.remove(&format!("{kind}s")).ok_or_else(|| {
         SpotifyError::Decode("catalog search omitted the requested result kind".into())
     })?;
-    if page.offset != 0
+    if page.offset != offset
         || page.limit != limit
         || page.items.len() > limit as usize
-        || page.items.len() > page.total as usize
+        || page.items.len() > page.total.saturating_sub(offset) as usize
     {
         return Err(SpotifyError::Decode(
             "catalog search returned inconsistent page counters".into(),
         ));
     }
-    let more = page.next.is_some() || page.total as usize > page.items.len();
+    let received = u32::try_from(page.items.len())
+        .map_err(|_| SpotifyError::Decode("catalog search returned too many raw entries".into()))?;
+    let end = offset + received;
+    let more = page.next.is_some() || page.total > end;
+    if more && received == 0 {
+        return Err(SpotifyError::Decode(
+            "catalog search returned a continuation without making progress".into(),
+        ));
+    }
+    let next_offset = (more && end <= MAX_OFFSET).then_some(end);
     let mut seen = HashSet::new();
     let mut items = Vec::new();
     for item in page.items.iter().flatten() {
@@ -123,7 +161,11 @@ pub async fn search(
             items.push(item);
         }
     }
-    Ok(CatalogPage { items, more })
+    Ok(CatalogSearchPage {
+        page: CatalogPage { items, more },
+        offset,
+        next_offset,
+    })
 }
 
 fn validate_query<'a>(query: &'a str, kind: &str, limit: u32) -> Result<&'a str, SpotifyError> {

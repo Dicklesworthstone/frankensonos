@@ -676,10 +676,16 @@ fn explicit_spotify_tracks_and_episodes_compose_saved_playlists_without_touching
                 assert_eq!(actual.parent_id, DESTINATION);
                 assert_eq!(actual.title, supplied.title);
                 assert_eq!(actual.class, supplied.class);
-                assert_eq!(actual.desc, supplied.desc, "the service account is retained");
+                assert_eq!(
+                    actual.desc, supplied.desc,
+                    "the service account is retained"
+                );
                 let resource = actual.res.as_ref().unwrap();
                 assert_eq!(resource.uri, supplied.res.as_ref().unwrap().uri);
-                assert!(resource.protocol_info.is_some(), "Sonos enriches the resource");
+                assert!(
+                    resource.protocol_info.is_some(),
+                    "Sonos enriches the resource"
+                );
                 assert!(resource.duration.is_some(), "Sonos supplies its duration");
                 assert!(actual.album_art_uri.is_some(), "Sonos supplies catalog art");
             }

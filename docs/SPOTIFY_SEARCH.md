@@ -40,6 +40,7 @@ The CLI defaults to tracks and ten results:
 ~~~bash
 fsonos spotify-search "Nina Simone" --kind artist
 fsonos spotify-search "science" --kind show --limit 5
+fsonos spotify-search "science" --kind show --limit 5 --offset 5
 fsonos --json spotify-search "title words" --kind track
 ~~~
 
@@ -64,15 +65,24 @@ to another account or the local saved library.
 | CLI | `fsonos spotify-search "Nina Simone" --kind artist --limit 10` |
 
 The HTTP endpoint requires `q` and `kind`; the MCP tool requires `query` and
-`kind`. The optional limit defaults to ten. The six kinds are `track`, `album`,
+`kind`. The optional limit defaults to ten; `offset` defaults to zero and accepts
+0–1000. The six kinds are `track`, `album`,
 `artist`, `playlist`, `show`, and `episode`.
 
-The response contains the normalized `query`, `kind`, ordered `items`, and
-`more`. Each item contains `source_uri`, `title`, and an optional `subtitle`.
-Sources are canonical Spotify URIs with the requested kind. An empty `items`
-array is a successful search with no available matches on that page.
-`more: true` means more provider results exist; refine the query to narrow the
-selection. It does not provide a continuation token.
+The response contains the normalized `query`, `kind`, ordered `items`,
+`more`, `offset` and nullable `next_offset`. Each item contains `source_uri`,
+`title`, and an optional `subtitle`. Sources are canonical Spotify URIs with
+the requested kind. An empty `items` array can still carry a continuation:
+unavailable rows and duplicate sources count toward the provider position.
+
+To read another page, keep the exact query, kind and limit, and pass the returned
+`next_offset` as HTTP/MCP `offset` or CLI `--offset`. Never calculate it from
+the visible item count. Each request reads only one page. A null `next_offset`
+ends available continuation; `more` can remain true at Spotify's offset limit
+or for an older custom provider that cannot expose raw paging. Refine the query
+in that case. Search order may change between requests; this is not a frozen
+catalog snapshot. Older first-page daemon replies remain readable, but cannot
+satisfy a nonzero-offset request.
 
 Search reads metadata only. An agent chooses a result and then calls the
 existing `play` or `add_to_queue` tool. House policy, group/queue checks,
@@ -88,8 +98,9 @@ admission slot, overall 45-second deadline, token refresh and retained Spotify
 cooldown with artist/show resolution.
 
 Queries must contain 1–256 UTF-8 bytes after trimming outer whitespace and must
-not contain control characters. Limits are 1–10. Each request reads only the
-first provider page; returned next-page URLs and artwork are never fetched.
+not contain control characters. Limits are 1–10 and offsets are 0–1000. Each
+request rebuilds its explicit provider URL against the signed-in session's
+configured endpoint; returned next-page URLs and artwork are never fetched.
 Available entries retain provider order; duplicates, null rows and entries
 marked local, restricted or unavailable are omitted. Malformed usable
 identities, metadata or page counters fail the whole response instead of
@@ -104,8 +115,10 @@ destination before a playback command.
 The read permission is `search_spotify` or the policy's `read` class. Denied
 requests do not call Spotify. Missing sign-in returns `SPOTIFY_AUTH_REQUIRED`;
 invalid requests return `INVALID_ARGUMENT`; cooldown, unavailable catalog and
-malformed provider results return `NOT_READY`. A custom playback-only provider
-that has not implemented search returns `NOT_IMPLEMENTED`.
+malformed provider results return `NOT_READY`. Non-advancing or inconsistent
+continuations are rejected before sources are offered. A custom playback-only
+provider that has not implemented search returns `NOT_IMPLEMENTED`; a legacy
+search provider still serves its first page and refuses later offsets.
 
 The existing `fsonos search`, `/library/search`, and `search_library` continue
 to search the saved local library and optional Sonos favorites. Catalog search
@@ -142,3 +155,8 @@ The Rust commands above remain verification targets, not a claim that Rust tests
 passed. Both local Cargo-check attempts were killed while compiling dependencies;
 the recovered attempt stopped in asupersync 0.5.0 before project typechecking.
 No physical-speaker or live Spotify acceptance is claimed by the browser tests.
+
+Pagination regression sources additionally cover filtered/duplicate raw positions,
+empty filtered pages with continuation, the provider offset bound, later-page
+counter mismatches, HTTP and CLI parameter validation, and MCP forwarding that
+refuses a stale first-page reply. These cases exercise the provider, API, CLI and MCP continuation boundaries.
