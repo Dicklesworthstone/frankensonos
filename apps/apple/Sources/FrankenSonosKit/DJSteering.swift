@@ -37,7 +37,7 @@ public struct DJSteeringFilters: Equatable, Sendable {
     /// Decode sparse serde defaults without dropping unknown or malformed fields.
     public init(_ fields: [String: JSONValue] = [:]) throws {
         let allowed = Set(DJSteeringField.allCases.map(\.rawValue) +
-            ["min_work_minutes", "max_work_minutes", "energy_bias", "allow_long_works"])
+            ["min_work_minutes", "max_work_minutes", "energy_bias", "allow_long_works", "strict"])
         guard Set(fields.keys).isSubset(of: allowed) else {
             throw ContractError.invalid("Unknown DJ filter. Use a compatible client before replacing these settings.")
         }
@@ -86,6 +86,10 @@ public struct DJSteeringFilters: Equatable, Sendable {
             guard case .bool(let allowed) = raw else { throw ContractError.invalid("Long-work permission must be a boolean.") }
             if allowed { result["allow_long_works"] = raw }
         }
+        if let raw = fields["strict"] {
+            guard case .bool(let strict) = raw else { throw ContractError.invalid("Strict filters must be a boolean.") }
+            if strict { result["strict"] = raw }
+        }
         values = result
     }
 
@@ -111,6 +115,7 @@ public struct DJSteeringFilters: Equatable, Sendable {
             if case .integer(let value) = values[key] { lines.append("\(title): \(value)") }
         }
         if values["allow_long_works"] == .bool(true) { lines.append("Allow long works") }
+        if values["strict"] == .bool(true) { lines.append("Strict filters: new picks wait if no music matches") }
         return lines.isEmpty ? "No additional filters" : lines.joined(separator: "\n")
     }
 }

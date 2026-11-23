@@ -253,6 +253,14 @@ on a reachable room. Panels refresh on selection, explicit refresh, relevant
 live-state transitions and completed commands; they are observations, not an
 independent event log.
 
+Both the DJ direction editor and rehearsal editor offer **Keep selection filters
+strict**. Strict directions created on any surface can be read, edited, cleared,
+saved in scenes and routines, or copied from a rehearsal without losing that
+setting. A strict mood remains strict when the session's own toggle is off.
+Turning strictness off restores the existing adaptive selection behavior for
+that session; queued music and standing taste preferences retain their existing
+behavior. Reviews detect an intervening strictness change before sending a write.
+
 Native Sonos favorites and saved playlists follow household-scoped
 `catalog.changed` events. Affected open catalogs and scene favorite choices
 refresh after coalescing an event burst; closed and unrelated views stay lazy.

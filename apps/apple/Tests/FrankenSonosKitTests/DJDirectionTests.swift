@@ -10,7 +10,7 @@ private let savedFilters: [String: JSONValue] = [
     "decades": .array([.integer(1960)]), "exclude_decades": .array([.integer(1980)]),
     "include_keywords": .array([.string("piano")]), "exclude_keywords": .array([.string("opera")]),
     "min_work_minutes": .integer(2), "max_work_minutes": .integer(45),
-    "energy_bias": .integer(-1), "allow_long_works": .bool(true)
+    "energy_bias": .integer(-1), "allow_long_works": .bool(true), "strict": .bool(true)
 ]
 
 private func savedDirection(_ filters: [String: JSONValue] = savedFilters, seconds: UInt32? = 27) -> DJDirection {
@@ -48,7 +48,7 @@ private func changedDirections() -> [DJDirection?] {
     #expect(try DaemonClient.decode(DJDirection.self, from: data) == expected)
     #expect(try expected.validated(mood: "calm") == expected)
     let summary = expected.summary(mood: "calm")
-    for text in ["Nina Simone", "Bach", "Wagner", "jazz", "metal", "late_romantic", "1960", "1980", "piano", "opera", "45", "Energy shift: -1", "Allow long works", "27 seconds from each start"] {
+    for text in ["Nina Simone", "Bach", "Wagner", "jazz", "metal", "late_romantic", "1960", "1980", "piano", "opera", "45", "Energy shift: -1", "Allow long works", "Strict filters", "27 seconds from each start"] {
         #expect(summary.contains(text))
     }
     let scene = directedScene()
@@ -76,6 +76,8 @@ private func changedDirections() -> [DJDirection?] {
         #"{"constraints":null}"#, #"{"constraints":[]}"#,
         #"{"constraints":{"include_genre":["jazz"]}}"#,
         #"{"constraints":{"energy_bias":3}}"#,
+        #"{"constraints":{"strict":"true"}}"#,
+        #"{"constraints":{"strict":1}}"#,
         #"{"constraints":{"min_work_minutes":50,"max_work_minutes":20}}"#,
         #"{"constraints":{"periods":["unknown"]}}"#,
         #"{"for_secs":0}"#, #"{"for_secs":604801}"#, #"{"for_secs":-1}"#,
@@ -106,12 +108,12 @@ private func changedDirections() -> [DJDirection?] {
     let returned = try DaemonClient.decode(DJDirection.self, from: Data(#"{"constraints":{"include_artists":["Miles Davis"],"energy_bias":0}}"#.utf8))
     #expect(requested == returned)
     let withDefaults = DJDirection(constraints: ["include_artists": .array([.string("Miles Davis")]),
-        "energy_bias": .integer(0), "allow_long_works": .bool(false), "exclude_artists": .array([])])
+        "energy_bias": .integer(0), "allow_long_works": .bool(false), "strict": .bool(false), "exclude_artists": .array([])])
     #expect(try withDefaults.validated(mood: nil) == requested)
     let scene = directedScene(withDefaults, mood: nil)
     let checked = try SceneDefinition(groups: scene.groups).validated(zones: [automationZone()])
     #expect(checked.groups[0].source.direction == returned)
-    #expect(try DaemonClient.decode(DJDirection.self, from: Data(#"{"constraints":{"energy_bias":0,"allow_long_works":false}}"#.utf8)) == DJDirection())
+    #expect(try DaemonClient.decode(DJDirection.self, from: Data(#"{"constraints":{"energy_bias":0,"allow_long_works":false,"strict":false}}"#.utf8)) == DJDirection())
     #expect(requested != DJDirection())
 }
 

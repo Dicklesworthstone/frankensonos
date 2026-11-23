@@ -128,10 +128,13 @@ import FrankenSonosKit
                     numberField("Maximum work minutes", text: binding(\.maximumMinutes))
                     Stepper("Energy shift: \(rehearsal.draft.energyBias)", value: binding(\.energyBias), in: -2...2)
                     Toggle("Allow long works", isOn: binding(\.allowLongWorks))
+                    Toggle("Keep selection filters strict", isOn: binding(\.strict))
+                    Text("Strict keeps every selection filter when matching music is scarce. A preview with no matching music reports that instead of relaxing its filters. A strict mood stays strict when this option is off. Standing taste preferences keep their existing fallback behavior.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Button("Remove all preview-only overrides") {
                         var draft = rehearsal.draft
                         draft.mood = ""; draft.filters = [:]; draft.minimumMinutes = ""; draft.maximumMinutes = ""
-                        draft.energyBias = 0; draft.allowLongWorks = false
+                        draft.energyBias = 0; draft.allowLongWorks = false; draft.strict = false
                         rehearsal.update(draft)
                     }.buttonStyle(.bordered)
                 }.padding(.top, 12)

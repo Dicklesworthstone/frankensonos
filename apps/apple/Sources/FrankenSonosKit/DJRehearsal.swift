@@ -37,6 +37,7 @@ public struct DJRehearsalDraft: Equatable, Sendable {
     public var seed = "1"
     public var energyBias = 0
     public var allowLongWorks = false
+    public var strict = false
     public var minimumMinutes = ""
     public var maximumMinutes = ""
     /// One literal value per line. Commas are part of names, never separators.
@@ -69,6 +70,7 @@ public struct DJRehearsalDraft: Equatable, Sendable {
         var constraints: [String: JSONValue] = [:]
         if energyBias != 0 { constraints["energy_bias"] = .integer(Int64(energyBias)) }
         if allowLongWorks { constraints["allow_long_works"] = .bool(true) }
+        if strict { constraints["strict"] = .bool(true) }
         func minutes(_ raw: String) throws -> UInt32? {
             if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
             guard let value = Self.unsigned(raw, as: UInt32.self) else {

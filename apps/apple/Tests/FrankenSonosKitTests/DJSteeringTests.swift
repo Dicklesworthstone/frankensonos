@@ -20,18 +20,20 @@ private func makeChange(_ fields: [String: JSONValue] = ["include_genres": .arra
     }
     fields["min_work_minutes"] = .integer(5); fields["max_work_minutes"] = .integer(90)
     fields["energy_bias"] = .integer(-2); fields["allow_long_works"] = .bool(true)
+    fields["strict"] = .bool(true)
     let filters = try DJSteeringFilters(fields)
-    #expect(filters.values.count == 16)
+    #expect(filters.values.count == 17)
     #expect(filters.values["include_artists"] == .array([.string("Example")]))
     #expect(filters.values["periods"] == .array([.string("late_romantic")]))
     #expect(filters.values["decades"] == .array([.integer(1980)]))
     #expect(filters.summary.contains("Minimum work minutes: 5"))
     #expect(filters.summary.contains("Exclude release decades: 1980"))
+    #expect(filters.summary.contains("Strict filters: new picks wait if no music matches"))
 }
 
 @Test func temporaryFilterDefaultsAreSparseButMalformedValuesFail() throws {
     #expect(try DJSteeringFilters(["energy_bias": .integer(0), "allow_long_works": .bool(false),
-        "periods": .array([]), "min_work_minutes": .null]).values.isEmpty)
+        "strict": .bool(false), "periods": .array([]), "min_work_minutes": .null]).values.isEmpty)
     for fields: [String: JSONValue] in [
         ["future_filter": .bool(true)], ["include_artists": .string("Artist")],
         ["include_genres": .array([.integer(1)])], ["periods": .array([.string("future")])],
@@ -39,6 +41,7 @@ private func makeChange(_ fields: [String: JSONValue] = ["include_genres": .arra
         ["decades": .array([.integer(990)])], ["decades": .array([.integer(65540)])],
         ["energy_bias": .integer(3)], ["energy_bias": .number(1.5)],
         ["allow_long_works": .string("false")], ["min_work_minutes": .integer(0)],
+        ["strict": .string("true")], ["strict": .integer(1)], ["strict": .null],
         ["max_work_minutes": .integer(601)], ["min_work_minutes": .integer(30), "max_work_minutes": .integer(29)]
     ] { #expect(throws: ContractError.self) { try DJSteeringFilters(fields) } }
 }
@@ -135,6 +138,42 @@ private func makeChange(_ fields: [String: JSONValue] = ["include_genres": .arra
     #expect(draft.mood.isEmpty && draft.entries.isEmpty)
     #expect(throws: ContractError.self) { try draft.change(moods: []) }
     #expect(try draft.clear().fields(in: steeringZone)["clear"] == .bool(true))
+}
+
+@Test func strictSessionCanBeEditedRelaxedAndClearedWithoutLosingItsBaseline() throws {
+    let status = try steerStatus(#"{"source":"session","added":{"exclude_genres":["opera"],"strict":true},"constraints":{"exclude_genres":["opera"],"strict":true}}"#)
+    var draft = try DJSteeringDraft(in: steeringZone, status: status)
+    #expect(draft.strict)
+    draft.entries[.includeArtists] = "Example"
+    let retained = try draft.change(moods: [])
+    #expect(retained.filters.values["strict"] == .bool(true))
+    #expect(retained.filters.values["exclude_genres"] == .array([.string("opera")]))
+    try retained.validate(status)
+    draft.strict = false
+    let relaxed = try draft.change(moods: [])
+    #expect(relaxed.filters.values["strict"] == nil)
+    #expect(retained.filters.values["strict"] == .bool(true))
+    try relaxed.validate(status)
+    let cleared = try draft.clear()
+    try cleared.validate(status)
+    #expect(try cleared.fields(in: steeringZone) == ["zone": .string("Studio@S2"), "clear": .bool(true)])
+    let changed = try steerStatus(#"{"source":"session","added":{"exclude_genres":["opera"],"strict":false},"constraints":{"exclude_genres":["opera"],"strict":false}}"#)
+    for change in [retained, relaxed, cleared] {
+        #expect(throws: ContractError.self) { try change.validate(changed) }
+    }
+}
+
+@Test func inheritedStrictMoodRemainsAValidatedMoodInsteadOfASessionAddition() throws {
+    let status = try steerStatus(#"{"source":"session","mood":"calm","added":{"include_artists":["Example"]},"constraints":{"include_artists":["Example"],"strict":true}}"#)
+    let mood = MoodCatalog.Mood(name: "calm", constraints: ["strict": .bool(true)])
+    let draft = try DJSteeringDraft(in: steeringZone, status: status)
+    #expect(!draft.strict)
+    let change = try draft.change(moods: [mood])
+    #expect(change.filters.values["strict"] == nil && change.mood == mood)
+    try change.validateMoods([mood])
+    #expect(throws: ContractError.self) {
+        try change.validateMoods([MoodCatalog.Mood(name: "calm", constraints: ["strict": .bool(false)])])
+    }
 }
 
 @Test func draftUsesOneNamePerLineAndTypedDecades() throws {

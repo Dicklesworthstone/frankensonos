@@ -106,6 +106,19 @@ private func fields(_ draft: DJRehearsalDraft) throws -> [String: JSONValue] {
     }
 }
 
+@Test func previewDraftStrictChoiceIsExplicitSparseAndBoundToTheGeneratedRequest() throws {
+    var draft = DJRehearsalDraft()
+    #expect(try !draft.request(for: draftZone()).overridesSteering)
+    draft.strict = true
+    let request = try draft.request(for: draftZone())
+    #expect(request.overridesSteering)
+    #expect(request.constraints == ["strict": .bool(true)])
+    #expect(try fields(draft)["constraints"] == .object(["strict": .bool(true)]))
+    draft.strict = false
+    #expect(try fields(draft)["constraints"] == nil)
+    #expect(request.constraints["strict"] == .bool(true))
+}
+
 @Test func previewRequestDoesNotFollowLaterComposerEdits() throws {
     var draft = DJRehearsalDraft(); draft.mood = "calm"; draft.filters[.includeGenres] = "jazz"
     let request = try draft.request(for: draftZone())

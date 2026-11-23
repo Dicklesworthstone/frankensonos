@@ -6,7 +6,7 @@ import Testing
 @testable import FrankenSonosKit
 
 private let filtersZoneJSON = #"{"household":"S2","coordinator_room":"Studio","members":["Studio"],"transport_state":"playing"}"#
-private let filtersSteeringJSON = #"{"source":"session","mood":"calm","added":{"include_genres":["jazz"]},"expires_at":2000000000,"expires_in_secs":3600}"#
+private let filtersSteeringJSON = #"{"source":"session","mood":"calm","added":{"include_genres":["jazz"],"strict":true},"constraints":{"include_genres":["jazz"],"strict":true},"expires_at":2000000000,"expires_in_secs":3600}"#
 private actor FilterTransport: DaemonTransport {
     private(set) var requests: [URLRequest] = []
     var steering = filtersSteeringJSON
@@ -43,7 +43,7 @@ private func filterFixture(_ transport: FilterTransport) throws -> (CommandRevie
     let steering = try DaemonClient.decode(DJStatus.Steering.self, from: Data(filtersSteeringJSON.utf8))
     let mood = MoodCatalog.Mood(name: "calm", constraints: ["energy_bias": .integer(-1)])
     let change = try DJSteeringChange(in: zone, before: steering, mood: mood,
-        filters: DJSteeringFilters(["include_artists": .array([.string("Example artist")])]), seconds: 7200)
+        filters: DJSteeringFilters(["include_artists": .array([.string("Example artist")]), "strict": .bool(true)]), seconds: 7200)
     return (CommandReviewSession(client: client), .djFilters(change), zone)
 }
 
@@ -60,10 +60,38 @@ private func filterFixture(_ transport: FilterTransport) throws -> (CommandRevie
     #expect(writes[0].url?.path == "/dj/steer")
     #expect(try JSONDecoder().decode([String: JSONValue].self, from: writes[0].httpBody!) == [
         "zone": .string("Studio@S2"), "mood": .string("calm"), "for_secs": .integer(7200),
-        "constraints": .object(["include_artists": .array([.string("Example artist")])])
+        "constraints": .object(["include_artists": .array([.string("Example artist")]), "strict": .bool(true)])
     ])
     await #expect(throws: ContractError.self) { try await session.execute(review) }
     #expect(await transport.requests.filter { $0.httpMethod == "POST" }.count == 1)
+}
+
+@Test func nativeStrictSessionCanBeClearedThroughTheReviewedWriterOnce() async throws {
+    let transport = FilterTransport()
+    let client = DaemonClient(endpoint: try DaemonEndpoint("https://music.example.test"), transport: transport)
+    let zone = try DaemonClient.decode(Zone.self, from: Data(filtersZoneJSON.utf8))
+    let steering = try DaemonClient.decode(DJStatus.Steering.self, from: Data(filtersSteeringJSON.utf8))
+    let command = NativeCommand.djFilters(try .clear(in: zone, before: steering))
+    let session = CommandReviewSession(client: client)
+    let review = try await session.prepare(command, in: zone)
+    #expect(await transport.requests.allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
+    _ = try await session.execute(review)
+    let writes = await transport.requests.filter { $0.httpMethod == "POST" }
+    #expect(writes.count == 1 && writes[0].url?.path == "/dj/steer")
+    #expect(try JSONDecoder().decode([String: JSONValue].self, from: writes[0].httpBody!) == [
+        "zone": .string("Studio@S2"), "clear": .bool(true)
+    ])
+    await #expect(throws: ContractError.self) { try await session.execute(review) }
+    #expect(await transport.requests.filter { $0.httpMethod == "POST" }.count == 1)
+}
+
+@Test func nativeReviewedStrictChangeRejectsAnInterveningStrictnessEdit() async throws {
+    let transport = FilterTransport()
+    let (session, command, zone) = try filterFixture(transport)
+    let review = try await session.prepare(command, in: zone)
+    await transport.configure(steering: filtersSteeringJSON.replacingOccurrences(of: "\"strict\":true", with: "\"strict\":false"))
+    await #expect(throws: ContractError.self) { try await session.execute(review) }
+    #expect(await transport.requests.allSatisfy { ($0.httpMethod ?? "GET") == "GET" })
 }
 
 @Test func nativeFilterDraftAndReviewedSessionChangesStopBeforeWriting() async throws {

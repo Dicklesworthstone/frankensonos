@@ -26,14 +26,15 @@ private func handoffDraft(_ choices: DJRehearsalDraft = handoffChoices(),
             : field == .periods || field == .excludePeriods ? "Late Romantic\nbaroque" : "Artist, With Comma\nAnother"
     }
     choices.minimumMinutes = "2"; choices.maximumMinutes = "90"
-    choices.energyBias = -2; choices.allowLongWorks = true
+    choices.energyBias = -2; choices.allowLongWorks = true; choices.strict = true
     choices.length = .hours; choices.hours = 48; choices.start = .houseTime; choices.houseTime = "23:00"
     choices.seed = String(UInt64.max)
     let request = try choices.request(for: handoffZone)
     var draft = try handoffDraft(choices); draft.minutes = "15"
     let change = try draft.change(moods: [])
     #expect(change.filters == (try DJSteeringFilters(request.constraints)))
-    #expect(change.filters.values.count == 16)
+    #expect(change.filters.values.count == 17)
+    #expect(draft.strict && change.filters.values["strict"] == .bool(true))
     let fields = try change.fields(in: handoffZone)
     #expect(Set(fields.keys) == ["zone", "constraints", "for_secs"])
     #expect(fields["zone"] == .string("Studio@S2") && fields["for_secs"] == .integer(900))
@@ -42,11 +43,11 @@ private func handoffDraft(_ choices: DJRehearsalDraft = handoffChoices(),
 }
 
 @Test func rehearsalHandoffReplacesRatherThanMergesExistingSessionAdditions() throws {
-    let status = try handoffStatus(#"{"source":"session","mood":"old","expires_at":2000000000,"added":{"include_artists":["Old artist"],"exclude_genres":["jazz"],"min_work_minutes":50,"max_work_minutes":60,"energy_bias":2,"allow_long_works":true},"constraints":{"include_artists":["Old artist"]}}"#)
+    let status = try handoffStatus(#"{"source":"session","mood":"old","expires_at":2000000000,"added":{"include_artists":["Old artist"],"exclude_genres":["jazz"],"min_work_minutes":50,"max_work_minutes":60,"energy_bias":2,"allow_long_works":true,"strict":true},"constraints":{"include_artists":["Old artist"],"strict":true}}"#)
     var draft = try handoffDraft(status: status)
     #expect(draft.entries == [.includeGenres: "jazz"] && draft.mood.isEmpty)
     #expect(draft.minimumMinutes.isEmpty && draft.maximumMinutes.isEmpty)
-    #expect(draft.energyBias == 0 && !draft.allowLongWorks)
+    #expect(draft.energyBias == 0 && !draft.allowLongWorks && !draft.strict)
     draft.minutes = "60"
     let change = try draft.change(moods: [])
     try change.validate(status)

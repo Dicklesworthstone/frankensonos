@@ -89,6 +89,9 @@ import FrankenSonosKit
             Text("−2 is much calmer; +2 is much brighter. Zero adds no shift to the base mood.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Allow long works", isOn: binding(\.allowLongWorks, fallback: false))
+            Toggle("Keep selection filters strict", isOn: binding(\.strict, fallback: false))
+            Text("Strict keeps every selection filter when matching music is scarce. New picks wait if none match; queued music continues. A strict mood stays strict when this option is off. Standing taste preferences keep their existing fallback behavior.")
+                .font(.caption).foregroundStyle(.secondary)
             Divider()
             Toggle("Keep until explicitly cleared", isOn: binding(\.untilCleared, fallback: false))
             if !observed.untilCleared {

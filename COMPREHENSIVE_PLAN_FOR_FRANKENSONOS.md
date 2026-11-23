@@ -597,6 +597,10 @@ from a genre the DJ was built around.
   and a future steering failure rejects a rehearsal without publishing a
   misleading preview. Browser editors and reviewed direction signatures carry
   the same option.
+  The native Apple steering and rehearsal editors also preserve and expose
+  strictness. Existing strict sessions, mood inheritance, reusable scene/routine
+  directions and rehearsal handoffs share the same typed validation and reviewed
+  command path; unknown constraint fields remain errors rather than being lost.
 - **Multi-movement works stay whole.** Classical tracks on Spotify are
   movements. A DJ that picks tracks independently plays a scherzo, then an
   aria, then the finale of a different symphony, which is the most common way

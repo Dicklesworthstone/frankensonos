@@ -10,6 +10,7 @@ public struct DJSteeringDraft: Sendable {
     public var minimumMinutes = "", maximumMinutes = ""
     public var energyBias = 0
     public var allowLongWorks = false
+    public var strict = false
     public var untilCleared = false
     public var minutes = "60"
 
@@ -56,7 +57,7 @@ public struct DJSteeringDraft: Sendable {
 
     private mutating func loadFilters(_ fields: [String: JSONValue]) {
         entries = [:]; minimumMinutes = ""; maximumMinutes = ""
-        energyBias = 0; allowLongWorks = false
+        energyBias = 0; allowLongWorks = false; strict = false
         for field in DJSteeringField.allCases {
             guard case .array(let values) = fields[field.rawValue] else { continue }
             entries[field] = values.map { value -> String in
@@ -67,6 +68,7 @@ public struct DJSteeringDraft: Sendable {
         if case .integer(let value) = fields["max_work_minutes"] { maximumMinutes = String(value) }
         if case .integer(let value) = fields["energy_bias"] { energyBias = Int(value) }
         allowLongWorks = fields["allow_long_works"] == .bool(true)
+        strict = fields["strict"] == .bool(true)
     }
 
     public func change(moods: [MoodCatalog.Mood]) throws -> DJSteeringChange {
@@ -87,6 +89,7 @@ public struct DJSteeringDraft: Sendable {
         }
         fields["energy_bias"] = .integer(Int64(energyBias))
         fields["allow_long_works"] = .bool(allowLongWorks)
+        fields["strict"] = .bool(strict)
         let selected: MoodCatalog.Mood?
         if mood.isEmpty { selected = nil }
         else {
