@@ -298,19 +298,29 @@ fn stale_resync_cannot_release_the_live_feed_before_ownership_is_confirmed() {
                 change,
                 changed: Cell::new(false),
             };
-            assert!(
-                !maintain(
-                    &mut feed,
-                    &Speakers {
-                        transport: &observer,
-                        households: &rig.houses,
-                        coordinator: &rig.id,
-                    },
-                    &event,
-                )
-                .unwrap(),
-                "{change:?}"
+            let result = maintain(
+                &mut feed,
+                &Speakers {
+                    transport: &observer,
+                    households: &rig.houses,
+                    coordinator: &rig.id,
+                },
+                &event,
             );
+            match change {
+                QueueReadChange::Clear => assert!(!result.unwrap(), "{change:?}"),
+                QueueReadChange::ReuseAddress => match result {
+                    // Resync rejects the changed owner before it can publish
+                    // the candidate snapshot or release the live feed.
+                    Err(FeedError::Proto(ProtoError::Malformed(detail))) => {
+                        assert_eq!(
+                            detail,
+                            "DJ queue owner changed: the coordinator address or identity no longer matches"
+                        );
+                    }
+                    unexpected => panic!("expected owner mismatch, got {unexpected:?}"),
+                },
+            }
             assert!(observer.changed.get());
             drop(observer);
             let expected: &[&str] = match change {

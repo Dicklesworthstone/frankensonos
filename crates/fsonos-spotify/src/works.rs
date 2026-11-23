@@ -49,10 +49,20 @@ pub struct Work {
 }
 
 impl Work {
-    /// Partial and Unknown works want their album's track list read.
+    /// Incomplete works need catalog completion only when the library has not
+    /// already observed their saved album. A validated album read can omit
+    /// unavailable movements; an older catalog cache must not put them back.
     #[must_use]
     pub fn needs_expansion(&self) -> bool {
-        self.completeness != Completeness::Complete
+        self.completeness != Completeness::Complete && !self.has_saved_album_observation()
+    }
+
+    pub(crate) fn has_saved_album_observation(&self) -> bool {
+        self.movements.iter().any(|movement| {
+            // Filled-in tracks use SavedAlbum as a neutral origin, but are not
+            // evidence that the owner saved and reread the whole album.
+            !movement.expanded && matches!(movement.origin, Origin::SavedAlbum | Origin::Both)
+        })
     }
 
     /// The composer's grouping key (shared by every movement).

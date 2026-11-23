@@ -16,6 +16,11 @@
 //! isn't there or has nothing playable is left alone for a week
 //! ([`AlbumMisses`]), and a rate limit or outage stops the run (the rest is
 //! tried next time) rather than waiting it out album by album.
+//!
+//! A validated saved-album read already covers that album's available tracks.
+//! Its omitted movements stay omitted, even if an older completion cache has
+//! them. Liked- and taste-only works still use catalog completion; this does not
+//! add persistent negative availability evidence for those separate sources.
 
 use std::collections::{HashMap, HashSet};
 
@@ -344,9 +349,14 @@ pub(crate) fn album_track(t: &SimplifiedTrack) -> Option<AlbumTrack> {
 
 /// Reconstruct one recording in album order, preserving held tracks and their
 /// preferences. A complete album can also confirm an all-liked work or recover
-/// missing positions and durations. `None` means no change or uncertain identity.
+/// missing positions and durations. A saved-album observation already covers
+/// its available tracks and is never enlarged from this separate cache.
+/// `None` means no change, authoritative saved contents or uncertain identity.
 #[must_use]
 pub fn expand_work(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
+    if work.has_saved_album_observation() {
+        return None;
+    }
     recording::expand(work, album)
 }
 
@@ -391,6 +401,7 @@ fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> Option<ClassicalTrack
 
 #[cfg(test)]
 mod tests {
+    mod availability;
     mod paging;
     mod recordings;
 

@@ -92,3 +92,36 @@ fn invalidated_or_other_owner_progress_is_never_inherited() {
         assert_eq!(current, expected);
     }
 }
+
+#[test]
+fn saved_album_gaps_do_not_schedule_catalog_completion() {
+    use crate::library::Origin;
+    use fsonos_core::store::MemStore;
+
+    let album_uri = "spotify:album:ObservedAlbum";
+    let store = MemStore::default();
+    for origin in [
+        Origin::SavedAlbum,
+        Origin::Both,
+        Origin::LikedTrack,
+        Origin::Taste,
+    ] {
+        let item = LibraryItem {
+            source_uri: "spotify:track:ObservedMovement".into(),
+            title: "Cello Suite No. 1 in G Major, BWV 1007: II. Allemande".into(),
+            artists: vec!["Johann Sebastian Bach".into()],
+            album: Some("Bach: Cello Suites".into()),
+            album_uri: Some(album_uri.into()),
+            disc_number: Some(1),
+            track_number: Some(2),
+            origin,
+            ..LibraryItem::default()
+        };
+        let pending = missing_for_items(&store, &[item], 1_000).unwrap();
+        if matches!(origin, Origin::SavedAlbum | Origin::Both) {
+            assert!(pending.is_empty(), "{origin:?}");
+        } else {
+            assert_eq!(pending, [album_uri], "{origin:?}");
+        }
+    }
+}
