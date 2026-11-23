@@ -516,8 +516,9 @@ impl Fader {
 
     /// Fade the group `coordinator` leads down to silence over `over`, pause
     /// it, then put every member room's volume back where it was, so the next
-    /// play is not silent. A newer intent before the pause prevents it; a
-    /// newer level during recovery or restoration keeps that room's volume.
+    /// play is not silent. A newer intent prevents the pause and restores
+    /// rooms this fade still owns; a newer level during recovery or restoration
+    /// keeps that room's volume.
     pub fn fade_out_and_pause<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -554,6 +555,7 @@ impl Fader {
             }
         };
         if outcome != FadeOutcome::Reached {
+            put_back()?;
             return Ok(outcome);
         }
         // A newer intent on an earlier member can arrive while the last
@@ -561,6 +563,7 @@ impl Fader {
         let Some(paused) = self.with_claimed(&claimed, || {
             crate::control::pause(t, households, coordinator)
         }) else {
+            put_back()?;
             return Ok(FadeOutcome::Superseded { at: 0 });
         };
         let restored = put_back();
@@ -805,16 +808,25 @@ mod tests {
         assert_eq!(soap::get_volume(&sim.lan(), host).unwrap(), 50);
     }
 
-    #[test]
-    fn an_override_during_the_last_group_step_prevents_the_pause() {
+    fn interrupted_group_fade(s2: bool, over: Duration) {
         use fsonos_sim::{SimHousehold, SimModel, SimPlayerSpec};
-        let sim = SimHousehold::builder()
-            .s2([
-                SimPlayerSpec::new("Kitchen", SimModel::One),
-                SimPlayerSpec::new("Office", SimModel::One),
-            ])
-            .spawn()
-            .unwrap();
+        let model = if s2 {
+            SimModel::One
+        } else {
+            SimModel::Play5Gen1
+        };
+        let players = [
+            SimPlayerSpec::new("Kitchen", model),
+            SimPlayerSpec::new("Office", model),
+        ];
+        let builder = SimHousehold::builder();
+        let sim = if s2 {
+            builder.s2(players)
+        } else {
+            builder.s1(players)
+        }
+        .spawn()
+        .unwrap();
         let lan = sim.lan();
         let host = sim.player("Kitchen").unwrap().ip;
         let player = PlayerId(sim.player("Kitchen").unwrap().uuid.clone());
@@ -827,7 +839,10 @@ mod tests {
         let members = member_rooms(&houses[0], &player);
         assert_eq!(members.len(), 2);
         let overridden = &members[0];
+        let overridden_host = ip(&houses, overridden).unwrap();
         let held_host = ip(&houses, &members[1]).unwrap();
+        soap::set_volume(&lan, overridden_host, 40).unwrap();
+        soap::set_volume(&lan, held_host, 30).unwrap();
         crate::control::play_uri(
             &lan,
             &houses,
@@ -838,21 +853,49 @@ mod tests {
         .unwrap();
         let mut held = Held::new(lan.clone(), "SetVolume");
         held.host = Some(held_host);
-        held.level = Some(0);
+        held.level = over.is_zero().then_some(0);
         let fader = Fader::default();
         let outcome = set_50_meanwhile(&fader, &held, &houses, overridden, || {
-            fader.fade_out_and_pause(&held, &houses, &player, Duration::ZERO)
-        });
-        assert_eq!(outcome.unwrap(), FadeOutcome::Superseded { at: 0 });
+            fader.fade_out_and_pause(&held, &houses, &player, over)
+        })
+        .unwrap();
+        if over.is_zero() {
+            assert_eq!(outcome, FadeOutcome::Superseded { at: 0 });
+        } else {
+            assert!(
+                matches!(outcome, FadeOutcome::Superseded { at } if at > 0),
+                "the manual override interrupts an unfinished fade: {outcome:?}"
+            );
+        }
         assert_eq!(
-            soap::get_volume(&lan, ip(&houses, overridden).unwrap()).unwrap(),
-            50
+            soap::get_volume(&lan, overridden_host).unwrap(),
+            50,
+            "the listener's new level survives restoration"
+        );
+        assert_eq!(
+            soap::get_volume(&lan, held_host).unwrap(),
+            30,
+            "the other room recovers its original level instead of remaining faded"
         );
         assert_eq!(
             soap::get_transport_info(&lan, host).unwrap().state,
             fsonos_types::TransportState::Playing
         );
         assert!(sim.soap_log().iter().all(|entry| entry.action != "Pause"));
+    }
+
+    #[test]
+    fn an_override_during_the_fade_restores_rooms_it_still_owns() {
+        for s2 in [false, true] {
+            interrupted_group_fade(s2, Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn an_override_during_the_last_group_step_prevents_the_pause_and_restores_other_rooms() {
+        for s2 in [false, true] {
+            interrupted_group_fade(s2, Duration::ZERO);
+        }
     }
 
     #[test]

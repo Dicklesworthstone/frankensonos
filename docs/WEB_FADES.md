@@ -36,6 +36,12 @@ replacement or follow-up volume command. The panel requires a known, playing
 source; paused, stopped, transitioning or unknown playback cannot be resumed
 by this control. A failed fade or restoration can leave a partial result.
 
+A newer manual volume change interrupts a gentle pause before its Pause command.
+That room keeps its new level, while the other rooms still owned by the fade
+return to their original levels. This also applies when the manual change lands
+during the last group's final fade step, so continuing music is not left silent
+in the untouched rooms. A failed restoration remains an explicit error.
+
 ## Review, freshness and uncertain outcomes
 
 Every review freezes the target and typed request. Editing, cancelling,
@@ -76,3 +82,9 @@ API fixtures: local sliders, review/cancel, keyboard focus, stale group
 refusal, policy-limited results, gentle pause, text-only metadata and layout.
 These fixtures do not establish Rust HTTP integration, physical speaker
 behavior, fade timing or successful hardware restoration.
+
+Core S1/S2 simulator regressions exercise manual interruption during a fade and
+at its final frame, checking restored peer levels, preserved manual levels and
+continued playback without Pause. The new cases are included in
+`cargo test -p fsonos-core --lib fade::tests`; execution remains pending after
+the editing environment became unavailable.
