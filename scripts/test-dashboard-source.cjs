@@ -410,7 +410,7 @@ test('dashboard playlist picker uses text labels and an explicit review for the 
   f.catalogs.set('Den@S2',[{id:'SQ:7',title}]);$('open-source').fire('click');
   $('source-type').value='playlist';$('source-type').fire('change');await settled(()=>f.source.state.playlistStatus==='ready');
   assert.equal($('source-link-field').hidden,true);assert.equal($('source-playlist-field').hidden,false);
-  assert.equal($('source-playlist').children[1].textContent,title);assert.equal($('source-playlist').children[1].tag,'option');
+  assert.equal($('source-playlist').children[1].textContent,title + ' (SQ:7)');assert.equal($('source-playlist').children[1].tag,'option');
   $('source-playlist').value='SQ:7';$('source-playlist').fire('change');$('source-review').fire('click');
   await settled(()=>!!f.source.state.pending);assert.match($('source-preview-title').textContent,/<script>Evening & Friends/);
   assert.match($('source-preview-effect').textContent,/saved Sonos playlist/);assert.match($('source-preview-target').textContent,/S2/);

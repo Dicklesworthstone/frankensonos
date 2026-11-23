@@ -161,7 +161,7 @@ const DashboardCore = (() => {
       roomConfiguration: { path: '/rooms/configuration', label: 'room configuration', observed: 'saved aliases and defaults', route: /^\/rooms\/configuration$/ },
       preferences: { path: '/dj/preferences', label: 'preferences', observed: 'standing taste', route: /^\/dj\/preferences$/ },
       playlists: { path: target => `/sonos/playlists?zone=${encodeURIComponent(target)}`, scoped: true,
-        label: 'saved playlists', observed: 'original household catalog', route: /^\/sonos\/playlists\/(?:save|rename|remove|remove-tracks|move-tracks|append-tracks)$/ },
+        label: 'saved playlists', observed: 'original household catalog', route: /^\/sonos\/playlists\/(?:save|rename|remove|remove-tracks|move-tracks|append-tracks|add-tracks)$/ },
       favorites: { path: target => `/favorites?zone=${encodeURIComponent(target)}`, scoped: true,
         label: 'favorites', observed: 'original household catalog', route: /^\/favorites\/(?:save|rename|remove)$/ },
     };

@@ -55,11 +55,12 @@ const DashboardLibraryPanel = (() => {
     const selectedNext = button('Queue selected next', () => { void selectTracks('next'); });
     const selectedEnd = button('Add selected to end', () => { void selectTracks('append'); });
     const selectedScene = button('Save selection as scene', () => { void selectScene(); });
+    const selectedPlaylist = button('Add selection to Sonos playlist', () => { void selectPlaylist(); });
     selectedScene.hidden = typeof offerScene !== 'function';
     const selectedClear = button('Clear selection', () => control.clearSelection());
     const selectedActions = el('div', null, 'dashboard-library-actions');
     selectedActions.setAttribute('role', 'group'); selectedActions.setAttribute('aria-label', 'Selected track actions');
-    selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedScene, selectedClear);
+    selectedActions.append(selectedCount, selectedPlay, selectedNext, selectedEnd, selectedScene, selectedPlaylist, selectedClear);
     const selectionHelp = el('p', `Build a selection of up to ${L.MAX_TRACKS} tracks from different cached albums, playlists and filters. Keep browsing, then move, repeat or remove tracks below before review. Refresh listing, Clear selection or closing this browser clears it.`, 'small-note');
     const selectionNotice = el('p', '', 'small-note'); selectionNotice.setAttribute('role', 'status');
     const basket = el('ol', null, 'dashboard-library-selection');
@@ -138,6 +139,34 @@ const DashboardLibraryPanel = (() => {
         if (!disposed) { render(control.state); if (visible() && problem) status.textContent = problem; }
       }
     }
+    async function selectPlaylist() {
+      if (!visible() || reviewing || trackDestination !== 'group' || !controller.canControl() || session.state.pending) return;
+      const selected = controller.selected(), choice = control.chooseTracks();
+      if (!selected || !choice) return;
+      const P = typeof SourcePlayerRemote !== 'undefined' ? SourcePlayerRemote : require('./source-player.js');
+      const Q = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote : require('./queue-tracks.js');
+      const group = P.groups([selected.zone])[0], tracks = Q.tracksOf(choice.rows.map(row => row.item));
+      const valid = () => {
+        if (!visible() || !controller.canControl() || session.state.pending || controller.state.selected !== group.target
+            || P.groups([controller.selected().zone])[0].signature !== group.signature) {
+          throw new Error('The selected household group changed. Choose the music and group again.');
+        }
+      };
+      reviewing = true; render(control.state); let problem = '';
+      try {
+        await L.verifySelection(call, choice, valid); valid();
+        const selection = Object.freeze({ group, tracks, verify: async check => {
+          await L.verifySelection(call, choice, check); check(); return tracks;
+        } });
+        const detail = { selection, response: null };
+        const event = new (doc.defaultView?.CustomEvent || CustomEvent)('fsonos:playlist-selection', { cancelable: true, detail });
+        if (doc.dispatchEvent(event) || !await detail.response) {
+          throw new Error('Finish or clear the current source draft, then choose Add selection to Sonos playlist again.');
+        }
+        reviewing = false; close(); dialog.close();
+      } catch (error) { problem = C.problem(error); }
+      finally { reviewing = false; if (!disposed) { render(control.state); if (visible() && problem) status.textContent = problem; } }
+    }
     function render(state) {
       if (disposed) return;
       const selected = controller.selected(), destination = selected
@@ -162,6 +191,7 @@ const DashboardLibraryPanel = (() => {
       selectedPlay.disabled = selectedNext.disabled = selectedEnd.disabled = !basketUsable || !state.basket.length || (trackDestination === 'set' ? !trackTarget.trim() : !destination)
         || !controller.canControl() || !!session.state.pending;
       selectedScene.disabled = selectedPlay.disabled || trackDestination !== 'group';
+      selectedPlaylist.disabled = selectedPlay.disabled || trackDestination !== 'group';
       selectedClear.disabled = !visible() || reviewing || !state.basket.length;
       const basketFocus = basket.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
       basket.hidden = !state.basket.length;

@@ -20,6 +20,7 @@ on:
       - "scripts/test-sonos-playlist-track-actions.cjs"
       - "scripts/test-sonos-playlist-management.cjs"
       - "scripts/test-sonos-playlist-append.cjs"
+      - "scripts/test-sonos-playlist-cached-add.cjs"
       - "scripts/test-favorites-management.cjs"
       - "scripts/test-favorites-panel.cjs"
       - "scripts/test-playlist-save-remote.cjs"
@@ -158,7 +159,7 @@ jobs:
         run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs scripts/test-sonos-playlist-contents.cjs scripts/test-sonos-playlist-track-actions.cjs scripts/test-line-in-source.cjs
       - name: Native playlist and favorites management, saving and recovery regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-sonos-playlist-management.cjs scripts/test-sonos-playlist-append.cjs scripts/test-playlist-save-remote.cjs scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-playlist-save-panel.cjs scripts/test-dashboard-playlist-store.cjs scripts/test-favorites-management.cjs scripts/test-favorites-panel.cjs
+        run: node --test scripts/test-sonos-playlist-management.cjs scripts/test-sonos-playlist-append.cjs scripts/test-sonos-playlist-cached-add.cjs scripts/test-playlist-save-remote.cjs scripts/test-dashboard-playlist-save.cjs scripts/test-dashboard-playlist-save-panel.cjs scripts/test-dashboard-playlist-store.cjs scripts/test-favorites-management.cjs scripts/test-favorites-panel.cjs
       - name: Web speaker sound regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-equalizer.cjs scripts/test-dashboard-equalizer.cjs scripts/test-remote-fades.cjs scripts/test-remote-sound-copy.cjs

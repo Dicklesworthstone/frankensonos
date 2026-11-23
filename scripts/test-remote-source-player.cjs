@@ -447,7 +447,7 @@ test('phone playlist picker renders untrusted titles as text and reviews before 
   });
   await ui.panel.refresh(); ui.panel.edit('target', 'Den@S2');
   const kind = ui.field('Music source'); kind.value = 'playlist'; kind.emit('change'); await settle();
-  const select = ui.field('Saved Sonos playlist'); assert.equal(select.children[1].textContent, title);
+  const select = ui.field('Saved Sonos playlist'); assert.equal(select.children[1].textContent, title + ' (SQ:7)');
   assert.ok(descendants(ui.panel.node).every(node => node.tag !== 'img'));
   select.value = 'SQ:7'; select.emit('change'); ui.find('Review playback').emit('click'); await settle();
   assert.equal(calls.filter(([name]) => name === 'sourcePlaylistPlay').length, 0);

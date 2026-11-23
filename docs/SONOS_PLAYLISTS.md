@@ -430,6 +430,33 @@ music found in the cached library, online catalog search, or shared links while
 the house keeps listening to something else. Order and deliberate repetitions
 are retained; album, artist, playlist and show containers are not expanded.
 
+### From a cached-library selection
+
+In either browser remote, select tracks across cached albums, playlists or
+filtered library pages and arrange their order in the selection basket. Keep
+one displayed listening group as the destination, then choose **Add selection
+to Sonos playlist**. This opens that group's native source panel. Choose the
+**Saved Sonos playlist** destination and **Review selected additions**. The
+review shows every new occurrence in order, the household and exact `SQ:` id,
+and the complete existing playlist under **Existing saved contents**. An empty
+saved playlist is a valid destination.
+
+Choose **Add selected tracks to playlist** once to confirm. Every distinct
+selected source page and the saved destination are checked before review and
+again before dispatch. Changed source occurrences, cache evidence, saved
+contents or group identity require another review. Duplicate selections retain
+their order. This operation targets one household's saved playlist; switch a
+room-set basket back to one displayed group before using it.
+
+A lost, malformed or partly applied reply retains the original destination and
+offers **Read original playlist contents**. This reads the current saved count
+and entries at the original append boundary, including after switching rooms.
+It does not repeat the additions or use a playback-queue refresh to acknowledge
+them. These are optimistic checks against other controllers, not a playlist
+lock or an atomic multi-track transaction.
+
+### CLI, HTTP and MCP
+
 Read the destination's exact native id and contents revision first:
 
 ```sh
@@ -555,6 +582,7 @@ read and review.
 | Remove consecutive saved occurrences | `POST /sonos/playlists/remove-tracks` with `zone`, exact `playlist`, `expected_revision`, `position`, and `count` | `remove_sonos_playlist_tracks` with the same fields |
 | Reorder a saved block | `POST /sonos/playlists/move-tracks` with the same fields plus original `insert_before` | `move_sonos_playlist_tracks` with the same fields |
 | Add selected occurrences to an existing saved playlist | `POST /sonos/playlists/append-tracks` with `zone`, exact destination `playlist`, `expected_revision`, `source_revision`, `positions`, and optional exact `source_playlist` | `append_sonos_playlist_tracks` with the same fields |
+| Add 1–10 explicit Spotify tracks or episodes | `POST /sonos/playlists/add-tracks` with `zone`, exact destination `playlist`, `expected_revision`, and ordered `tracks` | `add_tracks_to_sonos_playlist` with the same fields |
 | Replace the queue and play | `POST /sonos/playlists/play` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `play_sonos_playlist(zone="Kitchen", playlist="SQ:7")` |
 | Append | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7"}` | `add_to_queue(zone="Kitchen", playlist="SQ:7")` |
 | Play next in the queue | `POST /queue` with `{"zone":"Kitchen","playlist":"SQ:7","next":true}` | `add_to_queue(zone="Kitchen", playlist="SQ:7", next=true)` |
@@ -574,9 +602,9 @@ accepts only `zone` and `title`, never an existing playlist id or overwrite flag
 Rename and removal require their own `rename_sonos_playlist` and
 `remove_sonos_playlist` permissions, also in `house-config`. Saved-track edits
 require `remove_sonos_playlist_tracks`, `move_sonos_playlist_tracks`, or
-`append_sonos_playlist_tracks`, likewise
+`append_sonos_playlist_tracks` or `add_tracks_to_sonos_playlist`, likewise
 in `house-config`. A read-only catalog
-allowlist cannot perform these writes. All six catalog mutation operations are in the
+allowlist cannot perform these writes. All seven catalog mutation operations are in the
 MCP Full profile. Request bodies reject unknown fields, including overwrite or
 force flags.
 

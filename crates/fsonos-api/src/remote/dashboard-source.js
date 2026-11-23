@@ -136,6 +136,7 @@ const DashboardSource = (() => {
       publish();
     }
     function edit(field, value) {
+      if (manager.state.cached && field !== 'playlist') return false;
       if (!editable() || typeof value !== 'string' || !['sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode', 'destinationMode', 'destinationInput', 'nativeQuery'].includes(field)
           || (field === 'mode' && (!Object.hasOwn(P.modes, value) || state.sourceType === 'line_in' && value !== 'play'))) return false;
       if (field === 'destinationMode' && !['selected', 'set'].includes(value)) return false;
@@ -275,7 +276,7 @@ const DashboardSource = (() => {
       valid();
       return observation(playback, queue, reviewed.zone, reviewed.group, reviewed.mode);
     }
-    const canReview = () => !!(ready() && state.sourceType !== 'catalog' && (!targetSet() || state.destinationInput.trim()) && (nativeQuery()
+    const canReview = () => !!(ready() && !manager.state.cached && state.sourceType !== 'catalog' && (!targetSet() || state.destinationInput.trim()) && (nativeQuery()
       ? state.nativeQuery.trim() : state.sourceType === 'playlist'
       ? state.playlist && state.playlistStatus === 'ready' && state.playlistTarget === state.target
       : state.sourceType === 'line_in' ? state.lineIn && state.lineInStatus === 'ready' && state.lineInTarget === state.target : state.input.trim()));
@@ -437,6 +438,7 @@ const DashboardSource = (() => {
       cancelReview() { if (state.writing || manager.state.writing) return false; retire(); state.message = ''; publish(); return true; },
       clearDraft() {
         if (!editable()) return false;
+        if (!manager.clearCached()) return false;
         retire(); clearPlaylists(); clearLineIn(); state.sourceType = 'link'; state.input = ''; state.title = ''; state.mode = 'play';
         state.destinationMode = 'selected'; state.destinationInput = ''; state.nativeQuery = '';
         state.message = 'Source draft cleared. No playback command was sent.'; publish(); return true;
@@ -446,10 +448,24 @@ const DashboardSource = (() => {
         let offered;
         try { offered = P.offeredSource(value); }
         catch (error) { state.message = C.problem(error); publish(); return false; }
-        if (state.loading || state.pending || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
+        if (state.loading || state.pending || manager.state.cached || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
           state.open = true; state.message = 'Finish this source action, or clear its draft before importing another source.'; publish(); return false;
         }
         open(); clearPlaylists(); clearLineIn(); state.sourceType = 'link'; state.input = offered.input; state.title = offered.title; state.mode = 'play'; publish(); return true;
+      },
+      async offerTracks(value) {
+        if (disposed || !active || state.writing || manager.busy() || manager.state.recovery || manager.state.cached || controller.state.busy
+            || state.loading || state.pending || state.input.trim() || state.title.trim() || state.nativeQuery.trim()
+            || state.destinationInput.trim() || state.playlist || state.lineIn) return false;
+        let incoming;
+        try { incoming = P.cachedPlaylistSelection(value); }
+        catch (error) { state.message = C.problem(error); publish(); return false; }
+        if (!controller.canControl() || controller.state.selected !== incoming.group.target
+            || P.groups([controller.selected().zone])[0].signature !== incoming.group.signature) return false;
+        open(); clearPlaylists(); clearLineIn(); state.sourceType = 'playlist'; state.destinationMode = 'selected';
+        state.message = ''; publish();
+        if (!await loadPlaylists() || !live() || state.target !== incoming.group.target || state.group?.signature !== incoming.group.signature) return false;
+        return manager.offerTracks(incoming);
       },
       close() { state.open = false; retire(); publish(); },
       suspend() { active = false; state.open = false; retire(); publish(); },
@@ -505,7 +521,7 @@ const DashboardSource = (() => {
       for (const id of ['source-link-field', 'source-title-field', 'source-kinds']) $(id).hidden = saved || online || analog || native;
       for (const id of ['source-playlist-field', 'source-playlist-controls']) $(id).hidden = !saved || native;
       for (const id of ['source-line-in-field', 'source-line-in-controls']) $(id).hidden = !analog;
-      $('source-mode-field').hidden = analog;
+      $('source-mode-field').hidden = analog || !!s.managing.cached;
       $('source-mode').disabled = !control.editable() || analog;
       $('source-online').hidden = !online;
       if ($('source-catalog-query').value !== s.catalog.query) $('source-catalog-query').value = s.catalog.query;
@@ -528,14 +544,18 @@ const DashboardSource = (() => {
         const placeholder = doc.createElement('option'); placeholder.value = ''; placeholder.textContent = caption; placeholder.disabled = true;
         $('source-playlist').replaceChildren(placeholder);
         for (const item of s.playlists) {
-          const option = doc.createElement('option'); option.value = item.id; option.textContent = item.title || item.id;
+          const option = doc.createElement('option'); option.value = item.id; option.textContent = `${item.title || 'Untitled playlist'} (${item.id})`;
           $('source-playlist').append(option);
         }
       }
       $('source-playlist').value = s.playlist;
       $('source-playlist').disabled = !control.editable() || s.playlistStatus !== 'ready' || !s.playlists.length;
+      if (s.managing.cached) {
+        for (const id of ['source-type', 'source-destination-mode', 'source-destination-input']) $(id).disabled = true;
+      }
+      $('source-review').hidden = !!s.managing.cached;
       $('source-playlist-refresh').disabled = !control.editable() || s.loading || !s.group || !controller.canControl();
-      $('source-playlist-help').textContent = s.playlistStatus === 'ready' ? s.playlists.length
+      $('source-playlist-help').textContent = s.managing.cached && s.playlists.length ? 'Choose the saved playlist that will receive the selected tracks, then review its contents and the additions below.' : s.playlistStatus === 'ready' ? s.playlists.length
         ? 'Saved on the speakers in this household. Read its tracks before choosing how to play it.'
         : 'This household has no saved Sonos playlists. Open Speaker queue → Save queue as playlist, then refresh here.'
         : s.group ? 'Read saved playlists for the selected group.' : 'Select a listening group first.';
@@ -664,7 +684,13 @@ const DashboardSource = (() => {
     $('close-source').addEventListener('click', () => control.close());
     dialog.addEventListener('cancel', event => { event.preventDefault(); control.close(); });
     dialog.addEventListener('close', () => { if (control.state.open) control.close(); });
-    render(control.state); return control;
+    const offerTracks = event => {
+      if (!event.detail || typeof event.detail !== 'object' || Array.isArray(event.detail) || doc.hidden) return;
+      event.preventDefault(); event.detail.response = control.offerTracks(event.detail.selection);
+    };
+    doc.addEventListener?.('fsonos:playlist-selection', offerTracks);
+    render(control.state);
+    return { ...control, dispose() { doc.removeEventListener?.('fsonos:playlist-selection', offerTracks); control.dispose(); } };
   }
   return { MAX_AGE, observation, effect, model, panel };
 })();

@@ -747,6 +747,14 @@ completed batch reports its confirmed count and is never automatically retried;
 the remotes can inspect the original destination after a lost reply. See
 [Adding selected tracks](docs/SONOS_PLAYLISTS.md#add-selected-tracks-to-an-existing-playlist).
 
+The cached-library baskets also offer **Add selection to Sonos playlist**.
+Choose up to ten tracks across albums, playlists or library pages, arrange their
+order, and review the additions beside the destination's complete saved
+contents. Confirmation rechecks source pages and the native playlist revision.
+CLI `playlist-add-tracks`, HTTP and MCP support explicit Spotify tracks and
+episodes through the same guarded operation, without first loading the live
+queue. See [direct saved-playlist additions](docs/SONOS_PLAYLISTS.md#add-spotify-selections-directly).
+
 Saved albums, liked tracks, and missing album-track pages now resume from
 private checkpoints after an interrupted read or Spotify cooldown. Each pass
 uses at most 512 page requests; the daemon continues unfinished work at its

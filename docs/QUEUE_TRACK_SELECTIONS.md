@@ -18,6 +18,19 @@ queues unchanged. The saved scene can then run through an ordinary Apply scene
 routine. See [ordered-track scenes](ORDERED_TRACK_SCENES.md) for the phone editor,
 dashboard dialog and the equivalent CLI/API definition.
 
+Both browser baskets also offer **Add selection to Sonos playlist** for one
+displayed group. Choose an existing native saved playlist, review the ordered
+additions and its complete current contents, then confirm **Add selected tracks
+to playlist**. Source-page checks and the destination's native contents revision
+protect the reviewed selection. This catalog edit leaves the playing queue and
+music unchanged and does not consume a playback undo. A partial or lost reply
+keeps the original playlist available for an explicit contents read; additions
+are never replayed automatically. CLI `playlist-add-tracks`, HTTP
+`POST /sonos/playlists/add-tracks` and MCP `add_tracks_to_sonos_playlist` accept
+the same 1–10 explicit Spotify track or episode occurrences. See
+[direct saved-playlist additions](SONOS_PLAYLISTS.md#add-spotify-selections-directly)
+for the request, household renderer requirement and recovery behavior.
+
 ## From the phone remote or Listening Room
 
 Open **Find music** and browse cached tracks, or open an album or playlist with

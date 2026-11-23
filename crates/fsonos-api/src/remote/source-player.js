@@ -12,6 +12,7 @@ const SourcePlayerRemote = (() => {
     sourcePlaylistRename: ['POST', '/sonos/playlists/rename'], sourcePlaylistRemove: ['POST', '/sonos/playlists/remove'],
     sourcePlaylistRemoveTracks: ['POST', '/sonos/playlists/remove-tracks'],
     sourcePlaylistAppendTracks: ['POST', '/sonos/playlists/append-tracks'],
+    sourcePlaylistAddTracks: ['POST', '/sonos/playlists/add-tracks'],
     sourcePlaylistMoveTracks: ['POST', '/sonos/playlists/move-tracks'] };
   const modes = Object.freeze({ play: 'Play now', next: 'Queue next', end: 'Queue at end' });
   const MAX_BYTES = 2048, MAX_TITLE = 256, MAX_PLAYLIST_TRACKS = 10;
@@ -581,6 +582,33 @@ const SourcePlayerRemote = (() => {
       : ' The additions were confirmed, but the action log could not be written. Do not repeat this operation.') });
   }
 
+  function cachedPlaylistSelection(value) {
+    const Q = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote : require('./queue-tracks.js');
+    if (!value || !text(value.group?.target) || !text(value.group?.signature) || typeof value.verify !== 'function') {
+      throw new Error('Choose an observed cached track selection and one household first.');
+    }
+    const tracks = Object.freeze(Q.tracksOf(value.tracks).map(track => {
+      const title = (track.title || '').replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+      return Object.freeze({ source_uri: track.source_uri, ...(title ? { title } : {}) });
+    }));
+    return Object.freeze({ group: Object.freeze({ target: value.group.target, signature: value.group.signature }),
+      tracks, verify: value.verify });
+  }
+
+  function addedCachedPlaylist(value, reviewed) {
+    const tracks = reviewed.cached.tracks, item = playlists([value?.playlist])[0];
+    if (!value || value.zone !== reviewed.group.coordinator || item.id !== reviewed.item.id || item.title !== reviewed.item.title
+        || !text(value.done) || typeof value.logged !== 'boolean' || value.added !== tracks.length
+        || value.previous_total !== reviewed.total || value.total !== reviewed.total + tracks.length
+        || !text(value.revision) || value.revision.length > 4096 || /[\p{Cc}]/u.test(value.revision) || value.revision === reviewed.revision
+        || JSON.stringify(value.source_uris) !== JSON.stringify(tracks.map(track => track.source_uri))
+        || JSON.stringify(value.titles) !== JSON.stringify(tracks.map(track => track.title || track.source_uri))) {
+      throw new Error('The saved-playlist addition was not confirmed by a complete response.');
+    }
+    return Object.freeze({ ...value, playlist: item, changed: true, detail: value.done + (value.logged ? ''
+      : ' The additions were confirmed, but the action log could not be written. Do not repeat this operation.') });
+  }
+
   function managedPlaylist(value, reviewed) {
     const item = playlists([value?.playlist])[0];
     const trackEdit = editsTracks(reviewed.operation);
@@ -608,7 +636,7 @@ const SourcePlayerRemote = (() => {
     readCatalog = (target, decode) => call('sourcePlaylists', { query: { zone: target } }).then(decode) }) {
     let epoch = 0;
     const state = { title: '', position: '1', count: '1', insert_before: '1', basis: null,
-      sourcePlaylist: '', sourcePositions: '1',
+      sourcePlaylist: '', sourcePositions: '1', cached: null,
       pending: null, reading: false, writing: false, result: null, recovery: null, message: '' };
     const publish = () => { try { changed(state); } catch (_) { /* Presentation only. */ } };
     const busy = () => state.reading || state.writing;
@@ -685,10 +713,35 @@ const SourcePlayerRemote = (() => {
       if (expected && JSON.stringify(result) !== JSON.stringify(expected)) throw new Error('The reviewed source occurrences changed. Review the additions again.');
       return result;
     }
+    async function inspectCached(reviewed, valid) {
+      valid();
+      const checked = cachedPlaylistSelection({ ...reviewed.cached, tracks: await reviewed.cached.verify(valid) });
+      valid();
+      if (JSON.stringify(checked.tracks) !== JSON.stringify(reviewed.cached.tracks)) {
+        throw new Error('The cached selection changed. Choose its tracks again.');
+      }
+    }
+    async function inspectDestination(reviewed, valid) {
+      const items = [];
+      for (let offset = 0; offset < reviewed.total;) {
+        valid();
+        const query = { zone: reviewed.group.target, playlist: reviewed.item.id, offset, limit: 100,
+          expected_revision: reviewed.revision };
+        const page = playlistContents(await call('sourcePlaylistContents', { query }), query, reviewed.item, reviewed.group);
+        valid();
+        if (page.total !== reviewed.total || !page.items.length) throw new Error('The destination playlist changed. Review it again.');
+        items.push(...page.items); offset += page.items.length;
+      }
+      return Object.freeze(items);
+    }
     async function review(operation) {
-      if (!live() || !available() || busy() || state.recovery || !['rename', 'remove', 'remove_tracks', 'move_tracks', 'append_tracks'].includes(operation)) return null;
+      if (!live() || !available() || busy() || state.recovery || !['rename', 'remove', 'remove_tracks', 'move_tracks', 'append_tracks', 'add_tracks'].includes(operation)
+          || (state.cached && operation !== 'add_tracks')) return null;
       const selected = selection();
       if (!selected) return null;
+      const cached = operation === 'add_tracks' ? state.cached : null;
+      if (operation === 'add_tracks' && (!cached || cached.group.target !== selected.group.target
+          || cached.group.signature !== selected.group.signature)) return null;
       const basis = state.basis;
       invalidate(); const version = epoch;
       let title, edit, append;
@@ -698,7 +751,7 @@ const SourcePlayerRemote = (() => {
         if (operation === 'append_tracks') append = playlistAppendSelection(state.sourcePlaylist, state.sourcePositions, catalog());
       }
       catch (error) { state.message = problem(error); publish(); return null; }
-      const reviewed = { ...selected, operation, title, ...(append ? { append } : {}) };
+      const reviewed = { ...selected, operation, title, ...(append ? { append } : {}), ...(cached ? { cached } : {}) };
       const valid = () => { if (!live() || version !== epoch || !same(reviewed)) throw new Error('This playlist review is no longer current. Review it again.'); };
       state.reading = true; state.message = 'Reading the selected playlist in its original household…'; publish();
       try {
@@ -713,10 +766,15 @@ const SourcePlayerRemote = (() => {
           if (page.total + append.positions.length > 1000) throw new Error('The resulting saved playlist must contain at most 1,000 tracks.');
           observed.source = await inspectAdditions(observed, valid); valid();
         }
+        if (cached) {
+          if (page.total + cached.tracks.length > 1000) throw new Error('The resulting saved playlist must contain at most 1,000 tracks.');
+          await inspectCached(observed, valid);
+          observed.destinationTracks = await inspectDestination(observed, valid); valid();
+        }
         state.pending = Object.freeze({ ...observed, ...(tracks || {}),
           body: Object.freeze({ zone: reviewed.group.target, playlist: reviewed.item.id, expected_revision: page.revision,
             ...(operation === 'rename' ? { title } : append ? { positions: append.positions, source_revision: observed.source.revision,
-              ...(append.playlist ? { source_playlist: append.playlist.id } : {}) } : edit || {}) }) });
+              ...(append.playlist ? { source_playlist: append.playlist.id } : {}) } : cached ? { tracks: cached.tracks } : edit || {}) }) });
         state.message = ''; return state.pending;
       } catch (error) { if (version === epoch) state.message = problem(error); return null; }
       finally { if (version === epoch) { state.reading = false; publish(); } }
@@ -735,14 +793,21 @@ const SourcePlayerRemote = (() => {
             throw new Error('The reviewed saved tracks changed. Read tracks and review again.');
           }
           if (reviewed.append) await inspectAdditions(reviewed, valid, reviewed.source);
+          if (reviewed.cached) {
+            await inspectCached(reviewed, valid);
+            if (JSON.stringify(await inspectDestination(reviewed, valid)) !== JSON.stringify(reviewed.destinationTracks)) {
+              throw new Error('The reviewed destination tracks changed. Review the saved playlist again.');
+            }
+          }
           valid();
           if (sent) throw new Error('The playlist command was already dispatched.');
           sent = true;
           const route = { rename: 'sourcePlaylistRename', remove: 'sourcePlaylistRemove',
             remove_tracks: 'sourcePlaylistRemoveTracks', move_tracks: 'sourcePlaylistMoveTracks',
-            append_tracks: 'sourcePlaylistAppendTracks' }[reviewed.operation];
+            append_tracks: 'sourcePlaylistAppendTracks', add_tracks: 'sourcePlaylistAddTracks' }[reviewed.operation];
           const value = await send(route, reviewed.body);
-          receipt = reviewed.append ? appendedPlaylist(value, reviewed) : managedPlaylist(value, reviewed);
+          receipt = reviewed.cached ? addedCachedPlaylist(value, reviewed)
+            : reviewed.append ? appendedPlaylist(value, reviewed) : managedPlaylist(value, reviewed);
           return receipt;
         });
         if (!receipt) throw new Error('The playlist command was not sent. Review it again.');
@@ -753,13 +818,13 @@ const SourcePlayerRemote = (() => {
         return true;
       } catch (error) {
         state.result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent', group: reviewed.group, item: reviewed.item,
-          operation: reviewed.operation, ...(reviewed.append ? { previous_total: reviewed.total } : {}), detail: problem(error) + (sent
-            ? reviewed.append ? ' Some tracks may already have been added. Read the original playlist before another addition; nothing was retried.'
+          operation: reviewed.operation, ...(reviewed.append || reviewed.cached ? { previous_total: reviewed.total } : {}), detail: problem(error) + (sent
+            ? reviewed.append || reviewed.cached ? ' Some tracks may already have been added. Read the original playlist before another addition; nothing was retried.'
               : ' The household catalog may have changed. Read the original household catalog before another edit; nothing was retried.'
             : ' No catalog edit was sent.') });
         if (sent) state.recovery = state.result;
         state.message = ''; return false;
-      } finally { state.writing = false; publish(); }
+      } finally { if (sent && reviewed.cached) state.cached = null; state.writing = false; publish(); }
     }
     async function recover() {
       const result = state.recovery;
@@ -769,7 +834,7 @@ const SourcePlayerRemote = (() => {
       const valid = () => { if (!live() || version !== epoch || state.recovery !== result) throw new Error('Read the original household catalog again.'); };
       try {
         let observed = null, addition = '';
-        if (result.operation === 'append_tracks') {
+        if (['append_tracks', 'add_tracks'].includes(result.operation)) {
           // Inspect the original destination's tail before acknowledging its
           // catalog lane. A list of playlist names cannot reveal partial adds.
           const initial = playlists(await call('sourcePlaylists', { query: { zone: result.group.target } })); valid();
@@ -803,6 +868,13 @@ const SourcePlayerRemote = (() => {
       finally { if (version === epoch) { state.reading = false; publish(); } }
     }
     return { state, busy, review, confirm, recover, invalidate, sources: catalog,
+      offerTracks(value) {
+        if (!live() || busy() || state.recovery || state.pending || state.cached) return false;
+        try { state.cached = cachedPlaylistSelection(value); }
+        catch (error) { state.message = problem(error); publish(); return false; }
+        invalidate(); state.result = null; state.message = 'Choose the destination saved Sonos playlist, then review the selected additions.'; publish(); return true;
+      },
+      clearCached() { if (busy()) return false; invalidate(); state.cached = null; publish(); return true; },
       catalogChanged(change = null) {
         if (change?.playlists === false) return;
         const group = state.recovery?.group || state.pending?.group || selection()?.group;
@@ -810,7 +882,11 @@ const SourcePlayerRemote = (() => {
         if (change?.household && group?.household !== change.household) return;
         invalidate(); state.message = 'The saved catalog changed. Read its current contents before another review.'; publish();
       },
-      canReview: () => !!(live() && available() && !busy() && !state.recovery && selection()),
+      canReview: () => {
+        const selected = selection();
+        return !!(live() && available() && !busy() && !state.recovery && selected && (!state.cached
+          || state.cached.group.target === selected.group.target && state.cached.group.signature === selected.group.signature));
+      },
       editTitle(value) {
         if (!live() || !available() || busy() || typeof value !== 'string' || value.length > 8192) return false;
         invalidate(); state.title = value; state.message = ''; publish(); return true;
@@ -874,10 +950,18 @@ const SourcePlayerRemote = (() => {
     appendFields.append(el('h4', 'Add tracks to this playlist'), sourceLabel, positionsLabel,
       el('p', 'Choose the current group queue or a saved playlist in this household. Enter up to 10 numbered tracks in the order you want; 2,4,2 adds the second track twice. Review shows their titles before adding them. Playback continues as it is.'), add);
     fields.append(appendFields);
+    const cachedFields = el('section', null, 'source-playlist-track-edit');
+    const cachedList = el('ol', null, 'source-playlist-edit-preview'), cachedHelp = el('p');
+    cachedList.setAttribute('aria-label', 'Cached tracks to add in order');
+    const addCached = el('button', 'Review selected additions'), clearCached = el('button', 'Cancel selected additions');
+    addCached.type = clearCached.type = 'button';
+    addCached.addEventListener('click', () => { void manager.review('add_tracks'); });
+    clearCached.addEventListener('click', () => manager.clearCached());
+    cachedFields.append(el('h3', 'Add selection to saved Sonos playlist'), cachedHelp, cachedList, addCached, clearCached);
     const message = el('p'), consent = el('div', null, 'source-review'), result = el('p'), recovery = el('button', 'Read original household catalog');
     for (const item of [message, result]) { item.setAttribute('role', 'status'); item.setAttribute('aria-live', 'polite'); }
     for (const button of [rename, remove, removeTracks, moveTracks, recovery]) button.type = 'button';
-    node.append(fields, message, consent, result, recovery);
+    node.append(fields, cachedFields, message, consent, result, recovery);
     title.addEventListener('input', () => manager.editTitle(title.value));
     rename.addEventListener('click', () => { void manager.review('rename'); });
     remove.addEventListener('click', () => { void manager.review('remove'); });
@@ -887,11 +971,18 @@ const SourcePlayerRemote = (() => {
     positions.addEventListener('input', () => manager.editAppend('sourcePositions', positions.value));
     add.addEventListener('click', () => { void manager.review('append_tracks'); });
     recovery.addEventListener('click', () => { void manager.recover(); });
-    let shown = null, confirm = null, shownSources = null;
+    let shown = null, confirm = null, shownSources = null, shownCached = null;
     return { node, render(selected) {
       const s = manager.state;
-      node.hidden = !selected && !s.result && !s.message && !s.pending;
-      fields.hidden = !selected;
+      node.hidden = !selected && !s.cached && !s.result && !s.message && !s.pending;
+      fields.hidden = !selected || !!s.cached;
+      cachedFields.hidden = !s.cached;
+      cachedHelp.textContent = s.cached ? `Choose a saved playlist in ${s.cached.group.target}. Add these ${s.cached.tracks.length} tracks in the order shown. Current playback, loaded queues and the DJ continue unchanged.` : '';
+      addCached.disabled = !manager.canReview(); clearCached.disabled = manager.busy();
+      if (shownCached !== s.cached) {
+        shownCached = s.cached; cachedList.replaceChildren();
+        for (const track of s.cached?.tracks || []) cachedList.append(el('li', `${track.title || 'Untitled track'} · ${track.source_uri}`));
+      }
       if (title.value !== s.title) title.value = s.title;
       title.disabled = !manager.canReview(); rename.disabled = !manager.canReview() || !s.title.trim(); remove.disabled = !manager.canReview();
       for (const [key, input] of Object.entries(inputs)) {
@@ -910,13 +1001,24 @@ const SourcePlayerRemote = (() => {
       source.disabled = positions.disabled = add.disabled = !manager.canReview();
       message.textContent = s.message; result.textContent = s.result ? `${s.result.group.target}: ${s.result.detail}` : '';
       recovery.hidden = !s.recovery; recovery.disabled = manager.busy();
-      recovery.textContent = s.recovery?.operation === 'append_tracks' ? 'Read original playlist contents' : 'Read original household catalog';
+      recovery.textContent = ['append_tracks', 'add_tracks'].includes(s.recovery?.operation) ? 'Read original playlist contents' : 'Read original household catalog';
       consent.hidden = !s.pending;
       if (shown !== s.pending) {
         shown = s.pending; consent.replaceChildren(); confirm = null;
         if (shown) {
           const pending = shown;
-          if (pending.append) {
+          if (pending.cached) {
+            const list = el('ol', null, 'source-playlist-edit-preview');
+            list.setAttribute('aria-label', 'Reviewed additions in order');
+            consent.append(el('p', `Add ${pending.cached.tracks.length} cached track(s) to “${pending.item.title}” (${pending.item.id}) in ${pending.group.label}?`));
+            for (const track of pending.cached.tracks) list.append(el('li', `${track.title || 'Untitled track'} · ${track.source_uri}`));
+            const existing = el('details'), existingList = el('ol', null, 'source-playlist-edit-preview');
+            existing.append(el('summary', `Existing saved contents: ${pending.total} tracks`));
+            for (const track of pending.destinationTracks) existingList.append(el('li', `${track.title || 'Untitled track'}${track.creator ? ' · ' + track.creator : ''}`));
+            existing.append(existingList);
+            consent.append(list, existing, el('p', `Append after the existing ${pending.total} tracks; ${pending.total + pending.cached.tracks.length} in total. Repeated selections add repeated copies. Current playback and queues stay unchanged. This addition cannot be undone here.`));
+            confirm = el('button', 'Add selected tracks to playlist');
+          } else if (pending.append) {
             const list = el('ol', null, 'source-playlist-edit-preview');
             const from = pending.append.playlist ? `“${pending.append.playlist.title}” (${pending.append.playlist.id})` : 'the current group queue';
             consent.append(el('p', `Add ${pending.append.positions.length} track(s) from ${from} to “${pending.item.title}” (${pending.item.id}) in ${pending.group.label}?`));
@@ -1023,6 +1125,7 @@ const SourcePlayerRemote = (() => {
 
     function edit(field, value) {
       if (disposed || blocked() || !['target', 'targetMode', 'targetQuery', 'nativeQuery', 'sourceType', 'playlist', 'lineIn', 'input', 'title', 'mode'].includes(field) || typeof value !== 'string') return false;
+      if (manager.state.cached && field !== 'playlist') return false;
       if (field === 'target' && !state.groups.some((group) => group.target === value)) return false;
       if (field === 'targetMode' && (!['group', 'set'].includes(value) || value === 'set' && state.sourceType === 'line_in')) return false;
       if (field === 'mode' && (!Object.hasOwn(modes, value) || state.sourceType === 'line_in' && value !== 'play')) return false;
@@ -1115,7 +1218,7 @@ const SourcePlayerRemote = (() => {
       try { incoming = offeredSource(value); }
       catch (error) { state.message = problem(error); publish(); return false; }
       state.open = true;
-      if (blocked() || state.reading || manager.busy() || state.pending || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
+      if (blocked() || state.reading || manager.busy() || manager.state.cached || state.pending || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
         state.message = 'Finish the current source action, or explicitly clear its draft before importing another source.';
         publish(); return false;
       }
@@ -1124,6 +1227,29 @@ const SourcePlayerRemote = (() => {
       // Refresh only the selectable destinations. Review and confirmation remain
       // separate user actions, and share the existing write coordination lane.
       return refresh();
+    }
+
+    async function offerTracks(value) {
+      if (disposed || blocked() || state.reading || manager.busy() || manager.state.recovery || manager.state.cached || state.pending
+          || state.input.trim() || state.title.trim() || state.nativeQuery.trim() || state.targetQuery.trim() || state.playlist || state.lineIn) return false;
+      let incoming;
+      try { incoming = cachedPlaylistSelection(value); }
+      catch (error) { state.message = problem(error); publish(); return false; }
+      state.open = true; invalidate(); const version = epoch;
+      state.reading = true; state.message = 'Reading the selected household’s saved playlists…'; publish();
+      try {
+        const fresh = groups(await call('zones'));
+        if (!current(version)) return false;
+        const group = fresh.find(group => group.target === incoming.group.target && group.signature === incoming.group.signature);
+        if (!group) throw new Error('The selected household group changed. Choose the music and group again.');
+        const catalog = playlists(await call('sourcePlaylists', { query: { zone: group.target } }));
+        if (!current(version)) return false;
+        clearPlaylists(); clearLineIn(); state.groups = fresh; state.target = group.target;
+        state.targetMode = 'group'; state.sourceType = 'playlist'; state.playlists = catalog;
+        state.playlistTarget = group.target; state.playlistStatus = 'ready'; state.message = '';
+        return manager.offerTracks(incoming);
+      } catch (error) { if (current(version)) state.message = problem(error); return false; }
+      finally { if (current(version)) { state.reading = false; publish(); } }
     }
 
     async function browseSaved(value) {
@@ -1138,7 +1264,7 @@ const SourcePlayerRemote = (() => {
         incoming = { target: value.target, signature: value.signature, playlist: playlists([value.playlist])[0] };
       } catch (error) { state.message = problem(error); publish(); return false; }
       state.open = true;
-      if (blocked() || state.reading || manager.busy() || state.pending || state.input.trim() || state.title.trim()
+      if (blocked() || state.reading || manager.busy() || manager.state.cached || state.pending || state.input.trim() || state.title.trim()
           || state.targetQuery.trim() || state.nativeQuery.trim() || state.playlist || state.lineIn) {
         state.message = 'Finish the current source action, or explicitly clear its draft before browsing the saved playlist.';
         publish(); return false;
@@ -1167,6 +1293,7 @@ const SourcePlayerRemote = (() => {
 
     function clearDraft() {
       if (disposed || blocked()) return false;
+      if (!manager.clearCached()) return false;
       invalidate(); clearPlaylists(); clearLineIn(); state.input = ''; state.title = ''; state.target = '';
       state.targetMode = 'group'; state.targetQuery = ''; state.nativeQuery = ''; state.mode = 'play'; state.sourceType = 'link';
       state.message = 'Source draft cleared. No playback command was sent.';
@@ -1198,7 +1325,7 @@ const SourcePlayerRemote = (() => {
     }
 
     async function review(choice = null) {
-      if (disposed || !state.open || blocked() || state.reading || state.sourceType === 'catalog') return false;
+      if (disposed || !state.open || blocked() || state.reading || manager.state.cached || state.sourceType === 'catalog') return false;
       invalidate();
       const version = epoch, group = selected(), mode = choice?.mode || state.mode;
       if (collective()) {
@@ -1333,7 +1460,7 @@ const SourcePlayerRemote = (() => {
     }
 
     return { state, manager, catalog, chooseCatalog, refresh, edit, loadTargetSuggestions, loadPlaylists, loadLineInSources, loadContents,
-      review, reviewTrack, selectTrack, reviewTracks, clearTrackSelection, confirm, offer, browseSaved, clearDraft,
+      review, reviewTrack, selectTrack, reviewTracks, clearTrackSelection, confirm, offer, offerTracks, browseSaved, clearDraft,
       catalogChanged(change = null) {
         manager.catalogChanged(change);
         if (disposed || !['playlist', 'favorite'].includes(state.sourceType)
@@ -1447,7 +1574,7 @@ const SourcePlayerRemote = (() => {
       targetMode.value = state.targetMode; targetField.hidden = set; targetSetFields.hidden = !set;
       if (targetQuery.value !== state.targetQuery) targetQuery.value = state.targetQuery;
       if (nativeQuery.value !== state.nativeQuery) nativeQuery.value = state.nativeQuery;
-      targetMode.disabled = writing || analog; targetQuery.disabled = writing;
+      targetMode.disabled = writing || analog || !!state.managing.cached; targetQuery.disabled = writing || !!state.managing.cached;
       nativeQuery.disabled = writing; refreshTargets.disabled = busy; targetSuggestions.disabled = busy;
       if (shownSuggestions !== state.targetSuggestions) {
         shownSuggestions = state.targetSuggestions;
@@ -1456,7 +1583,7 @@ const SourcePlayerRemote = (() => {
       }
       for (const option of sourceType.children) if (option.value === 'line_in') option.disabled = set;
       inputField.hidden = saved || favorite || online || analog; titleField.hidden = saved || favorite || online || analog;
-      nativeFields.hidden = !nativeTitle; playlistFields.hidden = !saved || set; catalogFields.hidden = !online; lineInFields.hidden = !analog; modeField.hidden = analog;
+      nativeFields.hidden = !nativeTitle; playlistFields.hidden = !saved || set; catalogFields.hidden = !online; lineInFields.hidden = !analog; modeField.hidden = analog || !!state.managing.cached;
       if (catalogInput.value !== state.catalog.query) catalogInput.value = state.catalog.query;
       catalogKind.value = state.catalog.kind;
       catalogInput.disabled = busy; catalogKind.disabled = busy;
@@ -1474,12 +1601,12 @@ const SourcePlayerRemote = (() => {
           : state.playlistStatus === 'ready' ? state.playlists.length ? 'Choose a playlist…' : 'No saved Sonos playlists'
             : 'Refresh playlists for this group';
         playlist.replaceChildren(el('option', { value: '', text: caption, disabled: true }));
-        for (const item of state.playlists) playlist.append(el('option', { value: item.id, text: item.title || item.id }));
+        for (const item of state.playlists) playlist.append(el('option', { value: item.id, text: `${item.title || 'Untitled playlist'} (${item.id})` }));
       }
       playlist.value = state.playlist;
       playlist.disabled = writing || state.playlistStatus !== 'ready' || !state.playlists.length;
       refreshPlaylists.disabled = busy || !state.target;
-      playlistHelp.textContent = state.playlistStatus === 'ready' ? state.playlists.length
+      playlistHelp.textContent = state.managing.cached && state.playlists.length ? 'Choose the saved playlist that will receive the selected tracks, then review its contents and the additions below.' : state.playlistStatus === 'ready' ? state.playlists.length
         ? 'Saved on the speakers in this household. Read its tracks before choosing how to play it.'
         : 'This household has no saved Sonos playlists. Save a playlist in Sonos, then refresh here.'
         : state.target ? 'Read the saved playlists for this destination.' : 'Choose a destination group first.';
@@ -1502,12 +1629,12 @@ const SourcePlayerRemote = (() => {
       previousContents.hidden = !state.contentsHistory.length; previousContents.disabled = busy;
       nextContents.hidden = state.contents?.next_offset == null; nextContents.disabled = busy;
       contentsHelp.textContent = contentsSummary(state.contents);
-      selectionPanel.render(state.contents, state.contentsSelection, busy);
+      selectionPanel.render(state.contents, state.contentsSelection, busy || !!state.managing.cached);
       if (shownContents !== state.contents || shownContentsBusy !== busy || shownContentsSelection !== state.contentsSelection) {
         shownContents = state.contents; shownContentsBusy = busy; shownContentsSelection = state.contentsSelection;
         renderContents(contentsList, state.contents, doc, { review: control.reviewTrack, select: control.selectTrack,
           edit: (position, page) => { if (page === state.contents) control.manager.chooseTrack(position, page); },
-          selected: state.contentsSelection, disabled: busy });
+          selected: state.contentsSelection, disabled: busy || !!state.managing.cached });
       }
       review.textContent = state.contentsSelection.length ? state.mode === 'play' ? 'Review selected playback' : 'Review selected queue addition'
         : state.mode === 'play' ? 'Review playback' : 'Review queue addition';
@@ -1515,7 +1642,8 @@ const SourcePlayerRemote = (() => {
       for (const element of [target, sourceType, input, title, mode]) element.disabled = writing;
       mode.disabled = writing || analog;
       clear.disabled = writing;
-      refresh.disabled = busy; review.disabled = busy || online || !(set ? state.targetQuery.trim() : state.target)
+      if (state.managing.cached) { target.disabled = true; sourceType.disabled = true; }
+      refresh.disabled = busy; review.hidden = !!state.managing.cached; review.disabled = busy || !!state.managing.cached || online || !(set ? state.targetQuery.trim() : state.target)
         || (nativeTitle ? !state.nativeQuery.trim() : saved ? !state.playlist || state.playlistStatus !== 'ready'
         : analog ? !state.lineIn || state.lineInStatus !== 'ready' : !state.input.trim());
       message.textContent = state.message || (state.reading ? 'Reading the destination…' : '');
@@ -1640,6 +1768,14 @@ const SourcePlayerRemote = (() => {
         node.scrollIntoView({ block: 'start' });
       }
       return offered;
+    }, openTrackSelection(value) {
+      const opened = control.offerTracks(value);
+      if (control.state.open) {
+        details.open = true;
+        playlist.focus({ preventScroll: true });
+        node.scrollIntoView({ block: 'start' });
+      }
+      return opened;
     }, openSavedPlaylist(value) {
       const opened = control.browseSaved(value);
       if (control.state.open) {
@@ -1658,7 +1794,7 @@ const SourcePlayerRemote = (() => {
   }
 
   return { source, prepare, playlists, preparePlaylist, verifyPlaylist, contentsRequest, playlistContents, contentsSummary, renderContents,
-    nativePlaylistTitle, playlistTrackEdit, playlistAppendSelection, appendedPlaylist, managedPlaylist, playlistManager, playlistManagerPanel,
+    nativePlaylistTitle, playlistTrackEdit, playlistAppendSelection, appendedPlaylist, cachedPlaylistSelection, addedCachedPlaylist, managedPlaylist, playlistManager, playlistManagerPanel,
     lineInSources, lineInLabel, lineInHelp, prepareLineIn, verifyLineIn,
     preparePlaylistTrack, trackQuery, verifyPlaylistTrack, trackOutcome,
     preparePlaylistTracks, tracksQuery, verifyPlaylistTracks, tracksOutcome, renderSelectedTracks, playlistTrackSelectionPanel, MAX_PLAYLIST_TRACKS,
@@ -1703,6 +1839,11 @@ else if (typeof ROUTES !== 'undefined') {
       if (!event.detail || typeof event.detail !== 'object' || Array.isArray(event.detail)) return;
       event.preventDefault();
       event.detail.response = sourcePanel.openSavedPlaylist(event.detail.selection);
+    });
+    document.addEventListener('fsonos:playlist-selection', event => {
+      if (!event.detail || typeof event.detail !== 'object' || Array.isArray(event.detail)) return;
+      event.preventDefault();
+      event.detail.response = sourcePanel.openTrackSelection(event.detail.selection);
     });
   }
 }

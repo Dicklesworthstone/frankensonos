@@ -1298,6 +1298,15 @@ apply. No Web API lookup, playback permission or queue mutation is needed.
 Partial additions remain visible and are never replayed automatically. See
 [direct saved-playlist selections](docs/SONOS_PLAYLISTS.md#add-spotify-selections-directly).
 
+Both browser library baskets hand their ordered selection to that group's
+native playlist editor through **Add selection to Sonos playlist**. Review
+shows every addition and the complete saved destination, then rechecks all
+selected source pages and the destination revision before one command. Original
+household recovery retains the append boundary after an uncertain result,
+including navigation away from the selected group. Existing queues and music
+remain untouched. Both browser models and the shared production review
+component have executable Node coverage in `test-sonos-playlist-cached-add.cjs`.
+
 The phone and Listening room source editors expose these catalog edits through
 a shared **Manage saved playlist** review. Both read the exact saved contents
 before review and again inside their existing command lane before dispatch.

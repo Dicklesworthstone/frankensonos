@@ -458,6 +458,34 @@ const LibraryRemote = (() => {
       } finally { if (current(version)) { state.loading = false; publish(); } }
     }
 
+    async function playlistSelection(offer = null) {
+      const zone = destination();
+      if (!Q || disposed || !state.open || state.loading || state.writing || state.pending
+          || state.trackDestination !== 'group' || !zone || !state.basket.length) return null;
+      const rows = Object.freeze(state.basket.map(row => Object.freeze({ ...row }))), version = ++epoch;
+      state.loading = true; state.message = 'Checking the selected music before choosing a saved playlist…'; publish();
+      try {
+        if (!await verifySelection(rows, () => current(version))) return null;
+        const tracks = Q.tracksOf(rows.map(({ item }) => ({ source_uri: item.source, title: item.title })));
+        state.message = '';
+        const selected = Object.freeze({ group: zone, tracks, verify: async valid => {
+          await verifySelection(rows, () => { valid(); return true; }); valid(); return tracks;
+        } });
+        if (!offer) return selected;
+        // Keep the basket locked while the saved-playlist panel reads its
+        // destination catalog. A closed or changed browser must never let an
+        // older handoff clear a newer selection or playback review.
+        const accepted = await offer(selected);
+        if (!current(version)) return false;
+        if (accepted) { selection.clear(); syncSelection(); state.selectionNotice = ''; }
+        state.message = accepted
+          ? 'Choose a saved playlist in the selected household, then review the ordered additions there.'
+          : 'Finish or clear the current source draft, then choose Add selection to Sonos playlist again.';
+        return Boolean(accepted);
+      } catch (error) { if (current(version)) state.message = message(error); return null; }
+      finally { if (current(version)) { state.loading = false; publish(); } }
+    }
+
     async function chooseTracks(action) {
       const zone = destination(), set = state.trackDestination === 'set';
       if (!Q || disposed || !state.open || state.loading || state.writing || state.pending || (set ? !state.trackTarget.trim() : !zone)
@@ -651,7 +679,7 @@ const LibraryRemote = (() => {
             || change?.household && destination()?.household !== change.household) return;
         invalidate(true); state.message = 'The household favorites changed. Search again for current results.'; publish();
       },
-      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, trackTarget, chooseTracks, sceneSelection, routine, cancel, confirm,
+      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, selectTrack, clearSelection, trackTarget, chooseTracks, sceneSelection, playlistSelection, routine, cancel, confirm,
       removeTrack: id => editSelection('remove', id), repeatTrack: id => editSelection('repeat', id),
       moveTrack: (id, delta) => editSelection('move', id, delta),
       close() { state.open = false; invalidate(); publish(); },
@@ -703,6 +731,14 @@ const LibraryRemote = (() => {
       status.textContent = document.dispatchEvent(event)
         ? 'Close any unfinished scene draft, then choose Save selection as scene again.'
         : 'The selected tracks opened in Scenes. Name the scene, check its group and playback setting, then review before saving.';
+    }
+    async function addSelectionToPlaylist() {
+      return control.playlistSelection(async selection => {
+        if (document.hidden || !node.open || node.closest('[hidden], [inert]')) return false;
+        const detail = { selection, response: null };
+        const event = new CustomEvent('fsonos:playlist-selection', { cancelable: true, detail });
+        return !document.dispatchEvent(event) && Boolean(await detail.response);
+      });
     }
     destination.addEventListener('change', () => control.target(destination.value));
     trackDestination.addEventListener('change', () => control.trackTarget('trackDestination', trackDestination.value));
@@ -779,6 +815,7 @@ const LibraryRemote = (() => {
             button('Queue selected next', () => choose('next'), locked, 'selected-next'),
             button('Add selected to end', () => choose('append'), locked, 'selected-append'),
             button('Save selection as scene', () => createSelectionScene(), locked || state.trackDestination !== 'group', 'selected-scene'),
+            button('Add selection to Sonos playlist', () => addSelectionToPlaylist(), locked || state.trackDestination !== 'group', 'selected-playlist'),
             button('Clear selection', () => control.clearSelection(), busy || !state.basket.length))));
       }
       if (state.pending?.tracks) {
