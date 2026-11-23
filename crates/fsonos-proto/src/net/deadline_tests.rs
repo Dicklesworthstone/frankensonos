@@ -121,6 +121,7 @@ fn queued_requests_expire_without_sending_a_late_write() {
                 url: held_url,
                 headers: Vec::new(),
                 body: Vec::new(),
+                follow_redirects: false,
                 deadline: first_deadline,
                 reply,
             })

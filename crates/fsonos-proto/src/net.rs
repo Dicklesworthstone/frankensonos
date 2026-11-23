@@ -21,6 +21,9 @@
 //! Device-description batches admit at most [`MAX_DESCRIPTION_READS`] reads
 //! at once through those same lanes. Slow players no longer serialize a survey;
 //! the results keep discovery order and cancellation stops further admissions.
+//! SOAP, GENA and device-description reads stay on the requested endpoint:
+//! redirects cannot substitute another speaker's identity or receive a write.
+//! Byte reads for artwork retain their ordinary redirect support.
 
 use crate::gena::{self, Notify, Subscription};
 use crate::mdns;
@@ -50,6 +53,8 @@ pub use inbox::{CallbackEvent, EVENT_BACKLOG, EVENT_BACKLOG_BYTES};
 mod deadline_tests;
 #[cfg(test)]
 mod description_tests;
+#[cfg(test)]
+mod redirect_tests;
 
 /// The port every player serves its UPnP control and description on.
 pub const PLAYER_PORT: u16 = 1400;
@@ -116,6 +121,7 @@ enum Job {
         url: String,
         headers: Vec<(String, String)>,
         body: Vec<u8>,
+        follow_redirects: bool,
         deadline: Instant,
         reply: mpsc::Sender<Result<Reply, ProtoError>>,
     },
@@ -167,8 +173,11 @@ impl Lane {
                         return;
                     }
                 };
+                // Keep endpoint-bound connections pooled within this lane.
+                // The runtime's default client remains available for artwork.
+                let endpoint_client = Client::builder().no_redirects().build();
                 for job in inbox {
-                    runtime.block_on(run(job));
+                    runtime.block_on(run(job, &endpoint_client));
                 }
             })
             .map_err(|e| network("LAN worker", e))?;
@@ -394,6 +403,17 @@ impl Lan {
         headers: Vec<(String, String)>,
         body: Vec<u8>,
     ) -> Result<Reply, ProtoError> {
+        self.http_with_redirects(method, url, headers, body, false)
+    }
+
+    fn http_with_redirects(
+        &self,
+        method: Method,
+        url: String,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+        follow_redirects: bool,
+    ) -> Result<Reply, ProtoError> {
         let started = Instant::now();
         let deadline = started
             .checked_add(self.timeout)
@@ -418,6 +438,7 @@ impl Lan {
             url,
             headers,
             body,
+            follow_redirects,
             deadline,
             reply,
         });
@@ -655,10 +676,16 @@ impl Transport for Lan {
             .collect()
     }
 
-    /// Like [`Self::http_get`], routed the same way; a body over
-    /// [`MAX_BODY_BYTES`] is an error.
+    /// Routed like [`Self::http_get`], but artwork may follow redirects;
+    /// a body over [`MAX_BODY_BYTES`] is an error.
     fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
-        let reply = self.http(Method::Get, self.route_url(url), Vec::new(), Vec::new())?;
+        let reply = self.http_with_redirects(
+            Method::Get,
+            self.route_url(url),
+            Vec::new(),
+            Vec::new(),
+            true,
+        )?;
         if reply.status != 200 {
             return Err(network(url, format!("HTTP {}", reply.status)));
         }
@@ -747,17 +774,29 @@ impl Transport for Lan {
     }
 }
 
-async fn run(job: Job) {
+async fn run(job: Job, endpoint_client: &Client) {
     match job {
         Job::Http {
             method,
             url,
             headers,
             body,
+            follow_redirects,
             deadline,
             reply,
         } => {
-            let _ = reply.send(http(method, url, headers, body, deadline).await);
+            let _ = reply.send(
+                http(
+                    method,
+                    url,
+                    headers,
+                    body,
+                    follow_redirects,
+                    deadline,
+                    endpoint_client,
+                )
+                .await,
+            );
         }
         Job::Search {
             target,
@@ -825,11 +864,17 @@ async fn http(
     url: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    follow_redirects: bool,
     deadline: Instant,
+    endpoint_client: &Client,
 ) -> Result<Reply, ProtoError> {
     remaining(deadline)?;
     let cx = Cx::current().ok_or_else(|| network(&url, "no asupersync context"))?;
-    let client = Client::default_for_runtime(&cx);
+    let client = if follow_redirects {
+        Client::default_for_runtime(&cx)
+    } else {
+        endpoint_client.clone()
+    };
     let mut request = client.request_builder(method, url.clone());
     for (name, value) in headers {
         request = request.header(name, value);

@@ -84,7 +84,8 @@ pub trait Transport {
     /// POST a SOAP envelope to `http://{host}:1400{control_path}` and return the
     /// raw response body. UPnP faults arrive as HTTP 500 with a SOAP Fault
     /// body: return that body too, so [`soap::parse_response`] can surface the
-    /// UPnP error code as [`ProtoError::SoapFault`].
+    /// UPnP error code as [`ProtoError::SoapFault`]. Redirects must be refused:
+    /// an endpoint proof or mutation must not move to a different player.
     fn soap_post(
         &self,
         host: std::net::IpAddr,
@@ -93,7 +94,9 @@ pub trait Transport {
         body: &str,
     ) -> Result<String, ProtoError>;
 
-    /// GET `url` (a device description) and return the body.
+    /// GET `url` (a device description) and return the body. Do not follow
+    /// redirects: the root device identity must belong to the contacted
+    /// endpoint, not a different host or resource named by its response.
     fn http_get(&self, _url: &str) -> Result<String, ProtoError> {
         Err(ProtoError::NotWired("http_get"))
     }
