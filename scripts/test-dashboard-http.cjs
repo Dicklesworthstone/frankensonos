@@ -136,6 +136,45 @@ test('a queue-search deadline aborts the outstanding read without a retry', asyn
   expire(); await rejected; assert.equal(signal.aborted, true); assert.equal(requests, 1);
 });
 
+for (const route of ['append-tracks', 'add-tracks']) {
+  test(`real loopback HTTP: ${route} has a long deadline and an expired result is never replayed`, { timeout: 5000 }, async t => {
+    const requests = []; let reading, closed, expire, signal, cleared = 0;
+    const bodyReading = new Promise(resolve => { reading = resolve; }), socketClosed = new Promise(resolve => { closed = resolve; });
+    const server = http.createServer(async (req, res) => {
+      let raw = ''; for await (const chunk of req) raw += chunk;
+      requests.push({ method: req.method, url: req.url, body: JSON.parse(raw) });
+      res.on('close', closed); res.writeHead(200, { 'content-type': 'application/json' }); res.write('{"done":');
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const call = C.request({ schedule(fn, ms) { assert.equal(ms, 600000); expire = fn; return 1; }, cancel() { ++cleared; },
+      fetcher: async (url, init) => {
+        signal = init.signal; const response = await fetch(base + url, init), text = response.text.bind(response);
+        response.text = () => { reading(); return text(); }; return response;
+      } });
+    const body = { zone: 'Den@S2', playlist: 'SQ:7', expected_revision: 'saved:1',
+      ...(route === 'append-tracks' ? { source_revision: 'queue:1', positions: [2, 1, 2] }
+        : { tracks: [{ source_uri: 'spotify:track:' + 'a'.repeat(22) }] }) };
+    const request = call(`/sonos/playlists/${route}?scope=current`, body);
+    const rejected = assert.rejects(request, /No command confirmation.*may still complete/);
+    await bodyReading; call.cancelReads(); assert.equal(signal.aborted, false);
+    expire(); await rejected; await socketClosed;
+    assert.equal(signal.aborted, true); assert.equal(cleared, 1);
+    assert.deepEqual(requests, [{ method: 'POST', url: `/sonos/playlists/${route}?scope=current`, body }]);
+  });
+}
+
+test('saved-playlist addition budgets cover query parameters while retaining ordinary read and unrelated-write deadlines', async () => {
+  const budgets = [], call = C.request({ schedule(fn, ms) { budgets.push(ms); return budgets.length; }, cancel() {},
+    fetcher: async () => ({ ok: true, text: async () => '{}' }) });
+  for (const route of ['append-tracks', 'add-tracks']) {
+    const url = '/sonos/playlists/' + route;
+    await call(url, {}); await call(url + '?scope=current', {}); await call(url); await call(url + '-other', {});
+  }
+  assert.deepEqual(budgets, [600000, 600000, 10000, 120000, 600000, 600000, 10000, 120000]);
+});
+
 test('cancelReads retires observations but never aborts or repeats an already submitted PUT', async () => {
   let finish, writeSignal, readSignal;
   const calls = [], call = C.request({ schedule() { return 1; }, cancel() {}, fetcher: async (url, init) => {

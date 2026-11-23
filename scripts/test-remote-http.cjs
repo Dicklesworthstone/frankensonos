@@ -27,8 +27,8 @@ async function serve(t, handler) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 function client(base, options = {}) {
-  return vm.runInNewContext(source.replace(/\nstart\(\);\s*$/, '') + '\nObject.assign(ROUTES, SourceTargetsRemote.routes); call;', {
-    AbortController, URLSearchParams, setTimeout, clearTimeout, SourceTargetsRemote: T,
+  return vm.runInNewContext(source.replace(/\nstart\(\);\s*$/, '') + '\nObject.assign(ROUTES, SourcePlayerRemote.routes, SourceTargetsRemote.routes); call;', {
+    AbortController, URLSearchParams, setTimeout, clearTimeout, SourcePlayerRemote: P, SourceTargetsRemote: T,
     fetch: (where, init) => fetch(`${base}${where}`, init), ...options,
   });
 }
@@ -95,6 +95,46 @@ test('a real response-body stall releases an uncertain write and closes its sock
   const rejected = assert.rejects(result, (error) => error.code === 'REMOTE_OUTCOME_UNKNOWN' && error.uncertain);
   await reading.promise; expire(); await rejected; await closed.promise;
   assert.equal(writes, 1); assert.equal(cleared, 1);
+});
+
+for (const [name, route] of [['sourcePlaylistAppendTracks', 'append-tracks'], ['sourcePlaylistAddTracks', 'add-tracks']]) {
+  test(`${route} receives the long write deadline over real HTTP and never replays a stalled result`, { timeout: 5000 }, async t => {
+    const reading = deferred(), closed = deferred(), requests = [];
+    let expire, signal, cleared = 0;
+    const base = await serve(t, async (req, res) => {
+      let text = ''; for await (const chunk of req) text += chunk;
+      requests.push({ method: req.method, url: req.url, body: JSON.parse(text) });
+      res.on('close', closed.resolve); res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"done":');
+    });
+    const call = client(base, {
+      setTimeout(fn, ms) { assert.equal(ms, 600000); expire = fn; return 1; },
+      clearTimeout() { ++cleared; },
+      fetch: async (where, init) => {
+        signal = init.signal; const response = await fetch(base + where, init), text = response.text.bind(response);
+        response.text = () => { reading.resolve(); return text(); }; return response;
+      },
+    });
+    const body = { zone: 'Den@S2', playlist: 'SQ:7', expected_revision: 'saved:1',
+      ...(route === 'append-tracks' ? { source_revision: 'queue:1', positions: [2, 1, 2] }
+        : { tracks: [{ source_uri: 'spotify:track:' + 'a'.repeat(22) }] }) };
+    const request = call(name, { body, query: { scope: 'current' } });
+    const rejected = assert.rejects(request, error => error.code === 'REMOTE_OUTCOME_UNKNOWN' && error.uncertain && /not repeated/.test(error.hint));
+    await reading.promise; assert.equal(signal.aborted, false); expire(); await rejected; await closed.promise;
+    assert.equal(signal.aborted, true); assert.equal(cleared, 1);
+    assert.deepEqual(requests, [{ method: 'POST', url: `/sonos/playlists/${route}?scope=current`, body }]);
+  });
+}
+
+test('saved-playlist additions use a long write budget without extending ordinary reads or unrelated paths', () => {
+  const request = vm.runInNewContext(source.replace(/\nstart\(\);\s*$/, '') + '\nRequestRemote;', { setTimeout, clearTimeout });
+  for (const route of ['append-tracks', 'add-tracks']) {
+    const url = '/sonos/playlists/' + route;
+    assert.equal(request.timeoutFor('POST', url), 600000);
+    assert.equal(request.timeoutFor('POST', url + '?scope=current'), 600000);
+    assert.equal(request.timeoutFor('GET', url), 15000);
+    assert.equal(request.timeoutFor('POST', url + '-other'), 120000);
+  }
 });
 
 test('a real HTTP redirect cannot relocate or replay a music command', { timeout: 5000 }, async (t) => {

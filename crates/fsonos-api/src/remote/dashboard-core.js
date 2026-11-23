@@ -89,7 +89,7 @@ const DashboardCore = (() => {
       const write = method !== 'GET', abort = new AbortController();
       const budget = method === 'POST' && url === '/announce' ? 1200000
         : write && (url === '/queue' || url === '/queue/tracks' || url === '/play/tracks' || url === '/sources/control' || url === '/sleep' || url === '/pause/fade' || url === '/sonos/playlists/play' || url === '/sonos/playlists/tracks'
-        || /^\/sonos\/playlists\/(?:remove-tracks|move-tracks)(?:\?|$)/.test(url) || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
+        || /^\/sonos\/playlists\/(?:remove-tracks|move-tracks|append-tracks|add-tracks)(?:\?|$)/.test(url) || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)
         || (method === 'PUT' && /^\/scenes\/[^/]+$/.test(url) && body?.backup_queues === true)) ? 600000
         : write ? 120000 : /^\/(?:spotify\/search|zones\/[^/]+\/queue\/search)(?:\?|$)/.test(url) ? 60000 : 10000;
       let timer, finished = false, stopped = null, rejectStopped;
