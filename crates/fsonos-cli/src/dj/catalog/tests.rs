@@ -67,8 +67,7 @@ impl Store for ObservedStore {
         }
         let entries = self.inner.borrow().library()?;
         if let Some((path, text)) = self.configuration_edit.borrow_mut().take() {
-            std::fs::write(path, text)
-                .map_err(|error| StoreError::Backend(error.to_string()))?;
+            std::fs::write(path, text).map_err(|error| StoreError::Backend(error.to_string()))?;
         }
         if self.publish_while_reading.replace(false) {
             let mut inner = self.inner.borrow_mut();
@@ -329,9 +328,8 @@ fn starting_and_checking_another_room_reuses_music_but_rereads_feedback() {
         .unwrap();
         let lan = sim.lan();
         let mut household = HouseholdState::default();
-        household.apply_topology(
-            &get_zone_group_state(&lan, sim.player("Den").unwrap().ip).unwrap(),
-        );
+        household
+            .apply_topology(&get_zone_group_state(&lan, sim.player("Den").unwrap().ip).unwrap());
         let households = vec![household];
         let first = PlayerId(sim.player("Den").unwrap().uuid.clone());
         let second = PlayerId(sim.player("Study").unwrap().uuid.clone());
@@ -344,9 +342,8 @@ fn starting_and_checking_another_room_reuses_music_but_rereads_feedback() {
             coordinator: &second,
             ..first_at
         };
-        let clock = FakeClock::new(
-            chrono::DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z").unwrap(),
-        );
+        let clock =
+            FakeClock::new(chrono::DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z").unwrap());
         let dj = SpotifyDj::new(None);
         let (mut store, _) = fixture();
         apply_library_read(&mut store, &(1..=12).map(song).collect::<Vec<_>>()).unwrap();
@@ -364,8 +361,7 @@ fn starting_and_checking_another_room_reuses_music_but_rereads_feedback() {
             })
             .unwrap();
 
-        dj.start_ready(second_at, &store, None, &clock)
-            .unwrap();
+        dj.start_ready(second_at, &store, None, &clock).unwrap();
         assert_eq!(store.library_reads.get(), reads);
         assert!(store.feedback_reads.get() > feedback_reads);
         assert_eq!(dj.state().feeds[&first].snapshot(), first_feed);
@@ -389,8 +385,7 @@ fn starting_and_checking_another_room_reuses_music_but_rereads_feedback() {
 
         // Receipt changes from an independent importer defeat both reuse paths.
         apply_library_read(&mut store, &[song(20), song(21)]).unwrap();
-        dj.start_ready(second_at, &store, None, &clock)
-            .unwrap();
+        dj.start_ready(second_at, &store, None, &clock).unwrap();
         assert!(store.library_reads.get() > reads);
         assert_eq!(dj.state().pool.len(), 12, "readiness cannot publish a plan");
         dj.act(second_at, &mut store, DjAction::Start, &clock)
@@ -494,9 +489,8 @@ fn direction_readiness_needs_configuration_but_never_scans_the_library() {
         households: &[],
         coordinator: &coordinator,
     };
-    let clock = FakeClock::new(
-        chrono::DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z").unwrap(),
-    );
+    let clock =
+        FakeClock::new(chrono::DateTime::parse_from_rfc3339("2026-10-22T12:00:00Z").unwrap());
     let direction = DjSteer::Set {
         mood: Some("focus".into()),
         constraints: SteerConstraints::default(),
@@ -507,10 +501,15 @@ fn direction_readiness_needs_configuration_but_never_scans_the_library() {
     assert!(store.dj_sessions().unwrap().is_empty());
     assert!(!dj.state().planned);
 
-    std::fs::write(moods.with_file_name("preferences.toml"), "energy = 'invalid'\n")
-        .unwrap();
+    std::fs::write(
+        moods.with_file_name("preferences.toml"),
+        "energy = 'invalid'\n",
+    )
+    .unwrap();
     assert_eq!(
-        dj.steer_ready(at, &store, &direction, &clock).unwrap_err().code,
+        dj.steer_ready(at, &store, &direction, &clock)
+            .unwrap_err()
+            .code,
         ErrorCode::InvalidArgument
     );
     assert_eq!(store.library_reads.get(), reads);

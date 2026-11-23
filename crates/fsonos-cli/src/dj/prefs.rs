@@ -109,6 +109,14 @@ pub(super) fn change(
     .map_err(|error| write_failure(state, error))?;
     state.pool = std::mem::take(&mut state.pool).with_preferences(prefs.clone(), &moods);
     state.moods = moods;
+    // Even a no-op edit installs freshly read configuration in this pool.
+    // Its old fingerprint cannot certify those inputs if another process
+    // restores the old file before the next start or readiness check.
+    state.planned = false;
+    state.plan_inputs = None;
+    state.plan_check_at = None;
+    state.plan_retry_at = None;
+    state.refill_retries.clear();
     Ok(PreferredDto {
         done: if changed {
             format!("{done}; the DJ follows it from its next pick")
@@ -416,6 +424,76 @@ mod tests {
                 .map(|index| format!("Fixture Artist {index}"))
                 .collect::<BTreeSet<_>>()
         );
+    }
+
+    #[test]
+    fn preference_edits_and_noops_cannot_reuse_an_older_configuration_fingerprint() {
+        use super::super::SpotifyDj;
+        use fsonos_api::dj::DjEngine;
+
+        for no_op in [false, true] {
+            let (_, moods_file) = fresh(if no_op {
+                "fingerprint-no-op"
+            } else {
+                "fingerprint-edit"
+            });
+            let moods = Some(&moods_file);
+            let path = moods_file.with_file_name(PREFERENCES_FILE);
+            let original = "energy = 25\n";
+            std::fs::write(&path, original).unwrap();
+            let store = MemStore::default();
+            let dj = SpotifyDj::new(Some(moods_file.clone()));
+            dj.state().reload(&store, moods, 100).unwrap();
+            let original_inputs = dj.state().plan_inputs;
+            assert!(dj.state().plan_is_current(&store, moods).unwrap());
+
+            // In the no-op case another process has already installed B.
+            // prefer still reads B and installs it in the in-memory pool.
+            if no_op {
+                std::fs::write(&path, "energy = 70\n").unwrap();
+            }
+            let done = dj.prefer(&set("energy", "70")).unwrap();
+            assert_eq!(done.changed, !no_op);
+            {
+                let state = dj.state();
+                assert_eq!(state.pool.preferences().energy, Some(70));
+                assert!(!state.planned);
+                assert!(state.plan_inputs.is_none());
+                assert!(state.plan_check_at.is_none());
+                assert!(state.plan_retry_at.is_none());
+            }
+
+            // Restoring A used to match the retained fingerprint while the
+            // pool still carried B. Neither readiness nor start may reuse B.
+            std::fs::write(&path, original).unwrap();
+            assert_eq!(Some(super::super::plan_inputs(moods)), original_inputs);
+            assert!(!dj.state().plan_is_current(&store, moods).unwrap());
+            dj.state().refresh(&store, moods, 101).unwrap();
+            let state = dj.state();
+            assert_eq!(state.pool.preferences().energy, Some(25));
+            assert!(state.plan_is_current(&store, moods).unwrap());
+        }
+    }
+
+    #[test]
+    fn refused_preference_edits_keep_a_current_plan_reusable() {
+        use super::super::SpotifyDj;
+        use fsonos_api::dj::DjEngine;
+
+        let (_, moods_file) = fresh("fingerprint-refused");
+        let moods = Some(&moods_file);
+        let path = moods_file.with_file_name(PREFERENCES_FILE);
+        std::fs::write(&path, "energy = 25\n").unwrap();
+        let store = MemStore::default();
+        let dj = SpotifyDj::new(Some(moods_file.clone()));
+        dj.state().reload(&store, moods, 100).unwrap();
+        let original_inputs = dj.state().plan_inputs;
+
+        assert!(dj.prefer(&set("energy", "150")).is_err());
+        let state = dj.state();
+        assert_eq!(state.plan_inputs, original_inputs);
+        assert_eq!(state.pool.preferences().energy, Some(25));
+        assert!(state.plan_is_current(&store, moods).unwrap());
     }
 
     #[test]

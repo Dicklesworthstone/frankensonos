@@ -348,6 +348,12 @@ failures. See [Callback recovery](docs/CALLBACK_RECOVERY.md).
   the household's expected prefix. These values are **per-household** (the prior
   attempt confirmed one household used `sid=12&flags=8224&sn=1`, service type
   3079). **Learn them from the household's own favorites**, don't hard-code.
+- Track recovery ranks complete observed household templates and, after a
+  definite initial SOAP 800 refusal, prefers an alternative to the rejected
+  track payload within the existing single retry. Direct playback, silent loads
+  and native queue insertion share this selection. Equivalent queue payloads
+  cannot consume that retry; ambiguous or completed writes retain no-replay
+  behavior. See [Native playback recovery](docs/NATIVE_PLAYBACK_RECOVERY.md).
 - **S1 vs S2 differ** in music-service account plumbing. Spotify Premium must be
   linked in the respective app once; the daemon then reuses that linkage. Treat
   S1 and S2 render-param discovery independently.
@@ -720,6 +726,8 @@ their standing preferences on every surface and in the daemon. What is on
   so observed account changes, edits during construction and unreadable files
   cannot publish a mismatched candidate. Cold readiness without a live plan
   still builds independently; the optimization targets the warmed daemon.
+  Successful preference edits also invalidate the cached proof before the next
+  start or readiness check, including no-op edits that adopt an external change.
 - A full-read attempt also returns a compact account-bound progress report:
   retained pages and track rows, rechecked pages, and reading/verifying/ready
   phase. The daemon persists this report with admission, retry deadlines and

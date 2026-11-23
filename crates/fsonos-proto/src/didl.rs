@@ -11,6 +11,7 @@
 
 use crate::{ProtoError, xml};
 use fsonos_types::Track;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 mod native_metadata;
@@ -203,7 +204,7 @@ pub fn favorite_metadata(metadata: &str) -> Result<String, ProtoError> {
 
 /// Parameters needed to render a Spotify track on a specific household. These
 /// are discovered from the household's own favorites, never guessed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SpotifyRenderParams {
     pub sid: u32,
     pub flags: u32,
@@ -238,6 +239,16 @@ pub fn spotify_track_uri(spotify_uri: &str, p: &SpotifyRenderParams) -> String {
 /// to learn from.
 #[must_use]
 pub fn learn_spotify_params(favorites: &[DidlObject]) -> Option<SpotifyRenderParams> {
+    spotify_track_templates(favorites).into_iter().next()
+}
+
+/// Every distinct track-rendering template observed in this household's
+/// favorites, in the same preference order as [`learn_spotify_params`]. A
+/// definite renderer refusal can select the next complete template without
+/// mixing account fields or repeatedly choosing a stale majority. Ties retain
+/// favorite order. Parsing and frequency counting happen once per observation.
+#[must_use]
+pub fn spotify_track_templates(favorites: &[DidlObject]) -> Vec<SpotifyRenderParams> {
     let mut seen: Vec<SpotifyRenderParams> = Vec::new();
     for fav in favorites {
         let Some(res) = &fav.res else { continue };
@@ -275,26 +286,38 @@ pub fn learn_spotify_params(favorites: &[DidlObject]) -> Option<SpotifyRenderPar
             item_id_prefix: item.id[..prefix_len].to_string(),
         });
     }
-    let count =
-        |same: &dyn Fn(&SpotifyRenderParams) -> bool| seen.iter().filter(|q| same(q)).count();
-    let score = |p: &SpotifyRenderParams| {
-        (
-            count(&|q| q == p),
-            count(&|q| q.sid == p.sid)
-                + count(&|q| q.flags == p.flags)
-                + count(&|q| q.sn == p.sn)
-                + count(&|q| q.cdudn == p.cdudn)
-                + count(&|q| q.item_id_prefix == p.item_id_prefix),
-        )
-    };
-    let mut best: Option<(&SpotifyRenderParams, (usize, usize))> = None;
-    for p in &seen {
-        let s = score(p);
-        if best.is_none_or(|(_, top)| s > top) {
-            best = Some((p, s));
-        }
+    let mut sets = HashMap::new();
+    let mut services = HashMap::new();
+    let mut flags = HashMap::new();
+    let mut accounts = HashMap::new();
+    let mut descriptors = HashMap::new();
+    let mut prefixes = HashMap::new();
+    for (index, params) in seen.iter().enumerate() {
+        sets.entry(params).or_insert((index, 0_usize)).1 += 1;
+        *services.entry(params.sid).or_insert(0_usize) += 1;
+        *flags.entry(params.flags).or_insert(0_usize) += 1;
+        *accounts.entry(params.sn).or_insert(0_usize) += 1;
+        *descriptors.entry(params.cdudn.as_str()).or_insert(0_usize) += 1;
+        *prefixes
+            .entry(params.item_id_prefix.as_str())
+            .or_insert(0_usize) += 1;
     }
-    best.map(|(p, _)| p.clone())
+    let mut ranked: Vec<_> = sets
+        .into_iter()
+        .map(|(params, (first, count))| {
+            let shared = services[&params.sid]
+                + flags[&params.flags]
+                + accounts[&params.sn]
+                + descriptors[params.cdudn.as_str()]
+                + prefixes[params.item_id_prefix.as_str()];
+            (params, (count, shared), first)
+        })
+        .collect();
+    ranked.sort_unstable_by_key(|(_, score, first)| (std::cmp::Reverse(*score), *first));
+    ranked
+        .into_iter()
+        .map(|(params, _, _)| params.clone())
+        .collect()
 }
 
 /// The DIDL-Lite metadata a `spotify:track:<id>` needs on this household, for
@@ -1051,6 +1074,75 @@ mod tests {
             "{flags:?} vs {}",
             p.flags
         );
+    }
+
+    fn template_favorite(params: &SpotifyRenderParams, index: usize) -> DidlObject {
+        let source = format!("spotify:track:ExampleTrack{index}");
+        let document = format!(
+            "<DIDL-Lite xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">\
+             <item id=\"FV:2/{index}\"><res>{}</res><r:resMD>{}</r:resMD></item></DIDL-Lite>",
+            xml_escape(&spotify_track_uri(&source, params)),
+            xml_escape(&spotify_track_didl(&source, "Example", params)),
+        );
+        parse_didl(&document).unwrap().remove(0)
+    }
+
+    #[test]
+    fn ranked_track_templates_are_distinct_complete_observed_sets() {
+        let first = SpotifyRenderParams {
+            sid: 12,
+            flags: 8224,
+            sn: 1,
+            cdudn: "SA_RINCON_SIM_FIRST".into(),
+            item_id_prefix: "10032020".into(),
+        };
+        let second = SpotifyRenderParams {
+            sn: 2,
+            cdudn: "SA_RINCON_SIM_SECOND".into(),
+            ..first.clone()
+        };
+        let third = SpotifyRenderParams {
+            flags: 8232,
+            item_id_prefix: "10032028".into(),
+            ..second.clone()
+        };
+        let favorites: Vec<_> = [&first, &second, &third, &first, &first]
+            .into_iter()
+            .enumerate()
+            .map(|(index, params)| template_favorite(params, index))
+            .collect();
+        assert_eq!(
+            spotify_track_templates(&favorites),
+            [first.clone(), second, third]
+        );
+        assert_eq!(learn_spotify_params(&favorites), Some(first));
+    }
+
+    #[test]
+    fn ranked_track_template_ties_keep_the_original_favorite_order() {
+        let first = SpotifyRenderParams {
+            sid: 12,
+            flags: 8224,
+            sn: 1,
+            cdudn: "SA_RINCON_SIM_FIRST".into(),
+            item_id_prefix: "10032020".into(),
+        };
+        let second = SpotifyRenderParams {
+            sn: 2,
+            cdudn: "SA_RINCON_SIM_SECOND".into(),
+            ..first.clone()
+        };
+        for ordered in [[&first, &second], [&second, &first]] {
+            let favorites: Vec<_> = ordered
+                .iter()
+                .enumerate()
+                .map(|(index, params)| template_favorite(params, index))
+                .collect();
+            assert_eq!(
+                spotify_track_templates(&favorites),
+                ordered.map(Clone::clone)
+            );
+        }
     }
 
     #[test]

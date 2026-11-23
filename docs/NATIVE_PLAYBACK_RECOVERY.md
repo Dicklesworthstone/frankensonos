@@ -115,6 +115,35 @@ contents and sending each playback write once. These new simulator cases still
 require execution: the workspace build was killed with exit 137 in the existing
 asupersync dependency before project checks completed.
 
+## Spotify track account recovery
+
+Track playback, silent loading, queue-next and queue-append can recover when a
+household's most common favorite still names a stale Spotify account. Favorites
+supply ranked, distinct, complete rendering templates; after a definite initial
+SOAP 800 refusal, the single recovery attempt prefers a different observed
+template. Account fields are never mixed, and each household supplies its own
+favorites. Queue recovery compares the actual URI and DIDL so an equivalent
+rejected payload cannot consume the retry merely because unused flags differ.
+
+The original template remains the one transient retry when no alternative
+exists. Lost replies and failures after an accepted source or queue write retain
+the existing observation and no-replay boundaries. There is no account guessing,
+new credential source, cross-household cache or unbounded retry loop.
+
+The `track_favorites_sim` regression cases exercise direct playback, silent
+loading, queue-next and bound queue-append on both simulated generations,
+including missing alternatives, lost acknowledgements and later read-back
+refusals. Protocol and core unit tests cover coherent ranking and equivalent
+queue payloads. Run these focused localhost regressions with:
+
+```sh
+cargo test --locked -p fsonos-proto --lib ranked_track
+cargo test --locked -p fsonos-core --lib control::spotify_source::tests
+cargo test --locked -p fsonos-core --test track_favorites_sim
+```
+
+Physical-speaker acceptance remains separate from these simulator checks.
+
 ## Direct source selection after a playback refusal
 
 Direct source playback and silent loading retain the completed source-selection

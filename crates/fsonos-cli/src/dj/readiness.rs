@@ -83,12 +83,7 @@ fn check_plan(
     let feed = state.feeds.get(at.coordinator).unwrap_or(&fresh);
     feed.start_ready(
         &speakers(at),
-        plan(
-            &candidate.pool,
-            feedback.as_ref(),
-            &context,
-            &elsewhere,
-        ),
+        plan(&candidate.pool, feedback.as_ref(), &context, &elsewhere),
         store,
     )
     .map_err(failure)

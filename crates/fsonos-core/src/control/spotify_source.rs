@@ -4,8 +4,44 @@
 
 use fsonos_proto::didl::{
     DidlObject, SpotifyContainer, SpotifyRenderParams, learn_spotify_params, parse_didl,
-    spotify_container_didl, spotify_container_uri, spotify_uri_from_renderer_uri,
+    spotify_container_didl, spotify_container_uri, spotify_queue_uri, spotify_track_didl,
+    spotify_track_templates, spotify_track_uri, spotify_uri_from_renderer_uri,
 };
+
+#[derive(Clone, Copy)]
+pub(super) enum TrackUse {
+    Direct,
+    Queue,
+}
+
+/// Prefer a different complete observed track template after a definite
+/// rejection. Queue URIs omit flags and account numbers, so compare the actual
+/// rendered source: an otherwise different template may produce the same
+/// rejected queue metadata. If no alternative exists, retain the established
+/// single retry of the preferred template for a transient 800.
+pub(super) fn track(
+    favorites: &[DidlObject],
+    source: &str,
+    title: &str,
+    usage: TrackUse,
+    rejected: Option<&(String, String)>,
+) -> Option<(String, String)> {
+    let mut preferred = None;
+    for params in spotify_track_templates(favorites) {
+        let uri = match usage {
+            TrackUse::Direct => spotify_track_uri(source, &params),
+            TrackUse::Queue => spotify_queue_uri(source),
+        };
+        let candidate = (uri, spotify_track_didl(source, title, &params));
+        if rejected.is_none_or(|old| !same_source(&candidate, old)) {
+            return Some(candidate);
+        }
+        if preferred.is_none() {
+            preferred = Some(candidate);
+        }
+    }
+    preferred
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Template {
@@ -222,6 +258,48 @@ mod tests {
             ),
             &spotify_container_didl(source, "Album", SpotifyContainer::Album, prefix, p),
         )
+    }
+
+    #[test]
+    fn queue_recovery_skips_templates_with_the_same_rejected_wire_metadata() {
+        let source = "spotify:track:0SimTrack";
+        let original = params(1);
+        let mut equivalent = original.clone();
+        equivalent.sn = 2;
+        equivalent.flags += 1;
+        let distinct = params(3);
+        let favorites: Vec<_> = [&original, &original, &equivalent, &distinct]
+            .into_iter()
+            .map(|params| {
+                favorite(
+                    &spotify_track_uri(source, params),
+                    &spotify_track_didl(source, "Track", params),
+                )
+            })
+            .collect();
+        let initial = track(&favorites, source, "Track", TrackUse::Queue, None).unwrap();
+        let recovered =
+            track(&favorites, source, "Track", TrackUse::Queue, Some(&initial)).unwrap();
+        assert_eq!(recovered.0, spotify_queue_uri(source));
+        assert_eq!(recovered.1, spotify_track_didl(source, "Track", &distinct));
+    }
+
+    #[test]
+    fn an_unchanged_track_catalog_retains_one_transient_retry_without_an_alternative() {
+        let source = "spotify:track:0SimTrack";
+        let params = params(1);
+        let favorites = [favorite(
+            &spotify_track_uri(source, &params),
+            &spotify_track_didl(source, "Track", &params),
+        )];
+        for usage in [TrackUse::Direct, TrackUse::Queue] {
+            let initial = track(&favorites, source, "Track", usage, None).unwrap();
+            assert_eq!(
+                track(&favorites, source, "Track", usage, Some(&initial)),
+                Some(initial)
+            );
+        }
+        assert!(track(&[], source, "Track", TrackUse::Direct, None).is_none());
     }
 
     #[test]

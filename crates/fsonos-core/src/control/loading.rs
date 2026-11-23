@@ -2,8 +2,7 @@
 //! loading share renderer account selection and the same bounded recovery.
 
 use super::{
-    addr, is_render_800, pause, play_uri, queue_start, source_start, spotify_params,
-    spotify_source, spotify_track_source,
+    addr, is_render_800, pause, play_uri, queue_start, source_start, spotify_params, spotify_source,
 };
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::content;
@@ -142,7 +141,17 @@ pub(super) fn spotify_track<T: Transport + ?Sized>(
     title: &str,
     autoplay: bool,
 ) -> Result<(), CoreError> {
-    let source = || spotify_track_source(t, households, coordinator, spotify_uri, title);
+    let source = |rejected| {
+        let favorites = content::browse_all(t, addr(households, coordinator)?, "FV:2")?;
+        spotify_source::track(
+            &favorites,
+            spotify_uri,
+            title,
+            spotify_source::TrackUse::Direct,
+            rejected,
+        )
+        .ok_or(CoreError::NoSpotifyFavorite)
+    };
     let render = |(uri, metadata): &(String, String)| {
         if autoplay {
             play_uri(t, households, coordinator, uri, metadata)
@@ -150,10 +159,10 @@ pub(super) fn spotify_track<T: Transport + ?Sized>(
             load_uri(t, households, coordinator, uri, metadata)
         }
     };
-    let initial = source()?.ok_or(CoreError::NoSpotifyFavorite)?;
+    let initial = source(None)?;
     match render(&initial) {
         Err(error) if is_render_800(&error) => {
-            let refreshed = source()?.ok_or(CoreError::NoSpotifyFavorite)?;
+            let refreshed = source(Some(&initial))?;
             match render(&refreshed) {
                 Err(error) if is_render_800(&error) => Err(CoreError::RenderParamsStale),
                 other => other,

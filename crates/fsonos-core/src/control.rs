@@ -13,7 +13,7 @@ use fsonos_proto::content;
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
 use fsonos_proto::didl::{
     SpotifyBare, SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_bare_didl,
-    spotify_bare_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
+    spotify_bare_uri, spotify_queue_uri, spotify_track_didl,
 };
 use fsonos_proto::topology::{ZoneGroupState, get_zone_group_state};
 use fsonos_types::{Player, PlayerId};
@@ -337,12 +337,14 @@ pub fn spotify_track_source<T: Transport + ?Sized>(
     spotify_uri: &str,
     title: &str,
 ) -> Result<Option<(String, String)>, CoreError> {
-    Ok(spotify_params(t, households, coordinator)?.map(|p| {
-        (
-            spotify_track_uri(spotify_uri, &p),
-            spotify_track_didl(spotify_uri, title, &p),
-        )
-    }))
+    let favorites = content::browse_all(t, addr(households, coordinator)?, "FV:2")?;
+    Ok(spotify_source::track(
+        &favorites,
+        spotify_uri,
+        title,
+        spotify_source::TrackUse::Direct,
+        None,
+    ))
 }
 
 /// Check that a canonical Spotify source has a renderer template in this
@@ -616,11 +618,14 @@ fn enqueue_spotify_observed<T: Transport + ?Sized>(
             }
             .ok_or(CoreError::NoSpotifyFavorite);
         }
-        let params = learn_spotify_params(&favorites).ok_or(CoreError::NoSpotifyFavorite)?;
-        Ok((
-            spotify_queue_uri(spotify_uri),
-            spotify_track_didl(spotify_uri, title, &params),
-        ))
+        spotify_source::track(
+            &favorites,
+            spotify_uri,
+            title,
+            spotify_source::TrackUse::Queue,
+            rejected,
+        )
+        .ok_or(CoreError::NoSpotifyFavorite)
     };
     let add = |(uri, metadata): &(String, String)| {
         queue_insert::enqueue(
