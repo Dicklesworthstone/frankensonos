@@ -23,10 +23,11 @@ use fsonos_core::scenes::{
     self, ApplyOptions, Scene, SceneError, SceneGroup, SceneHooks, SceneOp, ScenePlan, SceneReport,
     SceneSource,
 };
-use fsonos_core::store::{Store, StoreError};
+use fsonos_core::store::{Store, StoreError, StoredScene};
 use fsonos_core::{CoreError, HouseholdState, Room, control};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -53,6 +54,10 @@ pub struct SceneDto {
     pub name: String,
     /// When it was last saved (unix seconds).
     pub saved: i64,
+    /// Opaque proof of the exact saved definition, including private metadata.
+    /// Empty only for an unsaved local projection or an older daemon response.
+    #[serde(default)]
+    pub revision: String,
     /// How the rooms group, and what each group plays.
     pub groups: Vec<SceneGroupDto>,
     /// Room → volume (0-100).
@@ -235,6 +240,10 @@ impl From<&scenes::QueueReference> for SceneQueueDto {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SceneSaveRequest {
+    /// The revision reviewed before replacing a scene, or `absent` to create
+    /// only when no scene of this name exists. Omit for legacy callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
     #[serde(default)]
     pub groups: Vec<SceneGroupDefinition>,
     #[serde(default)]
@@ -406,15 +415,36 @@ impl SceneDefinition {
     }
 }
 
-/// The scene called `name` (ignoring case) and who saved it: no one (the
-/// owner's) for one saved before savers were kept, or one that no longer
-/// reads, which its owner may still save over or delete.
-fn saver_of(store: &dyn Store, name: &str) -> Result<(String, Option<String>), SceneError> {
-    match scenes::load(store, name) {
-        Ok(scene) => Ok((scene.name, scene.writer)),
-        Err(SceneError::Corrupt { name, .. }) => Ok((name, None)),
-        Err(e) => Err(e),
+fn scene_revision(row: &StoredScene) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"frankensonos:scene:v1\0");
+    for part in [&row.name, &row.spec] {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part.as_bytes());
     }
+    digest.update(row.updated.to_be_bytes());
+    format!("scene-v1:{:x}", digest.finalize())
+}
+
+fn scene_changed() -> Failure {
+    Failure::new(
+        ErrorCode::ConfigChanged,
+        "the saved scene changed after it was read",
+    )
+    .with_hint("Read the current scene and review the change again. No change was retried.")
+}
+
+fn validate_scene_revision(expected: Option<&str>) -> Result<(), Failure> {
+    if expected.is_some_and(|revision| {
+        revision.trim().is_empty()
+            || revision.len() > 4096
+            || revision.chars().any(char::is_control)
+    }) {
+        return Err(Failure::invalid(
+            "expected_revision must be the observed scene revision, or absent to create a new scene",
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve a persisted reference without aliases, prefixes or first-match
@@ -539,12 +569,22 @@ pub struct SceneDeletedDto {
     pub done: String,
 }
 
+/// Delete only the saved definition that was reviewed. An absent body keeps
+/// older callers compatible while still fencing changes during this call.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneDeleteRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
+}
+
 impl SceneDto {
     #[must_use]
     pub fn new(scene: &Scene, saved: i64) -> Self {
         Self {
             name: scene.name.clone(),
             saved,
+            revision: String::new(),
             groups: scene
                 .groups
                 .iter()
@@ -558,6 +598,14 @@ impl SceneDto {
             volumes: scene.volumes.clone(),
             mutes: scene.mutes.clone(),
         }
+    }
+
+    fn from_stored(row: &StoredScene) -> Result<Self, SceneError> {
+        let scene = scenes::from_stored(row)?;
+        Ok(Self {
+            revision: scene_revision(row),
+            ..Self::new(&scene, row.updated)
+        })
     }
 }
 
@@ -640,6 +688,8 @@ pub fn scene_failure(err: SceneError) -> Failure {
                 nearest
             })
         }
+        SceneError::AmbiguousName { .. } => Failure::new(ErrorCode::ConfigChanged, detail)
+            .with_hint("Resolve the duplicate saved names before changing this scene."),
         SceneError::Corrupt { .. } => Failure::new(ErrorCode::Internal, detail)
             .with_hint("Save the scene again (fsonos scene save), or delete it."),
         SceneError::Store(e) => store_failure(&e),
@@ -999,29 +1049,77 @@ impl Surface {
     /// Every saved scene, by name (`list_scenes`, read-only).
     pub fn scenes(&self, client: &Client) -> Result<Vec<SceneDto>, Failure> {
         self.guard(client).authorize("list_scenes", true)?;
-        let listed = self.scene_store(|store| scenes::list(store))?;
-        Ok(listed.iter().map(|(s, at)| SceneDto::new(s, *at)).collect())
+        self.scene_store(|store| store.scenes()?.iter().map(SceneDto::from_stored).collect())
     }
 
     /// The scene called `name`, ignoring case (`get_scene`, read-only).
     pub fn scene(&self, client: &Client, name: &str) -> Result<SceneDto, Failure> {
         self.guard(client).authorize("get_scene", true)?;
-        let (scene, saved) = self.scene_store(|store| {
-            let scene = scenes::load(store, name)?;
-            let saved = store
-                .scenes()?
-                .iter()
-                .find(|s| s.name == scene.name)
-                .map_or(0, |s| s.updated);
-            Ok((scene, saved))
-        })?;
-        Ok(SceneDto::new(&scene, saved))
+        self.scene_store(|store| {
+            let Some(row) = scenes::observe(store, name)? else {
+                return Err(SceneError::Unknown {
+                    name: name.to_string(),
+                    known: store.scenes()?.into_iter().map(|row| row.name).collect(),
+                });
+            };
+            SceneDto::from_stored(&row)
+        })
+    }
+
+    /// Bind authorization and the caller's review to one exact stored row,
+    /// retained across capture or source resolution until the atomic write.
+    fn observe_scene_change(
+        &self,
+        client: &Client,
+        tool: &str,
+        name: &str,
+        expected_revision: Option<&str>,
+    ) -> Result<Option<StoredScene>, Failure> {
+        validate_scene_revision(expected_revision)?;
+        let row = self.scene_store(|store| scenes::observe(store, name))?;
+        if let Some(row) = &row {
+            // An unreadable legacy scene remains the owner's to repair/delete.
+            let writer = match scenes::from_stored(row) {
+                Ok(scene) => scene.writer,
+                Err(SceneError::Corrupt { .. }) => None,
+                Err(error) => return Err(scene_failure(error)),
+            };
+            self.authorize_change(
+                client,
+                tool,
+                &format!("the scene {:?}", row.name),
+                writer.as_deref(),
+            )?;
+        }
+        if let Some(expected) = expected_revision
+            && !match &row {
+                Some(row) => expected == scene_revision(row),
+                None => expected == "absent",
+            }
+        {
+            return Err(scene_changed());
+        }
+        Ok(row)
+    }
+
+    /// Capture or author a scene, optionally bound to its reviewed revision.
+    pub fn save_scene_with(
+        &self,
+        client: &Client,
+        name: &str,
+        request: &SceneSaveRequest,
+    ) -> Result<SceneDto, Failure> {
+        let expected_revision = request.expected_revision.as_deref();
+        match request.clone().into_definition()? {
+            Some(def) => self.save_scene_from_revision(client, name, &def, expected_revision),
+            None => self.capture_scene(client, name, request.backup_queues, expected_revision),
+        }
     }
 
     /// Save the house as it is now as the scene `name`, replacing one of
     /// that name (`save_scene`).
     pub fn save_scene(&self, client: &Client, name: &str) -> Result<SceneDto, Failure> {
-        self.capture_scene(client, name, false)
+        self.capture_scene(client, name, false, None)
     }
 
     /// Capture complete ordinary queues so recall can reconstruct them after
@@ -1031,7 +1129,7 @@ impl Surface {
         client: &Client,
         name: &str,
     ) -> Result<SceneDto, Failure> {
-        self.capture_scene(client, name, true)
+        self.capture_scene(client, name, true, None)
     }
 
     fn capture_scene(
@@ -1039,6 +1137,7 @@ impl Surface {
         client: &Client,
         name: &str,
         backup_queues: bool,
+        expected_revision: Option<&str>,
     ) -> Result<SceneDto, Failure> {
         let tool = "save_scene";
         self.authorize_logged(client, tool)?;
@@ -1051,6 +1150,7 @@ impl Surface {
         if length == 0 || length > scenes::MAX_NAME {
             return Err(scene_failure(SceneError::BadName));
         }
+        let observed = self.observe_scene_change(client, tool, name, expected_revision)?;
         let households = self.scene_house()?;
         let now = self.now();
         let djs = dj_direction::capture(self, &households)?;
@@ -1060,7 +1160,7 @@ impl Surface {
             scenes::capture(&*self.transport, &households, name, &djs, now)
         }
         .map_err(|e| self.explain(scene_failure(e)))?;
-        self.store_scene(client, tool, &scene)
+        self.store_scene(client, tool, &scene, observed.as_ref())
     }
 
     /// Save `def` as the scene `name` (`save_scene` with a scene): checked
@@ -1071,6 +1171,16 @@ impl Surface {
         client: &Client,
         name: &str,
         def: &SceneDefinition,
+    ) -> Result<SceneDto, Failure> {
+        self.save_scene_from_revision(client, name, def, None)
+    }
+
+    fn save_scene_from_revision(
+        &self,
+        client: &Client,
+        name: &str,
+        def: &SceneDefinition,
+        expected_revision: Option<&str>,
     ) -> Result<SceneDto, Failure> {
         let tool = "save_scene";
         self.authorize_logged(client, tool)?;
@@ -1090,6 +1200,7 @@ impl Surface {
             );
         }
         def.validate_sources()?;
+        let observed = self.observe_scene_change(client, tool, name, expected_revision)?;
         let households = self.scene_house()?;
         let playlists = sonos_playlist::resolve(self, def, &households)?;
         let mut scene = def.scene(name, &households, &playlists)?;
@@ -1112,7 +1223,7 @@ impl Surface {
             name.clone_from(&favorite.title);
             uri.clone_from(&favorite.uri);
         }
-        self.store_scene(client, tool, &scene)
+        self.store_scene(client, tool, &scene, observed.as_ref())
     }
 
     /// `mood` as the DJ names it, or `UNKNOWN_MOOD`, where this surface runs
@@ -1140,37 +1251,31 @@ impl Surface {
     }
 
     /// Keep `scene`, replacing one of the same name in any case, and log it.
-    fn store_scene(&self, client: &Client, tool: &str, scene: &Scene) -> Result<SceneDto, Failure> {
+    fn store_scene(
+        &self,
+        client: &Client,
+        tool: &str,
+        scene: &Scene,
+        observed: Option<&StoredScene>,
+    ) -> Result<SceneDto, Failure> {
         // Who saved it bounds its volumes when anyone applies it.
         let scene = &Scene {
             writer: Some(client.key().to_string()),
             ..scene.clone()
         };
         let now = self.now();
-        // Saving over a scene is changing it: its saver's to do.
-        let existing = self.scene_store(|store| match saver_of(store, &scene.name) {
-            Err(SceneError::Unknown { .. }) => Ok(None),
-            found => found.map(Some),
+        let replacement = scenes::to_stored(scene, now).map_err(scene_failure)?;
+        let saved = self.scene_store(|store| {
+            Ok(store.compare_and_swap_scene(&scene.name, observed, Some(&replacement))?)
         })?;
-        if let Some((name, saver)) = &existing {
-            self.authorize_change(
-                client,
-                tool,
-                &format!("the scene {name:?}"),
-                saver.as_deref(),
-            )?;
+        if !saved {
+            return Err(scene_changed());
         }
-        // What it saves over, and what it leaves there, so undo can put the
-        // first back.
-        let over = self.scene_store(|store| {
-            let was = actions::scene_row(store, &scene.name)?;
-            if let Some(old) = was.as_ref().filter(|old| old.name != scene.name) {
-                store.delete_scene(&old.name)?;
-            }
-            scenes::save(store, scene, now)?;
-            let left = actions::scene_row(store, &scene.name)?;
-            Ok(was.map(|was| actions::SceneBefore { was, left }))
-        })?;
+        // The receipt must describe this write, not a later controller's row.
+        let over = observed.cloned().map(|was| actions::SceneBefore {
+            was: was.into(),
+            left: Some(replacement.clone().into()),
+        });
         let replaced = over.is_some();
         let rooms = scene.volumes.len();
         let done = format!(
@@ -1187,30 +1292,47 @@ impl Surface {
             done,
             before,
         );
-        Ok(SceneDto::new(scene, now))
+        SceneDto::from_stored(&replacement).map_err(scene_failure)
     }
 
     /// Forget the scene called `name` (`delete_scene`).
     pub fn delete_scene(&self, client: &Client, name: &str) -> Result<SceneDeletedDto, Failure> {
+        self.delete_scene_with(client, name, &SceneDeleteRequest::default())
+    }
+
+    /// Delete a reviewed scene without removing a newer saved definition.
+    pub fn delete_scene_with(
+        &self,
+        client: &Client,
+        name: &str,
+        request: &SceneDeleteRequest,
+    ) -> Result<SceneDeletedDto, Failure> {
         let tool = "delete_scene";
         self.authorize_logged(client, tool)?;
-        let (found, saver) = self.scene_store(|store| saver_of(store, name))?;
-        self.authorize_change(
-            client,
-            tool,
-            &format!("the scene {found:?}"),
-            saver.as_deref(),
-        )?;
-        let was = self.scene_store(|store| {
-            let was = actions::scene_row(store, &found)?;
-            scenes::delete(store, &found)?;
-            Ok(was)
-        })?;
-        let deleted = found;
+        let observed =
+            self.observe_scene_change(client, tool, name, request.expected_revision.as_deref())?;
+        let Some(was) = observed else {
+            return self.scene_store(|store| {
+                Err(SceneError::Unknown {
+                    name: name.to_string(),
+                    known: store.scenes()?.into_iter().map(|row| row.name).collect(),
+                })
+            });
+        };
+        let removed =
+            self.scene_store(|store| Ok(store.compare_and_swap_scene(name, Some(&was), None)?))?;
+        if !removed {
+            return Err(scene_changed());
+        }
+        let deleted = was.name.clone();
         let done = format!("deleted scene {deleted}");
-        let before = was.and_then(|was| {
-            actions::before_state_config(&[actions::SceneBefore { was, left: None }], &[])
-        });
+        let before = actions::before_state_config(
+            &[actions::SceneBefore {
+                was: was.into(),
+                left: None,
+            }],
+            &[],
+        );
         self.record(
             client,
             format!("{tool}: {deleted}"),
@@ -1720,3 +1842,6 @@ mod queue_tests;
 
 #[cfg(test)]
 mod direction_tests;
+
+#[cfg(test)]
+mod revision_tests;

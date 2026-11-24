@@ -10,6 +10,7 @@ const Schedules = require('../crates/fsonos-api/src/remote/schedules.js');
 const row = (extra = {}) => ({
   name: 'Evening',
   saved: 1_900_000_000,
+  revision: 'scene-v1:fixture-evening',
   groups: [{ coordinator: 'Living Room@S2', members: ['Kitchen@S2'],
     source: { kind: 'favorite', name: 'Dinner Mix' }, playing: true }],
   volumes: { 'Living Room@S2': 28, 'Kitchen@S2': 24 },
@@ -39,11 +40,14 @@ function fixture(initial = [row()]) {
     }
     writes.push({ name, ...structuredClone(options) });
     if (name === 'sceneSave') {
-      const saved = row({ name: options.params.name, saved: row().saved + 1 });
+      const previous = rows.find(r => r.name.toLowerCase() === options.params.name.toLowerCase());
+      assert.equal(options.body.expected_revision, previous?.revision || 'absent');
+      const saved = row({ name: options.params.name, saved: row().saved + 1, revision: 'scene-v1:fixture-saved' });
       rows = rows.filter((r) => r.name !== saved.name).concat(saved);
       return structuredClone(saved);
     }
     if (name === 'sceneDelete') {
+      assert.equal(options.body.expected_revision, rows.find(r => r.name === options.params.name).revision);
       rows = rows.filter((r) => r.name !== options.params.name);
       return { deleted: options.params.name, done: 'deleted' };
     }
@@ -61,10 +65,15 @@ test('scene decoding freezes a complete definition and rejects malformed house s
   const scene = Scenes.sceneOf(row());
   assert.equal(Object.isFrozen(scene), true);
   assert.equal(Object.isFrozen(scene.groups), true);
+  assert.equal(scene.revision, row().revision);
   assert.equal(scene.groups[0].source.name, 'Dinner Mix');
   for (const bad of [
     row({ name: '' }),
     row({ saved: 1.5 }),
+    row({ revision: 42 }),
+    row({ revision: '' }),
+    row({ revision: 'absent' }),
+    row({ revision: 'bad\nrevision' }),
     row({ groups: [{ coordinator: '', members: [], source: { kind: 'keep' } }] }),
     row({ groups: [{ coordinator: 'A', members: ['A'], source: { kind: 'keep' } }] }),
     row({ groups: [{ coordinator: 'A', members: [], source: { kind: 'bogus' } }] }),
@@ -80,6 +89,7 @@ test('signature ignores save time but binds every operational field', () => {
   assert.notEqual(Scenes.signature(a), Scenes.signature(Scenes.sceneOf(row({
     volumes: { ...row().volumes, 'Kitchen@S2': 25 },
   }))));
+  assert.notEqual(Scenes.signature(a), Scenes.signature(Scenes.sceneOf(row({ revision: 'scene-v1:private-change' }))));
 });
 
 const directedRow = (direction = { constraints: { include_genres: ['jazz'], include_artists: ['Earth, Wind & Fire'] }, for_secs: 7200 }) =>
@@ -282,7 +292,7 @@ test('capture creates a new scene and overwrites only the reviewed existing defi
   f.control.editName('Morning');
   assert.equal(f.control.review('capture'), true);
   assert.equal(await f.control.confirm(f.control.state.pending), true);
-  assert.deepEqual(f.writes[0], { name: 'sceneSave', params: { name: 'Morning' }, body: {} });
+  assert.deepEqual(f.writes[0], { name: 'sceneSave', params: { name: 'Morning' }, body: { expected_revision: 'absent' } });
 
   f = fixture();
   await f.control.refresh();
@@ -311,7 +321,7 @@ test('queue backup capture sends the reviewed option once and changing it cancel
   const reviewed = control.state.pending;
   assert.equal(await control.confirm(reviewed), true);
   assert.equal(await control.confirm(reviewed), false);
-  assert.deepEqual(writes, [{ params: { name: 'Evening' }, body: { backup_queues: true } }]);
+  assert.deepEqual(writes, [{ params: { name: 'Evening' }, body: { backup_queues: true, expected_revision: 'absent' } }]);
 });
 
 test('a bookmark reply cannot confirm requested queue backup capture and is never replayed', async () => {
@@ -353,7 +363,8 @@ test('delete rechecks the exact definition and sends once', async () => {
   await f.control.refresh();
   f.control.review('delete', 'Evening');
   assert.equal(await f.control.confirm(f.control.state.pending), true);
-  assert.deepEqual(f.writes, [{ name: 'sceneDelete', params: { name: 'Evening' }, body: {} }]);
+  assert.deepEqual(f.writes, [{ name: 'sceneDelete', params: { name: 'Evening' },
+    body: { expected_revision: row().revision } }]);
 });
 
 test('changed or removed scenes abort apply and delete before any write', async () => {
@@ -1007,7 +1018,7 @@ function editorFixture(initial = []) {
     }
     assert.equal(name, 'sceneSave', 'custom scene creation must never send a speaker command');
     f.writes.push({ name, ...structuredClone(options) });
-    const saved = { name: options.params.name, saved: 1_900_000_001, ...structuredClone(options.body) };
+    const saved = { name: options.params.name, saved: 1_900_000_001, revision: 'scene-v1:fixture-saved', ...structuredClone(options.body) };
     for (const g of saved.groups) if (g.source.kind === 'favorite') {
       const favorite = f.favorites.find((v) => v.id === g.source.name);
       g.source.name = favorite.title;
@@ -1070,7 +1081,7 @@ test('volume and mute only scenes preserve zero and false and never become a cap
   f.control.editRoom('Hall@S1', 'mutes', 'unmuted');
   f.control.editRoom('Studio@S2', 'mutes', 'muted');
   const body = await saveDefinition(f);
-  assert.deepEqual(body, { groups: [], volumes: { 'Den@S1': 0, 'Den@S2': 100 },
+  assert.deepEqual(body, { expected_revision: 'absent', groups: [], volumes: { 'Den@S1': 0, 'Den@S2': 100 },
     mutes: { 'Hall@S1': false, 'Studio@S2': true } });
   assert.equal(f.writes.length, 1);
   assert.match(f.control.state.message, /No playback was changed/);
@@ -1375,7 +1386,7 @@ test('custom definitions cross a real localhost JSON endpoint with exact encoded
   assert.equal(await first, true, control.state.message);
   assert.deepEqual(requests.filter((r) => r.method !== 'GET'), [{ method: 'PUT',
     path: `/scenes/${encodeURIComponent(name)}`,
-    body: { groups: [{ coordinator: 'Hall@S1', members: [], source: { kind: 'favorite', name: 'FV:2/1' }, playing: true }],
+    body: { expected_revision: 'absent', groups: [{ coordinator: 'Hall@S1', members: [], source: { kind: 'favorite', name: 'FV:2/1' }, playing: true }],
       volumes: { 'Den@S1': 0 }, mutes: { 'Den@S2': false } } }]);
   assert.equal(requests.filter((r) => r.path === '/favorites?zone=Hall%40S1').length, 3,
     'browse, review and confirmation all read the exact household-qualified source');
@@ -1699,7 +1710,7 @@ test('custom DJ groups retain all filters through review, exact save and acknowl
   assert.match(Scenes.detail(prepared.preview), /90 minutes on each start/);
   assert.deepEqual(f.writes, [], 'review still performs no mutation');
   assert.equal(await f.control.confirm(f.control.state.pending), true, f.control.state.message);
-  assert.deepEqual(f.writes[0].body, JSON.parse(JSON.stringify(prepared.body)));
+  assert.deepEqual(f.writes[0].body, { ...JSON.parse(JSON.stringify(prepared.body)), expected_revision: 'absent' });
   assert.deepEqual(f.control.state.saved.groups[0].source.direction, fullDirection());
   assert.equal(f.writes.length, 1);
 });
@@ -1835,4 +1846,79 @@ test('a custom-save acknowledgement must retain every direction field, duration 
     assert.equal(f.control.state.saved, null, field);
     assert.match(f.control.state.message, /did not confirm.*uncertain/, field);
   }
+});
+
+test('private-only revision changes retire capture and delete reviews', async () => {
+  for (const action of ['capture', 'delete']) {
+    const f = fixture(); await f.control.refresh(); f.control.editName('Evening');
+    assert.equal(f.control.review(action, 'Evening'), true);
+    const pending = f.control.state.pending;
+    assert.equal(pending.expectedRevision, row().revision);
+    f.set([row({ revision: 'scene-v1:private-metadata-changed' })]);
+    assert.equal(await f.control.confirm(pending), false);
+    assert.deepEqual(f.writes, []);
+    assert.equal(f.control.state.pending, null);
+  }
+});
+
+test('missing stored revisions never authorize capture, delete or authored replacement', async () => {
+  for (const action of ['capture', 'delete']) {
+    const f = fixture([row({ revision: undefined })]);
+    assert.equal(await f.control.refresh(), true);
+    f.control.editName('Evening');
+    assert.equal(f.control.review(action, 'Evening'), false);
+    assert.equal(f.control.state.pending, null);
+    assert.match(f.control.state.message, /revision/);
+    assert.deepEqual(f.writes, []);
+  }
+  const f = editorFixture(); f.rows = [row({ name: 'Morning', revision: undefined })];
+  await editor(f); f.control.editRoom('Den@S1', 'volumes', '20');
+  assert.equal(await f.control.reviewDefinition(), false);
+  assert.match(f.control.state.message, /revision/);
+  assert.deepEqual(f.writes, []);
+});
+
+test('changes after the final scene read reach the daemon with the frozen proof and never retry', async () => {
+  for (const [action, existed] of [['capture', false], ['capture', true], ['delete', true]]) {
+    let current = existed ? row() : null;
+    const writes = [];
+    const control = Scenes.model({ call: async (name, options = {}) => {
+      if (name === 'scenes') return current ? [structuredClone(current)] : [];
+      if (name === 'scene') return structuredClone(current);
+      writes.push({ name, ...structuredClone(options) });
+      current = row({ revision: 'scene-v1:concurrent-winner', volumes: { 'Living Room@S2': 12 } });
+      assert.equal(options.body.expected_revision, existed ? row().revision : 'absent');
+      throw Object.assign(new Error('The saved scene changed after it was read.'), { code: 'CONFIG_CHANGED' });
+    } });
+    assert.equal(await control.refresh(), true); control.editName('Evening');
+    assert.equal(control.review(action, 'Evening'), true);
+    const pending = control.state.pending;
+    assert.equal(await control.confirm(pending), false);
+    assert.equal(await control.confirm(pending), false);
+    assert.equal(writes.length, 1);
+    assert.equal(control.state.pending, null); assert.equal(control.state.loaded, false);
+    assert.equal(current.revision, 'scene-v1:concurrent-winner');
+    assert.match(control.state.message, /not repeated/);
+    assert.doesNotMatch(control.state.message, /uncertain/);
+  }
+});
+
+test('authored replacements retain the reviewed proof across source preparation and server conflicts', async () => {
+  const f = editorFixture(); f.rows = [row({ name: 'Morning' })];
+  await editor(f); f.control.editRoom('Den@S1', 'volumes', '20');
+  assert.equal(await f.control.reviewDefinition(), true);
+  const pending = f.control.state.pending;
+  let attempts = 0;
+  f.hook = async (name, options) => {
+    if (name !== 'sceneSave') return undefined;
+    attempts++;
+    assert.equal(options.body.expected_revision, row().revision);
+    assert.deepEqual(options.body.volumes, { 'Den@S1': 20 });
+    f.rows = [row({ name: 'Morning', revision: 'scene-v1:changed-after-preflight' })];
+    throw Object.assign(new Error('The saved scene changed after it was read.'), { code: 'CONFIG_CHANGED' });
+  };
+  assert.equal(await f.control.confirm(pending), false);
+  assert.equal(await f.control.confirm(pending), false);
+  assert.equal(attempts, 1); assert.equal(f.control.state.pending, null);
+  assert.equal(f.control.state.saved, null); assert.equal(f.control.state.loaded, false);
 });

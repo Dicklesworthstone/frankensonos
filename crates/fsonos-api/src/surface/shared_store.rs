@@ -523,6 +523,16 @@ impl Store for SharedStore<'_> {
         self.lock().delete_scene(name)
     }
 
+    fn compare_and_swap_scene(
+        &mut self,
+        name: &str,
+        expected: Option<&StoredScene>,
+        replacement: Option<&StoredScene>,
+    ) -> Result<bool, StoreError> {
+        self.lock()
+            .compare_and_swap_scene(name, expected, replacement)
+    }
+
     fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError> {
         self.lock().add_schedule(schedule)
     }

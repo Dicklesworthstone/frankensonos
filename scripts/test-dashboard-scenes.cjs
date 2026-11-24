@@ -42,7 +42,7 @@ function fixture({ demo = false, dom = false, network } = {}) {
     members: i ? ['Main room'] : ['Main room', 'Side room'], transport_state: i ? 'paused' : 'playing' }));
   const rows = new Map(zones.map(zone => [C.key(zone), { zone, transport_state: zone.transport_state, volume: 25, mute: false,
     track: { uri: 'fixture:track', title: 'Synthetic music', queue_position: 2, position_secs: 30, duration_secs: 180 } }]));
-  const capture = (name, backupQueues) => ({ name, saved: 1700000000, groups: zones.map(zone => ({
+  const capture = (name, backupQueues) => ({ name, saved: 1700000000, revision: 'scene-v1:fixture-' + name, groups: zones.map(zone => ({
     coordinator: C.key(zone), members: zone.members.filter(room => room !== zone.coordinator_room).map(room => room + '@' + zone.household),
     playing: rows.get(C.key(zone)).transport_state === 'playing', source: { kind: backupQueues ? 'queue_backup' : 'queue',
       queue: { coordinator: 'fixture-player-' + zone.household, household: zone.household, update_id: 9,
@@ -65,7 +65,10 @@ function fixture({ demo = false, dom = false, network } = {}) {
   const normalWrite = (url, body, options) => {
     assert.equal(options?.method, 'PUT'); assert.match(url, /^\/scenes\/[^/]+$/);
     const name = decodeURIComponent(url.slice(8));
-    const result = body.groups ? { name, saved: 1700000000, ...copy(body) } : capture(name, body.backup_queues === true);
+    const previous = catalog.find(scene => scene.name.toLowerCase() === name.toLowerCase());
+    assert.equal(body.expected_revision, previous?.revision || 'absent');
+    const { expected_revision, ...definition } = body;
+    const result = body.groups ? { name, saved: 1700000000, revision: 'scene-v1:fixture-' + name, ...copy(definition) } : capture(name, body.backup_queues === true);
     const index = catalog.findIndex(scene => scene.name === result.name);
     if (index < 0) catalog.push(result); else catalog[index] = result;
     return copy(result);
@@ -113,7 +116,7 @@ test('a library selection opens a named scene draft and saves only the reviewed 
     assert.deepEqual(f.writes(), []);
     assert.equal(await f.capturer.apply(pending), true, f.capturer.state.message);
     assert.equal(await f.capturer.apply(pending), false);
-    assert.deepEqual(f.writes(), [{ url: '/scenes/Selected%20%2F%20music', body: pending.body, method: 'PUT' }]);
+    assert.deepEqual(f.writes(), [{ url: '/scenes/Selected%20%2F%20music', body: { ...pending.body, expected_revision: 'absent' }, method: 'PUT' }]);
     const sent = f.calls.findIndex((call, index) => index >= start && call.body !== undefined);
     assert.ok(f.calls.slice(start, sent).every(call => ['/zones', '/scenes'].includes(call.url)),
       'reviewing a concrete selection needs no current music, queue or DJ state');
@@ -255,7 +258,7 @@ test('capture uses one native PUT, saves the whole house, then refreshes the cat
   const p = await review(f); assert.ok(Object.isFrozen(p)); assert.ok(Object.isFrozen(p.body)); assert.ok(Object.isFrozen(p.groups));
   const before = f.calls.length;
   assert.equal(await f.capturer.apply(p), true);
-  assert.deepEqual(f.writes(), [{ url: '/scenes/Quiet%20%2F%20evening', body: {}, method: 'PUT' }]);
+  assert.deepEqual(f.writes(), [{ url: '/scenes/Quiet%20%2F%20evening', body: { expected_revision: 'absent' }, method: 'PUT' }]);
   assert.deepEqual([...f.rows], beforeState); assert.equal(f.capturer.state.result.groups.length, 2);
   assert.equal(f.capturer.state.result.groups[0].source.kind, 'queue');
   assert.equal(f.capturer.state.result.groups[1].playing, false); assert.equal(f.saved.length, 1);
@@ -267,7 +270,7 @@ test('capture uses one native PUT, saves the whole house, then refreshes the cat
 test('complete queue backups use the exact native capture option and retain restore metadata', async () => {
   const f = await fixture().ready(); await review(f, 'Queue for later', true);
   assert.equal(await f.capturer.apply(), true);
-  assert.deepEqual(f.writes(), [{ url: '/scenes/Queue%20for%20later', body: { backup_queues: true }, method: 'PUT' }]);
+  assert.deepEqual(f.writes(), [{ url: '/scenes/Queue%20for%20later', body: { backup_queues: true, expected_revision: 'absent' }, method: 'PUT' }]);
   const source = f.capturer.state.result.groups[0].source;
   assert.equal(source.kind, 'queue_backup'); assert.equal(source.queue.total, 12); assert.equal(source.queue.track, 2);
   assert.equal(source.queue.position_secs, 30); assert.equal(source.queue.play_mode, 'NORMAL');
@@ -278,7 +281,7 @@ test('replacement review retains the exact existing definition and canonical sto
   assert.equal(p.name, 'Dinner'); assert.equal(p.existing.name, 'Dinner'); assert.ok(Object.isFrozen(p.existing));
   assert.equal(p.existing.groups[0].source.kind, 'queue');
   assert.equal(await f.capturer.apply(), true); assert.equal(f.catalog.length, 1);
-  assert.deepEqual(f.writes(), [{ url: '/scenes/Dinner', body: { backup_queues: true }, method: 'PUT' }]);
+  assert.deepEqual(f.writes(), [{ url: '/scenes/Dinner', body: { backup_queues: true, expected_revision: p.existing.revision }, method: 'PUT' }]);
 });
 
 test('case-ambiguous saved names fail closed without creating another saved definition', async () => {
@@ -450,6 +453,51 @@ test('real loopback HTTP captures a native PUT once and never applies the saved 
   t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
   const f = await fixture({ network(raw) { backend = raw; return C.request({ fetcher: (url, init) => fetch(`http://127.0.0.1:${server.address().port}${url}`, init) }); } }).ready();
   await review(f, 'Quiet / evening', true); assert.equal(await f.capturer.apply(), true);
-  assert.deepEqual(received.filter(row => row.method !== 'GET'), [{ url: '/scenes/Quiet%20%2F%20evening', method: 'PUT', body: { backup_queues: true } }]);
+  assert.deepEqual(received.filter(row => row.method !== 'GET'), [{ url: '/scenes/Quiet%20%2F%20evening', method: 'PUT', body: { backup_queues: true, expected_revision: 'absent' } }]);
   assert.equal(f.ctl.state.uncertain, false); assert.equal(f.capturer.state.result.name, 'Quiet / evening');
+});
+
+test('missing or malformed scene revisions cannot enable dashboard storage', async () => {
+  for (const revision of [undefined, null, '', 'absent', 42, 'bad\nrevision']) {
+    const f = await fixture().ready(); f.catalog[0].revision = revision;
+    assert.equal(await f.capturer.open(), false);
+    f.capturer.edit('name', 'Dinner');
+    assert.equal(f.capturer.canReview(), false); assert.equal(f.capturer.review(), null);
+    assert.equal(f.writes().length, 0);
+    assert.match(f.capturer.state.message, /revision|^$/);
+  }
+});
+
+test('private metadata revisions invalidate dashboard replacements before dispatch', async () => {
+  const f = await fixture().ready(), pending = await review(f, 'Dinner');
+  assert.equal(pending.expectedRevision, f.catalog[0].revision);
+  f.catalog[0].revision = 'scene-v1:hidden-change';
+  assert.equal(await f.capturer.apply(pending), false);
+  assert.equal(f.writes().length, 0); assert.equal(f.capturer.state.pending, null);
+  assert.match(f.capturer.state.message, /changed/);
+});
+
+test('dashboard create, capture and selected-track reviews retain their proofs through final-write conflicts', async () => {
+  for (const kind of ['create', 'capture', 'selection']) {
+    const f = await fixture().ready();
+    let pending;
+    if (kind === 'selection') {
+      assert.equal(await f.capturer.openSelection(selectedMusic()), true);
+      f.capturer.edit('name', 'Dinner'); pending = f.capturer.review();
+    } else pending = await review(f, kind === 'create' ? 'New scene' : 'Dinner');
+    const expected = kind === 'create' ? 'absent' : f.catalog[0].revision;
+    f.write((url, body) => {
+      assert.equal(body.expected_revision, expected);
+      const winner = f.capture(pending.name, false); winner.revision = 'scene-v1:concurrent-winner';
+      const index = f.catalog.findIndex(scene => scene.name === pending.name);
+      if (index < 0) f.catalog.push(winner); else f.catalog[index] = winner;
+      throw Object.assign(new Error('The saved scene changed after it was read.'), { code: 'CONFIG_CHANGED', status: 409 });
+    });
+    assert.equal(await f.capturer.apply(pending), false);
+    assert.equal(await f.capturer.apply(pending), false);
+    assert.equal(f.writes().length, 1); assert.equal(f.capturer.state.pending, null);
+    assert.equal(f.capturer.state.result, null); assert.equal(f.capturer.state.stale, true);
+    assert.equal(f.catalog.find(scene => scene.name === pending.name).revision, 'scene-v1:concurrent-winner');
+    assert.match(f.capturer.state.message, /changed.*no retry/s);
+  }
 });

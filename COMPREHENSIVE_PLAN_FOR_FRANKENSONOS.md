@@ -1488,6 +1488,21 @@ mood). `scene apply` diffs current state against the scene and issues only the
 operations needed. One call replaces five to ten, and it matches how people
 describe what they want ("dinner", "work").
 
+Stored scene reads now carry an opaque revision of the exact saved name,
+specification and timestamp, including private queue metadata and ownership.
+Save and delete requests can bind to that revision; `absent` requires a new
+name. Both web remotes retain the proof shown in their review and send it once.
+Legacy callers remain compatible, while every write still compares the exact
+row authorized before capture or catalog work. A competing edit returns a
+conflict without replacing the newer scene or issuing a successful receipt.
+The store performs comparison and replacement or deletion atomically across
+connections, rejects ambiguous case variants and renames case in one update.
+Scene undo also compares its original result; forced undo first observes the
+current row and still refuses an edit that arrives during restoration.
+The focused phone/dashboard suite passes all 140 tests, including final-write
+conflicts and retained review proofs. New Rust storage, HTTP and public undo
+regressions remain unexecuted after local dependency compilation was terminated.
+
 Authored `kind: tracks` sources now retain 1–10 concrete Spotify track or
 episode identities with exact order, repeated occurrences and optional titles.
 CLI, HTTP and MCP author and expose the full sequence; the web custom scene

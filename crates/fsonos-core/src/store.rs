@@ -1072,6 +1072,25 @@ pub trait Store {
     /// Forget the scene called exactly `name`; whether there was one.
     fn delete_scene(&mut self, name: &str) -> Result<bool, StoreError>;
 
+    /// Save or remove one scene only while its complete observed row still
+    /// matches. Names identify one scene ignoring ASCII case and surrounding
+    /// input whitespace; multiple stored spellings are a conflict. None as
+    /// expected requires absence, and None as replacement removes the scene.
+    /// A replacement must retain the same name, apart from ASCII case.
+    /// Comparison and mutation are atomic across connections; false means
+    /// nothing changed. Custom stores must implement this before accepting
+    /// reviewed scene writes.
+    fn compare_and_swap_scene(
+        &mut self,
+        _name: &str,
+        _expected: Option<&StoredScene>,
+        _replacement: Option<&StoredScene>,
+    ) -> Result<bool, StoreError> {
+        Err(StoreError::Backend(
+            "this store does not support atomic scene changes".into(),
+        ))
+    }
+
     /// Add a schedule; returns its new id.
     fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError>;
 
@@ -1142,6 +1161,27 @@ pub trait Store {
 pub enum StoreError {
     #[error("store backend error: {0}")]
     Backend(String),
+}
+
+fn validate_scene_swap(
+    name: &str,
+    expected: Option<&StoredScene>,
+    replacement: Option<&StoredScene>,
+) -> Result<(), StoreError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(StoreError::Backend("a scene change needs a name".into()));
+    }
+    if [expected, replacement]
+        .into_iter()
+        .flatten()
+        .any(|scene| !scene.name.eq_ignore_ascii_case(name))
+    {
+        return Err(StoreError::Backend(
+            "a scene change must retain its name apart from ASCII case".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_schedule_replacement(
@@ -2449,6 +2489,35 @@ impl Store for MemStore {
 
     fn delete_scene(&mut self, name: &str) -> Result<bool, StoreError> {
         Ok(self.scenes.remove(name).is_some())
+    }
+
+    fn compare_and_swap_scene(
+        &mut self,
+        name: &str,
+        expected: Option<&StoredScene>,
+        replacement: Option<&StoredScene>,
+    ) -> Result<bool, StoreError> {
+        validate_scene_swap(name, expected, replacement)?;
+        let mut matching = self
+            .scenes
+            .values()
+            .filter(|scene| scene.name.eq_ignore_ascii_case(name.trim()));
+        let current = matching.next();
+        if matching.next().is_some() || current != expected {
+            return Ok(false);
+        }
+        if current == replacement {
+            return Ok(true);
+        }
+        let previous_name = current.map(|scene| scene.name.clone());
+        if let Some(previous_name) = previous_name {
+            self.scenes.remove(&previous_name);
+        }
+        if let Some(replacement) = replacement {
+            self.scenes
+                .insert(replacement.name.clone(), replacement.clone());
+        }
+        Ok(true)
     }
 
     fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError> {

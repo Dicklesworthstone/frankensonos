@@ -14,6 +14,8 @@ const OTHER: &str = "x-rincon-mp3radio://stream.example.invalid/other.mp3";
 
 #[path = "actions_sim/read_failures.rs"]
 mod read_failures;
+#[path = "actions_sim/scene_edits.rs"]
+mod scene_edits;
 
 fn sim() -> SimHandle {
     SimHousehold::builder()

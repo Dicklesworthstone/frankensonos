@@ -347,6 +347,7 @@ mod tests {
         SceneDto {
             name: "Evening".into(),
             saved: 0,
+            revision: String::new(),
             groups: vec![
                 SceneGroupDto {
                     coordinator: "Kitchen".into(),

@@ -30,6 +30,16 @@ impl From<StoredScene> for SceneRow {
     }
 }
 
+impl SceneRow {
+    fn stored(&self) -> StoredScene {
+        StoredScene {
+            name: self.name.clone(),
+            spec: self.spec.clone(),
+            updated: self.updated,
+        }
+    }
+}
+
 /// A scene an action saved over or deleted: undo saves `was` back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneBefore {
@@ -101,11 +111,28 @@ pub struct ScheduleBefore {
 /// # Errors
 /// The store cannot be read.
 pub fn scene_row<S: Store + ?Sized>(store: &S, name: &str) -> Result<Option<SceneRow>, StoreError> {
-    Ok(store
-        .scenes()?
-        .into_iter()
-        .find(|s| s.name.eq_ignore_ascii_case(name))
-        .map(SceneRow::from))
+    crate::scenes::observe(store, name)
+        .map(|scene| scene.map(SceneRow::from))
+        .map_err(|error| match error {
+            crate::scenes::SceneError::Store(error) => error,
+            error => StoreError::Backend(error.to_string()),
+        })
+}
+
+/// A forced undo may replace a scene that changed before admission, but
+/// cannot adopt another edit arriving while restoration is in progress.
+pub(super) fn rebase_scenes<S: Store + ?Sized>(
+    store: &S,
+    scenes: &mut [SceneBefore],
+) -> Result<(), CoreError> {
+    for scene in scenes {
+        let name = scene
+            .left
+            .as_ref()
+            .map_or(&scene.was.name, |left| &left.name);
+        scene.left = scene_row(store, name).map_err(|error| store_err(&error))?;
+    }
+    Ok(())
 }
 
 /// Schedule `id`, as stored now.
@@ -168,12 +195,7 @@ fn config_changes<S: Store + ?Sized>(
             .as_ref()
             .map_or(&scene.was.name, |left| &left.name);
         let now = scene_row(store, name)?;
-        let unchanged = match (&scene.left, &now) {
-            (None, None) => true,
-            (Some(left), Some(now)) => left.name == now.name && left.spec == now.spec,
-            _ => false,
-        };
-        if unchanged {
+        if scene.left == now {
             continue;
         }
         changes.push(match now {
@@ -258,14 +280,13 @@ fn put_back_scene<S: Store + ?Sized>(store: &mut S, scene: &SceneBefore) -> Resu
         .left
         .as_ref()
         .map_or(&scene.was.name, |left| &left.name);
-    if let Some(now) = scene_row(store, name)? {
-        store.delete_scene(&now.name)?;
+    let expected = scene.left.as_ref().map(SceneRow::stored);
+    if !store.compare_and_swap_scene(name, expected.as_ref(), Some(&scene.was.stored()))? {
+        return Err(StoreError::Backend(format!(
+            "the scene {name:?} changed after undo was prepared; inspect it before trying again"
+        )));
     }
-    store.save_scene(&StoredScene {
-        name: scene.was.name.clone(),
-        spec: scene.was.spec.clone(),
-        updated: scene.was.updated,
-    })
+    Ok(())
 }
 
 /// Put `was` back: switched as it was where it still is, under its own id
@@ -358,12 +379,92 @@ mod tests {
             config_changes(&store, &deleted, &[]).unwrap(),
             ["a scene \"EVENING\" was saved"]
         );
-        // Forced, it replaces that one.
-        put_back_config(&mut store, &before(&deleted, &[]), 500);
+        let refused = put_back_config(&mut store, &before(&deleted, &[]), 500);
+        assert!(refused.done.is_empty());
+        assert_eq!(refused.failed.len(), 1);
+        // Forced, it replaces that observed row, not a later edit.
+        let mut forced = before(&deleted, &[]);
+        rebase_scenes(&store, &mut forced.scenes).unwrap();
+        let restored = put_back_config(&mut store, &forced, 500);
+        assert!(restored.failed.is_empty(), "{restored:?}");
         assert_eq!(
             store.scenes().unwrap(),
             [scene("evening", "{\"v\":1}", 100)]
         );
+    }
+
+    #[test]
+    fn ordinary_and_forced_scene_undo_refuse_edits_after_admission() {
+        let mut store = MemStore::default();
+        let was = scene("Evening", r#"{"v":1}"#, 100);
+        let left = scene("EVENING", r#"{"v":2}"#, 200);
+        store.save_scene(&left).unwrap();
+        let mut prepared = before(
+            &[SceneBefore {
+                was: was.clone().into(),
+                left: Some(left.clone().into()),
+            }],
+            &[],
+        );
+        assert!(
+            config_changes(&store, &prepared.scenes, &[])
+                .unwrap()
+                .is_empty()
+        );
+
+        let later = scene("EVENING", r#"{"v":3}"#, 200);
+        store.save_scene(&later).unwrap();
+        let refused = put_back_config(&mut store, &prepared, 300);
+        assert!(refused.done.is_empty());
+        assert_eq!(refused.failed.len(), 1);
+        assert_eq!(store.scenes().unwrap(), [later]);
+
+        rebase_scenes(&store, &mut prepared.scenes).unwrap();
+        let newest = scene("EVENING", r#"{"v":4}"#, 301);
+        store.save_scene(&newest).unwrap();
+        let refused = put_back_config(&mut store, &prepared, 400);
+        assert!(refused.done.is_empty());
+        assert_eq!(refused.failed.len(), 1);
+        assert_eq!(store.scenes().unwrap(), [newest]);
+
+        rebase_scenes(&store, &mut prepared.scenes).unwrap();
+        let restored = put_back_config(&mut store, &prepared, 500);
+        assert_eq!(restored.done, [r#"the scene "Evening""#]);
+        assert!(restored.failed.is_empty(), "{restored:?}");
+        assert_eq!(store.scenes().unwrap(), [was]);
+    }
+
+    #[test]
+    fn scene_undo_binds_timestamp_and_refuses_ambiguous_stored_names() {
+        let mut store = MemStore::default();
+        let left = scene("Evening", r#"{"v":2}"#, 200);
+        let prepared = before(
+            &[SceneBefore {
+                was: scene("evening", r#"{"v":1}"#, 100).into(),
+                left: Some(left.clone().into()),
+            }],
+            &[],
+        );
+        let later = StoredScene {
+            updated: 201,
+            ..left
+        };
+        store.save_scene(&later).unwrap();
+        assert_eq!(
+            config_changes(&store, &prepared.scenes, &[]).unwrap(),
+            [r#"the scene "Evening" was saved again"#]
+        );
+        assert_eq!(put_back_config(&mut store, &prepared, 300).failed.len(), 1);
+        assert_eq!(store.scenes().unwrap(), [later]);
+
+        store
+            .save_scene(&scene("EVENING", r#"{"v":3}"#, 201))
+            .unwrap();
+        let rows = store.scenes().unwrap();
+        let mut forced = prepared;
+        assert!(rebase_scenes(&store, &mut forced.scenes).is_err());
+        assert_eq!(put_back_config(&mut store, &forced, 400).failed.len(), 1);
+        assert_eq!(store.scenes().unwrap(), rows);
     }
 
     #[test]

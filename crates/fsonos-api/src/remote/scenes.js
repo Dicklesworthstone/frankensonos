@@ -14,6 +14,12 @@ const ScenesRemote = (() => {
   };
   const text = (v, max = 512) => typeof v === 'string' && v.trim() !== '' && [...v].length <= max;
   const integer = (v, low, high) => Number.isSafeInteger(v) && v >= low && v <= high;
+  const validRevision = v => text(v, 4096) && v !== 'absent' && !/[\u0000-\u001f\u007f]/.test(v);
+  function revisionOf(scene) {
+    if (scene == null) return 'absent';
+    if (!validRevision(scene.revision)) throw new Error('The saved scene has no usable revision. Refresh before changing it.');
+    return scene.revision;
+  }
   const plain = (v) => v && typeof v === 'object' && !Array.isArray(v)
     && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
   const errorText = (e) => text(e?.message, 2048)
@@ -71,6 +77,7 @@ const ScenesRemote = (() => {
 
   function sceneOf(v) {
     if (!plain(v) || !text(v.name, 512) || !Number.isSafeInteger(v.saved)
+        || (v.revision != null && !validRevision(v.revision))
         || !Array.isArray(v.groups) || v.groups.length > 512) {
       throw new Error('The scene response is unreadable.');
     }
@@ -97,6 +104,7 @@ const ScenesRemote = (() => {
     return Object.freeze({
       name: v.name,
       saved: v.saved,
+      revision: v.revision ?? null,
       groups: Object.freeze(groups),
       volumes: settingsOf(v.volumes, 'volume'),
       mutes: settingsOf(v.mutes, 'mute'),
@@ -117,6 +125,7 @@ const ScenesRemote = (() => {
   function signature(scene) {
     return JSON.stringify([
       scene.name,
+      scene.revision,
       scene.groups.map((g) => [g.coordinator, g.members, g.source.kind, g.source.name,
         g.source.uri, g.source.mood, g.playing,
         g.source.direction == null ? null : directionApi().signature(g.source.direction, g.source.mood),
@@ -363,7 +372,7 @@ const ScenesRemote = (() => {
   // read-only FavoriteDto deliberately does not expose. Compare every authored
   // field while leaving that server-learned field out of the save check.
   function authoredSignature(scene) {
-    return signature({ ...scene, groups: scene.groups.map((g) => g.source.kind === 'favorite'
+    return signature({ ...scene, revision: null, groups: scene.groups.map((g) => g.source.kind === 'favorite'
       ? { ...g, source: { ...g.source, uri: null } } : g.source.kind === 'sonos_playlist'
         ? { ...g, source: { ...g.source, playlist: { ...g.source.playlist, household: null } } } : g) });
   }
@@ -548,7 +557,10 @@ const ScenesRemote = (() => {
         if (!integer(value, 0, 60)) return false;
         fadeSecs = value;
       }
-      state.pending = Object.freeze({ action, name: asked, row, fadeSecs,
+      let expectedRevision = null;
+      try { if (action !== 'apply') expectedRevision = revisionOf(row); }
+      catch (error) { state.message = errorText(error); publish(); return false; }
+      state.pending = Object.freeze({ action, name: asked, row, fadeSecs, expectedRevision,
         ...(action === 'capture' ? { backupQueues: state.backupQueues } : {}) });
       publish();
       return true;
@@ -735,8 +747,9 @@ const ScenesRemote = (() => {
       try {
         const prepared = await prepareDefinition(state.draft, state.rooms, state.name, call, () => current(version));
         if (!current(version) || !prepared) return false;
+        const row = state.rows.find((r) => nameKey(r.name) === nameKey(prepared.name)) || null;
         state.pending = Object.freeze({ action: 'define', name: prepared.name, prepared,
-          draft: state.draft, row: state.rows.find((r) => nameKey(r.name) === nameKey(prepared.name)) || null });
+          draft: state.draft, row, expectedRevision: revisionOf(row) });
         return true;
       } catch (e) {
         if (current(version)) state.message = errorText(e);
@@ -789,7 +802,8 @@ const ScenesRemote = (() => {
           }
           sent = true;
           const saved = sceneOf(await call('sceneSave', { params: { name: reviewed.name },
-            body: prepared ? prepared.body : reviewed.backupQueues ? { backup_queues: true } : {} }));
+            body: { ...(prepared ? prepared.body : reviewed.backupQueues ? { backup_queues: true } : {}),
+              expected_revision: reviewed.expectedRevision } }));
           if (prepared) await savedDefinition(saved, prepared, call);
           if (saved.name !== reviewed.name) throw new Error('The reply did not confirm the reviewed scene name.');
           if (!prepared && saved.groups.some((g) => g.source.kind === (reviewed.backupQueues ? 'queue' : 'queue_backup'))) {
@@ -827,14 +841,17 @@ const ScenesRemote = (() => {
           }
           return result.complete;
         }
-        const result = await call('sceneDelete', { params: { name: reviewed.name }, body: {} });
+        const result = await call('sceneDelete', { params: { name: reviewed.name },
+          body: { expected_revision: reviewed.expectedRevision } });
         if (!plain(result) || result.deleted !== reviewed.name || !text(result.done, 8192)) {
           throw new Error('The delete reply did not confirm the reviewed scene.');
         }
         if (!disposed) state.message = `Deleted scene “${reviewed.name}”. Refresh before another scene change.`;
         return true;
       } catch (e) {
-        if (current(version) || (sent && !disposed)) state.message = `${errorText(e)}${sent ? ' The outcome may be uncertain. The request was not repeated.' : ''} Refresh before another change.`;
+        if (current(version) || (sent && !disposed)) state.message = `${errorText(e)}${sent
+          ? `${e?.code === 'CONFIG_CHANGED' ? '' : ' The outcome may be uncertain.'} The request was not repeated.`
+          : ''} Refresh before another change.`;
         return false;
       } finally {
         state.writing = false;
@@ -1107,11 +1124,11 @@ const ScenesRemote = (() => {
           : 'Save queue bookmarks. Recall requires each original player’s queue to remain unchanged. Select “Back up queue contents” to save the tracks too.' }));
         if (p.row) review.append(el('details', {}, el('summary', { text: 'Existing saved definition' }), el('pre', { text: detail(p.row) })));
         review.append(el('p', { text: p.action === 'define'
-          ? 'Saving does not play or regroup anything. Apply the saved scene separately. The daemon resolves favorites and moods by name; later edits can change them. This preview is not an atomic lock on another client’s edits.'
+          ? 'Saving does not play or regroup anything. Apply the saved scene separately. The daemon checks that the saved definition still matches this review. Favorites, moods and the live house can change separately.'
           : p.action === 'capture'
-          ? 'Capture reads the current house when confirmed and replaces this saved name. The definition is checked before sending, not locked; another client can still edit it between that read and the save.'
+          ? 'Capture reads the live house after confirmation. The daemon saves only if this name still has the reviewed definition, or remains unused for a new scene. Live grouping and playback can change during capture.'
           : p.action === 'delete'
-            ? 'Deleting forgets only the saved scene. It does not change speakers and speaker undo cannot restore the saved definition.'
+            ? 'Deleting forgets only the reviewed saved definition and does not change speakers. If another controller changes it first, deletion is refused.'
             : p.fadeSecs ? `Volumes ramp for ${p.fadeSecs} second(s). The definition is checked again before the speaker write, but another controller can still change the house concurrently.`
               : 'The definition is checked again before the speaker write, but another controller can still change the house concurrently.' }));
         review.append(el('div', { class: 'row' }, button('Cancel', 'cancel', () => control.cancel()),

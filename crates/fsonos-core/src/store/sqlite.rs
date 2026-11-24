@@ -2713,6 +2713,32 @@ impl Store for SqliteStore {
         Ok(gone > 0)
     }
 
+    fn compare_and_swap_scene(
+        &mut self,
+        name: &str,
+        expected: Option<&StoredScene>,
+        replacement: Option<&StoredScene>,
+    ) -> Result<bool, StoreError> {
+        super::validate_scene_swap(name, expected, replacement)?;
+        // Plain BEGIN uses fsqlite's concurrent mode. A scene's folded-name
+        // absence check must serialize even when different spellings would
+        // occupy separate exact primary keys.
+        retrying(|| {
+            self.conn.execute_sync("BEGIN IMMEDIATE")?;
+            match swap_scene(&self.conn, name, expected, replacement)
+                .and_then(|changed| self.conn.commit_transaction_sync().map(|()| changed))
+            {
+                Ok(changed) => Ok(changed),
+                Err(error) => {
+                    let _ = self.conn.rollback_transaction_sync();
+                    Err(error)
+                }
+            }
+        })
+        .map_err(engine)
+        .inspect(|_| self.wrote())
+    }
+
     fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError> {
         self.in_transaction(|c| {
             c.execute_with_params_sync(
@@ -2890,6 +2916,71 @@ fn schedule_row(r: &Row) -> Result<StoredSchedule, StoreError> {
         created: int(r, 5)?,
         last_fired: opt_int(r, 6)?,
     })
+}
+
+// The caller holds a serialized write transaction through publication.
+fn swap_scene(
+    connection: &AsyncConnection,
+    name: &str,
+    expected: Option<&StoredScene>,
+    replacement: Option<&StoredScene>,
+) -> Result<bool, FrankenError> {
+    // Use exactly the same name equivalence as memory and callers,
+    // without loading every other scene's potentially large queues.
+    let mut found = None;
+    for row in connection.query_sync("SELECT name FROM scenes")? {
+        let candidate = text(&row, 0).map_err(|error| FrankenError::Internal(error.to_string()))?;
+        if candidate.eq_ignore_ascii_case(name.trim()) && found.replace(candidate).is_some() {
+            return Ok(false);
+        }
+    }
+    let current = match found {
+        Some(found) => connection
+            .query_with_params_sync(
+                "SELECT name, spec, updated FROM scenes WHERE name = ?1",
+                &[found.into()],
+            )?
+            .first()
+            .map(scene_row)
+            .transpose()
+            .map_err(|error| FrankenError::Internal(error.to_string()))?,
+        None => None,
+    };
+    if current.as_ref() != expected {
+        return Ok(false);
+    }
+    let changed = match (expected, replacement) {
+        (Some(expected), Some(replacement)) => connection.execute_with_params_sync(
+            "UPDATE scenes SET name = ?4, spec = ?5, updated = ?6 \
+             WHERE name = ?1 AND spec = ?2 AND updated = ?3",
+            &[
+                expected.name.as_str().into(),
+                expected.spec.as_str().into(),
+                expected.updated.into(),
+                replacement.name.as_str().into(),
+                replacement.spec.as_str().into(),
+                replacement.updated.into(),
+            ],
+        )?,
+        (Some(expected), None) => connection.execute_with_params_sync(
+            "DELETE FROM scenes WHERE name = ?1 AND spec = ?2 AND updated = ?3",
+            &[
+                expected.name.as_str().into(),
+                expected.spec.as_str().into(),
+                expected.updated.into(),
+            ],
+        )?,
+        (None, Some(replacement)) => connection.execute_with_params_sync(
+            "INSERT INTO scenes (name, spec, updated) VALUES (?1, ?2, ?3)",
+            &[
+                replacement.name.as_str().into(),
+                replacement.spec.as_str().into(),
+                replacement.updated.into(),
+            ],
+        )?,
+        (None, None) => return Ok(true),
+    };
+    Ok(changed > 0)
 }
 
 fn scene_row(r: &Row) -> Result<StoredScene, StoreError> {

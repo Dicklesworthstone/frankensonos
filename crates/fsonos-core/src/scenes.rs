@@ -150,6 +150,10 @@ pub enum SceneError {
     CrossHousehold { rooms: Vec<String> },
     #[error("room {0:?} is in more than one group of the scene")]
     RoomTwice(String),
+    #[error(
+        "more than one saved scene is called {name:?} ignoring case; use distinct names before changing it"
+    )]
+    AmbiguousName { name: String },
     #[error("no scene named {name:?}; scenes: {}", names(.known))]
     Unknown { name: String, known: Vec<String> },
     #[error("scene {name:?} is unreadable: {why}")]
@@ -1307,17 +1311,27 @@ fn capture_source<T: Transport + ?Sized>(
 
 /// Store `scene` (replacing one of the same name) as of `now`.
 pub fn save<S: Store + ?Sized>(store: &mut S, scene: &Scene, now: i64) -> Result<(), SceneError> {
+    Ok(store.save_scene(&to_stored(scene, now)?)?)
+}
+
+/// Validate and encode the exact row used by an atomic scene change.
+pub fn to_stored(scene: &Scene, now: i64) -> Result<StoredScene, SceneError> {
     check_name(&scene.name)?;
     check(scene, &[])?;
     let spec = serde_json::to_string(scene).map_err(|e| SceneError::Corrupt {
         name: scene.name.clone(),
         why: e.to_string(),
     })?;
-    Ok(store.save_scene(&StoredScene {
+    Ok(StoredScene {
         name: scene.name.trim().to_string(),
         spec,
         updated: now,
-    })?)
+    })
+}
+
+/// Decode the same exact row a caller observed, without a second store read.
+pub fn from_stored(stored: &StoredScene) -> Result<Scene, SceneError> {
+    parse(stored)
 }
 
 fn parse(stored: &StoredScene) -> Result<Scene, SceneError> {
@@ -1327,19 +1341,39 @@ fn parse(stored: &StoredScene) -> Result<Scene, SceneError> {
     })
 }
 
-/// The stored scene called `name` (ignoring case).
+/// Observe one saved scene, ignoring ASCII case and surrounding input
+/// whitespace. Ambiguous stored spellings fail even when one matches exactly.
+/// Retain this exact row when authorizing and later comparing a scene change.
+pub fn observe<S: Store + ?Sized>(
+    store: &S,
+    name: &str,
+) -> Result<Option<StoredScene>, SceneError> {
+    check_name(name)?;
+    let mut matching = store
+        .scenes()?
+        .into_iter()
+        .filter(|scene| scene.name.eq_ignore_ascii_case(name.trim()));
+    let found = matching.next();
+    if matching.next().is_some() {
+        return Err(SceneError::AmbiguousName {
+            name: name.trim().to_string(),
+        });
+    }
+    Ok(found)
+}
+
 fn stored<S: Store + ?Sized>(store: &S, name: &str) -> Result<StoredScene, SceneError> {
-    if let Some(s) = store.scene(name.trim())? {
+    if let Some(s) = observe(store, name)? {
         return Ok(s);
     }
-    let all = store.scenes()?;
-    let known = all.iter().map(|s| s.name.clone()).collect();
-    all.into_iter()
-        .find(|s| s.name.eq_ignore_ascii_case(name.trim()))
-        .ok_or(SceneError::Unknown {
-            name: name.to_string(),
-            known,
-        })
+    Err(SceneError::Unknown {
+        name: name.to_string(),
+        known: store
+            .scenes()?
+            .into_iter()
+            .map(|scene| scene.name)
+            .collect(),
+    })
 }
 
 /// The scene called `name` (ignoring case).

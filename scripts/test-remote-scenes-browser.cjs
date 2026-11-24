@@ -42,7 +42,7 @@ async function load(page, theme) {
       }
       if (route === 'moods') return { moods: fixture.emptyMoods ? [] : [{ name: 'focus' }, { name: 'Late evening' }] };
       if (route !== 'sceneSave') throw new Error(`Unexpected speaker route: ${route}`);
-      const saved = { name: args.params.name, saved: 1_900_000_000, ...structuredClone(args.body) };
+      const saved = { name: args.params.name, saved: 1_900_000_000, revision: 'scene-v1:browser-fixture', ...structuredClone(args.body) };
       for (const group of saved.groups) if (group.source.kind === 'favorite') {
         group.source.name = favorites(group.coordinator).find(item => item.id === group.source.name).title;
         group.source.uri = 'x-file:fixture-server-metadata';

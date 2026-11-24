@@ -18,6 +18,10 @@ const DashboardScenes = (() => {
     if (new Set(scenes.map(scene => nameKey(scene.name))).size !== scenes.length) {
       fail('Saved scene names are ambiguous. Resolve them in the full remote before capturing.');
     }
+    if (scenes.some(scene => typeof scene.revision !== 'string' || !scene.revision.trim()
+        || scene.revision.length > 4096 || scene.revision === 'absent' || /[\u0000-\u001f\u007f]/.test(scene.revision))) {
+      fail('A saved scene has no usable revision. Read the current scenes before changing them.');
+    }
     return Object.freeze(scenes);
   }
   function houseOf(value, scope) {
@@ -156,7 +160,7 @@ const DashboardScenes = (() => {
       const asked = nameOf(state.name), existing = state.scenes.find(scene => nameKey(scene.name) === nameKey(asked)) || null;
       // Reuse the stored spelling: a case-only edit must not create a second saved name.
       state.pending = Object.freeze({ version, target: state.target, scope: state.scope, groups: state.groups,
-        name: existing?.name || asked, existing, backupQueues: state.backupQueues,
+        name: existing?.name || asked, existing, expectedRevision: existing?.revision || 'absent', backupQueues: state.backupQueues,
         selection: state.selection,
         body: state.selection ? selectedDefinition(state.selection, state.groups, state.playing)
           : Object.freeze(state.backupQueues ? { backup_queues: true } : {}) });
@@ -184,7 +188,8 @@ const DashboardScenes = (() => {
             fail('That saved scene changed while you reviewed it. Read the house and review the replacement again.');
           }
           valid();
-          captured = confirmed(await send('/scenes/' + encodeURIComponent(reviewed.name), reviewed.body, { method: 'PUT' }), reviewed);
+          captured = confirmed(await send('/scenes/' + encodeURIComponent(reviewed.name),
+            { ...reviewed.body, expected_revision: reviewed.expectedRevision }, { method: 'PUT' }), reviewed);
           if (reviewed.selection) await confirmSelection(captured, reviewed, call);
           return { done: `Saved scene “${captured.name}”. Playback was not changed. Review the saved scene separately to recall it.`, changed: true };
         }, { wholeHouse: true });
@@ -288,8 +293,8 @@ const DashboardScenes = (() => {
           existingShown = p.existing; $('capture-scene-existing-detail').replaceChildren(...(p.existing ? [detail(p.existing)] : []));
         }
         $('capture-scene-review-note').textContent = p.selection
-          ? 'The saved name and current grouping are checked again before storage. Apply the scene separately or choose it in Routines. Later edits to the scene change what those routines do. Replacing a saved scene cannot be undone through speaker history.'
-          : 'The daemon captures current playback after confirmation. The saved definition and house groups are checked again before sending; another controller can still change them between that check and capture. Replacing a saved scene cannot be undone through speaker history.';
+          ? 'The daemon checks that the saved definition still matches this review when storing it. Apply the scene separately or choose it in Routines. Later edits to the scene change what those routines do.'
+          : 'The daemon checks that the saved definition still matches this review when storing it. Live groups and playback can change during capture after confirmation.';
       }
       $('capture-scene-confirm').disabled = !control.canApply();
       $('capture-scene-back').disabled = s.writing;

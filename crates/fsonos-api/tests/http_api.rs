@@ -19,6 +19,8 @@ use std::time::Duration;
 
 #[path = "http_api/room_configuration.rs"]
 mod room_configuration;
+#[path = "http_api/scene_revisions.rs"]
+mod scene_revisions;
 #[path = "http_api/schedule_update.rs"]
 mod schedule_update;
 #[path = "http_api/schema_enums.rs"]

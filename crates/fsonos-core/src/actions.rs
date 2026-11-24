@@ -758,6 +758,8 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
             refuse_if_changed(t, households, &target, &before)?;
         }
         house_config::refuse_if_changed(store, &target, &before)?;
+    } else {
+        house_config::rebase_scenes(store, &mut before.scenes)?;
     }
     let coordinators: Vec<PlayerId> = before.zones.iter().map(|s| s.coordinator.clone()).collect();
     // A level-only undo must not depend on playback reads or stop a later

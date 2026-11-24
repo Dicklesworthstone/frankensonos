@@ -2,8 +2,9 @@
 //! `POST /scenes/{name}/apply` (see [`crate::surface::scenes`]).
 //!
 //! `PUT` saves the house as it is now when it has no body, or the scene a
-//! JSON body writes out (any other body is UNSUPPORTED_MEDIA_TYPE); `DELETE`
-//! takes none. Browsers send an Origin with both, which the listener checks,
+//! JSON body writes out (any other body is UNSUPPORTED_MEDIA_TYPE). Both
+//! writes accept an optional expected_revision to bind a reviewed definition.
+//! Browsers send an Origin with both, which the listener checks,
 //! and never send either cross-origin without a preflight.
 
 use fastapi::core::RouteEntry;
@@ -12,7 +13,8 @@ use fastapi::{Method, PathParams, Request};
 use super::{Ctx, Op, answer, body_or_default, percent_decode};
 use crate::failure::Failure;
 use crate::surface::scenes::{
-    SceneApplyDto, SceneApplyRequest, SceneDeletedDto, SceneDto, SceneSaveRequest,
+    SceneApplyDto, SceneApplyRequest, SceneDeleteRequest, SceneDeletedDto, SceneDto,
+    SceneSaveRequest,
 };
 
 const SCENES: &str = "scenes";
@@ -84,13 +86,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 // into durable contents without accepting authored metadata.
                 let saved = body_or_default::<Option<SceneSaveRequest>>(req, None).and_then(|r| {
                     let name = path_name(req)?;
-                    let request = r.unwrap_or_default();
-                    let backup_queues = request.backup_queues;
-                    match request.into_definition()? {
-                        Some(def) => s.save_scene_from(c, &name, &def),
-                        None if backup_queues => s.save_scene_with_queue_backups(c, &name),
-                        None => s.save_scene(c, &name),
-                    }
+                    s.save_scene_with(c, &name, &r.unwrap_or_default())
                 });
                 answer(saved)
             },
@@ -117,8 +113,14 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         .response_schema::<SceneApplyDto>(200, "What was done"),
         cx.route(
             &Op::delete("/scenes/{name}", "delete_scene", SCENES, "Forget a scene"),
-            |s, c, req| answer(path_name(req).and_then(|name| s.delete_scene(c, &name))),
+            |s, c, req| {
+                answer(body_or_default(req, SceneDeleteRequest::default()).and_then(|request| {
+                    let name = path_name(req)?;
+                    s.delete_scene_with(c, &name, &request)
+                }))
+            },
         )
+        .request_schema::<SceneDeleteRequest>(false)
         .response_schema::<SceneDeletedDto>(200, "The scene is gone"),
     ]
 }
