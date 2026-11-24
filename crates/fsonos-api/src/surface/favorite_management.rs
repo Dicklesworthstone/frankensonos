@@ -157,12 +157,27 @@ impl ObservedFavoriteDto {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FavoriteOperation {
     Save,
     Rename,
     Remove,
+}
+
+impl fastapi_openapi::JsonSchema for FavoriteOperation {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            ["save", "rename", "remove"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("FavoriteOperation")
+    }
 }
 
 /// Confirmed native catalog result. A separate local logging failure cannot

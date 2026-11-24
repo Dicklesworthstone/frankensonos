@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 /// daemon retires these IDs; no recording or speech text is retained here.
 pub const MAX_RETAINED: usize = 64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnouncementJobPhase {
     Queued,
@@ -24,6 +24,29 @@ pub enum AnnouncementJobPhase {
     Completed,
     Cancelled,
     Failed,
+}
+
+impl fastapi_openapi::JsonSchema for AnnouncementJobPhase {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            [
+                "queued",
+                "preparing",
+                "playing",
+                "restoring",
+                "completed",
+                "cancelled",
+                "failed",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("AnnouncementJobPhase")
+    }
 }
 
 impl AnnouncementJobPhase {

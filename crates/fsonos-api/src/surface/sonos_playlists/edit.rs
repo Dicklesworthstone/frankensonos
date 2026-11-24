@@ -94,11 +94,26 @@ fn validate(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SonosPlaylistEditOperation {
     RemoveTracks,
     MoveTracks,
+}
+
+impl fastapi_openapi::JsonSchema for SonosPlaylistEditOperation {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            ["remove_tracks", "move_tracks"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("SonosPlaylistEditOperation")
+    }
 }
 
 /// A verified native edit, with a new revision for an explicit subsequent read

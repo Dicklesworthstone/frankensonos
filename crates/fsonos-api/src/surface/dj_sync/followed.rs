@@ -7,13 +7,28 @@ use std::fmt::Write as _;
 use super::timestamp_text;
 
 /// A verified directory can still await its full library reconciliation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FollowedArtistsPhase {
     #[default]
     Reading,
     Verifying,
     Ready,
+}
+
+impl fastapi_openapi::JsonSchema for FollowedArtistsPhase {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            ["reading", "verifying", "ready"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("FollowedArtistsPhase")
+    }
 }
 
 /// A compact observation of the bounded followed-artist reader. The private

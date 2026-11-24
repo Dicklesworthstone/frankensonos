@@ -333,6 +333,13 @@ failures. See [Callback recovery](docs/CALLBACK_RECOVERY.md).
   interface (or uses Tailscale Serve) so tailnet agents reach it; speakers stay
   on the LAN. ACLs restrict who can reach the daemon. No Tailscale on speakers.
 
+The published OpenAPI schemas retain the exact lowercase or snake-case values
+accepted and returned by playback, DJ, playlist editing, favorite management,
+announcement jobs and library intake. Reviewed source alternatives use the same
+`kind` discriminator as their JSON requests, including ordered track selections.
+Schema/serde parity and real HTTP request regressions cover these contracts;
+the new Rust tests await execution after the build environment became unavailable.
+
 ---
 
 ## 6. Spotify on Sonos — the hard truth (so no one re-learns it painfully)

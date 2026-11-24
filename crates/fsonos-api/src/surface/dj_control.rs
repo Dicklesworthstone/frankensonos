@@ -15,13 +15,28 @@ use crate::plan::{self, Command, DjAction, Rooms};
 use crate::request::{DjStartRequest, DjSteerRequest, ZoneRequest, zone_name};
 
 /// The existing DJ actions, with the same policy and action-log names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewedDjAction {
     Start,
     Steer,
     Skip,
     Stop,
+}
+
+impl fastapi_openapi::JsonSchema for ReviewedDjAction {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            ["start", "steer", "skip", "stop"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("ReviewedDjAction")
+    }
 }
 
 impl ReviewedDjAction {

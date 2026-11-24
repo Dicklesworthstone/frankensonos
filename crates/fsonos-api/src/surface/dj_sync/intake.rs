@@ -8,13 +8,28 @@ use super::timestamp_text;
 
 /// What the retained saved-library read must finish. Ready pages may still
 /// need enrichment or publication; they are not an accepted public library.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SavedLibraryIntakePhase {
     #[default]
     Reading,
     Verifying,
     Ready,
+}
+
+impl fastapi_openapi::JsonSchema for SavedLibraryIntakePhase {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            ["reading", "verifying", "ready"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("SavedLibraryIntakePhase")
+    }
 }
 
 /// A compact observation of private progress, without exposing the owner's

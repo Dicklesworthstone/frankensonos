@@ -23,7 +23,7 @@ use crate::plan::{self, Command, Rooms};
 use crate::request::{PlayRequest, zone_name};
 
 /// Playback replaces the current source; queue modes preserve playback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewedSourceMode {
     Play,
@@ -31,8 +31,23 @@ pub enum ReviewedSourceMode {
     Append,
 }
 
+impl fastapi_openapi::JsonSchema for ReviewedSourceMode {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            ["play", "next", "append"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("ReviewedSourceMode")
+    }
+}
+
 /// Native identifiers and metadata are resolved within each target household.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReviewedSource {
     Uri {
@@ -50,6 +65,58 @@ pub enum ReviewedSource {
     Playlist {
         playlist: String,
     },
+}
+
+// The pinned derive ignores serde's enum names and discriminator. Describe
+// the accepted source objects exactly; arbitrary metadata is never admitted.
+impl fastapi_openapi::JsonSchema for ReviewedSource {
+    fn schema() -> fastapi_openapi::Schema {
+        use fastapi_openapi::{ObjectSchema, Schema};
+
+        let variant = |kind: &str, required: &[&str], fields: Vec<(&str, Schema)>| {
+            let mut properties: std::collections::HashMap<_, _> = fields
+                .into_iter()
+                .map(|(name, schema)| (name.to_owned(), schema))
+                .collect();
+            properties.insert("kind".into(), Schema::string_enum(vec![kind.into()]));
+            Schema::Object(ObjectSchema {
+                title: None,
+                description: None,
+                properties,
+                required: required.iter().map(|name| (*name).to_owned()).collect(),
+                additional_properties: Some(Box::new(Schema::Boolean(false))),
+            })
+        };
+        Schema::one_of(vec![
+            variant(
+                "uri",
+                &["kind", "source_uri"],
+                vec![
+                    ("source_uri", String::schema()),
+                    ("title", Option::<String>::schema()),
+                ],
+            ),
+            variant(
+                "tracks",
+                &["kind", "tracks"],
+                vec![("tracks", Vec::<QueueTrackInput>::schema())],
+            ),
+            variant(
+                "favorite",
+                &["kind", "favorite"],
+                vec![("favorite", String::schema())],
+            ),
+            variant(
+                "playlist",
+                &["kind", "playlist"],
+                vec![("playlist", String::schema())],
+            ),
+        ])
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("ReviewedSource")
+    }
 }
 
 /// `POST /sources/control`: one source, one admitted audience, one action.

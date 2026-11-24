@@ -12,12 +12,27 @@ use crate::surface::{log_entry, note_unlogged};
 use crate::{ErrorCode, Failure, OutcomeDto};
 
 /// Immediate playback retains the existing queue. Queue modes never start it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SonosPlaylistTrackMode {
     Play,
     Next,
     Append,
+}
+
+impl fastapi_openapi::JsonSchema for SonosPlaylistTrackMode {
+    fn schema() -> fastapi_openapi::Schema {
+        fastapi_openapi::Schema::string_enum(
+            ["play", "next", "append"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        )
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("SonosPlaylistTrackMode")
+    }
 }
 
 impl std::str::FromStr for SonosPlaylistTrackMode {
