@@ -6,7 +6,6 @@ use super::{CoreError, Fader, HouseholdState, PlayerId, SleepTimer, Transport, i
 use crate::snapshot::{self, SnapshotSource, ZoneSnapshot};
 use chrono::{DateTime, Utc};
 use fsonos_proto::ProtoError;
-use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::TransportState;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -101,7 +100,8 @@ fn layout<T: Transport + ?Sized>(
         .iter()
         .find(|h| h.player(coordinator).is_some())
         .ok_or_else(|| CoreError::UnknownPlayer(coordinator.0.clone()))?;
-    let topology = get_zone_group_state(t, ip(households, coordinator)?)?;
+    let host = ip(households, coordinator)?;
+    let topology = crate::topology::read_at(t, host, coordinator)?;
     let mut groups = topology
         .groups
         .iter()
@@ -111,6 +111,11 @@ fn layout<T: Transport + ?Sized>(
     };
     if groups.next().is_some() {
         return Err(changed());
+    }
+    if !crate::topology::coordinator_at(&topology, host, coordinator)? {
+        return Err(CoreError::TargetChanged(
+            "the sleep fade's coordinator no longer owns this address".into(),
+        ));
     }
     let mut physical: Physical = group
         .members
@@ -429,11 +434,34 @@ impl SleepFade {
                         return Err(changed());
                     };
                     let host = ip(households, player)?;
+                    crate::control::require_player(t, host, player)?;
                     let current = soap::get_volume(t, host)?;
                     if current == level.original || !level.owns(current) {
                         return Ok(());
                     }
                     self.step(checkpoint, player, current, level.original)?;
+                    // The durable write and earlier rooms' cleanup can take
+                    // time. They cannot authorize restoring a changed source,
+                    // group, boot, endpoint or a listener's newer volume.
+                    let Some(now) = self.observed(t, households)? else {
+                        return Ok(());
+                    };
+                    if !(now.transport_state == self.before.transport_state
+                        || matches!(
+                            now.transport_state,
+                            TransportState::Paused | TransportState::Stopped
+                        ))
+                    {
+                        return Ok(());
+                    }
+                    crate::control::require_player(t, host, player)?;
+                    if soap::get_volume(t, host)? != current {
+                        return Ok(());
+                    }
+                    crate::control::require_player(t, host, player)?;
+                    if !checkpoint.current(self) {
+                        return Ok(());
+                    }
                     soap::set_volume(t, host, level.original).map_err(CoreError::from)
                 })
                 .unwrap_or(Ok(()));

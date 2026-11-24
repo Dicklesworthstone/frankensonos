@@ -16,6 +16,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+#[path = "sleep_recovery_sim/endpoints.rs"]
+mod endpoints;
+
 struct House {
     sim: SimHandle,
     lan: SimLan,
@@ -25,13 +28,28 @@ struct House {
 
 impl House {
     fn new() -> Self {
-        let sim = SimHousehold::builder()
-            .s2([
-                SimPlayerSpec::new("SleepA", SimModel::One),
-                SimPlayerSpec::new("SleepB", SimModel::One),
-            ])
-            .spawn()
-            .unwrap();
+        Self::with_generation(2)
+    }
+
+    fn with_generation(generation: u8) -> Self {
+        let model = if generation == 1 {
+            SimModel::Play5Gen1
+        } else {
+            SimModel::One
+        };
+        let players = [
+            SimPlayerSpec::new("SleepA", model),
+            SimPlayerSpec::new("SleepB", model),
+            SimPlayerSpec::new("Foreign", model),
+        ];
+        let builder = SimHousehold::builder();
+        let sim = if generation == 1 {
+            builder.s1(players)
+        } else {
+            builder.s2(players)
+        }
+        .spawn()
+        .unwrap();
         let lan = sim.lan();
         let mut household = HouseholdState::default();
         household

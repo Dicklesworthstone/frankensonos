@@ -43,6 +43,18 @@ the timer definition. A replacement fade waits until its predecessor's cleanup
 settles, so it cannot capture an attenuated level as its starting volume. A
 newly armed timer retains its own native backstop.
 
+Volume cleanup proves the responding coordinator's endpoint and each room's
+physical identity before using a saved address. An address reassigned to another
+speaker cannot receive the old room's volume. A failed identity check retains
+the unfinished recovery; other still-owned rooms can finish their cleanup, and
+a refreshed inventory can later restore the original speaker at its new address.
+
+Each pending restoration is saved before the write. After that save, recovery
+rechecks its source, group, bonding and known boot identities, playback state,
+exact observed room level and current recovery ownership. A listener's change
+during checkpoint persistence is preserved. A retired recovery sends no volume
+write, and restoration never replays playback or queue commands.
+
 ## Changing a daemon timer
 
 Timer edits first verify that the addressed endpoint is still the intended
@@ -115,6 +127,12 @@ interrupted before and after acknowledgement, resumption with original levels,
 an accepted pause, manual volume overrides, changed sources/groups, and failed
 checkpoints. Core sleep dispatch tests also cover a worker waiting on a room
 step while a checkpoint reads the timer map and nonblocking timer adoption.
+
+The endpoint module adds 18 S1/S2 scenarios for stale room bindings, actual
+address reuse, stale coordinator addresses and changes during checkpoint saves.
+It also checks successful cleanup after refreshing inventory and restoration
+of unaffected rooms while preserving a newer manual level. These new Rust
+regressions remain unexecuted in the editing environment.
 
 `cargo test -p fsonos-api --lib surface::schedules::recovery` covers real saved
 files, S1/S2 restart recovery, unreadable speakers, cancellation/replacement,
