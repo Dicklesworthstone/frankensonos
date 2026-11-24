@@ -41,6 +41,46 @@ fn unknown_duration_is_not_invented_and_invalid_samples_never_seek() {
     let mut empty = position(Some(70), Some(180));
     empty.uri.clear();
     assert!(destination(&empty, 30).is_err());
+    empty.uri = "NOT_IMPLEMENTED".into();
+    assert!(destination(&empty, 30).is_err());
+}
+
+#[test]
+fn preparation_accepts_only_continuous_progress_on_the_original_occurrence() {
+    let before = position(Some(70), Some(180));
+    for (seconds, age, accepted) in [
+        (70, 0, true),
+        (71, 0, true),
+        (73, 2, true),
+        (69, 2, false),
+        (74, 2, false),
+        (120, 2, false),
+        (70, 31, false),
+    ] {
+        assert_eq!(
+            continuous(
+                &before,
+                &position(Some(seconds), Some(180)),
+                Duration::from_secs(age)
+            ),
+            accepted
+        );
+    }
+    for current in [
+        position(None, Some(180)),
+        position(Some(70), None),
+        position(Some(70), Some(181)),
+        PositionInfo {
+            track: 3,
+            ..before.clone()
+        },
+        PositionInfo {
+            uri: "another:track".into(),
+            ..before.clone()
+        },
+    ] {
+        assert!(!continuous(&before, &current, Duration::ZERO));
+    }
 }
 
 #[test]
@@ -139,11 +179,16 @@ fn lost() -> ProtoError {
 
 type Step = (&'static str, Result<String, ProtoError>);
 
-struct Script(RefCell<VecDeque<Step>>);
+struct Script(RefCell<VecDeque<Step>>, u32);
 
 impl Script {
     fn new(replies: Vec<Step>) -> Self {
-        Self(RefCell::new(replies.into()))
+        Self(RefCell::new(replies.into()), 100)
+    }
+
+    fn expecting(mut self, target: u32) -> Self {
+        self.1 = target;
+        self
     }
 
     fn seek(&self) -> Result<u32, CoreError> {
@@ -178,7 +223,11 @@ impl Transport for Script {
         if expected == "Seek" {
             assert!(body.contains("<Unit>REL_TIME</Unit>"));
             // fsonos-proto writes REL_TIME as H:MM:SS (UPnP H+:MM:SS).
-            assert!(body.contains("<Target>0:01:40</Target>"));
+            assert!(body.contains(&format!(
+                "<Target>0:{:02}:{:02}</Target>",
+                self.1 / 60,
+                self.1 % 60
+            )));
         }
         reply
     }
@@ -218,6 +267,15 @@ fn preparation() -> Vec<Step> {
     ]
 }
 
+fn admission(position: String) -> Vec<Step> {
+    vec![
+        topology("synthetic-player"),
+        topology("synthetic-player"),
+        media(),
+        ("GetPositionInfo", Ok(position)),
+    ]
+}
+
 fn recovery(last: String) -> Vec<Step> {
     vec![
         ("GetPositionInfo", Ok(clock("00:01:40", 2))),
@@ -237,11 +295,81 @@ fn recovery(last: String) -> Vec<Step> {
 #[test]
 fn normal_success_checks_the_endpoint_between_position_and_seek() {
     let mut steps = preparation();
-    steps.extend([
-        topology("synthetic-player"),
-        ("Seek", Ok(reply("Seek", ""))),
-    ]);
+    steps.extend(admission(clock("00:01:10", 2)));
+    steps.push(("Seek", Ok(reply("Seek", ""))));
     assert_eq!(Script::new(steps).seek().unwrap(), 100);
+}
+
+#[test]
+fn a_relative_seek_uses_the_latest_continuous_clock() {
+    let mut steps = preparation();
+    steps.extend(admission(clock("00:01:11", 2)));
+    steps.push(("Seek", Ok(reply("Seek", ""))));
+    assert_eq!(Script::new(steps).expecting(101).seek().unwrap(), 101);
+}
+
+#[test]
+fn another_occurrence_or_listener_seek_during_preparation_sends_no_write() {
+    for current in [
+        clock("00:01:10", 3),
+        clock("00:00:30", 2),
+        clock("00:02:00", 2),
+        clock("NOT_IMPLEMENTED", 2),
+        clock("00:01:10", 2).replace("synthetic:track", "another:track"),
+    ] {
+        let mut steps = preparation();
+        steps.extend(admission(current));
+        assert!(matches!(
+            Script::new(steps).seek(),
+            Err(CoreError::Proto(ProtoError::Malformed(reason)))
+                if reason.contains("no seek was sent")
+        ));
+    }
+}
+
+#[test]
+fn a_failed_fresh_clock_never_falls_back_to_the_original_sample() {
+    let mut steps = preparation();
+    let mut checks = admission(clock("00:01:10", 2));
+    *checks.last_mut().unwrap() = (
+        "GetPositionInfo",
+        Err(ProtoError::Malformed("fresh clock unavailable".into())),
+    );
+    steps.extend(checks);
+    assert!(matches!(
+        Script::new(steps).seek(),
+        Err(CoreError::Proto(ProtoError::Malformed(reason)))
+            if reason == "fresh clock unavailable"
+    ));
+}
+
+#[test]
+fn retained_source_and_boot_changes_are_not_discarded_before_dispatch() {
+    for boot in [false, true] {
+        let mut steps = preparation();
+        steps.push(topology("synthetic-player"));
+        if boot {
+            let (action, answer) = topology("synthetic-player");
+            steps.push((
+                action,
+                Ok(answer.unwrap().replace("BootSeq=\"7\"", "BootSeq=\"8\"")),
+            ));
+            steps.push(media());
+        } else {
+            steps.push(topology("synthetic-player"));
+            let (action, answer) = media();
+            steps.push((
+                action,
+                Ok(answer
+                    .unwrap()
+                    .replace("synthetic:source", "listener:source")),
+            ));
+        }
+        assert!(matches!(
+            Script::new(steps).seek(),
+            Err(CoreError::Proto(ProtoError::Malformed(_)))
+        ));
+    }
 }
 
 #[test]
@@ -258,7 +386,8 @@ fn unreported_clock_prevents_the_write() {
 fn lost_and_malformed_acknowledgements_can_complete_without_a_second_seek() {
     for answer in [Err(lost()), Ok("unreadable reply".into())] {
         let mut replies = preparation();
-        replies.extend([topology("synthetic-player"), ("Seek", answer)]);
+        replies.extend(admission(clock("00:01:10", 2)));
+        replies.push(("Seek", answer));
         replies.extend(recovery(clock("00:01:40", 2)));
         assert_eq!(Script::new(replies).seek().unwrap(), 100);
     }
@@ -267,16 +396,14 @@ fn lost_and_malformed_acknowledgements_can_complete_without_a_second_seek() {
 #[test]
 fn a_definite_fault_is_not_disguised_by_the_current_position() {
     let mut steps = preparation();
-    steps.extend([
-        topology("synthetic-player"),
-        (
-            "Seek",
-            Err(ProtoError::SoapFault {
-                code: 711,
-                reason: "illegal seek".into(),
-            }),
-        ),
-    ]);
+    steps.extend(admission(clock("00:01:10", 2)));
+    steps.push((
+        "Seek",
+        Err(ProtoError::SoapFault {
+            code: 711,
+            reason: "illegal seek".into(),
+        }),
+    ));
     assert!(matches!(
         Script::new(steps).seek(),
         Err(CoreError::Proto(ProtoError::SoapFault { code: 711, .. }))
@@ -286,8 +413,8 @@ fn a_definite_fault_is_not_disguised_by_the_current_position() {
 #[test]
 fn failed_readback_keeps_the_original_write_failure_without_replay() {
     let mut steps = preparation();
+    steps.extend(admission(clock("00:01:10", 2)));
     steps.extend([
-        topology("synthetic-player"),
         ("Seek", Err(lost())),
         (
             "GetPositionInfo",
@@ -304,7 +431,8 @@ fn failed_readback_keeps_the_original_write_failure_without_replay() {
 #[test]
 fn a_track_changing_during_readback_is_not_confirmed() {
     let mut replies = preparation();
-    replies.extend([topology("synthetic-player"), ("Seek", Err(lost()))]);
+    replies.extend(admission(clock("00:01:10", 2)));
+    replies.push(("Seek", Err(lost())));
     replies.extend(recovery(clock("00:01:40", 3)));
     assert!(matches!(
         Script::new(replies).seek(),
@@ -349,6 +477,7 @@ fn unavailable_recovery_evidence_keeps_acknowledged_relative_seeks_available() {
             Err(ProtoError::NotWired("optional source read")),
         ),
         topology("synthetic-player"),
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
         ("Seek", Ok(reply("Seek", ""))),
     ];
     assert_eq!(Script::new(steps).seek().unwrap(), 100);
@@ -363,6 +492,7 @@ fn missing_boot_evidence_does_not_claim_a_lost_reply_succeeded() {
         (action, Ok(old_topology)),
         media(),
         topology("synthetic-player"),
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
         ("Seek", Err(lost())),
     ];
     assert!(matches!(

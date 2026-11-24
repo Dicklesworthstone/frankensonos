@@ -7,7 +7,7 @@ use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::TransportState;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
 fn sim() -> SimHandle {
@@ -379,6 +379,144 @@ fn relative_seek_keeps_acknowledged_results_when_optional_source_evidence_fails(
             assert_eq!(t.reads_after_write.get(), 0);
             let position = soap::get_position_info(&sim.lan(), target.coordinator.ip).unwrap();
             assert_eq!(position.position_secs, Some(if refused { 70 } else { 100 }));
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DuringPreparation {
+    DuplicateTrack,
+    SourceMetadata,
+    Queue,
+    ForwardSeek,
+    BackwardSeek,
+    MissingClock,
+    FailedClock,
+}
+
+type Playing = (soap::PositionInfo, soap::MediaInfo, soap::TransportInfo);
+
+fn playing(lan: &SimLan, host: IpAddr) -> Playing {
+    (
+        soap::get_position_info(lan, host).unwrap(),
+        soap::get_media_info(lan, host).unwrap(),
+        soap::get_transport_info(lan, host).unwrap(),
+    )
+}
+
+struct ChangeBeforeSeek {
+    lan: SimLan,
+    change: DuringPreparation,
+    topology_reads: Cell<usize>,
+    position_reads: Cell<usize>,
+    writes: Cell<usize>,
+    listener: RefCell<Option<Playing>>,
+}
+
+impl ChangeBeforeSeek {
+    fn change(&self, host: IpAddr) -> Result<(), ProtoError> {
+        match self.change {
+            DuringPreparation::DuplicateTrack => soap::next(&self.lan, host)?,
+            DuringPreparation::SourceMetadata => {
+                // Keep the URI, occurrence and time; only the retained source
+                // metadata can distinguish the listener's new selection.
+                let source = soap::get_media_info(&self.lan, host)?;
+                soap::set_av_transport_uri(&self.lan, host, &source.uri, "<DIDL-Lite/>")?;
+                soap::seek_position(&self.lan, host, 70)?;
+            }
+            DuringPreparation::Queue => {
+                let (current, metadata) = soap::get_position_info_with_metadata(&self.lan, host)?;
+                soap::enqueue_uri(&self.lan, host, &current.uri, &metadata, 0, false)?;
+            }
+            DuringPreparation::ForwardSeek => soap::seek_position(&self.lan, host, 120)?,
+            DuringPreparation::BackwardSeek => soap::seek_position(&self.lan, host, 30)?,
+            DuringPreparation::MissingClock | DuringPreparation::FailedClock => {}
+        }
+        *self.listener.borrow_mut() = Some(playing(&self.lan, host));
+        Ok(())
+    }
+}
+
+impl Transport for ChangeBeforeSeek {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if action.ends_with("#Seek\"") {
+            self.writes.set(self.writes.get() + 1);
+        }
+        let mut answer = self.lan.soap_post(host, path, action, body)?;
+        if action.ends_with("#GetZoneGroupState\"") {
+            self.topology_reads.set(self.topology_reads.get() + 1);
+            if self.topology_reads.get() == 2 {
+                // The original position/source/queue have been observed; the
+                // last ownership reply is now in flight. Inject a listener's
+                // change before the controller gets a chance to send its seek.
+                self.change(host)?;
+            }
+        }
+        if action.ends_with("#GetPositionInfo\"") {
+            self.position_reads.set(self.position_reads.get() + 1);
+            if self.position_reads.get() > 1 {
+                match self.change {
+                    DuringPreparation::MissingClock => {
+                        let start = answer.find("<RelTime>").expect("simulator reports RelTime");
+                        let end = start + answer[start..].find("</RelTime>").unwrap();
+                        answer.replace_range(start..end, "<RelTime>NOT_IMPLEMENTED");
+                    }
+                    DuringPreparation::FailedClock => {
+                        return Err(ProtoError::Malformed("fresh seek clock unavailable".into()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(answer)
+    }
+}
+
+#[test]
+fn relative_seeks_preserve_listener_changes_during_preparation_on_s1_and_s2() {
+    for change in [
+        DuringPreparation::DuplicateTrack,
+        DuringPreparation::SourceMetadata,
+        DuringPreparation::Queue,
+        DuringPreparation::ForwardSeek,
+        DuringPreparation::BackwardSeek,
+        DuringPreparation::MissingClock,
+        DuringPreparation::FailedClock,
+    ] {
+        for paused in [false, true] {
+            let sim = sim();
+            let houses = snapshot(&sim);
+            for room in ["Test S1", "Test S2"] {
+                prepare(&sim, &houses, room, paused);
+                let target = resolve_room(&houses, room).unwrap();
+                let t = ChangeBeforeSeek {
+                    lan: sim.lan(),
+                    change,
+                    topology_reads: Cell::new(0),
+                    position_reads: Cell::new(0),
+                    writes: Cell::new(0),
+                    listener: RefCell::new(None),
+                };
+                let result =
+                    control::seek(&t, &houses, &target.coordinator.id, control::Seek::By(30));
+                assert!(result.is_err(), "{room}, {change:?}, paused={paused}");
+                assert_eq!(
+                    t.writes.get(),
+                    0,
+                    "a changed observation cannot authorize a seek"
+                );
+                assert_eq!(
+                    Some(playing(&sim.lan(), target.coordinator.ip)),
+                    *t.listener.borrow(),
+                    "the listener's source, occurrence, clock and transport must remain intact"
+                );
+            }
         }
     }
 }

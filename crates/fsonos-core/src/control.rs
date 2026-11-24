@@ -285,7 +285,8 @@ pub enum Seek {
 }
 
 /// Move the group `coordinator` leads to `to` in its current track. A
-/// relative move requires a reported position and stays within the track.
+/// relative move requires a reported, continuous position on the original
+/// occurrence, rechecked after preparation, and stays within that track.
 /// An uncertain reply is read back against the retained track occurrence,
 /// never retried. Absolute seeks retain optional source and queue evidence;
 /// unavailable evidence does not prevent the original one-shot request.

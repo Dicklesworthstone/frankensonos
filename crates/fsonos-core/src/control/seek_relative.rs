@@ -1,4 +1,6 @@
-//! A relative seek uses a real clock sample and never repeats its offset.
+//! A relative seek uses a continuous clock sample and never repeats its offset.
+//! Recheck the original occurrence after preparation so a track transition or
+//! listener seek cannot inherit an offset computed for the previous position.
 //! Lost replies use the same source, boot and queue proof as an absolute seek.
 
 use super::seek_absolute::Observation;
@@ -19,9 +21,22 @@ pub(super) fn seek<T: Transport + ?Sized>(
 ) -> Result<u32, CoreError> {
     let observed = Instant::now();
     let before = soap::get_position_info(t, host)?;
-    let target = destination(&before, by)?;
-    let proof = Observation::for_relative(t, host, coordinator, before, observed);
+    destination(&before, by)?;
+    let proof = Observation::for_relative(t, host, coordinator, before.clone(), observed);
     super::require_coordinator(t, host, coordinator)?;
+    if let Some(proof) = &proof {
+        proof.confirm_destination(t, host, coordinator)?;
+    }
+    let current = soap::get_position_info(t, host)?;
+    if !continuous(&before, &current, observed.elapsed()) {
+        return Err(ProtoError::Malformed(
+            "the track or playback position changed while preparing the relative seek; \
+             no seek was sent; read playback before trying again"
+                .into(),
+        )
+        .into());
+    }
+    let target = destination(&current, by)?;
     let started = Instant::now();
     match soap::seek_position(t, host, target) {
         Ok(()) => Ok(target),
@@ -54,7 +69,7 @@ fn destination(before: &PositionInfo, by: i64) -> Result<u32, ProtoError> {
                 .into(),
         )
     })?;
-    if before.uri.trim().is_empty() {
+    if before.uri.trim().is_empty() || before.uri.trim() == "NOT_IMPLEMENTED" {
         return Err(ProtoError::Malformed(
             "relative seek needs a current track, not an empty source".into(),
         ));
@@ -76,6 +91,19 @@ fn same_track(before: &PositionInfo, after: &PositionInfo) -> bool {
     before.uri == after.uri
         && before.track == after.track
         && before.duration_secs == after.duration_secs
+}
+
+/// Natural progress can advance only by the elapsed observation time, allowing
+/// one second for whole-second renderer rounding. A manual backward/forward
+/// seek, another duplicate occurrence, or an old sample requires a fresh request.
+fn continuous(before: &PositionInfo, after: &PositionInfo, age: Duration) -> bool {
+    if age > MAX_CONFIRM_AGE || !same_track(before, after) {
+        return false;
+    }
+    let (Some(before), Some(after)) = (before.position_secs, after.position_secs) else {
+        return false;
+    };
+    after >= before && u64::from(after - before) <= age.as_secs() + 1
 }
 
 pub(super) fn reached(

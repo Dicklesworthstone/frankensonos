@@ -120,6 +120,20 @@ navigation recovery matrix covers moved and reused addresses, next/previous,
 and absolute/relative seeks. A recovered relative seek reads the intended
 player's current position again; it does not reuse the other player's clock.
 
+Relative seeks also recheck the original occurrence immediately before their
+first write. Retained group, boot, source metadata and queue revision evidence
+must still match, followed by a fresh playback clock. A different track or
+duplicate queue occurrence, changed duration, missing clock, backward jump or
+implausible forward jump stops the operation before sending any Seek. Natural
+progress is allowed up to the actual monotonic elapsed time plus one second
+for renderer rounding; the offset uses that fresh position and stays before
+the known track end. If optional recovery evidence was unavailable from the
+start, a continuous clock still permits one acknowledged request. These checks
+add no write retries and leave absolute-seek behavior unchanged. The S1/S2
+cases in `relative_seek_recovery_sim` inject listener changes during preparation
+and assert that source, occurrence, clock and transport remain intact; the
+`control::seek_relative` unit tests cover elapsed-time bounds and fresh targets.
+
 Focused regressions: `cargo test --locked -p fsonos-core --test control
 --test control_endpoint_sim --test navigation_recovery_sim` and
 `cargo test --locked -p fsonos-api --test preflight_recovery_sim

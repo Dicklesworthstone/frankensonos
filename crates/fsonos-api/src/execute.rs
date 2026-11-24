@@ -879,7 +879,14 @@ mod tests {
             let out = execute(&t, &houses, &seek(Seek::By(by))).unwrap();
             assert_eq!(
                 t.actions(),
-                ["GetPositionInfo", "GetZoneGroupState", "Seek"]
+                [
+                    "GetPositionInfo",
+                    "GetZoneGroupState",
+                    "GetMediaInfo",
+                    "GetZoneGroupState",
+                    "GetPositionInfo",
+                    "Seek",
+                ]
             );
             assert_eq!(out, OutcomeDto::sent(format!("{verb} in Den's group")));
         }

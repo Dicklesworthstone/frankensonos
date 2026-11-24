@@ -89,7 +89,8 @@ impl Observation {
 
     /// A relative seek already needs a real clock to compute its target.
     /// Retain that exact sample, rather than rereading and applying the offset
-    /// to a different track. Missing optional evidence still allows one write.
+    /// to a different track. Missing optional recovery evidence still allows
+    /// one write after the relative caller confirms its required clock sample.
     pub(super) fn for_relative<T: Transport + ?Sized>(
         t: &T,
         host: IpAddr,
@@ -171,6 +172,34 @@ impl Observation {
         self.confirmed(&confirmation, host, coordinator, target, sent)
             .unwrap_or(false)
             && Instant::now() < confirmation.until
+    }
+
+    /// A relative offset was computed for this source and occurrence. Once
+    /// observed, a changed group, boot, account source or queue cannot silently
+    /// become optional just because the initial seek has not been sent yet.
+    pub(super) fn confirm_destination<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        host: IpAddr,
+        coordinator: &PlayerId,
+    ) -> Result<(), ProtoError> {
+        self.destination.confirm(t, host, coordinator)?;
+        if let Some(queue) = &self.queue {
+            let current = content::browse(
+                t,
+                host,
+                QUEUE,
+                BrowseFlag::DirectChildren,
+                self.position.track - 1,
+                1,
+            )?;
+            if *queue != current {
+                return Err(ProtoError::Malformed(
+                    "the queue changed while preparing the relative seek; no seek was sent".into(),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn confirmed<T: Transport + ?Sized>(
