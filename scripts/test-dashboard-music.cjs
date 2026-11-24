@@ -8,7 +8,7 @@ const Auth = require('../crates/fsonos-api/src/remote/spotify-connect.js');
 const Sync = require('../crates/fsonos-api/src/remote/library-sync.js');
 const clone = value => structuredClone(value);
 const callback = 'http://127.0.0.1:8099/auth/spotify/callback';
-const authStatus = fields => ({ signed_in: false, pending: false, redirect_uri: callback, ...fields });
+const authStatus = fields => ({ signed_in: false, pending: false, redirect_uri: callback, configured: true, ...fields });
 const syncStatus = fields => ({ done: 'No full refresh yet.', running: false, last: null, ...fields });
 const completed = () => ({ at: 1790000000, tracks: 100, candidates: 80, classical: 12, retired: 3, notes: [] });
 const intake = () => ({ pending: true, running: false, phase: 'verifying', pages: 512, tracks: 24500, verified_pages: 100, retry_at: 1790000900, not_before: 1790003600 });
@@ -25,6 +25,7 @@ function fixture({ demo = false, request = false } = {}) {
     calls.push({url,body});
     if (override) { const value = await override(url,body); if(value!==undefined)return value; }
     if (url === '/auth/spotify') return clone(data.auth);
+    if (url === '/auth/spotify/configure') { data.auth = authStatus(); return clone(data.auth); }
     if (url === '/auth/spotify/begin') { data.auth.pending=true;return consent(); }
     if (url === '/auth/spotify/complete') { data.auth=authStatus({signed_in:true});return clone(data.auth); }
     if (url === '/dj/sync') { if(body!==undefined)data.sync.running=true;return clone(data.sync); }
@@ -230,4 +231,95 @@ test('demo panel offers browsing but never enables connection or refresh', async
   assert.equal(h.byId('music-connection-begin').disabled, true);
   assert.equal(h.byId('music-connection-complete').disabled, true); assert.equal(h.calls.length, 0);
   h.panel.dispose();
+});
+
+
+const appId = '0123456789abcdef0123456789abcdef';
+
+test('initial app dashboard setup activates an empty daemon before offering a separate consent step', async () => {
+  const f = fixture(); f.data.auth = authStatus({ configured: false });
+  await f.control.open('connection');
+  assert.equal(f.control.canConfigure(), true); assert.equal(f.control.canConnect(), false);
+  assert.equal(f.control.reviewConnect(), null);
+  f.control.setClientId(appId); assert.equal(await f.control.configure(), true);
+  assert.deepEqual(f.writes(), [{ url: '/auth/spotify/configure', body: { client_id: appId } }]);
+  assert.equal(f.control.canConfigure(), false); assert.equal(f.control.canConnect(), true);
+  assert.equal(f.control.state.connection.consent, null); assert.equal(f.timers.size, 0);
+  assert.equal(f.control.state.connection.clientIdDraft, appId);
+  assert.ok(!f.calls.some((call) => call.url === '/dj/sync')); f.control.dispose();
+});
+
+test('initial app dashboard uncertain saves retain the ID and require an explicit status check', async () => {
+  const f = fixture(); f.data.auth = authStatus({ configured: false });
+  await f.control.open('connection'); f.control.setClientId(appId);
+  f.override((url) => {
+    if (url === '/auth/spotify/configure') { f.data.auth = authStatus(); throw new Error('PRIVATE_REPLY'); }
+  });
+  assert.equal(await f.control.configure(), false); await settleMusic();
+  assert.equal(f.calls.length, 3); assert.equal(f.timers.size, 0);
+  assert.equal(f.control.state.connection.configurationUncertain, true);
+  assert.equal(f.control.state.connection.clientIdDraft, appId);
+  assert.doesNotMatch(f.control.state.connection.message, /PRIVATE_REPLY/);
+  assert.equal(f.control.canConnect(), false); assert.equal(await f.control.configure(), false);
+  await f.control.refresh(); assert.equal(f.control.canConnect(), true);
+  assert.equal(f.writes().length, 1); f.control.dispose();
+});
+
+test('initial app dashboard configuration occupies the shared setup lane through tab changes', async () => {
+  const f = fixture(), gate = deferred(); f.data.auth = authStatus({ configured: false });
+  await f.control.open('connection'); f.control.setClientId(appId);
+  f.override((url) => url === '/auth/spotify/configure' ? gate.promise : undefined);
+  const saving = f.control.configure(); await settled(() => f.writes().length === 1);
+  await f.control.open('library');
+  assert.equal(f.control.canStart(), false); assert.equal(await f.control.start(), false);
+  assert.equal(f.control.setClientId('f'.repeat(32)), false);
+  f.data.auth = authStatus(); gate.resolve(authStatus()); assert.equal(await saving, true);
+  await f.control.open('connection');
+  assert.equal(f.control.canConnect(), true); assert.equal(f.control.state.connection.clientIdDraft, appId);
+  assert.deepEqual(f.writes(), [{ url: '/auth/spotify/configure', body: { client_id: appId } }]); f.control.dispose();
+});
+
+test('initial app dashboard panel exposes registration and retains the entered ID after saving', async () => {
+  let configured = false;
+  const h = panelHarness((path) => {
+    if (path === '/auth/spotify/configure') configured = true;
+    return path === '/dj/sync' ? syncStatus() : authStatus({ configured });
+  });
+  h.panel.open('connection'); await settleMusic();
+  assert.equal(h.byId('music-app-configuration').hidden, false);
+  assert.equal(h.byId('music-connection-begin').disabled, true);
+  assert.equal(h.byId('music-client-id').disabled, false);
+  assert.equal(h.byId('music-redirect').textContent, callback);
+  const link = h.nodes.find((node) => node.tagName === 'a' && node.textContent === 'Open Spotify developer dashboard');
+  assert.equal(link.href, 'https://developer.spotify.com/dashboard'); assert.equal(link.rel, 'noopener noreferrer');
+  h.byId('music-client-id').value = appId; h.byId('music-client-id').events.get('input')();
+  h.byId('music-configure').click(); await settleMusic();
+  assert.equal(h.byId('music-connection-begin').disabled, false);
+  assert.equal(h.byId('music-client-id').value, appId); assert.equal(h.byId('music-client-id').disabled, true);
+  assert.equal(h.byId('music-configure').disabled, true);
+  assert.deepEqual(h.calls.filter(([, body]) => body !== undefined), [['/auth/spotify/configure', { client_id: appId }]]);
+  h.panel.dispose();
+});
+
+test('initial app dashboard panel keeps failed draft values across closing and suspension', async () => {
+  const h = panelHarness((path) => {
+    if (path === '/auth/spotify/configure') throw new Error('connection lost');
+    return path === '/dj/sync' ? syncStatus() : authStatus({ configured: false });
+  });
+  h.panel.open('connection'); await settleMusic();
+  h.byId('music-client-id').value = appId; h.byId('music-client-id').events.get('input')();
+  h.byId('music-configure').click(); await settleMusic();
+  assert.equal(h.byId('music-client-id').value, appId); assert.equal(h.byId('music-configure').disabled, true);
+  assert.equal(h.timers.size, 0);
+  h.panel.suspend(); h.panel.resume(); h.panel.open('connection'); await settleMusic();
+  assert.equal(h.byId('music-client-id').value, appId); assert.equal(h.byId('music-configure').disabled, false);
+  assert.equal(h.calls.filter(([path]) => path === '/auth/spotify/configure').length, 1); h.panel.dispose();
+});
+
+test('initial app dashboard preview cannot configure a daemon', async () => {
+  const h = panelHarness(() => { throw new Error('unexpected request'); }, { demo: true });
+  h.panel.open('connection'); await settleMusic();
+  assert.equal(h.byId('music-app-configuration').hidden, true);
+  assert.equal(h.byId('music-configure').disabled, true);
+  assert.equal(await h.panel.control.configure(), false); assert.equal(h.calls.length, 0); h.panel.dispose();
 });

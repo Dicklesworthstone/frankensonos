@@ -9,7 +9,7 @@ const remote = require('../crates/fsonos-api/src/remote/spotify-connect.js');
 
 const redirect = 'http://127.0.0.1:8099/auth/spotify/callback';
 const state = 'synthetic_state_123';
-const status = (fields = {}) => ({ signed_in: false, pending: false, redirect_uri: redirect, ...fields });
+const status = (fields = {}) => ({ signed_in: false, pending: false, redirect_uri: redirect, configured: true, ...fields });
 const consent = (fields = {}, target = redirect) => ({ redirect_uri: target,
   url: `https://accounts.spotify.com/authorize?${new URLSearchParams({
     client_id: 'abc123', response_type: 'code', redirect_uri: target, code_challenge_method: 'S256',
@@ -274,10 +274,248 @@ test('the shipped assets and explicit library handoff are embedded under unchang
   for(const [file,name] of [['spotify-connect.js','CONNECT_SCRIPT'],['spotify-connect.css','CONNECT_STYLE']]){
     assert.ok(embed.includes(`include_str!("../remote/${file}")`));assert.ok(embed.includes(`{${name}}`));assert.ok(embed.includes(`("${file}", ${name})`));
     const source=fs.readFileSync(path.join(root,'crates/fsonos-api/src/remote',file),'utf8');
-    for(const banned of ['innerHTML','localStorage','sessionStorage','console.','eval(', 'http://','https://','password','token'])assert.ok(!source.includes(banned),`${file}: ${banned}`);
+    const localSource = source.replace(remote.APP_DASHBOARD, '');
+    for(const banned of ['innerHTML','localStorage','sessionStorage','console.','eval(', 'http://','https://','password','token'])assert.ok(!localSource.includes(banned),`${file}: ${banned}`);
   }
   assert.ok(embed.includes("connect-src 'self'; base-uri 'none'; form-action 'none';"));
   const sync=fs.readFileSync(path.join(root,'crates/fsonos-api/src/remote/library-sync.js'),'utf8');
   assert.ok(sync.includes("document.addEventListener('fsonos-library-refresh-open', requested)"));
   assert.ok(sync.includes("document.removeEventListener('fsonos-library-refresh-open', requested)"));
+});
+
+
+const appId = '0123456789abcdef0123456789abcdef';
+function configurationHarness(handler) {
+  let configured = false;
+  return harness((name, options, fallback) => {
+    const normal = () => {
+      if (name === 'spotifyConnectConfigure') { configured = true; return status(); }
+      if (name === 'spotifyConnectStatus' && !configured) return status({ configured: false });
+      return fallback(name);
+    };
+    return handler ? handler(name, options, normal) : normal();
+  });
+}
+
+test('initial app status distinguishes an unconfigured daemon while accepting legacy status', () => {
+  const legacy = status(); delete legacy.configured;
+  assert.equal(remote.statusOf(legacy).configured, true);
+  assert.equal(remote.statusOf(status({ configured: false })).configured, false);
+  for (const fields of [{ configured: null }, { configured: 'false' }, { configured: 0 },
+    { configured: false, signed_in: true }, { configured: false, pending: true }]) {
+    assert.throws(() => remote.statusOf(status(fields)));
+  }
+});
+
+test('initial app Client ID accepts exactly 32 hex characters without truncation', () => {
+  assert.equal(remote.clientIdOf(' ' + appId + '\n'), appId);
+  assert.equal(remote.clientIdOf(appId.toUpperCase()), appId.toUpperCase());
+  for (const value of [null, 42, '', appId.slice(1), appId + '0', appId + appId,
+    appId.slice(0, 31) + 'g', appId.slice(0, 16) + ' ' + appId.slice(16), 'https://example.test/app']) {
+    assert.throws(() => remote.clientIdOf(value));
+  }
+});
+
+test('initial app save makes one explicit configuration request before a separate sign-in', async () => {
+  const h = configurationHarness(); await h.model.open();
+  assert.equal(h.model.canConfigure(), true); assert.equal(h.model.canBegin(), false);
+  assert.equal(h.model.reviewBegin(), null); assert.equal(await h.model.begin({}), false);
+  h.model.setClientId(' ' + appId + ' ');
+  assert.equal(await h.model.configure(), true);
+  assert.deepEqual(h.calls.map(([name]) => name), ['spotifyConnectStatus', 'spotifyConnectStatus', 'spotifyConnectConfigure']);
+  assert.deepEqual(h.calls.at(-1)[1], { body: { client_id: appId } });
+  assert.equal(h.model.state.clientIdDraft, ' ' + appId + ' ');
+  assert.equal(h.model.state.status.configured, true); assert.equal(h.model.canConfigure(), false);
+  assert.equal(h.model.canBegin(), true); assert.equal(h.model.state.consent, null);
+  assert.equal(h.timers.size, 0); h.model.dispose();
+});
+
+test('initial app invalid input never reaches preflight or a configuration write', async () => {
+  const h = configurationHarness(); await h.model.open();
+  for (const value of ['', 'not-an-id', appId + appId]) {
+    h.model.setClientId(value); assert.equal(await h.model.configure(), false);
+    assert.equal(h.model.state.clientIdDraft, value); assert.match(h.model.state.message, /32-character/);
+  }
+  assert.equal(h.calls.length, 1); h.model.dispose();
+});
+
+test('initial app configuration cannot replace a previously configured app or bypass a stale read', async () => {
+  const h = harness(); await h.model.open(); h.model.setClientId(appId);
+  assert.equal(h.model.canConfigure(), false); assert.equal(await h.model.configure(), false);
+  assert.equal(h.calls.length, 1); h.model.dispose();
+  for (const changed of [status(), status({ configured: false, redirect_uri: 'https://home.example/callback' })]) {
+    let reads = 0;
+    const c = configurationHarness((name, options, normal) => name === 'spotifyConnectStatus' && ++reads > 1 ? changed : normal());
+    await c.model.open(); c.model.setClientId(appId);
+    assert.equal(await c.model.configure(), false);
+    assert.ok(c.calls.every(([name]) => name === 'spotifyConnectStatus'));
+    assert.match(c.model.state.message, /Nothing was submitted/); c.model.dispose();
+  }
+});
+
+test('initial app double save keeps one worker and does not change its captured ID', async () => {
+  const wait = deferred();
+  const h = configurationHarness((name, options, normal) => name === 'spotifyConnectConfigure' ? wait.promise : normal());
+  await h.model.open(); h.model.setClientId(appId);
+  const first = h.model.configure(); await settle();
+  assert.equal(await h.model.configure(), false); assert.equal(h.model.setClientId('f'.repeat(32)), false);
+  assert.equal(h.model.reviewBegin(), null); wait.resolve(status()); assert.equal(await first, true);
+  assert.equal(h.calls.filter(([name]) => name === 'spotifyConnectConfigure').length, 1);
+  assert.equal(h.model.state.clientIdDraft, appId); h.model.dispose();
+});
+
+test('initial app lost save acknowledgement retains the draft until an explicit status observation', async () => {
+  for (const applied of [true, false]) {
+    const h = configurationHarness((name, options, normal) => {
+      if (name === 'spotifyConnectConfigure') { if (applied) normal(); throw new Error('private response'); }
+      return normal();
+    });
+    await h.model.open(); h.model.setClientId(appId); assert.equal(await h.model.configure(), false);
+    await settle(); assert.equal(h.calls.length, 3); assert.equal(h.timers.size, 0);
+    assert.equal(h.model.state.configurationUncertain, true); assert.equal(h.model.state.fresh, false);
+    assert.equal(h.model.state.clientIdDraft, appId); assert.equal(await h.model.configure(), false);
+    assert.doesNotMatch(h.model.state.message, /private response/);
+    assert.equal(await h.model.refresh(), true);
+    assert.equal(h.model.state.status.configured, applied);
+    assert.equal(h.model.state.configurationUncertain, false);
+    assert.equal(h.model.canBegin(), applied); assert.equal(h.model.canConfigure(), !applied);
+    assert.equal(h.calls.filter(([name]) => name === 'spotifyConnectConfigure').length, 1); h.model.dispose();
+  }
+});
+
+test('initial app policy and malformed receipts preserve input without automatic retries', async () => {
+  for (const reply of [status({ configured: false }), { signed_in: false, pending: false, redirect_uri: redirect },
+    status({ redirect_uri: 'https://home.example/callback' }), Object.assign(new Error('PRIVATE_APP'), { code: 'POLICY_DENIED' })]) {
+    const h = configurationHarness((name, options, normal) => {
+      if (name !== 'spotifyConnectConfigure') return normal();
+      if (reply instanceof Error) throw reply;
+      return reply;
+    });
+    await h.model.open(); h.model.setClientId(appId); assert.equal(await h.model.configure(), false);
+    assert.equal(h.model.state.configurationUncertain, true); assert.equal(h.model.state.clientIdDraft, appId);
+    assert.equal(h.model.canBegin(), false); assert.doesNotMatch(h.model.state.message, /PRIVATE_APP/);
+    assert.equal(h.timers.size, 0); assert.equal(h.calls.length, 3); h.model.dispose();
+  }
+});
+
+test('initial app close during preflight stops dispatch and keeps the draft for reopening', async () => {
+  const wait = deferred(); let reads = 0;
+  const h = configurationHarness((name, options, normal) => name === 'spotifyConnectStatus' && ++reads === 2 ? wait.promise : normal());
+  await h.model.open(); h.model.setClientId(appId);
+  const saving = h.model.configure(); h.model.close(); wait.resolve(status({ configured: false }));
+  assert.equal(await saving, false); assert.equal(h.model.state.clientIdDraft, appId);
+  await h.model.open(); assert.equal(h.model.canConfigure(), true);
+  assert.ok(h.calls.every(([name]) => name === 'spotifyConnectStatus')); h.model.dispose();
+});
+
+test('initial app reopen during a sent save observes its completion without replay', async () => {
+  const wait = deferred(); let configured = false;
+  const h = configurationHarness((name, options, normal) => {
+    if (name === 'spotifyConnectConfigure') { configured = true; return wait.promise; }
+    return configured ? status() : normal();
+  });
+  await h.model.open(); h.model.setClientId(appId);
+  const saving = h.model.configure(); await settle(); h.model.close(); await h.model.open();
+  assert.equal(h.model.state.busy, true); wait.resolve(status()); assert.equal(await saving, true); await settle();
+  assert.equal(h.model.state.status.configured, true); assert.equal(h.model.state.clientIdDraft, appId);
+  assert.equal(h.calls.filter(([name]) => name === 'spotifyConnectConfigure').length, 1);
+  assert.equal(h.calls.at(-1)[0], 'spotifyConnectStatus'); assert.equal(h.model.state.consent, null); h.model.dispose();
+});
+
+test('initial app remains usable when a view callback throws', async () => {
+  let configured = false; const calls = [];
+  const m = remote.model({ call: async (name) => { calls.push(name); if (name === 'spotifyConnectConfigure') configured = true; return status({ configured }); },
+    changed: () => { throw new Error('view failed'); } });
+  await m.open(); m.setClientId(appId); assert.equal(await m.configure(), true);
+  assert.equal(m.canBegin(), true); assert.equal(calls.filter((name) => name === 'spotifyConnectConfigure').length, 1); m.dispose();
+});
+
+function configurationPanel(answer) {
+  const nodes = [];
+  class Element {
+    constructor(tag, attrs = {}, children = []) {
+      this.tagName = tag; this.attrs = {}; this.children = children; this.value = '';
+      for (const [key, value] of Object.entries(attrs)) {
+        if (key === 'text') this.textContent = value;
+        else if (key.startsWith('on')) this[key] = value;
+        else { this[key] = value; this.attrs[key] = value; }
+      }
+      nodes.push(this);
+    }
+    append(...nodes) { this.children.push(...nodes); }
+    replaceChildren(...nodes) { this.children = nodes; }
+    setAttribute(key, value) { this.attrs[key] = String(value); }
+    removeAttribute(key) { delete this.attrs[key]; }
+    focus() {}
+    click() { if (!this.disabled) this.onclick?.(); }
+  }
+  const listeners = new Map(), previous = global.document;
+  global.document = { hidden: false, addEventListener: (key, fn) => listeners.set(key, fn),
+    removeEventListener: (key) => listeners.delete(key) };
+  const calls = [];
+  const p = remote.panel({ call: async (name, options) => { calls.push([name, options]); return answer(name, options); },
+    el: (tag, attrs = {}, ...children) => new Element(tag, attrs, children) });
+  return { panel: p, calls, nodes, button: (text) => nodes.find((n) => n.tagName === 'button' && n.textContent === text),
+    input: nodes.find((n) => n.tagName === 'input'),
+    dispose() { p.dispose(); global.document = previous; } };
+}
+
+test('initial app phone panel shows the callback, accepts an app ID and enables explicit consent only after save', async () => {
+  let configured = false;
+  const h = configurationPanel((name) => { if (name === 'spotifyConnectConfigure') configured = true; return status({ configured }); });
+  try {
+    await h.panel.model.open();
+    const link = h.nodes.find((node) => node.tagName === 'a' && node.textContent === 'Open Spotify developer dashboard');
+    assert.equal(link.attrs.href, 'https://developer.spotify.com/dashboard');
+    assert.equal(link.attrs.rel, 'noopener noreferrer');
+    assert.ok(h.nodes.some((node) => node.textContent === redirect));
+    assert.equal(h.button('Review new sign-in').disabled, true); assert.equal(h.input.disabled, false);
+    h.input.value = appId; h.input.oninput(); h.button('Save Spotify app').click(); await settle();
+    assert.equal(h.button('Review new sign-in').disabled, false); assert.equal(h.button('Save Spotify app').disabled, true);
+    assert.equal(h.input.value, appId); assert.equal(h.input.disabled, true);
+    assert.equal(h.calls.filter(([name]) => name === 'spotifyConnectConfigure').length, 1);
+    assert.ok(!h.calls.some(([name]) => ['spotifyConnectBegin', 'spotifyConnectComplete'].includes(name)));
+  } finally { h.dispose(); }
+});
+
+test('initial app configuration uses the actual loopback JSON route without opening Spotify', async (t) => {
+  const requests = []; let configured = false;
+  const server = http.createServer(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk;
+    requests.push([req.method, req.url, req.headers['content-type'], body]);
+    if (req.url === '/auth/spotify/configure') configured = true;
+    res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(status({ configured })));
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const m = remote.model({ call: async (name, options) => {
+    const [method, route] = remote.routes[name];
+    const response = await fetch('http://127.0.0.1:' + server.address().port + route, { method,
+      ...(method === 'POST' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options.body) } : {}) });
+    return response.json();
+  } });
+  t.after(() => m.dispose()); await m.open(); m.setClientId(appId);
+  assert.equal(await m.configure(), true); assert.equal(m.canBegin(), true);
+  assert.deepEqual(requests.map((row) => row.slice(0, 2)),
+    [['GET', '/auth/spotify'], ['GET', '/auth/spotify'], ['POST', '/auth/spotify/configure']]);
+  assert.equal(requests[2][2], 'application/json');
+  assert.deepEqual(JSON.parse(requests[2][3]), { client_id: appId });
+});
+
+
+test('initial app hidden sent saves retain their draft and recover only by observation when shown', async () => {
+  const wait = deferred(); let configured = false;
+  const h = configurationHarness((name, options, normal) => {
+    if (name === 'spotifyConnectConfigure') { configured = true; return wait.promise; }
+    return configured ? status() : normal();
+  });
+  await h.model.open(); h.model.setClientId(appId);
+  const saving = h.model.configure(); await settle(); h.model.setVisible(false);
+  wait.reject(new Error('reply lost while hidden')); assert.equal(await saving, false);
+  assert.equal(h.model.state.clientIdDraft, appId); assert.equal(h.model.state.configurationUncertain, true);
+  assert.equal(h.timers.size, 0); assert.equal(h.calls.length, 3);
+  h.model.setVisible(true); await settle();
+  assert.equal(h.model.state.status.configured, true); assert.equal(h.model.canBegin(), true);
+  assert.equal(h.model.state.clientIdDraft, appId);
+  assert.equal(h.calls.filter(([name]) => name === 'spotifyConnectConfigure').length, 1); h.model.dispose();
 });

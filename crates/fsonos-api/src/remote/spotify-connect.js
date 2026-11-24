@@ -3,10 +3,12 @@
 
 const SpotifyConnectRemote = (() => {
   const routes = { spotifyConnectStatus: ['GET', '/auth/spotify'],
+    spotifyConnectConfigure: ['POST', '/auth/spotify/configure'],
     spotifyConnectBegin: ['POST', '/auth/spotify/begin'],
     spotifyConnectComplete: ['POST', '/auth/spotify/complete'] };
   const scopes = Object.freeze(['user-library-read', 'user-follow-read', 'playlist-read-private',
     'user-top-read', 'user-read-recently-played']);
+  const APP_DASHBOARD = 'https://developer.spotify.com/dashboard';
   const MAX_ADDRESS = 16384;
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   class InputError extends Error {}
@@ -52,11 +54,28 @@ const SpotifyConnectRemote = (() => {
     return url;
   }
   function statusOf(value) {
-    if (!object(value) || typeof value.signed_in !== 'boolean' || typeof value.pending !== 'boolean') {
+    const configured = object(value) && value.configured === undefined ? true : value?.configured;
+    if (!object(value) || typeof value.signed_in !== 'boolean' || typeof value.pending !== 'boolean'
+        || typeof configured !== 'boolean' || (!configured && (value.signed_in || value.pending))) {
       fail('The sign-in status is unreadable. Check status again.');
     }
     redirectOf(value.redirect_uri);
-    return Object.freeze({ signed_in: value.signed_in, pending: value.pending, redirect_uri: value.redirect_uri });
+    return Object.freeze({ signed_in: value.signed_in, pending: value.pending, redirect_uri: value.redirect_uri, configured });
+  }
+  function clientIdOf(value) {
+    if (typeof value !== 'string' || !/^[a-fA-F0-9]{32}$/.test(value.trim())) {
+      fail('Enter the public 32-character hexadecimal Client ID from your Spotify app settings.');
+    }
+    return value.trim();
+  }
+  function configurationMessage(error) {
+    if (error instanceof InputError) return error.message;
+    if (error?.code === 'POLICY_DENIED') return 'The house policy does not let this login configure Spotify. Use the daemon owner’s login or run fsonos setup on its host.';
+    if (error?.code === 'NOT_IMPLEMENTED') return message(error);
+    if (error?.code === 'NOT_READY' || error?.code === 'INVALID_ARGUMENT') {
+      return 'The app configuration was not accepted. Check status and the Client ID. An existing app or an app selected on the daemon host cannot be replaced here.';
+    }
+    return 'The app configuration request did not finish or returned an unreadable answer. Check status on this daemon.';
   }
   function consentOf(value, redirect) {
     if (!object(value) || value.redirect_uri !== redirect) fail('The daemon redirect changed. Read status and start again.');
@@ -102,18 +121,18 @@ const SpotifyConnectRemote = (() => {
   function model({ call, changed = () => {}, schedule = setTimeout, cancel = clearTimeout }) {
     let epoch = 0, disposed = false, visible = true, timer = null, reading = false, again = false, failures = 0;
     const state = { open: false, busy: false, loading: false, fresh: false, status: null,
-      consent: null, review: null, message: '', uncertain: false };
+      consent: null, review: null, message: '', uncertain: false, clientIdDraft: '', configurationUncertain: false };
     const active = () => !disposed && state.open && visible;
     const current = (v) => active() && v === epoch;
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Never repeat a write after a view failure. */ } } };
     const stop = () => { if (timer !== null) cancel(timer); timer = null; };
     function observe(answer) {
-      if (!answer.pending || state.consent?.redirect !== answer.redirect_uri) state.consent = null;
+      if (!answer.configured || !answer.pending || state.consent?.redirect !== answer.redirect_uri) state.consent = null;
       state.status = answer; state.fresh = true; failures = 0;
     }
     function arm() {
       stop();
-      if (!active() || state.busy || reading || (!failures && !state.status?.pending)) return;
+      if (!active() || state.busy || reading || state.configurationUncertain || (!failures && !state.status?.pending)) return;
       timer = schedule(() => { timer = null; void refresh(); }, failures ? Math.min(60000, 3000 * 2 ** Math.min(failures, 5)) : 3000);
     }
     async function refresh() {
@@ -124,8 +143,14 @@ const SpotifyConnectRemote = (() => {
       try {
         const answer = statusOf(await call('spotifyConnectStatus'));
         if (!current(v)) return false;
+        const recoveringConfiguration = state.configurationUncertain;
         observe(answer);
-        if (!state.uncertain) state.message = '';
+        state.configurationUncertain = false;
+        if (recoveringConfiguration) {
+          state.message = answer.configured
+            ? 'The daemon now reports a configured Spotify app. The earlier save remains unconfirmed; review a new sign-in when ready.'
+            : 'The daemon reports no configured Spotify app. Your Client ID is retained; save it when ready.';
+        } else if (!state.uncertain) state.message = '';
         return true;
       } catch (error) {
         if (current(v)) { ++failures; state.message = message(error); }
@@ -139,15 +164,68 @@ const SpotifyConnectRemote = (() => {
       }
     }
     const writable = () => active() && state.fresh && state.status && !reading && !state.busy;
+    const canBegin = () => Boolean(writable() && state.status.configured);
+    const canConfigure = () => Boolean(writable() && !state.status.configured);
+    function setClientId(value) {
+      if (!active() || state.busy || typeof value !== 'string' || value.length > 128) return false;
+      state.clientIdDraft = value; publish(); return true;
+    }
+    async function configure() {
+      if (!canConfigure()) return false;
+      let clientId;
+      try { clientId = clientIdOf(state.clientIdDraft); }
+      catch (error) { state.message = configurationMessage(error); publish(); return false; }
+      const before = state.status;
+      stop(); again = false; const v = ++epoch;
+      state.busy = true; state.fresh = false; state.review = null; state.uncertain = false;
+      state.configurationUncertain = false; state.message = 'Checking this daemon before saving the Spotify app…'; publish();
+      let sent = false, acknowledged = false;
+      try {
+        if (!current(v)) return false;
+        const fresh = statusOf(await call('spotifyConnectStatus'));
+        if (!current(v)) return false;
+        if (fresh.redirect_uri !== before.redirect_uri || fresh.configured) {
+          observe(fresh);
+          fail('Spotify app configuration changed. Nothing was submitted. Check the current status before continuing.');
+        }
+        state.message = 'Saving the Spotify app on this daemon…'; publish();
+        if (!current(v)) return false;
+        sent = true;
+        const reply = await call('spotifyConnectConfigure', { body: { client_id: clientId } });
+        const after = statusOf(reply);
+        if (reply.configured !== true || after.redirect_uri !== before.redirect_uri) {
+          fail('The daemon did not confirm this app configuration. Check status before continuing.');
+        }
+        acknowledged = true;
+        if (current(v)) {
+          observe(after); state.message = 'The Spotify app is configured. Review a new sign-in when ready.';
+        } else again = true;
+        return true;
+      } catch (error) {
+        if (!disposed) {
+          state.uncertain = state.configurationUncertain = sent;
+          state.message = `${configurationMessage(error)}${sent ? ' Outcome unconfirmed. Your Client ID is retained; use Check sign-in status before another request.' : ''}`;
+        }
+        return acknowledged;
+      } finally {
+        state.busy = false;
+        if (!disposed) {
+          publish();
+          // A reopen or explicit refresh requested during the write may read.
+          // A lost save reply alone does not start observation or repeat it.
+          if (active() && again) { again = false; void refresh(); } else arm();
+        }
+      }
+    }
     function reviewBegin() {
-      if (!writable()) return null;
+      if (!canBegin()) return null;
       stop();
       state.review = Object.freeze({ status: state.status }); publish(); return state.review;
     }
     function cancelReview() { if (!disposed && !state.busy) { state.review = null; publish(); arm(); } }
 
     async function write(kind, input) {
-      if (!writable()) return false;
+      if (!canBegin()) return false;
       const before = state.status;
       let body = {};
       if (kind === 'begin') {
@@ -166,7 +244,8 @@ const SpotifyConnectRemote = (() => {
         if (!current(v)) return false;
         const fresh = statusOf(await call('spotifyConnectStatus'));
         if (!current(v)) return false;
-        if (fresh.redirect_uri !== before.redirect_uri || fresh.pending !== before.pending || fresh.signed_in !== before.signed_in) {
+        if (fresh.redirect_uri !== before.redirect_uri || fresh.configured !== before.configured
+            || fresh.pending !== before.pending || fresh.signed_in !== before.signed_in) {
           observe(fresh);
           fail('Sign-in status changed. Nothing was submitted. Check the current status and review again.');
         }
@@ -215,7 +294,7 @@ const SpotifyConnectRemote = (() => {
       if (active()) void refresh(); else { again = false; publish(); }
     }
     function dispose() { close(); disposed = true; }
-    return { state, open, close, refresh, reviewBegin, cancelReview,
+    return { state, open, close, refresh, canBegin, canConfigure, setClientId, configure, reviewBegin, cancelReview,
       begin: (review) => write('begin', review), complete: (value) => write('complete', value), setVisible, dispose };
   }
 
@@ -230,6 +309,16 @@ const SpotifyConnectRemote = (() => {
     const begin = button('Review new sign-in', () => control.reviewBegin());
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
     const facts = el('p'), redirect = el('code', { class: 'spotify-connect-address' });
+    const appLink = el('a', { text: 'Open Spotify developer dashboard', href: APP_DASHBOARD,
+      target: '_blank', rel: 'noopener noreferrer', referrerpolicy: 'no-referrer' });
+    const clientId = el('input', { id: `${id}-client-id`, type: 'text', maxlength: 128,
+      autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+      oninput: () => control.setClientId(clientId.value) });
+    const configure = button('Save Spotify app', () => { void control.configure(); });
+    const configuration = el('div', { class: 'spotify-connect-configuration' },
+      el('h3', { text: 'Register your Spotify app' }),
+      el('p', { text: 'Create an app in Spotify’s developer dashboard and register the exact callback shown above. Paste its public Client ID below to activate it on this daemon.' }),
+      appLink, el('label', { for: clientId.id, text: 'Spotify app Client ID' }), clientId, configure);
     const link = el('a', { text: 'Open Spotify consent', target: '_blank', rel: 'noopener noreferrer', referrerpolicy: 'no-referrer', hidden: true });
     const reviewBox = el('div', { class: 'spotify-connect-review', hidden: true, tabindex: -1 });
     const input = el('textarea', { id: `${id}-callback`, rows: 3, maxlength: MAX_ADDRESS, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
@@ -241,7 +330,11 @@ const SpotifyConnectRemote = (() => {
       box.hidden = !s.open; toggle.setAttribute('aria-expanded', String(s.open));
       box.setAttribute('aria-busy', String(s.loading || s.busy));
       check.disabled = s.loading || s.busy;
-      begin.disabled = !s.fresh || s.loading || s.busy;
+      begin.disabled = !control.canBegin();
+      configuration.hidden = !s.status || (s.status.configured && !s.clientIdDraft);
+      clientId.disabled = s.busy || s.loading || !s.status || s.status.configured;
+      if (clientId.value !== s.clientIdDraft) clientId.value = s.clientIdDraft;
+      configure.disabled = !control.canConfigure();
       // A status poll must not steal focus from someone pasting the callback.
       input.disabled = !s.status?.pending || s.busy;
       complete.disabled = !s.fresh || !s.status?.pending || s.loading || s.busy;
@@ -249,7 +342,7 @@ const SpotifyConnectRemote = (() => {
       if (!s.open || s.busy) input.value = '';
       status.textContent = s.loading ? 'Reading sign-in status…' : s.message;
       facts.textContent = !s.status ? 'Sign-in status has not been read.'
-        : `${!s.fresh ? 'Last observation (may be stale): ' : ''}${s.status.signed_in ? 'A cached sign-in is available; this is not a live Spotify access check.' : 'No cached sign-in is available.'}${s.status.pending ? ' A sign-in is waiting or being completed.' : ''}`;
+        : `${!s.fresh ? 'Last observation (may be stale): ' : ''}${!s.status.configured ? 'No Spotify app is configured. Register an app below to begin.' : s.status.signed_in ? 'A cached sign-in is available; this is not a live Spotify access check.' : 'The Spotify app is configured. No cached sign-in is available.'}${s.status.pending ? ' A sign-in is waiting or being completed.' : ''}`;
       redirect.textContent = s.status?.redirect_uri || 'Read status to see the daemon’s configured callback.';
       link.hidden = !s.consent || !s.fresh || s.busy;
       if (!link.hidden) link.setAttribute('href', s.consent.url); else link.removeAttribute('href');
@@ -267,7 +360,7 @@ const SpotifyConnectRemote = (() => {
     box.append(el('h2', { text: 'Connect your Spotify library' }),
       el('p', { text: 'The daemon handles sign-in and stores access locally. Your Sonos account linkage is separate: Spotify must also be linked to each household in its Sonos app.' }),
       el('div', { class: 'row' }, check, begin, button('Close', () => { control.close(); toggle.focus(); })), status, facts, reviewBox,
-      el('p', { text: 'Configured callback (must exactly match the app’s registered redirect):' }), redirect,
+      el('p', { text: 'Configured callback (must exactly match the app’s registered redirect):' }), redirect, configuration,
       el('p', {}, link),
       el('details', {}, el('summary', { text: 'Finish from a phone or another computer' }),
         el('p', { text: 'A loopback callback on another device can show a connection error. Copy the full address from that Spotify tab after consent, return here and paste it below. The address is sent only to this daemon, never opened or fetched by this panel. Keep it private; do not paste it into chat or logs.' }),
@@ -278,7 +371,7 @@ const SpotifyConnectRemote = (() => {
     return { node: el('div', { class: 'spotify-connect' }, toggle, box), model: control,
       dispose() { input.value = ''; document.removeEventListener('visibilitychange', visibility); control.dispose(); } };
   }
-  return { routes, scopes, MAX_ADDRESS, statusOf, consentOf, callbackOf, model, panel };
+  return { routes, scopes, APP_DASHBOARD, MAX_ADDRESS, statusOf, clientIdOf, consentOf, callbackOf, model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SpotifyConnectRemote;

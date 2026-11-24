@@ -24,8 +24,8 @@ const DashboardMusic = (() => {
     const shown = (tab) => !disposed && state.active && state.open && state.tab === tab && !demo;
     const canStart = () => shown('library') && !busy() && state.sync.fresh
       && !state.sync.loading && Boolean(state.sync.status) && !state.sync.status.running;
-    const canConnect = () => shown('connection') && !busy() && state.connection.fresh
-      && !state.connection.loading && Boolean(state.connection.status);
+    const canConnect = () => shown('connection') && !busy() && connection.canBegin();
+    const canConfigure = () => shown('connection') && !busy() && connection.canConfigure();
     function open(tab = state.tab) {
       if (disposed || !state.active || !TABS.includes(tab)) return Promise.resolve(false);
       state.open = true; state.tab = tab;
@@ -51,7 +51,9 @@ const DashboardMusic = (() => {
       state.active = true; sync.setVisible(true); connection.setVisible(true); publish();
     }
     function dispose() { if (!disposed) { close(); disposed = true; sync.dispose(); connection.dispose(); } }
-    return { state, open, close, refresh, canStart, canConnect, busy,
+    return { state, open, close, refresh, canStart, canConnect, canConfigure, busy,
+      setClientId: (value) => !busy() && connection.setClientId(value),
+      configure: () => canConfigure() ? connection.configure() : Promise.resolve(false),
       start: () => canStart() ? sync.start() : Promise.resolve(false),
       reviewConnect: () => canConnect() ? connection.reviewBegin() : null,
       cancelReview: () => connection.cancelReview(),
@@ -121,6 +123,17 @@ const DashboardMusic = (() => {
     const back = button('music-connection-back', 'Cancel', () => { control.cancelReview(); connectBegin.focus(); });
     reviewBox.append(el('p', 'Start a new sign-in for this daemon. This replaces any pending consent link and keeps the cached sign-in. Spotify will ask for read-only library and taste access.'), confirm, back);
     const redirect = el('code', '', 'music-address'); redirect.id = 'music-redirect';
+    const configuration = el('div', null, 'music-configuration'); configuration.id = 'music-app-configuration';
+    const appDashboard = el('a', 'Open Spotify developer dashboard'); appDashboard.href = A.APP_DASHBOARD;
+    appDashboard.target = '_blank'; appDashboard.rel = 'noopener noreferrer'; appDashboard.referrerPolicy = 'no-referrer';
+    const clientIdLabel = el('label', 'Spotify app Client ID'); clientIdLabel.htmlFor = 'music-client-id';
+    const clientId = el('input'); clientId.id = 'music-client-id'; clientId.type = 'text'; clientId.maxLength = 128;
+    clientId.autocomplete = 'off'; clientId.autocapitalize = 'off'; clientId.spellcheck = false;
+    clientId.addEventListener('input', () => control.setClientId(clientId.value));
+    const configure = button('music-configure', 'Save Spotify app', () => { void control.configure(); }, 'primary-button');
+    configuration.append(el('h3', 'Register your Spotify app'),
+      el('p', 'Create an app in Spotify’s developer dashboard and register the exact callback above. Paste its public Client ID to activate it on this daemon.', 'small-note'),
+      appDashboard, clientIdLabel, clientId, configure);
     const consent = el('a', 'Open Spotify consent', 'primary-button'); consent.id = 'music-consent';
     consent.target = '_blank'; consent.rel = 'noopener noreferrer'; consent.referrerPolicy = 'no-referrer';
     const callbackDetails = el('details', null, 'music-callback');
@@ -137,7 +150,7 @@ const DashboardMusic = (() => {
     sections.get('connection').append(el('p', 'The daemon stores the sign-in locally. Spotify must also be linked to each household in its Sonos app before those speakers can play Spotify.', 'small-note'),
       connectActions, connectStatus, connectFacts, reviewBox,
       el('p', 'Configured callback — use this exact address when registering the Spotify app:', 'small-note'),
-      redirect, consent, callbackDetails,
+      redirect, configuration, consent, callbackDetails,
       el('p', 'After consent, check status here. Then continue to library refresh and explicitly request a refresh.', 'small-note'), next);
     dialog.replaceChildren(header, intro, preview, tabs, sections.get('library'), sections.get('connection'));
 
@@ -242,6 +255,11 @@ const DashboardMusic = (() => {
       sections.get('connection').setAttribute('aria-busy', String(a.loading || a.busy));
       connectRead.disabled = demo || !visible || a.loading || busy;
       connectBegin.disabled = !control.canConnect();
+      configuration.hidden = demo || !a.status || (a.status.configured && !a.clientIdDraft);
+      clientId.disabled = demo || !visible || state.tab !== 'connection' || busy || a.loading
+        || !a.status || a.status.configured;
+      if (clientId.value !== a.clientIdDraft) clientId.value = a.clientIdDraft;
+      configure.disabled = !control.canConfigure();
       confirm.disabled = !control.canConnect() || !a.review;
       back.disabled = busy;
       // A periodic read must not erase a callback while the owner is pasting it.
@@ -251,8 +269,9 @@ const DashboardMusic = (() => {
       next.disabled = !control.canConnect() || !a.status?.signed_in;
       connectStatus.textContent = demo ? '' : a.loading ? 'Reading sign-in status…' : a.message;
       connectFacts.textContent = !a.status ? 'Sign-in status has not been read.'
-        : (!a.fresh ? 'Last observation (may be stale): ' : '') + (a.status.signed_in
-          ? 'A cached sign-in is available; refresh the library to verify Spotify access.' : 'No cached sign-in is available.')
+        : (!a.fresh ? 'Last observation (may be stale): ' : '') + (!a.status.configured
+          ? 'No Spotify app is configured. Register an app below to begin.' : a.status.signed_in
+            ? 'A cached sign-in is available; refresh the library to verify Spotify access.' : 'The Spotify app is configured. No cached sign-in is available.')
           + (a.status.pending ? ' A sign-in is waiting or being completed.' : '');
       redirect.textContent = a.status?.redirect_uri || 'Check status to see the configured callback.';
       consent.hidden = demo || !visible || state.tab !== 'connection' || !a.consent || !a.fresh || busy;

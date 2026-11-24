@@ -27,3 +27,9 @@
 .music-manage { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .music-dialog :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 @media (max-width: 600px) { .music-facts { grid-template-columns: minmax(0, 1fr); } .music-actions > button { flex: 1 1 180px; } }
+
+.music-configuration { padding: 16px; margin: 16px 0; border: 1px solid var(--line); border-radius: 12px; }
+.music-configuration h3 { margin-top: 0; }
+.music-configuration label { display: block; margin: 14px 0 8px; }
+.music-configuration input { display: block; box-sizing: border-box; width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; }
+.music-configuration a { color: var(--accent); }
