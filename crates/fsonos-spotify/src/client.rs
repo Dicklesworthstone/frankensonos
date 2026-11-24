@@ -422,6 +422,30 @@ pub struct TokenCache {
     path: PathBuf,
 }
 
+/// A sign-in owns an opaque receipt independently of its rotating access and
+/// refresh tokens. Flattening keeps existing token caches and readers usable.
+#[derive(Serialize, Deserialize)]
+struct CachedGrant {
+    #[serde(flatten)]
+    token: CachedToken,
+    #[serde(default)]
+    authorization_id: Option<String>,
+}
+
+impl CachedGrant {
+    fn authorization_id(&self) -> String {
+        self.authorization_id.clone().unwrap_or_else(|| {
+            // Preserve a legacy cache's identity through its first refresh,
+            // including refresh-token rotation. This digest stays private and
+            // is not an account identity.
+            format!(
+                "legacy:{}",
+                base64url(&sha256(self.token.refresh_token.as_bytes()))
+            )
+        })
+    }
+}
+
 impl TokenCache {
     #[must_use]
     pub fn in_data_dir(data_dir: &Path) -> Self {
@@ -437,20 +461,47 @@ impl TokenCache {
 
     /// The cached token, or `None` before the owner has authorized.
     pub fn load(&self) -> Result<Option<CachedToken>, SpotifyError> {
+        Ok(self.load_grant()?.map(|(token, _)| token))
+    }
+
+    /// Opaque identity of this sign-in, stable across ordinary token refreshes.
+    /// It does not identify the Spotify account; that still requires `/me`.
+    pub fn authorization_id(&self) -> Result<Option<String>, SpotifyError> {
+        Ok(self.load_grant()?.map(|(_, authorization)| authorization))
+    }
+
+    /// Read credentials and their receipt from the same atomic file revision.
+    pub(crate) fn load_grant(&self) -> Result<Option<(CachedToken, String)>, SpotifyError> {
         let bytes = match fs::read(&self.path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e.into()),
         };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|e| SpotifyError::Decode(format!("token cache {}: {e}", self.path.display())))
+        let grant: CachedGrant = serde_json::from_slice(&bytes).map_err(|e| {
+            SpotifyError::Decode(format!("token cache {}: {e}", self.path.display()))
+        })?;
+        let authorization = grant.authorization_id();
+        if authorization.is_empty()
+            || authorization.len() > 128
+            || authorization.chars().any(char::is_control)
+        {
+            return Err(SpotifyError::Decode(
+                "invalid Spotify authorization receipt".into(),
+            ));
+        }
+        Ok(Some((grant.token, authorization)))
     }
 
-    /// Persist `token`, atomically replacing any previous one.
+    /// Persist a new sign-in, atomically replacing any previous one.
     pub fn store(&self, token: &CachedToken) -> Result<(), SpotifyError> {
+        self.store_authorization(token).map(|_| ())
+    }
+
+    pub(crate) fn store_authorization(&self, token: &CachedToken) -> Result<String, SpotifyError> {
         let _lock = self.lock()?;
-        self.write(token)
+        let authorization = random_state()?;
+        self.write(token, &authorization)?;
+        Ok(authorization)
     }
 
     /// Publish a refresh only if its original grant is still current. The
@@ -459,13 +510,17 @@ impl TokenCache {
     pub(crate) fn store_if_current(
         &self,
         current: &CachedToken,
+        authorization: &str,
         token: &CachedToken,
     ) -> Result<bool, SpotifyError> {
         let _lock = self.lock()?;
-        if self.load()?.as_ref() != Some(current) {
+        if !self
+            .load_grant()?
+            .is_some_and(|(saved, receipt)| saved == *current && receipt == authorization)
+        {
             return Ok(false);
         }
-        self.write(token)?;
+        self.write(token, authorization)?;
         Ok(true)
     }
 
@@ -487,9 +542,12 @@ impl TokenCache {
         Ok(file)
     }
 
-    fn write(&self, token: &CachedToken) -> Result<(), SpotifyError> {
-        let json = serde_json::to_vec_pretty(token)
-            .map_err(|e| SpotifyError::Decode(format!("token cache: {e}")))?;
+    fn write(&self, token: &CachedToken, authorization: &str) -> Result<(), SpotifyError> {
+        let json = serde_json::to_vec_pretty(&CachedGrant {
+            token: token.clone(),
+            authorization_id: Some(authorization.to_owned()),
+        })
+        .map_err(|e| SpotifyError::Decode(format!("token cache: {e}")))?;
         write_private_atomic(&self.path, &json)?;
         Ok(())
     }
@@ -1876,6 +1934,7 @@ mod tests {
             scope: SCOPE.into(),
         };
         cache.store(&current).unwrap();
+        let authorization = cache.authorization_id().unwrap().unwrap();
         let refreshed: Vec<_> = (0..8)
             .map(|revision| CachedToken {
                 access_token: format!("access-{revision}"),
@@ -1889,10 +1948,13 @@ mod tests {
             for token in &refreshed {
                 let cache = cache.clone();
                 let current = &current;
+                let authorization = &authorization;
                 let ready = &ready;
                 writes.push(threads.spawn(move || {
                     ready.wait();
-                    cache.store_if_current(current, token).unwrap()
+                    cache
+                        .store_if_current(current, authorization, token)
+                        .unwrap()
                 }));
             }
             writes
@@ -2313,5 +2375,78 @@ mod tests {
             assert_eq!(Endpoints::at_loopback(Some(elsewhere)), None, "{elsewhere}");
         }
         assert_eq!(Endpoints::at_loopback(None), None);
+    }
+    #[test]
+    fn authorization_receipts_survive_refresh_rotation_but_change_on_new_sign_in() {
+        let data_dir = scratch_dir("authorization-receipts");
+        let cache = TokenCache::in_data_dir(&data_dir);
+        let first = CachedToken {
+            access_token: "access-a".into(),
+            refresh_token: "refresh-a".into(),
+            expires_at: 10,
+            scope: SCOPE.into(),
+        };
+        cache.store(&first).unwrap();
+        let authorization = cache.authorization_id().unwrap().unwrap();
+        let rotated = CachedToken {
+            access_token: "access-b".into(),
+            refresh_token: "refresh-b".into(),
+            expires_at: 20,
+            ..first.clone()
+        };
+        assert!(
+            cache
+                .store_if_current(&first, &authorization, &rotated)
+                .unwrap()
+        );
+        assert_eq!(
+            cache.authorization_id().unwrap().as_deref(),
+            Some(authorization.as_str())
+        );
+        assert_eq!(cache.load().unwrap(), Some(rotated.clone()));
+
+        // Spotify may return the same credentials for a new consent flow.
+        // Equality of token text cannot make the old session current again.
+        cache.store(&rotated).unwrap();
+        let replacement = cache.authorization_id().unwrap().unwrap();
+        assert_ne!(replacement, authorization);
+        assert!(
+            !cache
+                .store_if_current(&rotated, &authorization, &first)
+                .unwrap()
+        );
+        assert_eq!(cache.load().unwrap(), Some(rotated));
+        assert_eq!(cache.authorization_id().unwrap(), Some(replacement));
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn a_legacy_grant_retains_its_receipt_across_its_first_rotating_refresh() {
+        let data_dir = scratch_dir("legacy-authorization-receipt");
+        let cache = TokenCache::in_data_dir(&data_dir);
+        fs::create_dir_all(cache.path().parent().unwrap()).unwrap();
+        let first = CachedToken {
+            access_token: "legacy-access".into(),
+            refresh_token: "legacy-refresh".into(),
+            expires_at: 10,
+            scope: SCOPE.into(),
+        };
+        fs::write(cache.path(), serde_json::to_vec(&first).unwrap()).unwrap();
+        let authorization = cache.authorization_id().unwrap().unwrap();
+        assert!(authorization.starts_with("legacy:"));
+        let rotated = CachedToken {
+            access_token: "rotated-access".into(),
+            refresh_token: "rotated-refresh".into(),
+            expires_at: 20,
+            ..first.clone()
+        };
+        assert!(
+            cache
+                .store_if_current(&first, &authorization, &rotated)
+                .unwrap()
+        );
+        assert_eq!(cache.authorization_id().unwrap(), Some(authorization));
+        assert_eq!(cache.load().unwrap(), Some(rotated));
+        fs::remove_dir_all(data_dir).unwrap();
     }
 }

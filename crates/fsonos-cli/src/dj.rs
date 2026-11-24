@@ -303,7 +303,7 @@ impl State {
         now: i64,
     ) -> Result<Self, Failure> {
         let inputs = plan_inputs(moods_file);
-        let catalog = catalog::Receipt::read(store)?;
+        let catalog = catalog::Receipt::read(store, moods_file.and_then(|path| path.parent()))?;
         let mut next = Self {
             pool: works_from_store(store)
                 .map_err(|e| Failure::new(ErrorCode::Internal, format!("the DJ's pool: {e}")))?,
@@ -830,7 +830,7 @@ impl SpotifyDj {
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
         let room = room(at);
-        let speakers = speakers(at);
+        let stop_speakers = speakers(at);
         let now = clock.now().timestamp();
         match action {
             DjAction::Start => {
@@ -839,6 +839,12 @@ impl SpotifyDj {
                 self.take_library_fresh(state);
                 state.refresh(store, self.moods_file.as_ref(), now)?;
                 let cx = state.context(store, at.coordinator, clock)?;
+                let selection =
+                    catalog::SelectionTransport::new(at.transport, state.catalog.as_ref());
+                let speakers = speakers(DjSpeakers {
+                    transport: &selection,
+                    ..at
+                });
                 let State {
                     feeds,
                     pool,
@@ -881,6 +887,12 @@ impl SpotifyDj {
                 self.take_library_fresh(state);
                 state.refresh(store, self.moods_file.as_ref(), now)?;
                 let cx = state.context(store, at.coordinator, clock)?;
+                let selection =
+                    catalog::SelectionTransport::new(at.transport, state.catalog.as_ref());
+                let speakers = speakers(DjSpeakers {
+                    transport: &selection,
+                    ..at
+                });
                 let State {
                     feeds,
                     pool,
@@ -906,7 +918,7 @@ impl SpotifyDj {
                     .get_mut(at.coordinator)
                     .filter(|feed| feed.is_active())
                     .ok_or_else(|| no_session(&room))?;
-                let stopped = feed.stop(&speakers).map_err(failure);
+                let stopped = feed.stop(&stop_speakers).map_err(failure);
                 // Definite refusals retain a retryable session. An ambiguous
                 // Stop releases it even on error; the pre-Stop checkpoint
                 // already retired its durable state, so clear its bookkeeping.
@@ -1389,6 +1401,11 @@ impl DjEngine for SpotifyDj {
                 saved::RecoveryCheckpoint::new(path, &state.feeds, &state.handover, &state.starters)
             })
         });
+        let selection = catalog::SelectionTransport::new(at.transport, state.catalog.as_ref());
+        let guarded_speakers = speakers(DjSpeakers {
+            transport: &selection,
+            ..at
+        });
         let State {
             feeds,
             refill_retries,
@@ -1405,7 +1422,7 @@ impl DjEngine for SpotifyDj {
             return;
         };
         let result = feed.on_playback_with_recovery_checkpoint(
-            &speakers(at),
+            &guarded_speakers,
             plan(pool, feedback.as_ref(), &cx, &elsewhere),
             store,
             playback,

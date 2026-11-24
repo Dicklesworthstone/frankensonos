@@ -75,6 +75,7 @@ pub struct Session {
     cache: TokenCache,
     http: Client,
     token: Option<CachedToken>,
+    authorization_id: Option<String>,
     /// A server rate limit also applies to the next read on this session.
     api_cooldown: retry::Cooldown,
 }
@@ -98,13 +99,17 @@ impl Session {
         http: Client,
     ) -> Result<Self, SpotifyError> {
         config.validate()?;
-        let token = cache.load()?;
+        let grant = cache.load_grant()?;
+        let (token, authorization_id) = grant.map_or((None, None), |(token, receipt)| {
+            (Some(token), Some(receipt))
+        });
         Ok(Self {
             config,
             endpoints: Endpoints::for_session(),
             cache,
             http,
             token,
+            authorization_id,
             api_cooldown: retry::Cooldown::default(),
         })
     }
@@ -129,6 +134,12 @@ impl Session {
     #[must_use]
     pub fn is_authorized(&self) -> bool {
         self.token.is_some()
+    }
+
+    /// The sign-in this reader opened, unchanged by access-token refresh.
+    #[must_use]
+    pub fn authorization_id(&self) -> Option<&str> {
+        self.authorization_id.as_deref()
     }
 
     /// The taste scopes the owner's grant lacks (all of them before sign-in).
@@ -158,7 +169,7 @@ impl Session {
         let body = self.config.code_exchange_body(&code, &pending.pkce);
         let response = self.post_token(cx, body).await?;
         let token = CachedToken::from_exchange(response, unix_now())?;
-        self.cache.store(&token)?;
+        self.authorization_id = Some(self.cache.store_authorization(&token)?);
         self.token = Some(token);
         Ok(())
     }
@@ -274,7 +285,9 @@ impl Session {
     /// session's refresh updates both copies; a new sign-in belongs to a new read.
     fn current_grant(&self) -> Result<&CachedToken, SpotifyError> {
         let current = self.token.as_ref().ok_or_else(not_authorized)?;
-        if self.cache.load()?.as_ref() != Some(current) {
+        if !self.cache.load_grant()?.is_some_and(|(token, receipt)| {
+            token == *current && Some(receipt.as_str()) == self.authorization_id.as_deref()
+        }) {
             return Err(sign_in_changed());
         }
         Ok(current)
@@ -288,7 +301,13 @@ impl Session {
         // A new sign-in or another refresh may have completed during HTTP.
         // Persist first, without replacing a changed or removed grant. Never
         // adopt a different session's account midway through a library read.
-        if !self.cache.store_if_current(current, &next)? {
+        if !self.cache.store_if_current(
+            current,
+            self.authorization_id
+                .as_deref()
+                .ok_or_else(not_authorized)?,
+            &next,
+        )? {
             return Err(sign_in_changed());
         }
         self.token = Some(next);

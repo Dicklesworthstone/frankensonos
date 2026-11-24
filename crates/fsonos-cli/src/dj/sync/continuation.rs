@@ -64,6 +64,14 @@ impl Pass {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Checkpoint {
+    /// Admission and full publication are separate: an interrupted sign-in
+    /// change cannot acknowledge the old account's cached library.
+    #[serde(default)]
+    pub(super) authorization_observed: bool,
+    #[serde(default)]
+    pub(super) authorization_id: Option<String>,
+    #[serde(default)]
+    pub(super) accepted_authorization_id: Option<String>,
     owner: Option<String>,
     pending: usize,
     limited: usize,
@@ -119,6 +127,23 @@ pub(super) struct Checkpoint {
 }
 
 impl Checkpoint {
+    fn observe_authorization(&mut self, current: Option<String>, now: i64) -> bool {
+        if self.authorization_id == current {
+            return false;
+        }
+        *self = Self {
+            authorization_observed: true,
+            authorization_id: current,
+            not_before: self.not_before,
+            retry_at: now.max(self.not_before),
+            requires_refresh: true,
+            intake_pending: true,
+            intake_error: Some("Spotify sign-in changed; a full library refresh is pending".into()),
+            ..Self::default()
+        };
+        true
+    }
+
     fn wait(stalled: usize) -> i64 {
         let check = i64::try_from(CHECK.as_secs()).unwrap_or(i64::MAX);
         let max = i64::try_from(MAX_AGE.as_secs()).unwrap_or(i64::MAX);
@@ -174,6 +199,9 @@ impl Checkpoint {
             self.stalled.saturating_add(1)
         };
         let mut next = Self {
+            authorization_observed: self.authorization_observed,
+            authorization_id: self.authorization_id.clone(),
+            accepted_authorization_id: self.accepted_authorization_id.clone(),
             owner: report.owner.clone(),
             pending: report.pending,
             limited: report.limited,
@@ -494,6 +522,10 @@ impl Checkpoint {
                 .max(read.artist_samples.retry_after_secs)
                 .max(read.playlists.retry_after_secs),
         );
+        if full && !next.requires_refresh {
+            next.accepted_authorization_id
+                .clone_from(&self.authorization_id);
+        }
         next
     }
 
@@ -557,10 +589,23 @@ struct Envelope {
 }
 
 pub(super) fn load(data_dir: &Path) -> Option<Checkpoint> {
-    let text = std::fs::read_to_string(data_dir.join(STAMP)).ok()?;
+    load_checked(data_dir).ok().flatten()
+}
+
+pub(super) fn load_checked(data_dir: &Path) -> Result<Option<Checkpoint>, Failure> {
+    let text = match std::fs::read_to_string(data_dir.join(STAMP)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(store_failure(error)),
+    };
     serde_json::from_str::<Envelope>(&text)
-        .ok()?
-        .playlist_continuation
+        .map(|saved| saved.playlist_continuation)
+        .map_err(|_| {
+            Failure::new(
+                ErrorCode::Internal,
+                "the library refresh receipt is unreadable",
+            )
+        })
 }
 
 fn genre_status(saved: &Checkpoint, running: bool, now: i64) -> Option<GenreEnrichmentDto> {
@@ -659,12 +704,20 @@ fn legacy_genre_note(note: &str) -> bool {
     })
 }
 
+/// A busy worker has not inspected due work. Keep a reauthorization wake
+/// pending until this process can actually admit the saved read intent.
+pub(super) enum Background {
+    Busy,
+    Idle,
+    Finished(Box<Result<LibrarySyncDto, Failure>>),
+}
+
 impl LibrarySync {
-    pub(super) fn background(&self) -> Option<Result<LibrarySyncDto, Failure>> {
+    pub(super) fn background(&self) -> Background {
         {
             let mut state = self.running();
             if state.running {
-                return None;
+                return Background::Busy;
             }
             state.running = true;
         }
@@ -672,17 +725,26 @@ impl LibrarySync {
             Ok(Some(lock)) => lock,
             Ok(None) => {
                 self.running().running = false;
-                return None;
+                return Background::Busy;
             }
-            Err(error) => return Some(self.finish_running(Err(error))),
+            Err(error) => return Background::Finished(Box::new(self.finish_running(Err(error)))),
         };
         // A manual refresh cannot replace the saved owner or cooldown between
         // this selection and its admission. Preserve the last error if idle.
+        let changed = match self.observe_authorization() {
+            Ok(changed) => changed,
+            Err(error) => return Background::Finished(Box::new(self.finish_running(Err(error)))),
+        };
+        // Establish new ownership before account-dependent continuation work.
+        if changed {
+            self.running().error = None;
+            return Background::Finished(Box::new(self.run_pass_locked(Pass::Full)));
+        }
         let listening = match self.refresh_recent_if_due() {
             Ok(observed) => observed,
             Err(error) => {
                 self.running().running = false;
-                return Some(Err(error));
+                return Background::Finished(Box::new(Err(error)));
             }
         };
         let now = self.now();
@@ -695,10 +757,14 @@ impl LibrarySync {
         };
         let Some(pass) = pass else {
             self.running().running = false;
-            return listening.then(|| Ok(self.status()));
+            return if listening {
+                Background::Finished(Box::new(Ok(self.status())))
+            } else {
+                Background::Idle
+            };
         };
         self.running().error = None;
-        Some(self.run_pass_locked(pass))
+        Background::Finished(Box::new(self.run_pass_locked(pass)))
     }
 
     pub(super) fn run_pass(&self, pass: Pass) -> Result<LibrarySyncDto, Failure> {
@@ -716,6 +782,11 @@ impl LibrarySync {
     }
 
     fn run_pass_locked(&self, pass: Pass) -> Result<LibrarySyncDto, Failure> {
+        let pass = match self.observe_authorization() {
+            Ok(true) => Pass::Full,
+            Ok(false) => pass,
+            Err(error) => return self.finish_running(Err(error)),
+        };
         {
             let mut state = self.running();
             state.genres = matches!(pass, Pass::Genres(_));
@@ -775,7 +846,11 @@ impl LibrarySync {
             PassKind::Playlists => checkpoint.reserve(now),
         };
         write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
-        let read = self.read(pass, checkpoint.albums.clone());
+        let read = self.read(
+            pass,
+            checkpoint.albums.clone(),
+            checkpoint.authorization_id.clone(),
+        );
         self.finish_pass(before, &checkpoint, reserved, kind, read)
     }
 
@@ -816,6 +891,15 @@ impl LibrarySync {
             Err(error) => (Err(error), 0, false, None, false),
         };
         let at = self.now();
+        let authorization = self.authorization_id()?;
+        if authorization != checkpoint.authorization_id {
+            // A completed old proof cannot acknowledge a newer sign-in.
+            // Retain any application-wide cooldown observed by that reader.
+            reserved.cooldown(at, retry_after);
+            reserved.observe_authorization(authorization, at);
+            write(&self.data_dir, before.as_ref(), &reserved).map_err(store_failure)?;
+            return Err(super::authorization::pending());
+        }
         if full {
             // Starting a worker or calling /me is not an observation of saved
             // pages. Only a persisted checkpoint or definite invalidation can
@@ -854,6 +938,18 @@ impl LibrarySync {
                 Err(error)
             }
         }
+    }
+
+    /// Persist a new read intent before selecting an account-bound worker.
+    /// Keep application-wide cooldowns, but retire the former grant's backoff,
+    /// completed proofs, and acknowledgement of the public library.
+    fn observe_authorization(&self) -> Result<bool, Failure> {
+        let mut checkpoint = load(&self.data_dir).unwrap_or_default();
+        let changed = checkpoint.observe_authorization(self.authorization_id()?, self.now());
+        if changed {
+            write(&self.data_dir, self.last().as_ref(), &checkpoint).map_err(store_failure)?;
+        }
+        Ok(changed)
     }
 
     /// Publish one accepted read to the scheduler and notify active DJ feeds.
@@ -935,3 +1031,6 @@ mod album_tests;
 
 #[cfg(test)]
 mod genre_tests;
+
+#[cfg(test)]
+mod authorization_tests;

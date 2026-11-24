@@ -572,3 +572,141 @@ fn direction_readiness_needs_configuration_but_never_scans_the_library() {
     );
     assert_eq!(store.library_reads.get(), reads);
 }
+
+fn authorize_catalog(dir: &std::path::Path) -> String {
+    let cache = fsonos_spotify::client::TokenCache::in_data_dir(dir);
+    cache
+        .store(&fsonos_spotify::client::CachedToken {
+            access_token: "fixture-access".into(),
+            refresh_token: "fixture-refresh".into(),
+            expires_at: i64::MAX,
+            scope: fsonos_spotify::client::SCOPE.into(),
+        })
+        .unwrap();
+    cache.authorization_id().unwrap().unwrap()
+}
+
+fn acknowledge_catalog(dir: &std::path::Path, authorization: &str) {
+    let stamp = serde_json::json!({
+        "playlist_continuation": {
+            "authorization_observed": true,
+            "authorization_id": authorization,
+            "accepted_authorization_id": authorization,
+            "owner": "original-owner",
+            "pending": 0,
+            "limited": 0,
+            "stalled": 0,
+            "retry_at": 0,
+            "not_before": 0,
+            "requires_refresh": false
+        }
+    });
+    std::fs::write(
+        dir.join("library-sync.json"),
+        serde_json::to_vec(&stamp).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn reauthorization_defers_warm_and_cold_selection_until_a_full_refresh_is_accepted() {
+    let (mut store, mut state) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let moods = dir.path().join("moods.toml");
+    let receipt = authorize_catalog(dir.path());
+    acknowledge_catalog(dir.path(), &receipt);
+    state.reload(&store, Some(&moods), 0).unwrap();
+    assert!(state.plan_is_current(&store, Some(&moods)).unwrap());
+    let reads = store.library_reads.get();
+
+    let replacement = authorize_catalog(dir.path());
+    assert!(state.plan_is_current(&store, Some(&moods)).is_err());
+    assert!(State::read_plan(&store, Some(&moods), 1).is_err());
+    let failure = state.refresh(&store, Some(&moods), 1).unwrap_err();
+    assert_eq!(failure.code, fsonos_api::ErrorCode::NotReady);
+    assert!(failure.detail.contains("sign-in changed"));
+    assert!(state.pool.is_empty() && !state.planned && state.catalog.is_none());
+    assert_eq!(
+        store.library_reads.get(),
+        reads,
+        "pending consent cannot read old candidate music"
+    );
+
+    apply_library_read(&mut store, &[song(2)]).unwrap();
+    acknowledge_catalog(dir.path(), &replacement);
+    state.refresh(&store, Some(&moods), 2).unwrap();
+    assert_eq!(state.pool.len(), 1);
+    assert_eq!(state.pool.works()[0].composer, "Artist 2");
+    assert!(state.plan_is_current(&store, Some(&moods)).unwrap());
+}
+
+#[test]
+fn sign_in_during_pool_construction_cannot_install_the_retired_selection_proof() {
+    let (store, mut state) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let moods = dir.path().join("moods.toml");
+    let receipt = authorize_catalog(dir.path());
+    acknowledge_catalog(dir.path(), &receipt);
+    state.reload(&store, Some(&moods), 0).unwrap();
+    let cache = fsonos_spotify::client::TokenCache::in_data_dir(dir.path());
+    let previous = std::fs::read(cache.path()).unwrap();
+    authorize_catalog(dir.path());
+    let replacement = std::fs::read_to_string(cache.path()).unwrap();
+    std::fs::write(cache.path(), previous).unwrap();
+    *store.configuration_edit.borrow_mut() = Some((cache.path().to_owned(), replacement));
+
+    let failure = state.reload(&store, Some(&moods), 0).unwrap_err();
+    assert_eq!(failure.code, fsonos_api::ErrorCode::NotReady);
+    assert!(state.pool.is_empty());
+    assert!(state.catalog.is_none());
+}
+
+#[test]
+fn sign_in_during_speaker_preflight_cannot_append_old_picks_but_stop_still_works() {
+    use fsonos_proto::{ProtoError, Transport};
+
+    struct ChangingSpeaker {
+        dir: std::path::PathBuf,
+        sent: RefCell<Vec<String>>,
+    }
+    impl Transport for ChangingSpeaker {
+        fn soap_post(
+            &self,
+            _host: std::net::IpAddr,
+            _path: &str,
+            action: &str,
+            _body: &str,
+        ) -> Result<String, ProtoError> {
+            self.sent.borrow_mut().push(action.to_owned());
+            if action.ends_with("#GetPositionInfo") {
+                authorize_catalog(&self.dir);
+            }
+            Ok(String::new())
+        }
+    }
+    let (store, _) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let receipt = authorize_catalog(dir.path());
+    acknowledge_catalog(dir.path(), &receipt);
+    let evidence = super::Receipt::read(&store, Some(dir.path())).unwrap();
+    let raw = ChangingSpeaker {
+        dir: dir.path().to_owned(),
+        sent: RefCell::default(),
+    };
+    let guarded = super::SelectionTransport::new(&raw, Some(&evidence));
+    let host = "127.0.0.1".parse().unwrap();
+    let service = "urn:schemas-upnp-org:service:AVTransport:1";
+    guarded
+        .soap_post(host, "/Control", &format!("{service}#GetPositionInfo"), "")
+        .unwrap();
+    for action in ["AddURIToQueue", "AddMultipleURIsToQueue"] {
+        let error = guarded
+            .soap_post(host, "/Control", &format!("{service}#{action}"), "")
+            .unwrap_err();
+        assert!(error.to_string().contains("sign-in changed"));
+    }
+    guarded
+        .soap_post(host, "/Control", &format!("{service}#Stop"), "")
+        .unwrap();
+    assert_eq!(raw.sent.borrow().len(), 2, "no retired selection was sent");
+}

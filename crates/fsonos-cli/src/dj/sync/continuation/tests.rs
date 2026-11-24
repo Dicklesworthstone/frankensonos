@@ -210,7 +210,10 @@ fn a_background_check_releases_idle_admission_and_preserves_an_existing_worker()
     write(&dir, Some(&full(at)), &checkpoint).unwrap();
     let sync = controller(dir, at);
     sync.running().error = Some("the previous pass failed".into());
-    assert!(sync.background().is_none(), "no Spotify work is due yet");
+    assert!(
+        matches!(sync.background(), Background::Idle),
+        "no Spotify work is due yet"
+    );
     assert!(!sync.running().running);
     assert_eq!(
         sync.running().error.as_deref(),
@@ -220,7 +223,7 @@ fn a_background_check_releases_idle_admission_and_preserves_an_existing_worker()
 
     assert!(sync.claim(), "idle background admission was released");
     assert!(
-        sync.background().is_none(),
+        matches!(sync.background(), Background::Busy),
         "an admitted manual refresh owns the slot"
     );
     assert!(
@@ -469,8 +472,8 @@ fn another_directory_writer_blocks_manual_and_background_reads_without_changing_
 
     contender.running().error = Some("previous reader failed".into());
     assert!(
-        contender.background().is_none(),
-        "a busy writer is idle work"
+        matches!(contender.background(), Background::Busy),
+        "a busy writer has not admitted this reader"
     );
     assert!(!contender.running().running);
     assert_eq!(
@@ -508,7 +511,7 @@ fn a_retried_reader_observes_the_latest_writer_cooldown_before_admission() {
     let error = reader.run().unwrap_err();
     assert_eq!(error.code, ErrorCode::NotReady);
     assert!(error.detail.contains("no refresh request was sent"));
-    assert!(reader.background().is_none());
+    assert!(matches!(reader.background(), Background::Idle));
     assert_eq!(std::fs::read(dir.join(STAMP)).unwrap(), original);
     assert!(!reader.running().running);
 }
@@ -527,10 +530,10 @@ fn refresh_locks_are_per_directory_and_failed_admission_releases_the_local_slot(
     let reader = controller(dir.clone(), at);
     assert_eq!(reader.run().unwrap_err().code, ErrorCode::Internal);
     assert!(!reader.running().running);
-    assert_eq!(
-        reader.background().unwrap().unwrap_err().code,
-        ErrorCode::Internal
-    );
+    let Background::Finished(result) = reader.background() else {
+        panic!("failed directory admission must return its error");
+    };
+    assert_eq!((*result).unwrap_err().code, ErrorCode::Internal);
     assert!(!reader.running().running);
     assert!(!dir.join(STAMP).exists());
 

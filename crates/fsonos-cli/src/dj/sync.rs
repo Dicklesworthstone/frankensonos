@@ -53,6 +53,7 @@ use std::time::Duration;
 use crate::config::{GlobalArgs, ServeArgs};
 use crate::remote::Daemon;
 
+pub(super) mod authorization;
 mod continuation;
 use continuation::Pass;
 
@@ -259,6 +260,7 @@ impl LibrarySync {
         &self,
         pass: Pass,
         previous_albums: Option<AlbumContinuation>,
+        authorization: Option<String>,
     ) -> Result<ReadResult, Failure> {
         let config = self.settings.resolve(&self.data_dir)?;
         let dir = self.data_dir.clone();
@@ -276,6 +278,12 @@ impl LibrarySync {
                     )?;
                     if !session.is_authorized() {
                         return Err(SpotifyError::Auth("not signed in to Spotify".into()));
+                    }
+                    if session.authorization_id() != authorization.as_deref() {
+                        return Err(SpotifyError::Auth(
+                            "Spotify sign-in changed before the library read; retry the new sign-in"
+                                .into(),
+                        ));
                     }
                     let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
                     let mut progress = None;
@@ -358,13 +366,29 @@ impl LibrarySync {
     #[must_use]
     pub fn due(&self, now: i64) -> bool {
         let checkpoint = continuation::load(&self.data_dir);
-        if let Some(saved) = &checkpoint {
-            if now < saved.not_before {
-                return false;
-            }
-            if saved.requires_refresh || saved.reconcile {
-                return now >= saved.retry_at;
-            }
+        if checkpoint
+            .as_ref()
+            .is_some_and(|saved| now < saved.not_before)
+        {
+            return false;
+        }
+        if self
+            .authorization_id()
+            .ok()
+            .flatten()
+            .is_some_and(|current| {
+                checkpoint
+                    .as_ref()
+                    .and_then(|saved| saved.authorization_id.as_ref())
+                    != Some(&current)
+            })
+        {
+            return true;
+        }
+        if let Some(saved) = &checkpoint
+            && (saved.requires_refresh || saved.reconcile)
+        {
+            return now >= saved.retry_at;
         }
         let max = i64::try_from(MAX_AGE.as_secs()).unwrap_or(i64::MAX);
         let check = i64::try_from(CHECK.as_secs()).unwrap_or(i64::MAX);
@@ -411,25 +435,36 @@ pub fn watch(
         .stack_size(STACK)
         .spawn(move || {
             let mut next = i64::MIN;
-            let mut signed_in = false;
+            let mut authorization = None;
             while !stop.load(Ordering::Acquire) {
-                let available = sync.signed_in();
-                // Completing first-run setup activates this existing worker
-                // immediately; the first library need not wait fifteen minutes.
-                if available && !signed_in {
+                let current = sync
+                    .settings
+                    .resolve(&sync.data_dir)
+                    .ok()
+                    .and_then(|_| sync.authorization_id().ok().flatten());
+                // A new sign-in wakes an already authorized daemon too.
+                // Ordinary token refreshes preserve this opaque receipt.
+                if current.is_some() && current != authorization {
                     next = i64::MIN;
                 }
-                signed_in = available;
+                authorization = current;
                 if sync.elapsed_secs() >= next {
-                    if available && let Some(result) = sync.background() {
-                        match result {
-                            Ok(status) => eprintln!("fsonos serve: {}", status.done),
-                            Err(f) => tracing::warn!("library refresh: {}", f.detail),
+                    let checked = match authorization.as_ref().map(|_| sync.background()) {
+                        Some(continuation::Background::Busy) => false,
+                        Some(continuation::Background::Finished(result)) => {
+                            match *result {
+                                Ok(status) => eprintln!("fsonos serve: {}", status.done),
+                                Err(f) => tracing::warn!("library refresh: {}", f.detail),
+                            }
+                            true
                         }
+                        Some(continuation::Background::Idle) | None => true,
+                    };
+                    // Contention cannot consume a new sign-in's wake. The
+                    // next half-second tick only retries worker admission.
+                    if checked {
+                        next = sync.elapsed_secs().saturating_add(every);
                     }
-                    // From the end of a refresh, however long it took (a
-                    // rate limit can hold one for an hour).
-                    next = sync.elapsed_secs().saturating_add(every);
                 }
                 thread::sleep(Duration::from_millis(500));
             }

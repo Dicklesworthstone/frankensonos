@@ -737,6 +737,19 @@ their standing preferences on every surface and in the daemon. What is on
   off failures while honoring Spotify cooldowns, on a thread of its own.
   `fsonos dj sync` (`POST /dj/sync`, MCP `dj_sync`) asks for a read now, and
   `GET /dj/sync` (`dj_sync_status`) says where it stands.
+- Reauthorizing Spotify wakes an already signed-in daemon. An opaque sign-in
+  receipt changes on consent and survives ordinary token rotation. Each new
+  grant requires a bounded full refresh; admission survives restart, retains
+  Spotify's application-wide cooldown, and retires previous account-dependent
+  scheduling proofs. Late results cannot acknowledge a newer sign-in. Until
+  the full refresh completes, warmed and cold DJ plans and the final queue
+  append reject old authorization evidence; queued music and explicit stop
+  retain their normal behavior. Regression cases cover repeated PKCE consent,
+  the live watch loop, cooldown/restart recovery, stale full-read completion,
+  credential removal, and changes during pool construction or speaker preflight.
+  Rust execution remains pending after dependency-build SIGKILL and loss of
+  the local execution environment. See
+  [Spotify read recovery](docs/SPOTIFY_READ_RECOVERY.md#account-changes-while-reading).
 - Essential saved-library reads resume across restarts and long rate limits.
   Migration 21 stores private, account-bound progress for saved albums, liked
   tracks, and album hydration. A pass spends at most 512 page requests,

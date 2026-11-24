@@ -805,8 +805,12 @@ fn rewriting_the_same_grant_during_http_keeps_the_response_usable() {
     let mut reply = Reply::status(200);
     reply.before_response = Some(Box::new(move || {
         let cache = receive_cache.recv_timeout(Duration::from_secs(2)).unwrap();
-        let current = cache.load().unwrap().unwrap();
-        cache.store(&current).unwrap();
+        let (current, authorization) = cache.load_grant().unwrap().unwrap();
+        assert!(
+            cache
+                .store_if_current(&current, &authorization, &current)
+                .unwrap()
+        );
     }));
     let server = Server::start(vec![reply]);
     let (mut session, directory) = server.session();
@@ -836,9 +840,16 @@ fn own_proactive_and_reactive_refreshes_allow_subsequent_reads() {
         let server = Server::start(replies);
         let (mut session, directory) = server.session();
         if proactive {
-            session.token.as_mut().unwrap().expires_at = 0;
-            let expired = session.token.as_ref().unwrap();
-            session.cache.store(expired).unwrap();
+            let current = session.token.as_ref().unwrap().clone();
+            let mut expired = current.clone();
+            expired.expires_at = 0;
+            assert!(
+                session
+                    .cache
+                    .store_if_current(&current, session.authorization_id().unwrap(), &expired,)
+                    .unwrap()
+            );
+            session.token = Some(expired);
         }
         runtime().block_on(async move {
             let cx = Cx::current().unwrap();

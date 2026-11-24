@@ -129,7 +129,11 @@ impl LibrarySync {
         let mut saved = load(&self.data_dir).unwrap_or_default();
         let before = self.last();
         let fenced = self.fence_recent_status(&mut saved);
-        if now < saved.not_before || now < saved.recent.retry_at || !self.signed_in() {
+        if now < saved.not_before
+            || now < saved.recent.retry_at
+            || saved.authorization_id != saved.accepted_authorization_id
+            || !self.signed_in()
+        {
             if fenced {
                 write(&self.data_dir, before.as_ref(), &saved).map_err(store_failure)?;
             }
@@ -139,13 +143,20 @@ impl LibrarySync {
         saved.recent.retry_at = saved.recent.retry_at.max(saved.not_before);
         write(&self.data_dir, before.as_ref(), &saved).map_err(store_failure)?;
         self.running().recent = true;
-        let read = self.read_recent(now);
+        let read = self.read_recent(now, saved.authorization_id.clone());
         self.running().recent = false;
         let at = self.now();
         let (result, retry_after) = match read {
             Ok(read) => (read.result.map_err(failure), read.retry_after),
             Err(error) => (Err(error), 0),
         };
+        let authorization = self.authorization_id()?;
+        if authorization != saved.authorization_id {
+            saved.cooldown(at, retry_after);
+            saved.observe_authorization(authorization, at);
+            write(&self.data_dir, before.as_ref(), &saved).map_err(store_failure)?;
+            return Ok(true);
+        }
         match result {
             Ok(report) => {
                 if report.requires_refresh && !saved.requires_refresh {
@@ -173,7 +184,7 @@ impl LibrarySync {
         Ok(true)
     }
 
-    fn read_recent(&self, now: i64) -> Result<Read, Failure> {
+    fn read_recent(&self, now: i64, authorization: Option<String>) -> Result<Read, Failure> {
         let config = self.settings.resolve(&self.data_dir)?;
         let dir = self.data_dir.clone();
         thread::Builder::new()
@@ -190,6 +201,12 @@ impl LibrarySync {
                     )?;
                     if !session.is_authorized() {
                         return Err(SpotifyError::Auth("not signed in to Spotify".into()));
+                    }
+                    if session.authorization_id() != authorization.as_deref() {
+                        return Err(SpotifyError::Auth(
+                            "Spotify sign-in changed before the listening read; retry the refresh"
+                                .into(),
+                        ));
                     }
                     let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
                     let result = refresh_recent_listening(&mut session, &cx, &mut store, now).await;

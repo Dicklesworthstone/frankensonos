@@ -28,7 +28,7 @@ oversized HTTP messages are not classified as transient.
 Only Web API GETs are retried. Authorization-code and refresh-token POSTs retain
 their existing single-submission session path. The existing endpoint guard runs
 before authentication or network dispatch. No new OAuth scopes, playback
-commands, dependencies or token persistence rules are introduced. Successful
+commands or dependencies are introduced. Successful
 response bodies still pass to their existing parsers; malformed JSON is not a
 reason to replay a request.
 
@@ -42,9 +42,34 @@ selection. Retry the catalog request with the current sign-in; each catalog
 request opens a new session.
 
 Automatic token refresh still works: a session can continue reading with the
-credentials it refreshed itself. Rewriting an identical credential does not
-invalidate a read. An observed Spotify rate limit is retained even when the
-account changes before its response is accepted.
+credentials it refreshed itself. The private token cache now keeps an opaque
+sign-in receipt beside the credentials. Refreshing or rotating a token preserves
+that receipt; completing a new authorization changes it, even if Spotify
+returns the same token strings. Existing token files remain readable, and their
+receipt survives the first refresh without requiring another sign-in. An
+observed Spotify rate limit is retained even when the account changes before
+its response is accepted.
+
+The running daemon notices a replaced grant at its existing half-second check,
+even when it was already signed in. If another refresh owns the worker or its
+directory lock, that wake stays pending until admission succeeds. A bounded
+full library read takes priority
+over account-dependent listening and enrichment jobs. This admission survives
+restart, retires the previous grant's completed proofs and retry backoff, and
+preserves the application's Spotify cooldown. Ordinary token refresh does not
+request an extra full library scan. A reader already in flight cannot
+acknowledge a replacement grant or publish its old progress as the new sign-in's
+completed refresh.
+
+Until that sign-in has a completed full refresh, new DJ starts, rehearsals,
+readiness checks and refills cannot use the retired selection pool. The DJ
+rechecks the receipt before appending selected tracks, including after speaker
+preflight; already queued music and explicit stop keep their normal behavior.
+Removing credentials after admission also keeps new selections waiting.
+Inspect `fsonos dj sync --status` for the pending refresh, or request
+`fsonos dj sync` to run the next bounded pass. On upgrade, an existing authorized
+library needs one full refresh to establish this receipt; its last successful
+refresh remains visible while the new read is pending.
 
 ## Availability survives restarts
 
@@ -109,13 +134,26 @@ request and before it replies, without timing sleeps. They cover fresh-token
 replacement and removal, successful and failed responses, connection loss,
 unchanged-credential rewrites, and successful proactive and reactive refresh.
 
-The focused `session::` filter is the Rust proof for this behavior; live
-Spotify operation and physical-speaker acceptance are separate. The stalled-body
+Reauthorization cases also cover opaque receipt persistence, two real PKCE code
+exchanges, rotating HTTP refresh, stale full-reader completion, removed grants,
+and warm/cold DJ pool admission. The real daemon watcher runs with a fixed clock
+to prove that replacement wakes it before the periodic deadline, including
+while another writer holds the refresh lock. Catalog cases replace consent
+during pool construction and speaker preflight, before the first queue append.
+These new receipt, watcher and catalog tests await Rust execution: the
+implementation environment filled during dependency compilation and became
+unavailable before the project test binaries could run.
+
+The focused filters below exercise this behavior; live Spotify operation and
+physical-speaker acceptance are separate. The stalled-body
 case uses an interruptible 30-second scripted body against a one-second total
 budget, so loaded-host scheduling cannot turn it into a zero-request race. Run:
 
 ```sh
+cargo test -p fsonos-spotify client::tests::
 cargo test -p fsonos-spotify session::
+cargo test -p fsonos-cli dj::sync::
+cargo test -p fsonos-cli dj::catalog::
 cargo fmt --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
