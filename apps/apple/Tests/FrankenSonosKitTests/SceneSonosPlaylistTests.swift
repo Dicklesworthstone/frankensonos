@@ -11,7 +11,7 @@ private let savedPlaylistReference = Scene.PlaylistReference(
 
 private let savedPlaylistSceneWire = #"""
 {
-  "name": "Playlist evening", "saved": 1,
+  "name": "Playlist evening", "saved": 1, "revision": "scene-v1:playlist",
   "groups": [{
     "coordinator": "Workshop@TEST-B", "members": ["Hall@TEST-B"], "playing": false,
     "source": {
@@ -30,7 +30,7 @@ private func savedPlaylistScene(reference: Scene.PlaylistReference = savedPlayli
                          source: source ?? .init(kind: "sonos_playlist", name: reference.id,
                                                  uri: nil, mood: nil, playlist: reference),
                          playing: playing)],
-          volumes: [:], mutes: [:])
+          volumes: [:], mutes: [:], revision: "scene-v1:playlist")
 }
 
 @Test func nativeSonosPlaylistSceneDecodesTheDaemonContractAndRetainsItsPinnedIdentity() throws {

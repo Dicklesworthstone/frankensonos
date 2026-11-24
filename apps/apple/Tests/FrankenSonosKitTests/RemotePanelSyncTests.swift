@@ -19,7 +19,7 @@ private actor CatalogSyncTransport: DaemonTransport {
     func release() { blocked = false; waiter?.resume(); waiter = nil }
     func count(_ path: String) -> Int { requests.filter { $0.url?.path == path }.count }
     private func scene() -> [String: Any] {
-        ["name": name, "saved": saved, "groups": [], "volumes": [:], "mutes": [:]]
+        ["name": name, "saved": saved, "revision": "scene-v1:\(saved)", "groups": [], "volumes": [:], "mutes": [:]]
     }
     func send(_ request: URLRequest) async throws -> HTTPReply {
         requests.append(request)

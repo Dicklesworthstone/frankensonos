@@ -778,7 +778,8 @@ public struct RemoteResult: Identifiable, Sendable {
                 let uncertain: Bool
                 if case ClientError.uncertain = error { uncertain = true } else { uncertain = false }
                 self?.sceneMutationResult = RemoteSceneMutationResult(command: reviewed.command, receipt: nil,
-                    title: uncertain ? "Scene outcome uncertain — not repeated" : "Nothing sent",
+                    title: uncertain ? "Scene outcome uncertain — not repeated" :
+                        ((error as? APIProblem)?.code == "CONFIG_CHANGED" ? "Scene changed — review again" : "Nothing sent"),
                     detail: error.localizedDescription, kind: uncertain ? .uncertain : .notSent)
             }
             // A late result stays with the original stored scene, even after

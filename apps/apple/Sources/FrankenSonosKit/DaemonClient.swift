@@ -312,24 +312,34 @@ extension DaemonClient {
     /// Dispatch only the immutable, one-use scene review. A response lost after
     /// the PUT/DELETE was handed to transport is uncertain and is never retried.
     func perform(_ review: SceneMutationReview) async throws -> SceneMutationReceipt {
+        struct Body: Encodable {
+            let expectedRevision: String
+            let groups: [Scene.Group]?
+            let volumes: [String: Int]?
+            let mutes: [String: Bool]?
+            enum CodingKeys: String, CodingKey {
+                case expectedRevision = "expected_revision", groups, volumes, mutes
+            }
+        }
         try Task.checkCancellation()
         var request = URLRequest(url: try endpoint.resource(["scenes", review.name]),
                                  cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
         request.httpMethod = review.command.isDelete ? "DELETE" : "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if !review.command.isDelete {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            if let definition = review.observation.definition {
-                request.httpBody = try JSONEncoder().encode(definition)
-            } else {
-                request.httpBody = Data("{}".utf8)
-            }
-        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let definition = review.observation.definition
+        request.httpBody = try JSONEncoder().encode(Body(
+            expectedRevision: review.observation.expectedRevision,
+            groups: definition?.groups, volumes: definition?.volumes, mutes: definition?.mutes))
         try Task.checkCancellation()
         do {
             let reply = try await transport.send(request)
             try Self.check(reply)
             return try review.receipt(reply.data)
+        } catch let problem as APIProblem where problem.code == "CONFIG_CHANGED" {
+            // The conditional store boundary refused the stale revision before
+            // changing the scene. Keep the original review; never retry it.
+            throw problem
         } catch {
             throw ClientError.uncertain(error.localizedDescription)
         }

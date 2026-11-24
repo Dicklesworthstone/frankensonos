@@ -274,6 +274,7 @@ public struct SceneSourceChoices: Sendable {
 }
 
 struct SceneMutationObservation: Sendable {
+    let expectedRevision: String
     let groups: [Zone]
     let definition: SceneDefinition?
     let preview: Scene?
@@ -282,6 +283,7 @@ struct SceneMutationObservation: Sendable {
 
     static func read(_ command: SceneMutation, client: DaemonClient) async throws -> Self {
         let name = try SceneName.validated(command.name)
+        let expectedRevision = try command.previous.map { try revisionForChange($0) } ?? "absent"
         if let previous = command.previous {
             _ = try previous.validated()
             guard SceneName.key(previous.name) == SceneName.key(name) else {
@@ -293,21 +295,25 @@ struct SceneMutationObservation: Sendable {
             throw ContractError.invalid("Add at least one group, room level or mute setting before saving a custom scene.")
         }
         let matches = try await client.scenes().filter { SceneName.key($0.name) == SceneName.key(name) }
-        guard matches.count <= 1, matches.first == command.previous else {
+        let currentRevision = try matches.first.map { try revisionForChange($0) } ?? "absent"
+        guard matches.count <= 1, matches.first == command.previous,
+              currentRevision.utf8.elementsEqual(expectedRevision.utf8) else {
             throw ContractError.invalid("A scene with this name was added, changed or removed. Refresh scenes and review the replacement again.")
         }
         if let previous = command.previous {
-            guard try await client.scene(named: previous.name) == previous else {
+            let current = try await client.scene(named: previous.name)
+            guard current == previous,
+                  try revisionForChange(current).utf8.elementsEqual(expectedRevision.utf8) else {
                 throw ContractError.invalid("The saved scene changed. Refresh scenes before replacing or deleting it.")
             }
         }
         if command.isDelete {
-            return Self(groups: [], definition: nil, preview: nil, favorites: [:], moods: [:])
+            return Self(expectedRevision: expectedRevision, groups: [], definition: nil, preview: nil, favorites: [:], moods: [:])
         }
         let zones = try await client.zones()
         guard !zones.isEmpty else { throw ContractError.invalid("Connect to the house before saving a scene.") }
         if command.isCapture {
-            return Self(groups: zones, definition: nil, preview: nil, favorites: [:], moods: [:])
+            return Self(expectedRevision: expectedRevision, groups: zones, definition: nil, preview: nil, favorites: [:], moods: [:])
         }
         guard case .save(_, let requested, _) = command else { throw ClientError.unreadable }
         let checked = try requested.validated(zones: zones)
@@ -339,14 +345,25 @@ struct SceneMutationObservation: Sendable {
         }
         try Task.checkCancellation()
         let relevant = zones.filter { !$0.rooms.map(\.address).allSatisfy { !checked.roomAddresses.contains($0) } }
-        return Self(groups: relevant,
+        return Self(expectedRevision: expectedRevision, groups: relevant,
             definition: .init(groups: wireGroups, volumes: checked.volumes, mutes: checked.mutes),
             preview: Scene(name: name, saved: 0, groups: previewGroups, volumes: checked.volumes, mutes: checked.mutes),
             favorites: favorites, moods: moods)
     }
 
+    static func revisionForChange(_ scene: Scene) throws -> String {
+        guard let revision = scene.revision, revision != "absent",
+              revision.utf8.count <= 4_096,
+              revision.unicodeScalars.contains(where: { !$0.properties.isWhitespace }),
+              !revision.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else {
+            throw ContractError.invalid("The daemon did not provide a valid saved scene revision. Refresh scenes or update the daemon before replacing or deleting this scene.")
+        }
+        return revision
+    }
+
     func validate(_ current: Self) throws {
-        guard groups.count == current.groups.count,
+        guard expectedRevision.utf8.elementsEqual(current.expectedRevision.utf8),
+              groups.count == current.groups.count,
               groups.allSatisfy({ old in current.groups.contains { old.sameGroup(as: $0) } }),
               definition == current.definition, preview == current.preview,
               favorites == current.favorites, moods == current.moods else {
@@ -366,6 +383,7 @@ extension SceneMutationReview {
                 detail: "The saved definition was removed. Current playback was not changed. Schedules using this scene name need a replacement scene or a different action.")
         }
         let actual = try DaemonClient.decode(Scene.self, from: data).validated()
+        _ = try SceneMutationObservation.revisionForChange(actual)
         guard actual.name.utf8.elementsEqual(name.utf8) else { throw ClientError.unreadable }
         if let preview {
             let authored = actual.groups.map { group in

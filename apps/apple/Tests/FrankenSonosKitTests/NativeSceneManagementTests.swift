@@ -11,11 +11,12 @@ private let sceneManagementOther = RoomID(household: "TEST-B", room: "Studio")
 private func sceneManagementZone(_ household: String = "TEST-A") -> Zone {
     Zone(household: household, coordinatorRoom: "Studio", members: ["Studio", "Hall"], transportState: "playing")
 }
-private func sceneManagementSaved(_ name: String = sceneManagementName, level: Int = 24, at: Int64 = 1) -> Scene {
+private func sceneManagementSaved(_ name: String = sceneManagementName, level: Int = 24, at: Int64 = 1,
+                                  revision: String? = "scene-v1:original") -> Scene {
     Scene(name: name, saved: at,
         groups: [.init(coordinator: "Studio@TEST-A", members: ["Hall@TEST-A"],
             source: .init(kind: "keep", name: nil, uri: nil, mood: nil), playing: nil)],
-        volumes: ["Hall@TEST-A": level], mutes: ["Studio@TEST-A": false])
+        volumes: ["Hall@TEST-A": level], mutes: ["Studio@TEST-A": false], revision: revision)
 }
 private func sceneManagementCaptured(_ name: String) -> Scene {
     Scene(name: name, saved: 1_800_000_000,
@@ -25,7 +26,7 @@ private func sceneManagementCaptured(_ name: String) -> Scene {
             .init(coordinator: "Studio@TEST-B", members: ["Hall@TEST-B"],
                   source: .init(kind: "dj", name: nil, uri: nil, mood: "calm"), playing: false)
         ], volumes: ["Studio@TEST-A": 17, "Hall@TEST-B": 29],
-        mutes: ["Studio@TEST-A": false, "Hall@TEST-B": true])
+        mutes: ["Studio@TEST-A": false, "Hall@TEST-B": true], revision: "scene-v1:captured")
 }
 private func sceneManagementJSON<T: Encodable>(_ value: T, status: Int = 200) throws -> HTTPReply {
     let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -71,10 +72,12 @@ private actor SceneManagementTransport: DaemonTransport {
     var saves = 0
     var deletes = 0
     var blocked = false
+    private var rowsBeforeWrite: [Scene]?
     private var holdKey: String?
     private var held: CheckedContinuation<Void, Never>?
 
     func setRows(_ value: [Scene]) { rows = value }
+    func changeBeforeWrite(_ value: [Scene]) { rowsBeforeWrite = value }
     func setTopology(_ value: [Zone]) { topology = value }
     func setFavorites(_ value: [Favorite]) { favorites = value }
     func setMoods(_ value: [MoodCatalog.Mood]) { moods = value }
@@ -90,6 +93,18 @@ private actor SceneManagementTransport: DaemonTransport {
         let method = request.httpMethod ?? "GET"
         let path = request.url!.path.removingPercentEncoding ?? request.url!.path
         if method == "GET", failPath == path { throw URLError(.cannotConnectToHost) }
+        if method != "GET", path.hasPrefix("/scenes/") {
+            if let replacement = rowsBeforeWrite { rows = replacement; rowsBeforeWrite = nil }
+            let name = String(path.dropFirst("/scenes/".count))
+            let expected = try sceneManagementBody(request)["expected_revision"]
+            let current = rows.first { sceneManagementNameKey($0.name) == sceneManagementNameKey(name) }
+            let revision = current?.revision ?? "absent"
+            guard expected == .string(revision) else {
+                return try sceneManagementJSON(APIProblem(code: "CONFIG_CHANGED",
+                    detail: "The saved scene changed after it was read.",
+                    hint: "Read the current scene and review the change again. No change was retried."), status: 409)
+            }
+        }
         let response: HTTPReply
         if method == "GET" {
             switch path {
@@ -115,7 +130,8 @@ private actor SceneManagementTransport: DaemonTransport {
             }
         } else if method == "PUT", path.hasPrefix("/scenes/") {
             let name = String(path.dropFirst("/scenes/".count))
-            let body = request.httpBody.flatMap { try? JSONDecoder().decode([String: JSONValue].self, from: $0) } ?? [:]
+            var body = try sceneManagementBody(request)
+            body.removeValue(forKey: "expected_revision")
             let saved: Scene
             if body.isEmpty { saved = sceneManagementCaptured(name) }
             else {
@@ -128,7 +144,8 @@ private actor SceneManagementTransport: DaemonTransport {
                     }
                     return Scene.Group(coordinator: group.coordinator, members: group.members, source: source, playing: group.playing)
                 }
-                saved = Scene(name: name, saved: definition.saved, groups: groups, volumes: definition.volumes, mutes: definition.mutes)
+                saved = Scene(name: name, saved: definition.saved, groups: groups, volumes: definition.volumes,
+                              mutes: definition.mutes, revision: "scene-v1:authored")
             }
             saves += 1
             rows.removeAll { sceneManagementNameKey($0.name) == sceneManagementNameKey(name) }
@@ -254,7 +271,7 @@ private func sceneManagementUncertain(_ session: CommandReviewSession, _ review:
     let request = try #require(await transport.writes().first)
     #expect(request.httpMethod == "PUT" && request.url?.query == nil && request.url?.fragment == nil)
     #expect(request.url?.absoluteString.contains("%2F") == true)
-    #expect(try sceneManagementBody(request).isEmpty)
+    #expect(try sceneManagementBody(request) == ["expected_revision": .string("absent")])
     await #expect(throws: ContractError.self) { try await session.execute(review) }
     #expect(await transport.saves == 1)
 }
@@ -270,6 +287,7 @@ private func sceneManagementUncertain(_ session: CommandReviewSession, _ review:
     let request = try #require(await transport.writes().first)
     #expect(request.httpMethod == "PUT")
     #expect(try sceneManagementBody(request) == [
+        "expected_revision": .string("absent"),
         "groups": .array([]), "volumes": .object(["Studio@TEST-B": .integer(24)]),
         "mutes": .object(["Hall@TEST-A": .bool(false)])
     ])
@@ -374,6 +392,119 @@ private func sceneManagementUncertain(_ session: CommandReviewSession, _ review:
     }
 }
 
+@Test func nativeSceneManagementRevisionIncludesChangesHiddenFromTheSceneDisplay() async throws {
+    for deleting in [true, false] {
+        let transport = SceneManagementTransport(), session = try CommandReviewSession(client: sceneManagementClient(transport))
+        let original = sceneManagementSaved()
+        let command: SceneMutation = deleting ? .delete(original) : .capture(name: original.name, replacing: original)
+        let reviewed = try await session.prepare(command)
+        let updated = sceneManagementSaved(revision: "scene-v1:metadata-changed")
+        #expect(updated.groups == original.groups && updated.saved == original.saved)
+        await transport.setRows([updated])
+        await #expect(throws: ContractError.self) { try await session.execute(reviewed) }
+        #expect(await transport.writes().isEmpty)
+        #expect(await transport.rows == [updated])
+    }
+}
+
+@Test func nativeSceneManagementRevisionUsesExactOpaqueBytesWithoutUnicodeNormalization() async throws {
+    let original = sceneManagementSaved(revision: "scene:CAF\u{e9}")
+    let updated = sceneManagementSaved(revision: "scene:CAFe\u{301}")
+    #expect(original.revision == updated.revision)
+    let transport = SceneManagementTransport(), session = try CommandReviewSession(client: sceneManagementClient(transport))
+    await transport.setRows([original])
+    let review = try await session.prepare(SceneMutation.delete(original))
+    await transport.setRows([updated])
+    await #expect(throws: ContractError.self) { try await session.execute(review) }
+    #expect(await transport.writes().isEmpty)
+}
+
+@Test func nativeSceneManagementMissingOrInvalidRevisionsKeepLegacyScenesReadableButNotEditable() async throws {
+    let revisions: [String?] = [nil, "", " \t", "absent", "scene:new\n", "scene:\u{7f}", String(repeating: "é", count: 2_049)]
+    for revision in revisions {
+        let transport = SceneManagementTransport(), client = try sceneManagementClient(transport)
+        let legacy = sceneManagementSaved(revision: revision)
+        await transport.setRows([legacy])
+        #expect(try await client.scenes() == [legacy])
+        #expect(try await client.scene(named: legacy.name) == legacy)
+        let session = CommandReviewSession(client: client)
+        await #expect(throws: ContractError.self) { try await session.prepare(SceneMutation.delete(legacy)) }
+        await #expect(throws: ContractError.self) {
+            try await session.prepare(SceneMutation.capture(name: legacy.name, replacing: legacy))
+        }
+        #expect(await transport.writes().isEmpty)
+    }
+}
+
+@Test func nativeSceneManagementLateRevisionConflictsPreserveNewerScenesForEveryEdit() async throws {
+    for operation in ["capture", "save", "delete"] {
+        for removed in [true, false] {
+            let transport = SceneManagementTransport(), session = try CommandReviewSession(client: sceneManagementClient(transport))
+            let original = sceneManagementSaved()
+            let command: SceneMutation
+            switch operation {
+            case "capture": command = .capture(name: original.name, replacing: original)
+            case "save": command = .save(name: original.name, definition: try sceneManagementLevels(), replacing: original)
+            default: command = .delete(original)
+            }
+            let review = try await session.prepare(command)
+            let newer = removed ? [] : [sceneManagementSaved(revision: "scene-v1:newer-private-metadata")]
+            await transport.changeBeforeWrite(newer)
+            do {
+                _ = try await session.execute(review)
+                Issue.record("A newer scene was overwritten or removed after final confirmation reads")
+            } catch let error as APIProblem {
+                #expect(error.code == "CONFIG_CHANGED")
+            }
+            let writes = await transport.writes()
+            #expect(writes.count == 1)
+            #expect(try sceneManagementBody(#require(writes.first))["expected_revision"] == .string("scene-v1:original"))
+            #expect(await transport.rows == newer)
+            #expect(await transport.saves == 0)
+            #expect(await transport.deletes == 0)
+            await #expect(throws: ContractError.self) { try await session.execute(review) }
+            #expect(await transport.writes().count == 1)
+        }
+    }
+}
+
+@Test func nativeSceneManagementLateCreateConflictsPreserveCaseEquivalentNames() async throws {
+    for capturing in [true, false] {
+        let transport = SceneManagementTransport(), session = try CommandReviewSession(client: sceneManagementClient(transport))
+        await transport.setRows([])
+        let command: SceneMutation = capturing ? .capture(name: "Evening", replacing: nil) :
+            .save(name: "Evening", definition: try sceneManagementLevels(), replacing: nil)
+        let review = try await session.prepare(command)
+        let other = sceneManagementSaved("EVENING", revision: "scene-v1:other-controller")
+        await transport.changeBeforeWrite([other])
+        do {
+            _ = try await session.execute(review)
+            Issue.record("A create-only scene write replaced another controller's scene")
+        } catch let error as APIProblem {
+            #expect(error.code == "CONFIG_CHANGED")
+        }
+        #expect(await transport.rows == [other])
+        #expect(await transport.saves == 0)
+        #expect(try sceneManagementBody(#require(await transport.writes().first))["expected_revision"] == .string("absent"))
+        await #expect(throws: ContractError.self) { try await session.execute(review) }
+        #expect(await transport.writes().count == 1)
+    }
+}
+
+@Test func nativeSceneManagementAuthoredReplacementRetainsTheReviewedRevisionAndReturnsItsNewProof() async throws {
+    let transport = SceneManagementTransport(), session = try CommandReviewSession(client: sceneManagementClient(transport))
+    let original = sceneManagementSaved()
+    let review = try await session.prepare(SceneMutation.save(name: original.name,
+        definition: sceneManagementLevels(32), replacing: original))
+    let receipt = try await session.execute(review)
+    #expect(review.previous?.revision == "scene-v1:original" && review.preview?.revision == nil)
+    #expect(receipt.saved?.revision == "scene-v1:authored")
+    #expect(receipt.saved?.volumes == ["Studio@TEST-B": 32])
+    let body = try sceneManagementBody(#require(await transport.writes().first))
+    #expect(body["expected_revision"] == .string("scene-v1:original"))
+    #expect(body["revision"] == nil && body["saved"] == nil && body["name"] == nil)
+}
+
 @Test func nativeSceneManagementListingAndDeletionNeedNoSpeakerOrSelectedRoom() async throws {
     let transport = SceneManagementTransport(), client = try sceneManagementClient(transport)
     await transport.fail("/zones")
@@ -384,7 +515,8 @@ private func sceneManagementUncertain(_ session: CommandReviewSession, _ review:
     #expect(receipt.deleted == saved.name && receipt.saved == nil)
     let writes = await transport.writes()
     #expect(writes.count == 1 && writes[0].httpMethod == "DELETE")
-    #expect(try sceneManagementBody(writes[0]).isEmpty)
+    #expect(try sceneManagementBody(writes[0]) == ["expected_revision": .string("scene-v1:original")])
+    #expect(writes[0].value(forHTTPHeaderField: "Content-Type") == "application/json")
     #expect(await transport.requests.allSatisfy { $0.url!.path.hasPrefix("/scenes") })
     #expect(await transport.rows.isEmpty)
 }
@@ -442,10 +574,10 @@ private func sceneManagementUncertain(_ session: CommandReviewSession, _ review:
 
 @Test func nativeSceneManagementSaveReceiptMustConfirmEveryAuthoredField() async throws {
     let badReplies = [
-        Scene(name: "Wrong name", saved: 2, groups: [], volumes: ["Studio@TEST-B": 24], mutes: ["Hall@TEST-A": false]),
-        Scene(name: "Levels", saved: 2, groups: [], volumes: ["Studio@TEST-B": 55], mutes: ["Hall@TEST-A": false]),
-        Scene(name: "Levels", saved: 2, groups: [], volumes: ["Studio@TEST-A": 24], mutes: ["Hall@TEST-A": false]),
-        Scene(name: "Levels", saved: 2, groups: [], volumes: ["Studio@TEST-B": 24], mutes: ["Hall@TEST-A": true])
+        Scene(name: "Wrong name", saved: 2, groups: [], volumes: ["Studio@TEST-B": 24], mutes: ["Hall@TEST-A": false], revision: "scene-v1:reply"),
+        Scene(name: "Levels", saved: 2, groups: [], volumes: ["Studio@TEST-B": 55], mutes: ["Hall@TEST-A": false], revision: "scene-v1:reply"),
+        Scene(name: "Levels", saved: 2, groups: [], volumes: ["Studio@TEST-A": 24], mutes: ["Hall@TEST-A": false], revision: "scene-v1:reply"),
+        Scene(name: "Levels", saved: 2, groups: [], volumes: ["Studio@TEST-B": 24], mutes: ["Hall@TEST-A": true], revision: "scene-v1:reply")
     ]
     for saved in badReplies {
         let transport = SceneManagementTransport(), session = try CommandReviewSession(client: sceneManagementClient(transport))
@@ -455,6 +587,17 @@ private func sceneManagementUncertain(_ session: CommandReviewSession, _ review:
         await #expect(throws: ContractError.self) { try await session.execute(review) }
         #expect(await transport.writes().count == 1)
     }
+}
+
+@Test func nativeSceneManagementSaveWithoutANewRevisionRetainsAnUncertainOutcome() async throws {
+    let transport = SceneManagementTransport(), session = try CommandReviewSession(client: sceneManagementClient(transport))
+    let review = try await session.prepare(SceneMutation.save(name: "Levels", definition: sceneManagementLevels(), replacing: nil))
+    await transport.overrideWrite(try sceneManagementJSON(Scene(name: "Levels", saved: 2, groups: [],
+        volumes: ["Studio@TEST-B": 24], mutes: ["Hall@TEST-A": false])))
+    await sceneManagementUncertain(session, review)
+    #expect(await transport.saves == 1)
+    await #expect(throws: ContractError.self) { try await session.execute(review) }
+    #expect(await transport.writes().count == 1)
 }
 
 @Test func nativeSceneManagementDeleteReceiptCannotClaimADifferentSceneWasRemoved() async throws {
@@ -667,6 +810,32 @@ private func sceneManagementUncertain(_ session: CommandReviewSession, _ review:
     model.confirmSceneMutation(id); model.refresh()
     #expect(model.sceneMutationReview == nil && model.sceneMutationResult?.receipt == nil)
     #expect(await transport.writes().isEmpty)
+}
+
+@Test @MainActor func nativeSceneManagementScreenReportsALateConflictAndKeepsTheOriginalDraft() async throws {
+    let transport = SceneManagementTransport(), model = try await sceneManagementScreen(transport)
+    defer { model.stop() }
+    let original = try #require(model.scenes.first)
+    model.beginSceneDraft(replacing: original)
+    var draft = model.sceneDraft
+    draft.volumes[sceneManagementOther] = 31
+    model.updateSceneDraft(draft); model.prepareSceneDraft()
+    try await sceneManagementScreenWait { model.sceneMutationReview != nil && model.actionPhase == .idle }
+    let id = try #require(model.sceneMutationReview?.id)
+    let newer = sceneManagementSaved(revision: "scene-v1:newer-definition")
+    await transport.changeBeforeWrite([newer])
+    model.confirmSceneMutation(id)
+    try await sceneManagementScreenWait { model.sceneMutationResult != nil && model.actionPhase == .idle }
+    #expect(model.sceneMutationResult?.kind == .notSent)
+    #expect(model.sceneMutationResult?.title == "Scene changed — review again")
+    #expect(model.sceneMutationResult?.command.previous == original)
+    #expect(model.sceneMutationResult?.receipt == nil)
+    #expect(model.sceneComposerOpen && model.sceneDraft == draft && model.sceneDraftReplacing == original)
+    model.confirmSceneMutation(id); model.refresh()
+    #expect(model.sceneMutationReview == nil)
+    #expect(await transport.rows == [newer])
+    #expect(await transport.saves == 0)
+    #expect(await transport.writes().count == 1)
 }
 
 @Test @MainActor func nativeSceneManagementScreenCancelledPreparationCannotReopenItsReview() async throws {

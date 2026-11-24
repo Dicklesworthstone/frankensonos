@@ -235,9 +235,19 @@ public struct MoodCatalog: Codable, Sendable {
 public struct Scene: Codable, Equatable, Sendable, Identifiable {
     public let name: String
     public let saved: Int64
+    /// Proof of the complete stored definition, including renderer metadata
+    /// omitted from this display. Older daemons may omit it on reads.
+    public let revision: String?
     public let groups: [Group]
     public let volumes: [String: Int]
     public let mutes: [String: Bool]
+
+    public init(name: String, saved: Int64, groups: [Group], volumes: [String: Int],
+                mutes: [String: Bool], revision: String? = nil) {
+        self.name = name; self.saved = saved; self.revision = revision
+        self.groups = groups; self.volumes = volumes; self.mutes = mutes
+    }
+
     // Keep distinct UTF-8 names distinct in SwiftUI, whose String equality
     // otherwise merges composed and decomposed Unicode spellings.
     public var id: String { Data(name.utf8).base64EncodedString() }
