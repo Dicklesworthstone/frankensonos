@@ -353,3 +353,106 @@ fn playlist_progress_keeps_due_album_pages_and_the_two_background_readers_take_t
         Some(Pass::Playlists(_))
     ));
 }
+
+#[test]
+fn completed_album_caches_wake_at_the_retained_recheck_after_restart() {
+    let dir = directory("cache-recheck");
+    let at = 1_790_000_000;
+    let recheck = at + 3_600;
+    let mut state = checkpoint(at, 0);
+    let mut cached = albums(0, 0, 0);
+    cached.recheck_at = Some(recheck);
+    state.observed_albums(&cached, at, false);
+    write(&dir, Some(&full(at)), &state).unwrap();
+
+    let restored = load(&dir).unwrap();
+    assert!(restored.background_pass(recheck - 1).is_none());
+    assert!(matches!(
+        restored.background_pass(recheck),
+        Some(Pass::Albums(Some(ref observed))) if observed.recheck_at == Some(recheck)
+    ));
+    let sync = controller(dir, recheck);
+    assert!(!sync.due(recheck), "the full library is still current");
+    assert_eq!(sync.last(), Some(full(at)));
+}
+
+#[test]
+fn idle_album_rechecks_keep_admission_backoff_and_shared_cooldowns() {
+    let at = 1_790_000_000;
+    let check = i64::try_from(CHECK.as_secs()).unwrap();
+    let recheck = at + 3_600;
+    let mut state = checkpoint(at, 0);
+    let mut cached = albums(0, 0, 0);
+    cached.recheck_at = Some(recheck);
+    state.observed_albums(&cached, at, false);
+
+    let mut admitted = state.reserve_albums(recheck);
+    assert_eq!(admitted.album_retry_at, recheck + 2 * check);
+    assert!(!admitted.album_due(admitted.album_retry_at - 1));
+    assert!(admitted.album_due(admitted.album_retry_at));
+    admitted.cooldown(recheck, 7_200);
+    assert!(!admitted.album_due(recheck + 7_199));
+    assert!(admitted.album_due(recheck + 7_200));
+
+    admitted.requires_refresh = true;
+    assert!(!admitted.album_due(i64::MAX));
+    admitted.requires_refresh = false;
+    admitted.reconcile = true;
+    assert!(!admitted.album_due(i64::MAX));
+}
+
+#[test]
+fn accepted_album_revalidation_refreshes_the_pool_and_reschedules_without_a_full_sync() {
+    let dir = directory("cache-revalidated");
+    let at = 1_790_000_000;
+    let recheck = at + 3_600;
+    let mut state = checkpoint(at, 0);
+    let mut cached = albums(0, 0, 0);
+    cached.recheck_at = Some(recheck);
+    state.observed_albums(&cached, at, false);
+    write(&dir, Some(&full(at)), &state).unwrap();
+
+    let sync = controller(dir.clone(), recheck);
+    let next_recheck = recheck + 7 * 86_400;
+    let mut refreshed = albums(0, 1, 0);
+    refreshed.recheck_at = Some(next_recheck);
+    let latest = sync
+        .accepted(
+            sync.last(),
+            &state,
+            &report(refreshed),
+            PassKind::Albums,
+            recheck,
+        )
+        .unwrap();
+    assert_eq!(latest.at, at);
+    assert!(sync.take_fresh(), "new album evidence changes the next pick");
+    let saved = load(&dir).unwrap();
+    assert!(saved.background_pass(next_recheck - 1).is_none());
+    assert!(matches!(
+        saved.background_pass(next_recheck),
+        Some(Pass::Albums(Some(_)))
+    ));
+}
+
+#[test]
+fn due_album_cache_refreshes_share_the_existing_reader_rotation() {
+    let at = 1_790_000_000;
+    let recheck = at + 3_600;
+    let mut state = checkpoint(at, 2);
+    let mut cached = albums(0, 0, 0);
+    cached.recheck_at = Some(recheck);
+    state.observed_albums(&cached, at, false);
+    assert!(matches!(
+        state.background_pass(recheck),
+        Some(Pass::Playlists(_))
+    ));
+    let mut read = report(cached);
+    read.playlists = playlists(1);
+    read.playlists.advanced = 50;
+    let after_playlist = state.accepted(&read, PassKind::Playlists, recheck);
+    assert!(matches!(
+        after_playlist.background_pass(after_playlist.album_retry_at),
+        Some(Pass::Albums(Some(_)))
+    ));
+}

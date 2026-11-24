@@ -248,7 +248,9 @@ impl Checkpoint {
             && !self.reconcile
             && now >= self.not_before
             && now >= self.album_retry_at
-            && self.albums.as_ref().is_none_or(|albums| albums.pending > 0)
+            && self.albums.as_ref().is_none_or(|albums| {
+                albums.pending > 0 || albums.recheck_at.is_some_and(|at| now >= at)
+            })
     }
 
     pub(super) fn has_genres(&self) -> bool {

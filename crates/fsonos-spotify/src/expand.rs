@@ -4,8 +4,8 @@
 //! work-based DJ that movement would play alone, which is jarring; the album
 //! knows the rest. [`complete_works`] reads each partly-held work's album track
 //! list (`GET /v1/albums/{id}/tracks` with the owner's own token: a read of
-//! public catalog data, cached in the store's album-track table so each album
-//! is fetched once) and [`expand_work`] fills in the missing movements — from
+//! public catalog data, cached in the store's album-track table and rechecked
+//! weekly) and [`expand_work`] fills in the missing movements — from
 //! the same recording, when an album holds more than one.
 //!
 //! Filled-in movements are not library items: they carry
@@ -22,7 +22,7 @@
 //! them. Liked- and taste-only works still use catalog completion; this does not
 //! add persistent negative availability evidence for those separate sources.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use asupersync::Cx;
 use fsonos_core::store::{AlbumTrack, CachedAlbum, Store, StoreError};
@@ -41,6 +41,22 @@ mod recording;
 /// How long an album whose track list was missing or unplayable is left
 /// alone before it is read again, in seconds (a week).
 pub const MISS_RETRY_SECS: i64 = 7 * 86_400;
+
+/// Recheck a completed album observation after a week. Its last proved list
+/// remains available while a bounded refresh is incomplete or offline.
+pub const ALBUM_CACHE_MAX_AGE_SECS: i64 = 7 * 86_400;
+
+/// Unknown content flags and invalid or future timestamps cannot postpone a
+/// refresh. This is a validation deadline, not an offline playback deadline.
+pub(crate) fn album_recheck_at(album: &CachedAlbum, now: i64) -> i64 {
+    if album.fetched_at <= 0
+        || album.fetched_at > now
+        || album.tracks.iter().any(|track| track.explicit.is_none())
+    {
+        return now;
+    }
+    album.fetched_at.saturating_add(ALBUM_CACHE_MAX_AGE_SECS)
+}
 
 // Album reads must remain finite even when a server invents new page URLs.
 pub(crate) const MAX_ALBUM_PAGES: usize = 2_000;
@@ -85,9 +101,15 @@ impl AlbumMisses {
         self.retry_at.get(album_uri).is_some_and(|&at| now < at)
     }
 
+    pub(crate) fn retry_at(&self, album_uri: &str) -> Option<i64> {
+        self.retry_at.get(album_uri).copied()
+    }
+
     pub(crate) fn record(&mut self, album_uri: &str, now: i64) {
-        self.retry_at
-            .insert(album_uri.to_owned(), now + MISS_RETRY_SECS);
+        self.retry_at.insert(
+            album_uri.to_owned(),
+            now.saturating_add(MISS_RETRY_SECS),
+        );
     }
 
     /// The misses `store` keeps that still wait at `now`.
@@ -148,34 +170,37 @@ pub async fn complete_works<S: Store + ?Sized>(
     if !config.expand_partial_works {
         return (works, report);
     }
-    let mut unreadable: HashSet<String> = HashSet::new();
+    // Several partly-held works can share an album. A failed revalidation
+    // must not retry it once per work, nor discard a successfully read list
+    // merely because its cache write failed.
+    let mut lists: HashMap<String, Option<Vec<AlbumTrack>>> = HashMap::new();
     let mut done = Vec::with_capacity(works.len());
     for work in works {
         let Some(uri) = work
             .album_uri
             .clone()
-            .filter(|_| work.needs_expansion() && report.halted.is_none())
+            .filter(|_| work.needs_expansion())
         else {
             done.push(work);
             continue;
         };
-        if unreadable.contains(&uri) {
-            done.push(work);
-            continue;
-        }
-        if misses.waiting(&uri, now) {
-            report.skipped += 1;
-            unreadable.insert(uri);
-            done.push(work);
-            continue;
-        }
-        let Some(tracks) = album_list(session, cx, store, &uri, now, misses, &mut report).await
-        else {
-            unreadable.insert(uri);
+        let tracks = match lists.entry(uri) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let tracks = if misses.waiting(entry.key(), now) {
+                    report.skipped += 1;
+                    None
+                } else {
+                    album_list(session, cx, store, entry.key(), now, misses, &mut report).await
+                };
+                entry.insert(tracks)
+            }
+        };
+        let Some(tracks) = tracks.as_deref() else {
             done.push(work);
             continue;
         };
-        match expand_work(&work, &tracks) {
+        match expand_work(&work, tracks) {
             Some(full) => {
                 report.completed += 1;
                 done.push(full);
@@ -186,9 +211,9 @@ pub async fn complete_works<S: Store + ?Sized>(
     (done, report)
 }
 
-/// `album_uri`'s track list from the cache, else the Web API (then cached).
-/// `None` when it can't be had this run, with why in `report` — and a miss
-/// recorded when the album itself is the problem.
+/// Use a fresh album list, otherwise revalidate it through the Web API.
+/// Transient failures retain its last proved list. A validated empty response
+/// or definite disappearance retires that list instead of reviving it offline.
 async fn album_list<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
@@ -198,22 +223,50 @@ async fn album_list<S: Store + ?Sized>(
     misses: &mut AlbumMisses,
     report: &mut Expansion,
 ) -> Option<Vec<AlbumTrack>> {
-    match store.album_tracks(album_uri) {
-        Ok(Some(cached)) if cached.tracks.iter().all(|track| track.explicit.is_some()) => {
+    let owner = match store.spotify_library_owner() {
+        Ok(owner) => owner,
+        Err(error) => {
+            report.halted = Some(format!("album ownership could not be read: {error}"));
+            return None;
+        }
+    };
+    let previous = match store.album_tracks(album_uri) {
+        Ok(Some(cached)) if album_recheck_at(&cached, now) > now => {
             return Some(cached.tracks);
         }
-        // Legacy rows have no explicit-content metadata. Refetch rather than
-        // treating their missing flag as permission to add a movement.
-        Ok(_) => {}
+        // Legacy rows have no explicit-content metadata. Expansion still
+        // refuses unknown flags when a refresh cannot repair them.
+        Ok(previous) => previous.map(|cached| cached.tracks),
         Err(e) => {
             report.fail(album_uri, SpotifyError::from(e));
             return None;
         }
+    };
+    if report.halted.is_some() {
+        return previous;
     }
-    match fetch_album_tracks(session, cx, album_uri).await {
+    let read = fetch_album_tracks(session, cx, album_uri).await;
+    // Account adoption can run in another process while the request is away.
+    // Compare the exact generation, including an unowned legacy cache, before
+    // accepting positive data or retiring the previous list as unavailable.
+    match store.spotify_library_owner() {
+        Ok(current) if current == owner => {}
+        Ok(_) => {
+            report.halted = Some("the Spotify account changed during album revalidation".into());
+            return None;
+        }
+        Err(error) => {
+            report.halted = Some(format!("album ownership could not be verified: {error}"));
+            return None;
+        }
+    }
+    match read {
         Ok(tracks) if tracks.is_empty() => {
             report.fail(album_uri, "no playable tracks");
-            misses.record(album_uri, now);
+            match store.save_album_tracks(album_uri, &[], now) {
+                Ok(()) => misses.record(album_uri, now),
+                Err(error) => report.fail(album_uri, error),
+            }
             None
         }
         Ok(tracks) => {
@@ -225,19 +278,25 @@ async fn album_list<S: Store + ?Sized>(
         }
         Err(e) if halts(&e) => {
             report.halted = Some(e.to_string());
-            None
+            previous
         }
-        Err(e @ SpotifyError::Decode(_)) => {
-            // A truncated or contradictory page is not evidence that this
-            // album is unavailable. Keep it uncached and retry next sync,
-            // rather than hiding its missing movements for a week.
+        Err(
+            e @ SpotifyError::Api {
+                status: 404 | 410, ..
+            },
+        ) => {
             report.fail(album_uri, e);
+            match store.save_album_tracks(album_uri, &[], now) {
+                Ok(()) => misses.record(album_uri, now),
+                Err(error) => report.fail(album_uri, error),
+            }
             None
         }
         Err(e) => {
+            // Malformed or rejected requests do not prove unavailability.
+            // Preserve any completed list without claiming it was refreshed.
             report.fail(album_uri, e);
-            misses.record(album_uri, now);
-            None
+            previous
         }
     }
 }
@@ -756,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn albums_are_read_once_through_429_and_paging_then_cached() {
+    fn albums_are_read_through_429_and_paging_then_revalidated_weekly() {
         let (spotify, cache, data_dir) = authorized("expand-fetch");
         let run = fetch_scenario(&spotify, cache);
 
@@ -793,12 +852,13 @@ mod tests {
             "an unreadable album's work plays as held"
         );
 
-        // A cache hit makes no requests, and the missing album is left alone
-        // for a week, then asked again.
+        // A fresh cache makes no requests. After a week both its positive
+        // observation and the missing album need revalidation.
         assert_eq!((run.second.completed, run.second.fetched), (1, 0));
         assert_eq!((run.second.skipped, run.second.failed.len()), (1, 0));
         assert_eq!(run.asked[1], 4);
-        assert_eq!(run.asked[2], 5);
+        assert_eq!(run.asked[2], 7);
+        assert_eq!(run.week_later.fetched, 1);
         assert_eq!(
             (run.week_later.skipped, run.week_later.failed.len()),
             (0, 1)
@@ -810,7 +870,7 @@ mod tests {
         assert!(run.untouched.iter().all(|w| w.movements.len() == 1));
         assert_eq!(
             (run.off, run.asked[3]),
-            (Expansion::default(), 5),
+            (Expansion::default(), 7),
             "off reads nothing"
         );
 

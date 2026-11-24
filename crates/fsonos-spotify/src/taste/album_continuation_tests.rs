@@ -11,6 +11,8 @@ use fsonos_core::store::SqliteStore;
 mod budget;
 #[path = "album_proof_tests.rs"]
 mod proof;
+#[path = "album_refresh_tests.rs"]
+mod refresh;
 
 const OWNER: &str = "test-owner";
 const ALBUM: &str = "BackgroundSonata";

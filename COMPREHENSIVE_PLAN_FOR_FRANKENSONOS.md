@@ -642,6 +642,17 @@ from a genre the DJ was built around.
   the DJ's next selections. Album enrichment leaves the last full library-sync
   timestamp intact and shares Spotify's server-requested cooldown with other
   background reads.
+  Completed album lists now revalidate after seven days through the same
+  eight-request continuation budget. A retained deadline wakes an otherwise
+  idle reader after cache expiry or a known-miss retry, including after restart.
+  The last complete list remains usable while a refresh is partial or fails.
+  A validated empty or unavailable list, or a definite 404/410 disappearance,
+  retires its former expansion cache before recording the retry deadline;
+  new DJ picks cannot revive those old movements from disk. Personal saved
+  music and the last full-refresh timestamp remain intact. New timestamp,
+  HTTP/SQLite and scheduler regressions await execution because the build
+  runtime became unavailable. Immediate negative evidence learned from other
+  Spotify endpoints still needs a separate account-bound availability model.
 - Works longer than `max_work_minutes` (default 75: most complete operas
   and Passions) are left out unless the mood allows them. A parsed work is never
   split; titles that don't parse fall back to single-track units.

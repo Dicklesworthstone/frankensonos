@@ -1,4 +1,5 @@
-//! Finish whole-work album metadata independently of the daily library read.
+//! Finish and revalidate whole-work album metadata independently of the daily
+//! library read. Completed lists are refreshed after a week.
 //! An unfinished album stays in the private scheduler checkpoint. Only a
 //! complete, validated list enters the album cache the selector consumes.
 
@@ -6,7 +7,7 @@ use super::LibrarySyncDetailed;
 use super::playlists::{candidate_items, summarize};
 use crate::SpotifyError;
 use crate::classical::CandidatePool;
-use crate::expand::{AlbumMisses, album_id, halts};
+use crate::expand::{AlbumMisses, album_id, album_recheck_at, halts};
 use crate::genres::GenreRead;
 use crate::library::LibraryItem;
 use crate::session::Session;
@@ -15,7 +16,7 @@ use crate::works::group_works;
 use asupersync::Cx;
 use fsonos_core::store::{SpotifyLibraryOwner, Store};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod library;
@@ -37,7 +38,11 @@ pub struct AlbumContinuation {
     pub owner: Option<String>,
     pub generation: Option<u64>,
     pub pending: usize,
-    /// Complete album lists published by this pass.
+    /// Earliest future cache-expiry or known-miss retry, even with no pending
+    /// requests. None means there are no future album checks to schedule.
+    pub recheck_at: Option<i64>,
+    /// Complete catalog observations published by this pass, including a
+    /// validated empty or missing album that retires its former cached list.
     pub completed: usize,
     /// Raw positions newly retained or verified in this pass's partial list.
     pub advanced: usize,
@@ -106,6 +111,7 @@ impl AlbumContinuation {
         self.requires_refresh = true;
         self.partial = None;
         self.pending = 0;
+        self.recheck_at = None;
         self.advanced = 0;
     }
 }
@@ -118,17 +124,31 @@ fn now() -> i64 {
         })
 }
 
-/// Missing lists, excluding albums whose established miss backoff still runs.
-/// Sorting makes the durable cursor independent of library row order.
-fn missing<S: Store + ?Sized>(store: &S, at: i64) -> Result<Vec<String>, SpotifyError> {
-    missing_for_items(store, &candidate_items(store)?, at)
+/// One candidate/cache snapshot provides both immediate work and its next
+/// deadline. Scheduling must not rescan the whole library just for expiry.
+struct AlbumInventory {
+    pending: Vec<String>,
+    recheck_at: Option<i64>,
 }
 
-fn missing_for_items<S: Store + ?Sized>(
+impl AlbumInventory {
+    fn observe(&self, state: &mut AlbumContinuation) {
+        state.pending = self.pending.len();
+        state.recheck_at = self.recheck_at;
+    }
+}
+
+fn inventory<S: Store + ?Sized>(store: &S, at: i64) -> Result<AlbumInventory, SpotifyError> {
+    inventory_for_items(store, &candidate_items(store)?, at)
+}
+
+/// Missing and expired lists, excluding albums whose established miss backoff
+/// still runs. Sorting keeps rotation independent of library row order.
+fn inventory_for_items<S: Store + ?Sized>(
     store: &S,
     items: &[LibraryItem],
     at: i64,
-) -> Result<Vec<String>, SpotifyError> {
+) -> Result<AlbumInventory, SpotifyError> {
     let works = group_works(CandidatePool::build(items).tracks());
     let mut albums: Vec<String> = works
         .iter()
@@ -138,15 +158,27 @@ fn missing_for_items<S: Store + ?Sized>(
         .collect();
     albums.sort_unstable();
     albums.dedup();
-    let cached: HashSet<String> = store
+    let cached: HashMap<_, _> = store
         .album_tracks_many(&albums.iter().map(String::as_str).collect::<Vec<_>>())?
         .into_iter()
-        .filter(|(_, album)| album.tracks.iter().all(|track| track.explicit.is_some()))
-        .map(|(uri, _)| uri)
         .collect();
     let misses = AlbumMisses::load(store, at)?;
-    albums.retain(|uri| !cached.contains(uri) && !misses.waiting(uri, at));
-    Ok(albums)
+    let mut observed = AlbumInventory {
+        pending: Vec::new(),
+        recheck_at: None,
+    };
+    for uri in albums {
+        let due = cached
+            .get(&uri)
+            .map_or(at, |album| album_recheck_at(album, at))
+            .max(misses.retry_at(&uri).unwrap_or(at));
+        if due <= at {
+            observed.pending.push(uri);
+        } else {
+            observed.recheck_at = Some(observed.recheck_at.map_or(due, |next| next.min(due)));
+        }
+    }
+    Ok(observed)
 }
 
 /// Discover completion work after a full or playlist-only library update.
@@ -164,7 +196,7 @@ pub(super) fn status<S: Store + ?Sized>(
         state.changed_owner();
         return Ok(state);
     }
-    state.pending = missing(store, at)?.len();
+    inventory(store, at)?.observe(&mut state);
     if store.spotify_library_owner()?.as_ref() != Some(receipt) {
         state.changed_owner();
     }
@@ -188,17 +220,17 @@ pub(super) fn status_for_items<S: Store + ?Sized>(
         state.changed_owner();
         return Ok(state);
     }
-    state.pending = missing_for_items(store, items, at)?.len();
+    inventory_for_items(store, items, at)?.observe(&mut state);
     if store.spotify_library_owner()?.as_ref() != Some(receipt) {
         state.changed_owner();
     }
     Ok(state)
 }
 
-/// Complete cached candidate works in a bounded background pass. A legacy
-/// scheduler can pass no checkpoint to discover unfinished albums immediately.
-/// Reads only account identity and missing album pages, never saved music,
-/// playlist directories, taste endpoints or speakers.
+/// Complete or refresh candidate works in a bounded background pass. A legacy
+/// scheduler can pass no checkpoint to discover due albums immediately. Reads
+/// only account identity and due album pages, never saved music, playlist
+/// directories, taste endpoints or speakers.
 pub async fn continue_albums<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
@@ -219,26 +251,37 @@ pub async fn continue_albums<S: Store + ?Sized>(
             state.owner = Some(receipt.owner_id.clone());
             state.generation = Some(receipt.generation);
             state.requires_refresh = false;
-            let albums = missing(store, at)?;
-            if albums.is_empty() {
-                state.pending = 0;
+            let albums = inventory(store, at)?;
+            albums.observe(&mut state);
+            if albums.pending.is_empty() {
                 state.partial = None;
             } else if session.read_owner(cx).await? != receipt.owner_id {
                 state.changed_owner();
             } else {
-                read_pages(session, cx, store, receipt, &albums, &mut state, &mut notes).await?;
+                read_pages(
+                    session,
+                    cx,
+                    store,
+                    receipt,
+                    &albums.pending,
+                    &mut state,
+                    &mut notes,
+                )
+                .await?;
             }
             if store.spotify_library_owner()?.as_ref() != Some(receipt) {
                 state.changed_owner();
-            } else if !state.requires_refresh {
-                state.pending = missing(store, at)?.len();
             }
         }
     } else {
         state.changed_owner();
     }
     state.retry_after_secs = session.retry_after_secs();
-    let library = summarize(&candidate_items(store)?);
+    let items = candidate_items(store)?;
+    let library = summarize(&items);
+    if !state.requires_refresh {
+        inventory_for_items(store, &items, now())?.observe(&mut state);
+    }
     if store.spotify_library_owner()? != receipt {
         state.changed_owner();
     }
@@ -348,11 +391,19 @@ async fn read_pages<S: Store + ?Sized>(
                     break 'albums;
                 }
                 Err(error) => {
-                    if !matches!(error, SpotifyError::Decode(_)) {
-                        misses.record(&uri, at);
+                    if matches!(
+                        error,
+                        SpotifyError::Api {
+                            status: 404 | 410, ..
+                        }
+                    ) {
+                        // A definite disappearance replaces the old list too.
+                        // A failed cache write keeps it due and makes no miss.
+                        publish_missing(store, &uri, at, &mut misses, state, notes);
                     }
-                    // Move past malformed albums, with no partial cache. Their
-                    // next turn starts cleanly after every later album's turn.
+                    // Malformed or rejected reads cannot replace the last
+                    // completed list or establish a week-long negative cache.
+                    // Give later albums a turn before this one starts again.
                     notes.push(format!("{uri}: {error}"));
                     break;
                 }
@@ -379,14 +430,13 @@ fn publish_complete<S: Store + ?Sized>(
 ) -> bool {
     let uri = &part.uri;
     let mut tracks = part.album_tracks();
-    if tracks.is_empty() {
-        misses.record(uri, at);
-        notes.push(format!("{uri}: no playable album tracks"));
-        return true;
-    }
     tracks.sort_by_key(|track| (track.disc_number, track.track_number));
     match store.save_album_tracks(uri, &tracks, at) {
         Ok(()) => {
+            if tracks.is_empty() {
+                misses.record(uri, at);
+                notes.push(format!("{uri}: no playable album tracks"));
+            }
             state.completed += 1;
             true
         }
@@ -394,5 +444,24 @@ fn publish_complete<S: Store + ?Sized>(
             notes.push(format!("{uri}: {error}"));
             false
         }
+    }
+}
+
+fn publish_missing<S: Store + ?Sized>(
+    store: &mut S,
+    uri: &str,
+    at: i64,
+    misses: &mut AlbumMisses,
+    state: &mut AlbumContinuation,
+    notes: &mut Vec<String>,
+) {
+    match store.save_album_tracks(uri, &[], at) {
+        Ok(()) => {
+            misses.record(uri, at);
+            state.completed += 1;
+        }
+        Err(error) => notes.push(format!(
+            "{uri}: could not retire the missing album cache: {error}"
+        )),
     }
 }

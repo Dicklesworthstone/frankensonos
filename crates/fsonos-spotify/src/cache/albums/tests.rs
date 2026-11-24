@@ -117,11 +117,116 @@ fn saved_album_gaps_do_not_schedule_catalog_completion() {
             origin,
             ..LibraryItem::default()
         };
-        let pending = missing_for_items(&store, &[item], 1_000).unwrap();
+        let pending = inventory_for_items(&store, &[item], 1_000).unwrap().pending;
         if matches!(origin, Origin::SavedAlbum | Origin::Both) {
             assert!(pending.is_empty(), "{origin:?}");
         } else {
             assert_eq!(pending, [album_uri], "{origin:?}");
         }
     }
+}
+
+fn liked_movement(album: &str) -> LibraryItem {
+    LibraryItem {
+        source_uri: format!("spotify:track:{album}Movement2"),
+        title: "Cello Suite No. 1 in G Major, BWV 1007: II. Allemande".into(),
+        artists: vec!["Johann Sebastian Bach".into()],
+        album: Some("Bach: Cello Suites".into()),
+        album_uri: Some(format!("spotify:album:{album}")),
+        disc_number: Some(1),
+        track_number: Some(2),
+        origin: crate::library::Origin::LikedTrack,
+        ..LibraryItem::default()
+    }
+}
+
+fn cache_movement(store: &mut impl Store, item: &LibraryItem, at: i64) {
+    let track = fsonos_core::store::AlbumTrack {
+        disc_number: 1,
+        track_number: 2,
+        source_uri: item.source_uri.clone(),
+        title: item.title.clone(),
+        duration_secs: Some(120),
+        explicit: Some(false),
+    };
+    store
+        .save_album_tracks(item.album_uri.as_deref().unwrap(), &[track], at)
+        .unwrap();
+}
+
+#[test]
+fn expiry_boundary_and_invalid_timestamps_cannot_hide_due_album_reads() {
+    use crate::expand::ALBUM_CACHE_MAX_AGE_SECS;
+    use fsonos_core::store::MemStore;
+
+    let at = 2 * ALBUM_CACHE_MAX_AGE_SECS + 100;
+    let item = liked_movement("ExpiryAlbum");
+    let uri = item.album_uri.as_deref().unwrap();
+    for (fetched_at, next) in [
+        (at - ALBUM_CACHE_MAX_AGE_SECS - 1, None),
+        (at - ALBUM_CACHE_MAX_AGE_SECS, None),
+        (at - ALBUM_CACHE_MAX_AGE_SECS + 1, Some(at + 1)),
+        (at, Some(at + ALBUM_CACHE_MAX_AGE_SECS)),
+        (-1, None),
+        (0, None),
+        (at + 1, None),
+        (i64::MAX, None),
+    ] {
+        let mut store = MemStore::default();
+        cache_movement(&mut store, &item, fetched_at);
+        let observed = inventory_for_items(&store, std::slice::from_ref(&item), at).unwrap();
+        assert_eq!(observed.recheck_at, next, "fetched_at={fetched_at}");
+        if next.is_some() {
+            assert!(observed.pending.is_empty(), "fetched_at={fetched_at}");
+        } else {
+            assert_eq!(observed.pending, [uri], "fetched_at={fetched_at}");
+        }
+    }
+}
+
+#[test]
+fn inventory_retains_the_earliest_future_expiry_or_miss_alongside_due_albums() {
+    use crate::expand::ALBUM_CACHE_MAX_AGE_SECS;
+    use fsonos_core::store::MemStore;
+
+    let at = 2 * ALBUM_CACHE_MAX_AGE_SECS;
+    let due = liked_movement("ADueAlbum");
+    let cached = liked_movement("BCachedAlbum");
+    let missed = liked_movement("CMissingAlbum");
+    let cached_uri = cached.album_uri.clone().unwrap();
+    let missed_uri = missed.album_uri.clone().unwrap();
+    let mut store = MemStore::default();
+    cache_movement(&mut store, &cached, at - ALBUM_CACHE_MAX_AGE_SECS + 500);
+    store
+        .save_album_misses(&[(missed_uri.clone(), at + 100)])
+        .unwrap();
+    let items = [due.clone(), cached, missed, due.clone()];
+    let first = inventory_for_items(&store, &items, at).unwrap();
+    assert_eq!(first.pending, [due.album_uri.clone().unwrap()]);
+    assert_eq!(first.recheck_at, Some(at + 100));
+
+    let retry = inventory_for_items(&store, &items, at + 100).unwrap();
+    assert_eq!(retry.pending, [due.album_uri.unwrap(), missed_uri]);
+    assert_eq!(retry.recheck_at, Some(at + 500));
+    let expired = inventory_for_items(&store, &items, at + 500).unwrap();
+    assert!(expired.pending.contains(&cached_uri));
+    assert_eq!(expired.pending.len(), 3);
+    assert_eq!(expired.recheck_at, None);
+}
+
+#[test]
+fn legacy_flags_need_a_refresh_even_when_the_timestamp_is_current() {
+    use fsonos_core::store::MemStore;
+
+    let at = 1_000_000;
+    let item = liked_movement("LegacyFlags");
+    let uri = item.album_uri.as_deref().unwrap();
+    let mut store = MemStore::default();
+    cache_movement(&mut store, &item, at);
+    let mut tracks = store.album_tracks(uri).unwrap().unwrap().tracks;
+    tracks[0].explicit = None;
+    store.save_album_tracks(uri, &tracks, at).unwrap();
+    let observed = inventory_for_items(&store, &[item], at).unwrap();
+    assert_eq!(observed.pending, ["spotify:album:LegacyFlags"]);
+    assert_eq!(observed.recheck_at, None);
 }

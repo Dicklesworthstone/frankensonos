@@ -1,7 +1,7 @@
 //! Album completion at the end of an accepted library or playlist window.
 //! It uses the same page allowance and checkpoint as dedicated album passes.
 
-use super::{AlbumContinuation, missing, now, read_pages};
+use super::{AlbumContinuation, inventory, now, read_pages};
 use crate::SpotifyError;
 use crate::session::Session;
 use asupersync::Cx;
@@ -31,21 +31,31 @@ pub(in crate::cache) async fn complete_verified<S: Store + ?Sized>(
     if store.spotify_library_owner()?.as_ref() != Some(receipt) {
         state.changed_owner();
     } else {
-        let albums = missing(store, at)?;
+        let albums = inventory(store, at)?;
+        albums.observe(&mut state);
         if store.spotify_library_owner()?.as_ref() != Some(receipt) {
             state.changed_owner();
-        } else if albums.is_empty() {
+        } else if albums.pending.is_empty() {
             state.pending = 0;
             state.partial = None;
         } else if session.retry_after_secs() > 0 {
             notes.push("album completion paused: the Spotify API cooldown is still active".into());
         } else {
-            read_pages(session, cx, store, receipt, &albums, &mut state, notes).await?;
+            read_pages(
+                session,
+                cx,
+                store,
+                receipt,
+                &albums.pending,
+                &mut state,
+                notes,
+            )
+            .await?;
         }
         if store.spotify_library_owner()?.as_ref() != Some(receipt) {
             state.changed_owner();
         } else if !state.requires_refresh {
-            state.pending = missing(store, at)?.len();
+            inventory(store, now())?.observe(&mut state);
         }
     }
     if store.spotify_library_owner()?.as_ref() != Some(receipt) {
