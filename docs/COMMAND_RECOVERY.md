@@ -185,12 +185,26 @@ at the address contacted. Stereo-room cleanup retains the original bonded
 players, and checks their endpoints before reuniting them. S1's stale self-view
 can still be confirmed by another player in the household.
 
+Acknowledged leaves now require the complete original room to be observed
+alone too. A coordinator handoff first proves that the remaining rooms moved
+to the intended heir. If S1 leaves a hidden stereo half behind, the controller
+uses that observed handoff to reunite it, sends each rejoin once, and verifies
+the whole room afterward. A lost rejoin reply can complete from this proof;
+a refused or unconfirmed reunion reports an uncertain partial handoff instead
+of claiming the room moved successfully. Later endpoint or topology failures
+cannot turn that partial operation into a fresh, automatically repeated handoff.
+
 Pre-write identity failures retain the existing bounded address recovery.
 Regressions in `grouping_endpoint_sim` cover both S1 and S2, real address reuse
 followed by successful recovery, malformed and foreign topology, lost replies,
 and successful stereo joins and handoffs preserving queue position. Run
 `cargo test --locked -p fsonos-core --test grouping_endpoint_sim
---test grouping_sim --test grouping_recovery_sim --test sleep_leave_cleanup_sim`.
+--test grouping_sim --test grouping_recovery_sim --test grouping_handoff_sim
+--test sleep_leave_cleanup_sim`. The handoff cases use real simulator SOAP with
+a synthetic split-pair topology overlay and cover confirmed, lost, refused,
+ignored and unavailable follow-up replies. These additional regressions were
+authored but could not be executed in the session because the build runtime
+became unavailable.
 
 ## A lost daemon reply does not authorize another write
 

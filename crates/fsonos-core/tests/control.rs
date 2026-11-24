@@ -9,6 +9,8 @@ use fsonos_types::PlayerId;
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
+#[path = "control/grouping_fixture.rs"]
+mod grouping_fixture;
 #[path = "control/queue_fixture.rs"]
 mod queue_fixture;
 use queue_fixture::QueueFixture;
@@ -262,12 +264,13 @@ fn join_targets_the_member_and_names_the_coordinator() {
     );
     assert!(sent[2].2.contains("x-rincon:RINCON_000E58A0000201400"));
     drop(sent);
-    // A member leaves by joining itself (docs/PROTOCOL.md §6).
-    control::leave(&t, &h, &pid(8)).unwrap();
+    // Leave uses a self-join (docs/PROTOCOL.md §6). This fixed fixture already
+    // shows the S2 room alone, so its complete departure is observable too.
+    control::leave(&t, &h, &pid(0x0A)).unwrap();
     let sent = t.sent.borrow();
     assert_eq!(sent[3].1, "GetZoneGroupState");
     assert_eq!(sent[4].1, "SetAVTransportURI");
-    assert!(sent[4].2.contains(&format!("x-rincon:{}", pid(8).0)));
+    assert!(sent[4].2.contains(&format!("x-rincon:{}", pid(0x0A).0)));
 }
 
 #[test]
@@ -1053,6 +1056,7 @@ const ZGS_S1_BEDROOM_HANDED_OVER: &str = include_str!("fixtures/zgs_s1_bedroom_h
 #[derive(Default)]
 struct HandedOver {
     sent: RefCell<Vec<(IpAddr, String, String)>>,
+    reunited: Cell<bool>,
 }
 
 impl Transport for HandedOver {
@@ -1072,8 +1076,16 @@ impl Transport for HandedOver {
         self.sent
             .borrow_mut()
             .push((host, action.clone(), body.into()));
+        if action == "SetAVTransportURI"
+            && host == ip("192.0.2.17")
+            && body.contains(&format!("x-rincon:{}", pid(3).0))
+        {
+            self.reunited.set(true);
+        }
         Ok(if action == "GetZoneGroupState" {
-            if self
+            if self.reunited.get() {
+                grouping_fixture::relocate(ZGS_S1_BEDROOM_HANDED_OVER, &pid(7), &pid(3))
+            } else if self
                 .sent
                 .borrow()
                 .iter()

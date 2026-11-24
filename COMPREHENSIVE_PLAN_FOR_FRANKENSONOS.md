@@ -1733,6 +1733,15 @@ behavior. An error on the old destination source does not block replacing it,
 and paused transfers remain silent. Commands are never repeated to clear a
 renderer error; inspect the destination before requesting another move.
 
+A group departure now confirms the complete original bonded room before
+reporting success. Acknowledged and lost coordinator-handoff replies share the
+same bounded topology proof, retaining the remaining rooms on the chosen heir.
+If a hidden stereo half remains behind, each rejoin is sent once and the final
+whole-room membership is verified. Failed or unobserved reunification reports
+an uncertain partial handoff, preventing automatic replay. New S1/S2 simulator
+cases cover these transitions; execution is pending after the build runtime
+became unavailable. See [Command recovery](docs/COMMAND_RECOVERY.md).
+
 ### 12.12 Announcements
 
 [`b-announce`, `d-announce-surface`] Snapshot, set a policy-capped announcement

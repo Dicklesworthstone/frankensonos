@@ -197,7 +197,7 @@ fn observe<T: Transport + ?Sized>(
     preferred: &[&PlayerId],
     wait: Duration,
     matches: impl Fn(&ZoneGroupState) -> bool,
-) -> bool {
+) -> Option<ZoneGroupState> {
     let mut hosts = Vec::new();
     for id in preferred
         .iter()
@@ -218,7 +218,7 @@ fn observe<T: Transport + ?Sized>(
             // A blocking SOAP call can exhaust this whole budget. Do not
             // multiply its timeout by every offline player in the household.
             if read_any && started.elapsed() >= wait {
-                return false;
+                return None;
             }
             read_any = true;
             match get_zone_group_state(t, *host) {
@@ -228,7 +228,7 @@ fn observe<T: Transport + ?Sized>(
                     {
                         failed.push(*host);
                     } else if matches(&state) {
-                        return true;
+                        return Some(state);
                     }
                 }
                 Err(_) => failed.push(*host),
@@ -237,7 +237,7 @@ fn observe<T: Transport + ?Sized>(
         hosts.retain(|(_, host)| !failed.contains(host));
         let left = wait.saturating_sub(started.elapsed());
         if hosts.is_empty() || left.is_zero() {
-            return false;
+            return None;
         }
         std::thread::sleep(LEAVE_POLL.min(left));
     }
@@ -270,6 +270,7 @@ pub(super) fn joined<T: Transport + ?Sized>(
             expected.is_subset(&members) && destination.members.iter().all(|p| members.contains(p))
         })
     })
+    .is_some()
 }
 
 pub(super) fn left<T: Transport + ?Sized>(
@@ -291,27 +292,24 @@ pub(super) fn left<T: Transport + ?Sized>(
         LEAVE_WAIT,
         |state| group(state, member).is_some_and(|members| members == expected),
     )
+    .is_some()
 }
 
+/// Retain the observed handoff for reuniting the old leader's bonded players.
+/// Both acknowledged and uncertain replies need the same actual transition.
 pub(super) fn delegated<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     member: &PlayerId,
     heir: &PlayerId,
-) -> bool {
-    let Some(household) = households.iter().find(|h| h.player(member).is_some()) else {
-        return false;
-    };
-    let Some(original) = household.groups.iter().find(|g| g.coordinator == *member) else {
-        return false;
-    };
+) -> Option<ZoneGroupState> {
+    let household = households.iter().find(|h| h.player(member).is_some())?;
+    let original = household.groups.iter().find(|g| g.coordinator == *member)?;
     let original: Members = original.members.iter().cloned().collect();
-    let Some(own) = room(household, member) else {
-        return false;
-    };
+    let own = room(household, member)?;
     let retained: Members = original.difference(&own).cloned().collect();
     if !retained.contains(heir) {
-        return false;
+        return None;
     }
     observe(t, household, &[heir, member], LEAVE_WAIT, |state| {
         let (Some(left), Some(remaining)) = (group(state, member), group(state, heir)) else {
@@ -360,7 +358,7 @@ mod tests {
             ..HouseholdState::default()
         };
         let t = Unreachable(Cell::new(0));
-        assert!(!observe(&t, &household, &[], Duration::ZERO, |_| false));
+        assert!(observe(&t, &household, &[], Duration::ZERO, |_| false).is_none());
         assert_eq!(t.0.get(), 1, "one initial read, no more after the budget");
     }
 }

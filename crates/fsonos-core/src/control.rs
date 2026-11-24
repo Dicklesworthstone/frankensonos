@@ -931,7 +931,9 @@ pub fn join<T: Transport + ?Sized>(
 /// verified 2026-10-12, bead frankensonos-p9f — while the rest of the
 /// household already shows the leave.
 /// A lost delegation or self-join reply is reconciled from topology without
-/// replaying the write. Recovery requires the room's bonded players too.
+/// replaying the write. Every completed leave requires the room's bonded
+/// players too, including when the handoff itself was acknowledged. Failed
+/// reunification reports a partial handoff, never a replayable preflight error.
 /// Read the current household before choosing an heir: earlier rooms in an
 /// ungroup set may have left or inherited coordination since it was planned.
 pub fn leave<T: Transport + ?Sized>(
@@ -945,24 +947,46 @@ pub fn leave<T: Transport + ?Sized>(
     let mut lost_delegation = None;
     let delegated = match heir_of(households, member) {
         Some(heir) => match soap::delegate_group(t, host, &heir) {
-            Ok(()) => true,
+            Ok(()) => {
+                let state = grouping_state::delegated(t, households, member, &heir)
+                    .ok_or_else(|| {
+                        incomplete_handoff("the acknowledged group handoff could not be confirmed")
+                    })?;
+                Some(state)
+            }
             // Refused: the self-join, and the topology decides.
-            Err(ProtoError::SoapFault { .. }) => false,
-            Err(cause)
-                if grouping_state::uncertain(&cause)
-                    && grouping_state::delegated(t, households, member, &heir) =>
-            {
+            Err(ProtoError::SoapFault { .. }) => None,
+            Err(cause) if grouping_state::uncertain(&cause) => {
+                let Some(state) = grouping_state::delegated(t, households, member, &heir) else {
+                    return Err(cause.into());
+                };
                 lost_delegation = Some(cause);
-                true
+                Some(state)
             }
             Err(e) => return Err(e.into()),
         },
-        None => false,
+        None => None,
     };
-    if !delegated {
+    let Some(departed) = delegated else {
         match soap::leave_group(t, host, member) {
-            Ok(soap::Leaving::Done) => return Ok(()),
-            Ok(soap::Leaving::Unconfirmed) => {}
+            Ok(result) => {
+                if grouping_state::left(t, households, member) {
+                    return Ok(());
+                }
+                return Err(match result {
+                    soap::Leaving::Done => CoreError::Uncertain(
+                        "group leave was acknowledged, but the complete room could not be \
+                         confirmed alone; inspect the groups before trying again"
+                            .into(),
+                    ),
+                    soap::Leaving::Unconfirmed => ProtoError::SoapFault {
+                        code: 402,
+                        reason: "asked to leave its group, the complete room is not confirmed alone"
+                            .into(),
+                    }
+                    .into(),
+                });
+            }
             Err(cause)
                 if grouping_state::uncertain(&cause)
                     && grouping_state::left(t, households, member) =>
@@ -972,117 +996,40 @@ pub fn leave<T: Transport + ?Sized>(
             }
             Err(e) => return Err(e.into()),
         }
-    }
-    if lost_delegation.is_none() {
-        wait_until_alone(t, households, member, host)?;
-    }
-    if delegated {
-        reunite_room(t, households, member, host);
-    }
+    };
+    reunite_room(t, households, member, host, &departed).map_err(incomplete_handoff)?;
     if let Some(cause) = lost_delegation {
-        if !grouping_state::left(t, households, member) {
-            return Err(cause.into());
-        }
         tracing::warn!(cause = %cause, "group handoff and leave confirmed by topology; not repeated");
     }
     Ok(())
 }
 
-/// Read the topology back until `member` leads a group of its own (see
-/// [`leave`]); still grouped after [`LEAVE_WAIT`], the player's 402 stands.
-fn wait_until_alone<T: Transport + ?Sized>(
-    t: &T,
-    households: &[HouseholdState],
-    member: &PlayerId,
-    host: IpAddr,
-) -> Result<(), CoreError> {
-    let household = households
-        .iter()
-        .find(|h| h.player(member).is_some())
-        .unwrap_or_else(|| households.first().expect("addr() found the household"));
-    // A witness in another room of the same household: a player of the
-    // member's own room (a stereo pair's other half) shares its view, and a
-    // player of another household never lists this one's groups at all.
-    let mut witness = household_witnesses(household, member).into_iter().next();
-    let own = household.rooms.iter().find(|room| room.primary == *member);
-    let leads_own = |state: &ZoneGroupState| {
-        crate::topology::coordinator_at(state, host, member).unwrap_or(false)
-            && own.is_some_and(|room| {
-                state.groups.iter().any(|g| {
-                    g.coordinator == *member
-                        && g.members
-                            .iter()
-                            .flat_map(|m| std::iter::once(m).chain(&m.satellites))
-                            .all(|m| room.players.contains(&m.uuid))
-                })
-            })
-    };
-    let started = Instant::now();
-    loop {
-        // Alone: it leads its group, with nobody visible but itself (a
-        // stereo pair's other half and a sub are invisible members).
-        let current = crate::topology::read_at(t, host, member)?;
-        crate::topology::validate(&current)?;
-        if !topology_player_at(&current, host, member) {
-            return Err(coordinator_changed());
-        }
-        if leads_own(&current) {
-            return Ok(());
-        }
-        // Its own read may be stale; a witness player's is not. The witness
-        // is best effort — one try: a player that cannot be read is not
-        // asked again this leave (each dead read would stall the single LAN
-        // worker a whole SOAP timeout, p9f's review note), and the member's
-        // own view still decides.
-        if let Some(other) = witness {
-            match get_zone_group_state(t, other.ip) {
-                Ok(state)
-                    if crate::topology::validate(&state).is_ok()
-                        && topology_player_at(&state, other.ip, &other.id) =>
-                {
-                    if leads_own(&state) {
-                        return Ok(());
-                    }
-                }
-                Ok(_) | Err(_) => witness = None,
-            }
-        }
-        let left = LEAVE_WAIT.saturating_sub(started.elapsed());
-        if left.is_zero() {
-            return Err(ProtoError::SoapFault {
-                code: 402,
-                reason: "asked to leave its group, the player is still in it".into(),
-            }
-            .into());
-        }
-        std::thread::sleep(LEAVE_POLL.min(left));
-    }
+fn incomplete_handoff(cause: impl std::fmt::Display) -> CoreError {
+    CoreError::Uncertain(format!(
+        "group handoff may have completed, but the room's bonded players are not confirmed \
+         together: {cause}; inspect the groups before trying again"
+    ))
 }
 
 /// After a coordinator handed its group on, bring back the players of its
 /// own room that stayed in that group: an S1 stereo pair leaves its hidden
 /// half behind with the heir, and it rejoins its primary when asked to
-/// (verified live 2026-10-14). Best effort: the leave itself has happened.
+/// (verified live 2026-10-14). Retain the confirmed handoff, send each rejoin
+/// at most once, and require the complete room before reporting success.
 fn reunite_room<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     member: &PlayerId,
     host: IpAddr,
-) {
-    let Some(room) = households
+    departed: &ZoneGroupState,
+) -> Result<(), CoreError> {
+    let room = households
         .iter()
         .flat_map(|h| h.rooms.iter())
-        .find(|r| r.players.contains(member))
-    else {
-        return;
-    };
-    let Ok(now) = crate::topology::read_at(t, host, member) else {
-        return;
-    };
-    if crate::topology::validate(&now).is_err() || !topology_player_at(&now, host, member) {
-        return;
-    }
-    let own = now.groups.iter().find(|g| g.coordinator == *member);
+        .find(|r| r.primary == *member)
+        .ok_or_else(|| CoreError::UnknownPlayer(member.0.clone()))?;
+    let own = departed.groups.iter().find(|g| g.coordinator == *member);
+    let mut lost_rejoin = None;
     for p in room.players.iter().filter(|p| *p != member) {
         if own.is_some_and(|g| {
             g.members
@@ -1092,17 +1039,26 @@ fn reunite_room<T: Transport + ?Sized>(
         }) {
             continue;
         }
-        if let Ok(ip) = addr(households, p)
-            && let Err(e) = require_player(t, ip, p)
-                .and_then(|()| require_coordinator_after_leave(t, households, host, member))
-                .and_then(|()| soap::join_group(t, ip, member).map_err(CoreError::from))
-        {
-            tracing::warn!(
-                player = p.0.as_str(),
-                "a bonded player did not rejoin its room: {e}"
-            );
+        let ip = addr(households, p)?;
+        require_player(t, ip, p)?;
+        require_coordinator_after_leave(t, households, host, member)?;
+        if let Err(cause) = soap::join_group(t, ip, member) {
+            if !grouping_state::uncertain(&cause) {
+                return Err(cause.into());
+            }
+            lost_rejoin.get_or_insert(cause);
         }
     }
+    if !grouping_state::left(t, households, member) {
+        return Err(lost_rejoin.map_or_else(
+            || CoreError::Uncertain("the complete room was not observed after reunification".into()),
+            CoreError::from,
+        ));
+    }
+    if let Some(cause) = lost_rejoin {
+        tracing::warn!(cause = %cause, "bonded room reunion confirmed by topology; not repeated");
+    }
+    Ok(())
 }
 
 /// The room that takes over the group `member` leads when it leaves: the
