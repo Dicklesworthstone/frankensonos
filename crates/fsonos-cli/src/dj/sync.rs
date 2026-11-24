@@ -73,7 +73,7 @@ const STACK: usize = 8 * 1024 * 1024;
 
 /// The library refresh for one data directory; see the module docs.
 pub struct LibrarySync {
-    config: SpotifyConfig,
+    settings: crate::spotify_app::Settings,
     data_dir: PathBuf,
     state: Mutex<Running>,
     /// A refresh landed since the DJ last rebuilt its pool.
@@ -110,13 +110,17 @@ impl LibrarySync {
             tracing::warn!("Spotify library refresh off: {e}");
             return None;
         }
-        Some(Self {
-            config,
+        Some(Self::with_settings(config.into(), data_dir))
+    }
+
+    fn with_settings(settings: crate::spotify_app::Settings, data_dir: PathBuf) -> Self {
+        Self {
+            settings,
             data_dir,
             state: Mutex::new(Running::default()),
             fresh: AtomicBool::new(false),
             clock: Box::new(SystemClock),
-        })
+        }
     }
 
     /// The same refresh on `clock`.
@@ -137,26 +141,15 @@ impl LibrarySync {
         self.clock.elapsed_secs()
     }
 
-    /// The daemon's, on its `clock`: when `serve` names a Spotify app (it
-    /// says so when not).
+    /// The daemon's worker exists before setup. Each new read resolves the
+    /// current saved app, while explicit startup settings retain precedence.
     #[must_use]
-    pub fn for_serve(
-        serve: &ServeArgs,
-        data_dir: &Path,
-        clock: Box<dyn Clock>,
-    ) -> Option<Arc<Self>> {
-        let Some(client_id) = serve.spotify_app_id(data_dir) else {
-            tracing::warn!(
-                "the DJ's library is not refreshed: no Spotify app client id; `fsonos setup` \
-                 saves one (or set FSONOS_SPOTIFY_CLIENT_ID)"
-            );
-            return None;
-        };
-        let config = SpotifyConfig {
-            client_id,
+    pub fn for_serve(serve: &ServeArgs, data_dir: &Path, clock: Box<dyn Clock>) -> Arc<Self> {
+        let settings = crate::spotify_app::Settings {
+            client_id: serve.spotify_client_id.clone(),
             redirect_uri: serve.spotify_redirect_uri.clone(),
         };
-        Self::new(config, data_dir.to_owned()).map(|sync| Arc::new(sync.with_clock(clock)))
+        Arc::new(Self::with_settings(settings, data_dir.to_owned()).with_clock(clock))
     }
 
     fn running(&self) -> std::sync::MutexGuard<'_, Running> {
@@ -215,6 +208,7 @@ impl LibrarySync {
     /// Start a refresh on a thread of its own, unless one is running;
     /// where it stands.
     pub fn start(self: &Arc<Self>) -> Result<LibrarySyncDto, Failure> {
+        self.settings.resolve(&self.data_dir)?;
         if !self.signed_in() {
             return Err(signed_out());
         }
@@ -266,7 +260,8 @@ impl LibrarySync {
         pass: Pass,
         previous_albums: Option<AlbumContinuation>,
     ) -> Result<ReadResult, Failure> {
-        let (config, dir) = (self.config.clone(), self.data_dir.clone());
+        let config = self.settings.resolve(&self.data_dir)?;
+        let dir = self.data_dir.clone();
         thread::Builder::new()
             .stack_size(STACK)
             .spawn(move || {
@@ -344,9 +339,10 @@ impl LibrarySync {
     /// Whether a Spotify sign-in is cached (no network).
     #[must_use]
     pub fn signed_in(&self) -> bool {
-        TokenCache::in_data_dir(&self.data_dir)
-            .load()
-            .is_ok_and(|token| token.is_some())
+        self.settings.resolve(&self.data_dir).is_ok()
+            && TokenCache::in_data_dir(&self.data_dir)
+                .load()
+                .is_ok_and(|token| token.is_some())
     }
 
     /// The last successful refresh, from [`STAMP`].
@@ -415,11 +411,17 @@ pub fn watch(
         .stack_size(STACK)
         .spawn(move || {
             let mut next = i64::MIN;
+            let mut signed_in = false;
             while !stop.load(Ordering::Acquire) {
+                let available = sync.signed_in();
+                // Completing first-run setup activates this existing worker
+                // immediately; the first library need not wait fifteen minutes.
+                if available && !signed_in {
+                    next = i64::MIN;
+                }
+                signed_in = available;
                 if sync.elapsed_secs() >= next {
-                    if sync.signed_in()
-                        && let Some(result) = sync.background()
-                    {
+                    if available && let Some(result) = sync.background() {
                         match result {
                             Ok(status) => eprintln!("fsonos serve: {}", status.done),
                             Err(f) => tracing::warn!("library refresh: {}", f.detail),
@@ -729,6 +731,31 @@ mod tests {
         assert_eq!(
             failure(SpotifyError::Auth("expired".into())).code,
             ErrorCode::SpotifyAuthRequired
+        );
+    }
+    #[test]
+    fn the_existing_daemon_worker_activates_after_setup_saves_an_app_and_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut serve = ServeArgs::from_env().unwrap();
+        serve.spotify_client_id = None;
+        serve.spotify_redirect_uri = crate::config::SPOTIFY_REDIRECT_URI.into();
+        let sync = LibrarySync::for_serve(&serve, dir.path(), Box::new(SystemClock));
+        assert!(!sync.signed_in());
+        assert!(sync.settings.resolve(dir.path()).is_err());
+
+        crate::spotify_app::save(dir.path(), "0123456789abcdef0123456789abcdef").unwrap();
+        TokenCache::in_data_dir(dir.path())
+            .store(&fsonos_spotify::client::CachedToken {
+                access_token: "fixture-access".into(),
+                refresh_token: "fixture-refresh".into(),
+                expires_at: i64::MAX,
+                scope: fsonos_spotify::client::SCOPE.into(),
+            })
+            .unwrap();
+        assert!(sync.signed_in());
+        assert_eq!(
+            sync.settings.resolve(dir.path()).unwrap().client_id,
+            "0123456789abcdef0123456789abcdef"
         );
     }
 }

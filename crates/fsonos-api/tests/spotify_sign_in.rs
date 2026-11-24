@@ -52,6 +52,7 @@ struct FakeAuth {
 impl SpotifyAuth for FakeAuth {
     fn status(&self) -> SignInDto {
         SignInDto {
+            configured: true,
             signed_in: *self.signed_in.lock().unwrap(),
             pending: *self.pending.lock().unwrap(),
             redirect_uri: REDIRECT_URI.into(),
@@ -78,6 +79,46 @@ impl SpotifyAuth for FakeAuth {
         *self.pending.lock().unwrap() = false;
         *self.signed_in.lock().unwrap() = true;
         Ok(())
+    }
+}
+
+/// A daemon whose sign-in engine is installed before an app is configured.
+#[derive(Default)]
+struct ConfigurableAuth {
+    client_id: Mutex<Option<String>>,
+    auth: FakeAuth,
+}
+
+impl SpotifyAuth for ConfigurableAuth {
+    fn status(&self) -> SignInDto {
+        SignInDto {
+            configured: self.client_id.lock().unwrap().is_some(),
+            ..self.auth.status()
+        }
+    }
+
+    fn configure(&self, client_id: &str) -> Result<(), Failure> {
+        let mut configured = self.client_id.lock().unwrap();
+        if let Some(existing) = configured.as_deref()
+            && existing != client_id
+        {
+            return Err(Failure::invalid(
+                "a different Spotify app is already configured",
+            ));
+        }
+        *configured = Some(client_id.to_owned());
+        Ok(())
+    }
+
+    fn begin(&self) -> Result<SignInStartDto, Failure> {
+        if self.client_id.lock().unwrap().is_none() {
+            return Err(Failure::invalid("configure the Spotify app first"));
+        }
+        self.auth.begin()
+    }
+
+    fn complete(&self, redirect: &str) -> Result<(), Failure> {
+        self.auth.complete(redirect)
     }
 }
 
@@ -235,7 +276,7 @@ fn the_browser_comes_back_to_the_daemon_and_signs_in() {
     assert_eq!(status, 200, "{body}");
     assert_eq!(
         json_of(&body),
-        json!({ "signed_in": false, "pending": false, "redirect_uri": REDIRECT_URI })
+        json!({ "configured": true, "signed_in": false, "pending": false, "redirect_uri": REDIRECT_URI })
     );
 
     let (status, _, body) = call(addr, "/auth/spotify/begin", Some(&json!({})));
@@ -281,7 +322,7 @@ fn the_browser_comes_back_to_the_daemon_and_signs_in() {
     assert_eq!(header(&headers, "cache-control"), Some("no-store"));
     assert_eq!(
         json_of(&call(addr, "/auth/spotify", None).2),
-        json!({ "signed_in": true, "pending": false, "redirect_uri": REDIRECT_URI })
+        json!({ "configured": true, "signed_in": true, "pending": false, "redirect_uri": REDIRECT_URI })
     );
 }
 
@@ -368,4 +409,143 @@ fn the_house_policy_can_deny_the_sign_in() {
             .is_some_and(|d| d.contains("policy denies spotify_sign_in")),
         "the deny itself, not the owner-only default: {body}"
     );
+}
+
+#[test]
+fn a_running_daemon_can_be_configured_before_signing_in() {
+    const APP: &str = "0123456789abcdef0123456789ABCDEF";
+    let addr = serve(
+        surface(granted("loopback-http")).with_spotify_auth(Box::new(ConfigurableAuth::default())),
+    );
+    let (status, _, body) = call(addr, "/auth/spotify", None);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        json_of(&body),
+        json!({
+            "configured": false,
+            "signed_in": false,
+            "pending": false,
+            "redirect_uri": REDIRECT_URI,
+        })
+    );
+
+    let configure = |body: Value| call(addr, "/auth/spotify/configure", Some(&body));
+    for body in [
+        json!({}),
+        json!({ "client_id": "invalid" }),
+        json!({ "client_id": "x".repeat(32) }),
+        json!({ "client_id": APP, "client_secret": "not-accepted" }),
+    ] {
+        let (status, _, body) = configure(body);
+        assert_eq!(status, 422, "{body}");
+        assert_eq!(json_of(&body)["code"], "INVALID_ARGUMENT");
+    }
+    assert_eq!(
+        json_of(&call(addr, "/auth/spotify", None).2)["configured"],
+        false
+    );
+
+    let (status, _, body) = configure(json!({ "client_id": format!("  {APP}\n") }));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        json_of(&body),
+        json!({
+            "configured": true,
+            "signed_in": false,
+            "pending": false,
+            "redirect_uri": REDIRECT_URI,
+        })
+    );
+    // A repeated request can recover a lost response, but cannot replace the app.
+    let (status, _, body) = configure(json!({ "client_id": APP }));
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = configure(json!({ "client_id": "fedcba9876543210fedcba9876543210" }));
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(
+        json_of(&call(addr, "/auth/spotify", None).2)["pending"],
+        false,
+        "saving the app must not start consent"
+    );
+    let (status, _, body) = call(addr, "/auth/spotify/begin", Some(&json!({})));
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        json_of(&call(addr, "/auth/spotify", None).2)["pending"],
+        true
+    );
+
+    let (status, _, body) = call(addr, "/openapi.json", None);
+    assert_eq!(status, 200, "{body}");
+    let spec = json_of(&body);
+    let route = &spec["paths"]["/auth/spotify/configure"]["post"];
+    assert_eq!(route["operationId"], "spotify_sign_in_configure");
+    assert!(route["requestBody"].is_object());
+    assert!(route["responses"]["200"].is_object());
+}
+
+#[test]
+fn initial_app_configuration_uses_the_owner_sign_in_permission() {
+    const APP: &str = "0123456789abcdef0123456789abcdef";
+    let addr =
+        serve(surface(Policy::default()).with_spotify_auth(Box::new(ConfigurableAuth::default())));
+    let (status, _, body) = call(
+        addr,
+        "/auth/spotify/configure",
+        Some(&json!({ "client_id": APP })),
+    );
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(json_of(&body)["code"], "POLICY_DENIED");
+    assert_eq!(
+        json_of(&call(addr, "/auth/spotify", None).2)["configured"],
+        false
+    );
+
+    let s = surface(Policy::default().with_owner(Some("owner@example.com".into())))
+        .with_action_log(Box::new(MemStore::default()), "http")
+        .with_spotify_auth(Box::new(ConfigurableAuth::default()));
+    let stranger = Client::Tailnet("stranger@example.com".into());
+    let refused = s.spotify_sign_in_configure(&stranger, APP).unwrap_err();
+    assert_eq!(refused.code, fsonos_api::ErrorCode::PolicyDenied);
+    let owner = Client::Tailnet("owner@example.com".into());
+    assert!(s.spotify_sign_in_configure(&owner, APP).unwrap().configured);
+    let actions = s
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    let saved = actions
+        .iter()
+        .find(|row| row.action.intent == "spotify_sign_in: configure")
+        .expect("configuration is logged");
+    assert_eq!(saved.action.client, "owner@example.com");
+    assert_eq!(saved.action.result, "Spotify app configured");
+    assert!(
+        actions
+            .iter()
+            .all(|row| { !row.action.intent.contains(APP) && !row.action.result.contains(APP) }),
+        "configuration logs retain the operation, not the submitted value"
+    );
+
+    let deny = "[clients.\"owner@example.com\"]\ndeny = [\"spotify_sign_in\"]\n";
+    let denied = surface(
+        Policy::from_toml(deny)
+            .unwrap()
+            .with_owner(Some("owner@example.com".into())),
+    )
+    .with_spotify_auth(Box::new(ConfigurableAuth::default()));
+    assert_eq!(
+        denied
+            .spotify_sign_in_configure(&owner, APP)
+            .unwrap_err()
+            .code,
+        fsonos_api::ErrorCode::PolicyDenied
+    );
+}
+
+#[test]
+fn status_from_an_older_daemon_still_means_an_app_was_configured() {
+    let old: SignInDto = serde_json::from_value(json!({
+        "signed_in": false,
+        "pending": false,
+        "redirect_uri": REDIRECT_URI,
+    }))
+    .unwrap();
+    assert!(old.configured);
 }

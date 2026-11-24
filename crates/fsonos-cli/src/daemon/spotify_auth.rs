@@ -19,27 +19,24 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::config::ServeArgs;
 
-/// `surface` running the Spotify sign-in when serve has a Spotify app
-/// client id, with its token cache in `data_dir`.
+/// Install before setup too: a newly saved app activates the same sign-in
+/// engine without replacing the daemon or its pending authorization.
 pub fn install(surface: Surface, args: &ServeArgs, data_dir: &Path) -> Surface {
     let surface = crate::spotify_sources::install(surface, data_dir, Some(args));
     let surface = surface.with_spotify_redirect(args.spotify_redirect_uri.clone());
-    let Some(client_id) = args.spotify_app_id(data_dir) else {
-        return surface;
-    };
-    let config = SpotifyConfig {
-        client_id,
-        redirect_uri: args.spotify_redirect_uri.clone(),
-    };
-    match SpotifySignIn::new(config, data_dir.to_owned()) {
-        Some(sign_in) => surface.with_spotify_auth(Box::new(sign_in)),
-        None => surface,
-    }
+    surface.with_spotify_auth(Box::new(SpotifySignIn {
+        settings: crate::spotify_app::Settings {
+            client_id: args.spotify_client_id.clone(),
+            redirect_uri: args.spotify_redirect_uri.clone(),
+        },
+        data_dir: data_dir.to_owned(),
+        pending: Mutex::new(PendingSignIn::default()),
+    }))
 }
 
 /// See the module docs.
 pub struct SpotifySignIn {
-    config: SpotifyConfig,
+    settings: crate::spotify_app::Settings,
     data_dir: PathBuf,
     pending: Mutex<PendingSignIn>,
 }
@@ -48,7 +45,7 @@ pub struct SpotifySignIn {
 /// callback must not replace it until the exchange has finished.
 #[derive(Default)]
 struct PendingSignIn {
-    authorization: Option<Arc<PendingAuthorization>>,
+    authorization: Option<Arc<Authorization>>,
     exchanging: bool,
 }
 
@@ -64,6 +61,12 @@ impl PendingSignIn {
         }
         Ok(())
     }
+}
+
+/// The authorization code belongs to exactly the app and redirect used at begin.
+struct Authorization {
+    flow: PendingAuthorization,
+    config: SpotifyConfig,
 }
 
 /// Always release the reservation, including session-open failures and
@@ -87,6 +90,7 @@ impl SpotifySignIn {
     /// A sign-in for the app `config` names, caching the token in
     /// `data_dir`; `None` when the config cannot work (the reason is
     /// logged).
+    #[cfg(test)]
     #[must_use]
     pub fn new(config: SpotifyConfig, data_dir: PathBuf) -> Option<Self> {
         if let Err(e) = config.validate() {
@@ -94,7 +98,7 @@ impl SpotifySignIn {
             return None;
         }
         Some(Self {
-            config,
+            settings: config.into(),
             data_dir,
             pending: Mutex::new(PendingSignIn::default()),
         })
@@ -103,9 +107,10 @@ impl SpotifySignIn {
     /// Run `work` with an open session, on a thread with its own runtime.
     fn with_session<R: Send + 'static>(
         &self,
+        config: SpotifyConfig,
         work: impl AsyncFnOnce(&mut Session, &Cx) -> Result<R, SpotifyError> + Send + 'static,
     ) -> Result<R, Failure> {
-        let (config, cache) = (self.config.clone(), TokenCache::in_data_dir(&self.data_dir));
+        let cache = TokenCache::in_data_dir(&self.data_dir);
         std::thread::spawn(move || {
             let runtime = crate::runtime().map_err(|e| SpotifyError::Http(format!("{e:#}")))?;
             runtime.block_on(async move {
@@ -124,7 +129,7 @@ impl SpotifySignIn {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn claim(&self) -> Result<(Arc<PendingAuthorization>, Completing<'_>), Failure> {
+    fn claim(&self) -> Result<(Arc<Authorization>, Completing<'_>), Failure> {
         let mut pending = self.pending();
         pending.idle()?;
         let authorization = pending.authorization.clone().ok_or_else(|| {
@@ -139,6 +144,17 @@ impl SpotifySignIn {
                 successful: false,
             },
         ))
+    }
+
+    fn unchanged(&self, expected: &SpotifyConfig) -> Result<(), Failure> {
+        let active = self.settings.resolve(&self.data_dir)?;
+        if active.client_id != expected.client_id || active.redirect_uri != expected.redirect_uri {
+            return Err(
+                Failure::invalid("the Spotify app changed while sign-in was pending")
+                    .with_hint("Restore the original app configuration or start a new sign-in."),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -156,36 +172,72 @@ fn failure(err: SpotifyError) -> Failure {
 
 impl SpotifyAuth for SpotifySignIn {
     fn status(&self) -> SignInDto {
+        let active = self.settings.resolve(&self.data_dir).ok();
+        let configured = active.is_some();
+        let pending = self
+            .pending()
+            .authorization
+            .as_ref()
+            .is_some_and(|authorization| {
+                active.as_ref().is_some_and(|config| {
+                    config.client_id == authorization.config.client_id
+                        && config.redirect_uri == authorization.config.redirect_uri
+                })
+            });
         SignInDto {
-            signed_in: TokenCache::in_data_dir(&self.data_dir)
-                .load()
-                .is_ok_and(|token| token.is_some()),
-            pending: self.pending().authorization.is_some(),
-            redirect_uri: self.config.redirect_uri.clone(),
+            configured,
+            signed_in: configured
+                && TokenCache::in_data_dir(&self.data_dir)
+                    .load()
+                    .is_ok_and(|token| token.is_some()),
+            pending,
+            redirect_uri: self.settings.redirect_uri.clone(),
         }
+    }
+
+    fn configure(&self, client_id: &str) -> Result<(), Failure> {
+        let pending = self.pending();
+        if pending
+            .authorization
+            .as_ref()
+            .is_some_and(|authorization| authorization.config.client_id != client_id.trim())
+        {
+            return Err(
+                Failure::invalid("a sign-in for a different Spotify app is still pending")
+                    .with_hint(
+                        "Restore the original app configuration before completing this sign-in.",
+                    ),
+            );
+        }
+        self.settings.configure(&self.data_dir, client_id)
     }
 
     fn begin(&self) -> Result<SignInStartDto, Failure> {
         self.pending().idle()?;
-        let authorization = self.with_session(async |session, _| session.begin_authorization())?;
+        let config = self.settings.resolve(&self.data_dir)?;
+        let flow = self.with_session(config.clone(), async |session, _| {
+            session.begin_authorization()
+        })?;
         let started = SignInStartDto {
-            url: authorization.url().to_owned(),
-            redirect_uri: self.config.redirect_uri.clone(),
+            url: flow.url().to_owned(),
+            redirect_uri: config.redirect_uri.clone(),
         };
         let mut pending = self.pending();
         // A callback could have claimed the previous flow while this one
         // was being generated. Recheck before replacing it.
         pending.idle()?;
-        pending.authorization = Some(Arc::new(authorization));
+        self.unchanged(&config)?;
+        pending.authorization = Some(Arc::new(Authorization { flow, config }));
         Ok(started)
     }
 
     fn complete(&self, redirect: &str) -> Result<(), Failure> {
         let (pending, mut completion) = self.claim()?;
+        self.unchanged(&pending.config)?;
         let redirect = redirect.to_owned();
-        let result = self.with_session(async move |session, cx| {
+        let result = self.with_session(pending.config.clone(), async move |session, cx| {
             session
-                .complete_authorization(cx, &pending, &redirect)
+                .complete_authorization(cx, &pending.flow, &redirect)
                 .await
         });
         // A forged/stale redirect or failed worker leaves the same pending
@@ -294,7 +346,7 @@ mod tests {
         let flow = auth.pending().authorization.clone().unwrap();
         // Session::open rejects this before network I/O. Previously its
         // error bypassed restoration and silently discarded the pending flow.
-        auth.config.client_id = "invalid client id!".into();
+        auth.settings.client_id = Some("invalid client id!".into());
         assert_eq!(
             auth.complete("?code=c&state=s").unwrap_err().code,
             ErrorCode::InvalidArgument
@@ -346,5 +398,107 @@ mod tests {
                 (true, ErrorCode::NotReady, ErrorCode::NotReady)
             );
         });
+    }
+    fn unconfigured(data_dir: PathBuf) -> SpotifySignIn {
+        SpotifySignIn {
+            settings: crate::spotify_app::Settings {
+                client_id: None,
+                redirect_uri: crate::config::SPOTIFY_REDIRECT_URI.into(),
+            },
+            data_dir,
+            pending: Mutex::new(PendingSignIn::default()),
+        }
+    }
+
+    #[test]
+    fn first_run_configuration_activates_the_existing_auth_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = unconfigured(dir.path().to_path_buf());
+        assert!(!auth.status().configured);
+        assert!(!auth.status().signed_in);
+        assert_eq!(
+            auth.begin().unwrap_err().code,
+            ErrorCode::SpotifyAuthRequired
+        );
+
+        let app = "0123456789abcdef0123456789abcdef";
+        auth.configure(app).unwrap();
+        assert!(auth.status().configured);
+        let started = auth.begin().unwrap();
+        assert!(started.url.contains(app));
+        let flow = auth.pending().authorization.clone().unwrap();
+        auth.configure(app).unwrap();
+        assert!(auth.configure("fedcba9876543210fedcba9876543210").is_err());
+        assert!(Arc::ptr_eq(
+            auth.pending().authorization.as_ref().unwrap(),
+            &flow
+        ));
+    }
+
+    #[test]
+    fn a_pending_flow_keeps_its_original_app_and_rejects_external_reconfiguration() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = unconfigured(dir.path().to_path_buf());
+        let app = "0123456789abcdef0123456789abcdef";
+        auth.configure(app).unwrap();
+        auth.begin().unwrap();
+        let flow = auth.pending().authorization.clone().unwrap();
+        assert_eq!(flow.config.client_id, app);
+        std::fs::write(
+            dir.path().join(crate::spotify_app::FILE_NAME),
+            "client_id = \"fedcba9876543210fedcba9876543210\"\n",
+        )
+        .unwrap();
+        let error = auth.complete("?code=unused&state=unused").unwrap_err();
+        assert!(error.detail.contains("app changed"));
+        assert!(auth.status().configured);
+        assert!(!auth.status().pending);
+        assert!(!auth.pending().exchanging);
+        assert!(Arc::ptr_eq(
+            auth.pending().authorization.as_ref().unwrap(),
+            &flow
+        ));
+        assert!(
+            TokenCache::in_data_dir(dir.path())
+                .load()
+                .unwrap()
+                .is_none()
+        );
+
+        let path = dir.path().join(crate::spotify_app::FILE_NAME);
+        std::fs::rename(&path, path.with_extension("toml.saved")).unwrap();
+        assert!(!auth.status().configured);
+        assert!(!auth.status().pending);
+        assert!(auth.configure("fedcba9876543210fedcba9876543210").is_err());
+        assert!(
+            !path.exists(),
+            "a pending flow must not bind to a different app"
+        );
+        std::fs::write(&path, "not valid TOML = [").unwrap();
+        assert!(!auth.status().configured);
+        assert!(!auth.status().pending);
+        std::fs::write(&path, format!("client_id = \"{app}\"\n")).unwrap();
+        assert!(auth.status().configured);
+        assert!(auth.status().pending);
+        assert!(Arc::ptr_eq(
+            auth.pending().authorization.as_ref().unwrap(),
+            &flow
+        ));
+    }
+
+    #[test]
+    fn an_unconfigured_engine_does_not_advertise_an_orphaned_token_as_signed_in() {
+        let dir = tempfile::tempdir().unwrap();
+        TokenCache::in_data_dir(dir.path())
+            .store(&fsonos_spotify::client::CachedToken {
+                access_token: "fixture-access".into(),
+                refresh_token: "fixture-refresh".into(),
+                expires_at: i64::MAX,
+                scope: fsonos_spotify::client::SCOPE.into(),
+            })
+            .unwrap();
+        let auth = unconfigured(dir.path().to_path_buf());
+        assert!(!auth.status().configured);
+        assert!(!auth.status().signed_in);
     }
 }

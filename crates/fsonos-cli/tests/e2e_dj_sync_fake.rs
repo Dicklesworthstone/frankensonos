@@ -13,7 +13,7 @@ use e2e::{Daemon, Scenario, http};
 use fsonos_proto::control::get_position_info;
 use fsonos_sim::SimHousehold;
 use fsonos_spotify::client::{CachedToken, TEST_BASE_ENV, TokenCache, requested_scope};
-use fsonos_spotify::fake_spotify::{CLIENT_ID, FakeSpotify};
+use fsonos_spotify::fake_spotify::{CLIENT_ID, FakeSpotify, REDIRECT, query_param};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -90,22 +90,29 @@ fn cache_a_lapsed_grant(s: &Scenario) {
 /// `fsonos serve` with the Spotify app and the fake at `base`, on the
 /// clock in `clock`, live: the daemon and its API.
 fn serve(s: &mut Scenario, base: &str, clock: &Path) -> (Daemon, String) {
+    serve_with_app(s, base, clock, Some(CLIENT_ID))
+}
+
+fn serve_with_app(
+    s: &mut Scenario,
+    base: &str,
+    clock: &Path,
+    client_id: Option<&str>,
+) -> (Daemon, String) {
     let clock = clock.to_string_lossy().into_owned();
-    let mut daemon = s.spawn_env(
+    let mut args = vec![
         "serve",
-        &[
-            "serve",
-            "--http",
-            "127.0.0.1:0",
-            "--mcp-http",
-            "127.0.0.1:0",
-            "--spotify-client-id",
-            CLIENT_ID,
-            "--clock-file",
-            &clock,
-        ],
-        &[(TEST_BASE_ENV, base)],
-    );
+        "--http",
+        "127.0.0.1:0",
+        "--mcp-http",
+        "127.0.0.1:0",
+        "--clock-file",
+        &clock,
+    ];
+    if let Some(client_id) = client_id {
+        args.extend(["--spotify-client-id", client_id]);
+    }
+    let mut daemon = s.spawn_env("serve", &args, &[(TEST_BASE_ENV, base)]);
     let ready = daemon
         .wait_line("fsonos serve: ready", Duration::from_secs(20))
         .unwrap_or_default();
@@ -234,6 +241,132 @@ fn a_signed_in_daemon_reads_spotify_and_the_dj_plays_what_it_read() {
         "exit",
         "daemon",
         "SIGINT stops serve cleanly",
+        code == Some(0),
+        format!("{code:?}"),
+    );
+    s.finish();
+    let _ = fake.stop();
+}
+
+/// The loopback CLI identity can initialize the app; ordinary HTTP control
+/// rights do not grant the owner-only Spotify sign-in capability.
+fn owner_call(api: &str, token: &str, method: &str, path: &str, body: &Value) -> (u16, Value) {
+    http(
+        api,
+        method,
+        path,
+        &[
+            ("Content-Type", "application/json"),
+            (fsonos_api::identity::CLI_TOKEN, token),
+        ],
+        &body.to_string(),
+    )
+    .map_or((0, Value::Null), |(status, _, body)| {
+        (status, json_of(&body))
+    })
+}
+
+#[test]
+fn a_running_unconfigured_daemon_completes_setup_and_starts_the_dj_without_restart() {
+    let fake = FakeSpotify::start();
+    let mut s = Scenario::start("spotify_first_setup");
+    s.sim(SimHousehold::standard());
+    let clock = s.dir().join("clock");
+    std::fs::write(&clock, chrono::Utc::now().to_rfc3339()).unwrap();
+    let (mut daemon, api) = serve_with_app(&mut s, &format!("http://{}", fake.addr), &clock, None);
+    let daemon_file: Value =
+        serde_json::from_slice(&std::fs::read(s.dir().join("data/daemon.json")).unwrap()).unwrap();
+    let token = daemon_file["cli_token"].as_str().unwrap();
+    let before = owner_call(&api, token, "GET", "/auth/spotify", &json!({}));
+    s.check(
+        "unconfigured",
+        "http",
+        "the existing daemon reports first-run configuration honestly",
+        before.0 == 200 && before.1["configured"] == false && before.1["signed_in"] == false,
+        format!("{before:?}"),
+    );
+
+    let configured = owner_call(
+        &api,
+        token,
+        "POST",
+        "/auth/spotify/configure",
+        &json!({ "client_id": CLIENT_ID }),
+    );
+    s.check(
+        "configure",
+        "http",
+        "the app is persisted and immediately available without restarting",
+        configured.0 == 200 && configured.1["configured"] == true,
+        format!("{configured:?}"),
+    );
+    let started = owner_call(&api, token, "POST", "/auth/spotify/begin", &json!({}));
+    let url = started.1["url"].as_str().unwrap_or("");
+    fake.state.lock().unwrap().expected_challenge = Some(query_param(url, "code_challenge"));
+    let state = query_param(url, "state");
+    s.check(
+        "begin",
+        "http",
+        "the existing sign-in engine starts PKCE with the configured app",
+        started.0 == 200 && query_param(url, "client_id") == CLIENT_ID,
+        format!("status={}", started.0),
+    );
+    let completed = owner_call(
+        &api,
+        token,
+        "POST",
+        "/auth/spotify/complete",
+        &json!({ "redirect": format!("{REDIRECT}?code=good-code&state={state}") }),
+    );
+    s.check(
+        "complete",
+        "http",
+        "the fake Spotify verifies PKCE and the daemon caches the grant",
+        completed.0 == 200 && completed.1["signed_in"] == true,
+        format!("{completed:?}"),
+    );
+
+    // No POST /dj/sync: the worker installed before configuration notices
+    // first sign-in and fills the shared DJ cache itself.
+    let synced = sync_until(&api, Duration::from_secs(30), |value| {
+        value["running"] == false && value["last"]["tracks"].as_u64().unwrap_or(0) >= 4
+    });
+    s.check(
+        "activated watcher",
+        "http",
+        "the original background worker publishes the first library automatically",
+        synced["last"]["tracks"].as_u64().unwrap_or(0) >= 4
+            && synced.get("error").is_none()
+            && daemon.running(),
+        &synced,
+    );
+    the_dj_plays_what_was_read(&mut s, &api);
+    let repeated = owner_call(
+        &api,
+        token,
+        "POST",
+        "/auth/spotify/configure",
+        &json!({ "client_id": CLIENT_ID }),
+    );
+    let replacement = owner_call(
+        &api,
+        token,
+        "POST",
+        "/auth/spotify/configure",
+        &json!({ "client_id": "fedcba9876543210fedcba9876543210" }),
+    );
+    s.check(
+        "initial app retained",
+        "http",
+        "same-id retries work while changing the configured app is refused",
+        repeated.0 == 200 && (400..500).contains(&replacement.0),
+        format!("same={} different={}", repeated.0, replacement.0),
+    );
+    let code = daemon.interrupt(Duration::from_secs(10));
+    s.check(
+        "exit",
+        "daemon",
+        "serve stops cleanly",
         code == Some(0),
         format!("{code:?}"),
     );

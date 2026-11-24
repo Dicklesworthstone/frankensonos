@@ -946,6 +946,16 @@ refuses. Today each of these shows up as "nothing happens".
   press Enter"), runs the PKCE login, and offers to write `seeds.toml` when
   multicast fails but players answer directly.
 
+First-run Spotify configuration now activates the existing daemon without a
+restart. The auth engine and supervised library worker are installed at startup
+and resolve newly saved app settings for subsequent operations. The owner-only
+`POST /auth/spotify/configure` accepts an initial public Client ID; same-ID
+retries preserve the file, and replacing an existing app is refused. Pending
+consent retains its original app and callback. Both browser remotes expose the
+workflow, and selected-daemon `fsonos setup` saves on that daemon without a local
+fallback after failed requests. Real-account sign-in and audible house playback
+remain the owner's unverified milestones; simulator evidence does not close them.
+
 ### 12.3 State and read tools for agents, and errors that say what to do
 
 [`a-soap-reads`, `b-now-playing`, `b-favorites-search`, `d-agent-read-tools`,

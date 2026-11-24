@@ -91,19 +91,17 @@ impl Prompt {
 /// How the sign-in went, before it is a step's verdict.
 #[derive(Debug)]
 pub enum SignIn {
-    /// No Spotify app client id is configured.
-    NoClientId,
+    /// No app is configured; a selected daemon names its own redirect URI.
+    NoClientId {
+        redirect_uri: Option<String>,
+    },
     /// Not signed in, and no terminal to sign in on.
     NeedsTerminal,
     /// Signed in now (or before), and the library just read into the store.
     Synced(LibrarySync),
-    /// As `Synced`, but the running daemon has no Spotify app: it started
-    /// before one was saved, and reads it only when it starts again.
-    SyncedRestartDaemon(LibrarySync),
     /// Authentication succeeded; a bounded library read still needs work.
     LibraryPending {
         detail: String,
-        restart_daemon: bool,
     },
     /// Authentication succeeded, but the subsequent library update failed.
     LibraryFailed(String),
@@ -114,16 +112,21 @@ pub enum SignIn {
 #[must_use]
 pub fn verdict(result: SignIn, redirect_uri: &str) -> StepOutcome {
     let (status, summary, remedy) = match result {
-        SignIn::NoClientId => (
-            Status::Warn,
-            "no Spotify app client id is configured".to_owned(),
-            Some(format!(
-                "Create an app at {} with the redirect URI {redirect_uri}, then run fsonos \
-                 setup on a terminal and paste its client id (saved for serve too), or set \
-                 FSONOS_SPOTIFY_CLIENT_ID (or pass --spotify-client-id).",
-                crate::spotify_app::DASHBOARD
-            )),
-        ),
+        SignIn::NoClientId {
+            redirect_uri: daemon_redirect,
+        } => {
+            let redirect_uri = daemon_redirect.as_deref().unwrap_or(redirect_uri);
+            (
+                Status::Warn,
+                "no Spotify app client id is configured".to_owned(),
+                Some(format!(
+                    "Create an app at {} with the redirect URI {redirect_uri}, then run fsonos \
+                     setup on a terminal and paste its client id (saved for serve too), or set \
+                     FSONOS_SPOTIFY_CLIENT_ID (or pass --spotify-client-id).",
+                    crate::spotify_app::DASHBOARD
+                )),
+            )
+        }
         SignIn::NeedsTerminal => (
             Status::Warn,
             "not signed in to Spotify".to_owned(),
@@ -141,27 +144,12 @@ pub fn verdict(result: SignIn, redirect_uri: &str) -> StepOutcome {
             ),
             None,
         ),
-        SignIn::SyncedRestartDaemon(sync) => (
-            Status::Warn,
-            format!(
-                "signed in; read {} library track(s), {} in the DJ's pool ({} classical); the \
-                 running daemon has no Spotify app yet",
-                sync.tracks, sync.candidates, sync.classical
-            ),
-            Some(
-                "Restart fsonos serve: it reads the Spotify app saved in the data directory when \
-                 it starts, then keeps the DJ's library fresh on its own."
-                    .to_owned(),
-            ),
-        ),
-        SignIn::LibraryPending { detail, restart_daemon } => (
+        SignIn::LibraryPending { detail } => (
             Status::Warn,
             format!("signed in; {detail}"),
-            Some(if restart_daemon {
-                "Restart fsonos serve so it reads the saved Spotify app and continues the library intake. Check retained progress with fsonos dj sync --status.".to_owned()
-            } else {
-                "The daemon continues pending intake after its saved retry deadline. Check fsonos dj sync --status; without a daemon, run fsonos dj sync to continue. Signing in again is unnecessary.".to_owned()
-            }),
+            Some(
+                "The daemon continues pending intake after its saved retry deadline. Check fsonos dj sync --status; without a daemon, run fsonos dj sync to continue. Signing in again is unnecessary.".to_owned(),
+            ),
         ),
         SignIn::LibraryFailed(why) => (
             Status::Fail,
@@ -185,37 +173,22 @@ pub fn verdict(result: SignIn, redirect_uri: &str) -> StepOutcome {
 
 /// Sign in (on a terminal, through `prompt`) and sync the library.
 pub fn sign_in(global: &GlobalArgs, serve: &ServeArgs, prompt: Option<&Prompt>) -> SignIn {
+    let daemon = match Daemon::find(global, global.daemon) {
+        Ok(daemon) => daemon,
+        Err(error) => return remote_failed(error),
+    };
+    if let Some(daemon) = daemon {
+        return sign_in_on_daemon(&daemon, serve, prompt);
+    }
     let data_dir = match crate::daemon::data_dir(global) {
         Ok(dir) => dir,
         Err(f) => return SignIn::Failed(f.detail),
     };
     let saved = serve.spotify_app_id(&data_dir);
-    let daemon = Daemon::find(global, false).ok().flatten();
-    let status = daemon.as_ref().map(|d| d.get::<SignInDto>("/auth/spotify"));
-    // A daemon that runs the sign-in holds the flow; the token it caches in
-    // the shared data directory is the one read with below.
-    if let (Some(daemon), Some(Ok(status))) = (&daemon, &status) {
-        if !status.signed_in {
-            let Some(prompt) = prompt else {
-                return SignIn::NeedsTerminal;
-            };
-            if let Err(why) = through_daemon(daemon, prompt) {
-                return SignIn::Failed(why);
-            }
-        }
-        // The daemon already has its app configuration and owns admission,
-        // retained progress and cooldowns. Setup needs no duplicate client id.
-        return match daemon.post::<_, LibrarySyncDto>("/dj/sync", &serde_json::json!({})) {
-            Ok(status) => library_result(status, false),
-            Err(error) => SignIn::LibraryFailed(error.detail),
-        };
-    }
-    // A daemon that answered without a sign-in route has no Spotify app.
-    let restart_daemon = matches!(status, Some(Err(_)));
     let Some(client_id) = saved
         .or_else(|| prompt.and_then(|p| ask_client_id(p, &serve.spotify_redirect_uri, &data_dir)))
     else {
-        return SignIn::NoClientId;
+        return SignIn::NoClientId { redirect_uri: None };
     };
     let config = SpotifyConfig {
         client_id,
@@ -263,12 +236,63 @@ pub fn sign_in(global: &GlobalArgs, serve: &ServeArgs, prompt: Option<&Prompt>) 
         return SignIn::Failed("the Spotify app configuration is invalid".into());
     };
     match sync.run() {
-        Ok(status) => library_result(status, restart_daemon),
+        Ok(status) => library_result(status),
         Err(error) => SignIn::LibraryFailed(error.detail),
     }
 }
 
-fn library_result(status: LibrarySyncDto, restart_daemon: bool) -> SignIn {
+/// Once a daemon is selected, all setup writes and sign-in stay on it.
+/// Refused or uncertain requests must not create a second local configuration.
+fn sign_in_on_daemon(daemon: &Daemon, serve: &ServeArgs, prompt: Option<&Prompt>) -> SignIn {
+    let mut status = match daemon.get::<SignInDto>("/auth/spotify") {
+        Ok(status) => status,
+        Err(error) => return remote_failed(error),
+    };
+    if !status.configured {
+        let requested = serve
+            .spotify_client_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .or_else(|| prompt.and_then(|prompt| ask_app_id(prompt, &status.redirect_uri)));
+        let Some(client_id) = requested else {
+            return SignIn::NoClientId {
+                redirect_uri: Some(status.redirect_uri),
+            };
+        };
+        status = match daemon.post(
+            "/auth/spotify/configure",
+            &serde_json::json!({ "client_id": client_id }),
+        ) {
+            Ok(status) => status,
+            Err(error) => return remote_failed(error),
+        };
+        if !status.configured {
+            return SignIn::Failed(
+                "the daemon did not confirm its Spotify app configuration".into(),
+            );
+        }
+    }
+    if !status.signed_in {
+        let Some(prompt) = prompt else {
+            return SignIn::NeedsTerminal;
+        };
+        if let Err(why) = through_daemon(daemon, prompt) {
+            return SignIn::Failed(why);
+        }
+    }
+    match daemon.post::<_, LibrarySyncDto>("/dj/sync", &serde_json::json!({})) {
+        Ok(status) => library_result(status),
+        Err(error) => SignIn::LibraryFailed(format!("{} {}", error.detail, error.hint)),
+    }
+}
+
+fn remote_failed(error: fsonos_api::Failure) -> SignIn {
+    SignIn::Failed(format!("{} {}", error.detail, error.hint))
+}
+
+fn library_result(status: LibrarySyncDto) -> SignIn {
     if let Some(error) = status.error {
         return SignIn::LibraryFailed(error);
     }
@@ -280,13 +304,11 @@ fn library_result(status: LibrarySyncDto, restart_daemon: bool) -> SignIn {
     {
         return SignIn::LibraryPending {
             detail: status.done,
-            restart_daemon,
         };
     }
     let Some(last) = status.last else {
         return SignIn::LibraryPending {
             detail: status.done,
-            restart_daemon,
         };
     };
     let sync = LibrarySync {
@@ -295,16 +317,33 @@ fn library_result(status: LibrarySyncDto, restart_daemon: bool) -> SignIn {
         classical: last.classical,
         retired: last.retired,
     };
-    if restart_daemon {
-        SignIn::SyncedRestartDaemon(sync)
-    } else {
-        SignIn::Synced(sync)
-    }
+    SignIn::Synced(sync)
 }
 
 /// Ask on the terminal for the client id of the owner's Spotify app, and
 /// save it in `data_dir` for `serve` too; `None` when none is given.
 fn ask_client_id(prompt: &Prompt, redirect_uri: &str, data_dir: &Path) -> Option<String> {
+    let id = ask_app_id(prompt, redirect_uri)?;
+    match crate::spotify_app::save(data_dir, &id) {
+        Ok(()) => {
+            println!(
+                "Saved in {}.",
+                data_dir.join(crate::spotify_app::FILE_NAME).display()
+            );
+            Some(id)
+        }
+        Err(error) => {
+            println!(
+                "Could not save the Spotify app: {} {}",
+                error.detail, error.hint
+            );
+            None
+        }
+    }
+}
+
+/// Ask without writing: a selected daemon owns its own configuration.
+fn ask_app_id(prompt: &Prompt, redirect_uri: &str) -> Option<String> {
     println!(
         "The DJ reads your Spotify library through a Spotify app of your own. Create one at {} \
          with the redirect URI {redirect_uri}, then paste its client id here (Enter skips):",
@@ -316,15 +355,8 @@ fn ask_client_id(prompt: &Prompt, redirect_uri: &str, data_dir: &Path) -> Option
         return None;
     }
     if !crate::spotify_app::plausible(&id) {
-        println!("That is not a Spotify client id (32 letters and digits); skipping Spotify.");
+        println!("That is not a Spotify client id (32 hexadecimal digits); skipping Spotify.");
         return None;
-    }
-    match crate::spotify_app::save(data_dir, &id) {
-        Ok(()) => println!(
-            "Saved in {}.",
-            data_dir.join(crate::spotify_app::FILE_NAME).display()
-        ),
-        Err(e) => println!("Could not save it ({e}); this run uses it anyway."),
     }
     Some(id)
 }
@@ -457,6 +489,135 @@ pub fn redirect_addr(uri: &str) -> Option<SocketAddr> {
 mod tests {
     use super::*;
 
+    fn remote_setup(
+        replies: Vec<Option<(u16, serde_json::Value)>>,
+    ) -> (SignIn, Vec<String>, tempfile::TempDir) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut requests = Vec::new();
+            for reply in replies {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "setup did not send its request");
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("accept setup: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 4096];
+                    let count = stream.read(&mut chunk).unwrap();
+                    assert!(count > 0, "setup sent an incomplete request");
+                    bytes.extend_from_slice(&chunk[..count]);
+                    let text = String::from_utf8_lossy(&bytes);
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            requests.push(text.into_owned());
+                            break;
+                        }
+                    }
+                }
+                if let Some((status, value)) = reply {
+                    let body = value.to_string();
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    ).unwrap();
+                }
+            }
+            requests
+        });
+        let local = tempfile::tempdir().unwrap();
+        let global = GlobalArgs {
+            seeds: None,
+            seed: Vec::new(),
+            routes: None,
+            wait: 0,
+            json: true,
+            direct: false,
+            daemon: true,
+            daemon_url: Some(format!("http://{address}")),
+            data_dir: Some(local.path().join("must-stay-local-only")),
+        };
+        let mut serve = ServeArgs::from_env().unwrap();
+        serve.spotify_client_id = Some("0123456789abcdef0123456789abcdef".into());
+        let result = sign_in(&global, &serve, None);
+        let requests = worker.join().unwrap();
+        assert!(!global.data_dir.as_ref().unwrap().exists());
+        (result, requests, local)
+    }
+
+    #[test]
+    fn setup_configures_the_selected_daemon_without_writing_local_settings() {
+        let (result, requests, _local) = remote_setup(vec![
+            Some((200, serde_json::json!({ "status": "ok" }))),
+            Some((
+                200,
+                serde_json::json!({
+                    "configured": false, "signed_in": false, "pending": false,
+                    "redirect_uri": "https://daemon.example.invalid/auth/spotify/callback",
+                }),
+            )),
+            Some((
+                200,
+                serde_json::json!({
+                    "configured": true, "signed_in": false, "pending": false,
+                    "redirect_uri": "https://daemon.example.invalid/auth/spotify/callback",
+                }),
+            )),
+        ]);
+        assert!(matches!(result, SignIn::NeedsTerminal));
+        assert!(requests[2].starts_with("POST /auth/spotify/configure "));
+        assert!(requests[2].contains("0123456789abcdef0123456789abcdef"));
+    }
+
+    #[test]
+    fn refused_and_lost_configuration_replies_never_fall_back_to_local_sign_in() {
+        for response in [Some((403, serde_json::json!({}))), None] {
+            let (result, requests, _local) = remote_setup(vec![
+                Some((200, serde_json::json!({ "status": "ok" }))),
+                Some((
+                    200,
+                    serde_json::json!({
+                        "configured": false, "signed_in": false, "pending": false,
+                        "redirect_uri": "https://daemon.example.invalid/auth/spotify/callback",
+                    }),
+                )),
+                response,
+            ]);
+            assert!(matches!(result, SignIn::Failed(_)), "{result:?}");
+            assert_eq!(requests.len(), 3);
+        }
+    }
+
+    #[test]
+    fn a_refused_remote_status_does_not_start_local_spotify_setup() {
+        let (result, requests, _local) = remote_setup(vec![
+            Some((200, serde_json::json!({ "status": "ok" }))),
+            Some((403, serde_json::json!({}))),
+        ]);
+        assert!(matches!(result, SignIn::Failed(_)), "{result:?}");
+        assert_eq!(requests.len(), 2);
+    }
+
     /// A prompt answering `lines`, in order.
     fn answering(lines: &[&str]) -> Prompt {
         let (tx, rx) = mpsc::channel();
@@ -523,11 +684,20 @@ mod tests {
     #[test]
     fn each_sign_in_result_is_a_verdict_with_its_fix() {
         let uri = "http://127.0.0.1:8099/auth/spotify/callback";
-        let none = verdict(SignIn::NoClientId, uri);
+        let none = verdict(SignIn::NoClientId { redirect_uri: None }, uri);
         assert_eq!(none.status, Status::Warn);
         assert!(
             none.remedies[0].contains("FSONOS_SPOTIFY_CLIENT_ID") && none.remedies[0].contains(uri)
         );
+        let remote_uri = "https://daemon.example.invalid/auth/spotify/callback";
+        let remote = verdict(
+            SignIn::NoClientId {
+                redirect_uri: Some(remote_uri.into()),
+            },
+            uri,
+        );
+        assert!(remote.remedies[0].contains(remote_uri));
+        assert!(!remote.remedies[0].contains(uri));
         assert_eq!(verdict(SignIn::NeedsTerminal, uri).status, Status::Warn);
         let synced = verdict(
             SignIn::Synced(LibrarySync {
@@ -580,7 +750,7 @@ mod tests {
                     ..Default::default()
                 },
             ));
-            let waiting = verdict(library_result(status, false), uri);
+            let waiting = verdict(library_result(status), uri);
             assert_eq!(waiting.status, Status::Warn);
             assert!(waiting.summary.starts_with("signed in;"));
             assert!(waiting.summary.contains("unfinished"));
@@ -589,16 +759,17 @@ mod tests {
             assert!(!waiting.remedies[0].contains("redirect URI"));
         }
         let active = LibrarySyncDto::new(true, None, None);
-        let waiting = verdict(library_result(active, true), uri);
+        let waiting = verdict(library_result(active), uri);
         assert_eq!(waiting.status, Status::Warn);
-        assert!(waiting.remedies[0].contains("Restart fsonos serve"));
+        assert!(waiting.remedies[0].contains("continues pending intake"));
+        assert!(!waiting.remedies[0].contains("Restart"));
     }
 
     #[test]
     fn a_failed_library_update_does_not_send_a_signed_in_owner_back_to_oauth_setup() {
         let status = LibrarySyncDto::new(false, None, Some("Spotify cooldown is active".into()));
         let outcome = verdict(
-            library_result(status, false),
+            library_result(status),
             "http://127.0.0.1:8099/auth/spotify/callback",
         );
         assert_eq!(outcome.status, Status::Fail);

@@ -7,12 +7,40 @@ each household in its Sonos app.
 
 ## Configure the daemon once
 
-The owner must configure `FSONOS_SPOTIFY_CLIENT_ID` (or
-`fsonos serve --spotify-client-id`) and the Spotify application's registered
-redirect URI on the daemon host. Read the configured callback in Spotify setup;
-it must exactly match the application's registration. An unconfigured daemon
-reports this prerequisite instead of pretending that a browser can register an
-application for it. The existing `fsonos setup` remains available.
+Both the phone remote and desktop dashboard can configure the first Spotify
+app on the selected daemon. Open **Spotify setup**, copy the daemon's callback
+address into the application's registered redirect URIs, and use **Open Spotify
+developer dashboard** to create or inspect the application. Paste its public
+32-character Client ID and choose **Save Spotify app**. No client secret is used.
+
+Saving the app enables sign-in on the already running daemon. Its library worker
+also becomes available without a restart. Saving does not start consent or
+playback; **Review new sign-in** remains a separate action. Client ID drafts
+survive errors, panel closing and suspension. After an uncertain save, use
+**Check sign-in status** before another action; the remote never retries a write
+automatically.
+
+Initial configuration cannot replace an existing app. Repeating the same ID is
+safe, and a startup `FSONOS_SPOTIFY_CLIENT_ID` or `--spotify-client-id` keeps its
+precedence. The daemon saves its own configuration atomically and preserves
+existing comments on same-ID retries. A cached sign-in with a missing original
+app configuration requires restoring that configuration on the host.
+
+`fsonos setup` supports the same workflow. When a daemon is selected, setup reads
+its callback and saves the app on that daemon, including over the tailnet. A
+failed daemon read or save does not fall back to writing local configuration.
+With no daemon, the existing local setup remains available. The callback must
+exactly match the application's registration in every workflow.
+
+### API contract
+
+`GET /auth/spotify` returns `configured`, `signed_in`, `pending` and
+`redirect_uri`, including when no app is configured. `POST
+/auth/spotify/configure` accepts only `{"client_id":"<32 hexadecimal characters>"}`
+and returns the new status. It uses the same owner-only `spotify_sign_in`
+permission as beginning consent; the action log records the operation and
+outcome, never the submitted value. Older successful daemon status replies that
+omit `configured` are treated as configured by current clients.
 
 ## Sign in, then load music
 
@@ -70,6 +98,9 @@ between observations. Only the daemon decides which flow may complete. The
 daemon reserves an exchanging flow until its exchange and cache write finish;
 competing starts or callbacks receive `NOT_READY`. A failed session open or
 callback preserves that same flow instead of overwriting a newer one.
+The pending flow retains the app and callback that created it. A later host-side
+configuration change cannot exchange its code under another app; restoring the
+original configuration makes the retained flow available again.
 
 Lost or unreadable write replies are reported as unconfirmed and recovered with
 status reads, never automatic write retries. A reported cached sign-in after an

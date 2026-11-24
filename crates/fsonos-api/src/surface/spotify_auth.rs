@@ -4,8 +4,8 @@
 //! http://127.0.0.1:8099/auth/spotify/callback) and `fsonos setup` never
 //! needs a second listener there. fsonos-spotify runs the flow behind
 //! [`SpotifyAuth`] (implemented in fsonos-cli); this is the surfaces' side:
-//! `GET /auth/spotify`, `POST /auth/spotify/begin`, the callback, and
-//! `POST /auth/spotify/complete` for an address pasted from a browser
+//! `GET /auth/spotify`, initial app configuration, sign-in begin, the callback,
+//! and `POST /auth/spotify/complete` for an address pasted from a browser
 //! elsewhere.
 
 use fastapi::{JsonSchema, fastapi_openapi};
@@ -30,6 +30,16 @@ pub trait SpotifyAuth: Send + Sync {
     /// browser.
     fn status(&self) -> SignInDto;
 
+    /// Save the initial app client id without starting sign-in. Repeating the
+    /// same id is harmless; replacing a configured app requires host-side
+    /// configuration so existing credentials and pending flows stay bound.
+    fn configure(&self, _client_id: &str) -> Result<(), Failure> {
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this sign-in engine does not support configuring a Spotify app",
+        ))
+    }
+
     /// Start a sign-in: the consent page to open. It replaces any sign-in
     /// still waiting.
     fn begin(&self) -> Result<SignInStartDto, Failure>;
@@ -43,12 +53,28 @@ pub trait SpotifyAuth: Send + Sync {
 /// `GET /auth/spotify`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInDto {
+    /// A Spotify app is configured. Older daemons only returned a successful
+    /// status when one was installed, so their absent field means true.
+    #[serde(default = "configured_by_default")]
+    pub configured: bool,
     /// A token is cached: the daemon can read the owner's library.
     pub signed_in: bool,
     /// A sign-in waits for the browser to come back.
     pub pending: bool,
     /// Where Spotify sends the browser back to.
     pub redirect_uri: String,
+}
+
+const fn configured_by_default() -> bool {
+    true
+}
+
+/// `POST /auth/spotify/configure` body. PKCE uses a public app identifier,
+/// never a client secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SignInConfigureRequest {
+    pub client_id: String,
 }
 
 /// `POST /auth/spotify/begin`.
@@ -105,6 +131,40 @@ impl Surface {
     pub fn spotify_sign_in_status(&self, client: &Client) -> Result<SignInDto, Failure> {
         self.guard(client).authorize(SIGN_IN_TOOL, true)?;
         Ok(self.sign_in_engine()?.status())
+    }
+
+    /// Configure the initial Spotify app on this daemon. It has the same
+    /// owner-only permission as starting consent, and does not contact Spotify
+    /// or change playback.
+    pub fn spotify_sign_in_configure(
+        &self,
+        client: &Client,
+        client_id: &str,
+    ) -> Result<SignInDto, Failure> {
+        self.authorize_logged(client, SIGN_IN_TOOL)?;
+        let configured = (|| {
+            let client_id = client_id.trim();
+            if client_id.len() != 32 || !client_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(Failure::invalid(
+                    "a Spotify app client id must contain exactly 32 hexadecimal characters",
+                ));
+            }
+            let engine = self.sign_in_engine()?;
+            engine.configure(client_id)?;
+            Ok(engine.status())
+        })();
+        let result = match &configured {
+            Ok(_) => "Spotify app configured".to_owned(),
+            Err(failure) => format!("failed: {}", failure.code),
+        };
+        self.record(
+            client,
+            format!("{SIGN_IN_TOOL}: configure"),
+            "allow".into(),
+            result,
+            None,
+        );
+        configured
     }
 
     /// Start a sign-in (`POST /auth/spotify/begin`).

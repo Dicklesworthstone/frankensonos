@@ -85,6 +85,7 @@
 //! | `GET /dj/sync` | | [`crate::surface::dj_sync::LibrarySyncDto`]: the DJ's library refresh from Spotify |
 //! | `POST /dj/sync` | `{}` | [`crate::surface::dj_sync::LibrarySyncDto`]: a refresh started in the background |
 //! | `GET /auth/spotify` | | `SignInDto`: whether the daemon is signed in to the owner's Spotify |
+//! | `POST /auth/spotify/configure` | `{client_id}` | `SignInDto`: configure the initial app without restarting |
 //! | `POST /auth/spotify/begin` | `{}` | `SignInStartDto`: the consent page to open |
 //! | `POST /auth/spotify/complete` | `{redirect}`: the address the browser landed on | `SignInDto` |
 //! | `GET /auth/spotify/callback` | | where Spotify sends the browser back (the registered redirect URI) |

@@ -3,6 +3,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `GET /auth/spotify` | | [`SignInDto`] |
+//! | `POST /auth/spotify/configure` | [`SignInConfigureRequest`] | [`SignInDto`]: configure the initial app |
 //! | `POST /auth/spotify/begin` | `{}` | [`SignInStartDto`]: the consent page to open |
 //! | `GET /auth/spotify/callback?code=&state=` | | a short HTML page for the browser Spotify sends back |
 //! | `POST /auth/spotify/complete` | [`SignInCompleteRequest`] | [`SignInDto`] |
@@ -12,7 +13,9 @@ use fastapi::{Response, ResponseBody, StatusCode};
 
 use super::{Ctx, DAEMON, Op, answer, body};
 use crate::failure::Failure;
-use crate::surface::spotify_auth::{SignInCompleteRequest, SignInDto, SignInStartDto};
+use crate::surface::spotify_auth::{
+    SignInCompleteRequest, SignInConfigureRequest, SignInDto, SignInStartDto,
+};
 
 /// Every sign-in route.
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
@@ -27,6 +30,22 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |s, c, _| answer(s.spotify_sign_in_status(c)),
         )
         .response_schema::<SignInDto>(200, "The sign-in"),
+        cx.route(
+            &Op::post(
+                "/auth/spotify/configure",
+                "spotify_sign_in_configure",
+                DAEMON,
+                "Configure the initial Spotify app without restarting the daemon",
+            ),
+            |s, c, req| {
+                answer(
+                    body::<SignInConfigureRequest>(req)
+                        .and_then(|b| s.spotify_sign_in_configure(c, &b.client_id)),
+                )
+            },
+        )
+        .request_schema::<SignInConfigureRequest>(true)
+        .response_schema::<SignInDto>(200, "The configured app's sign-in state"),
         cx.route(
             &Op::post(
                 "/auth/spotify/begin",

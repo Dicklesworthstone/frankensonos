@@ -357,7 +357,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // store, the LAN (discovery, each player, a GENA round trip) and the
     // aliases, then serve's own checks.
     let checks = crate::doctor::checks(global, args.clone())?;
-    let library = LibrarySync::for_serve(args, &data_dir, scheduler.clock());
+    let library = Some(LibrarySync::for_serve(args, &data_dir, scheduler.clock()));
     let house = policy(&data_dir)?.with_owner(owner_login(&tailnet));
     let (surface, live) = live_surface(global, args.events_port, house, library.clone())?;
     let surface = surface

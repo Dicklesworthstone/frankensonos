@@ -174,7 +174,8 @@ impl LibrarySync {
     }
 
     fn read_recent(&self, now: i64) -> Result<Read, Failure> {
-        let (config, dir) = (self.config.clone(), self.data_dir.clone());
+        let config = self.settings.resolve(&self.data_dir)?;
+        let dir = self.data_dir.clone();
         thread::Builder::new()
             .stack_size(STACK)
             .spawn(move || {

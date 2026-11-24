@@ -1,6 +1,7 @@
 //! The Spotify sign-in through `fsonos serve`, against the virtual
 //! households, with no Spotify on the network. A daemon without an app
-//! client id answers NOT_IMPLEMENTED. With one, `POST /auth/spotify/begin`
+//! client id reports its initial setup state and callback, and refuses
+//! consent until an app is configured. With one, `POST /auth/spotify/begin`
 //! gives Spotify's consent page for this app (PKCE S256,
 //! user-library-read), the daemon holds the waiting sign-in, and a forged
 //! redirect to its own callback route is refused on a plain HTML page before
@@ -119,14 +120,25 @@ fn the_daemon_holds_the_sign_in_and_refuses_a_forged_redirect() {
     s.check(
         "no-app",
         "http",
-        "without an app client id the sign-in is NOT_IMPLEMENTED, naming the setting, where \
-         to create the app and the callback it must register",
-        status == 501
-            && json_of(&body)["hint"].as_str().is_some_and(|h| {
-                h.contains("FSONOS_SPOTIFY_CLIENT_ID")
-                    && h.contains("https://developer.spotify.com/dashboard")
-                    && h.contains("/auth/spotify/callback")
-            }),
+        "without an app client id the existing sign-in engine reports initial setup and \
+         the callback the app must register",
+        status == 200
+            && json_of(&body)["configured"] == false
+            && json_of(&body)["signed_in"] == false
+            && json_of(&body)["pending"] == false
+            && json_of(&body)["redirect_uri"] == "http://127.0.0.1:8099/auth/spotify/callback",
+        &body,
+    );
+    let (status, body) = begin(&mut s, &api);
+    s.check(
+        "begin-without-app",
+        "http",
+        "the owner must configure an app before consent can begin",
+        status == 409
+            && json_of(&body)["code"] == "SPOTIFY_AUTH_REQUIRED"
+            && json_of(&body)["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("fsonos setup")),
         &body,
     );
     let code = daemon.interrupt(Duration::from_secs(10));
@@ -144,7 +156,10 @@ fn the_daemon_holds_the_sign_in_and_refuses_a_forged_redirect() {
         "status",
         "http",
         "not signed in, and nothing waits",
-        status == 200 && json_of(&body)["signed_in"] == false && json_of(&body)["pending"] == false,
+        status == 200
+            && json_of(&body)["configured"] == true
+            && json_of(&body)["signed_in"] == false
+            && json_of(&body)["pending"] == false,
         &body,
     );
 
