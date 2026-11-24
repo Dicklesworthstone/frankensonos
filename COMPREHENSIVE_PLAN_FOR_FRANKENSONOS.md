@@ -951,7 +951,7 @@ restart. The auth engine and supervised library worker are installed at startup
 and resolve newly saved app settings for subsequent operations. The owner-only
 `POST /auth/spotify/configure` accepts an initial public Client ID; same-ID
 retries preserve the file, and replacing an existing app is refused. Pending
-consent retains its original app and callback. Both browser remotes expose the
+consent retains its original app and callback. Both browser remotes and the native Apple app expose the
 workflow, and selected-daemon `fsonos setup` saves on that daemon without a local
 fallback after failed requests. Real-account sign-in and audible house playback
 remain the owner's unverified milestones; simulator evidence does not close them.

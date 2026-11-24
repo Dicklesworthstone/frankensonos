@@ -3,13 +3,40 @@ import Foundation
 /// SignInDto reports a cached grant, not a successful library import or proof
 /// that Spotify/Sonos playback is ready. The daemon alone stores credentials.
 public struct SpotifySignIn: Decodable, Equatable, Sendable {
+    public let configured: Bool
     public let signedIn: Bool
     public let pending: Bool
     public let redirectUri: String
 
+    private enum CodingKeys: String, CodingKey { case configured, signedIn, pending, redirectUri }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        // Older daemons expose this endpoint only when an app is configured.
+        if values.contains(.configured) {
+            configured = try values.decode(Bool.self, forKey: .configured)
+        } else {
+            configured = true
+        }
+        signedIn = try values.decode(Bool.self, forKey: .signedIn)
+        pending = try values.decode(Bool.self, forKey: .pending)
+        redirectUri = try values.decode(String.self, forKey: .redirectUri)
+    }
+
     public func validated() throws -> Self {
         _ = try SpotifyAddress.redirect(redirectUri)
+        guard configured || (!signedIn && !pending) else { throw ClientError.unreadable }
         return self
+    }
+}
+
+enum SpotifyAppID {
+    static func validated(_ input: String) throws -> String {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.utf8.count == 32,
+              value.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else {
+            throw SpotifySetupError.invalidClientID
+        }
+        return value
     }
 }
 
@@ -99,13 +126,14 @@ public struct SpotifyLibraryImport: Decodable, Equatable, Sendable {
 }
 
 public enum SpotifySetupError: Error, LocalizedError, Equatable, Sendable {
-    case unsafeConsent, invalidCallback, uncertain, changedSignIn
+    case unsafeConsent, invalidCallback, invalidClientID, uncertain, changedSignIn
     public var errorDescription: String? {
         switch self {
         case .unsafeConsent: "The daemon did not return the expected read-only Spotify consent link. Nothing was opened."
+        case .invalidClientID: "Enter the 32-character hexadecimal Client ID from your Spotify app. No client secret is needed. Nothing was sent."
         case .invalidCallback: "Paste the complete callback address from this sign-in, with its matching state and authorization code. It was not sent. A denied or replaced sign-in needs a new consent flow."
         case .uncertain: "The Spotify request may have taken effect. It was not repeated. Refresh status before starting another request; callback details are not shown."
-        case .changedSignIn: "The daemon's sign-in changed. Refresh its status and review whether to replace the pending flow. Nothing was sent."
+        case .changedSignIn: "The daemon's Spotify setup changed. Refresh its status and review the current app and pending sign-in. Nothing was sent."
         }
     }
 }

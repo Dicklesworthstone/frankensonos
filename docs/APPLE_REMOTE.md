@@ -243,6 +243,30 @@ queue replacement and the lack of ordinary queue undo. See
 `docs/SPOTIFY_SEARCH.md` for provider bounds and account requirements.
 
 Spotify sign-in and library synchronization are available from **House**.
+When the selected daemon has no Spotify app configured, **Spotify & Library**
+shows its exact registered return address and an app-settings link. Register
+that address with your Spotify app, enter its public 32-character Client ID,
+then choose **Save Spotify app**. The app saves the initial configuration on
+that daemon; sign-in and its library worker become available without restarting
+the daemon. No client secret is requested. **Begin Spotify sign-in** and
+**Open Spotify in browser** remain separate, explicit actions.
+
+The client rechecks the daemon's current setup before saving. It preserves the
+public Client ID draft through validation errors, refused or uncertain saves,
+panel closing and app suspension while that daemon connection remains open.
+Sent writes are never automatically repeated; **Refresh status** observes the
+current configuration. Existing app replacement remains a host-side operation.
+Older daemons that omit the `configured` status field retain the existing
+sign-in flow. Callback addresses containing one-time authorization codes are
+cleared separately and are never stored with the public app draft.
+
+Eight added Swift regression tests cover legacy and first-run status, exact
+configuration requests, invalid Client IDs, configuration through sign-in on
+the same model, changed preflight state, uncertain acknowledgements, retained
+drafts and cancellation/serialization. These tests have been reviewed but not
+executed in this development session because the environment has no Swift
+toolchain; native build and test verification still requires the Apple workflow
+or a Swift-capable host.
 
 The DJ panel shows its current whole work, the upcoming works and the reason for
 its choice. It connects start, stop, whole-work skip, like/dislike, timed mood

@@ -10,7 +10,7 @@ public struct SpotifySetupResult: Sendable {
 /// user actions; only GETs repeat while sign-in or a library refresh is pending.
 /// The configured daemon holds PKCE and tokens. No callback is published or saved.
 @MainActor public final class SpotifySetupModel {
-    public enum Activity: String, Sendable { case idle, reading, beginning, completing, syncing }
+    public enum Activity: String, Sendable { case idle, reading, configuring, beginning, completing, syncing }
     public var onChange: (@MainActor () -> Void)?
     public private(set) var active = false { willSet { onChange?() } }
     public private(set) var activity: Activity = .idle { willSet { onChange?() } }
@@ -22,7 +22,11 @@ public struct SpotifySetupResult: Sendable {
     public private(set) var observedAt: Date? { willSet { onChange?() } }
     public private(set) var result: SpotifySetupResult? { willSet { onChange?() } }
     public private(set) var browserProblem: String? { willSet { onChange?() } }
-    public var canBegin: Bool { active && activity == .idle && signIn != nil }
+    /// Public app configuration survives closing/reopening this daemon's panel.
+    /// Keeping the draft also lets the owner review it after an uncertain save.
+    public var clientIDDraft = "" { willSet { onChange?() } }
+    public var canConfigure: Bool { active && activity == .idle && signIn?.configured == false }
+    public var canBegin: Bool { active && activity == .idle && signIn?.configured == true }
     public var canComplete: Bool { canBegin && consent != nil && signIn?.pending == true }
     public var canSync: Bool { active && activity == .idle && library != nil && library?.running == false }
 
@@ -70,6 +74,17 @@ public struct SpotifySetupResult: Sendable {
             let url = try consent.authorizationURL()
             browserProblem = open(url) ? nil : "The browser did not accept the request. Try Open Spotify again; no new sign-in was started."
         } catch { browserProblem = SpotifySetupError.unsafeConsent.localizedDescription }
+    }
+
+    public func configureApp(_ clientID: String) {
+        guard canConfigure, let reviewed = signIn else { return }
+        clientIDDraft = clientID
+        do {
+            let value = try SpotifyAppID.validated(clientID)
+            start(.configure(reviewed, value), activity: .configuring)
+        } catch {
+            result = SpotifySetupResult(title: "Spotify app not saved", detail: SpotifySetupError.invalidClientID.localizedDescription, uncertain: false)
+        }
     }
 
     public func beginSignIn(replacePending: Bool = false) {
@@ -150,6 +165,9 @@ public struct SpotifySetupResult: Sendable {
             case .failure(let why): library = nil; libraryProblem = why
             }
             observedAt = Date()
+        case .configured(let value):
+            signIn = value; signInProblem = nil; consent = nil
+            result = SpotifySetupResult(title: "Spotify app saved", detail: "The running daemon is ready to begin Spotify sign-in. Register the displayed return address in your Spotify app before continuing.", uncertain: false)
         case .begun(let value):
             consent = value
             result = SpotifySetupResult(title: "Consent link ready", detail: "Open Spotify explicitly, authorize read-only library access, then return here. The daemon keeps the credentials.", uncertain: false)
@@ -179,13 +197,13 @@ public struct SpotifySetupResult: Sendable {
     }
 
     private enum Work: Sendable {
-        case read, begin(SpotifySignIn, Bool), complete(SpotifyConsent, String), sync
+        case read, configure(SpotifySignIn, String), begin(SpotifySignIn, Bool), complete(SpotifyConsent, String), sync
         var isRead: Bool { if case .read = self { true } else { false } }
     }
     private enum Read<T: Sendable>: Sendable { case value(T), failure(String) }
     private enum Answer: Sendable {
         case read(Read<SpotifySignIn>, Read<SpotifyLibrarySync>)
-        case begun(SpotifyConsent), completed, sync(SpotifyLibrarySync, Bool)
+        case configured(SpotifySignIn), begun(SpotifyConsent), completed, sync(SpotifyLibrarySync, Bool)
     }
     nonisolated private static func read<T: Sendable>(_ operation: @Sendable () async throws -> T) async -> Read<T> {
         do { return .value(try await operation()) }
@@ -200,16 +218,23 @@ public struct SpotifySetupResult: Sendable {
             let result = await Answer.read(auth, sync)
             try Task.checkCancellation()
             return result
+        case .configure(let reviewed, let clientID):
+            let current = try await client.spotifySignIn()
+            guard current == reviewed, !current.configured else { throw SpotifySetupError.changedSignIn }
+            try Task.checkCancellation()
+            let configured = try await client.configureSpotifyApp(clientID)
+            guard configured.redirectUri == current.redirectUri else { throw SpotifySetupError.uncertain }
+            return .configured(configured)
         case .begin(let reviewed, let replace):
             let current = try await client.spotifySignIn()
-            guard current == reviewed, !current.pending || replace else { throw SpotifySetupError.changedSignIn }
+            guard current == reviewed, current.configured, !current.pending || replace else { throw SpotifySetupError.changedSignIn }
             try Task.checkCancellation()
             let consent = try await client.beginSpotifySignIn()
             guard consent.redirectUri == current.redirectUri else { throw SpotifySetupError.uncertain }
             return .begun(consent)
         case .complete(let consent, let callback):
             let current = try await client.spotifySignIn()
-            guard current.pending, current.redirectUri == consent.redirectUri else { throw SpotifySetupError.changedSignIn }
+            guard current.configured, current.pending, current.redirectUri == consent.redirectUri else { throw SpotifySetupError.changedSignIn }
             try Task.checkCancellation()
             _ = try await client.completeSpotifySignIn(callback, consent: consent)
             return .completed

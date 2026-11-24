@@ -82,36 +82,40 @@ import FrankenSonosKit
         GroupBox("1. Connect Spotify on the daemon") {
             VStack(alignment: .leading, spacing: 10) {
                 if let state = model.signIn {
-                    Label(state.signedIn ? "The daemon has a cached Spotify grant" : "The daemon has no cached Spotify grant",
-                          systemImage: state.signedIn ? "checkmark.circle" : "person.crop.circle.badge.questionmark")
-                    Text("Cached sign-in alone does not verify token validity or a completed library import.").font(.caption).foregroundStyle(.secondary)
                     Text("Registered return address: \(state.redirectUri)").font(.caption).textSelection(.enabled)
-                    if state.pending { Text("A consent flow is waiting for the browser to return.") }
-                    VStack(alignment: .leading, spacing: 12) {
-                        Button(state.pending ? "Replace pending sign-in…" : (state.signedIn ? "Reconnect Spotify" : "Begin Spotify sign-in")) {
-                            if state.pending { replacePending = true }
-                            else { callback = ""; model.beginSignIn() }
-                        }.disabled(!model.canBegin)
-                        if model.consent != nil {
-                            Button("Open Spotify in browser", action: openSpotify)
-                                .buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk).disabled(!model.canComplete)
+                    if state.configured {
+                        Label(state.signedIn ? "The daemon has a cached Spotify grant" : "The daemon has no cached Spotify grant",
+                              systemImage: state.signedIn ? "checkmark.circle" : "person.crop.circle.badge.questionmark")
+                        Text("Cached sign-in alone does not verify token validity or a completed library import.").font(.caption).foregroundStyle(.secondary)
+                        if state.pending { Text("A consent flow is waiting for the browser to return.") }
+                        VStack(alignment: .leading, spacing: 12) {
+                            Button(state.pending ? "Replace pending sign-in…" : (state.signedIn ? "Reconnect Spotify" : "Begin Spotify sign-in")) {
+                                if state.pending { replacePending = true }
+                                else { callback = ""; model.beginSignIn() }
+                            }.disabled(!model.canBegin)
+                            if model.consent != nil {
+                                Button("Open Spotify in browser", action: openSpotify)
+                                    .buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk).disabled(!model.canComplete)
+                            }
                         }
-                    }
-                    if model.consent != nil {
-                        Text("Authorize read-only access in Spotify, then return here. If the return address cannot be reached from this device, paste the complete address the browser landed on below. Do not share that address: it contains a one-time code.")
-                            .font(.callout)
-                        SecureField("Paste the complete callback address", text: $callback)
-                            .textFieldStyle(.roundedBorder).accessibilityLabel("Spotify callback address, kept only until submission or closing")
-                            #if os(iOS)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            #endif
-                        Button("Complete sign-in once") {
-                            let text = callback; callback = ""; model.completeSignIn(text)
-                        }.disabled(!model.canComplete || callback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if let problem = browserFailure ?? model.browserProblem { Text(problem).font(.callout) }
-                    } else if state.pending {
-                        Text("This panel has no usable consent link. Complete the existing flow in its original browser, or explicitly replace it above.").font(.callout)
+                        if model.consent != nil {
+                            Text("Authorize read-only access in Spotify, then return here. If the return address cannot be reached from this device, paste the complete address the browser landed on below. Do not share that address: it contains a one-time code.")
+                                .font(.callout)
+                            SecureField("Paste the complete callback address", text: $callback)
+                                .textFieldStyle(.roundedBorder).accessibilityLabel("Spotify callback address, kept only until submission or closing")
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                #endif
+                            Button("Complete sign-in once") {
+                                let text = callback; callback = ""; model.completeSignIn(text)
+                            }.disabled(!model.canComplete || callback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            if let problem = browserFailure ?? model.browserProblem { Text(problem).font(.callout) }
+                        } else if state.pending {
+                            Text("This panel has no usable consent link. Complete the existing flow in its original browser, or explicitly replace it above.").font(.callout)
+                        }
+                    } else {
+                        appConfiguration
                     }
                 } else {
                     Text(model.signInProblem ?? "Reading the daemon's sign-in status…").textSelection(.enabled)
@@ -119,6 +123,28 @@ import FrankenSonosKit
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+        }
+    }
+
+    private var appConfiguration: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("No Spotify app configured on this daemon", systemImage: "person.crop.circle.badge.plus")
+            Text("Open your Spotify app settings, register the exact return address shown above, then copy its Client ID.")
+                .font(.callout)
+            Link("Open Spotify app settings", destination: URL(string: "https://developer.spotify.com/dashboard")!)
+            TextField("Spotify Client ID (32 hexadecimal characters)", text: Binding(
+                get: { model.clientIDDraft }, set: { model.clientIDDraft = $0 }
+            ))
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Spotify app public Client ID")
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                #endif
+            Button("Save Spotify app") { model.configureApp(model.clientIDDraft) }
+                .disabled(!model.canConfigure || model.clientIDDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Text("The public Client ID is saved on the selected daemon and takes effect without a restart. Sign-in is a separate next step; no client secret is needed.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -172,6 +198,7 @@ import FrankenSonosKit
         switch model.activity {
         case .idle: ""
         case .reading: "Reading account and library status…"
+        case .configuring: "Saving the Spotify app on the daemon…"
         case .beginning: "Requesting a consent link…"
         case .completing: "Completing sign-in once…"
         case .syncing: "Requesting a library refresh…"

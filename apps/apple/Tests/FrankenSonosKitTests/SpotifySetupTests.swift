@@ -8,6 +8,7 @@ import Testing
 private let testRedirect = "http://127.0.0.1:8099/auth/spotify/callback"
 private let spotifyFixtureState = "SYNTHETIC-state"
 private let testCode = "SYNTHETIC-code"
+private let testClientID = "0123456789abcdef0123456789abcdef"
 private func jsonReply(_ object: Any, status: Int = 200) throws -> HTTPReply {
     HTTPReply(data: try JSONSerialization.data(withJSONObject: object), status: status)
 }
@@ -31,6 +32,7 @@ private func callback(code: String = testCode) -> String {
 }
 
 private actor SpotifyStub: DaemonTransport {
+    var configured = true
     var signedIn = false, pending = false, running = false
     var imported = false, partial = false
     var redirect = testRedirect
@@ -43,6 +45,7 @@ private actor SpotifyStub: DaemonTransport {
     private var gate: CheckedContinuation<Void, Never>?
 
     func setAuth(signed: Bool, pending: Bool) { signedIn = signed; self.pending = pending }
+    func setConfigured(_ value: Bool) { configured = value }
     func setRunning(_ running: Bool) { self.running = running }
     func finish(partial: Bool = false) { running = false; imported = true; self.partial = partial }
     func setRedirect(_ value: String) { redirect = value }
@@ -62,6 +65,7 @@ private actor SpotifyStub: DaemonTransport {
             switch key {
             case "GET /auth/spotify": reply = try auth()
             case "GET /dj/sync": reply = try sync()
+            case "POST /auth/spotify/configure": configured = true; reply = try auth()
             case "POST /auth/spotify/begin": pending = true; reply = try jsonReply(consentObject(redirect: redirect))
             case "POST /auth/spotify/complete": signedIn = true; pending = false; reply = try auth()
             case "POST /dj/sync": running = true; reply = try sync()
@@ -83,7 +87,7 @@ private actor SpotifyStub: DaemonTransport {
         AsyncThrowingStream { $0.finish() }
     }
     private func auth() throws -> HTTPReply {
-        try jsonReply(["signed_in": signedIn, "pending": pending, "redirect_uri": redirect])
+        try jsonReply(["configured": configured, "signed_in": signedIn, "pending": pending, "redirect_uri": redirect])
     }
     private func sync() throws -> HTTPReply {
         var object: [String: Any] = ["done": running ? "Reading library" : "Idle library", "running": running]
@@ -331,6 +335,155 @@ private func gate(_ stub: SpotifyStub) async throws {
     try await eventually { model.activity == .idle }
     #expect(model.result?.uncertain == true)
     #expect(await stub.writes().count == 2)
+}
+
+@Test func spotifySignInSupportsLegacyAndUnconfiguredDaemons() throws {
+    let legacy = try DaemonClient.decode(SpotifySignIn.self, from: jsonReply([
+        "signed_in": false, "pending": false, "redirect_uri": testRedirect
+    ]).data).validated()
+    #expect(legacy.configured)
+    let initial = try DaemonClient.decode(SpotifySignIn.self, from: jsonReply([
+        "configured": false, "signed_in": false, "pending": false, "redirect_uri": testRedirect
+    ]).data).validated()
+    #expect(!initial.configured && !initial.signedIn && !initial.pending)
+    for (signedIn, pending) in [(true, false), (false, true), (true, true)] {
+        #expect(throws: (any Error).self) {
+            try DaemonClient.decode(SpotifySignIn.self, from: jsonReply([
+                "configured": false, "signed_in": signedIn, "pending": pending, "redirect_uri": testRedirect
+            ]).data).validated()
+        }
+    }
+    #expect(throws: (any Error).self) {
+        try DaemonClient.decode(SpotifySignIn.self, from: jsonReply([
+            "configured": NSNull(), "signed_in": false, "pending": false, "redirect_uri": testRedirect
+        ]).data).validated()
+    }
+}
+
+@Test func spotifyClientSavesOnlyThePublicAppIDOnTheSelectedDaemon() async throws {
+    let stub = SpotifyStub(), client = try client(stub)
+    await stub.setConfigured(false)
+    let state = try await client.configureSpotifyApp("  " + testClientID + "\n")
+    #expect(state.configured && !state.signedIn && !state.pending)
+    let writes = await stub.writes()
+    #expect(writes.count == 1)
+    #expect(writes[0].url?.path == "/auth/spotify/configure")
+    #expect(writes[0].url?.host == "daemon.example.test" && writes[0].url?.query == nil)
+    #expect(try JSONDecoder().decode([String: String].self, from: writes[0].httpBody!) == ["client_id": testClientID])
+    #expect(writes[0].value(forHTTPHeaderField: "Authorization") == nil)
+    #expect(writes[0].value(forHTTPHeaderField: "Tailscale-User-Login") == nil)
+}
+
+@Test func spotifyInvalidAppIDsNeverReachTheDaemon() async throws {
+    let stub = SpotifyStub(), client = try client(stub)
+    for value in ["", String(repeating: "a", count: 31), String(repeating: "g", count: 32),
+                  String(repeating: "é", count: 32), testClientID + "-secret"] {
+        await #expect(throws: SpotifySetupError.invalidClientID) { try await client.configureSpotifyApp(value) }
+    }
+    #expect(await stub.requests.isEmpty)
+}
+
+@Test @MainActor func spotifyFirstRunCanConfigureAndSignInOnTheSameModel() async throws {
+    let stub = SpotifyStub()
+    await stub.setConfigured(false)
+    let model = try await ready(stub)
+    defer { model.stop() }
+    #expect(model.canConfigure && !model.canBegin && !model.canComplete)
+    model.beginSignIn()
+    #expect(await stub.writes().isEmpty)
+    model.configureApp(testClientID); model.configureApp(testClientID)
+    try await eventually { model.activity == .idle && model.signIn?.configured == true }
+    #expect(!model.canConfigure && model.canBegin && model.consent == nil)
+    #expect(model.result?.title == "Spotify app saved")
+    #expect(await stub.writes().map { $0.url!.path } == ["/auth/spotify/configure"])
+    model.beginSignIn()
+    try await eventually { model.canComplete }
+    model.completeSignIn(callback())
+    try await eventually { model.activity == .idle && model.signIn?.signedIn == true }
+    model.syncLibrary()
+    try await eventually { model.activity == .idle && model.library?.running == true }
+    #expect(await stub.writes().map { $0.url!.path } == [
+        "/auth/spotify/configure", "/auth/spotify/begin", "/auth/spotify/complete", "/dj/sync"
+    ])
+}
+
+@Test @MainActor func spotifyAppSavePreflightRefusesAnAlreadyConfiguredDaemon() async throws {
+    let stub = SpotifyStub()
+    await stub.setConfigured(false)
+    let model = try await ready(stub)
+    defer { model.stop() }
+    await stub.setConfigured(true)
+    model.configureApp(testClientID)
+    try await eventually { model.activity == .idle && model.signIn?.configured == true }
+    #expect(await stub.writes().isEmpty)
+    #expect(model.result?.title == "Nothing sent" && model.result?.uncertain == false)
+    #expect(model.canBegin && !model.canConfigure)
+}
+
+@Test @MainActor func spotifyLostAppSaveRemainsUncertainWithoutReplaying() async throws {
+    let stub = SpotifyStub()
+    await stub.setConfigured(false)
+    let model = try await ready(stub)
+    defer { model.stop() }
+    await stub.loseWrites()
+    model.configureApp(testClientID)
+    try await eventually { model.activity == .idle && model.signIn?.configured == true }
+    #expect(model.result?.uncertain == true && model.canBegin)
+    model.refresh()
+    try await eventually { model.activity == .idle }
+    model.configureApp(testClientID)
+    #expect(await stub.writes().count == 1)
+    #expect(model.result?.uncertain == true)
+    model.suspend(); model.resume()
+    try await eventually { model.activity == .idle }
+    #expect(model.clientIDDraft == testClientID)
+    #expect(model.result?.uncertain == true)
+    #expect(await stub.writes().count == 1)
+}
+
+@Test @MainActor func spotifyPublicAppDraftSurvivesFailedSavesAndPanelReopening() async throws {
+    let stub = SpotifyStub()
+    await stub.setConfigured(false)
+    let model = try await ready(stub)
+    defer { model.stop() }
+    model.clientIDDraft = "unfinished-public-id"
+    model.suspend(); model.resume()
+    try await eventually { model.canConfigure }
+    #expect(model.clientIDDraft == "unfinished-public-id")
+    model.configureApp(model.clientIDDraft)
+    #expect(model.result?.title == "Spotify app not saved")
+    #expect(model.clientIDDraft == "unfinished-public-id")
+    #expect(await stub.writes().isEmpty)
+
+    await stub.override("POST /auth/spotify/configure", try jsonReply([
+        "code": "POLICY_DENIED", "detail": "Fixture refusal"
+    ], status: 403))
+    model.clientIDDraft = testClientID
+    model.configureApp(model.clientIDDraft)
+    try await eventually { model.activity == .idle && model.result?.uncertain == true }
+    model.suspend(); model.resume()
+    try await eventually { model.canConfigure }
+    #expect(model.clientIDDraft == testClientID)
+    #expect(model.result?.uncertain == true)
+    #expect(await stub.writes().count == 1)
+}
+
+@Test @MainActor func spotifyAppSaveCancelsBeforeDispatchAndSerializesSentRequests() async throws {
+    for path in ["GET /auth/spotify", "POST /auth/spotify/configure"] {
+        let stub = SpotifyStub()
+        await stub.setConfigured(false)
+        let model = try await ready(stub)
+        await stub.hold(path)
+        model.configureApp(testClientID)
+        try await gate(stub)
+        model.configureApp(testClientID); model.beginSignIn(); model.syncLibrary()
+        model.suspend()
+        await stub.release()
+        try await eventually { model.activity == .idle }
+        #expect(await stub.writes().count == (path.hasPrefix("GET") ? 0 : 1))
+        #expect(model.consent == nil)
+        model.stop()
+    }
 }
 
 @Test @MainActor func spotifyResumeWaitsForCancelledReadToDrainAndDropsOldResults() async throws {

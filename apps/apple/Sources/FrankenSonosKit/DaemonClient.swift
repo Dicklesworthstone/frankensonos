@@ -387,6 +387,15 @@ extension DaemonClient {
 extension DaemonClient {
     /// These operations affect daemon sign-in/cache state, never speaker
     /// playback. No redirects, retries or credentials are added by the client.
+    public func configureSpotifyApp(_ clientID: String) async throws -> SpotifySignIn {
+        let value = try SpotifyAppID.validated(clientID)
+        return try await spotifyPost(SpotifySignIn.self, path: ["auth", "spotify", "configure"], body: ["client_id": value]) {
+            let result = try $0.validated()
+            guard result.configured else { throw ClientError.unreadable }
+            return result
+        }
+    }
+
     public func beginSpotifySignIn() async throws -> SpotifyConsent {
         try await spotifyPost(SpotifyConsent.self, path: ["auth", "spotify", "begin"], body: [:]) {
             _ = try $0.authorizationURL(); return $0
@@ -397,7 +406,7 @@ extension DaemonClient {
         let redirect = try consent.callback(callback)
         return try await spotifyPost(SpotifySignIn.self, path: ["auth", "spotify", "complete"], body: ["redirect": redirect]) {
             let result = try $0.validated()
-            guard result.signedIn, !result.pending, result.redirectUri == consent.redirectUri else { throw ClientError.unreadable }
+            guard result.configured, result.signedIn, !result.pending, result.redirectUri == consent.redirectUri else { throw ClientError.unreadable }
             return result
         }
     }
