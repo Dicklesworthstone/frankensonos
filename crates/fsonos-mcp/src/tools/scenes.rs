@@ -4,7 +4,8 @@
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::scenes::{
-    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeletedDto, SceneDto,
+    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeleteRequest, SceneDeletedDto,
+    SceneDto, SceneSaveRequest,
 };
 use serde::{Deserialize as _, Serialize};
 
@@ -111,29 +112,45 @@ impl Backend {
     /// The `save_scene` tool: on the daemon when one runs, whose DJ is the
     /// one a group plays (saved as the DJ, not as what it has), else here.
     pub fn save_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
-        self.capture_scene(name, false)
+        self.capture_scene_with_revision(name, false, None)
     }
 
     /// Capture complete ordinary queues for durable scene recall.
     pub fn save_scene_with_queue_backups(&self, name: &str) -> McpResult<FinalCallToolResult> {
-        self.capture_scene(name, true)
+        self.capture_scene_with_revision(name, true, None)
     }
 
-    fn capture_scene(&self, name: &str, backup_queues: bool) -> McpResult<FinalCallToolResult> {
+    /// Capture only over the reviewed stored revision, or `absent` for a new name.
+    pub fn capture_scene_with_revision(
+        &self,
+        name: &str,
+        backup_queues: bool,
+        expected_revision: Option<&str>,
+    ) -> McpResult<FinalCallToolResult> {
         let path = format!("/scenes/{}", segment(name));
-        let request = backup_queues.then(|| serde_json::json!({"backup_queues": true}));
+        let mut fields = serde_json::Map::new();
+        if backup_queues {
+            fields.insert("backup_queues".into(), true.into());
+        }
+        if let Some(revision) = expected_revision {
+            fields.insert("expected_revision".into(), revision.into());
+        }
+        let request = (!fields.is_empty()).then_some(serde_json::Value::Object(fields));
         if let Some(answer) = self.on_daemon("PUT", &path, request.as_ref(), |scene: &SceneDto| {
             format!("Saved {}", scene_line(scene))
         }) {
             return answer;
         }
         respond(|| {
-            let scene = if backup_queues {
-                self.surface
-                    .save_scene_with_queue_backups(&self.client, name)?
-            } else {
-                self.surface.save_scene(&self.client, name)?
-            };
+            let scene = self.surface.save_scene_with(
+                &self.client,
+                name,
+                &SceneSaveRequest {
+                    expected_revision: expected_revision.map(str::to_owned),
+                    backup_queues,
+                    ..SceneSaveRequest::default()
+                },
+            )?;
             Ok((format!("Saved {}", scene_line(&scene)), scene))
         })
     }
@@ -143,6 +160,16 @@ impl Backend {
         &self,
         name: &str,
         scene: &serde_json::Value,
+    ) -> McpResult<FinalCallToolResult> {
+        self.save_scene_from_revision(name, scene, None)
+    }
+
+    /// Author a scene without overwriting an edit newer than the caller's review.
+    pub fn save_scene_from_revision(
+        &self,
+        name: &str,
+        scene: &serde_json::Value,
+        expected_revision: Option<&str>,
     ) -> McpResult<FinalCallToolResult> {
         let def = SceneDefinition::deserialize(scene).map_err(|error| {
             crate::tool_error(&fsonos_api::Failure::invalid(format!("scene: {error}")))
@@ -158,13 +185,30 @@ impl Backend {
         def.validate_sources()
             .map_err(|error| crate::tool_error(&error))?;
         let path = format!("/scenes/{}", segment(name));
-        if let Some(answer) = self.on_daemon("PUT", &path, Some(scene), |saved: &SceneDto| {
+        let mut fields = scene.as_object().cloned().ok_or_else(|| {
+            crate::tool_error(&fsonos_api::Failure::invalid("scene must be a JSON object"))
+        })?;
+        if let Some(revision) = expected_revision {
+            fields.insert("expected_revision".into(), revision.into());
+        }
+        let body = serde_json::Value::Object(fields);
+        if let Some(answer) = self.on_daemon("PUT", &path, Some(&body), |saved: &SceneDto| {
             format!("Saved {}", scene_line(saved))
         }) {
             return answer;
         }
         respond(|| {
-            let saved = self.surface.save_scene_from(&self.client, name, &def)?;
+            let saved = self.surface.save_scene_with(
+                &self.client,
+                name,
+                &SceneSaveRequest {
+                    expected_revision: expected_revision.map(str::to_owned),
+                    groups: def.groups,
+                    volumes: def.volumes,
+                    mutes: def.mutes,
+                    backup_queues: false,
+                },
+            )?;
             Ok((format!("Saved {}", scene_line(&saved)), saved))
         })
     }
@@ -211,14 +255,33 @@ impl Backend {
 
     /// The `delete_scene` tool.
     pub fn delete_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
+        self.delete_scene_with_revision(name, None)
+    }
+
+    /// Delete exactly the reviewed scene; preserve a competing replacement.
+    pub fn delete_scene_with_revision(
+        &self,
+        name: &str,
+        expected_revision: Option<&str>,
+    ) -> McpResult<FinalCallToolResult> {
         let path = format!("/scenes/{}", segment(name));
-        if let Some(answer) = self.on_daemon("DELETE", &path, None, |deleted: &SceneDeletedDto| {
-            deleted.done.clone()
-        }) {
+        let request = SceneDeleteRequest {
+            expected_revision: expected_revision.map(str::to_owned),
+        };
+        let body =
+            expected_revision.map(|revision| serde_json::json!({"expected_revision": revision}));
+        if let Some(answer) = self.on_daemon(
+            "DELETE",
+            &path,
+            body.as_ref(),
+            |deleted: &SceneDeletedDto| deleted.done.clone(),
+        ) {
             return answer;
         }
         respond(|| {
-            let deleted = self.surface.delete_scene(&self.client, name)?;
+            let deleted = self
+                .surface
+                .delete_scene_with(&self.client, name, &request)?;
             Ok((deleted.done.clone(), deleted))
         })
     }
@@ -233,22 +296,26 @@ async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallTool
 }
 
 #[tool(
-    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind tracks with tracks [{source_uri: Spotify track/episode URI or link, title: optional text}, ...] containing 1-10 entries in exact order with duplicates retained, or kind sonos_playlist with name set to the target household’s exact SQ: id, or kind dj with optional mood and direction {constraints: {include_artists: [names], include_genres: [genres], ...}, for_secs: 7200}, uri with a stream uri or a Spotify track, album, playlist, artist, episode or show link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. A captured DJ retains its added filters and remaining duration, renewed on recall; an explicit empty direction without a mood clears prior steering. All steering constraint fields supported by add_schedule are accepted. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a bookmark by default. With backup_queues true, complete ordered contents are retained (up to 1000 entries and 4 MiB per queue) and recall can rebuild the original player's queue after edits or a restart. Recall replaces that player's current queue; a complete verified scene on unchanged groups can retain bounded queue-content and scoped-level undo. Inspect the result and undo preview for eligibility. Capture fails if a queue cannot be saved completely. The option cannot accompany scene. Captured queue sources cannot be authored; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A tracks source retains concrete identities and optional titles; each recall replaces the queue through the destination household’s own renderer, and playing false loads it silently. A sonos_playlist source pins the household, native id and current title; every recall replaces the queue from that playlist’s current contents, refuses missing or renamed identities, and can retain bounded queue-content undo after a complete verified recall on unchanged groups. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes. Artist and show URIs are stored without catalog access, then resolve on each recall using the owner's Spotify sign-in."
+    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind tracks with tracks [{source_uri: Spotify track/episode URI or link, title: optional text}, ...] containing 1-10 entries in exact order with duplicates retained, or kind sonos_playlist with name set to the target household’s exact SQ: id, or kind dj with optional mood and direction {constraints: {include_artists: [names], include_genres: [genres], ...}, for_secs: 7200}, uri with a stream uri or a Spotify track, album, playlist, artist, episode or show link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. A captured DJ retains its added filters and remaining duration, renewed on recall; an explicit empty direction without a mood clears prior steering. All steering constraint fields supported by add_schedule are accepted. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a bookmark by default. With backup_queues true, complete ordered contents are retained (up to 1000 entries and 4 MiB per queue) and recall can rebuild the original player's queue after edits or a restart. Recall replaces that player's current queue; a complete verified scene on unchanged groups can retain bounded queue-content and scoped-level undo. Inspect the result and undo preview for eligibility. Capture fails if a queue cannot be saved completely. The option cannot accompany scene. Captured queue sources cannot be authored; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A tracks source retains concrete identities and optional titles; each recall replaces the queue through the destination household’s own renderer, and playing false loads it silently. A sonos_playlist source pins the household, native id and current title; every recall replaces the queue from that playlist’s current contents, refuses missing or renamed identities, and can retain bounded queue-content undo after a complete verified recall on unchanged groups. A scene of the same name (case ignored) is replaced. Pass expected_revision from get_scene or list_scenes to replace only the reviewed definition, or absent to create only an unused name; CONFIG_CHANGED preserves a competing edit and requires a fresh read. Nothing on the speakers changes. Artist and show URIs are stored without catalog access, then resolve on each recall using the owner's Spotify sign-in."
 )]
 async fn save_scene(
     ctx: &McpContext,
     name: String,
     scene: Option<serde_json::Value>,
     backup_queues: Option<bool>,
+    expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |b| {
         match (&scene, backup_queues.unwrap_or(false)) {
             (Some(_), true) => Err(crate::tool_error(&fsonos_api::Failure::invalid(
                 "backup_queues captures the current house and cannot accompany an authored scene",
             ))),
-            (Some(scene), false) => b.save_scene_from(&name, scene),
-            (None, true) => b.save_scene_with_queue_backups(&name),
-            (None, false) => b.save_scene(&name),
+            (Some(scene), false) => {
+                b.save_scene_from_revision(&name, scene, expected_revision.as_deref())
+            }
+            (None, backup_queues) => {
+                b.capture_scene_with_revision(&name, backup_queues, expected_revision.as_deref())
+            }
         }
     })
     .await
@@ -280,13 +347,17 @@ async fn get_scene(
 }
 
 #[tool(
-    description = "Forget the saved scene `name` (case ignored; list_scenes names the saved ones). Only the saved scene is removed; nothing on the speakers changes. An unknown name is an error."
+    description = "Forget the saved scene `name` (case ignored; list_scenes names the saved ones). Only the saved scene is removed; nothing on the speakers changes. Pass expected_revision from get_scene or list_scenes to delete only the reviewed definition. CONFIG_CHANGED preserves a competing edit; reread and review rather than retry. An unknown name is an error."
 )]
 async fn delete_scene(
     ctx: &McpContext,
     name: String,
+    expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(ctx, move |b| b.delete_scene(&name)).await
+    with_backend_off_thread(ctx, move |b| {
+        b.delete_scene_with_revision(&name, expected_revision.as_deref())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -533,6 +604,57 @@ mod tests {
         let description = definition.description.unwrap();
         assert!(description.contains("backup_queues"));
         assert!(description.contains("bookmark by default"));
+    }
+
+    #[test]
+    fn scene_mutation_schemas_offer_the_revision_returned_by_reads() {
+        for definition in [
+            fastmcp_server::ToolHandler::definition(&SaveScene),
+            fastmcp_server::ToolHandler::definition(&DeleteScene),
+        ] {
+            assert_eq!(
+                definition.input_schema["properties"]["expected_revision"]["type"],
+                json!(["string", "null"])
+            );
+            assert_eq!(definition.input_schema["required"], json!(["name"]));
+            assert!(
+                definition
+                    .description
+                    .unwrap()
+                    .contains("expected_revision")
+            );
+        }
+    }
+
+    #[test]
+    fn reviewed_local_scene_changes_preserve_a_newer_definition() {
+        let saved = Scene {
+            writer: Some("mcp-stdio".into()),
+            ..evening()
+        };
+        let b = backend(Client::McpStdio, &[saved]);
+        let original = b.get_scene("Evening").unwrap().structured_content.unwrap();
+        let revision = original["revision"].as_str().unwrap();
+        assert!(!revision.is_empty());
+        for result in [
+            b.capture_scene_with_revision("Evening", false, Some("absent")),
+            b.capture_scene_with_revision("Evening", true, Some("stale")),
+            b.save_scene_from_revision(
+                "Evening",
+                &json!({"volumes": {"Kitchen": 12}}),
+                Some("stale"),
+            ),
+            b.delete_scene_with_revision("Evening", Some("stale")),
+        ] {
+            assert!(error_text(result).starts_with("CONFIG_CHANGED: "));
+            assert_eq!(
+                b.get_scene("Evening").unwrap().structured_content.unwrap(),
+                original
+            );
+        }
+        b.delete_scene_with_revision("evening", Some(revision))
+            .unwrap();
+        assert!(error_text(b.get_scene("Evening")).starts_with("UNKNOWN_SCENE: "));
     }
 
     fn direction() -> Value {

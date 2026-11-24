@@ -14,12 +14,12 @@ use clap::{Args, Subcommand};
 use fsonos_api::Failure;
 use fsonos_api::surface::Surface;
 use fsonos_api::surface::scenes::{
-    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeletedDto, SceneDto, SceneGroupDto,
-    SceneSaveRequest,
+    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeleteRequest, SceneDeletedDto,
+    SceneDto, SceneGroupDto, SceneSaveRequest,
 };
 use fsonos_core::policy::Client;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::GlobalArgs;
 use crate::remote::{Daemon, pct};
@@ -52,6 +52,10 @@ enum SceneAction {
         /// replaced contents. Incompatible with --from.
         #[arg(long, conflicts_with = "from")]
         backup_queues: bool,
+        /// Save only if this revision from scene show/list still matches.
+        /// Use `absent` to create only when the name is unused.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: Option<String>,
     },
     /// Put the house in a scene: only the steps it needs are sent;
     /// queue bookmarks require the original unchanged queue. A queue backup
@@ -71,7 +75,12 @@ enum SceneAction {
     Show { name: String },
     /// Forget a scene.
     #[command(visible_alias = "remove")]
-    Rm { name: String },
+    Rm {
+        name: String,
+        /// Delete only this revision from scene show/list; a newer edit stays.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: Option<String>,
+    },
 }
 
 /// The surface over the LAN and the data directory's store; it surveys only
@@ -89,51 +98,21 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
     match &args.action {
         SceneAction::Save {
             name,
-            from: Some(file),
-            ..
-        } => {
-            let text = std::fs::read_to_string(file)
-                .with_context(|| format!("read {}", file.display()))?;
-            let def: SceneDefinition = toml::from_str(&text).map_err(|e| {
-                Failure::invalid(format!("{}: {e}", file.display())).with_hint(
-                    "Write [[groups]] with a coordinator, and [volumes] and [mutes] by room.",
-                )
-            })?;
-            // Checked here: to the daemon an empty body is "the house as it is".
-            if def == SceneDefinition::default() {
-                return Err(Failure::invalid(format!(
-                    "{} names no group, volume or mute",
-                    file.display()
-                ))
-                .with_hint("Write at least one, or drop --from to save the house as it is.")
-                .into());
-            }
-            def.validate_sources()?;
-            let scene: SceneDto = match Daemon::find(global, global.daemon)? {
-                Some(daemon) => daemon.put_json(&format!("/scenes/{}", pct(name)), &def)?,
-                None => s()?.save_scene_from(&cli, name, &def)?,
-            };
-            crate::emit(global.json, &scene, |scene| {
-                format!("saved scene {}", show_text(scene))
-            })
-        }
-        SceneAction::Save {
-            name,
-            from: None,
+            from,
             backup_queues,
+            expected_revision,
         } => {
-            // The DJ plays in the daemon: only it knows where.
+            let request = save_request(
+                from.as_deref(),
+                *backup_queues,
+                expected_revision.as_deref(),
+            )?;
+            // Only the daemon can capture its own running DJ sessions.
+            let plain_capture = from.is_none() && !*backup_queues && expected_revision.is_none();
             let scene: SceneDto = match Daemon::find(global, global.daemon)? {
-                Some(daemon) if *backup_queues => daemon.put_json(
-                    &format!("/scenes/{}", pct(name)),
-                    &SceneSaveRequest {
-                        backup_queues: true,
-                        ..SceneSaveRequest::default()
-                    },
-                )?,
-                Some(daemon) => daemon.put(&format!("/scenes/{}", pct(name)))?,
-                None if *backup_queues => s()?.save_scene_with_queue_backups(&cli, name)?,
-                None => s()?.save_scene(&cli, name)?,
+                Some(daemon) if plain_capture => daemon.put(&format!("/scenes/{}", pct(name)))?,
+                Some(daemon) => daemon.put_json(&format!("/scenes/{}", pct(name)), &request)?,
+                None => s()?.save_scene_with(&cli, name, &request)?,
             };
             crate::emit(global.json, &scene, |scene| {
                 format!("saved scene {}", show_text(scene))
@@ -172,14 +151,59 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
             };
             crate::emit(global.json, &scene, show_text)
         }
-        SceneAction::Rm { name } => {
+        SceneAction::Rm {
+            name,
+            expected_revision,
+        } => {
+            let request = SceneDeleteRequest {
+                expected_revision: expected_revision.clone(),
+            };
             let deleted: SceneDeletedDto = match Daemon::find(global, global.daemon)? {
+                Some(daemon) if expected_revision.is_some() => {
+                    daemon.delete_json(&format!("/scenes/{}", pct(name)), &request)?
+                }
                 Some(daemon) => daemon.delete(&format!("/scenes/{}", pct(name)))?,
-                None => s()?.delete_scene(&cli, name)?,
+                None => s()?.delete_scene_with(&cli, name, &request)?,
             };
             crate::emit(global.json, &deleted, |d| format!("{}\n", d.done))
         }
     }
+}
+
+/// Validate authored input before selecting a daemon or reading the house.
+fn save_request(
+    from: Option<&Path>,
+    backup_queues: bool,
+    expected_revision: Option<&str>,
+) -> anyhow::Result<SceneSaveRequest> {
+    let mut request = SceneSaveRequest {
+        expected_revision: expected_revision.map(str::to_owned),
+        backup_queues,
+        ..SceneSaveRequest::default()
+    };
+    if let Some(file) = from {
+        let text =
+            std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
+        let def: SceneDefinition = toml::from_str(&text).map_err(|e| {
+            Failure::invalid(format!("{}: {e}", file.display())).with_hint(
+                "Write [[groups]] with a coordinator, and [volumes] and [mutes] by room.",
+            )
+        })?;
+        // An empty body asks the daemon to capture the house instead.
+        if def == SceneDefinition::default() {
+            return Err(Failure::invalid(format!(
+                "{} names no group, volume or mute",
+                file.display()
+            ))
+            .with_hint("Write at least one, or drop --from to save the house as it is.")
+            .into());
+        }
+        def.validate_sources()?;
+        request.groups = def.groups;
+        request.volumes = def.volumes;
+        request.mutes = def.mutes;
+    }
+    Ok(request)
 }
 
 /// A group's rooms, what it plays, and whether it plays.
@@ -250,6 +274,9 @@ pub fn list_text(scenes: &[SceneDto]) -> String {
 #[must_use]
 pub fn show_text(scene: &SceneDto) -> String {
     let mut out = format!("{}\n", scene.name);
+    if !scene.revision.is_empty() {
+        let _ = writeln!(out, "  revision: {}", scene.revision);
+    }
     for g in &scene.groups {
         let _ = writeln!(out, "  {}", group_text(g));
     }
@@ -305,6 +332,7 @@ mod tests {
                         name,
                         from,
                         backup_queues,
+                        expected_revision,
                     },
             }) = cli.command
             else {
@@ -313,6 +341,7 @@ mod tests {
             assert_eq!(name, "Evening");
             assert!(from.is_none());
             assert_eq!(backup_queues, backup);
+            assert!(expected_revision.is_none());
         }
     }
 
@@ -331,6 +360,67 @@ mod tests {
             .expect("backup capture conflicts with a scene file");
             assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
         }
+    }
+
+    #[test]
+    fn scene_save_and_remove_accept_a_reviewed_revision() {
+        for flags in [
+            vec![],
+            vec!["--backup-queues"],
+            vec!["--from", "evening.toml"],
+        ] {
+            let cli = Cli::try_parse_from(
+                [
+                    "fsonos",
+                    "scene",
+                    "save",
+                    "Evening",
+                    "--expected-revision",
+                    "absent",
+                ]
+                .into_iter()
+                .chain(flags),
+            )
+            .unwrap();
+            let Command::Scene(SceneArgs {
+                action:
+                    SceneAction::Save {
+                        expected_revision, ..
+                    },
+            }) = cli.command
+            else {
+                panic!("expected scene save");
+            };
+            assert_eq!(expected_revision.as_deref(), Some("absent"));
+        }
+        for command in ["rm", "remove"] {
+            let cli = Cli::try_parse_from([
+                "fsonos",
+                "scene",
+                command,
+                "Evening",
+                "--expected-revision",
+                "scene-v1:reviewed",
+            ])
+            .unwrap();
+            let Command::Scene(SceneArgs {
+                action:
+                    SceneAction::Rm {
+                        expected_revision, ..
+                    },
+            }) = cli.command
+            else {
+                panic!("expected scene removal");
+            };
+            assert_eq!(expected_revision.as_deref(), Some("scene-v1:reviewed"));
+        }
+    }
+
+    #[test]
+    fn scene_show_exposes_the_proof_needed_for_conditional_changes() {
+        let mut scene = evening();
+        scene.revision = "scene-v1:reviewed".into();
+        assert!(show_text(&scene).contains("revision: scene-v1:reviewed"));
     }
 
     fn evening() -> SceneDto {

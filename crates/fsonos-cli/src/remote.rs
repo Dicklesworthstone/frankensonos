@@ -404,6 +404,17 @@ impl Daemon {
         self.call("DELETE", path, None, CALL)
     }
 
+    /// `DELETE path` with a reviewed request body, without dropping its proof.
+    pub fn delete_json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, Failure> {
+        let body = serde_json::to_string(body)
+            .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))?;
+        self.call("DELETE", path, Some(&body), CALL)
+    }
+
     /// `PUT path` with no body: the answer as `T`, or the daemon's failure.
     pub fn put<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
         self.call("PUT", path, None, CALL)
@@ -453,7 +464,8 @@ impl Daemon {
             ("GET", _) => self.get(path),
             ("PUT", None) => self.put(path),
             ("PUT", Some(body)) => self.put_json(path, body),
-            ("DELETE", _) => self.delete(path),
+            ("DELETE", None) => self.delete(path),
+            ("DELETE", Some(body)) => self.delete_json(path, body),
             // An announcement answers once it has played and the music is back.
             ("POST", _) if path == "/announce" => self.announce_json(body.unwrap_or(&empty)),
             ("POST", _) => self.post(path, body.unwrap_or(&empty)),
@@ -1456,6 +1468,17 @@ mod tests {
         assert_eq!(failure.code, ErrorCode::OutcomeUncertain);
         assert!(!failure.retryable());
         worker.join().unwrap()
+    }
+
+    #[test]
+    fn stdio_deletion_retains_its_reviewed_scene_revision_on_the_wire() {
+        let request = serde_json::json!({"expected_revision": "scene-v1:reviewed"});
+        let (line, body) = forwarded("DELETE", Some(&request));
+        assert!(line.starts_with("DELETE /scenes/evening "), "{line}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            request
+        );
     }
 
     #[test]

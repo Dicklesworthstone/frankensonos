@@ -409,3 +409,169 @@ fn daemon_errors_and_loss_never_fall_back_to_the_agents_local_configuration() {
     fixture.local_unchanged();
     fixture.finish();
 }
+
+#[test]
+fn stdio_scene_revisions_preserve_competing_edits_on_the_selected_daemon() {
+    let mut fixture = Fixture::new("mcp-daemon-scene-revisions", DAEMON_POLICY);
+    let mut session = fixture.session();
+    let mut create = scene(28);
+    create["expected_revision"] = json!("absent");
+    success(&mut session, "save_scene", create.clone());
+    let original = fixture.get(SCENE_PATH);
+    let revision = original["revision"].as_str().unwrap();
+    assert!(!revision.is_empty());
+    failure(&mut session, "save_scene", create, "CONFIG_CHANGED");
+    assert_eq!(fixture.get(SCENE_PATH), original);
+
+    let mut replacement = scene(24);
+    replacement["expected_revision"] = json!(revision);
+    success(&mut session, "save_scene", replacement);
+    let current = fixture.get(SCENE_PATH);
+    assert_eq!(current["volumes"]["Kitchen"], 24);
+    assert_ne!(current["revision"], original["revision"]);
+    for backup_queues in [false, true] {
+        failure(
+            &mut session,
+            "save_scene",
+            json!({
+                "name": SCENE, "backup_queues": backup_queues,
+                "expected_revision": revision,
+            }),
+            "CONFIG_CHANGED",
+        );
+    }
+    failure(
+        &mut session,
+        "delete_scene",
+        json!({"name": SCENE, "expected_revision": revision}),
+        "CONFIG_CHANGED",
+    );
+    assert_eq!(fixture.get(SCENE_PATH), current);
+    assert_eq!(
+        fixture.volume(),
+        20,
+        "configuration edits never change playback"
+    );
+
+    success(
+        &mut session,
+        "delete_scene",
+        json!({"name": SCENE, "expected_revision": current["revision"]}),
+    );
+    assert!(fixture.get("/scenes").as_array().unwrap().is_empty());
+    drop(session);
+    fixture.local_unchanged();
+    fixture.finish();
+}
+
+fn reviewed_cli(fixture: &mut Fixture, step: &str, direct: bool, args: &[&str]) -> e2e::Run {
+    let dir = fixture.client_dir.display().to_string();
+    let mode = if direct { "--direct" } else { "--daemon" };
+    let mut command = vec![mode, "--data-dir", &dir, "--json"];
+    command.extend_from_slice(args);
+    fixture.scenario.cli(step, &command)
+}
+
+#[test]
+fn cli_scene_revisions_work_for_capture_authoring_and_removal_in_both_modes() {
+    let mut fixture = Fixture::new("cli-scene-revisions", DAEMON_POLICY);
+    let file = fixture.scenario.dir().join("reviewed-scene.toml");
+    let file_arg = file.display().to_string();
+    for direct in [true, false] {
+        std::fs::write(&file, "[volumes]\nKitchen = 18\n").unwrap();
+        let created = reviewed_cli(
+            &mut fixture,
+            "reviewed-create",
+            direct,
+            &[
+                "scene",
+                "save",
+                SCENE,
+                "--from",
+                &file_arg,
+                "--expected-revision",
+                "absent",
+            ],
+        );
+        assert!(created.ok(), "{created:?}");
+        let original: Value = serde_json::from_str(&created.stdout).unwrap();
+        let revision = original["revision"].as_str().unwrap();
+        assert!(!revision.is_empty());
+
+        std::fs::write(&file, "[volumes]\nKitchen = 19\n").unwrap();
+        let updated = reviewed_cli(
+            &mut fixture,
+            "reviewed-replace",
+            direct,
+            &[
+                "scene",
+                "save",
+                SCENE,
+                "--from",
+                &file_arg,
+                "--expected-revision",
+                revision,
+            ],
+        );
+        assert!(updated.ok(), "{updated:?}");
+        let current: Value = serde_json::from_str(&updated.stdout).unwrap();
+        assert_eq!(current["volumes"]["Kitchen"], 19);
+        assert_ne!(current["revision"], original["revision"]);
+
+        for args in [
+            vec!["scene", "save", SCENE, "--expected-revision", "absent"],
+            vec![
+                "scene",
+                "save",
+                SCENE,
+                "--backup-queues",
+                "--expected-revision",
+                revision,
+            ],
+            vec![
+                "scene",
+                "save",
+                SCENE,
+                "--from",
+                &file_arg,
+                "--expected-revision",
+                revision,
+            ],
+            vec!["scene", "rm", SCENE, "--expected-revision", revision],
+        ] {
+            let refused = reviewed_cli(&mut fixture, "reviewed-conflict", direct, &args);
+            assert!(!refused.ok(), "{refused:?}");
+            let observed = reviewed_cli(
+                &mut fixture,
+                "reviewed-observe",
+                direct,
+                &["scene", "show", SCENE],
+            );
+            assert!(observed.ok(), "{observed:?}");
+            assert_eq!(
+                serde_json::from_str::<Value>(&observed.stdout).unwrap(),
+                current
+            );
+        }
+        let removed = reviewed_cli(
+            &mut fixture,
+            "reviewed-remove",
+            direct,
+            &[
+                "scene",
+                "rm",
+                SCENE,
+                "--expected-revision",
+                current["revision"].as_str().unwrap(),
+            ],
+        );
+        assert!(removed.ok(), "{removed:?}");
+        assert_eq!(
+            fixture.volume(),
+            20,
+            "configuration edits leave speakers unchanged"
+        );
+    }
+    fixture.local_unchanged();
+    fixture.finish();
+}

@@ -1499,6 +1499,14 @@ The store performs comparison and replacement or deletion atomically across
 connections, rejects ambiguous case variants and renames case in one update.
 Scene undo also compares its original result; forced undo first observes the
 current row and still refuses an edit that arrives during restoration.
+
+CLI saves and removals also accept `--expected-revision`, including `absent`
+for create-only saves. MCP `save_scene` and `delete_scene` accept the same
+proof from `get_scene` or `list_scenes`; capture, queue backups and authored
+definitions share the conditional store boundary. Stdio forwarding preserves
+DELETE request bodies so the selected daemon receives the proof. Conflicts
+leave newer definitions intact and require a fresh review; failed remote writes
+never fall back to the local store. See [Scene edits](docs/SCENE_EDITS.md).
 The focused phone/dashboard suite passes all 140 tests, including final-write
 conflicts and retained review proofs. New Rust storage, HTTP and public undo
 regressions remain unexecuted after local dependency compilation was terminated.

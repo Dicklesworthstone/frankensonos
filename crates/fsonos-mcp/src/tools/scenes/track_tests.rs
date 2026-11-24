@@ -104,6 +104,57 @@ fn save_and_read_keep_exact_occurrences_titles_and_silent_intent() {
 }
 
 #[test]
+fn capture_and_authoring_forward_the_reviewed_revision_without_losing_sources() {
+    let (backend, reply) = backend(Ok(saved()));
+    backend
+        .capture_scene_with_revision("Evening", false, Some("absent"))
+        .unwrap();
+    backend
+        .capture_scene_with_revision("Evening", true, Some("scene-v1:reviewed"))
+        .unwrap();
+    backend
+        .save_scene_from_revision("Evening", &definition(), Some("scene-v1:reviewed"))
+        .unwrap();
+    let mut authored = definition();
+    authored["expected_revision"] = json!("scene-v1:reviewed");
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [
+            json!(["PUT", "/scenes/Evening", {"expected_revision": "absent"}]),
+            json!(["PUT", "/scenes/Evening", {"backup_queues": true, "expected_revision": "scene-v1:reviewed"}]),
+            json!(["PUT", "/scenes/Evening", authored]),
+        ]
+    );
+}
+
+#[test]
+fn reviewed_deletion_preserves_its_body_and_never_falls_back_after_a_reply() {
+    for answer in [
+        Ok(json!({"deleted": "Evening", "done": "Forgot Evening"})),
+        Err(Failure::new(
+            ErrorCode::ConfigChanged,
+            "a newer scene is saved",
+        )),
+        Err(Failure::new(
+            ErrorCode::OutcomeUncertain,
+            "lost after deletion",
+        )),
+        Ok(json!({"done": "missing deleted identity"})),
+    ] {
+        let succeeds = answer
+            .as_ref()
+            .is_ok_and(|body| body.get("deleted").is_some());
+        let (backend, reply) = backend(answer);
+        let result = backend.delete_scene_with_revision("Evening", Some("scene-v1:reviewed"));
+        assert_eq!(result.is_ok(), succeeds);
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["DELETE", "/scenes/Evening", {"expected_revision": "scene-v1:reviewed"}])]
+        );
+    }
+}
+
+#[test]
 fn invalid_ordered_sources_fail_before_daemon_or_speaker_io() {
     let (backend, reply) = backend(Ok(saved()));
     for source in [
