@@ -426,7 +426,10 @@ fn accepted_album_revalidation_refreshes_the_pool_and_reschedules_without_a_full
         )
         .unwrap();
     assert_eq!(latest.at, at);
-    assert!(sync.take_fresh(), "new album evidence changes the next pick");
+    assert!(
+        sync.take_fresh(),
+        "new album evidence changes the next pick"
+    );
     let saved = load(&dir).unwrap();
     assert!(saved.background_pass(next_recheck - 1).is_none());
     assert!(matches!(

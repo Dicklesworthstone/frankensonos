@@ -295,6 +295,9 @@ mod availability;
 #[path = "availability_retention_tests.rs"]
 mod availability_retention;
 
+#[path = "availability_persistence_tests.rs"]
+mod availability_persistence;
+
 #[path = "recent_validation_tests.rs"]
 mod recent_validation;
 

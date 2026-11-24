@@ -131,7 +131,9 @@ fn field<'a>(doc: &'a Value, schema: &'a Value, name: &str) -> &'a Value {
 }
 
 fn choices<'a>(doc: &'a Value, path: &str, name: &str) -> &'a [Value] {
-    field(doc, body(doc, path), name)["enum"].as_array().unwrap()
+    field(doc, body(doc, path), name)["enum"]
+        .as_array()
+        .unwrap()
 }
 
 #[test]
@@ -175,7 +177,10 @@ fn live_openapi_preserves_catalog_job_and_sync_response_names() {
             json!(["rename", "remove"]),
         ),
         (
-            &["/sonos/playlists/remove-tracks", "/sonos/playlists/move-tracks"][..],
+            &[
+                "/sonos/playlists/remove-tracks",
+                "/sonos/playlists/move-tracks",
+            ][..],
             json!(["remove_tracks", "move_tracks"]),
         ),
     ] {
@@ -188,14 +193,23 @@ fn live_openapi_preserves_catalog_job_and_sync_response_names() {
         }
     }
     let phases = json!([
-        "queued", "preparing", "playing", "restoring", "completed", "cancelled", "failed"
+        "queued",
+        "preparing",
+        "playing",
+        "restoring",
+        "completed",
+        "cancelled",
+        "failed"
     ]);
     for (path, method) in [
         ("/announcements", "post"),
         ("/announcements/{id}", "get"),
         ("/announcements/{id}/cancel", "post"),
     ] {
-        assert_eq!(field(&doc, reply(&doc, path, method), "phase")["enum"], phases);
+        assert_eq!(
+            field(&doc, reply(&doc, path, method), "phase")["enum"],
+            phases
+        );
     }
     let listing = resolve(&doc, &reply(&doc, "/announcements", "get")["items"]);
     assert_eq!(field(&doc, listing, "phase")["enum"], phases);
@@ -246,7 +260,10 @@ fn published_source_alternatives_are_exact_exclusive_wire_objects() {
             if sample["kind"] == "uri" { 3 } else { 2 },
         );
         let decoded = serde_json::from_value::<ReviewedSource>(sample.clone()).unwrap();
-        assert_eq!(serde_json::to_value(decoded).unwrap()["kind"], sample["kind"]);
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap()["kind"],
+            sample["kind"]
+        );
         let mut invalid = sample;
         invalid["metadata"] = json!("untrusted");
         assert!(serde_json::from_value::<ReviewedSource>(invalid).is_err());

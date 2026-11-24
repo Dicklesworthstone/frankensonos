@@ -11,7 +11,7 @@ use fsonos_core::store::{MAX_SPOTIFY_LIBRARY_PROGRESS_BYTES, SpotifyLibraryOwner
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 const MAX_FIELD: usize = 16 * 1024;
 
@@ -65,6 +65,8 @@ struct PageProof {
     spawned: Vec<Fetch>,
     item_start: usize,
     item_count: usize,
+    unavailable_start: usize,
+    unavailable_count: usize,
     raw_count: u32,
     total: Option<u32>,
     digest: [u8; 32],
@@ -119,13 +121,14 @@ fn fingerprint(
     raw_count: u32,
     total: Option<u32>,
     items: &[LibraryItem],
+    unavailable: &[String],
     spawned: &[Fetch],
 ) -> Result<[u8; 32], SpotifyError> {
     let next = spawned
         .iter()
         .map(|fetch| fetch.canonical(endpoints))
         .collect::<Result<Vec<_>, _>>()?;
-    let meaningful = serde_json::to_vec(&(raw_count, total, items, next))
+    let meaningful = serde_json::to_vec(&(raw_count, total, items, unavailable, next))
         .map_err(|error| invalid(&format!("library page proof: {error}")))?;
     Ok(sha256(&meaningful))
 }
@@ -314,6 +317,7 @@ impl LibraryProgress {
             .map_err(|_| invalid("library page has too many raw entries"))?;
         let total = raw.total.or(fetch.total());
         let item_start = self.read.items.len();
+        let unavailable_start = self.read.unavailable.len();
         let previous_pending = self.read.pending.len();
         self.read.ingest(body)?;
         let spawned: Vec<_> = self
@@ -324,12 +328,22 @@ impl LibraryProgress {
             .cloned()
             .collect();
         let items = &self.read.items[item_start..];
-        let digest = fingerprint(&self.read.endpoints, raw_count, total, items, &spawned)?;
+        let unavailable = &self.read.unavailable[unavailable_start..];
+        let digest = fingerprint(
+            &self.read.endpoints,
+            raw_count,
+            total,
+            items,
+            unavailable,
+            &spawned,
+        )?;
         self.proofs.push(PageProof {
             fetch,
             spawned,
             item_start,
             item_count: items.len(),
+            unavailable_start,
+            unavailable_count: unavailable.len(),
             raw_count,
             total,
             digest,
@@ -376,8 +390,8 @@ impl LibraryProgress {
         true
     }
 
-    pub(crate) fn into_items(self) -> Vec<LibraryItem> {
-        self.read.into_items()
+    pub(crate) fn into_observation(self) -> (Vec<LibraryItem>, Vec<String>) {
+        (self.read.items, self.read.unavailable)
     }
 
     fn valid(&self, owner: &str, endpoints: &Endpoints, now: i64) -> bool {
@@ -390,7 +404,12 @@ impl LibraryProgress {
             || self.nonce.is_empty()
             || self.nonce.len() > 128
             || self.read.pages > PAGE_BUDGET
-            || self.read.items.len() > ITEM_BUDGET
+            || self
+                .read
+                .items
+                .len()
+                .saturating_add(self.read.unavailable.len())
+                > ITEM_BUDGET
             || self.read.requested.len() > PAGE_BUDGET
             || self.read.pages != self.proofs.len()
             || self.checked > self.proofs.len()
@@ -400,6 +419,11 @@ impl LibraryProgress {
                 && (!self.read.pending.is_empty()
                     || (self.verification_required && self.checked != self.proofs.len())))
             || !self.read.items.iter().all(valid_item)
+            || !self
+                .read
+                .unavailable
+                .iter()
+                .all(|uri| uri.strip_prefix("spotify:track:").is_some_and(valid_id))
         {
             return false;
         }
@@ -407,10 +431,12 @@ impl LibraryProgress {
         // permission to add, skip, duplicate or redirect an outstanding fetch.
         let mut replay = LibraryRead::new(endpoints);
         let mut item_start = 0usize;
+        let mut unavailable_start = 0usize;
         for proof in &self.proofs {
             if replay.pending.pop_front().as_ref() != Some(&proof.fetch)
                 || !valid_fetch(endpoints, &proof.fetch)
                 || proof.item_start != item_start
+                || proof.unavailable_start != unavailable_start
                 || proof
                     .fetch
                     .total()
@@ -424,11 +450,19 @@ impl LibraryProgress {
             if next_item > self.read.items.len() {
                 return false;
             }
+            let Some(next_unavailable) = unavailable_start.checked_add(proof.unavailable_count)
+            else {
+                return false;
+            };
+            if next_unavailable > self.read.unavailable.len() {
+                return false;
+            }
             if !fingerprint(
                 endpoints,
                 proof.raw_count,
                 proof.total,
                 &self.read.items[item_start..next_item],
+                &self.read.unavailable[unavailable_start..next_unavailable],
                 &proof.spawned,
             )
             .is_ok_and(|digest| digest == proof.digest)
@@ -436,6 +470,7 @@ impl LibraryProgress {
                 return false;
             }
             item_start = next_item;
+            unavailable_start = next_unavailable;
             let Some(end) = offset(proof.fetch.url())
                 .ok()
                 .and_then(|start| start.checked_add(proof.raw_count))
@@ -469,6 +504,7 @@ impl LibraryProgress {
             }
         }
         item_start == self.read.items.len()
+            && unavailable_start == self.read.unavailable.len()
             && replay.pending == self.read.pending
             && replay.requested == self.read.requested
             && self

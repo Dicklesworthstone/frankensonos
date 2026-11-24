@@ -147,6 +147,7 @@ fn a_late_playlist_window_cannot_overwrite_a_newer_full_sync_or_its_proof() {
                             None,
                             Some(&fence),
                             None,
+                            None,
                         )
                         .unwrap()
                 );

@@ -20,7 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use asupersync::Cx;
-use fsonos_core::store::{CachedPlaylist, LibraryEntry, LibraryOrigin, SpotifyLibraryOwner, Store};
+use fsonos_core::store::{
+    CachedPlaylist, LibraryEntry, LibraryOrigin, SpotifyAvailability, SpotifyLibraryOwner, Store,
+};
 
 use crate::SpotifyError;
 use crate::classical::{CandidatePool, ClassicalTrack};
@@ -289,6 +291,17 @@ async fn sync_library_observed<S: Store + ?Sized>(
             "unavailable-track evidence exceeded its 10,000-identity limit; the library refresh was not published".into(),
         ));
     }
+    if read.available_overflow {
+        return Err(SpotifyError::Decode(
+            "playable-track evidence exceeded its 100,000-identity limit; the library refresh was not published".into(),
+        ));
+    }
+    let availability = availability_for_read(&items, &saved.unavailable, &read);
+    let mut unavailable = store.spotify_unavailable_tracks()?;
+    for uri in &availability.available {
+        unavailable.remove(uri);
+    }
+    unavailable.extend(availability.unavailable.iter().cloned());
     items.extend(
         taste
             .tracks
@@ -297,6 +310,9 @@ async fn sync_library_observed<S: Store + ?Sized>(
             .cloned(),
     );
     retain_unread_taste(store, &mut items, &taste, &read)?;
+    // Cached fallback and reused playlist proofs are useful music metadata,
+    // but neither can revoke a provider denial accepted by an earlier read.
+    items.retain(|item| !unavailable.contains(&item.source_uri));
     taste.weigh(&mut items);
     let genres = tag_genres(session, cx, store, &mut items, now).await;
     // Songs whose artists carry no tags get the best guess there is: what
@@ -311,6 +327,7 @@ async fn sync_library_observed<S: Store + ?Sized>(
         &mut taste,
         playlist_base.as_deref(),
         artist_base.as_deref(),
+        &availability,
     )?
     else {
         if store
@@ -357,6 +374,31 @@ async fn sync_library_observed<S: Store + ?Sized>(
         now,
     )
     .await
+}
+
+fn availability_for_read(
+    saved: &[LibraryItem],
+    saved_unavailable: &[String],
+    read: &TasteRead,
+) -> SpotifyAvailability {
+    let saved: HashSet<String> = saved.iter().map(|item| item.source_uri.clone()).collect();
+    let unavailable: HashSet<String> = saved_unavailable
+        .iter()
+        .chain(&read.unavailable)
+        // Preserve the existing priority of fresh saved music over an
+        // optional source's contradictory availability response.
+        .filter(|uri| !saved.contains(*uri))
+        .cloned()
+        .collect();
+    let available: HashSet<String> = saved
+        .into_iter()
+        .chain(read.available.iter().cloned())
+        .filter(|uri| !unavailable.contains(uri))
+        .collect();
+    SpotifyAvailability {
+        available: available.into_iter().collect(),
+        unavailable: unavailable.into_iter().collect(),
+    }
 }
 
 #[allow(
@@ -505,6 +547,10 @@ fn playlist_publication<S: Store + ?Sized>(
 /// All personal projections use the same adoption receipt. Reads and network
 /// requests may span another process's account switch; none of their prepared
 /// candidates, weights or observations may be published after that switch.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "all accepted projections share one saved-read receipt"
+)]
 fn publish_saved_library<S: Store + ?Sized>(
     store: &mut S,
     owner: &SpotifyLibraryOwner,
@@ -513,6 +559,7 @@ fn publish_saved_library<S: Store + ?Sized>(
     taste: &mut Taste,
     playlist_base: Option<&str>,
     artist_base: Option<&str>,
+    availability: &SpotifyAvailability,
 ) -> Result<Option<LibrarySync>, SpotifyError> {
     let prepared = prepare_library_publication(store, items, taste)?;
     let (fence, directory) = crate::taste::prepare_playlist_publication(
@@ -535,6 +582,7 @@ fn publish_saved_library<S: Store + ?Sized>(
         taste.heard.as_deref(),
         Some(&fence),
         Some(&artist_fence),
+        Some(availability),
     )? {
         taste.directory = directory;
         Ok(Some(prepared.report))

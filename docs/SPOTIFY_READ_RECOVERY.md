@@ -46,6 +46,37 @@ credentials it refreshed itself. Rewriting an identical credential does not
 invalidate a read. An observed Spotify rate limit is retained even when the
 account changes before its response is accepted.
 
+## Availability survives restarts
+
+A completed library refresh retains Spotify's explicit track exclusions for
+the accepted account. This includes unavailable liked tracks and fresh taste
+observations, even when those tracks contribute no playable library row.
+Migration 25 stores the exclusions beside the local library. Publication changes
+them in the same transaction as the library and its saved-read, playlist and
+artist receipts. An incomplete scan, malformed response, or stale publication
+cannot replace the accepted evidence.
+
+This matters when the DJ completes a liked classical movement from an older
+album cache: the cache cannot put an excluded movement back into the work.
+Both offline and network-assisted completion apply the retained exclusions,
+preserve the original recording boundaries and mark a known missing movement
+as partial. Ordinary songs use the same candidate exclusion. Already queued
+music is left in place; the catalog revision invalidates cached plans before
+new selections.
+
+A fresh playable observation accepted by a full refresh can restore the track.
+Its absence from a response cannot. Reused playlist pages, cached taste fallback,
+album-cache refreshes and additive background readers retain prior exclusions
+instead of treating older positive metadata as new permission. Run the normal
+library refresh to reconcile newly changed availability; independent background
+readers do not publish availability changes on their own. A change to the
+accepted Spotify account clears the previous account's exclusions.
+
+Saved-library checkpoints include unavailable identities in their page proofs.
+Version 2 checkpoints verify those identities when resuming; an older private
+checkpoint restarts intake without replacing the public library. Evidence is
+bounded, and overflow refuses publication rather than forgetting exclusions.
+
 ## Successive reads on the same session
 
 A 429 records a monotonic cooldown before returning or waiting, including the

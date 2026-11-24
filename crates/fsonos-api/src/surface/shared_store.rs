@@ -12,11 +12,13 @@
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
     CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, PlayName,
-    PlayRecord, SpotifyArtistDiscoveryFence, SpotifyLibraryOwner, SpotifyPlaylistPublication,
-    SpotifyPlaylistPublicationFence, Store, StoreError, StoredScene, StoredSchedule,
+    PlayRecord, SpotifyArtistDiscoveryFence, SpotifyAvailability, SpotifyLibraryOwner,
+    SpotifyPlaylistPublication, SpotifyPlaylistPublicationFence, Store, StoreError, StoredScene,
+    StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, ZoneGroup};
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -146,6 +148,10 @@ impl Store for SharedStore<'_> {
         self.lock().spotify_library_owner()
     }
 
+    fn spotify_unavailable_tracks(&self) -> Result<HashSet<String>, StoreError> {
+        self.lock().spotify_unavailable_tracks()
+    }
+
     fn spotify_artist_discovery(
         &self,
         owner: &SpotifyLibraryOwner,
@@ -222,6 +228,7 @@ impl Store for SharedStore<'_> {
         heard: Option<&[(String, i64)]>,
         playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
         artist_fence: Option<&SpotifyArtistDiscoveryFence>,
+        availability: Option<&SpotifyAvailability>,
     ) -> Result<bool, StoreError> {
         self.lock().publish_spotify_library_from_progress(
             owner,
@@ -232,6 +239,7 @@ impl Store for SharedStore<'_> {
             heard,
             playlist_fence,
             artist_fence,
+            availability,
         )
     }
 
@@ -567,6 +575,96 @@ impl Store for SharedStore<'_> {
 mod tests {
     use super::*;
     use fsonos_core::store::MemStore;
+
+    #[test]
+    fn the_dj_observes_accepted_availability_through_the_shared_store() {
+        let store: Mutex<Box<dyn Store + Send>> = Mutex::new(Box::new(MemStore::default()));
+        let mut shared = SharedStore(&store);
+        let (owner, _) = shared
+            .adopt_spotify_library_owner("shared-store-owner")
+            .unwrap();
+        let uri = "spotify:track:0000000000000000000001";
+        assert!(
+            shared
+                .save_spotify_library_progress(&owner.owner_id, Some(&owner), None, "complete")
+                .unwrap()
+        );
+        let denied = SpotifyAvailability {
+            unavailable: vec![uri.into()],
+            ..SpotifyAvailability::default()
+        };
+        assert!(
+            shared
+                .publish_spotify_library_from_progress(
+                    &owner,
+                    "complete",
+                    &[],
+                    None,
+                    &[],
+                    None,
+                    None,
+                    None,
+                    Some(&denied),
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            shared.spotify_unavailable_tracks().unwrap(),
+            HashSet::from([uri.into()])
+        );
+        assert!(
+            store
+                .lock()
+                .unwrap()
+                .spotify_unavailable_tracks()
+                .unwrap()
+                .contains(uri)
+        );
+
+        // A stale full read cannot erase the denial while passing through the
+        // per-call lock. Only a newly accepted checkpoint can restore the track.
+        let restored = SpotifyAvailability {
+            available: vec![uri.into()],
+            ..SpotifyAvailability::default()
+        };
+        assert!(
+            !shared
+                .publish_spotify_library_from_progress(
+                    &owner,
+                    "complete",
+                    &[],
+                    None,
+                    &[],
+                    None,
+                    None,
+                    None,
+                    Some(&restored),
+                )
+                .unwrap()
+        );
+        assert!(shared.spotify_unavailable_tracks().unwrap().contains(uri));
+        assert!(
+            shared
+                .save_spotify_library_progress(&owner.owner_id, Some(&owner), None, "restored")
+                .unwrap()
+        );
+        assert!(
+            shared
+                .publish_spotify_library_from_progress(
+                    &owner,
+                    "restored",
+                    &[],
+                    None,
+                    &[],
+                    None,
+                    None,
+                    None,
+                    Some(&restored),
+                )
+                .unwrap()
+        );
+        assert!(shared.spotify_unavailable_tracks().unwrap().is_empty());
+    }
 
     #[test]
     fn a_play_written_a_moment_ago_from_another_follower_is_not_written_again() {

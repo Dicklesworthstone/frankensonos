@@ -10,8 +10,7 @@ use fsonos_core::store::AlbumTrack;
 fn cached_tracks(album: &str, count: u32) -> Vec<AlbumTrack> {
     (1..=count)
         .map(|number| {
-            let track: SimplifiedTrack =
-                serde_json::from_value(movement(album, number)).unwrap();
+            let track: SimplifiedTrack = serde_json::from_value(movement(album, number)).unwrap();
             album_track(&track).unwrap()
         })
         .collect()
@@ -66,15 +65,26 @@ fn fresh_cache_stays_quiet_and_a_completed_checkpoint_can_revalidate_expired_mus
         assert!(server.calls("/v1/").is_empty(), "fresh cache needs no HTTP");
 
         store
-            .save_album_tracks(&uri, &cached_tracks(ALBUM, 3), at - ALBUM_CACHE_MAX_AGE_SECS)
+            .save_album_tracks(
+                &uri,
+                &cached_tracks(ALBUM, 3),
+                at - ALBUM_CACHE_MAX_AGE_SECS,
+            )
             .unwrap();
         assert_eq!(positions(&store), [1, 2, 3], "old evidence remains usable");
         let resumed: AlbumContinuation =
             serde_json::from_str(&serde_json::to_string(&fresh.albums).unwrap()).unwrap();
         let refreshed = continue_with(&server, &cx, &mut store, Some(&resumed)).await;
-        assert_eq!((refreshed.albums.pending, refreshed.albums.completed), (0, 1));
+        assert_eq!(
+            (refreshed.albums.pending, refreshed.albums.completed),
+            (0, 1)
+        );
         assert_eq!(server.calls(ROUTE).len(), 3);
-        assert_eq!(positions(&store), [2, 3], "a newly restricted movement is removed");
+        assert_eq!(
+            positions(&store),
+            [2, 3],
+            "a newly restricted movement is removed"
+        );
         let cached = store.album_tracks(&uri).unwrap().unwrap();
         assert!(cached.fetched_at >= at);
         assert_eq!(
@@ -111,7 +121,12 @@ fn empty_restricted_and_missing_catalogs_retire_old_movements_across_restart() {
                 );
             }
             "missing" => {
-                server.state.lock().unwrap().refused.insert(ROUTE.into(), 404);
+                server
+                    .state
+                    .lock()
+                    .unwrap()
+                    .refused
+                    .insert(ROUTE.into(), 404);
             }
             _ => unreachable!("known catalog observation"),
         }
@@ -125,10 +140,22 @@ fn empty_restricted_and_missing_catalogs_retire_old_movements_across_restart() {
             let before = store.library_catalog_revision().unwrap();
 
             let result = continue_with(&server, &cx, &mut store, None).await;
-            assert_eq!((result.albums.completed, result.albums.pending), (1, 0), "{kind}");
+            assert_eq!(
+                (result.albums.completed, result.albums.pending),
+                (1, 0),
+                "{kind}"
+            );
             assert!(store.album_tracks(&uri).unwrap().is_none(), "{kind}");
-            assert_eq!(positions(&store), [2], "{kind}: held music stays, expansion retires");
-            assert_eq!(store.library().unwrap(), saved, "refresh never changes saves");
+            assert_eq!(
+                positions(&store),
+                [2],
+                "{kind}: held music stays, expansion retires"
+            );
+            assert_eq!(
+                store.library().unwrap(),
+                saved,
+                "refresh never changes saves"
+            );
             assert_ne!(store.library_catalog_revision().unwrap(), before, "{kind}");
             let retry = store.album_misses().unwrap();
             assert_eq!(retry.len(), 1, "{kind}");
@@ -139,12 +166,20 @@ fn empty_restricted_and_missing_catalogs_retire_old_movements_across_restart() {
             let mut store = SqliteStore::open(&file).unwrap();
             let previous = serde_json::from_str(&checkpoint).unwrap();
             assert!(store.album_tracks(&uri).unwrap().is_none(), "{kind}");
-            assert_eq!(positions(&store), [2], "{kind}: restart cannot revive the old cache");
+            assert_eq!(
+                positions(&store),
+                [2],
+                "{kind}: restart cannot revive the old cache"
+            );
             let calls = server.calls("/v1/").len();
             let waiting = continue_with(&server, &cx, &mut store, Some(&previous)).await;
             assert_eq!(waiting.albums.completed, 0);
             assert_eq!(waiting.albums.recheck_at, Some(retry[0].1));
-            assert_eq!(server.calls("/v1/").len(), calls, "{kind}: respect known miss");
+            assert_eq!(
+                server.calls("/v1/").len(),
+                calls,
+                "{kind}: respect known miss"
+            );
             store.close().unwrap();
         });
     }
@@ -180,11 +215,22 @@ fn malformed_outage_and_cooldown_revalidation_preserve_the_last_completed_list()
             let result = continue_albums(&mut session, &cx, &mut store, None)
                 .await
                 .unwrap();
-            assert_eq!((result.albums.completed, result.albums.pending), (0, 1), "{kind}");
+            assert_eq!(
+                (result.albums.completed, result.albums.pending),
+                (0, 1),
+                "{kind}"
+            );
             assert_eq!(store.album_tracks(&uri).unwrap(), original, "{kind}");
-            assert_eq!(store.library_catalog_revision().unwrap(), revision, "{kind}");
+            assert_eq!(
+                store.library_catalog_revision().unwrap(),
+                revision,
+                "{kind}"
+            );
             assert_eq!(positions(&store), [1, 2, 3], "{kind}");
-            assert!(store.album_misses().unwrap().is_empty(), "{kind}: no false absence");
+            assert!(
+                store.album_misses().unwrap().is_empty(),
+                "{kind}: no false absence"
+            );
             assert!(!result.notes.is_empty(), "{kind}: failure remains visible");
 
             if kind == "cooldown" {
@@ -192,15 +238,25 @@ fn malformed_outage_and_cooldown_revalidation_preserve_the_last_completed_list()
                 let before = server.calls("/v1/").len();
                 let limited =
                     continue_albums(&mut session, &cx, &mut store, Some(&result.albums)).await;
-                assert!(matches!(limited, Err(SpotifyError::Api { status: 429, .. })));
+                assert!(matches!(
+                    limited,
+                    Err(SpotifyError::Api { status: 429, .. })
+                ));
                 assert_eq!(server.calls("/v1/").len(), before, "no early retry");
             }
 
             server.state.lock().unwrap().refused.remove(ROUTE);
             album_pages(&server, ALBUM, 3);
             let recovered = continue_with(&server, &cx, &mut store, Some(&result.albums)).await;
-            assert_eq!((recovered.albums.completed, recovered.albums.pending), (1, 0), "{kind}");
-            assert!(store.album_tracks(&uri).unwrap().unwrap().fetched_at > 1, "{kind}");
+            assert_eq!(
+                (recovered.albums.completed, recovered.albums.pending),
+                (1, 0),
+                "{kind}"
+            );
+            assert!(
+                store.album_tracks(&uri).unwrap().unwrap().fetched_at > 1,
+                "{kind}"
+            );
         });
     }
 }
@@ -231,7 +287,10 @@ fn an_expired_large_album_keeps_old_evidence_until_bounded_verification_finishes
         assert_eq!(server.calls(ROUTE).len(), 2 * ALBUM_PAGE_BUDGET);
         assert_eq!(store.album_tracks(&uri).unwrap(), original);
         let completed = finish_with(&server, &cx, &mut store, &checking.albums).await;
-        assert_eq!((completed.albums.completed, completed.albums.pending), (1, 0));
+        assert_eq!(
+            (completed.albums.completed, completed.albums.pending),
+            (1, 0)
+        );
         assert_eq!(positions(&store), (1..=10).collect::<Vec<_>>());
         assert!(store.album_tracks(&uri).unwrap().unwrap().fetched_at > 1);
         store.close().unwrap();
@@ -243,7 +302,12 @@ fn a_disappearance_from_an_old_account_cannot_clear_the_current_accounts_album()
     for missing in [false, true] {
         let server = Server::new();
         if missing {
-            server.state.lock().unwrap().refused.insert(ROUTE.into(), 404);
+            server
+                .state
+                .lock()
+                .unwrap()
+                .refused
+                .insert(ROUTE.into(), 404);
         } else {
             server.set(
                 ROUTE,
@@ -264,7 +328,9 @@ fn a_disappearance_from_an_old_account_cannot_clear_the_current_accounts_album()
                 ROUTE.into(),
                 Box::new(move || {
                     let mut other = SqliteStore::open(&other_file).unwrap();
-                    other.adopt_spotify_library_owner("another-test-owner").unwrap();
+                    other
+                        .adopt_spotify_library_owner("another-test-owner")
+                        .unwrap();
                     apply_library_read(&mut other, &[held(ALBUM)]).unwrap();
                     other
                         .save_album_tracks(&other_uri, &new_tracks, chrono::Utc::now().timestamp())
@@ -276,7 +342,10 @@ fn a_disappearance_from_an_old_account_cannot_clear_the_current_accounts_album()
             assert!(result.albums.requires_refresh);
             assert_eq!(result.albums.completed, 0);
             assert_eq!(result.albums.recheck_at, None);
-            assert_eq!(store.album_tracks(&uri).unwrap().unwrap().tracks, replacement);
+            assert_eq!(
+                store.album_tracks(&uri).unwrap().unwrap().tracks,
+                replacement
+            );
             assert!(store.album_misses().unwrap().is_empty());
             store.close().unwrap();
         });
@@ -293,7 +362,12 @@ fn direct_completion_cannot_replace_or_retire_an_intervening_accounts_album() {
                 json!({ "items": [], "offset": 0, "total": 0, "next": null }),
             ),
             "missing" => {
-                server.state.lock().unwrap().refused.insert(ROUTE.into(), 404);
+                server
+                    .state
+                    .lock()
+                    .unwrap()
+                    .refused
+                    .insert(ROUTE.into(), 404);
             }
             "positive" => server.set(
                 ROUTE,
@@ -324,7 +398,9 @@ fn direct_completion_cannot_replace_or_retire_an_intervening_accounts_album() {
                 ROUTE.into(),
                 Box::new(move || {
                     let mut other = SqliteStore::open(&other_file).unwrap();
-                    other.adopt_spotify_library_owner("another-test-owner").unwrap();
+                    other
+                        .adopt_spotify_library_owner("another-test-owner")
+                        .unwrap();
                     // Returning to the same ID must still invalidate the old
                     // generation. An unowned cache must notice adoption too.
                     other.adopt_spotify_library_owner(OWNER).unwrap();
@@ -352,7 +428,10 @@ fn direct_completion_cannot_replace_or_retire_an_intervening_accounts_album() {
             assert!(report.halted.is_some(), "{kind}");
             assert_eq!((report.completed, report.fetched), (0, 0), "{kind}");
             assert!(misses.is_empty(), "{kind}: no stale negative evidence");
-            assert_eq!(store.album_tracks(&uri).unwrap().unwrap().tracks, replacement);
+            assert_eq!(
+                store.album_tracks(&uri).unwrap().unwrap().tracks,
+                replacement
+            );
             store.close().unwrap();
         });
     }

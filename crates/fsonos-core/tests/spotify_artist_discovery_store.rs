@@ -56,6 +56,7 @@ fn publish(
             None,
             None,
             Some(cursor),
+            None,
         )
         .unwrap()
 }
@@ -170,6 +171,7 @@ fn rejects_other_receipts(store: &mut dyn Store) {
                 None,
                 None,
                 Some(&bad),
+                None,
             )
             .is_err()
     );
@@ -192,6 +194,7 @@ fn rejects_other_receipts(store: &mut dyn Store) {
                 None,
                 Some(&wrong_playlist),
                 Some(&valid),
+                None,
             )
             .unwrap()
     );
@@ -290,6 +293,7 @@ fn sqlite_failed_projection_keeps_rotation_and_library_progress() {
                 Some(&[]),
                 None,
                 Some(&fence(Some("first"), "rejected")),
+                None,
             )
             .is_err()
     );

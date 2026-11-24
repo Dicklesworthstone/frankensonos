@@ -188,6 +188,7 @@ fn private_writes(store: &mut dyn Store) {
                 None,
                 None,
                 Some(&artist),
+                None,
             )
             .unwrap()
     );
@@ -328,6 +329,7 @@ fn full_publications(store: &mut dyn Store) {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap()
     );
@@ -347,6 +349,7 @@ fn full_publications(store: &mut dyn Store) {
                 None,
                 None,
                 Some(&artist),
+                None,
             )
             .unwrap()
     );
@@ -370,6 +373,7 @@ fn full_publications(store: &mut dyn Store) {
                 None,
                 None,
                 Some(&artist),
+                None,
             )
             .unwrap()
     );

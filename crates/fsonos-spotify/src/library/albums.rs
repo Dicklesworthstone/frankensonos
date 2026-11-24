@@ -8,6 +8,19 @@ use crate::client::SavedAlbum;
 
 impl LibraryRead {
     pub(super) fn saved_album(&mut self, saved: SavedAlbum) -> Result<(), SpotifyError> {
+        if let Some(page) = &saved.album.tracks {
+            self.unavailable
+                .extend(page.items.iter().filter_map(|track| {
+                    crate::client::unavailable_uri(
+                        &track.uri,
+                        track.is_local,
+                        track.is_playable,
+                        track.restrictions.as_ref(),
+                        saved.album.restrictions.as_ref(),
+                    )
+                    .map(str::to_owned)
+                }));
+        }
         // The containing page still counts this save as a raw source entry.
         // Known-unavailable albums must neither contribute embedded tracks
         // nor trigger hydration that could lose the album's restriction.

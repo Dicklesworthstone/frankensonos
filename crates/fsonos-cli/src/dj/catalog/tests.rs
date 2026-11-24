@@ -4,7 +4,7 @@ use super::super::State;
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
     CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, MemStore,
-    PlayName, PlayRecord, SpotifyArtistDiscoveryFence, SpotifyLibraryOwner,
+    PlayName, PlayRecord, SpotifyArtistDiscoveryFence, SpotifyAvailability, SpotifyLibraryOwner,
     SpotifyPlaylistPublication, SpotifyPlaylistPublicationFence, Store, StoreError, StoredScene,
     StoredSchedule,
 };
@@ -13,6 +13,7 @@ use fsonos_spotify::cache::apply_library_read;
 use fsonos_spotify::library::{LibraryItem, Origin};
 use fsonos_types::{Player, ZoneGroup};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::ops::Range;
 
 #[derive(Default)]
@@ -106,12 +107,13 @@ impl Store for ObservedStore {
         fn save_groups( &mut self, household: &str, groups: &[ZoneGroup], updated: i64, ) -> Result<(), StoreError>;
         fn cached_groups(&self, household: &str) -> Result<Vec<ZoneGroup>, StoreError>;
         fn upsert_library(&mut self, entries: &[LibraryEntry]) -> Result<(), StoreError>;
+        fn spotify_unavailable_tracks(&self) -> Result<HashSet<String>, StoreError>;
         fn spotify_artist_discovery(&self, owner: &SpotifyLibraryOwner) -> Result<Option<String>, StoreError>;
         fn publish_spotify_artist_continuation(&mut self, owner: &SpotifyLibraryOwner, fence: &SpotifyArtistDiscoveryFence, entries: &[LibraryEntry]) -> Result<bool, StoreError>;
         fn spotify_library_progress(&self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>) -> Result<Option<String>, StoreError>;
         fn save_spotify_library_progress(&mut self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>, expected: Option<&str>, progress: &str) -> Result<bool, StoreError>;
         fn adopt_spotify_library_from_progress(&mut self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>, expected: &str) -> Result<Option<(SpotifyLibraryOwner, bool)>, StoreError>;
-        fn publish_spotify_library_from_progress(&mut self, owner: &SpotifyLibraryOwner, expected: &str, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>, playlist_fence: Option<&SpotifyPlaylistPublicationFence>, artist_fence: Option<&SpotifyArtistDiscoveryFence>) -> Result<bool, StoreError>;
+        fn publish_spotify_library_from_progress(&mut self, owner: &SpotifyLibraryOwner, expected: &str, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>, playlist_fence: Option<&SpotifyPlaylistPublicationFence>, artist_fence: Option<&SpotifyArtistDiscoveryFence>, availability: Option<&SpotifyAvailability>) -> Result<bool, StoreError>;
         fn adopt_spotify_library_owner( &mut self, owner_id: &str, ) -> Result<(SpotifyLibraryOwner, bool), StoreError>;
         fn publish_spotify_library( &mut self, owner: &SpotifyLibraryOwner, entries: &[LibraryEntry], playlists: Option<&[(String, String)]>, contents: &[CachedPlaylist], heard: Option<&[(String, i64)]>, ) -> Result<bool, StoreError>;
         fn publish_spotify_playlist_continuation(&mut self, owner: &SpotifyLibraryOwner, publication: &SpotifyPlaylistPublication) -> Result<bool, StoreError>;
@@ -213,6 +215,62 @@ fn unchanged_catalog_and_listening_writes_reuse_the_pool() {
         "listening and feedback must not cause a full catalog rebuild"
     );
     assert_eq!(state.pool.len(), 1);
+}
+
+#[test]
+fn accepted_availability_changes_retire_cached_selection_and_allow_fresh_recovery() {
+    let (mut store, mut state) = fixture();
+    let owner = store.spotify_library_owner().unwrap().unwrap();
+    let entries = store.library().unwrap();
+    let uri = song(1).source_uri;
+    for (proof, availability, expected_pool_size) in [
+        (
+            "unavailable",
+            SpotifyAvailability {
+                unavailable: vec![uri.clone()],
+                ..SpotifyAvailability::default()
+            },
+            0,
+        ),
+        (
+            "available-again",
+            SpotifyAvailability {
+                available: vec![uri.clone()],
+                ..SpotifyAvailability::default()
+            },
+            1,
+        ),
+    ] {
+        assert!(state.plan_is_current(&store, None).unwrap());
+        assert!(
+            store
+                .save_spotify_library_progress(&owner.owner_id, Some(&owner), None, proof)
+                .unwrap()
+        );
+        assert!(
+            store
+                .publish_spotify_library_from_progress(
+                    &owner,
+                    proof,
+                    &entries,
+                    None,
+                    &[],
+                    None,
+                    None,
+                    None,
+                    Some(&availability),
+                )
+                .unwrap()
+        );
+        assert!(!state.plan_is_current(&store, None).unwrap());
+        state.refresh(&store, None, 1).unwrap();
+        assert_eq!(state.pool.len(), expected_pool_size);
+        assert_eq!(
+            state.pool.work_of(&uri).is_some(),
+            expected_pool_size == 1,
+            "a retained plan must obey the newly published availability"
+        );
+    }
 }
 
 #[test]

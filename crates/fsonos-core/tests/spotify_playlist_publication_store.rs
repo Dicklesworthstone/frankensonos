@@ -408,7 +408,8 @@ fn full_publication_fences(store: &mut dyn Store) {
                 &[],
                 Some(&[]),
                 Some(&stale),
-                None
+                None,
+                None,
             )
             .unwrap()
     );
@@ -443,7 +444,8 @@ fn full_publication_fences(store: &mut dyn Store) {
                 &[],
                 None,
                 Some(&fresh),
-                None
+                None,
+                None,
             )
             .unwrap()
     );

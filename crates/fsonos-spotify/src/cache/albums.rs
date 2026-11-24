@@ -394,7 +394,8 @@ async fn read_pages<S: Store + ?Sized>(
                     if matches!(
                         error,
                         SpotifyError::Api {
-                            status: 404 | 410, ..
+                            status: 404 | 410,
+                            ..
                         }
                     ) {
                         // A definite disappearance replaces the old list too.

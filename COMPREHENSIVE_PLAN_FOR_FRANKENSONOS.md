@@ -715,8 +715,18 @@ their standing preferences on every surface and in the daemon. What is on
   responses without album metadata use only the availability evidence returned.
   Fully observed saved albums also remain authoritative during whole-work
   completion: stale album caches cannot restore movements omitted as unavailable.
-  Liked-only and taste-only work completion remains available; persistent negative
-  availability evidence for those sources remains a separate gap.
+  Accepted full saved-library and taste reads now persist account-bound negative
+  track evidence with their public library projection (migration 25). Liked-only
+  and taste-only completion cannot restore those movements from an older album
+  cache after restart. Explicit fresh playable observations can clear earlier
+  exclusions; cached fallback, reused playlist proofs and additive background
+  publication cannot. Recording boundaries are selected before unavailable
+  movements are removed, and a known missing movement keeps a work partial.
+  Changed evidence invalidates the warmed DJ pool through its catalog receipt;
+  account changes retire the prior account's exclusions. Dedicated background
+  readers preserve accepted exclusions; new availability observations become
+  authoritative through the next accepted full refresh. See
+  [Spotify read recovery](docs/SPOTIFY_READ_RECOVERY.md#availability-survives-restarts).
 - The library cache records, per track, whether it is a DJ candidate, its
   genres, release year, explicit flag and taste weight (migration 7), and
   caches each artist's genres (migration 8). `is_classical` again means "judged
@@ -951,8 +961,8 @@ restart. The auth engine and supervised library worker are installed at startup
 and resolve newly saved app settings for subsequent operations. The owner-only
 `POST /auth/spotify/configure` accepts an initial public Client ID; same-ID
 retries preserve the file, and replacing an existing app is refused. Pending
-consent retains its original app and callback. Both browser remotes and the native Apple app expose the
-workflow, and selected-daemon `fsonos setup` saves on that daemon without a local
+consent retains its original app and callback. Both browser remotes and the native
+Apple app expose the workflow, and selected-daemon `fsonos setup` saves on that daemon without a local
 fallback after failed requests. Real-account sign-in and audible house playback
 remain the owner's unverified milestones; simulator evidence does not close them.
 

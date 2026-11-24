@@ -142,6 +142,9 @@ impl Reader<'_> {
                             "no playable tracks in the artist top-track sample".into(),
                         ));
                     }
+                    for track in &tracks {
+                        self.available(&track.source_uri);
+                    }
                     return Ok(tracks);
                 }
                 Err(SpotifyError::Api {
@@ -205,6 +208,7 @@ impl Reader<'_> {
                     && seen_tracks.insert(item.source_uri.clone())
                 {
                     item.origin = Origin::Taste;
+                    self.available(&item.source_uri);
                     tracks.push(item);
                     if tracks.len() == ARTIST_TRACKS {
                         return Ok(tracks);

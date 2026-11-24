@@ -94,6 +94,7 @@ const MAX_ARTIST_READS: usize = 50;
 const ARTIST_TRACKS: usize = 3;
 /// Bound transient negative evidence as well as accepted candidate metadata.
 const MAX_UNAVAILABLE_TRACKS: usize = 10_000;
+const MAX_AVAILABLE_TRACKS: usize = 100_000;
 
 /// What one taste read did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -134,9 +135,13 @@ pub struct TasteRead {
     /// A full refresh must not revive these from retained taste after an
     /// unrelated optional-source failure. Fresh saved music keeps precedence.
     pub unavailable: HashSet<String>,
+    /// Fresh playable observations, excluding reused playlist checkpoints and
+    /// fallback candidates. Only these may clear a persistent provider denial.
+    pub available: HashSet<String>,
     /// More denials arrived than the bounded evidence set can retain. Such a
     /// pass cannot safely publish a union containing retained taste candidates.
     pub unavailable_overflow: bool,
+    pub available_overflow: bool,
 }
 
 impl TasteRead {
@@ -144,7 +149,10 @@ impl TasteRead {
     /// the sync then keeps the taste-only tracks it cached before.
     #[must_use]
     pub fn incomplete(&self) -> bool {
-        self.unavailable_overflow || self.halted.is_some() || !self.failed.is_empty()
+        self.unavailable_overflow
+            || self.available_overflow
+            || self.halted.is_some()
+            || !self.failed.is_empty()
     }
 }
 
@@ -338,6 +346,7 @@ pub(crate) async fn read_taste_for_owner<S: Store + ?Sized>(
         {
             reader.unavailable(track.unavailable_uri());
             if let Some(item) = track.library_item(Origin::Taste, None) {
+                reader.available(&item.source_uri);
                 taste.track(item, TOP_TRACK_PM);
                 reader.read.top_tracks += 1;
             }
@@ -464,6 +473,19 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
+    fn available(&mut self, uri: &str) {
+        if !uri.strip_prefix("spotify:track:").is_some_and(|id| {
+            !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }) {
+            return;
+        }
+        if self.read.available.len() < MAX_AVAILABLE_TRACKS || self.read.available.contains(uri) {
+            self.read.available.insert(uri.to_owned());
+        } else {
+            self.read.available_overflow = true;
+        }
+    }
+
     fn unavailable(&mut self, uri: Option<&str>) {
         let Some(uri) = uri else {
             return;
@@ -525,6 +547,7 @@ impl Reader<'_> {
                 continue;
             };
             if heard.insert(item.source_uri.clone()) {
+                self.available(&item.source_uri);
                 taste.track(item, RECENT_PM);
                 self.read.recent_tracks += 1;
             }

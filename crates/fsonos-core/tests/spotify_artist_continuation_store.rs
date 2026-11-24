@@ -184,6 +184,7 @@ fn competing_publications(store: &mut dyn Store) {
                 None,
                 None,
                 Some(&fence(None, "full publication")),
+                None,
             )
             .unwrap()
     );
@@ -207,6 +208,7 @@ fn competing_publications(store: &mut dyn Store) {
                 None,
                 None,
                 Some(&fence(Some("background batch"), "new cohort")),
+                None,
             )
             .unwrap()
     );

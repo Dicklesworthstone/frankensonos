@@ -431,10 +431,19 @@ impl Reader<'_> {
         };
         progress.applied = false;
         progress.fetched_at = Some(now);
+        let available: Vec<_> = progress
+            .tracks
+            .iter()
+            .filter(|entry| entry.position > first)
+            .map(|entry| entry.item.source_uri.clone())
+            .collect();
         let accepted = self
             .accept_window(store, &checkpoint, progress, failed, first)
             .await?;
         if !accepted.1 {
+            for uri in &available {
+                self.available(uri);
+            }
             for uri in &unavailable {
                 self.unavailable(Some(uri));
             }
@@ -501,6 +510,11 @@ impl Reader<'_> {
         progress
             .tracks
             .retain(|entry| entry.position <= first || entry.position > window.examined);
+        let available: Vec<_> = window
+            .tracks
+            .iter()
+            .map(|entry| entry.item.source_uri.clone())
+            .collect();
         progress.tracks.extend(window.tracks);
         progress.tracks.sort_by_key(|entry| entry.position);
         progress.refresh_offset = if window.complete { 0 } else { window.examined };
@@ -516,6 +530,9 @@ impl Reader<'_> {
         };
         if !self.save_checkpoint(store, checkpoint, &progress, &encoded) {
             return None;
+        }
+        for uri in &available {
+            self.available(uri);
         }
         for uri in &unavailable {
             self.unavailable(Some(uri));

@@ -11,9 +11,22 @@ use crate::works::{Completeness, RecordingOrder, Work, build};
 
 /// Rebuild from the album's positions rather than appending the missing
 /// tracks to held movements whose coordinates may be absent or stale.
-pub(super) fn expand(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
+pub(super) fn expand(
+    work: &Work,
+    album: &[AlbumTrack],
+    unavailable: &HashSet<String>,
+) -> Option<Work> {
     let template = work.movements.first()?;
-    let tracks = select(work, album)?;
+    // A denied opening movement can still mark the start of a different
+    // performance. Choose the recording before omitting unavailable slots.
+    let selected = select(work, album)?;
+    let excluded = selected
+        .iter()
+        .any(|track| unavailable.contains(&track.source_uri));
+    let tracks: Vec<_> = selected
+        .into_iter()
+        .filter(|track| !unavailable.contains(&track.source_uri))
+        .collect();
     let mut positions = HashSet::new();
     for track in &tracks {
         if track.disc_number == 0
@@ -52,7 +65,11 @@ pub(super) fn expand(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
         .collect::<Option<_>>()?;
     let ordered: Vec<&ClassicalTrack> = movements.iter().collect();
     let mut full = build(&ordered);
-    if full.completeness == Completeness::Unknown {
+    if excluded {
+        // Even a missing finale leaves a known gap. A consecutive surviving
+        // prefix cannot prove that this recording was observed complete.
+        full.completeness = Completeness::Partial;
+    } else if full.completeness == Completeness::Unknown {
         // All-liked recordings can be confirmed without inventing an album
         // save. A visible numbering gap still remains Partial.
         full.completeness = Completeness::Complete;

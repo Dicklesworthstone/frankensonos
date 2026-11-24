@@ -20,6 +20,7 @@ const CHECKPOINT_EVERY: usize = 16;
 
 pub(super) struct SavedLibrary {
     pub(super) items: Vec<LibraryItem>,
+    pub(super) unavailable: Vec<String>,
     pub(super) proof: String,
 }
 
@@ -183,8 +184,10 @@ pub(super) async fn read<S: Store + ?Sized>(
             tracks: progress.tracks(),
         });
     }
+    let (items, unavailable) = progress.into_observation();
     Ok(SavedLibrary {
-        items: progress.into_items(),
+        items,
+        unavailable,
         proof: expected.ok_or_else(changed)?,
     })
 }

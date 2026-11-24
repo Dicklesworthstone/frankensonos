@@ -73,13 +73,16 @@ impl LibraryRead {
             pending: VecDeque::new(),
             requested: HashSet::new(),
             items: Vec::new(),
+            unavailable: Vec::new(),
             pages: 0,
         };
         staged.ingest_page(fetch, body)?;
         if !fits(self.requested.len(), staged.pending.len(), PAGE_BUDGET) {
             return Err(invalid("library read exceeded its page budget"));
         }
-        if !fits(self.items.len(), staged.items.len(), ITEM_BUDGET) {
+        let retained = self.items.len().saturating_add(self.unavailable.len());
+        let incoming = staged.items.len().saturating_add(staged.unavailable.len());
+        if !fits(retained, incoming, ITEM_BUDGET) {
             return Err(invalid("library read exceeded its item budget"));
         }
         for next in &staged.pending {
@@ -99,6 +102,7 @@ impl LibraryRead {
             self.queue(next);
         }
         self.items.extend(staged.items);
+        self.unavailable.extend(staged.unavailable);
         self.pages += 1;
         Ok(())
     }

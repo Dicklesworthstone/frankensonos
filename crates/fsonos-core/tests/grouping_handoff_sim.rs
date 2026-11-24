@@ -92,10 +92,15 @@ impl Fixture {
         assert_eq!((position.track, position.position_secs), (2, Some(37)));
         assert_eq!(position.uri, "x-file-cifs://example.invalid/handoff-2.flac");
         assert_eq!(
-            soap::get_transport_info(&lan, self.heir_host).unwrap().state,
+            soap::get_transport_info(&lan, self.heir_host)
+                .unwrap()
+                .state,
             TransportState::Playing
         );
-        assert_eq!(soap::get_media_info(&lan, self.heir_host).unwrap().tracks, 3);
+        assert_eq!(
+            soap::get_media_info(&lan, self.heir_host).unwrap().tracks,
+            3
+        );
     }
 
     fn whole_room(&self, transport: &impl Transport) -> bool {
@@ -103,7 +108,12 @@ impl Fixture {
         let expected: HashSet<_> = [&self.leader, &self.hidden].into_iter().cloned().collect();
         topology.groups.iter().any(|group| {
             group.coordinator == self.leader
-                && group.members.iter().map(|m| m.uuid.clone()).collect::<HashSet<_>>() == expected
+                && group
+                    .members
+                    .iter()
+                    .map(|m| m.uuid.clone())
+                    .collect::<HashSet<_>>()
+                    == expected
         })
     }
 

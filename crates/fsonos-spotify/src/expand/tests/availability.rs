@@ -146,6 +146,24 @@ fn liked_and_taste_only_movements_still_complete_their_unsaved_recording() {
 }
 
 #[test]
+fn a_denied_opening_of_another_performance_does_not_merge_its_unnumbered_coda() {
+    let partial = works_of(&[liked(ADAGIETTO, ALBUM)]).pop().unwrap();
+    let mut album: Vec<_> = fixture_album().into_iter().take(5).collect();
+    let mut another = album[0].clone();
+    another.source_uri = "spotify:track:SecondPerformanceOpening".into();
+    another.track_number = 6;
+    let mut coda = album[0].clone();
+    coda.source_uri = "spotify:track:SecondPerformanceCoda".into();
+    coda.track_number = 7;
+    coda.title = "Symphony No. 5 in C-Sharp Minor: Coda".into();
+    let denied = HashSet::from([another.source_uri.clone()]);
+    album.extend([another, coda]);
+    let completed = expand_available_work(&partial, &album, &denied).unwrap();
+    assert_eq!(track_numbers(&completed), [1, 2, 3, 4, 5]);
+    assert_eq!(completed.completeness, Completeness::Complete);
+}
+
+#[test]
 fn filled_in_tracks_do_not_falsely_claim_a_saved_album_read() {
     let album = fixture_album();
     let partial = works_of(&[liked(ADAGIETTO, ALBUM)]).pop().unwrap();

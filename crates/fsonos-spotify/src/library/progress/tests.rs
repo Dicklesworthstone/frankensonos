@@ -132,6 +132,74 @@ fn restricted_saved_pages_keep_raw_coverage_and_reverify_after_restart() {
     resumed.ingest(&bytes(&liked(1, 2))).unwrap();
     assert_eq!(resumed.tracks(), 1);
     assert_eq!(resumed.read.items[0].source_uri, "spotify:track:Progress1");
+    assert_eq!(resumed.read.unavailable, ["spotify:track:Progress0"]);
+}
+
+#[test]
+fn denied_identity_changes_invalidate_a_resumed_page_even_without_playable_rows() {
+    let mut progress = fresh();
+    progress.ingest(&bytes(&empty())).unwrap();
+    let mut denied = liked(0, 2);
+    denied["items"][0]["track"]["is_playable"] = json!(false);
+    progress.ingest(&bytes(&denied)).unwrap();
+    let mut resumed = restored(&progress);
+    resumed.claim().unwrap();
+    assert!(resumed.matches(1, &bytes(&denied)).unwrap());
+    denied["items"][0]["track"]["uri"] = json!("spotify:track:DifferentDeniedTrack");
+    assert!(!resumed.matches(1, &bytes(&denied)).unwrap());
+    assert_eq!(resumed.read.unavailable, ["spotify:track:Progress0"]);
+}
+
+#[test]
+fn modified_or_unproved_denials_cannot_be_restored_from_a_checkpoint() {
+    let mut progress = fresh();
+    progress.ingest(&bytes(&empty())).unwrap();
+    let mut denied = liked(0, 2);
+    denied["items"][0]["track"]["restrictions"] = json!({"reason": "market"});
+    progress.ingest(&bytes(&denied)).unwrap();
+    let encoded: Value = serde_json::from_str(&progress.encode().unwrap()).unwrap();
+    for changed in ["identity", "unproved", "coverage", "legacy"] {
+        let mut malformed = encoded.clone();
+        match changed {
+            "identity" => malformed["read"]["unavailable"][0] = json!("spotify:track:ForgedDenial"),
+            "unproved" => malformed["read"]["unavailable"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("spotify:track:UnprovedDenial")),
+            "coverage" => malformed["proofs"][1]["unavailable_count"] = json!(0),
+            "legacy" => malformed["version"] = json!(1),
+            _ => unreachable!(),
+        }
+        assert!(
+            LibraryProgress::restore(
+                &malformed.to_string(),
+                OWNER,
+                &Endpoints::default(),
+                NOW + 1
+            )
+            .is_none(),
+            "{changed}"
+        );
+    }
+}
+
+#[test]
+fn a_bad_liked_page_never_retains_only_its_first_denial() {
+    let mut progress = fresh();
+    progress.ingest(&bytes(&empty())).unwrap();
+    let mut first = track(0);
+    first["is_playable"] = json!(false);
+    let mut second = track(1);
+    second["restrictions"] = json!("not a restriction object");
+    let page = json!({"items": [{"track": first}, {"track": second}], "offset": 0, "total": 2});
+    assert!(progress.ingest(&bytes(&page)).is_err());
+    assert_eq!(progress.pages(), 1);
+    assert!(progress.read.unavailable.is_empty());
+    assert!(progress.read.items.is_empty());
+    assert_eq!(
+        progress.next_url(),
+        Some(Endpoints::default().saved_tracks(0).as_str())
+    );
 }
 
 #[test]

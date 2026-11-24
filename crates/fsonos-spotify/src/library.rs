@@ -248,6 +248,9 @@ pub struct LibraryRead {
     pending: VecDeque<Fetch>,
     requested: HashSet<String>,
     items: Vec<LibraryItem>,
+    // Keep explicit provider denials beside playable rows until the complete
+    // account-bound read publishes. Absence alone is never a denial.
+    unavailable: Vec<String>,
     pages: usize,
 }
 
@@ -286,6 +289,7 @@ impl LibraryRead {
             pending: VecDeque::new(),
             requested: HashSet::new(),
             items: Vec::new(),
+            unavailable: Vec::new(),
             pages: 0,
         };
         read.queue(Fetch::SavedAlbums(endpoints.saved_albums(0), None));
@@ -326,6 +330,10 @@ impl LibraryRead {
                 })?;
                 self.items
                     .extend(page.items.iter().filter_map(SavedTrack::library_item));
+                self.unavailable
+                    .extend(page.items.iter().filter_map(|saved| {
+                        saved.track.as_ref()?.unavailable_uri().map(str::to_owned)
+                    }));
                 self.follow(page.next, |url| {
                     Fetch::SavedTracks(url, page.coverage.total)
                 })
@@ -340,6 +348,17 @@ impl LibraryRead {
                     item.added_at = added_at;
                     Some(item)
                 }));
+                self.unavailable
+                    .extend(page.items.iter().filter_map(|track| {
+                        crate::client::unavailable_uri(
+                            &track.uri,
+                            track.is_local,
+                            track.is_playable,
+                            track.restrictions.as_ref(),
+                            album.restrictions.as_ref(),
+                        )
+                        .map(str::to_owned)
+                    }));
                 self.follow(page.next, |url| {
                     Fetch::AlbumTracks(url, album, added_at, page.coverage.total)
                 })

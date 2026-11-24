@@ -203,10 +203,12 @@ pub(super) fn candidate_items<S: Store + ?Sized>(
 pub(super) fn candidate_items_with_genres<S: Store + ?Sized>(
     store: &S,
 ) -> Result<(Vec<crate::library::LibraryItem>, ArtistGenresBatch), SpotifyError> {
+    let unavailable = store.spotify_unavailable_tracks()?;
     let mut items = store
         .library()?
         .iter()
         .filter(|entry| entry.is_candidate())
+        .filter(|entry| !unavailable.contains(&entry.track.source_uri))
         .map(from_entry)
         .collect::<Vec<_>>();
     let genres = crate::genres::cached_genres(store, &items);

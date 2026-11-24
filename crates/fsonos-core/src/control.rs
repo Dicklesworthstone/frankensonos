@@ -948,8 +948,8 @@ pub fn leave<T: Transport + ?Sized>(
     let delegated = match heir_of(households, member) {
         Some(heir) => match soap::delegate_group(t, host, &heir) {
             Ok(()) => {
-                let state = grouping_state::delegated(t, households, member, &heir)
-                    .ok_or_else(|| {
+                let state =
+                    grouping_state::delegated(t, households, member, &heir).ok_or_else(|| {
                         incomplete_handoff("the acknowledged group handoff could not be confirmed")
                     })?;
                 Some(state)
@@ -981,8 +981,9 @@ pub fn leave<T: Transport + ?Sized>(
                     ),
                     soap::Leaving::Unconfirmed => ProtoError::SoapFault {
                         code: 402,
-                        reason: "asked to leave its group, the complete room is not confirmed alone"
-                            .into(),
+                        reason:
+                            "asked to leave its group, the complete room is not confirmed alone"
+                                .into(),
                     }
                     .into(),
                 });
@@ -1051,7 +1052,11 @@ fn reunite_room<T: Transport + ?Sized>(
     }
     if !grouping_state::left(t, households, member) {
         return Err(lost_rejoin.map_or_else(
-            || CoreError::Uncertain("the complete room was not observed after reunification".into()),
+            || {
+                CoreError::Uncertain(
+                    "the complete room was not observed after reunification".into(),
+                )
+            },
             CoreError::from,
         ));
     }

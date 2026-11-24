@@ -19,8 +19,8 @@
 //!
 //! A validated saved-album read already covers that album's available tracks.
 //! Its omitted movements stay omitted, even if an older completion cache has
-//! them. Liked- and taste-only works still use catalog completion; this does not
-//! add persistent negative availability evidence for those separate sources.
+//! them. Liked- and taste-only works still use catalog completion, with the
+//! accepted account's persistent provider denials removed from every list.
 
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
@@ -106,10 +106,8 @@ impl AlbumMisses {
     }
 
     pub(crate) fn record(&mut self, album_uri: &str, now: i64) {
-        self.retry_at.insert(
-            album_uri.to_owned(),
-            now.saturating_add(MISS_RETRY_SECS),
-        );
+        self.retry_at
+            .insert(album_uri.to_owned(), now.saturating_add(MISS_RETRY_SECS));
     }
 
     /// The misses `store` keeps that still wait at `now`.
@@ -154,9 +152,10 @@ pub fn album_id(album_uri: &str) -> Option<&str> {
 }
 
 /// Complete every partly-held work whose album is known. Album lists come
-/// from the store's cache, else the Web API (then cached). Works that can't
-/// be completed come back as they were — no failure loses any — and with
-/// `config.expand_partial_works` off, nothing is read or changed.
+/// from the store's cache, else the Web API (then cached). An unreadable album
+/// leaves its permitted held movements intact. Persistent provider denials
+/// always apply, including when `config.expand_partial_works` disables album
+/// reads; an unreadable denial projection supplies no selectable works.
 pub async fn complete_works<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
@@ -167,6 +166,17 @@ pub async fn complete_works<S: Store + ?Sized>(
     misses: &mut AlbumMisses,
 ) -> (Vec<Work>, Expansion) {
     let mut report = Expansion::default();
+    let mut unavailable = match store.spotify_unavailable_tracks() {
+        Ok(unavailable) => unavailable,
+        Err(error) => {
+            report.halted = Some(format!("track availability could not be read: {error}"));
+            return (Vec::new(), report);
+        }
+    };
+    let works: Vec<_> = works
+        .into_iter()
+        .filter_map(|work| retain_available(work, &unavailable))
+        .collect();
     if !config.expand_partial_works {
         return (works, report);
     }
@@ -176,11 +186,7 @@ pub async fn complete_works<S: Store + ?Sized>(
     let mut lists: HashMap<String, Option<Vec<AlbumTrack>>> = HashMap::new();
     let mut done = Vec::with_capacity(works.len());
     for work in works {
-        let Some(uri) = work
-            .album_uri
-            .clone()
-            .filter(|_| work.needs_expansion())
-        else {
+        let Some(uri) = work.album_uri.clone().filter(|_| work.needs_expansion()) else {
             done.push(work);
             continue;
         };
@@ -193,14 +199,28 @@ pub async fn complete_works<S: Store + ?Sized>(
                 } else {
                     album_list(session, cx, store, entry.key(), now, misses, &mut report).await
                 };
+                // A cached or newly fetched catalog list cannot undo a denial
+                // accepted by the account's saved/taste refresh. Recheck after
+                // network I/O before it can supply any additional movements.
+                match store.spotify_unavailable_tracks() {
+                    Ok(observed) => unavailable = observed,
+                    Err(error) => {
+                        report.halted =
+                            Some(format!("track availability could not be read: {error}"));
+                        return (Vec::new(), report);
+                    }
+                }
                 entry.insert(tracks)
             }
+        };
+        let Some(work) = retain_available(work, &unavailable) else {
+            continue;
         };
         let Some(tracks) = tracks.as_deref() else {
             done.push(work);
             continue;
         };
-        match expand_work(&work, tracks) {
+        match expand_available_work(&work, tracks, &unavailable) {
             Some(full) => {
                 report.completed += 1;
                 done.push(full);
@@ -208,7 +228,18 @@ pub async fn complete_works<S: Store + ?Sized>(
             None => done.push(work),
         }
     }
-    (done, report)
+    match store.spotify_unavailable_tracks() {
+        Ok(unavailable) => (
+            done.into_iter()
+                .filter_map(|work| retain_available(work, &unavailable))
+                .collect(),
+            report,
+        ),
+        Err(error) => {
+            report.halted = Some(format!("track availability could not be read: {error}"));
+            (Vec::new(), report)
+        }
+    }
 }
 
 /// Use a fresh album list, otherwise revalidate it through the Web API.
@@ -318,6 +349,11 @@ pub fn complete_from_cache<S: Store + ?Sized>(
     store: &S,
     works: Vec<Work>,
 ) -> Result<Vec<Work>, SpotifyError> {
+    let unavailable = store.spotify_unavailable_tracks()?;
+    let works: Vec<_> = works
+        .into_iter()
+        .filter_map(|work| retain_available(work, &unavailable))
+        .collect();
     // Read every album a partly-held work needs in one batch, rather than one
     // store round trip per work: most of a large classical library's works are
     // held in part, so the pool build paid a query each (sp4f.5).
@@ -333,10 +369,24 @@ pub fn complete_from_cache<S: Store + ?Sized>(
                 .as_deref()
                 .filter(|_| work.needs_expansion())
                 .and_then(|uri| cached.get(uri))
-                .and_then(|album| expand_work(&work, &album.tracks));
+                .and_then(|album| expand_available_work(&work, &album.tracks, &unavailable));
             expanded.unwrap_or(work)
         })
         .collect())
+}
+
+fn retain_available(mut work: Work, unavailable: &HashSet<String>) -> Option<Work> {
+    let original_count = work.movements.len();
+    work.movements
+        .retain(|movement| !unavailable.contains(&movement.track.source_uri));
+    if !work.movements.iter().any(|movement| !movement.expanded) {
+        return None;
+    }
+    if work.movements.len() != original_count {
+        work = crate::works::build(&work.movements.iter().collect::<Vec<_>>());
+        work.completeness = crate::works::Completeness::Partial;
+    }
+    Some(work)
 }
 
 /// The album URIs of the works that need completing, deduplicated: what
@@ -413,10 +463,18 @@ pub(crate) fn album_track(t: &SimplifiedTrack) -> Option<AlbumTrack> {
 /// `None` means no change, authoritative saved contents or uncertain identity.
 #[must_use]
 pub fn expand_work(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
+    expand_available_work(work, album, &HashSet::new())
+}
+
+fn expand_available_work(
+    work: &Work,
+    album: &[AlbumTrack],
+    unavailable: &HashSet<String>,
+) -> Option<Work> {
     if work.has_saved_album_observation() {
         return None;
     }
-    recording::expand(work, album)
+    recording::expand(work, album, unavailable)
 }
 
 /// A missing movement, shaped like the work's held one: same composer,

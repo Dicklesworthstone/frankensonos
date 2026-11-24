@@ -10,13 +10,14 @@
 use super::{
     Action, ActionFilter, AlbumTrack, ArtistGenresBatch, AuthEntry, CachedAlbum, CachedPlayer,
     CachedPlaylist, DjSession, Feedback, FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction,
-    PlayName, PlayRecord, SpotifyArtistDiscoveryFence, SpotifyLibraryOwner,
+    PlayName, PlayRecord, SpotifyArtistDiscoveryFence, SpotifyAvailability, SpotifyLibraryOwner,
     SpotifyPlaylistPublication, SpotifyPlaylistPublicationFence, SpotifyPlaylistPublicationItem,
     Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
 use fsqlite::{AsyncConnection, FrankenError, Row, SqliteValue};
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -275,6 +276,13 @@ const MIGRATIONS: &[Migration] = &[
         CREATE TABLE library_catalog_clock (
             singleton INTEGER PRIMARY KEY, revision INTEGER);
         INSERT INTO library_catalog_clock (singleton, revision) VALUES (1, 0);
+    ",
+    },
+    Migration {
+        version: 25,
+        name: "accepted Spotify availability denials survive catalog cache reuse",
+        sql: "
+        CREATE TABLE spotify_unavailable_tracks (source_uri TEXT PRIMARY KEY);
     ",
     },
 ];
@@ -754,17 +762,86 @@ fn write_library(
     if rows.is_empty() {
         return Ok(());
     }
-    connection
-        .execute_many_with_params_in_transaction_sync(
-            "INSERT OR REPLACE INTO spotify_library \
+    connection.execute_many_with_params_in_transaction_sync(
+        "INSERT OR REPLACE INTO spotify_library \
              (source_uri, title, artist, album, duration_secs, is_classical, added, \
               album_uri, album_artists, origin, disc_number, track_number, work_key, \
               genres, release_year, explicit, candidate, taste_weight, artist_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
               ?16, ?17, ?18, ?19)",
-            rows,
-        )
-        .map(drop)
+        rows,
+    )?;
+    retire_unavailable_library(connection).map(drop)
+}
+
+fn read_spotify_unavailable(connection: &AsyncConnection) -> Result<HashSet<String>, FrankenError> {
+    let limit = i64::try_from(super::MAX_SPOTIFY_AVAILABILITY_ENTRIES + 1)
+        .map_err(|error| FrankenError::Internal(error.to_string()))?;
+    let rows = connection.query_with_params_sync(
+        "SELECT source_uri FROM spotify_unavailable_tracks LIMIT ?1",
+        &[limit.into()],
+    )?;
+    if rows.len() > super::MAX_SPOTIFY_AVAILABILITY_ENTRIES {
+        return Err(FrankenError::Internal(
+            "retained Spotify availability evidence is too large".into(),
+        ));
+    }
+    rows.iter()
+        .map(|row| text(row, 0).map_err(|error| FrankenError::Internal(error.to_string())))
+        .collect()
+}
+
+fn retire_unavailable_library(connection: &AsyncConnection) -> Result<usize, FrankenError> {
+    connection.execute_sync(
+        "UPDATE spotify_library SET candidate = 0 \
+         WHERE source_uri IN (SELECT source_uri FROM spotify_unavailable_tracks) \
+         AND (candidate IS NULL OR candidate <> 0)",
+    )
+}
+
+fn write_spotify_availability(
+    connection: &AsyncConnection,
+    availability: Option<&SpotifyAvailability>,
+) -> Result<bool, FrankenError> {
+    let Some(availability) = availability else {
+        return Ok(false);
+    };
+    if availability.available.is_empty() && availability.unavailable.is_empty() {
+        return Ok(false);
+    }
+    let previous = read_spotify_unavailable(connection)?;
+    let mut retained = previous.clone();
+    for uri in &availability.available {
+        retained.remove(uri);
+    }
+    retained.extend(availability.unavailable.iter().cloned());
+    if retained.len() > super::MAX_SPOTIFY_AVAILABILITY_ENTRIES {
+        return Err(FrankenError::Internal(
+            "retained Spotify availability evidence is too large".into(),
+        ));
+    }
+    let removed = previous
+        .difference(&retained)
+        .map(|uri| vec![uri.as_str().into()])
+        .collect::<Vec<Vec<SqliteValue>>>();
+    if !removed.is_empty() {
+        connection.execute_many_with_params_in_transaction_sync(
+            "DELETE FROM spotify_unavailable_tracks WHERE source_uri = ?1",
+            &removed,
+        )?;
+    }
+    let added = retained
+        .difference(&previous)
+        .map(|uri| vec![uri.as_str().into()])
+        .collect::<Vec<Vec<SqliteValue>>>();
+    if !added.is_empty() {
+        connection.execute_many_with_params_in_transaction_sync(
+            "INSERT INTO spotify_unavailable_tracks (source_uri) VALUES (?1)",
+            &added,
+        )?;
+    }
+    let retired = retire_unavailable_library(connection)?;
+    Ok(!added.is_empty() || !removed.is_empty() || retired > 0)
 }
 
 fn playlist_rows(playlists: &[(String, String)]) -> Vec<Vec<SqliteValue>> {
@@ -1004,6 +1081,11 @@ fn merge_playlist_library(
             &format!("SELECT source_uri, candidate, is_classical, taste_weight FROM spotify_library WHERE source_uri IN ({placeholders})"),
             &values,
         )?;
+        let denied = connection.query_with_params_sync(
+            &format!("SELECT source_uri FROM spotify_unavailable_tracks WHERE source_uri IN ({placeholders})"),
+            &values,
+        )?.iter().map(|row| text(row, 0)).collect::<Result<HashSet<_>, StoreError>>()
+            .map_err(|error| FrankenError::Internal(error.to_string()))?;
         let current = rows
             .iter()
             .map(|row| {
@@ -1022,6 +1104,9 @@ fn merge_playlist_library(
         let mut inserted = Vec::new();
         let mut weights = Vec::new();
         for entry in chunk {
+            if denied.contains(&entry.track.source_uri) {
+                continue;
+            }
             if let Some((true, weight)) = current.get(&entry.track.source_uri) {
                 if let Some(stronger) = super::stronger_playlist_weight(*weight, entry.taste_weight)
                 {
@@ -1185,6 +1270,7 @@ fn adopt_spotify_owner(
     connection.execute_sync("DELETE FROM spotify_playlists")?;
     connection.execute_sync("DELETE FROM spotify_playlist_contents")?;
     connection.execute_sync("DELETE FROM spotify_heard")?;
+    connection.execute_sync("DELETE FROM spotify_unavailable_tracks")?;
     // Returning to an account cannot treat discarded public contents
     // as still published merely because its private proof survived.
     connection.execute_with_params_sync(
@@ -1496,6 +1582,10 @@ impl Store for SqliteStore {
         retrying(|| read_spotify_owner(&self.conn)).map_err(engine)
     }
 
+    fn spotify_unavailable_tracks(&self) -> Result<HashSet<String>, StoreError> {
+        retrying(|| read_spotify_unavailable(&self.conn)).map_err(engine)
+    }
+
     fn spotify_artist_discovery(
         &self,
         owner: &SpotifyLibraryOwner,
@@ -1626,8 +1716,12 @@ impl Store for SqliteStore {
         heard: Option<&[(String, i64)]>,
         playlist_fence: Option<&SpotifyPlaylistPublicationFence>,
         artist_fence: Option<&SpotifyArtistDiscoveryFence>,
+        availability: Option<&SpotifyAvailability>,
     ) -> Result<bool, StoreError> {
         super::validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
+        if let Some(availability) = availability {
+            super::validate_spotify_availability(availability)?;
+        }
         if let Some(fence) = artist_fence {
             super::validate_spotify_artist_discovery(
                 owner,
@@ -1667,7 +1761,8 @@ impl Store for SqliteStore {
             {
                 return Ok(false);
             }
-            let changed = write_spotify_library(connection, &projection)?;
+            let mut changed = write_spotify_availability(connection, availability)?;
+            changed |= write_spotify_library(connection, &projection)?;
             if let Some(fence) = playlist_fence {
                 write_playlist_evidence(
                     connection,
@@ -2866,6 +2961,53 @@ mod tests {
     }
 
     #[test]
+    fn availability_migration_preserves_the_adopted_library_and_completed_proof() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("availability-upgrade.db");
+        let mut old =
+            SqliteStore::open_migrated(&file.to_string_lossy(), &MIGRATIONS[..24]).unwrap();
+        old.execute(
+            "INSERT INTO spotify_library_owner (singleton, owner_id, generation) VALUES (1, ?1, 7)",
+            &["existing-owner".into()],
+        )
+        .unwrap();
+        old.execute(
+            "INSERT INTO spotify_library (source_uri, title, is_classical, added, candidate) \
+             VALUES (?1, 'Existing movement', 1, 10, 1)",
+            &["spotify:track:ExistingMovement".into()],
+        )
+        .unwrap();
+        let owner = old.spotify_library_owner().unwrap().unwrap();
+        assert!(
+            old.save_spotify_library_progress(
+                "existing-owner",
+                Some(&owner),
+                None,
+                "complete saved read"
+            )
+            .unwrap()
+        );
+        let library = old.library().unwrap();
+        let clock = old.library_catalog_revision().unwrap();
+        old.close().unwrap();
+
+        let store = SqliteStore::open(&file).unwrap();
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&25));
+        assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
+        assert_eq!(store.library().unwrap(), library);
+        assert_eq!(store.library_catalog_revision().unwrap(), clock);
+        assert!(store.spotify_unavailable_tracks().unwrap().is_empty());
+        assert_eq!(
+            store
+                .spotify_library_progress("existing-owner", Some(&owner))
+                .unwrap()
+                .as_deref(),
+            Some("complete saved read")
+        );
+        store.close().unwrap();
+    }
+
+    #[test]
     fn catalog_clock_migration_preserves_existing_rows_and_starts_a_new_revision() {
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("catalog-clock-upgrade.db");
@@ -2898,7 +3040,7 @@ mod tests {
         old.close().unwrap();
 
         let mut store = SqliteStore::open(&file).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&24));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&25));
         assert_eq!(store.library_catalog_revision().unwrap(), Some(0));
         assert_eq!(store.library().unwrap(), library);
         assert_eq!(store.playlists().unwrap(), names);
@@ -2937,6 +3079,7 @@ mod tests {
                     Some(&[]),
                     &[],
                     Some(&[]),
+                    None,
                     None,
                     None,
                 )
@@ -3099,7 +3242,7 @@ mod tests {
         old.close().unwrap();
 
         let mut store = SqliteStore::open(&file).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&24));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&25));
         assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
         assert_eq!(
             store.spotify_followed_directory(&owner).unwrap().as_deref(),
@@ -3121,6 +3264,7 @@ mod tests {
                     None,
                     None,
                     Some(&cursor),
+                    None,
                 )
                 .unwrap()
         );
@@ -3189,7 +3333,7 @@ mod tests {
         old.close().unwrap();
 
         let mut store = SqliteStore::open(&file).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&24));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&25));
         assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
         assert_eq!(store.library().unwrap(), library);
         assert_eq!(
@@ -3422,7 +3566,7 @@ mod tests {
         legacy.close().unwrap();
 
         let mut store = SqliteStore::open(&path).unwrap();
-        assert_eq!(store.schema_versions().unwrap().last(), Some(&24));
+        assert_eq!(store.schema_versions().unwrap().last(), Some(&25));
         let mut entry = store.library().unwrap().pop().unwrap();
         assert_eq!(entry.artist_id, None, "a name does not prove an artist ID");
         assert_eq!(entry.origin, LibraryOrigin::Both);
@@ -3463,7 +3607,7 @@ mod tests {
             store.schema_versions().unwrap(),
             [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24
+                24, 25
             ]
         );
         let lib = store.library().unwrap();
@@ -3507,7 +3651,7 @@ mod tests {
             store.schema_versions().unwrap(),
             [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24
+                24, 25
             ]
         );
         let lib = store.library().unwrap();
@@ -3567,7 +3711,7 @@ mod tests {
             store.schema_versions().unwrap(),
             [
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-                24
+                24, 25
             ]
         );
         let lib = store.library().unwrap();
