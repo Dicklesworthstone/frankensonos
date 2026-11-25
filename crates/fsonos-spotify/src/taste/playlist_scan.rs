@@ -91,7 +91,10 @@ impl Progress {
             || self.unavailable.len() > MAX_PLAYLIST_ENTRIES as usize
             || (self.applied && !self.unavailable.is_empty())
             || (!self.unavailable.is_empty() && self.unavailable_revision.is_none())
-            || self.unavailable.iter().any(|uri| !super::valid_track_uri(uri))
+            || self
+                .unavailable
+                .iter()
+                .any(|uri| !super::valid_track_uri(uri))
             || (self.refresh_offset != 0
                 && (!self.complete || self.refresh_offset >= self.examined))
             || self.source_total.is_some_and(|total| {
@@ -112,8 +115,7 @@ impl Progress {
     }
 
     fn denials_are_current(&self, revision: Option<u64>) -> bool {
-        self.unavailable.is_empty()
-            || (revision.is_some() && self.unavailable_revision == revision)
+        self.unavailable.is_empty() || (revision.is_some() && self.unavailable_revision == revision)
     }
 
     fn append(

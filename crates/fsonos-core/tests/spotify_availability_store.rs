@@ -366,7 +366,12 @@ fn playlist_denials_publish_without_replacing_complete_contents(store: &mut dyn 
     // A cached replay cannot restore a denial cleared by a fresh full read
     // after this playlist's observation has already been consumed.
     stage(store, &owner);
-    assert!(publish(store, &owner, &[entry()], Some(&delta(&[URI], &[]))));
+    assert!(publish(
+        store,
+        &owner,
+        &[entry()],
+        Some(&delta(&[URI], &[]))
+    ));
     let clock = store.library_catalog_revision().unwrap();
     assert!(
         !store
@@ -548,9 +553,7 @@ fn full_refresh_fences_retained_negative_observations(store: &mut dyn Store) {
 #[test]
 fn both_backends_reject_stale_retained_denials_in_full_publications() {
     full_refresh_fences_retained_negative_observations(&mut MemStore::default());
-    full_refresh_fences_retained_negative_observations(
-        &mut SqliteStore::open_in_memory().unwrap(),
-    );
+    full_refresh_fences_retained_negative_observations(&mut SqliteStore::open_in_memory().unwrap());
 }
 
 #[test]
@@ -864,7 +867,8 @@ fn sqlite_background_failure_rolls_back_denials_candidates_and_receipts() {
     let publication = pending_playlist_denial(store.library_catalog_revision().unwrap());
     let raw = fsqlite::AsyncConnection::open_sync(file.to_string_lossy()).unwrap();
     // Force failure after the denial, candidate retirement and receipt writes.
-    raw.execute_sync("DROP TABLE library_catalog_clock").unwrap();
+    raw.execute_sync("DROP TABLE library_catalog_clock")
+        .unwrap();
     assert!(
         store
             .publish_spotify_artist_continuation(

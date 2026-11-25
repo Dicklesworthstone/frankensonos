@@ -2059,10 +2059,8 @@ impl Store for MemStore {
             return Ok(false);
         }
         let availability_changed = if let Some(availability) = availability {
-            let changed = self.apply_spotify_availability(
-                &availability.available,
-                &availability.unavailable,
-            )?;
+            let changed = self
+                .apply_spotify_availability(&availability.available, &availability.unavailable)?;
             changed || spotify_available_observed(availability)
         } else {
             false

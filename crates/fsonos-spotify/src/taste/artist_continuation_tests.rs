@@ -107,7 +107,9 @@ fn background_artist_denials_wait_for_the_closing_identity_and_exact_receipt() {
                 Box::new(move || {
                     let mut other = SqliteStore::open(&other_file).unwrap();
                     if changed_account {
-                        other.adopt_spotify_library_owner("different-owner").unwrap();
+                        other
+                            .adopt_spotify_library_owner("different-owner")
+                            .unwrap();
                         other.adopt_spotify_library_owner(OWNER).unwrap();
                     } else {
                         let owner = other.spotify_library_owner().unwrap().unwrap();

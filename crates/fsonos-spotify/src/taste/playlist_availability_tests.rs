@@ -84,10 +84,9 @@ fn playlist_denials_survive_interrupted_publication_without_replaying_after_ackn
                     .get("spotify:track:TestTrack151")
                     .is_some()
             );
-            let proof: Value = serde_json::from_str(
-                &store.playlist_progress(OWNER, URI).unwrap().unwrap(),
-            )
-            .unwrap();
+            let proof: Value =
+                serde_json::from_str(&store.playlist_progress(OWNER, URI).unwrap().unwrap())
+                    .unwrap();
             assert_eq!(proof["applied"], true);
             assert!(
                 proof.get("unavailable").is_none(),
@@ -277,14 +276,21 @@ fn a_newer_full_positive_forces_unpublished_playlist_denials_to_be_read_again() 
         store.close().unwrap();
 
         let mut store = SqliteStore::open(&file).unwrap();
-        server.state.lock().unwrap().refused.remove("/v1/me/playlists");
+        server
+            .state
+            .lock()
+            .unwrap()
+            .refused
+            .remove("/v1/me/playlists");
         populate(&server, "stable", 160, 0);
         let item_reads = server.item_calls().len();
         let result = pending(&server, &cx, &mut store).await;
         assert_eq!(result.playlists.pending, 1);
         let calls = server.item_calls();
         assert!(
-            calls[item_reads..].iter().any(|call| call.contains("offset=0")),
+            calls[item_reads..]
+                .iter()
+                .any(|call| call.contains("offset=0")),
             "superseded negative proof must restart provider observation"
         );
         assert!(store.spotify_unavailable_tracks().unwrap().is_empty());
