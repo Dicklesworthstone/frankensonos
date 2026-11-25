@@ -129,6 +129,70 @@ fn ordinary_catalog_writes_and_deletions_invalidate_both_stores() {
     both(ordinary_writes);
 }
 
+fn artist_genres(store: &mut dyn Store) {
+    let (owner, _) = store.adopt_spotify_library_owner(OWNER).unwrap();
+    let row = entry("Preserved");
+    store.upsert_library(std::slice::from_ref(&row)).unwrap();
+    assert!(
+        store
+            .save_spotify_library_progress(OWNER, Some(&owner), None, "ready")
+            .unwrap()
+    );
+    let mut before = revision(store);
+    store.save_artist_genres("Artist", &[], 10).unwrap();
+    assert_eq!(revision(store), before, "a first empty answer adds no tags");
+    assert_eq!(store.artist_genres("Artist").unwrap(), Some((vec![], 10)));
+
+    let tags = vec!["jazz".into(), "folk".into()];
+    store.save_artist_genres("Artist", &tags, 20).unwrap();
+    before = advanced(store, before);
+    store.save_artist_genres("Artist", &tags, 30).unwrap();
+    assert_eq!(revision(store), before, "freshness alone is not a new pool");
+    assert_eq!(store.artist_genres("Artist").unwrap(), Some((tags, 30)));
+
+    let duplicate = vec!["jazz".into(), "jazz".into(), "folk".into(), "jazz".into()];
+    store.save_artist_genres("Artist", &duplicate, 40).unwrap();
+    assert_eq!(revision(store), before, "the overlay ignores repeated tags");
+    assert_eq!(
+        store.artist_genres("Artist").unwrap(),
+        Some((duplicate, 40)),
+        "the observed metadata is still retained"
+    );
+    store
+        .save_artist_genres("Artist", &["folk".into(), "jazz".into()], 50)
+        .unwrap();
+    before = advanced(store, before);
+    store
+        .save_artist_genres("Artist", &["folk".into()], 60)
+        .unwrap();
+    before = advanced(store, before);
+    store.save_artist_genres("Artist", &[], 70).unwrap();
+    before = advanced(store, before);
+    store.save_artist_genres("Artist", &[], 80).unwrap();
+    assert_eq!(revision(store), before);
+    assert_eq!(store.artist_genres("Artist").unwrap(), Some((vec![], 80)));
+    store
+        .save_artist_genres("NewArtist", &["rock".into()], 90)
+        .unwrap();
+    advanced(store, before);
+
+    assert_eq!(store.spotify_library_owner().unwrap(), Some(owner.clone()));
+    assert_eq!(store.library().unwrap(), [row]);
+    assert_eq!(
+        store
+            .spotify_library_progress(OWNER, Some(&owner))
+            .unwrap()
+            .as_deref(),
+        Some("ready"),
+        "public metadata writes preserve the accepted account and private intake"
+    );
+}
+
+#[test]
+fn changed_artist_genres_invalidate_but_equivalent_refreshes_keep_the_pool() {
+    both(artist_genres);
+}
+
 fn private_writes(store: &mut dyn Store) {
     let (owner, _) = store.adopt_spotify_library_owner(OWNER).unwrap();
     let before = revision(store);
@@ -162,9 +226,6 @@ fn private_writes(store: &mut dyn Store) {
         .save_spotify_heard(&[("spotify:track:Heard".into(), 10)])
         .unwrap();
     store.record_play("Den", "spotify:track:Heard", 20).unwrap();
-    store
-        .save_artist_genres("Artist", &["jazz".into()], 20)
-        .unwrap();
     store.save_album_misses(&[(ALBUM.into(), 100)]).unwrap();
     assert_eq!(revision(store), before);
 
@@ -500,5 +561,37 @@ fn another_sqlite_connection_observes_the_revision_and_reopen_preserves_it() {
     writer.close().unwrap();
     let reopened = SqliteStore::open(&path).unwrap();
     assert_eq!(revision(&reopened), after);
+    reopened.close().unwrap();
+}
+
+#[test]
+fn another_sqlite_connection_observes_genre_changes_and_reopen_retains_their_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("genre-revision.db");
+    let mut writer = SqliteStore::open(&path).unwrap();
+    let reader = SqliteStore::open(&path).unwrap();
+    let before = revision(&reader);
+    writer
+        .save_artist_genres("Artist", &["jazz".into()], 10)
+        .unwrap();
+    let after = advanced(&reader, before);
+    assert_eq!(
+        reader.artist_genres("Artist").unwrap(),
+        Some((vec!["jazz".into()], 10))
+    );
+    writer
+        .save_artist_genres("Artist", &["jazz".into(), "jazz".into()], 20)
+        .unwrap();
+    assert_eq!(revision(&reader), after);
+    reader.close().unwrap();
+    writer.close().unwrap();
+    let mut reopened = SqliteStore::open(&path).unwrap();
+    assert_eq!(revision(&reopened), after);
+    assert_eq!(
+        reopened.artist_genres("Artist").unwrap(),
+        Some((vec!["jazz".into(), "jazz".into()], 20))
+    );
+    reopened.save_artist_genres("Artist", &[], 30).unwrap();
+    advanced(&reopened, after);
     reopened.close().unwrap();
 }

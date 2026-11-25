@@ -26,6 +26,7 @@ struct ObservedStore {
     revision_supported: Cell<bool>,
     publish_while_reading: Cell<bool>,
     publish_while_reading_feedback: Cell<bool>,
+    genres_while_reading: RefCell<Option<(String, Vec<String>)>>,
     configuration_edit: RefCell<Option<(std::path::PathBuf, String)>>,
 }
 
@@ -49,6 +50,17 @@ macro_rules! forward {
 }
 
 impl Store for ObservedStore {
+    fn artist_genres_many(&self, artist_ids: &[&str]) -> ArtistGenresBatch {
+        let genres = self.inner.borrow().artist_genres_many(artist_ids);
+        if let Some((artist, tags)) = self.genres_while_reading.borrow_mut().take() {
+            self.inner
+                .borrow_mut()
+                .save_artist_genres(&artist, &tags, 1)
+                .unwrap();
+        }
+        genres
+    }
+
     fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError> {
         self.feedback_reads.set(self.feedback_reads.get() + 1);
         let feedback = self.inner.borrow().feedback_between(window)?;
@@ -96,7 +108,6 @@ impl Store for ObservedStore {
 
     forward! {
         fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError>;
-        fn artist_genres_many(&self, artist_ids: &[&str]) -> ArtistGenresBatch;
         fn save_artist_genres(&mut self, artist_id: &str, genres: &[String], fetched_at: i64) -> Result<(), StoreError>;
         fn record_play( &mut self, zone: &str, source_uri: &str, played_at: i64, ) -> Result<(), StoreError>;
         fn recent_plays(&self, zone: Option<&str>, limit: usize) -> Result<Vec<PlayRecord>, StoreError>;
@@ -189,6 +200,8 @@ fn fixture() -> (ObservedStore, State) {
     assert_eq!(state.pool.len(), 1);
     (store, state)
 }
+
+mod genres;
 
 #[test]
 fn unchanged_catalog_and_listening_writes_reuse_the_pool() {

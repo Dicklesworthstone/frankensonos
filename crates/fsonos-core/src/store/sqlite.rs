@@ -2164,15 +2164,29 @@ impl Store for SqliteStore {
         genres: &[String],
         fetched_at: i64,
     ) -> Result<(), StoreError> {
-        self.execute(
-            "INSERT OR REPLACE INTO artist_genres (artist_id, genres, fetched_at) \
-             VALUES (?1, ?2, ?3)",
-            &[
-                artist_id.into(),
-                opt_value((!genres.is_empty()).then(|| genres.join(GENRE_SEPARATOR))),
-                fetched_at.into(),
-            ],
-        )
+        self.in_transaction(|connection| {
+            let previous = connection.query_with_params_sync(
+                "SELECT genres FROM artist_genres WHERE artist_id = ?1",
+                &[artist_id.into()],
+            )?;
+            let unchanged = previous.first().map_or(genres.is_empty(), |row| {
+                opt_text(row, 0)
+                    .is_ok_and(|tags| super::same_artist_genres(&split_genres(tags), genres))
+            });
+            connection.execute_with_params_sync(
+                "INSERT OR REPLACE INTO artist_genres (artist_id, genres, fetched_at) \
+                 VALUES (?1, ?2, ?3)",
+                &[
+                    artist_id.into(),
+                    opt_value((!genres.is_empty()).then(|| genres.join(GENRE_SEPARATOR))),
+                    fetched_at.into(),
+                ],
+            )?;
+            if !unchanged {
+                bump_library_catalog_revision(connection)?;
+            }
+            Ok(())
+        })
     }
 
     fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError> {
@@ -3203,6 +3217,32 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(store.library_catalog_revision().unwrap(), revision);
         assert_eq!(store.library().unwrap(), library);
+    }
+
+    #[test]
+    fn artist_genre_changes_roll_back_when_the_catalog_clock_cannot_publish() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store
+            .save_artist_genres("Artist", &["jazz".into()], 10)
+            .unwrap();
+        let before = store.artist_genres("Artist").unwrap();
+        // Fail after replacing the tags: an unreceipted cache write must not
+        // remain visible to one reader while a warmed DJ retains the old pool.
+        store
+            .execute("DROP TABLE library_catalog_clock", &[])
+            .unwrap();
+        assert!(
+            store
+                .save_artist_genres("Artist", &["folk".into()], 20)
+                .is_err()
+        );
+        assert_eq!(store.artist_genres("Artist").unwrap(), before);
+        assert!(
+            store
+                .save_artist_genres("NewArtist", &["rock".into()], 30)
+                .is_err()
+        );
+        assert_eq!(store.artist_genres("NewArtist").unwrap(), None);
     }
 
     #[test]

@@ -630,10 +630,10 @@ pub trait Store {
     /// The whole library cache, ordered by `added` then `source_uri`.
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError>;
 
-    /// Monotonic revision of the public library, playlist and album catalog.
+    /// Monotonic revision of the public library, playlist, album and genre catalog.
     /// A supported store changes it atomically with every catalog write,
     /// including writes by another connection. Private sync progress, listening
-    /// history and independent artist-genre caches do not change this token.
+    /// history and artist-genre timestamp-only refreshes do not change this token.
     /// Same-value row rewrites may conservatively advance it. Callers must
     /// bracket a catalog snapshot with equal revisions before reusing it.
     /// None disables reuse, including permanently after counter exhaustion.
@@ -867,7 +867,10 @@ pub trait Store {
     }
 
     /// Cache an artist's genre tags (none is an answer too: the Web API had
-    /// no tags for it), read at `fetched_at`.
+    /// no tags for it), read at `fetched_at`. Changed tags advance the catalog
+    /// revision atomically with the cache write, including removal of old tags.
+    /// Order matters to DJ variety; duplicate tags and timestamp-only updates
+    /// do not change the selection inputs or advance the revision.
     fn save_artist_genres(
         &mut self,
         artist_id: &str,
@@ -1469,6 +1472,22 @@ fn validate_spotify_playlist_publication(
 
 fn stronger_playlist_weight(current: Option<u32>, incoming: Option<u32>) -> Option<u32> {
     incoming.filter(|weight| *weight > current.unwrap_or(1_000))
+}
+
+/// The DJ overlays each tag once, in order: its first tag determines variety.
+/// Keep that order while ignoring duplicates, without rewriting stored metadata.
+fn same_artist_genres(previous: &[String], current: &[String]) -> bool {
+    if previous == current {
+        return true;
+    }
+    let mut previous_seen = HashSet::new();
+    let mut current_seen = HashSet::new();
+    previous
+        .iter()
+        .filter(|tag| previous_seen.insert(tag.as_str()))
+        .eq(current
+            .iter()
+            .filter(|tag| current_seen.insert(tag.as_str())))
 }
 
 /// An in-memory [`Store`] with the same semantics as [`SqliteStore`]
@@ -2198,8 +2217,16 @@ impl Store for MemStore {
         genres: &[String],
         fetched_at: i64,
     ) -> Result<(), StoreError> {
+        let previous = self
+            .artist_genres
+            .get(artist_id)
+            .map_or(&[][..], |(tags, _)| tags.as_slice());
+        let changed = !same_artist_genres(previous, genres);
         self.artist_genres
             .insert(artist_id.to_string(), (genres.to_vec(), fetched_at));
+        if changed {
+            self.bump_library_catalog_revision();
+        }
         Ok(())
     }
 
