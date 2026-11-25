@@ -476,6 +476,10 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         tracing::error!("stopping the daemon after a worker failure: {error:#}");
     }
     eprintln!("fsonos serve: stopping");
+    // Close admission before draining workers or listeners: queued clips and
+    // speech synthesis must not outlive shutdown or begin another interruption.
+    // Active clips use their ordinary ownership-checked restoration path.
+    surface.stop_announcements();
     crate::remote::remove_daemon_file(&data_dir, std::process::id());
     // Stop new queue maintenance before restoring fades and announcements.
     // In-flight I/O is never replayed and cannot hold shutdown indefinitely.
@@ -597,7 +601,7 @@ fn record_daemon(
 }
 
 /// How long a stopping daemon waits for announcements in flight to put the
-/// music back (a clip plays for at most five minutes; most take seconds).
+/// music back after cancellation. This bounds recovery, not clip playback.
 const ANNOUNCE_DRAIN: Duration = Duration::from_secs(60);
 /// Seconds a service manager should give a stopping daemon before killing
 /// it: the drain, then time to cancel its event subscriptions (launchd's

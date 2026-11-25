@@ -158,3 +158,17 @@ make room. Jobs are process-local: restarting the daemon retires their IDs
 and does not replay an interrupted clip. Use the existing
 [announcement schedules](SCHEDULED_ANNOUNCEMENTS.md) when a future recipe must
 persist across daemon restarts.
+
+During an orderly stop, the daemon closes announcement admission and cancels
+every accepted job before draining its workers. Waiting clips never start,
+speech generation stops, and an active clip uses the same ownership-checked
+restoration as explicit cancellation. This includes synchronous requests,
+background jobs and scheduled announcements. A request still resolving its
+rooms, or holding an earlier scheduler reservation, cannot start after that
+shutdown boundary. Completed receipts stay unchanged.
+
+The shutdown drain waits up to 60 seconds for this recovery, regardless of
+the clip's original duration, and logs any work left in flight at the deadline.
+A forced termination, host failure or kill after the service manager's timeout
+cannot run this cleanup: announcement snapshots and restoration state are not
+durable across a process loss.

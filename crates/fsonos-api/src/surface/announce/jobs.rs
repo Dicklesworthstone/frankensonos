@@ -223,13 +223,14 @@ impl Job {
     }
 
     fn cancel(&self) -> (bool, AnnouncementJobDto) {
+        (self.request_cancel(), self.view())
+    }
+
+    fn request_cancel(&self) -> bool {
         // Serialize the final terminal publication with cancellation admission.
         // A late cancel is a read of the completed receipt, never a new Stop.
-        let changed = {
-            let state = self.state();
-            !state.phase.terminal() && self.control.cancel()
-        };
-        (changed, self.view())
+        let state = self.state();
+        !state.phase.terminal() && self.control.cancel()
     }
 }
 
@@ -299,6 +300,14 @@ impl Jobs {
             .filter(|entry| owner || entry.owner == client.key())
             .cloned()
             .collect()
+    }
+
+    /// The caller holds the shared announcement-admission lock, so no job
+    /// can be published between this scan and closing admission.
+    pub(super) fn cancel_all(&self) {
+        for job in self.entries().iter() {
+            job.request_cancel();
+        }
     }
 }
 

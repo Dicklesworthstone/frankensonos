@@ -136,6 +136,8 @@ pub struct Announcements {
     route: Option<MediaRoute>,
     turns: Arc<Turns>,
     jobs: jobs::Jobs,
+    /// Reservations and final job publication share the shutdown boundary.
+    stopping: Mutex<bool>,
 }
 
 impl Announcements {
@@ -148,6 +150,7 @@ impl Announcements {
             route: None,
             turns: Arc::new(Turns::default()),
             jobs: jobs::Jobs::default(),
+            stopping: Mutex::new(false),
         }
     }
 
@@ -158,6 +161,18 @@ impl Announcements {
     pub fn with_media_route(mut self, route: MediaRoute) -> Self {
         self.route = Some(route);
         self
+    }
+
+    /// Hold only over admission bookkeeping, never synthesis or speaker I/O.
+    fn admitting(&self) -> Result<std::sync::MutexGuard<'_, bool>, Failure> {
+        let stopping = self.stopping.lock().unwrap_or_else(PoisonError::into_inner);
+        if *stopping {
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "the daemon is stopping; new announcements are not accepted",
+            ));
+        }
+        Ok(stopping)
     }
 }
 
@@ -316,6 +331,21 @@ impl Surface {
             .map_or(0, |with| with.turns.held().values().sum::<usize>() as u64)
     }
 
+    /// Close admission and cancel all accepted announcements before draining
+    /// the daemon. Queued clips and speech generation stop without playback;
+    /// active clips use the same ownership-checked restoration as an explicit
+    /// cancellation. Receipts stay readable until their workers finish.
+    ///
+    /// This is an idempotent, process-local shutdown boundary. It performs no
+    /// speaker I/O and does not claim restoration has already completed.
+    pub fn stop_announcements(&self) {
+        if let Some(with) = &self.announcements {
+            let mut stopping = with.stopping.lock().unwrap_or_else(PoisonError::into_inner);
+            *stopping = true;
+            with.jobs.cancel_all();
+        }
+    }
+
     /// Check listener readiness without generating a clip or reserving a turn.
     /// A due schedule may wait for startup without consuming its occurrence.
     pub(super) fn announcement_ready(&self) -> Result<(), Failure> {
@@ -325,6 +355,7 @@ impl Surface {
                 "announcements need the daemon's media listener",
             )
         })?;
+        drop(with.admitting()?);
         (with.base)()
             .ok_or_else(|| Failure::new(ErrorCode::NotReady, "the media listener is not up yet"))?;
         Ok(())
@@ -337,6 +368,7 @@ impl Surface {
     ) -> Result<AnnouncementPermit, Failure> {
         self.announcement_ready()?;
         let with = self.announcements.as_ref().expect("readiness checked");
+        let _admission = with.admitting()?;
         with.turns.take(client).map(AnnouncementPermit)
     }
 
@@ -441,9 +473,12 @@ impl Surface {
             ClipSource::Chime { .. } => "chime",
             ClipSource::Wav { .. } => "wav",
         };
-        let job = with
-            .jobs
-            .insert(client, kind, named, self.clock.now().timestamp())?;
+        // A shutdown can begin during target resolution. Publishing the job
+        // under the same lock as cancellation either includes its control in
+        // the drain or refuses it before a worker can touch the speakers.
+        let created_at = self.clock.now().timestamp();
+        let _admission = with.admitting()?;
+        let job = with.jobs.insert(client, kind, named, created_at)?;
         Ok((
             PreparedAnnouncement {
                 operation,
@@ -833,6 +868,9 @@ mod policy_tests;
 
 #[cfg(test)]
 mod routing_tests;
+
+#[cfg(test)]
+mod shutdown_tests;
 
 #[cfg(test)]
 mod tests {

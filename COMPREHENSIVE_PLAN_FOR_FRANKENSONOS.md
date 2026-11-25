@@ -1839,6 +1839,14 @@ completed restoration. Exact admitted room identities survive alias edits;
 ordinary callers see their own jobs and the configured owner can inspect all.
 See [Announcement jobs](docs/ANNOUNCEMENT_JOBS.md).
 
+An orderly daemon stop closes announcement admission and cancels all accepted
+delivery before draining workers. Queued clips and speech generation stop;
+active clips restore through the same ownership checks as explicit cancellation.
+Earlier scheduler reservations and requests still resolving rooms cannot bypass
+shutdown. The bounded drain does not wait for a five-minute clip to finish.
+Hard-crash restoration remains unimplemented because announcement snapshots and
+attempted effects are process-local.
+
 Announcements use a media URL selected for each household's actual temporary
 leader after fresh topology is read. The same generated clip is served through
 the listener on that player's local route; missing routes fail only their own

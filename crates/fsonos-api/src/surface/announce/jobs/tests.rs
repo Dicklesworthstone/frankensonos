@@ -111,6 +111,53 @@ fn a_late_cancellation_neither_changes_the_terminal_receipt_nor_sets_the_token()
 }
 
 #[test]
+fn shutdown_cancels_every_active_client_and_preserves_completed_receipts() {
+    let surface = Arc::new(surface(Policy::default()));
+    let synchronous = insert(&surface, &Client::LoopbackHttp, 10);
+    let background = insert(&surface, &Client::McpStdio, 11);
+    background.preparing();
+    let scheduled = insert(&surface, &Client::Tailnet("routine@example.com".into()), 12);
+    let completed = insert(&surface, &Client::Cli, 1);
+    completed.finish(&Ok(report("finished", true)), 2);
+    let before = completed.view();
+
+    surface.stop_announcements();
+    surface.stop_announcements();
+    for job in [&synchronous, &background, &scheduled] {
+        let view = job.view();
+        assert!(view.cancel_requested && !view.can_cancel);
+        assert!(
+            view.finished_at.is_none(),
+            "shutdown requests restoration, not success"
+        );
+        assert!(view.result.is_none());
+    }
+    assert_eq!(completed.view(), before);
+    assert!(!completed.control.is_cancelled());
+    assert_eq!(surface.list_announcements(&Client::Cli).unwrap().len(), 4);
+
+    let request = AnnounceRequest {
+        chime: Some("bell".into()),
+        ..AnnounceRequest::default()
+    };
+    for denied in [
+        surface.announce(&Client::Cli, &request).unwrap_err(),
+        surface
+            .start_announcement(&Client::Cli, &request)
+            .unwrap_err(),
+        surface.reserve_announcement(&Client::Cli).err().unwrap(),
+    ] {
+        assert_eq!(denied.code, ErrorCode::NotReady);
+        assert!(denied.detail.contains("stopping"), "{denied:?}");
+    }
+    assert_eq!(surface.list_announcements(&Client::Cli).unwrap().len(), 4);
+
+    synchronous.finish(&Ok(report("cancelled", true)), 20);
+    assert_eq!(synchronous.view().phase, AnnouncementJobPhase::Cancelled);
+    assert_eq!(synchronous.view().finished_at, Some(20));
+}
+
+#[test]
 fn cancellation_that_cannot_restore_remains_a_failed_job_with_its_details() {
     let surface = surface(Policy::default());
     let job = insert(&surface, &Client::McpStdio, 10);

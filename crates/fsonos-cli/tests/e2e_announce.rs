@@ -1120,14 +1120,13 @@ fn within(limit: Duration, mut probe: impl FnMut() -> bool) -> bool {
     }
 }
 
-/// A stopping daemon closes its MCP port at once, while an announcement in
-/// flight still gets to put the music back (8hhv.11 item 2: the MCP listener
-/// took calls until the process exited).
+/// Shutdown cancels a clip longer than the drain budget and a queued clip,
+/// restores the original music, and closes both control listeners.
 #[test]
-fn a_stopping_daemon_closes_its_mcp_port_while_an_announcement_drains() {
+fn daemon_shutdown_cancels_long_and_queued_announcements_before_exit() {
     let mut s = Scenario::start("announce-stop");
-    let clock = s.sim(SimHousehold::standard()).clock().clone();
-    let (kitchen_before, _) = set_the_scene(&mut s);
+    s.sim(SimHousehold::standard());
+    let (kitchen_before, office_before) = set_the_scene(&mut s);
     let mut daemon = s.spawn(
         "serve",
         &[
@@ -1157,14 +1156,12 @@ fn a_stopping_daemon_closes_its_mcp_port_while_an_announcement_drains() {
         format!("http={api} mcp={mcp}\n{}", daemon.seen.join("\n")),
     );
 
-    // One announcement in flight: a minute of silence, so the drain lasts
-    // (a chime's own deadline ends it within seconds, and the process with
-    // it, closing every port). With the sim's clock standing still, its clip
-    // plays in Kitchen and waits there.
+    // The clock never advances: only shutdown cancellation can restore this
+    // five-minute synchronous announcement inside the daemon's drain budget.
     let request = AnnounceRequest {
         rooms: vec!["Kitchen".into()],
         volume: Some(30),
-        ..AnnounceRequest::from_wav(&silence(60)).unwrap()
+        ..AnnounceRequest::from_wav(&silence(300)).unwrap()
     };
     let body = serde_json::to_string(&request).unwrap();
     let (send, answer) = mpsc::channel();
@@ -1185,7 +1182,9 @@ fn a_stopping_daemon_closes_its_mcp_port_while_an_announcement_drains() {
     }
     let kitchen = s.ip("Kitchen");
     let playing = within(Duration::from_secs(60), || {
-        room(&s, kitchen).uri.is_some_and(|u| u.contains("/media/"))
+        let current = room(&s, kitchen);
+        current.uri.is_some_and(|u| u.contains("/media/"))
+            && current.state == Some(TransportState::Playing)
     });
     s.check(
         "in-flight",
@@ -1195,42 +1194,50 @@ fn a_stopping_daemon_closes_its_mcp_port_while_an_announcement_drains() {
         format!("{:?}", room(&s, kitchen)),
     );
 
-    // SIGINT: the MCP listener closes at once; the announcement is waited
-    // for. (The HTTP listener stays bound, accepting nothing, until its
-    // open connection, the announcement's, is done.)
-    let exited = daemon.interrupt(Duration::from_millis(1));
-    let closed = within(Duration::from_secs(5), || !connects(&mcp));
-    let draining = daemon.running();
-    // Still draining a while later: the port closed while the daemon ran on.
-    thread::sleep(Duration::from_secs(3));
-    let still = daemon.running();
+    let queued = http(
+        &api,
+        "POST",
+        "/announcements",
+        &[("Content-Type", "application/json")],
+        r#"{"chime":"bell","rooms":["Kitchen"],"volume":35}"#,
+    )
+    .unwrap();
+    let queued_job = json(&queued.2);
+    let queued_id = queued_job["id"].as_str().unwrap_or_default();
+    let waiting = within(Duration::from_secs(10), || {
+        let status = http(&api, "GET", &format!("/announcements/{queued_id}"), &[], "");
+        status.is_ok_and(|(_, _, body)| {
+            json(&body)["progress"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|row| row["phase"] == "queued"))
+        })
+    });
     s.check(
-        "stopping",
-        "daemon",
-        "the MCP port refuses connections while the announcement still plays",
-        exited.is_none() && closed && draining && still,
-        format!(
-            "exited={exited:?} mcp_open={} http_open={} running={draining} 3 s later={still}",
-            connects(&mcp),
-            connects(&api)
-        ),
+        "queued",
+        "http",
+        "the asynchronous job waits behind the active synchronous announcement",
+        queued.0 == 200 && waiting && clip_fetches(&s).len() == 1,
+        queued.2,
     );
 
-    // The clock runs: the announcement ends, puts the music back, and the
-    // daemon, done draining, exits. (Its HTTP answer may or may not arrive:
-    // the stopped HTTP server drains open connections only for a while.)
-    let (code, played) = {
-        let _ticking = Ticker::start(clock);
-        let code = daemon.interrupt(Duration::from_secs(120));
-        (code, answer.recv_timeout(Duration::from_secs(5)).ok())
-    };
+    let code = daemon.interrupt(Duration::from_secs(30));
+    // A stopped HTTP connection may close before returning the synchronous
+    // receipt. Fresh speaker observations, not that reply, prove restoration.
+    let played = answer.recv_timeout(Duration::from_secs(5)).ok();
     let kitchen = room(&s, kitchen);
     s.check(
         "drained",
         "daemon",
-        "the announcement puts Kitchen's stream at 20 back, then the daemon exits cleanly",
-        kitchen == kitchen_before && code == Some(0),
+        "shutdown restores music and volume without waiting for the clip's end",
+        kitchen == kitchen_before && room(&s, s.ip("Office")) == office_before && code == Some(0),
         format!("{kitchen:?} exit={code:?} answer={played:?}"),
+    );
+    s.check(
+        "no-replay",
+        "sim",
+        "the queued clip never plays and both control listeners are closed",
+        clip_fetches(&s).len() == 1 && !connects(&api) && !connects(&mcp),
+        format!("{:?}", clip_fetches(&s)),
     );
     drop(daemon);
     s.finish();
