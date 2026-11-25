@@ -111,6 +111,7 @@ enum Edit {
     ReadFailure,
     AfterSnapshot,
     AdvanceBeforeWrite,
+    MissingSource,
 }
 
 struct Intercept<'a> {
@@ -193,6 +194,12 @@ impl Transport for Intercept<'_> {
             }
         }
         let answer = self.inner.soap_post(host, path, action, body)?;
+        if name == "GetMediaInfo" && self.edit == Edit::MissingSource {
+            assert!(answer.contains("<CurrentURI>"));
+            return Ok(answer
+                .replace("<CurrentURI>", "<OmittedCurrentURI>")
+                .replace("</CurrentURI>", "</OmittedCurrentURI>"));
+        }
         if name == "GetPositionInfo"
             && self.adds.get() == 0
             && self.edit == Edit::AdvanceBeforeWrite
@@ -480,5 +487,39 @@ fn failed_preflight_and_unidentifiable_next_tracks_send_no_enqueue() {
         t.only_add_writes(0);
         rig.sim.clear_faults("Alpha").unwrap();
         assert_eq!(rig.queue(), ORIGINAL);
+    }
+}
+
+#[test]
+fn a_missing_source_cannot_turn_play_next_into_append() {
+    for s2 in [false, true] {
+        let rig = Rig::new(s2);
+        let before = soap::get_media_info(&rig.sim.lan(), rig.host).unwrap();
+        let selected = soap::get_position_info(&rig.sim.lan(), rig.host).unwrap();
+        let t = Intercept::new(&rig, Reply::Accepted, Edit::MissingSource);
+        let error = rig.enqueue(&t, TRACK, true).unwrap_err();
+        assert!(error.to_string().contains("CurrentURI"), "{error}");
+        t.only_add_writes(0);
+        assert_eq!(rig.queue(), ORIGINAL);
+        assert_eq!(
+            soap::get_media_info(&rig.sim.lan(), rig.host).unwrap(),
+            before
+        );
+        let current = soap::get_position_info(&rig.sim.lan(), rig.host).unwrap();
+        assert_eq!((current.track, current.uri), (selected.track, selected.uri));
+
+        // A fresh complete observation still inserts next, retaining playback.
+        let recovered = Intercept::new(&rig, Reply::Accepted, Edit::None);
+        let result = rig.enqueue(&recovered, TRACK, true).unwrap();
+        assert_eq!(result.first, 2);
+        assert!(result.playing_queue);
+        assert_eq!(rig.queue(), [ORIGINAL[0], TRACK, ORIGINAL[1], ORIGINAL[2]]);
+        recovered.only_add_writes(1);
+        assert_eq!(
+            soap::get_position_info(&rig.sim.lan(), rig.host)
+                .unwrap()
+                .track,
+            1
+        );
     }
 }

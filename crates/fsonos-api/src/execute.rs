@@ -868,7 +868,8 @@ mod tests {
         assert_eq!(out, OutcomeDto::sent("moved to 1:30 in Den's group".into()));
         // From where it is (1:00 of 3:00), and never past the last second.
         // A player on a track names it; a relative seek needs one.
-        let at = "<TrackURI>x-file-cifs://nas/den.mp3</TrackURI>\
+        let at = "<CurrentURI>x-file-cifs://nas/den.mp3</CurrentURI>\
+                  <TrackURI>x-file-cifs://nas/den.mp3</TrackURI>\
                   <RelTime>0:01:00</RelTime><TrackDuration>0:03:00</TrackDuration>";
         for (by, verb) in [
             (30, "moved to 1:30"),

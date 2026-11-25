@@ -683,7 +683,10 @@ pub fn get_position_info<T: Transport + ?Sized>(
 /// Read the position and its original native TrackMetaData in one response.
 /// Catalog authoring must retain service extensions outside the parsed model;
 /// ordinary playback observers can keep using [`get_position_info`]. Empty or
-/// unsupported metadata is returned as an empty string.
+/// unsupported metadata is returned as an empty string. TrackURI must be
+/// present, even when explicitly empty; an incomplete reply is not an observed
+/// absence of music. Missing legacy counters remain zero, but malformed supplied
+/// counters cannot authorize a queue or playback decision.
 pub fn get_position_info_with_metadata<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
@@ -701,13 +704,10 @@ pub fn get_position_info_with_metadata<T: Transport + ?Sized>(
     };
     Ok((
         PositionInfo {
-            track: r
-                .get("Track")
-                .and_then(|v| v.trim().parse().ok())
-                .unwrap_or(0),
+            track: r.get("Track").map_or(Ok(0), |_| r.require_u32("Track"))?,
             duration_secs: r.get("TrackDuration").and_then(parse_hms),
             position_secs: r.get("RelTime").and_then(parse_hms),
-            uri: r.get("TrackURI").unwrap_or("").to_string(),
+            uri: r.require("TrackURI")?.to_string(),
             metadata,
         },
         raw_metadata.to_owned(),
@@ -723,14 +723,15 @@ pub struct MediaInfo {
     pub uri_metadata: String,
 }
 
+/// Read the selected source without treating an omitted CurrentURI as an empty
+/// source. Older replies may omit NrTracks; a supplied count must be valid.
 pub fn get_media_info<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<MediaInfo, ProtoError> {
     let r = call(t, host, &AV_TRANSPORT, "GetMediaInfo", &[INSTANCE])?;
     Ok(MediaInfo {
         tracks: r
             .get("NrTracks")
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(0),
-        uri: r.get("CurrentURI").unwrap_or("").to_string(),
+            .map_or(Ok(0), |_| r.require_u32("NrTracks"))?,
+        uri: r.require("CurrentURI")?.to_string(),
         uri_metadata: r.get("CurrentURIMetaData").unwrap_or("").to_string(),
     })
 }
@@ -845,14 +846,14 @@ mod tests {
     /// Records each request and answers with a canned `<Action>Response`.
     struct Canned {
         sent: RefCell<Vec<(String, String, String)>>,
-        out_args: &'static str,
+        out_args: String,
     }
 
     impl Canned {
-        fn new(out_args: &'static str) -> Self {
+        fn new(out_args: &str) -> Self {
             Self {
                 sent: RefCell::new(Vec::new()),
-                out_args,
+                out_args: out_args.to_string(),
             }
         }
 
@@ -1348,6 +1349,90 @@ mod tests {
             (p.duration_secs, p.position_secs, p.metadata),
             (None, None, None)
         );
+    }
+
+    #[test]
+    fn missing_playback_uri_arguments_are_not_empty_sources() {
+        for args in ["", "<NrTracks>0</NrTracks><CurrentURIMetaData/>"] {
+            assert!(matches!(
+                get_media_info(&Canned::new(args), host()),
+                Err(ProtoError::Malformed(reason)) if reason.contains("CurrentURI")
+            ));
+        }
+        for args in ["", "<Track>0</Track><TrackMetaData/>"] {
+            assert!(matches!(
+                get_position_info(&Canned::new(args), host()),
+                Err(ProtoError::Malformed(reason)) if reason.contains("TrackURI")
+            ));
+            assert!(matches!(
+                get_position_info_with_metadata(&Canned::new(args), host()),
+                Err(ProtoError::Malformed(reason)) if reason.contains("TrackURI")
+            ));
+        }
+    }
+
+    #[test]
+    fn malformed_supplied_playback_counters_are_not_zero() {
+        for value in ["", " ", "-1", "4294967296", "NOT_IMPLEMENTED", "invalid"] {
+            let media = Canned::new(&format!(
+                "<NrTracks>{value}</NrTracks><CurrentURI>synthetic:station</CurrentURI>"
+            ));
+            assert!(matches!(
+                get_media_info(&media, host()),
+                Err(ProtoError::Malformed(reason)) if reason.contains("NrTracks")
+            ));
+            let position = Canned::new(&format!(
+                "<Track>{value}</Track><TrackURI>synthetic:track</TrackURI>"
+            ));
+            assert!(matches!(
+                get_position_info(&position, host()),
+                Err(ProtoError::Malformed(reason)) if reason.contains("Track")
+            ));
+        }
+    }
+
+    #[test]
+    fn explicit_empty_sources_and_optional_legacy_fields_remain_readable() {
+        for args in [
+            "<CurrentURI/>",
+            "<NrTracks>0</NrTracks><CurrentURI></CurrentURI><CurrentURIMetaData/>",
+        ] {
+            let media = get_media_info(&Canned::new(args), host()).unwrap();
+            assert_eq!(media.tracks, 0);
+            assert!(media.uri.is_empty());
+            assert!(media.uri_metadata.is_empty());
+        }
+        for args in [
+            "<TrackURI/>",
+            "<Track>0</Track><TrackURI></TrackURI><TrackMetaData/>",
+            "<Track>0</Track><TrackURI/><TrackDuration>NOT_IMPLEMENTED</TrackDuration>\
+             <RelTime>NOT_IMPLEMENTED</RelTime><TrackMetaData>NOT_IMPLEMENTED</TrackMetaData>",
+        ] {
+            let (position, metadata) =
+                get_position_info_with_metadata(&Canned::new(args), host()).unwrap();
+            assert_eq!(position.track, 0);
+            assert!(position.uri.is_empty());
+            assert_eq!(
+                (position.duration_secs, position.position_secs),
+                (None, None)
+            );
+            assert!(position.metadata.is_none());
+            assert!(metadata.is_empty());
+        }
+        let media = get_media_info(
+            &Canned::new("<CurrentURI>synthetic:station</CurrentURI>"),
+            host(),
+        )
+        .unwrap();
+        assert_eq!((media.tracks, media.uri.as_str()), (0, "synthetic:station"));
+        let position = get_position_info(
+            &Canned::new("<TrackURI>synthetic:track</TrackURI><RelTime>0:00:07</RelTime>"),
+            host(),
+        )
+        .unwrap();
+        assert_eq!(position.track, 0);
+        assert_eq!(position.uri, "synthetic:track");
+        assert_eq!(position.position_secs, Some(7));
     }
 
     #[test]

@@ -370,3 +370,75 @@ fn an_empty_queue_remains_an_empty_queue_without_starting_it() {
         t.assert_read_only();
     }
 }
+
+struct OmittedPlaybackUri<'a> {
+    lan: &'a SimLan,
+    action: &'static str,
+    field: &'static str,
+}
+
+impl Transport for OmittedPlaybackUri<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let reply = self.lan.soap_post(host, path, action, body)?;
+        let name = action.trim_matches('"').rsplit('#').next().unwrap();
+        if name != self.action {
+            return Ok(reply);
+        }
+        let opening = format!("<{}>", self.field);
+        let closing = format!("</{}>", self.field);
+        assert!(reply.contains(&opening));
+        Ok(reply
+            .replace(&opening, "<OmittedPlaybackURI>")
+            .replace(&closing, "</OmittedPlaybackURI>"))
+    }
+}
+
+#[test]
+fn incomplete_playback_identity_is_not_saved_as_empty_undo_state() {
+    for generation in [1, 2] {
+        for direct in [false, true] {
+            for (action, field) in [
+                ("GetMediaInfo", "CurrentURI"),
+                ("GetPositionInfo", "TrackURI"),
+            ] {
+                let f = Fixture::new(generation);
+                if direct {
+                    f.direct(FIRST);
+                }
+                let before = soap::get_media_info(&f.lan, f.host).unwrap();
+                let marker = f.sim.soap_log().len();
+                let t = OmittedPlaybackUri {
+                    lan: &f.lan,
+                    action,
+                    field,
+                };
+                let error = f.capture(&t).unwrap_err();
+                assert!(error.to_string().contains(field), "{error}");
+                assert!(
+                    f.sim.soap_log()[marker..].iter().all(|entry| {
+                        entry.action.starts_with("Get") || entry.action == "Browse"
+                    })
+                );
+                assert_eq!(soap::get_media_info(&f.lan, f.host).unwrap(), before);
+                let recovered = f.capture(&f.lan).unwrap();
+                if direct {
+                    assert!(matches!(
+                        recovered.source,
+                        SnapshotSource::Uri { uri, .. } if uri == FIRST
+                    ));
+                } else {
+                    assert!(matches!(
+                        recovered.source,
+                        SnapshotSource::Queue { track: 2, .. }
+                    ));
+                }
+            }
+        }
+    }
+}

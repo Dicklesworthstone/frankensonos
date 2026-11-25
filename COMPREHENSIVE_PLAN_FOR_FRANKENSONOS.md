@@ -1018,6 +1018,15 @@ The §5 MCP tool list is nearly all writes. "Turn it down a bit in the kitchen",
   `POLICY_DENIED`, …), a `hint`, and `suggestions` such as the closest room
   names. The same codes appear in HTTP, MCP, and CLI exit codes.
 
+Native playback reads distinguish explicitly empty source URIs from omitted
+`CurrentURI` or `TrackURI` arguments. Missing identity or malformed supplied
+track counters fail the observation instead of becoming an empty source or
+zero counter. Play Next therefore cannot silently become append after an
+incomplete reply, and snapshots cannot save that reply as empty undo state.
+Explicit empty values and omitted legacy counters remain compatible. Added
+protocol and S1/S2 simulator regressions await execution after dependency-build
+resource failures; pinned formatting passed.
+
 ### 12.4 A virtual household for hardware-free testing and demos
 
 [`a-sim-core`, `a-sim-gena`, `a-sim-discovery`, `d-e2e-sim`,
