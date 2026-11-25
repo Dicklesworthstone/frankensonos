@@ -1876,6 +1876,14 @@ shutdown. The bounded drain does not wait for a five-minute clip to finish.
 Hard-crash restoration remains unimplemented because announcement snapshots and
 attempted effects are process-local.
 
+Announcement cleanup rechecks each room's current volume cap immediately before
+restoring an owned level. Quiet hours and policy edits during the clip can lower
+the restored volume; a later higher cap never raises it above the captured
+level. Newer listener volume changes remain untouched. Preparation and cleanup
+use separate callbacks so restoring levels does not suspend a sleep timer or
+fade again. S1/S2 regression cases cover these boundaries; Rust execution remains
+pending after the local build filesystem filled and the executor became unavailable.
+
 An owned announcement's explicit renderer error now fails delivery and starts
 normal restoration without waiting for its clip deadline. The error takes
 precedence over playing, transitioning and stopped transport states. Fresh

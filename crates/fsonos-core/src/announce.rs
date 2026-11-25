@@ -223,6 +223,10 @@ pub struct AnnouncementCallbacks<'a> {
     pub authorize: &'a (dyn Fn() -> Result<(), String> + Sync),
     /// The maximum level for each target room, before any playback changes.
     pub cap: &'a (dyn Fn(&Room) -> u8 + Sync),
+    /// Recheck the maximum level immediately before each owned volume restore.
+    /// Unlike `cap`, this callback must not suspend fades or sleep jobs.
+    /// `None` leaves restoration uncapped for policy-neutral callers.
+    pub restore_cap: Option<&'a (dyn Fn(&Room) -> u8 + Sync)>,
     /// Called after restoration, including failed or partial restoration,
     /// before another announcement can enter this household. May resume a
     /// suspended timer only when the report confirms it is still appropriate.
@@ -368,6 +372,7 @@ impl Announcer {
                 clip_url: None,
                 authorize: &|| Ok(()),
                 cap,
+                restore_cap: None,
                 completed: &|_, _| {},
             },
         )
@@ -622,6 +627,7 @@ impl Announcer {
             &origins,
             capture_started,
             give_up,
+            callbacks.restore_cap,
             &mut report,
         );
         report

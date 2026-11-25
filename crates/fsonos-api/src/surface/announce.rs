@@ -572,6 +572,13 @@ impl Surface {
             self.policy()
                 .max_volume(&room.name, client, self.clock.now())
         };
+        // Restoration may happen after quiet hours begin or policy is edited.
+        // This callback only reads the current cap; suspending fades/sleep again
+        // would overwrite the admission receipts retained above.
+        let restore_cap = |room: &Room| {
+            self.policy()
+                .max_volume(&room.name, client, self.clock.now())
+        };
         let completed = |household: &HouseholdState, report: &HouseholdAnnouncement| {
             // Each household completes while its announcement turn is still
             // held. No later clip can start before its sleep recovery finishes.
@@ -601,6 +608,7 @@ impl Surface {
                 &AnnouncementCallbacks {
                     authorize: &authorize,
                     cap: &cap,
+                    restore_cap: Some(&restore_cap),
                     completed: &completed,
                     clip_url: Some(&clip_url),
                 },

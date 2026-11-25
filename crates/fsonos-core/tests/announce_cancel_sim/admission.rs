@@ -147,6 +147,7 @@ fn denied_household_admission_never_interrupts_fades_or_mutates_speakers() {
             &control,
             &AnnouncementCallbacks {
                 clip_url: None,
+                restore_cap: None,
                 authorize: &|| Err("announcement grant was revoked".into()),
                 cap: &|_| panic!("refused work must not interrupt a sleep fade"),
                 completed: &|_, _| {
@@ -185,6 +186,7 @@ fn post_snapshot_cancellation_or_revocation_explicitly_verifies_both_untouched_z
                 &control,
                 &AnnouncementCallbacks {
                     clip_url: None,
+                    restore_cap: None,
                     authorize: &|| {
                         if authorizations.fetch_add(1, Ordering::Relaxed) == 0 {
                             return Ok(());
@@ -260,6 +262,7 @@ fn cancelling_after_the_first_zones_volume_preserves_both_sleep_continuations() 
             &control,
             &AnnouncementCallbacks {
                 clip_url: None,
+                restore_cap: None,
                 authorize: &|| Ok(()),
                 cap: &|_| {
                     caps.store(true, Ordering::Release);
@@ -321,6 +324,7 @@ fn external_changes_never_gain_an_old_sleep_receipt_during_cancelled_preparation
                     &control,
                     &AnnouncementCallbacks {
                         clip_url: None,
+                        restore_cap: None,
                         authorize: &|| {
                             if authorizations.fetch_add(1, Ordering::Relaxed) == 1 && !partial {
                                 owner_change(&sim, &lan, "Beta", change);
@@ -390,6 +394,7 @@ fn an_external_source_during_snapshot_cannot_become_the_old_sleeps_baseline() {
             &control,
             &AnnouncementCallbacks {
                 clip_url: None,
+                restore_cap: None,
                 authorize: &|| Ok(()),
                 cap: &|_| {
                     caps.store(true, Ordering::Release);
@@ -440,6 +445,7 @@ fn a_later_snapshot_failure_still_verifies_the_already_captured_zone() {
             &control,
             &AnnouncementCallbacks {
                 clip_url: None,
+                restore_cap: None,
                 authorize: &|| Ok(()),
                 cap: &|_| {
                     caps.store(true, Ordering::Release);
@@ -528,6 +534,7 @@ fn a_queue_replacement_during_source_admission_never_interrupts_the_old_sleep() 
             &AnnouncementControl::default(),
             &AnnouncementCallbacks {
                 clip_url: None,
+                restore_cap: None,
                 authorize: &|| Ok(()),
                 cap: &|_| {
                     panic!("a torn queue/source observation must fail before suspending sleep")
@@ -624,6 +631,7 @@ fn a_cleanup_retry_rechecks_preparation_ownership_before_another_write() {
             &control,
             &AnnouncementCallbacks {
                 clip_url: None,
+                restore_cap: None,
                 authorize: &|| Ok(()),
                 cap: &|_| 25,
                 completed: &|_, _| {},

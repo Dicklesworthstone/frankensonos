@@ -5,7 +5,7 @@ pub(super) use untouched::Origin;
 
 use super::{GroupPlan, HouseholdAnnouncement, continuity, refreshed, topology};
 use crate::snapshot::{self, Aspect, RestoreOp, RestoreReport, SnapshotSource, ZoneSnapshot};
-use crate::{CoreError, HouseholdState, control, heal};
+use crate::{CoreError, HouseholdState, Room, control, heal};
 use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
@@ -213,6 +213,7 @@ pub(super) fn put_back<T: Transport + ?Sized>(
     origins: &[Origin],
     capture_started: Instant,
     give_up: Instant,
+    restore_cap: Option<&(dyn Fn(&Room) -> u8 + Sync)>,
     report: &mut HouseholdAnnouncement,
 ) {
     if let Some(why) = &effects.preserve {
@@ -277,6 +278,7 @@ pub(super) fn put_back<T: Transport + ?Sized>(
             capture_started,
             give_up,
             &still_owned,
+            restore_cap,
             report,
         );
     }
@@ -359,6 +361,7 @@ fn put_zone_back<T: Transport + ?Sized>(
     capture_started: Instant,
     give_up: Instant,
     still_owned: Owned<'_>,
+    restore_cap: Option<&(dyn Fn(&Room) -> u8 + Sync)>,
     report: &mut HouseholdAnnouncement,
 ) {
     let continuation = effects
@@ -433,7 +436,7 @@ fn put_zone_back<T: Transport + ?Sized>(
             if let Some((entry, proof)) = continuation.zip(returned.as_ref()) {
                 proof.check(t, entry).map_err(|error| error.to_string())?;
             }
-            vet(t, household, &now, &changed, effects, op)
+            vet(t, household, &now, &changed, effects, op, restore_cap)
         })
     };
     let owned = || match continuation.zip(returned.as_ref()) {
@@ -506,6 +509,7 @@ fn vet<T: Transport + ?Sized>(
     snap: &ZoneSnapshot,
     effects: &Effects,
     op: &RestoreOp,
+    restore_cap: Option<&(dyn Fn(&Room) -> u8 + Sync)>,
 ) -> Result<RestoreOp, String> {
     let household = refreshed(t, before).map_err(|error| error.to_string())?;
     if !snap.members.iter().all(|primary| {
@@ -562,6 +566,20 @@ fn vet<T: Transport + ?Sized>(
         _ => {}
     }
     require_dispatch(t, dispatch, &household, &snap.coordinator, op)?;
+    if let (Some(cap), RestoreOp::SetVolume { player, level }) = (restore_cap, op) {
+        let room = household
+            .rooms
+            .iter()
+            .find(|room| room.primary == *player)
+            .ok_or_else(|| "announcement room disappeared before volume restoration".to_string())?;
+        // Ownership above compares the actual level with the original write,
+        // not a newly lowered cap. A listener's newer level still wins. Check
+        // policy after the endpoint reads, as quiet hours can change mid-clip.
+        return Ok(RestoreOp::SetVolume {
+            player: player.clone(),
+            level: (*level).min(cap(room)),
+        });
+    }
     Ok(op.clone())
 }
 

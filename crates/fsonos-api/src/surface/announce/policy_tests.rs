@@ -443,3 +443,192 @@ fn cancelling_a_synthesizing_job_releases_its_turn_without_touching_speakers() {
         }));
     }
 }
+
+#[derive(Clone, Copy)]
+enum RestorePolicy {
+    Unchanged,
+    QuietHours,
+    TighterRoom,
+    HigherRoom,
+}
+
+/// Let the clip really start, then change policy or a room level while its
+/// request is still in flight. Inspect the resumed music and actual writes,
+/// not only the cap recorded when admission began.
+#[allow(clippy::too_many_lines)] // Keep the real playback, intervention and restore proof together.
+fn restored_cap(s2: bool, change: RestorePolicy, manual: Option<u8>, client: &Client) {
+    const SOURCE: &str = "x-rincon-mp3radio://stream.example.invalid/original";
+    let spec = SimPlayerSpec::new(
+        "Kitchen",
+        if s2 {
+            SimModel::One
+        } else {
+            SimModel::Play5Gen1
+        },
+    );
+    let builder = SimHousehold::builder();
+    let sim = if s2 {
+        builder.s2([spec])
+    } else {
+        builder.s1([spec])
+    }
+    .spawn()
+    .unwrap();
+    let lan = sim.lan();
+    let host = sim.player("Kitchen").unwrap().ip;
+    soap::set_av_transport_uri(&lan, host, SOURCE, "").unwrap();
+    soap::play(&lan, host).unwrap();
+    soap::set_volume(&lan, host, 60).unwrap();
+    let mut house = HouseholdState::default();
+    house.apply_topology(&get_zone_group_state(&lan, host).unwrap());
+    let (entered, playing) = mpsc::channel();
+    let (release, waiting) = mpsc::channel();
+    let clock = Arc::new(FakeClock::new(
+        DateTime::parse_from_rfc3339("2026-10-07T21:59:00-04:00").unwrap(),
+    ));
+    let initial = "[defaults]\nmax_volume = 70\n\
+        [quiet_hours]\nstart = \"22:00\"\nend = \"07:00\"\nmax_volume = 20\n";
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(data.path().join("policy.toml"), initial).unwrap();
+    let mut announcements = Announcements::new(
+        MediaStore::new(data.path()),
+        Box::new(|| Some("http://192.0.2.250:3400".into())),
+    );
+    announcements.announcer =
+        Announcer::with_timing(Duration::from_millis(5), Duration::from_millis(100));
+    let surface = Surface::new(
+        Box::new(QueuedClips {
+            lan: sim.lan(),
+            in_clip: AtomicBool::new(false),
+            reads: AtomicUsize::new(0),
+            first: Mutex::new(Some((entered, waiting))),
+        }),
+        Box::new(move |_| Ok(vec![house.clone()])),
+        Policy::from_toml(initial).unwrap(),
+        Box::new(SharedClock(Arc::clone(&clock))),
+    )
+    .with_policy_file(data.path().to_path_buf())
+    .with_announcements(announcements);
+    let request = AnnounceRequest {
+        chime: Some("beep".into()),
+        rooms: vec!["Kitchen".into()],
+        volume: Some(35),
+        ..AnnounceRequest::default()
+    };
+    let (report, expected, writes_after) = std::thread::scope(|scope| {
+        let running = scope.spawn(|| surface.announce(client, &request));
+        playing.recv_timeout(WAIT).unwrap();
+        let capped = match change {
+            RestorePolicy::Unchanged => 60,
+            RestorePolicy::QuietHours => {
+                clock.advance(TimeDelta::minutes(2));
+                20
+            }
+            RestorePolicy::TighterRoom | RestorePolicy::HigherRoom => {
+                let cap = if matches!(change, RestorePolicy::TighterRoom) {
+                    12
+                } else {
+                    90
+                };
+                std::fs::write(
+                    data.path().join("policy.toml"),
+                    format!("[defaults]\nmax_volume = 70\n[rooms.Kitchen]\nmax_volume = {cap}\n"),
+                )
+                .unwrap();
+                cap.min(60)
+            }
+        };
+        if let Some(level) = manual {
+            soap::set_volume(&lan, host, level).unwrap();
+        }
+        let writes_after = sim.soap_log().len();
+        release.send(()).unwrap();
+        let report = running.join().unwrap().unwrap();
+        let expected = manual.unwrap_or(if matches!(client, Client::Cli) {
+            60
+        } else {
+            capped
+        });
+        (report, expected, writes_after)
+    });
+    assert_eq!(report.households[0].outcome, "finished", "{report:?}");
+    assert_eq!(report.households[0].levels[0].volume, 35);
+    assert_eq!(
+        soap::get_volume(&lan, host).unwrap(),
+        expected,
+        "{report:?}"
+    );
+    assert_eq!(soap::get_media_info(&lan, host).unwrap().uri, SOURCE);
+    assert_eq!(
+        soap::get_transport_info(&lan, host).unwrap().state,
+        fsonos_types::TransportState::Playing
+    );
+    let log = sim.soap_log();
+    let levels: Vec<_> = log[writes_after..]
+        .iter()
+        .filter(|entry| entry.action == "SetVolume")
+        .filter_map(|entry| {
+            entry
+                .args
+                .iter()
+                .find(|(name, _)| name == "DesiredVolume")
+                .map(|(_, value)| value.clone())
+        })
+        .collect();
+    if manual.is_some() {
+        assert!(
+            levels.is_empty(),
+            "a newer manual level was overwritten: {levels:?}"
+        );
+        assert!(!report.clean, "{report:?}");
+    } else {
+        assert_eq!(levels, [expected.to_string()]);
+        assert!(report.clean, "{report:?}");
+    }
+    assert_eq!(surface.announcements_pending(), 0);
+    sim.shutdown();
+}
+
+#[test]
+fn announcement_restoration_obeys_quiet_hours_that_begin_during_playback() {
+    for s2 in [false, true] {
+        restored_cap(s2, RestorePolicy::QuietHours, None, &Client::LoopbackHttp);
+    }
+}
+
+#[test]
+fn announcement_restoration_rereads_the_room_policy_at_dispatch() {
+    for s2 in [false, true] {
+        restored_cap(s2, RestorePolicy::TighterRoom, None, &Client::LoopbackHttp);
+    }
+}
+
+#[test]
+fn unchanged_or_raised_caps_never_raise_restoration_above_the_original_level() {
+    for s2 in [false, true] {
+        for change in [RestorePolicy::Unchanged, RestorePolicy::HigherRoom] {
+            restored_cap(s2, change, None, &Client::LoopbackHttp);
+        }
+    }
+}
+
+#[test]
+fn changed_restoration_caps_preserve_newer_manual_levels() {
+    for s2 in [false, true] {
+        for level in [9, 55] {
+            restored_cap(
+                s2,
+                RestorePolicy::TighterRoom,
+                Some(level),
+                &Client::LoopbackHttp,
+            );
+        }
+    }
+}
+
+#[test]
+fn the_uncapped_cli_retains_its_original_announcement_restoration_level() {
+    for s2 in [false, true] {
+        restored_cap(s2, RestorePolicy::QuietHours, None, &Client::Cli);
+    }
+}

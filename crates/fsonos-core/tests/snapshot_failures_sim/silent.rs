@@ -91,14 +91,16 @@ impl Transport for Renderer<'_> {
                 Behavior::PauseRefusedAfterOwnerPause | Behavior::PauseFaultAfterOwnerPause => {
                     soap::pause(self.inner, host)?;
                     return if self.behavior == Behavior::PauseFaultAfterOwnerPause {
-                        Ok("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">\
+                        Ok(
+                            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">\
                             <s:Body><s:Fault><faultcode>s:Client</faultcode>\
                             <faultstring>UPnPError</faultstring><detail>\
                             <UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\">\
                             <errorCode>701</errorCode>\
                             <errorDescription>injected pause refusal</errorDescription>\
                             </UPnPError></detail></s:Fault></s:Body></s:Envelope>"
-                            .into())
+                                .into(),
+                        )
                     } else {
                         Err(ProtoError::SoapFault {
                             code: 701,
@@ -152,7 +154,10 @@ impl Transport for Renderer<'_> {
             // the real socket response while modeling that firmware detail.
             let position = soap::get_position_info(self.inner, host)?;
             let cleared = reply
-                .replace(&format!("<Track>{}</Track>", position.track), "<Track>0</Track>")
+                .replace(
+                    &format!("<Track>{}</Track>", position.track),
+                    "<Track>0</Track>",
+                )
                 .replace(
                     &format!(
                         "<TrackURI>{}</TrackURI>",
@@ -388,13 +393,8 @@ fn same_queue_changes_during_pause_or_fallback_authorization_are_left_alone() {
             for (manual_pause, deny) in [(false, false), (true, false), (true, true)] {
                 let mut rig = Rig::new(s2);
                 inactive_snapshot(&mut rig, true, TransportState::Paused);
-                control::play_queue_from(
-                    &rig.lan,
-                    &rig.houses,
-                    &rig.snapshot.coordinator,
-                    1,
-                )
-                .unwrap();
+                control::play_queue_from(&rig.lan, &rig.houses, &rig.snapshot.coordinator, 1)
+                    .unwrap();
                 let t = Renderer::new(
                     &rig.lan,
                     if fallback {
@@ -405,12 +405,8 @@ fn same_queue_changes_during_pause_or_fallback_authorization_are_left_alone() {
                 );
                 let pause_vets = Cell::new(0);
                 let change_at = if fallback { 2 } else { 1 };
-                let report = snapshot::restore_vetted(
-                    &t,
-                    &rig.houses,
-                    &rig.snapshot,
-                    &Aspect::ALL,
-                    &|op| {
+                let report =
+                    snapshot::restore_vetted(&t, &rig.houses, &rig.snapshot, &Aspect::ALL, &|op| {
                         if matches!(op, RestoreOp::Stop) {
                             pause_vets.set(pause_vets.get() + 1);
                             if pause_vets.get() == change_at {
@@ -427,9 +423,8 @@ fn same_queue_changes_during_pause_or_fallback_authorization_are_left_alone() {
                             }
                         }
                         Ok(op.clone())
-                    },
-                )
-                .unwrap();
+                    })
+                    .unwrap();
                 assert_eq!(pause_vets.get(), change_at);
                 for aspect in [
                     Aspect::Source,
@@ -472,17 +467,12 @@ fn source_reauthorization_cannot_retarget_an_inactive_queue_occurrence() {
         for stop in [false, true] {
             let mut rig = Rig::new(s2);
             inactive_snapshot(&mut rig, true, TransportState::Paused);
-            control::play_queue_from(&rig.lan, &rig.houses, &rig.snapshot.coordinator, 1)
-                .unwrap();
+            control::play_queue_from(&rig.lan, &rig.houses, &rig.snapshot.coordinator, 1).unwrap();
             soap::pause(&rig.lan, rig.host).unwrap();
             let t = Renderer::new(&rig.lan, Behavior::PreserveState);
             let source_vets = Cell::new(0);
-            let report = snapshot::restore_vetted(
-                &t,
-                &rig.houses,
-                &rig.snapshot,
-                &Aspect::ALL,
-                &|op| {
+            let report =
+                snapshot::restore_vetted(&t, &rig.houses, &rig.snapshot, &Aspect::ALL, &|op| {
                     if matches!(op, RestoreOp::SetUri { .. }) {
                         source_vets.set(source_vets.get() + 1);
                         // The first approval precedes source::restore's anchor.
@@ -496,9 +486,8 @@ fn source_reauthorization_cannot_retarget_an_inactive_queue_occurrence() {
                         }
                     }
                     Ok(op.clone())
-                },
-            )
-            .unwrap();
+                })
+                .unwrap();
             assert_eq!(source_vets.get(), 2);
             for aspect in [
                 Aspect::Source,
@@ -525,7 +514,10 @@ fn source_reauthorization_cannot_retarget_an_inactive_queue_occurrence() {
                 }
             );
             if !stop {
-                assert_eq!(soap::get_position_info(&rig.lan, rig.host).unwrap().track, 2);
+                assert_eq!(
+                    soap::get_position_info(&rig.lan, rig.host).unwrap().track,
+                    2
+                );
             }
             assert_eq!(soap::get_volume(&rig.lan, rig.host).unwrap(), 5);
             assert_eq!(soap::get_volume(&rig.lan, rig.peer).unwrap(), 70);
@@ -580,8 +572,7 @@ fn a_new_occurrence_after_an_authorized_pause_or_stop_is_left_alone() {
         ] {
             let mut rig = Rig::new(s2);
             inactive_snapshot(&mut rig, true, TransportState::Paused);
-            control::play_queue_from(&rig.lan, &rig.houses, &rig.snapshot.coordinator, 1)
-                .unwrap();
+            control::play_queue_from(&rig.lan, &rig.houses, &rig.snapshot.coordinator, 1).unwrap();
             let t = Renderer::new(&rig.lan, behavior);
             let report = snapshot::restore(&t, &rig.houses, &rig.snapshot).unwrap();
             for aspect in [
@@ -603,7 +594,10 @@ fn a_new_occurrence_after_an_authorized_pause_or_stop_is_left_alone() {
                 soap::get_media_info(&rig.lan, rig.host).unwrap().uri,
                 format!("x-rincon-queue:{}#0", rig.snapshot.coordinator.0)
             );
-            assert_eq!(soap::get_position_info(&rig.lan, rig.host).unwrap().track, 2);
+            assert_eq!(
+                soap::get_position_info(&rig.lan, rig.host).unwrap().track,
+                2
+            );
             assert_eq!(
                 soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
                 if behavior == Behavior::StopChangesOccurrence {
