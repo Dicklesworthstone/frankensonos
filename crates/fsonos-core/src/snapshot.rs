@@ -194,7 +194,7 @@ fn ip(household: &HouseholdState, player: &PlayerId) -> Result<IpAddr, CoreError
 
 /// A renderer can reserialize its DIDL between reads without changing music.
 /// Keep the source URI, track count and every metadata value authoritative.
-fn same_media(before: &soap::MediaInfo, after: &soap::MediaInfo) -> bool {
+pub(crate) fn same_media(before: &soap::MediaInfo, after: &soap::MediaInfo) -> bool {
     before.tracks == after.tracks
         && before.uri == after.uri
         && (before.uri_metadata.trim() == after.uri_metadata.trim()

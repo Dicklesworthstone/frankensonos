@@ -136,6 +136,18 @@ enum Fault {
     UnrelatedGroup,
     RejoinedSource,
     ChangedMedia,
+    PausedTarget,
+    ResumedTarget,
+    FailedTarget,
+    WrongOccurrence,
+    WrongPosition,
+    MissingOccurrence,
+    OutOfRangeOccurrence,
+    MissingTrackUri,
+    MissingTrackCount,
+    ChangedMetadata,
+    SettlingTarget,
+    FailedObservation,
     Ignored,
     Refused,
     RefusedNewSource,
@@ -217,6 +229,52 @@ impl Transport for Replies {
         }
         if name != "DelegateGroupCoordinationTo" {
             let response = self.inner.soap_post(host, path, action, body)?;
+            if name == "GetPositionInfo" {
+                match self.fault {
+                    Fault::MissingOccurrence => {
+                        return Ok(response.replace("<Track>2</Track>", ""));
+                    }
+                    Fault::OutOfRangeOccurrence => {
+                        return Ok(response.replace("<Track>2</Track>", "<Track>4</Track>"));
+                    }
+                    Fault::MissingTrackUri => {
+                        return Ok(
+                            response.replace("x-file-cifs://example.invalid/movement2.flac", "")
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            if name == "GetMediaInfo" && matches!(self.fault, Fault::MissingTrackCount) {
+                return Ok(response.replace("<NrTracks>3</NrTracks>", ""));
+            }
+            if sent && host == self.target_host {
+                match (self.fault, name) {
+                    (Fault::PausedTarget, "GetTransportInfo") => {
+                        return Ok(response.replace(">PLAYING<", ">PAUSED_PLAYBACK<"));
+                    }
+                    (Fault::ResumedTarget, "GetTransportInfo") => {
+                        return Ok(response.replace(">PAUSED_PLAYBACK<", ">PLAYING<"));
+                    }
+                    (Fault::FailedTarget, "GetTransportInfo") => {
+                        return Ok(response.replace(">OK<", ">ERROR_OCCURRED<"));
+                    }
+                    (Fault::SettlingTarget, "GetTransportInfo") if !self.injected.replace(true) => {
+                        return Ok(response.replace(">PLAYING<", ">TRANSITIONING<"));
+                    }
+                    (Fault::WrongOccurrence, "GetPositionInfo") => {
+                        return Ok(response.replace("<Track>2</Track>", "<Track>1</Track>"));
+                    }
+                    (Fault::WrongPosition, "GetPositionInfo") => {
+                        return Ok(response.replace(":00:37</RelTime>", ":00:00</RelTime>"));
+                    }
+                    (Fault::ChangedMetadata, "GetMediaInfo") => {
+                        return Ok(response.replace("original-title", "other-title"));
+                    }
+                    (Fault::FailedObservation, "GetTransportInfo") => return Err(Self::lost(host)),
+                    _ => {}
+                }
+            }
             if sent
                 && name == "SetAVTransportURI"
                 && host != self.source_host
@@ -648,5 +706,105 @@ fn native_recovery_keeps_a_paused_queue_inaudible_and_in_place() {
         let position = soap::get_position_info(&f.sim.lan(), f.target_host).unwrap();
         assert_eq!((position.track, position.position_secs), (2, Some(37)));
         f.only_native_write(since);
+    }
+}
+
+#[test]
+fn native_transfer_requires_the_original_queue_occurrence_time_and_play_intent() {
+    for generation in [1, 2] {
+        for fault in [
+            Fault::PausedTarget,
+            Fault::ResumedTarget,
+            Fault::FailedTarget,
+            Fault::WrongOccurrence,
+            Fault::WrongPosition,
+            Fault::FailedObservation,
+        ] {
+            let f = Fixture::new(generation, false);
+            if matches!(fault, Fault::ResumedTarget) {
+                soap::pause(&f.sim.lan(), f.source_host).unwrap();
+            }
+            let t = Replies::new(&f, fault);
+            let since = f.sim.soap_log().len();
+            assert!(
+                f.handoff(&t, Duration::ZERO)
+                    .unwrap_err()
+                    .contains("playback continuity")
+            );
+            assert_eq!(t.delegations.get(), 1);
+            f.only_native_write(since);
+        }
+    }
+}
+
+#[test]
+fn settling_native_playback_is_observed_without_another_handoff_or_play() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation, false);
+        let t = Replies::new(&f, Fault::SettlingTarget);
+        let since = f.sim.soap_log().len();
+        f.preserved(&f.handoff(&t, Duration::from_secs(2)).unwrap(), false);
+        assert!(t.injected.get());
+        f.only_native_write(since);
+    }
+}
+
+#[test]
+fn a_different_station_using_the_same_url_cannot_confirm_the_native_transfer() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation, false);
+        let metadata = "<DIDL-Lite><item><title>original-title</title></item></DIDL-Lite>";
+        soap::set_av_transport_uri(&f.sim.lan(), f.source_host, RADIO, metadata).unwrap();
+        soap::play(&f.sim.lan(), f.source_host).unwrap();
+        let t = Replies::new(&f, Fault::ChangedMetadata);
+        let since = f.sim.soap_log().len();
+        assert!(
+            f.handoff(&t, Duration::ZERO)
+                .unwrap_err()
+                .contains("playback continuity")
+        );
+        f.only_native_write(since);
+    }
+}
+
+#[test]
+fn nonempty_playing_and_paused_queues_need_an_identifiable_in_range_occurrence() {
+    for fault in [
+        Fault::MissingOccurrence,
+        Fault::OutOfRangeOccurrence,
+        Fault::MissingTrackUri,
+        Fault::MissingTrackCount,
+    ] {
+        for paused in [false, true] {
+            let f = Fixture::new(2, false);
+            if paused {
+                soap::pause(&f.sim.lan(), f.source_host).unwrap();
+            }
+            let t = Replies::new(&f, fault);
+            assert!(f.handoff(&t, Duration::ZERO).is_err());
+            assert_eq!(t.delegations.get(), 0);
+        }
+    }
+}
+
+#[test]
+fn quiet_native_transfers_cannot_be_confirmed_by_a_failed_renderer() {
+    for generation in [1, 2] {
+        for pause in [false, true] {
+            let f = Fixture::new(generation, false);
+            if pause {
+                soap::pause(&f.sim.lan(), f.source_host).unwrap();
+            } else {
+                soap::stop(&f.sim.lan(), f.source_host).unwrap();
+            }
+            let t = Replies::new(&f, Fault::FailedTarget);
+            let since = f.sim.soap_log().len();
+            assert!(
+                f.handoff(&t, Duration::ZERO)
+                    .unwrap_err()
+                    .contains("ERROR_OCCURRED")
+            );
+            f.only_native_write(since);
+        }
     }
 }
