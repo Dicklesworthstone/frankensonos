@@ -15,25 +15,43 @@ const pending = () => {
 function fixture(options = {}) {
   let total = options.total ?? 260, revision = 'fixture-revision', playing = 2;
   const entries = new Map(), calls = [];
+  const zone = (options.zone || 'Listening room@S2').replace(/@(S1|S2)$/, '');
   const item = position => entries.get(position) || { position, title: `Piece ${position}`,
     creator: 'Test Ensemble', album: 'Fixture recording', uri: `test:entry:${position}` };
   function page(offset, limit) {
     const count = Math.min(limit, options.short ?? limit, Math.max(0, total - offset));
-    return { total, revision, playing, items: Array.from({ length: count }, (_, i) => item(offset + i + 1)) };
+    return { zone, total, revision, playing, items: Array.from({ length: count }, (_, i) => item(offset + i + 1)) };
+  }
+  // Synthetic daemon results: the phone consumes this DTO and never scans or
+  // normalizes queue metadata itself. Rust search tests own the native matcher.
+  const normalized = value => (value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/♭/g, ' flat ').replace(/♯/g, ' sharp ').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  function section(query) {
+    if (query.expected_revision !== revision) throw Object.assign(new Error('The queue changed.'), { code: 'queue_changed' });
+    const terms = normalized(query.q).split(/\s+/), items = [];
+    const start = query.offset, end = Math.min(total, start + (options.scanLimit ?? 9900));
+    let cursor = start;
+    while (cursor < end && items.length < query.limit) {
+      const row = item(++cursor), fields = [row.title, row.creator, row.album].map(normalized);
+      if (terms.every(term => fields.some(field => field.includes(term)))) items.push(row);
+    }
+    return { zone, query: query.q.trim(), total, revision, offset: start, examined: cursor - start,
+      next_offset: cursor < total ? cursor : null, complete: cursor === total, items };
   }
   const call = async (name, args) => {
     calls.push(plain([name, args]));
     if (options.intercept) {
-      const answer = options.intercept(name, args, calls.length, page);
+      const answer = options.intercept(name, args, calls.length, page, section);
       if (answer !== undefined) return answer;
     }
     if (name === 'queue') return page(args.query.offset, args.query.limit);
+    if (name === 'queueSearch') return section(args.query);
     if (name === 'queuePlay') return { done: 'Playing selected occurrence', changed: true };
     throw new Error('Unexpected mutation ' + name);
   };
   const control = Q.model({ zone: options.zone || 'Listening room@S2', call,
     changed: options.changed, current: options.current, blocked: options.blocked, execute: options.execute });
-  return { control, calls, entries, page, item,
+  return { control, calls, entries, page, item, section,
     setTotal: value => { total = value; }, setRevision: value => { revision = value; },
     setPlaying: value => { playing = value; } };
 }
@@ -51,7 +69,9 @@ test('finds off-page titles, artists and albums with all words and accent foldin
   assert.equal(result.complete, true); assert.equal(result.scanned, 260);
   assert.equal(result.query, 'ELODIE prelude'); assert.equal(result.running, false);
   assert.equal(Object.isFrozen(result), true); assert.equal(Object.isFrozen(result.matches[0]), true);
-  assert.deepEqual(f.calls.slice(1).map(([, a]) => [a.query.offset, a.query.limit]), [[0,100],[100,100],[200,60]]);
+  assert.deepEqual(f.calls.slice(1), [['queueSearch', { params: { room: 'Listening room@S2' },
+    query: { q: 'ELODIE prelude', offset: 0, limit: 200, expected_revision: 'fixture-revision' } }]]);
+  assert.equal(result.examined, 260); assert.equal(result.next_offset, null);
   assert.equal(f.control.state.offset, 0, 'search does not replace the displayed page');
   assert.equal(f.control.state.page.playing, 2);
 });
@@ -62,7 +82,29 @@ test('repeated tracks keep occurrence positions; missing metadata does not fabri
   f.entries.set(111, { position: 111, title: '', uri: 'test:Repeated music' });
   await f.control.load(); await f.control.search('repeated music');
   assert.deepEqual(plain(f.control.state.search.matches.map(i => i.position)), [7,108,207]);
-  assert.equal(f.calls.every(([name]) => name === 'queue'), true);
+  assert.equal(f.calls.every(([name]) => name === 'queue' || name === 'queueSearch'), true);
+});
+
+test('daemon musical and language normalization is used without filtering results again on the phone', async () => {
+  for (const [query, title] of [['d flat', 'Nocturne in D♭'], ['f sharp', 'Prelude in F♯'], ['strasse', 'Straße']]) {
+    const f = fixture({ intercept: (name, args, count, page) => name === 'queueSearch' ? {
+      zone: 'Listening room', query: args.query.q, revision: 'fixture-revision', total: 260,
+      offset: 0, examined: 260, complete: true,
+      items: [{ position: 146, title, uri: 'test:normalized-result' }],
+    } : undefined });
+    await f.control.load(); assert.equal(await f.control.search(query), true);
+    assert.deepEqual(plain(f.control.state.search.matches.map(row => [row.position, row.title])), [[146, title]]);
+    assert.equal(f.calls.length, 2); assert.equal(f.calls[1][1].query.q, query);
+  }
+});
+
+test('the shared query contract accepts the UTF-8 limit and trims only the transmitted query', async () => {
+  for (const query of ['a'.repeat(1024), 'é'.repeat(512), '漢'.repeat(341), '  piece 146  ']) {
+    const f = fixture(); await f.control.load();
+    assert.equal(await f.control.search(query), true);
+    assert.equal(f.calls.length, 2); assert.equal(f.calls[1][1].query.q, query.trim());
+    assert.equal(f.control.state.search.query, query.trim());
+  }
 });
 
 test('result navigation reads one current page then existing playback sends exact occurrence once', async () => {
@@ -76,7 +118,7 @@ test('result navigation reads one current page then existing playback sends exac
     assert.equal(f.control.state.offset, 125); assert.equal(f.control.state.found, 146);
     assert.deepEqual(f.calls.at(-1), ['queue', { params: { room: `Listening / room@${household}` }, query: { offset: 125, limit: 25 } }]);
     assert.equal(await f.control.play(146), true);
-    assert.deepEqual(f.calls.filter(([n]) => n !== 'queue'), [['queuePlay', { body: {
+    assert.deepEqual(f.calls.filter(([n]) => n !== 'queue' && n !== 'queueSearch'), [['queuePlay', { body: {
       zone: `Listening / room@${household}`, position: 146, expected_uri: 'test:duplicate', expected_revision: 'fixture-revision',
     } }]]);
   }
@@ -120,35 +162,38 @@ test('bounds results and explicitly continues after the last examined occurrence
   assert.equal(f.control.state.search.start, 0);
 });
 
-test('bounds scan requests separately from queue size and continues a no-match prefix', async () => {
+test('uses one shared search request per bounded section, including a no-match prefix', async () => {
   const f = fixture({ total: 10005 }); f.entries.set(10004, { ...f.item(10004), title: 'Beyond the prefix' });
   await f.control.load(); await f.control.search('beyond');
   const first = f.control.state.search;
-  assert.equal(f.calls.length, 101); assert.equal(first.scanned, 10000);
+  assert.equal(f.calls.length, 2); assert.equal(first.scanned, 9900); assert.equal(first.next_offset, 9900);
   assert.equal(first.complete, false); assert.equal(first.matches.length, 0);
   await f.control.search(first.query, first);
   assert.deepEqual(plain(f.control.state.search.matches.map(i => i.position)), [10004]);
   assert.equal(f.control.state.search.complete, true);
 });
 
-test('short coherent pages advance by actual count with the same finite request budget', async () => {
-  const f = fixture({ total: 110, short: 1 }); await f.control.load(); await f.control.search('unmatched');
+test('partial daemon coverage advances by its exact cursor without frontend page scans', async () => {
+  const f = fixture({ total: 110, scanLimit: 100 }); await f.control.load(); await f.control.search('unmatched');
   const first = f.control.state.search;
-  assert.equal(first.scanned, 100); assert.equal(first.complete, false); assert.equal(f.calls.length, 101);
+  assert.equal(first.scanned, 100); assert.equal(first.complete, false); assert.equal(f.calls.length, 2);
   await f.control.search(first.query, first);
-  assert.equal(f.control.state.search.complete, true); assert.equal(f.calls.length, 111);
+  assert.equal(f.control.state.search.complete, true); assert.equal(f.calls.length, 3);
+  assert.deepEqual(f.calls.at(-1), ['queueSearch', { params: { room: 'Listening room@S2' },
+    query: { q: 'unmatched', offset: 100, limit: 200, expected_revision: 'fixture-revision' } }]);
 });
 
 test('complete no-match and empty-queue searches are distinguished from limited searches', async () => {
   for (const total of [0, 11]) {
     const f = fixture({ total }); await f.control.load(); await f.control.search('absent');
     assert.equal(f.control.state.search.complete, true); assert.equal(f.control.state.search.scanned, total);
-    assert.equal(f.control.state.search.matches.length, 0); assert.equal(f.calls.length, total ? 2 : 1);
+    assert.equal(f.control.state.search.matches.length, 0); assert.equal(f.calls.length, 2);
   }
 });
 
 test('invalid or excessive queries make no requests and invalidate an earlier review', async () => {
-  for (const query of ['', '  ', null, undefined, 3, 'a'.repeat(257), Array(34).fill('word').join(' '), '\u0301']) {
+  for (const query of ['', '  ', null, undefined, 3, 'a'.repeat(1025), 'é'.repeat(513),
+    Array(34).fill('word').join(' '), '\u0301', 'word\nline', 'word\u007f', 'word\u0085', '!!!']) {
     const f = fixture(); await f.control.load(); f.control.select(1, true); f.control.reviewRemoval();
     const review = f.control.state.pending;
     assert.equal(await f.control.search(query), false); assert.equal(f.calls.length, 1);
@@ -161,11 +206,12 @@ test('legacy queues remain browsable without a mixed-revision search', async () 
   assert.equal(await f.control.search('piece'), false); assert.equal(f.calls.length, 1);
 });
 
-test('a mutation, new coordinator token or changed length between search pages discards the entire result', async () => {
-  for (const change of [p => ({ ...p, revision: 'other-coordinator' }), p => ({ ...p, total: p.total + 1 }), p => ({ ...p, revision: null })]) {
-    const f = fixture({ intercept: (name, args, count, page) => count === 3 ? change(page(args.query.offset, args.query.limit)) : undefined });
+test('a changed coordinator, revision or queue length discards the daemon search result', async () => {
+  for (const change of [p => ({ ...p, revision: 'other-coordinator' }), p => ({ ...p, total: p.total + 1 }),
+    p => ({ ...p, revision: null }), p => ({ ...p, zone: 'Other room' })]) {
+    const f = fixture({ intercept: (name, args, count, page, section) => name === 'queueSearch' ? change(section(args.query)) : undefined });
     await f.control.load(); assert.equal(await f.control.search('piece 9'), false);
-    assert.equal(f.control.state.search, null); assert.equal(f.control.state.stale, true); assert.equal(f.calls.length, 3);
+    assert.equal(f.control.state.search, null); assert.equal(f.control.state.stale, true); assert.equal(f.calls.length, 2);
   }
 });
 
@@ -179,12 +225,25 @@ test('contradictory visible or selected identities are rejected even with an unc
   }
 });
 
-test('malformed pages or metadata never publish an incomplete scan as usable results', async () => {
-  for (const change of [() => null, p => ({ ...p, items: [] }), p => ({ ...p, items: [{ ...p.items[0], position: 2 }] }),
-    p => ({ ...p, items: [{ ...p.items[0], title: {} }] }), p => ({ ...p, items: [{ ...p.items[0], uri: 42 }] }),
-    p => ({ ...p, items: [{ ...p.items[0], album: 'a'.repeat(16385) }] })]) {
-    const f = fixture({ intercept: (name, args, count, page) => count === 2 ? change(page(args.query.offset, args.query.limit)) : undefined });
-    await f.control.load(); assert.equal(await f.control.search('piece'), false);
+test('malformed coverage or metadata never publishes an incomplete scan as usable results', async () => {
+  const changes = [
+    () => null, p => ({ ...p, zone: '' }), p => ({ ...p, query: 'other query' }),
+    p => ({ ...p, offset: 1 }), p => ({ ...p, examined: -1 }), p => ({ ...p, examined: 0.5 }),
+    p => ({ ...p, examined: 0xffffffff }), p => ({ ...p, complete: true }),
+    p => ({ ...p, complete: 'false' }), p => ({ ...p, next_offset: 0 }), p => ({ ...p, next_offset: null }),
+    p => ({ ...p, items: {} }), p => ({ ...p, items: [...p.items, p.items[0]] }),
+    p => ({ ...p, items: [{ ...p.items[0], position: 0 }] }),
+    p => ({ ...p, items: [p.items[1], p.items[0]] }),
+    p => ({ ...p, items: [p.items[0], p.items[0]] }),
+    p => ({ ...p, items: [{ ...p.items[0], position: p.examined + 1 }] }),
+    p => ({ ...p, items: [{ ...p.items[0], title: {} }] }),
+    p => ({ ...p, items: [{ ...p.items[0], uri: 42 }] }),
+    p => ({ ...p, items: [{ ...p.items[0], album: 'a'.repeat(16385) }] }),
+    p => ({ ...p, items: [{ ...p.items[0], creator: 'é'.repeat(8193) }] }),
+  ];
+  for (const [number, change] of changes.entries()) {
+    const f = fixture({ intercept: (name, args, count, page, section) => name === 'queueSearch' ? change(section(args.query)) : undefined });
+    await f.control.load(); assert.equal(await f.control.search('piece'), false, 'case ' + number);
     assert.equal(f.control.state.search, null); assert.equal(f.calls.length, 2);
   }
 });
@@ -204,7 +263,7 @@ test('a result is rechecked for revision, length and exact URI before publishing
     const hit = f.control.state.search.matches[0]; change(f);
     assert.equal(await f.control.openMatch(hit), false);
     assert.equal(f.control.state.stale, true); assert.equal(f.control.state.search, null);
-    assert.equal(f.control.state.found, null); assert.equal(f.calls.every(([n]) => n === 'queue'), true);
+    assert.equal(f.control.state.found, null); assert.equal(f.calls.every(([n]) => n === 'queue' || n === 'queueSearch'), true);
   }
 });
 
@@ -223,7 +282,7 @@ test('a search uses one in-flight read and excludes paging, range capture and wr
   assert.equal(await f.control.selectRange(2, 3), false); assert.equal(await f.control.play(1), false);
   assert.equal(await f.control.add('test:source'), false); assert.equal(f.control.reviewRemoval(), false);
   assert.equal(await f.control.reconcile(), false); assert.equal(f.calls.length, 2);
-  wait.resolve(f.page(0, 100)); assert.equal(await searching, true);
+  wait.resolve(f.section({ q: 'piece 9', offset: 0, limit: 200, expected_revision: 'fixture-revision' })); assert.equal(await searching, true);
 });
 
 test('cancel, closure, backgrounding, loss of ownership and staleness prevent late publication and further reads', async () => {
@@ -238,7 +297,7 @@ test('cancel, closure, backgrounding, loss of ownership and staleness prevent la
     else f.control[event]();
     assert.equal(f.control.state.searching, true, 'outstanding read still owns admission');
     assert.equal(await f.control.load(), false); assert.equal(await f.control.search('piece'), false);
-    wait.resolve(f.page(0, 100)); assert.equal(await searching, false);
+    wait.resolve(f.section({ q: 'piece', offset: 0, limit: 200, expected_revision: 'fixture-revision' })); assert.equal(await searching, false);
     assert.equal(f.calls.length, 2); assert.equal(f.control.state.searching, false);
     assert.equal(f.control.state.search?.matches.length || 0, 0);
   }
@@ -248,19 +307,19 @@ test('cancel frees admission only after the old read drains, then a new query su
   const wait = pending(); const f = fixture({ intercept: (n, a, count) => count === 2 ? wait.promise : undefined });
   await f.control.load(); const searching = f.control.search('piece'); f.control.cancelSearch();
   assert.equal(await f.control.search('ensemble'), false);
-  wait.resolve(f.page(0, 100)); await searching;
+  wait.resolve(f.section({ q: 'piece', offset: 0, limit: 200, expected_revision: 'fixture-revision' })); await searching;
   assert.equal(await f.control.search('piece 148'), true);
   assert.equal(f.control.state.search.matches[0].position, 148);
 });
 
 test('failed reads retain an error hint and never automatically restart the search', async () => {
   const f = fixture({ intercept: (n, a, count) => {
-    if (count === 3) throw Object.assign(new Error('Player did not answer'), { hint: 'Check this room.' });
+    if (count === 2) throw Object.assign(new Error('Player did not answer'), { hint: 'Check this room.' });
   } });
   await f.control.load(); assert.equal(await f.control.search('piece 9'), false);
   assert.match(f.control.state.message, /Check this room/); assert.equal(f.control.state.search, null);
-  assert.equal(f.calls.length, 3); assert.equal(await f.control.search('piece'), false);
-  await f.control.load(); assert.equal(f.control.state.search, null); assert.equal(f.calls.length, 4);
+  assert.equal(f.calls.length, 2); assert.equal(await f.control.search('piece'), false);
+  await f.control.load(); assert.equal(f.control.state.search, null); assert.equal(f.calls.length, 3);
 });
 
 test('search cannot bypass an uncertain write, and explicit refresh consumes old results', async () => {
@@ -291,10 +350,13 @@ test('a real localhost HTTP exchange finds a later recording then plays its exis
     const url = new URL(req.url, 'http://localhost'); const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null;
-    seen.push({ method: req.method, path: url.pathname, body });
+    seen.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body });
     res.setHeader('Content-Type', 'application/json');
     if (req.method === 'GET' && decodeURIComponent(url.pathname) === `/zones/${zone}/queue`) {
       res.end(JSON.stringify(f.page(Number(url.searchParams.get('offset')), Number(url.searchParams.get('limit')))));
+    } else if (req.method === 'GET' && decodeURIComponent(url.pathname) === `/zones/${zone}/queue/search`) {
+      res.end(JSON.stringify(f.section({ q: url.searchParams.get('q'), offset: Number(url.searchParams.get('offset')),
+        limit: Number(url.searchParams.get('limit')), expected_revision: url.searchParams.get('expected_revision') })));
     } else if (req.method === 'POST' && url.pathname === '/queue/play') {
       res.end(JSON.stringify({ done: 'Selected queue occurrence is playing', changed: true }));
     } else { res.statusCode = 404; res.end('{}'); }
@@ -303,15 +365,19 @@ test('a real localhost HTTP exchange finds a later recording then plays its exis
   try {
     const base = `http://127.0.0.1:${server.address().port}`;
     const control = Q.model({ zone, call: async (route, args) => {
-      const url = route === 'queue' ? `${base}/zones/${encodeURIComponent(args.params.room)}/queue?${new URLSearchParams(args.query)}` : `${base}/queue/play`;
-      const response = await fetch(url, route === 'queue' ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args.body) });
+      const read = route === 'queue' || route === 'queueSearch';
+      const url = read ? `${base}/zones/${encodeURIComponent(args.params.room)}/queue${route === 'queueSearch' ? '/search' : ''}?${new URLSearchParams(args.query)}` : `${base}/queue/play`;
+      const response = await fetch(url, read ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args.body) });
       assert.equal(response.status, 200); return response.json();
     } });
     await control.load(); assert.equal(await control.search('evening prelude'), true);
     assert.equal(await control.openMatch(control.state.search.matches[0]), true);
     assert.equal(seen.every(r => r.method === 'GET'), true, 'search and opening are entirely read-only');
+    assert.equal(seen.length, 3, 'one page, one native search and one result page');
+    assert.deepEqual(seen[1], { method: 'GET', path: `/zones/${encodeURIComponent(zone)}/queue/search`,
+      query: { q: 'evening prelude', offset: '0', limit: '200', expected_revision: 'fixture-revision' }, body: null });
     assert.equal(await control.play(177), true);
-    assert.deepEqual(seen.filter(r => r.method === 'POST'), [{ method: 'POST', path: '/queue/play', body: {
+    assert.deepEqual(seen.filter(r => r.method === 'POST'), [{ method: 'POST', path: '/queue/play', query: {}, body: {
       zone, position: 177, expected_uri: 'test:entry:177', expected_revision: 'fixture-revision',
     } }]);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }

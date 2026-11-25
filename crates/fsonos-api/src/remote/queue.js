@@ -5,9 +5,25 @@ const QueueRemote = (() => {
   const PAGE_SIZE = 25;
   // Match the existing native move/remove request limit, never split a write.
   const MAX_SELECTION = 100;
-  // Each explicit search examines one bounded section. Continue is deliberate.
-  const SEARCH_PAGE = 100, SEARCH_REQUESTS = 100, SEARCH_MATCHES = 200;
-  const searchText = value => value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+  // One explicit search asks the daemon for one bounded section.
+  const SEARCH_MATCHES = 200;
+  const utf8Bytes = value => {
+    let count = 0;
+    for (const char of value) {
+      const point = char.codePointAt(0);
+      count += point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4;
+    }
+    return count;
+  };
+  const controlCharacters = /[\u0000-\u001f\u007f-\u009f]/u;
+  const searchQuery = value => {
+    if (typeof value !== 'string' || value.length > 1024 || utf8Bytes(value) > 1024
+        || controlCharacters.test(value)) return null;
+    const query = value.trim();
+    // Matching and normalization belong to the shared daemon search.
+    return query && query.split(/\s+/u).length <= 32
+      && /[\p{L}\p{N}♭♯]/u.test(query) ? query : null;
+  };
   const MAX_INDEX = 4294967295;
   const nonblank = (value) => typeof value === 'string' && value.trim() !== '';
   const identity = (value) => nonblank(value) && value !== 'NOT_IMPLEMENTED';
@@ -36,7 +52,45 @@ const QueueRemote = (() => {
       ? value.playing : null;
     // Older daemons can still be browsed, but never silently lose a precondition.
     return { total: value.total, items, playing,
+      ...(nonblank(value.zone) ? { zone: value.zone } : {}),
       revision: nonblank(value.revision) ? value.revision : null };
+  }
+
+  const sameItem = (a, b) => a && b && a.position === b.position && a.title === b.title
+    && a.creator === b.creator && a.album === b.album && (a.uri ?? null) === (b.uri ?? null);
+
+  function searchOf(value, page, query, offset, selectedItems) {
+    const end = offset + (value?.examined ?? NaN);
+    if (!value || !nonblank(value.zone) || (page.zone && value.zone !== page.zone)
+        || value.query !== query || value.revision !== page.revision || value.total !== page.total
+        || value.offset !== offset || !index(value.examined) || !index(end)
+        || offset > page.total || end > page.total || typeof value.complete !== 'boolean'
+        || value.complete !== (end === page.total)
+        || (value.complete ? value.next_offset != null : value.next_offset !== end || end <= offset)
+        || !Array.isArray(value.items) || value.items.length > SEARCH_MATCHES
+        || value.items.length > value.examined) {
+      throw new Error('The queue search response is incomplete or belongs to a different queue. Refresh and search again.');
+    }
+    let previous = offset;
+    const matches = value.items.map(row => {
+      if (!row || !index(row.position) || row.position <= previous || row.position > end
+          || typeof row.title !== 'string' || ['title', 'creator', 'album', 'uri'].some(key =>
+            row[key] != null && (typeof row[key] !== 'string' || row[key].length > 16384 || utf8Bytes(row[key]) > 16384))) {
+        throw new Error('The queue search positions or metadata are unreadable. Refresh and search again.');
+      }
+      previous = row.position;
+      const item = Object.freeze({ position: row.position, title: row.title, uri: row.uri ?? null,
+        creator: row.creator ?? '', album: row.album ?? '' });
+      const shown = page.items.find(entry => entry.position === item.position);
+      const selected = selectedItems.get(item.position);
+      if ((shown && !sameItem(shown, item)) || (selected && !sameItem(selected, item))) {
+        throw new Error('A search result disagrees with an observed queue entry. Refresh and search again.');
+      }
+      return item;
+    });
+    return Object.freeze({ query, revision: value.revision, total: value.total, start: offset,
+      scanned: end, examined: value.examined, next_offset: value.next_offset ?? null,
+      complete: value.complete, running: false, matches: Object.freeze(matches) });
   }
 
   /** One card owns one snapshot. Reads can supersede reads, never a write. */
@@ -238,56 +292,31 @@ const QueueRemote = (() => {
       if (continuation && (continuation !== state.search || continuation.complete
           || continuation.running || !sameQueue(continuation, page) || query !== continuation.query)) return false;
       state.pending = null; clearSearch();
-      const trimmed = typeof query === 'string' && query.length <= 1024 ? query.trim() : '';
-      const terms = trimmed && [...trimmed].length <= 256 ? searchText(trimmed).split(/\s+/).filter(Boolean) : [];
-      if (!terms.length || terms.length > 32) {
-        state.message = 'Search for 1–32 words, at most 256 characters, in titles, artists or albums.';
+      const trimmed = searchQuery(query);
+      if (!trimmed) {
+        state.message = 'Search for 1–32 words of a title, artist or album, at most 1024 bytes, without control characters.';
         publish(); return false;
       }
       state.query = trimmed; state.searching = true;
-      const version = ++epoch, start = continuation ? continuation.scanned : 0;
+      const version = ++epoch, start = continuation ? continuation.next_offset : 0;
       const valid = () => available() && epoch === version && !state.stale && state.page === page;
-      const matches = [];
-      let offset = start, requests = 0, flight;
-      const snapshot = running => Object.freeze({ query: trimmed, revision: page.revision, total: page.total,
-        start, scanned: offset, complete: offset === page.total, running,
-        matches: Object.freeze([...matches]) });
-      state.search = snapshot(true); state.message = 'Searching the observed queue…'; publish();
+      let flight;
+      state.search = Object.freeze({ query: trimmed, revision: page.revision, total: page.total,
+        start, scanned: start, examined: 0, next_offset: null, complete: false, running: true,
+        matches: Object.freeze([]) });
+      state.message = 'Searching the observed queue…'; publish();
       try {
-        while (valid() && offset < page.total && requests < SEARCH_REQUESTS && matches.length < SEARCH_MATCHES) {
-          const limit = Math.min(SEARCH_PAGE, page.total - offset);
-          flight = (async () => call('queue', { params: { room: zone }, query: { offset, limit } }))();
-          reads.add(flight); requests++;
-          let response;
-          try { response = await flight; } finally { reads.delete(flight); }
-          if (!valid()) return false;
-          const next = pageOf(response, offset, limit);
-          if (!sameQueue(page, next) || !agreesWithSelection(next)
-              || page.items.some(item => item.position > offset && item.position <= offset + next.items.length
-                && item.uri !== next.items[item.position - offset - 1].uri)) {
-            throw new Error('The queue changed during search. Refresh and search its new contents.');
-          }
-          for (const item of next.items) {
-            // Limit retained metadata as well as result count. Preserve exact
-            // renderer identity; search normalization is only for matching text.
-            if ([item.title, item.creator, item.album].some(value => value.length > 16384)
-                || (item.uri != null && (typeof item.uri !== 'string' || item.uri.length > 16384))) {
-              throw new Error('A search entry is unreadable or too large. Refresh before searching again.');
-            }
-            const words = searchText([item.title, item.creator, item.album].join(' '));
-            offset = item.position;
-            if (terms.every(term => words.includes(term))) matches.push(Object.freeze({ ...item }));
-            if (matches.length === SEARCH_MATCHES) break;
-          }
-          state.search = snapshot(true);
-          state.message = `Searched ${offset - start} entries; ${matches.length} matches so far. No queue command was sent.`;
-          publish();
-        }
         if (!valid()) return false;
-        state.search = snapshot(false);
-        state.message = offset === page.total
+        flight = (async () => call('queueSearch', { params: { room: zone },
+          query: { q: trimmed, offset: start, limit: SEARCH_MATCHES, expected_revision: page.revision } }))();
+        reads.add(flight);
+        let response;
+        try { response = await flight; } finally { reads.delete(flight); }
+        if (!valid()) return false;
+        state.search = searchOf(response, page, trimmed, start, selectedItems);
+        state.message = state.search.complete
           ? 'Search reached the end of the observed queue. Open a result to inspect its current page.'
-          : 'Search stopped at its result or read limit. Continue explicitly to examine the next section.';
+          : 'The daemon returned a bounded section. Continue explicitly to examine the next section.';
         return true;
       } catch (error) {
         if (valid()) {
@@ -919,7 +948,7 @@ const QueueRemote = (() => {
 
     function drawSearch(state, page, busy, untrusted) {
       const usable = Boolean(page.revision && !busy && !untrusted);
-      const query = el('input', { type: 'text', value: state.query, maxlength: 256,
+      const query = el('input', { type: 'text', value: state.query, maxlength: 1024,
         disabled: !usable, class: 'queue-source', 'data-focus': 'queue-search',
         'aria-label': 'Search queue titles, artists or albums', placeholder: 'Title, artist or album' });
       const run = () => { if (body.contains(query)) void control.search(state.query); };
@@ -988,5 +1017,5 @@ const QueueRemote = (() => {
     };
   }
 
-  return { model, panel, PAGE_SIZE, MAX_SELECTION, SEARCH_PAGE, SEARCH_REQUESTS, SEARCH_MATCHES };
+  return { model, panel, PAGE_SIZE, MAX_SELECTION, SEARCH_MATCHES };
 })();

@@ -15,6 +15,7 @@ const ROUTES = {
   art: ['GET', '/art'],
   favorites: ['GET', '/favorites'],
   queue: ['GET', '/zones/{room}/queue'],
+  queueSearch: ['GET', '/zones/{room}/queue/search'],
   queuePlay: ['POST', '/queue/play'],
   queueRemove: ['POST', '/queue/remove'],
   queueMove: ['POST', '/queue/move'],
@@ -58,8 +59,10 @@ const RequestRemote = (() => {
 
   function timeoutFor(method, where) {
     const pathname = where.split('?')[0];
-    // Spotify lookups can use a 45-second daemon budget, including token refresh.
-    if (method === 'GET') return pathname === '/spotify/search' ? 60000 : READ_TIMEOUT;
+    // Spotify uses a 45-second lookup budget. Native queue searches also need
+    // their 15-second scan budget plus in-flight reads and final consistency checks.
+    if (method === 'GET') return pathname === '/spotify/search'
+      || /^\/zones\/[^/]+\/queue\/search$/.test(pathname) ? 60000 : READ_TIMEOUT;
     // Queue expansion, scene fades and spoken announcements can legitimately
     // outlast ordinary controls. Do not interrupt them at a read's deadline.
     if (pathname === '/announce') return ANNOUNCE_TIMEOUT;

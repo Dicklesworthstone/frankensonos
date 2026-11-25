@@ -27,9 +27,26 @@ async function load(page, theme, total = 40) {
     window.fixture = { entries, calls: [], blocked: false, failRead: false };
     const call = async (route, args) => {
       fixture.calls.push([route, JSON.parse(JSON.stringify(args))]);
+      if (route === 'queueSearch') {
+        if (fixture.failRead) throw new Error('Fixture connection lost');
+        const { q: query, offset, limit, expected_revision: expected } = args.query;
+        if (expected !== revision || !Number.isInteger(offset) || offset < 0
+            || !Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error('Invalid queue search');
+        const terms = query.toLowerCase().trim().split(/\s+/), items = [];
+        const end = Math.min(entries.length, offset + 9900);
+        let cursor = offset;
+        while (cursor < end && items.length < limit) {
+          const item = entries[cursor++];
+          const text = [item.title, item.creator, item.album].join(' ').toLowerCase();
+          if (terms.every(term => text.includes(term))) items.push({ ...item, position: cursor });
+        }
+        return { zone: 'Listening room', query, total: entries.length, revision, offset,
+          examined: cursor - offset, next_offset: cursor < entries.length ? cursor : null,
+          complete: cursor >= entries.length, items };
+      }
       if (route === 'queue') {
         if (fixture.failRead) throw new Error('Fixture connection lost');
-        return { total: entries.length, revision, playing: 2,
+        return { zone: 'Listening room', total: entries.length, revision, playing: 2,
           items: entries.slice(args.query.offset, args.query.offset + args.query.limit)
             .map((item, n) => ({ ...item, position: args.query.offset + n + 1 })) };
       }
@@ -53,7 +70,7 @@ async function load(page, theme, total = 40) {
 }
 
 const control = (page, key) => page.locator(`[data-focus="${key}"]`);
-const posts = page => page.evaluate(() => fixture.calls.filter(([route]) => route !== 'queue'));
+const posts = page => page.evaluate(() => fixture.calls.filter(([route]) => !['queue', 'queueSearch'].includes(route)));
 const tool = (page, key) => page.locator(`[data-queue-tool="${key}"]`);
 const checkWidth = async page => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 async function capture(page, width, theme, state) {
@@ -97,6 +114,10 @@ test('queue interaction and disclosure browser matrix', {
         assert.equal(await page.evaluate(() => fixture.calls.length), initialCalls);
         await control(page, 'Search queue').click();
         await page.waitForSelector('[data-focus="Show position 30"]');
+        assert.deepEqual(await page.evaluate(() => fixture.calls.filter(([route]) => route === 'queueSearch')),
+          [['queueSearch', { params: { room: 'Listening room@S2' }, query: {
+            q: 'Recording 30', offset: 0, limit: 200, expected_revision: 'q:1',
+          } }]], 'search uses one revision-bound daemon request');
         assert.equal(await tool(page, 'search').getAttribute('open'), '');
         assert.match(await control(page, 'tool-search').textContent(), /1 match\b/);
         await checkWidth(page); await capture(page, width, theme, 'search');

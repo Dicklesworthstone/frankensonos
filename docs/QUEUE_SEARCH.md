@@ -2,8 +2,8 @@
 
 Open the group's **Queue**, then use **Find music in this queue**. Enter words
 from a title, artist or album and choose **Search queue** (or press Enter).
-Typing does not read the queue. Matching ignores case and accents, and every
-word must occur somewhere across those three metadata fields. It does not
+Typing does not read the queue. Matching folds case, common Latin accents and
+punctuation, and every word must occur somewhere across those three metadata fields. It does not
 search the Spotify catalog or add anything to the queue.
 
 Each result keeps its original position. Two copies of the same track remain
@@ -28,23 +28,37 @@ closing the queue, or receiving stale live-state evidence.
 
 ## Web remote search limits
 
-One search or continuation makes at most **100 sequential page reads**, each
-requesting no more than **100 entries**, and retains at most **200 matches**.
-The interface reports the exact position range examined. A small or empty
-result set is not called complete unless the end of the queue was reached.
+The phone remote and Listening Room use the daemon's shared native search.
+Each explicit search or continuation submits one bounded search request, so a
+phone on your tailnet does not fetch the queue page by page. The phone retains
+at most **200 matches** and the dashboard at most **50 matches** per section.
+Both report the exact position range examined. A small or empty result set is
+not called complete unless the daemon reached the end of the queue.
+
+The request carries the opened queue's revision, including for the first
+section. The client checks the returned query, revision, queue length, ordered
+occurrences and continuation coverage before displaying results. A result that
+contradicts an already observed occurrence requires a fresh queue read. Query
+text is bounded to 1024 UTF-8 bytes, and metadata fields to 16 KiB each.
+Matching is performed by the same implementation used by CLI and MCP search.
 
 **Search next section** continues after the last examined occurrence. It
 replaces the displayed result batch rather than retaining an ever-growing
 index. It never runs automatically, and does not skip the rest of a partially
 examined page. Starting a new search begins at position one. Large individual
-metadata fields are rejected instead of retained without bounds.
+metadata fields are rejected instead of retained without bounds. A section
+that finds no matches can still offer continuation after the last examined
+position; continuations never advance by the number of matches.
 
-**Cancel queue search** stops further reads and discards the unfinished result.
+**Cancel queue search** discards the unfinished result and prevents continuation.
 A request already in flight keeps the card's admission slot until its response
 settles; cancellation, closing or backgrounding the page cannot create a second
 overlapping scan. The search adds no timer, event stream or background polling.
 After an error or changed revision, explicitly refresh before searching again.
-Search never repeats a playback or queue mutation.
+Search never repeats a playback or queue mutation. Search reads have a
+60-second whole-request deadline, allowing the daemon's 15-second scan budget
+and final speaker checks to finish. Ordinary queue reads keep their shorter
+deadline, and read retries share the original search deadline.
 
 ## Search from the terminal or an agent
 
@@ -106,7 +120,7 @@ result array as a consecutive range for removal or movement.
 Run the model and navigation regressions with:
 
 ```sh
-node --test scripts/test-remote-queue-search.cjs scripts/test-remote-queue-navigation.cjs
+node --test scripts/test-remote-queue-search.cjs scripts/test-remote-queue-navigation.cjs scripts/test-remote-requests.cjs
 ```
 
 The search suite is part of the existing web queue CI step. Its localhost HTTP

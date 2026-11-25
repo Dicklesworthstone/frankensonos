@@ -1941,6 +1941,15 @@ Native iOS and macOS remotes (`apps/apple`) speak the same
 HTTP API over the tailnet; whether they are a first-class surface of this
 plan is the owner's open decision (bead 8hhv.13).
 
+Both browser remotes search the playing queue through the shared native
+`/zones/{room}/queue/search` endpoint. The phone submits one bounded request
+per explicit section instead of fetching every queue page over the tailnet.
+Results retain exact occurrences, duplicate tracks and raw examined coverage;
+continuation requires the same queue revision. The phone's search deadline
+allows the server's scan budget and final consistency checks to finish, while
+its existing lifecycle and command lane prevent late results or repeated
+mutations. See [Queue search](docs/QUEUE_SEARCH.md).
+
 Native queue and catalog changes also arrive through coordinator
 ContentDirectory subscriptions. A paused reorder or replacement with the same
 queue length emits `zone.state` with `queue_changed: true`; favorites and saved

@@ -166,6 +166,81 @@ test('the catalog deadline is restricted to GET on the exact search route', () =
   }
 });
 
+test('registered queue searches preserve encoded room names, query and revision', async () => {
+  const h = harness(async () => response(200, { items: [] }));
+  await h.call('queueSearch', { params: { room: 'Work @ Loft / A@House' },
+    query: { q: 'Prélude / A & B', offset: 101, limit: 200, expected_revision: 'q:/?&' } });
+  assert.equal(h.calls[0].where, '/zones/Work%20%40%20Loft%20%2F%20A%40House/queue/search'
+    + '?q=Pr%C3%A9lude+%2F+A+%26+B&offset=101&limit=200&expected_revision=q%3A%2F%3F%26');
+  assert.equal(h.calls[0].init.method, 'GET'); assert.equal(h.calls[0].init.body, undefined);
+  assert.equal(h.calls[0].init.credentials, 'same-origin'); assert.equal(h.calls[0].init.redirect, 'error');
+  assert.equal(h.calls.length, 1); assert.equal(h.time.pending, 0);
+});
+
+test('queue search can complete after scanning and final speaker validation exceed ordinary read time', async () => {
+  const waiting = deferred(), data = { query: 'evening', total: 200, offset: 0, examined: 200,
+    complete: true, revision: 'queue:one', items: [] };
+  const h = harness(async () => waiting.promise);
+  const result = observe(h.request('/zones/Den%40House/queue/search?q=evening&expected_revision=queue%3Aone', { method: 'GET' }));
+  await h.time.tick(45000);
+  assert.equal(result.settled, false); assert.equal(h.calls[0].init.signal.aborted, false);
+  waiting.resolve(response(200, data)); await result.done;
+  assert.equal(result.value.query, 'evening'); assert.equal(result.value.examined, 200);
+  assert.equal(h.calls.length, 1); assert.equal(h.time.pending, 0);
+  await h.time.tick(60000); assert.equal(h.calls[0].init.signal.aborted, false);
+});
+
+for (const stage of ['connection', 'body']) test(`queue search bounds a stalled ${stage} to sixty seconds`, async () => {
+  const waiting = deferred();
+  const h = harness(async () => stage === 'connection' ? waiting.promise
+    : response(200, null, { body: () => waiting.promise }));
+  const result = observe(h.request('/zones/Den%40House/queue/search?q=evening', { method: 'GET' }));
+  await h.time.tick(59999); assert.equal(result.settled, false);
+  await h.time.tick(1); assert.equal(result.settled, true);
+  assert.equal(result.error.code, 'REMOTE_READ_TIMEOUT'); assert.equal(result.error.uncertain, false);
+  assert.equal(h.calls[0].init.signal.aborted, true); assert.equal(h.calls.length, 1);
+  assert.equal(h.time.pending, 0);
+  waiting.resolve(stage === 'connection' ? response() : '{"query":"late"}'); await settle();
+  assert.equal(result.value, undefined); assert.equal(h.calls.length, 1);
+});
+
+test('a queue search can be cancelled while its extended read is still pending', async () => {
+  const waiting = deferred(), abort = new AbortController();
+  const h = harness(async () => waiting.promise);
+  const result = observe(h.request('/zones/Den%40House/queue/search?q=evening', { method: 'GET', signal: abort.signal }));
+  await h.time.tick(20000); assert.equal(result.settled, false);
+  abort.abort(); await result.done;
+  assert.equal(result.error.code, 'REMOTE_READ_CANCELLED'); assert.equal(h.calls[0].init.signal.aborted, true);
+  assert.equal(h.time.pending, 0);
+  waiting.resolve(response()); await h.time.tick(60000);
+  assert.equal(result.value, undefined); assert.equal(h.calls.length, 1);
+});
+
+test('queue search retries share the original sixty-second deadline', async () => {
+  const waiting = deferred();
+  const h = harness(async (_, __, attempt) => attempt === 1
+    ? response(503, { detail: 'busy' }, { headers: { 'retry-after': '30' } }) : waiting.promise);
+  const result = observe(h.request('/zones/Den%40House/queue/search?q=evening', { method: 'GET' }));
+  await h.time.tick(30000); assert.equal(h.calls.length, 2);
+  await h.time.tick(29999); assert.equal(result.settled, false);
+  await h.time.tick(1); assert.equal(result.error.code, 'REMOTE_READ_TIMEOUT');
+  assert.equal(result.error.uncertain, false); assert.equal(h.calls.length, 2); assert.equal(h.time.pending, 0);
+  waiting.resolve(response()); await settle(); assert.equal(result.value, undefined);
+});
+
+test('the queue-search deadline applies only to GET on one encoded-room search route', () => {
+  const { RequestRemote: r } = harness(async () => response());
+  for (const where of ['/zones/Den/queue/search', '/zones/Work%20%40%20Loft%2FA%40House/queue/search?q=evening']) {
+    assert.equal(r.timeoutFor('GET', where), 60000);
+    assert.equal(r.timeoutFor('POST', where), 120000);
+  }
+  for (const where of ['/zones/Den/queue', '/zones/Den/queue?search=true', '/zones//queue/search',
+    '/zones/Den/Other/queue/search', '/zones/Den/queue/searching?q=evening',
+    '/zones/Den/queue/search/', '/zones/Den/queue/search/extra?q=evening']) {
+    assert.equal(r.timeoutFor('GET', where), 15000);
+  }
+});
+
 test('normal success cancels its timer and never aborts a completed request later', async () => {
   const h = harness(async () => response());
   await h.request('/pause', { method: 'POST' });
