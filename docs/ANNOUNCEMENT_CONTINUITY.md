@@ -40,6 +40,12 @@ changes and pauses made in that continuing group during the clip therefore
 survive. Restoring its old snapshot is unnecessary: the controller does not
 clear, reconstruct, seek or restart the continuing queue.
 
+Native source metadata is compared by its DIDL meaning during capture and
+handback. Equivalent namespace prefixes, attribute ordering, entity spelling
+and indentation preserve continuity. Resource URLs, account descriptors and
+vendor-extension values must still match. The shared source-ownership proof
+uses the same comparison for retained or serialized queue-replacement targets.
+
 A changed group, missing or rebooted player, conflicting identity, newer
 source in a released target room, or a playback change during the handoff
 prevents subsequent restoration writes. The announcement report records the
@@ -69,9 +75,15 @@ localhost regressions for continued queue progress, duplicate occurrences,
 silent states, multiple partial groups, a bonded coordinator, live edits,
 rejected clip installation, lost/malformed native replies, refused or
 unapplied handoffs, delayed joins, regrouping, reboot and ownership changes
-during rejoin.
+during rejoin. Its metadata regressions also cover direct-source progress and
+native handback across harmless XML rewrites, and refusal when account,
+resource or vendor values change. `source_metadata_sim` covers retained proofs
+and playing or silent album replacement. The new Rust cases remain unexecuted
+locally: dependency builds exhausted storage and the executor restarted;
+formatting and static review completed.
 Run that target with:
 
 ```sh
 cargo test -p fsonos-core --test announce_continuity_sim
+cargo test -p fsonos-core --test source_metadata_sim
 ```

@@ -17,6 +17,9 @@ use std::time::Duration;
 const CLIP: &str = "http://192.0.2.250:3400/media/continuity.wav";
 const NEW: &str = "http://example.invalid/newer.mp3";
 
+#[path = "announce_continuity_sim/metadata.rs"]
+mod native_metadata;
+
 fn sim(s2: bool, pair: bool) -> SimHandle {
     let model = if s2 {
         SimModel::One

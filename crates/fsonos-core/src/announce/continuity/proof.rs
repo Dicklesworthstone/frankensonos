@@ -396,7 +396,11 @@ impl Playback {
             _ => false,
         };
         media.uri == expected_uri
-            && media.uri_metadata == self.media.uri_metadata
+            && (media.uri_metadata == self.media.uri_metadata
+                || fsonos_proto::didl::equivalent_metadata(
+                    &media.uri_metadata,
+                    &self.media.uri_metadata,
+                ))
             && media.tracks == self.media.tracks
             && state == self.state
             && position.track == self.position.track

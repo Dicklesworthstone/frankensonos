@@ -9,7 +9,7 @@ use std::net::IpAddr;
 
 /// An observed group, boot epoch and selected source. Retain this proof across
 /// slow source resolution and confirm it again before changing the speakers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Destination {
     members: Vec<String>,
     boot_seq: Option<u32>,
@@ -17,6 +17,22 @@ pub struct Destination {
     coordinator_host: Option<IpAddr>,
     uri: String,
     metadata: String,
+}
+
+impl PartialEq for Destination {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_group(other)
+            && self.uri == other.uri
+            && same_metadata(&self.metadata, &other.metadata)
+    }
+}
+
+impl Eq for Destination {}
+
+// Preserve identical opaque metadata, including an empty idle source, while
+// accepting a renderer's equivalent XML serialization of the same DIDL.
+fn same_metadata(left: &str, right: &str) -> bool {
+    left == right || fsonos_proto::didl::equivalent_metadata(left, right)
 }
 
 impl Destination {
@@ -119,7 +135,8 @@ impl Destination {
     /// Prove the requested renderer source, retaining account metadata when
     /// supplied. A track id alone cannot prove another household's envelope.
     pub(crate) fn has_source(&self, uri: &str, metadata: &str) -> bool {
-        self.uri == uri && (metadata.trim().is_empty() || self.metadata.trim() == metadata.trim())
+        self.uri == uri
+            && (metadata.trim().is_empty() || same_metadata(self.metadata.trim(), metadata.trim()))
     }
 
     /// The only source change authorized by loading this player's queue.

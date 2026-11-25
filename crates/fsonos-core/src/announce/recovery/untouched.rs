@@ -225,7 +225,8 @@ fn same_source(
             },
         ) => {
             uri == now_uri
-                && metadata == now_metadata
+                && (metadata == now_metadata
+                    || fsonos_proto::didl::equivalent_metadata(metadata, now_metadata))
                 && progresses(*position_secs, *now_position, state, elapsed)
         }
         _ => false,
