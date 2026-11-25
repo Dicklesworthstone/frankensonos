@@ -192,6 +192,15 @@ fn ip(household: &HouseholdState, player: &PlayerId) -> Result<IpAddr, CoreError
         .ok_or_else(|| CoreError::UnknownPlayer(player.0.clone()))
 }
 
+/// A renderer can reserialize its DIDL between reads without changing music.
+/// Keep the source URI, track count and every metadata value authoritative.
+fn same_media(before: &soap::MediaInfo, after: &soap::MediaInfo) -> bool {
+    before.tracks == after.tracks
+        && before.uri == after.uri
+        && (before.uri_metadata.trim() == after.uri_metadata.trim()
+            || fsonos_proto::didl::equivalent_metadata(&before.uri_metadata, &after.uri_metadata))
+}
+
 /// The coordinator's queue `UpdateID`: it changes whenever the queue does.
 fn queue_update_id<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<u32, CoreError> {
     Ok(content::browse(t, host, content::QUEUE, BrowseFlag::DirectChildren, 0, 1)?.update_id)

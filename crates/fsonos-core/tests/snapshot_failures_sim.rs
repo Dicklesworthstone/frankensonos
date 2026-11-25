@@ -254,3 +254,6 @@ fn a_normal_restore_still_resumes_the_saved_track_and_position() {
 
 #[path = "snapshot_failures_sim/source_recovery.rs"]
 mod source_recovery;
+
+#[path = "snapshot_failures_sim/metadata.rs"]
+mod metadata;

@@ -43,7 +43,8 @@ impl Target {
     fn matches(&self, media: &MediaInfo) -> bool {
         media.uri == self.uri
             && (self.metadata.trim().is_empty()
-                || media.uri_metadata.trim() == self.metadata.trim())
+                || media.uri_metadata.trim() == self.metadata.trim()
+                || fsonos_proto::didl::equivalent_metadata(&media.uri_metadata, &self.metadata))
     }
 
     fn queue_unchanged<T: Transport + ?Sized>(&self, t: &T, host: IpAddr) -> Result<(), CoreError> {
@@ -75,7 +76,6 @@ impl Target {
     }
 }
 
-#[derive(PartialEq, Eq)]
 struct Anchor {
     media: MediaInfo,
     track: u32,
@@ -85,6 +85,14 @@ struct Anchor {
 }
 
 impl Anchor {
+    fn agrees(&self, after: &Self) -> bool {
+        super::same_media(&self.media, &after.media)
+            && self.track == after.track
+            && self.track_uri == after.track_uri
+            && self.state == after.state
+            && self.members == after.members
+    }
+
     fn read<T: Transport + ?Sized>(
         t: &T,
         host: IpAddr,
@@ -152,7 +160,8 @@ pub(super) fn restore<T: Transport + ?Sized>(
             // This is a definite refusal, not an indeterminate write. Still,
             // retry only against the context the first attempt observed.
             let unchanged = target.queue_unchanged(t, host).is_ok()
-                && Anchor::read(t, host, &snap.coordinator).is_ok_and(|after| after == before)
+                && Anchor::read(t, host, &snap.coordinator)
+                    .is_ok_and(|after| before.agrees(&after))
                 && vet(op).is_ok_and(|approved| approved == *op);
             if !unchanged {
                 return Err(error);

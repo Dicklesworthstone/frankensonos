@@ -147,7 +147,7 @@ impl Playback {
     }
 
     fn agrees(&self, after: &Self, elapsed: Duration) -> bool {
-        self.media == after.media
+        super::same_media(&self.media, &after.media)
             && self.state == after.state
             && self.status == after.status
             && matches!(
