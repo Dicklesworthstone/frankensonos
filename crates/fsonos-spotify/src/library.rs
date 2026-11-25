@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) use self::coverage::Page;
 use crate::SpotifyError;
 use crate::classical::normalize;
-use crate::client::{Album, Endpoints, SavedAlbum, SavedTrack, SimplifiedTrack};
+use crate::client::{Album, Endpoints, SavedAlbum, SimplifiedTrack};
 
 mod albums;
 mod coverage;
@@ -325,15 +325,16 @@ impl LibraryRead {
                 })
             }
             Fetch::SavedTracks(url, total) => {
-                let page = Page::<SavedTrack>::read(body, &url, &self.endpoints, total, |next| {
-                    self.endpoints.saved_tracks(next)
-                })?;
-                self.items
-                    .extend(page.items.iter().filter_map(SavedTrack::library_item));
-                self.unavailable
-                    .extend(page.items.iter().filter_map(|saved| {
-                        saved.track.as_ref()?.unavailable_uri().map(str::to_owned)
-                    }));
+                let page = Page::<intake::SavedTrackEntry>::read(
+                    body,
+                    &url,
+                    &self.endpoints,
+                    total,
+                    |next| self.endpoints.saved_tracks(next),
+                )?;
+                for entry in page.items {
+                    self.saved_track(entry)?;
+                }
                 self.follow(page.next, |url| {
                     Fetch::SavedTracks(url, page.coverage.total)
                 })

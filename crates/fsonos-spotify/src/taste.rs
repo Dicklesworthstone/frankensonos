@@ -38,7 +38,9 @@ use asupersync::Cx;
 use fsonos_core::store::{CachedPlaylist, SpotifyLibraryOwner, Store};
 
 use crate::SpotifyError;
-use crate::client::{Artist, CursorPage, FullTrack, PlayHistory, TASTE_SCOPES, decode};
+use crate::client::{
+    Artist, CursorPage, FullTrack, PlayHistory, TASTE_SCOPES, decode, valid_track_uri,
+};
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
 use crate::session::Session;
@@ -642,12 +644,6 @@ impl Reader<'_> {
             }
         }
     }
-}
-
-fn valid_track_uri(uri: &str) -> bool {
-    uri.strip_prefix("spotify:track:").is_some_and(|id| {
-        !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
-    })
 }
 
 fn valid_taste_track(item: &LibraryItem) -> bool {

@@ -105,6 +105,57 @@ fn invalid_liked_track_flags_leave_the_last_good_library_intact() {
 }
 
 #[test]
+fn a_sparse_liked_track_denial_can_finish_a_refresh_but_a_missing_envelope_cannot() {
+    let server = Server::new();
+    server.set(
+        "/v1/me/tracks",
+        page(
+            vec![json!({"track": track(0)}), json!({"track": track(1)})],
+            0,
+            None,
+        ),
+    );
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut store = MemStore::default();
+        let mut session = server.session(&cx, "");
+        sync_library(&mut session, &cx, &mut store).await.unwrap();
+        let before = store.library().unwrap();
+        let owner = store.spotify_library_owner().unwrap();
+
+        let denied = json!({"track": {"uri": "spotify:track:TestTrack1", "is_playable": false}});
+        server.set(
+            "/v1/me/tracks",
+            page(
+                vec![json!({"track": track(2)}), denied.clone(), json!({})],
+                0,
+                None,
+            ),
+        );
+        let error = sync_library(&mut session, &cx, &mut store)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, crate::SpotifyError::Decode(_)));
+        assert_eq!(store.library().unwrap(), before);
+        assert_eq!(store.spotify_library_owner().unwrap(), owner);
+
+        server.set(
+            "/v1/me/tracks",
+            page(
+                vec![json!({"track": track(2)}), denied, json!({"track": null})],
+                0,
+                None,
+            ),
+        );
+        let refreshed = sync_library(&mut session, &cx, &mut store).await.unwrap();
+        assert_eq!((refreshed.tracks, refreshed.retired), (1, 2));
+        let pool = works_from_store(&store).unwrap();
+        assert!(pool.work_of("spotify:track:TestTrack2").is_some());
+        assert!(pool.work_of("spotify:track:TestTrack1").is_none());
+    });
+}
+
+#[test]
 fn invalid_playlist_flags_preserve_complete_metadata_and_replacement_snapshots() {
     let server = Server::new();
     server.set("/v1/me/playlists", page(vec![playlist(0, true)], 0, None));

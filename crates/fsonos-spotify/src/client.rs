@@ -948,36 +948,7 @@ impl PlaylistItem {
     /// no authority to retire previously accepted music.
     pub(crate) fn unavailable_uri(&self) -> Option<&str> {
         let value = self.item.as_ref().or(self.track.as_ref())?;
-        if value
-            .get("type")
-            .is_some_and(|kind| kind.as_str() != Some("track"))
-            || value
-                .get("is_local")
-                .is_some_and(|local| local.as_bool() != Some(false))
-        {
-            return None;
-        }
-        let is_playable = match value.get("is_playable") {
-            None | Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::Bool(flag)) => Some(*flag),
-            _ => return None,
-        };
-        let restrictions = value.get("restrictions");
-        let album = value.get("album");
-        let album_restrictions = album.and_then(|album| album.get("restrictions"));
-        if ![restrictions, album, album_restrictions]
-            .into_iter()
-            .all(valid_availability_object)
-        {
-            return None;
-        }
-        unavailable_uri(
-            value.get("uri")?.as_str()?,
-            false,
-            is_playable,
-            restrictions.and_then(serde_json::Value::as_object),
-            album_restrictions.and_then(serde_json::Value::as_object),
-        )
+        unavailable_track_uri(value)
     }
 
     /// The entry's track as a library item of `origin`; `None` for an
@@ -1302,6 +1273,12 @@ pub(crate) fn renderable(
     uri.starts_with("spotify:track:") && !is_local && is_playable != Some(false) && !restricted
 }
 
+pub(crate) fn valid_track_uri(uri: &str) -> bool {
+    uri.strip_prefix("spotify:track:").is_some_and(|id| {
+        !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    })
+}
+
 /// A concrete provider denial for one canonical track, not a missing entry or
 /// a decode failure. Keep identities bounded before retaining negative evidence.
 pub(crate) fn unavailable_uri<'a>(
@@ -1326,10 +1303,42 @@ pub(crate) fn unavailable_uri<'a>(
     }
     (!is_local
         && (is_playable == Some(false) || restrictions.is_some() || album_restrictions.is_some())
-        && uri.strip_prefix("spotify:track:").is_some_and(|id| {
-            !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
-        }))
+        && valid_track_uri(uri))
     .then_some(uri)
+}
+
+/// A denial in a sparse track object may omit normal display metadata.
+pub(crate) fn unavailable_track_uri(value: &serde_json::Value) -> Option<&str> {
+    if value
+        .get("type")
+        .is_some_and(|kind| kind.as_str() != Some("track"))
+        || value
+            .get("is_local")
+            .is_some_and(|local| local.as_bool() != Some(false))
+    {
+        return None;
+    }
+    let is_playable = match value.get("is_playable") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Bool(flag)) => Some(*flag),
+        _ => return None,
+    };
+    let restrictions = value.get("restrictions");
+    let album = value.get("album");
+    let album_restrictions = album.and_then(|album| album.get("restrictions"));
+    if ![restrictions, album, album_restrictions]
+        .into_iter()
+        .all(valid_availability_object)
+    {
+        return None;
+    }
+    unavailable_uri(
+        value.get("uri")?.as_str()?,
+        false,
+        is_playable,
+        restrictions.and_then(serde_json::Value::as_object),
+        album_restrictions.and_then(serde_json::Value::as_object),
+    )
 }
 
 /// Absent optional metadata differs from a field with an invalid shape.

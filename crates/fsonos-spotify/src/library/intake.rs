@@ -2,9 +2,13 @@
 //! links must stay on their own collection and move forwards; finite budgets
 //! also stop servers that keep inventing new page URLs indefinitely.
 
-use super::{Fetch, LibraryRead};
+use super::{Fetch, LibraryRead, Origin};
 use crate::SpotifyError;
-use crate::client::{Endpoints, parse_query};
+use crate::client::{
+    Endpoints, FullTrack, parse_query, unavailable_track_uri, unix_seconds, valid_track_uri,
+};
+use serde::Deserialize;
+use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
 
 pub(super) const PAGE_BUDGET: usize = 20_000;
@@ -55,7 +59,46 @@ pub(super) fn check_route(endpoints: &Endpoints, fetch: &Fetch) -> Result<(), Sp
     Ok(())
 }
 
+/// A null track explicitly marks a gap. A missing field means the provider
+/// did not return the expected saved-track envelope and cannot prove removal.
+#[derive(Deserialize)]
+pub(super) struct SavedTrackEntry {
+    added_at: Option<String>,
+    track: Value,
+}
+
 impl LibraryRead {
+    pub(super) fn saved_track(&mut self, entry: SavedTrackEntry) -> Result<(), SpotifyError> {
+        let value = entry.track;
+        if value.is_null() || value.get("is_local").and_then(Value::as_bool) == Some(true) {
+            return Ok(());
+        }
+        let uri = value.get("uri").and_then(Value::as_str).unwrap_or_default();
+        if !valid_track_uri(uri)
+            || value
+                .get("type")
+                .is_some_and(|kind| kind.as_str() != Some("track"))
+            || value.get("id").is_some_and(|id| {
+                !id.is_null() && id.as_str() != uri.strip_prefix("spotify:track:")
+            })
+        {
+            return Err(invalid(
+                "saved track has an invalid or inconsistent identity",
+            ));
+        }
+        if let Some(denied) = unavailable_track_uri(&value) {
+            self.unavailable.push(denied.to_owned());
+            return Ok(());
+        }
+        let track: FullTrack = serde_json::from_value(value)
+            .map_err(|error| invalid(&format!("saved track: {error}")))?;
+        let item = track
+            .library_item(Origin::LikedTrack, unix_seconds(entry.added_at.as_deref()))
+            .ok_or_else(|| invalid("saved track has malformed availability metadata"))?;
+        self.items.push(item);
+        Ok(())
+    }
+
     pub(super) fn ingest_atomic(&mut self, body: &[u8]) -> Result<(), SpotifyError> {
         if self.pages >= PAGE_BUDGET {
             return Err(invalid("library read exceeded its page budget"));
@@ -150,6 +193,69 @@ mod tests {
         read.ingest(&liked(1, None)).unwrap();
         assert!(read.next_url().is_none());
         assert_eq!(read.into_items().len(), 1);
+    }
+
+    #[test]
+    fn liked_tracks_accept_sparse_denials_and_keep_explicit_gaps_in_page_coverage() {
+        let mut read = tracks_read();
+        let page = json!({
+            "items": [
+                { "track": null },
+                { "track": { "is_local": true } },
+                { "track": { "uri": "spotify:track:Removed", "is_playable": false } },
+                { "track": { "uri": "spotify:track:Restricted", "restrictions": {"reason": "market"} } },
+                { "track": { "uri": "spotify:track:RestrictedAlbum", "album": {"restrictions": {}} } },
+                { "track": track(1), "added_at": "1970-01-01T00:01:00Z" }
+            ],
+            "offset": 0, "total": 7, "next": null
+        });
+        read.ingest(&serde_json::to_vec(&page).unwrap()).unwrap();
+        assert_eq!(
+            read.next_url(),
+            Some(Endpoints::default().saved_tracks(6).as_str())
+        );
+        assert_eq!(read.items.len(), 1);
+        assert_eq!(read.items[0].added_at, Some(60));
+        assert_eq!(read.items[0].origin, Origin::LikedTrack);
+        assert_eq!(
+            read.unavailable,
+            [
+                "spotify:track:Removed",
+                "spotify:track:Restricted",
+                "spotify:track:RestrictedAlbum"
+            ]
+        );
+        let last = json!({ "items": [{"track": track(2)}], "offset": 6, "total": 7, "next": null });
+        read.ingest(&serde_json::to_vec(&last).unwrap()).unwrap();
+        assert!(read.next_url().is_none());
+        assert_eq!(read.items.len(), 2);
+    }
+
+    #[test]
+    fn malformed_liked_rows_never_consume_the_page_or_publish_a_partial_denial() {
+        let mut read = tracks_read();
+        let pending = read.next_url().unwrap().to_owned();
+        for invalid in [
+            json!({}),
+            json!({"track": {}}),
+            json!({"track": {"uri": "spotify:track:NoFlag", "name": "Unknown", "album": {"name": "Album"}}}),
+            json!({"track": {"uri": "spotify:track:Bad", "is_playable": "false"}}),
+            json!({"track": {"uri": "spotify:track:Bad", "is_playable": false, "album": {"restrictions": "bad"}}}),
+            json!({"track": {"uri": "spotify:track:Bad", "restrictions": {"reason": 42}}}),
+            json!({"track": {"uri": "spotify:track:First", "id": "Second", "is_playable": false}}),
+        ] {
+            let body = json!({"items": [
+                {"track": track(1)},
+                {"track": {"uri": "spotify:track:Removed", "is_playable": false}},
+                invalid
+            ], "next": null});
+            assert!(read.ingest(&serde_json::to_vec(&body).unwrap()).is_err());
+            assert_eq!(read.next_url(), Some(pending.as_str()));
+            assert!(read.items.is_empty() && read.unavailable.is_empty());
+        }
+        read.ingest(&liked(2, None)).unwrap();
+        assert!(read.next_url().is_none());
+        assert_eq!(read.items[0].source_uri, "spotify:track:TestRead2");
     }
 
     #[test]
