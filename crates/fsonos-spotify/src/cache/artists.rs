@@ -1,6 +1,7 @@
 //! Complete a finite artist-sampling cohort without rereading saved music.
 //! Samples and the remaining backlog publish in one account/receipt-fenced
-//! transaction. A background pass never retires existing music.
+//! transaction. Explicit provider denials retire only those named tracks; a
+//! missing track or a failed artist read never retires unrelated music.
 
 use super::{ArtistContinuation, LibrarySyncDetailed, playlists, sync_notes, to_entry};
 use crate::SpotifyError;
@@ -124,12 +125,19 @@ async fn sample_cohort<S: Store + ?Sized>(
     if !verify_identity(session, cx, store, owner, raw, state, read).await? {
         return Ok(());
     }
+    if read.unavailable_overflow {
+        return Err(SpotifyError::Decode(
+            "unavailable-track evidence exceeded its 10,000-identity limit; artist sampling was not published".into(),
+        ));
+    }
+    let mut unavailable: Vec<_> = read.unavailable.iter().cloned().collect();
+    unavailable.sort_unstable();
     progress.accepted(&samples.successful, samples.last_attempted.as_deref());
     let mut tracks = samples.tracks;
     progress.weigh(&mut tracks);
     let entries = prepare_entries(store, &tracks);
     let fence = progress.publication(raw)?;
-    if store.publish_spotify_artist_continuation(owner, &fence, &entries)? {
+    if store.publish_spotify_artist_continuation(owner, &fence, &entries, &unavailable)? {
         *state = progress.report(owner, now());
         state.attempted = read.artist_reads;
     } else {

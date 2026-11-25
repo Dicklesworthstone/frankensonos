@@ -92,10 +92,17 @@ new selections.
 A fresh playable observation accepted by a full refresh can restore the track.
 Its absence from a response cannot. Reused playlist pages, cached taste fallback,
 album-cache refreshes and additive background readers retain prior exclusions
-instead of treating older positive metadata as new permission. Run the normal
-library refresh to reconcile newly changed availability; independent background
-readers do not publish availability changes on their own. A change to the
+instead of treating older positive metadata as new permission. A change to the
 accepted Spotify account clears the previous account's exclusions.
+
+Background artist sampling also publishes fresh explicit denials, including a
+pass that returns no playable tracks. The denials, accepted music and exact
+cohort receipt commit together under the current account. A negative-only change
+advances the catalog revision, so a warmed DJ pool stops selecting that track
+without waiting for a full library refresh. A newer full refresh or account
+change rejects an older in-flight artist result. Background positive metadata
+cannot clear an exclusion; that still requires a fresh playable observation
+accepted by a full refresh.
 
 Saved-library checkpoints include unavailable identities in their page proofs.
 Version 2 checkpoints verify those identities when resuming; an older private

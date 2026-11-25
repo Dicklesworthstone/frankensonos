@@ -558,13 +558,17 @@ pub struct SpotifyPlaylistPublicationFence {
 /// Additive playlist evidence, never a replacement snapshot of the library.
 /// Entries must be playable taste rows supported by these observations. Active
 /// library rows retain their metadata and provenance; only a stronger taste
-/// weight may be merged. A full read alone can retire current candidates.
+/// weight may be merged. Only a full read retires candidates by absence; fresh
+/// unavailable observations can immediately retire their DJ eligibility.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SpotifyPlaylistPublication {
     pub expected_directory: Option<String>,
     pub directory: Option<String>,
     pub playlists: Option<Vec<(String, String)>>,
     pub entries: Vec<LibraryEntry>,
+    /// Fresh denials from these unpublished observations. Additive reads never
+    /// clear accepted denials, even when their metadata includes the track.
+    pub unavailable: Vec<String>,
     pub observations: Vec<SpotifyPlaylistPublicationItem>,
 }
 
@@ -664,13 +668,15 @@ pub trait Store {
     /// artist receipt still match. Only candidate Taste rows may be supplied.
     /// Existing active rows retain their metadata and any stronger weight;
     /// no unrelated candidate, playlist or listening evidence is retired.
-    /// The new finite-cohort receipt commits atomically with the merged rows.
+    /// Fresh denials take effect before merging and cannot be cleared here.
+    /// The new finite-cohort receipt commits atomically with rows and denials.
     /// Receipt-only progress does not change the public catalog revision.
     fn publish_spotify_artist_continuation(
         &mut self,
         owner: &SpotifyLibraryOwner,
         fence: &SpotifyArtistDiscoveryFence,
         entries: &[LibraryEntry],
+        unavailable: &[String],
     ) -> Result<bool, StoreError>;
 
     /// Private essential-read progress for a verified incoming account, bound
@@ -764,8 +770,9 @@ pub trait Store {
     /// Add validated playlist candidates while preserving the current library.
     /// All ownership, directory and per-playlist receipts must still match.
     /// Contents retention, candidate/weight changes and proof acknowledgement
-    /// commit together; a mismatch or error changes none of them. No candidate
-    /// is retired, and a partial observation cannot replace complete contents.
+    /// commit together; a mismatch or error changes none of them. Fresh denials
+    /// retire DJ eligibility without clearing prior denials or unrelated rows;
+    /// a partial observation cannot replace complete contents.
     fn publish_spotify_playlist_continuation(
         &mut self,
         owner: &SpotifyLibraryOwner,
@@ -1237,22 +1244,16 @@ fn validate_spotify_library_progress(
     Ok(())
 }
 
-fn validate_spotify_availability(availability: &SpotifyAvailability) -> Result<(), StoreError> {
-    if availability
-        .available
-        .len()
-        .saturating_add(availability.unavailable.len())
-        > MAX_SPOTIFY_AVAILABILITY_ENTRIES
-    {
+fn validate_spotify_availability(
+    available: &[String],
+    unavailable: &[String],
+) -> Result<(), StoreError> {
+    if available.len().saturating_add(unavailable.len()) > MAX_SPOTIFY_AVAILABILITY_ENTRIES {
         return Err(StoreError::Backend(
             "Spotify availability evidence is too large".into(),
         ));
     }
-    for uri in availability
-        .available
-        .iter()
-        .chain(&availability.unavailable)
-    {
+    for uri in available.iter().chain(unavailable) {
         if !uri.strip_prefix("spotify:track:").is_some_and(|id| {
             !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
         }) {
@@ -1289,8 +1290,10 @@ fn validate_spotify_artist_publication(
     owner: &SpotifyLibraryOwner,
     fence: &SpotifyArtistDiscoveryFence,
     entries: &[LibraryEntry],
+    unavailable: &[String],
 ) -> Result<(), StoreError> {
     validate_spotify_artist_discovery(owner, fence.expected.as_deref(), Some(&fence.progress))?;
+    validate_spotify_availability(&[], unavailable)?;
     if fence.progress.is_empty() || fence.expected.as_deref() == Some(fence.progress.as_str()) {
         return Err(StoreError::Backend(
             "artist continuation needs a new nonempty publication receipt".into(),
@@ -1440,6 +1443,17 @@ fn validate_spotify_playlist_publication(
         publication.directory.as_deref(),
         &publication.observations,
     )?;
+    validate_spotify_availability(&[], &publication.unavailable)?;
+    if !publication.unavailable.is_empty()
+        && !publication
+            .observations
+            .iter()
+            .any(|observation| observation.expected_progress != observation.applied_progress)
+    {
+        return Err(StoreError::Backend(
+            "playlist availability needs an unpublished observation receipt".into(),
+        ));
+    }
     let supported: BTreeSet<_> = publication
         .observations
         .iter()
@@ -1537,19 +1551,17 @@ impl MemStore {
 
     fn apply_spotify_availability(
         &mut self,
-        availability: Option<&SpotifyAvailability>,
+        available: &[String],
+        denied: &[String],
     ) -> Result<bool, StoreError> {
-        let Some(availability) = availability else {
-            return Ok(false);
-        };
-        if availability.available.is_empty() && availability.unavailable.is_empty() {
+        if available.is_empty() && denied.is_empty() {
             return Ok(false);
         }
         let mut unavailable = self.spotify_unavailable.clone();
-        for uri in &availability.available {
+        for uri in available {
             unavailable.remove(uri);
         }
-        unavailable.extend(availability.unavailable.iter().cloned());
+        unavailable.extend(denied.iter().cloned());
         if unavailable.len() > MAX_SPOTIFY_AVAILABILITY_ENTRIES {
             return Err(StoreError::Backend(
                 "retained Spotify availability evidence is too large".into(),
@@ -1809,14 +1821,16 @@ impl Store for MemStore {
         owner: &SpotifyLibraryOwner,
         fence: &SpotifyArtistDiscoveryFence,
         entries: &[LibraryEntry],
+        unavailable: &[String],
     ) -> Result<bool, StoreError> {
-        validate_spotify_artist_publication(owner, fence, entries)?;
+        validate_spotify_artist_publication(owner, fence, entries, unavailable)?;
         if self.spotify_library_owner.as_ref() != Some(owner)
             || self.spotify_artist_discovery(owner)?.as_deref() != fence.expected.as_deref()
         {
             return Ok(false);
         }
-        let changed = self.merge_playlist_library(entries);
+        let mut changed = self.apply_spotify_availability(&[], unavailable)?;
+        changed |= self.merge_playlist_library(entries);
         self.artist_discovery.insert(
             owner.owner_id.clone(),
             (owner.generation, fence.progress.clone()),
@@ -1972,7 +1986,7 @@ impl Store for MemStore {
     ) -> Result<bool, StoreError> {
         validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
         if let Some(availability) = availability {
-            validate_spotify_availability(availability)?;
+            validate_spotify_availability(&availability.available, &availability.unavailable)?;
         }
         // No validation may fail after the in-memory projections begin changing.
         for observation in contents {
@@ -2006,7 +2020,11 @@ impl Store for MemStore {
         if self.library_progress_for(&owner.owner_id, Some(owner)) != Some(expected) {
             return Ok(false);
         }
-        let availability_changed = self.apply_spotify_availability(availability)?;
+        let availability_changed = if let Some(availability) = availability {
+            self.apply_spotify_availability(&availability.available, &availability.unavailable)?
+        } else {
+            false
+        };
         let revision = self.catalog_revision;
         if !self.publish_spotify_library(owner, entries, playlists, contents, heard)? {
             return Ok(false);
@@ -2040,7 +2058,8 @@ impl Store for MemStore {
         ) {
             return Ok(false);
         }
-        let mut changed = self.merge_playlist_library(&publication.entries);
+        let mut changed = self.apply_spotify_availability(&[], &publication.unavailable)?;
+        changed |= self.merge_playlist_library(&publication.entries);
         if let Some(playlists) = &publication.playlists {
             changed |= self.replace_playlists(playlists);
         }

@@ -72,6 +72,7 @@ fn publication(entries: Vec<LibraryEntry>) -> SpotifyPlaylistPublication {
             applied_progress: APPLIED.into(),
         }],
         entries,
+        unavailable: Vec::new(),
     }
 }
 

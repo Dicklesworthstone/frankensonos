@@ -164,9 +164,10 @@ impl Store for SharedStore<'_> {
         owner: &SpotifyLibraryOwner,
         fence: &SpotifyArtistDiscoveryFence,
         entries: &[LibraryEntry],
+        unavailable: &[String],
     ) -> Result<bool, StoreError> {
         self.lock()
-            .publish_spotify_artist_continuation(owner, fence, entries)
+            .publish_spotify_artist_continuation(owner, fence, entries, unavailable)
     }
 
     fn spotify_library_progress(

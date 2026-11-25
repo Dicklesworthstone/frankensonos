@@ -801,20 +801,18 @@ fn retire_unavailable_library(connection: &AsyncConnection) -> Result<usize, Fra
 
 fn write_spotify_availability(
     connection: &AsyncConnection,
-    availability: Option<&SpotifyAvailability>,
+    available: &[String],
+    unavailable: &[String],
 ) -> Result<bool, FrankenError> {
-    let Some(availability) = availability else {
-        return Ok(false);
-    };
-    if availability.available.is_empty() && availability.unavailable.is_empty() {
+    if available.is_empty() && unavailable.is_empty() {
         return Ok(false);
     }
     let previous = read_spotify_unavailable(connection)?;
     let mut retained = previous.clone();
-    for uri in &availability.available {
+    for uri in available {
         retained.remove(uri);
     }
-    retained.extend(availability.unavailable.iter().cloned());
+    retained.extend(unavailable.iter().cloned());
     if retained.len() > super::MAX_SPOTIFY_AVAILABILITY_ENTRIES {
         return Err(FrankenError::Internal(
             "retained Spotify availability evidence is too large".into(),
@@ -1606,15 +1604,17 @@ impl Store for SqliteStore {
         owner: &SpotifyLibraryOwner,
         fence: &SpotifyArtistDiscoveryFence,
         entries: &[LibraryEntry],
+        unavailable: &[String],
     ) -> Result<bool, StoreError> {
-        super::validate_spotify_artist_publication(owner, fence, entries)?;
+        super::validate_spotify_artist_publication(owner, fence, entries, unavailable)?;
         self.in_transaction(|connection| {
             if read_spotify_owner(connection)?.as_ref() != Some(owner)
                 || read_artist_discovery(connection, owner)?.as_deref() != fence.expected.as_deref()
             {
                 return Ok(false);
             }
-            let changed = merge_playlist_library(connection, entries)?;
+            let mut changed = write_spotify_availability(connection, &[], unavailable)?;
+            changed |= merge_playlist_library(connection, entries)?;
             write_artist_discovery(connection, owner, &fence.progress)?;
             if changed {
                 bump_library_catalog_revision(connection)?;
@@ -1720,7 +1720,10 @@ impl Store for SqliteStore {
     ) -> Result<bool, StoreError> {
         super::validate_spotify_library_progress(&owner.owner_id, Some(expected), None)?;
         if let Some(availability) = availability {
-            super::validate_spotify_availability(availability)?;
+            super::validate_spotify_availability(
+                &availability.available,
+                &availability.unavailable,
+            )?;
         }
         if let Some(fence) = artist_fence {
             super::validate_spotify_artist_discovery(
@@ -1761,7 +1764,15 @@ impl Store for SqliteStore {
             {
                 return Ok(false);
             }
-            let mut changed = write_spotify_availability(connection, availability)?;
+            let mut changed = if let Some(availability) = availability {
+                write_spotify_availability(
+                    connection,
+                    &availability.available,
+                    &availability.unavailable,
+                )?
+            } else {
+                false
+            };
             changed |= write_spotify_library(connection, &projection)?;
             if let Some(fence) = playlist_fence {
                 write_playlist_evidence(
@@ -1801,7 +1812,8 @@ impl Store for SqliteStore {
             )? {
                 return Ok(false);
             }
-            let mut changed = merge_playlist_library(connection, &publication.entries)?;
+            let mut changed = write_spotify_availability(connection, &[], &publication.unavailable)?;
+            changed |= merge_playlist_library(connection, &publication.entries)?;
             changed |= write_spotify_library(connection, &projection)?;
             changed |= write_playlist_observations(connection, &publication.observations)?;
             write_playlist_evidence(

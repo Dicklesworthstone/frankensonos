@@ -85,6 +85,7 @@ fn prepare_competing_window(
             playlists: None,
             entries,
             observations: fence.observations,
+            unavailable: Vec::new(),
         },
     )
 }

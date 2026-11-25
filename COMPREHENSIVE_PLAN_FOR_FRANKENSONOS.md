@@ -723,9 +723,11 @@ their standing preferences on every surface and in the daemon. What is on
   publication cannot. Recording boundaries are selected before unavailable
   movements are removed, and a known missing movement keeps a work partial.
   Changed evidence invalidates the warmed DJ pool through its catalog receipt;
-  account changes retire the prior account's exclusions. Dedicated background
-  readers preserve accepted exclusions; new availability observations become
-  authoritative through the next accepted full refresh. See
+  account changes retire the prior account's exclusions. Background artist
+  sampling also publishes fresh explicit denials in the same transaction as
+  its music and exact cohort receipt. Negative-only changes invalidate the
+  warmed DJ pool; a newer full refresh or account rejects an older result.
+  Background positives still cannot clear an exclusion. See
   [Spotify read recovery](docs/SPOTIFY_READ_RECOVERY.md#availability-survives-restarts).
 - The library cache records, per track, whether it is a DJ candidate, its
   genres, release year, explicit flag and taste weight (migration 7), and

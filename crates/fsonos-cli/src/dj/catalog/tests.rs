@@ -120,7 +120,7 @@ impl Store for ObservedStore {
         fn upsert_library(&mut self, entries: &[LibraryEntry]) -> Result<(), StoreError>;
         fn spotify_unavailable_tracks(&self) -> Result<HashSet<String>, StoreError>;
         fn spotify_artist_discovery(&self, owner: &SpotifyLibraryOwner) -> Result<Option<String>, StoreError>;
-        fn publish_spotify_artist_continuation(&mut self, owner: &SpotifyLibraryOwner, fence: &SpotifyArtistDiscoveryFence, entries: &[LibraryEntry]) -> Result<bool, StoreError>;
+        fn publish_spotify_artist_continuation(&mut self, owner: &SpotifyLibraryOwner, fence: &SpotifyArtistDiscoveryFence, entries: &[LibraryEntry], unavailable: &[String]) -> Result<bool, StoreError>;
         fn spotify_library_progress(&self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>) -> Result<Option<String>, StoreError>;
         fn save_spotify_library_progress(&mut self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>, expected: Option<&str>, progress: &str) -> Result<bool, StoreError>;
         fn adopt_spotify_library_from_progress(&mut self, incoming_id: &str, base: Option<&SpotifyLibraryOwner>, expected: &str) -> Result<Option<(SpotifyLibraryOwner, bool)>, StoreError>;
@@ -284,6 +284,51 @@ fn accepted_availability_changes_retire_cached_selection_and_allow_fresh_recover
             "a retained plan must obey the newly published availability"
         );
     }
+}
+
+#[test]
+fn background_artist_denial_retires_warm_and_cold_selection_without_new_tracks() {
+    let (mut store, mut state) = fixture();
+    let owner = store.spotify_library_owner().unwrap().unwrap();
+    let uri = song(1).source_uri;
+    let fence = SpotifyArtistDiscoveryFence {
+        expected: None,
+        progress: "completed background batch".into(),
+    };
+    assert!(state.plan_is_current(&store, None).unwrap());
+    assert!(
+        store
+            .publish_spotify_artist_continuation(
+                &owner,
+                &fence,
+                &[],
+                std::slice::from_ref(&uri),
+            )
+            .unwrap()
+    );
+    assert!(
+        !state.plan_is_current(&store, None).unwrap(),
+        "negative-only publication must retire the warmed selection"
+    );
+    state.refresh(&store, None, 1).unwrap();
+    assert!(state.pool.is_empty());
+    assert!(state.pool.work_of(&uri).is_none());
+
+    let mut restarted = State::default();
+    restarted.reload(&store, None, 2).unwrap();
+    assert!(restarted.pool.is_empty());
+    assert!(
+        !store
+            .publish_spotify_artist_continuation(
+                &owner,
+                &fence,
+                &[],
+                std::slice::from_ref(&uri),
+            )
+            .unwrap(),
+        "an already consumed cohort cannot publish again"
+    );
+    assert!(state.plan_is_current(&store, None).unwrap());
 }
 
 #[test]

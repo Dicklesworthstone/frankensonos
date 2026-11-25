@@ -16,6 +16,137 @@ async fn pending(
         .unwrap()
 }
 
+#[test]
+fn background_artist_denials_survive_restart_and_only_a_full_read_can_clear_them() {
+    let server = Server::new();
+    populate(&server, 51);
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let file = server.data.join("artist-background-availability.db");
+        let mut store = SqliteStore::open(&file).unwrap();
+        let first = full(&server, &cx, &mut store).await;
+        let uri = "spotify:track:TestTrack50";
+        let mut prior = store.library().unwrap()[0].clone();
+        prior.track.source_uri = uri.into();
+        prior.artist_id = Some(id(50));
+        store.upsert_library(std::slice::from_ref(&prior)).unwrap();
+        let before = store.library_catalog_revision().unwrap();
+        let mut denied = song(50);
+        denied["restrictions"] = json!({ "reason": "market" });
+        server.set(
+            &format!("/v1/artists/{}/top-tracks", id(50)),
+            json!({ "tracks": [denied] }),
+        );
+
+        // An empty playable sample cannot retire an artist's other music,
+        // but its explicit track denial is still authoritative evidence.
+        let result = pending(&server, &cx, &mut store, Some(&first.artist_samples)).await;
+        assert_eq!(result.artist_samples.pending, 1);
+        assert_eq!(
+            store.spotify_unavailable_tracks().unwrap(),
+            std::collections::HashSet::from([uri.into()])
+        );
+        assert_ne!(store.library_catalog_revision().unwrap(), before);
+        assert!(pool_from_store(&store).unwrap().get(uri).is_none());
+        assert!(
+            pool_from_store(&store)
+                .unwrap()
+                .get("spotify:track:TestTrack0")
+                .is_some()
+        );
+        let row = store
+            .library()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.track.source_uri == uri)
+            .unwrap();
+        assert_eq!(row.track, prior.track);
+        assert!(!row.is_candidate());
+        store.close().unwrap();
+
+        let mut store = SqliteStore::open(&file).unwrap();
+        assert!(pool_from_store(&store).unwrap().get(uri).is_none());
+        server.set(
+            &format!("/v1/artists/{}/top-tracks", id(50)),
+            json!({ "tracks": [song(50)] }),
+        );
+        let complete = pending(&server, &cx, &mut store, Some(&result.artist_samples)).await;
+        assert_eq!(complete.artist_samples.pending, 0);
+        assert!(
+            pool_from_store(&store).unwrap().get(uri).is_none(),
+            "additive samples cannot clear accepted denials"
+        );
+        server.set(
+            "/v1/me/tracks",
+            page(vec![json!({ "track": song(50) })], 0, None),
+        );
+        full(&server, &cx, &mut store).await;
+        assert!(store.spotify_unavailable_tracks().unwrap().is_empty());
+        assert!(pool_from_store(&store).unwrap().get(uri).is_some());
+        store.close().unwrap();
+    });
+}
+
+#[test]
+fn background_artist_denials_wait_for_the_closing_identity_and_exact_receipt() {
+    for changed_account in [false, true] {
+        let server = Server::new();
+        populate(&server, 51);
+        runtime().block_on(async {
+            let cx = Cx::current().unwrap();
+            let file = server.data.join("artist-availability-race.db");
+            let mut store = SqliteStore::open(&file).unwrap();
+            let first = full(&server, &cx, &mut store).await;
+            let mut denied = song(0);
+            denied["is_playable"] = json!(false);
+            let route = format!("/v1/artists/{}/top-tracks", id(50));
+            server.set(&route, json!({ "tracks": [denied, song(50)] }));
+            let other_file = file.clone();
+            server.state.lock().unwrap().before_response = Some((
+                route,
+                Box::new(move || {
+                    let mut other = SqliteStore::open(&other_file).unwrap();
+                    if changed_account {
+                        other.adopt_spotify_library_owner("different-owner").unwrap();
+                        other.adopt_spotify_library_owner(OWNER).unwrap();
+                    } else {
+                        let owner = other.spotify_library_owner().unwrap().unwrap();
+                        let raw = receipt(&other);
+                        let mut body: Value = serde_json::from_str(&raw).unwrap();
+                        body["publication"] = json!("newer-availability-reader");
+                        assert!(
+                            other
+                                .publish_spotify_artist_continuation(
+                                    &owner,
+                                    &SpotifyArtistDiscoveryFence {
+                                        expected: Some(raw),
+                                        progress: body.to_string(),
+                                    },
+                                    &[],
+                                    &[],
+                                )
+                                .unwrap()
+                        );
+                    }
+                    other.close().unwrap();
+                }),
+            ));
+            let result = pending(&server, &cx, &mut store, Some(&first.artist_samples)).await;
+            assert!(result.artist_samples.requires_refresh);
+            assert!(store.spotify_unavailable_tracks().unwrap().is_empty());
+            if !changed_account {
+                assert!(
+                    pool_from_store(&store)
+                        .unwrap()
+                        .get("spotify:track:TestTrack0")
+                        .is_some()
+                );
+            }
+            store.close().unwrap();
+        });
+    }
+}
+
 fn personal_reads(server: &Server) -> [usize; 4] {
     [
         server.calls("/v1/me/albums").len(),
@@ -339,6 +470,7 @@ fn a_competing_receipt_keeps_the_backlog_and_candidates_until_a_fresh_pass() {
                                 progress: body.to_string(),
                             },
                             &[],
+                            &[],
                         )
                         .unwrap()
                 );
@@ -383,6 +515,7 @@ fn legacy_cursors_wait_for_a_full_refresh_without_guessing_a_backlog() {
                         })
                         .to_string(),
                     },
+                    &[],
                     &[],
                 )
                 .unwrap()

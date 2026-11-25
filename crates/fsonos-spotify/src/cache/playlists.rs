@@ -185,6 +185,7 @@ pub(super) fn publish_playlist_read<S: Store + ?Sized>(
         playlists: taste.playlists.clone(),
         entries,
         observations: fence.observations,
+        unavailable: Vec::new(),
     };
     if store.publish_spotify_playlist_continuation(owner, &publication)? {
         taste.directory = directory;

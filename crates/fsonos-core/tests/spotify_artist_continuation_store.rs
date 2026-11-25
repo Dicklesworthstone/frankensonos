@@ -45,7 +45,7 @@ fn publish(
     entries: &[LibraryEntry],
 ) -> bool {
     store
-        .publish_spotify_artist_continuation(owner, &fence(expected, progress), entries)
+        .publish_spotify_artist_continuation(owner, &fence(expected, progress), entries, &[])
         .unwrap()
 }
 
@@ -273,6 +273,7 @@ fn reject_invalid(store: &mut dyn Store) {
                     &owner,
                     &fence(Some(&large_cohort), unchanged),
                     &[sample("Unfenced", 1100)],
+                    &[],
                 )
                 .is_err()
         );
@@ -307,6 +308,7 @@ fn reject_invalid(store: &mut dyn Store) {
                     &owner,
                     &fence(Some(&large_cohort), "invalid"),
                     &entries,
+                    &[],
                 )
                 .is_err()
         );
@@ -323,6 +325,7 @@ fn reject_invalid(store: &mut dyn Store) {
             .publish_spotify_artist_continuation(
                 &owner,
                 &fence(Some(&large_cohort), &too_large),
+                &[],
                 &[],
             )
             .is_err()
@@ -425,6 +428,7 @@ fn sqlite_failure_after_the_candidate_and_receipt_writes_rolls_both_back() {
                 &owner,
                 &fence(Some("first"), "rejected"),
                 &[sample("First", 1400), sample("Rejected", 1100)],
+                &[],
             )
             .is_err()
     );
