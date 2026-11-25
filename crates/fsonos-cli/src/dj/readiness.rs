@@ -9,7 +9,6 @@ use super::{
 use chrono::{Datelike, Timelike};
 use fsonos_core::clock::Clock;
 use fsonos_core::store::Store;
-use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
 use fsonos_types::PlayerId;
 
 pub(super) fn direction(
@@ -67,7 +66,7 @@ fn check_plan(
     let context = context(candidate, store, at.coordinator, steer, clock)?;
     // Feedback and listening change without changing the catalog receipt.
     // Refresh the former here; start_ready reads current history itself.
-    let feedback = FeedbackModel::load(&StoreFeedback(store), context.now).ok();
+    let feedback = super::feedback::read(store, context.now)?;
     if let Some(receipt) = &candidate.catalog {
         receipt.confirm(store)?;
     }
@@ -83,7 +82,7 @@ fn check_plan(
     let feed = state.feeds.get(at.coordinator).unwrap_or(&fresh);
     feed.start_ready(
         &speakers(at),
-        plan(&candidate.pool, feedback.as_ref(), &context, &elsewhere),
+        plan(&candidate.pool, Some(&feedback), &context, &elsewhere),
         store,
     )
     .map_err(failure)

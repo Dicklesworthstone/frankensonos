@@ -49,7 +49,7 @@ use fsonos_core::{CoreError, control};
 use fsonos_spotify::cache::works_from_store;
 use fsonos_spotify::dj::{DjConfig, PlayRecord, WorkPool};
 use fsonos_spotify::feed::{FeedError, Planning, QueueFeed, QueuedWork, RecoveryNotice, Speakers};
-use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
+use fsonos_spotify::feedback::FeedbackModel;
 use fsonos_spotify::steer::{DjSession, Moods, Steer, steering};
 use fsonos_types::PlayerId;
 use std::collections::{HashMap, HashSet};
@@ -246,6 +246,8 @@ struct State {
     /// The accepted account and public catalog used to build the pool.
     catalog: Option<catalog::Receipt>,
     feedback: Option<FeedbackModel>,
+    /// A failed read must not turn learned exclusions into feedback-free picks.
+    feedback_failure: Option<feedback::Unavailable>,
     moods: Moods,
     /// What each group is hearing, for early skips and full listens.
     listening: HashMap<PlayerId, feedback::Listening>,
@@ -302,13 +304,21 @@ impl State {
         moods_file: Option<&PathBuf>,
         now: i64,
     ) -> Result<Self, Failure> {
+        let feedback = feedback::read(store, now)?;
+        Self::read_plan_with_feedback(store, moods_file, feedback)
+    }
+
+    fn read_plan_with_feedback(
+        store: &dyn Store,
+        moods_file: Option<&PathBuf>,
+        feedback: FeedbackModel,
+    ) -> Result<Self, Failure> {
         let inputs = plan_inputs(moods_file);
         let catalog = catalog::Receipt::read(store, moods_file.and_then(|path| path.parent()))?;
         let mut next = Self {
             pool: works_from_store(store)
                 .map_err(|e| Failure::new(ErrorCode::Internal, format!("the DJ's pool: {e}")))?,
-            // Feedback only weights the picks; without it the DJ still plays.
-            feedback: FeedbackModel::load(&StoreFeedback(store), now).ok(),
+            feedback: Some(feedback),
             moods: read_moods(moods_file)?,
             ..Self::default()
         };
@@ -332,7 +342,16 @@ impl State {
     ) -> Result<(), Failure> {
         let candidate = self
             .check_catalog(store)
-            .and_then(|()| Self::read_plan(store, moods_file, now));
+            .and_then(|()| self.refresh_feedback(store, now))
+            .and_then(|()| {
+                Self::read_plan_with_feedback(
+                    store,
+                    moods_file,
+                    self.feedback
+                        .clone()
+                        .expect("a successful feedback read installs its model"),
+                )
+            });
         self.plan_check_at = Some(Instant::now() + PLAN_CHECK);
         match candidate {
             Ok(next) => {
@@ -371,8 +390,7 @@ impl State {
     ) -> Result<(), Failure> {
         self.check_catalog(store)?;
         if self.planned && self.plan_inputs == Some(plan_inputs(moods_file)) {
-            // Feedback only weights the picks; without it the DJ still plays.
-            self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
+            self.refresh_feedback(store, now)?;
             // A publication can race the feedback read just as it can a full
             // rebuild. Reuse needs the same ending catalog confirmation.
             self.check_catalog(store)?;
@@ -1110,7 +1128,15 @@ impl DjEngine for SpotifyDj {
             &initial
         };
         let (steering, problem) = match dj_view::steering_of(store, moods, at.coordinator, clock) {
-            Ok(steering) => (steering, state.problems.get(at.coordinator).cloned()),
+            Ok(steering) => (
+                steering,
+                state
+                    .feeds
+                    .get(at.coordinator)
+                    .filter(|feed| feed.is_active())
+                    .and_then(|_| state.feedback_problem())
+                    .or_else(|| state.problems.get(at.coordinator).cloned()),
+            ),
             Err(error) => (
                 DjSteeringDto {
                     source: "unavailable".into(),
@@ -1352,6 +1378,12 @@ impl DjEngine for SpotifyDj {
         {
             tracing::warn!(detail = %f.detail, "the DJ's selection plan could not be rebuilt; retry pending");
         }
+        if !state.feedback_ready(store, clock.now().timestamp(), checked_at) {
+            if let Some(listening) = state.listening.get_mut(at.coordinator) {
+                listening.interrupt();
+            }
+            return;
+        }
         if state
             .refill_retries
             .get(at.coordinator)
@@ -1456,7 +1488,7 @@ impl DjEngine for SpotifyDj {
             listening.interrupt();
         }
         // An early skip or a full listen, as the movement heard ends.
-        if observe_listening
+        let recorded_feedback = observe_listening
             && feed.accepted_playback()
             && feedback::implicit(
                 listening.entry(at.coordinator.clone()).or_default(),
@@ -1466,11 +1498,7 @@ impl DjEngine for SpotifyDj {
                 playback,
                 clock.elapsed_secs(),
                 cx.now,
-            )
-        {
-            // From the DJ's next pick on.
-            *feedback = FeedbackModel::load(&StoreFeedback(&*store), cx.now).ok();
-        }
+            );
         if !feed.is_active() {
             // The owner cleared or replaced the queue: the DJ steps aside.
             problems.entry(at.coordinator.clone()).or_insert_with(|| {
@@ -1479,6 +1507,11 @@ impl DjEngine for SpotifyDj {
             feeds.remove(at.coordinator);
             refill_retries.remove(at.coordinator);
             listening.remove(at.coordinator);
+        }
+        if recorded_feedback {
+            // A recorded signal is durable. If its readback fails, new picks
+            // wait for a bounded retry instead of discarding all exclusions.
+            let _ = state.refresh_feedback(store, cx.now);
         }
         self.save(&mut state);
     }

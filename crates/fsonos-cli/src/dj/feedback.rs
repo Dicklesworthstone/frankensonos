@@ -30,6 +30,66 @@ use crate::remote::Daemon;
 
 mod attribution;
 
+pub(super) struct Unavailable {
+    failure: Failure,
+    retry_at: Instant,
+}
+
+/// Feedback includes whole-work exclusions, not only optional score weights.
+/// A failed read is distinct from a successful read with no saved signals.
+pub(super) fn read(store: &dyn Store, now: i64) -> Result<FeedbackModel, Failure> {
+    FeedbackModel::load(&StoreFeedback(store), now).map_err(|error| {
+        Failure::new(
+            ErrorCode::Internal,
+            format!("the DJ's feedback could not be read: {error}"),
+        )
+        .with_hint("New selections wait until feedback can be read; queued music and DJ stop remain available.")
+    })
+}
+
+impl State {
+    pub(super) fn refresh_feedback(&mut self, store: &dyn Store, now: i64) -> Result<(), Failure> {
+        match read(store, now) {
+            Ok(model) => {
+                self.feedback = Some(model);
+                self.feedback_failure = None;
+                Ok(())
+            }
+            Err(failure) => {
+                tracing::warn!(detail = %failure.detail, "DJ selections await readable feedback");
+                self.feedback_failure = Some(Unavailable {
+                    failure: failure.clone(),
+                    retry_at: Instant::now() + super::PLAN_RETRY,
+                });
+                Err(failure)
+            }
+        }
+    }
+
+    pub(super) fn feedback_ready(
+        &mut self,
+        store: &dyn Store,
+        now: i64,
+        checked_at: Instant,
+    ) -> bool {
+        match &self.feedback_failure {
+            None => true,
+            Some(failure) if checked_at < failure.retry_at => false,
+            Some(_) => self.refresh_feedback(store, now).is_ok(),
+        }
+    }
+
+    pub(super) fn feedback_problem(&self) -> Option<String> {
+        self.feedback_failure.as_ref().map(|unavailable| {
+            format!(
+                "The DJ is waiting to select more music: {}; it retries in at most {} s",
+                unavailable.failure.detail,
+                super::PLAN_RETRY.as_secs(),
+            )
+        })
+    }
+}
+
 /// The `spotify:track:<id>` a speaker's track URI plays, if it plays one.
 #[must_use]
 pub fn source_of(track_uri: &str) -> Option<String> {
@@ -379,7 +439,7 @@ pub(super) fn explicit(
     };
     record(store, &work, signal, now).map_err(store_failure)?;
     // From the DJ's next pick on.
-    state.feedback = FeedbackModel::load(&StoreFeedback(&*store), now).ok();
+    let awaiting_feedback = state.refresh_feedback(store, now).is_err();
     let name = format!("{}: {}", work.composer, work.title);
     // What the signal also reaches: a classical work's composer and
     // performer, a song's artist and album (`FeedbackSignal::about`).
@@ -388,13 +448,16 @@ pub(super) fn explicit(
     } else {
         "its artist and its album"
     };
-    let done = match feedback {
+    let mut done = match feedback {
         DjFeedback::Like => format!("noted that you like {name}: the DJ favors it, {also}"),
         DjFeedback::Dislike => format!(
             "noted that you dislike {name}: the DJ plays it, {also} less (a second dislike \
              keeps the work out for 180 days)"
         ),
     };
+    if awaiting_feedback {
+        done.push_str("; your feedback was saved, and new selections wait until it can be read");
+    }
     Ok(DjFeedbackDto {
         zone: room,
         work: name,

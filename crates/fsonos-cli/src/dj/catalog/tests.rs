@@ -22,6 +22,8 @@ struct ObservedStore {
     library_reads: Cell<usize>,
     feedback_reads: Cell<usize>,
     fail_library: Cell<bool>,
+    fail_feedback: Cell<bool>,
+    fail_feedback_after_record: Cell<bool>,
     fail_receipt: Cell<bool>,
     revision_supported: Cell<bool>,
     publish_while_reading: Cell<bool>,
@@ -63,6 +65,9 @@ impl Store for ObservedStore {
 
     fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError> {
         self.feedback_reads.set(self.feedback_reads.get() + 1);
+        if self.fail_feedback.get() {
+            return Err(StoreError::Backend("injected feedback read failure".into()));
+        }
         let feedback = self.inner.borrow().feedback_between(window)?;
         if self.publish_while_reading_feedback.replace(false) {
             let mut inner = self.inner.borrow_mut();
@@ -71,6 +76,14 @@ impl Store for ObservedStore {
                 .map_err(|error| StoreError::Backend(error.to_string()))?;
         }
         Ok(feedback)
+    }
+
+    fn record_feedback(&mut self, feedback: &Feedback) -> Result<(), StoreError> {
+        self.inner.borrow_mut().record_feedback(feedback)?;
+        if self.fail_feedback_after_record.replace(false) {
+            self.fail_feedback.set(true);
+        }
+        Ok(())
     }
 
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError> {
@@ -138,7 +151,6 @@ impl Store for ObservedStore {
         fn dj_session(&self, coordinator: &str) -> Result<Option<DjSession>, StoreError>;
         fn dj_sessions(&self) -> Result<Vec<DjSession>, StoreError>;
         fn delete_dj_session(&mut self, coordinator: &str) -> Result<(), StoreError>;
-        fn record_feedback(&mut self, feedback: &Feedback) -> Result<(), StoreError>;
         fn feedback( &self, key: FeedbackKey<'_>, window: Range<i64>, ) -> Result<Vec<Feedback>, StoreError>;
         fn save_album_tracks( &mut self, album_uri: &str, tracks: &[AlbumTrack], fetched_at: i64, ) -> Result<(), StoreError>;
         fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError>;
@@ -201,6 +213,7 @@ fn fixture() -> (ObservedStore, State) {
     (store, state)
 }
 
+mod feedback_failures;
 mod genres;
 
 #[test]
@@ -298,12 +311,7 @@ fn background_artist_denial_retires_warm_and_cold_selection_without_new_tracks()
     assert!(state.plan_is_current(&store, None).unwrap());
     assert!(
         store
-            .publish_spotify_artist_continuation(
-                &owner,
-                &fence,
-                &[],
-                std::slice::from_ref(&uri),
-            )
+            .publish_spotify_artist_continuation(&owner, &fence, &[], std::slice::from_ref(&uri),)
             .unwrap()
     );
     assert!(
@@ -319,12 +327,7 @@ fn background_artist_denial_retires_warm_and_cold_selection_without_new_tracks()
     assert!(restarted.pool.is_empty());
     assert!(
         !store
-            .publish_spotify_artist_continuation(
-                &owner,
-                &fence,
-                &[],
-                std::slice::from_ref(&uri),
-            )
+            .publish_spotify_artist_continuation(&owner, &fence, &[], std::slice::from_ref(&uri),)
             .unwrap(),
         "an already consumed cohort cannot publish again"
     );
