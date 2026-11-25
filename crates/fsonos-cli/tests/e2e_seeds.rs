@@ -10,6 +10,7 @@
 //!   directory, is read by default: `zones` finds both households.
 //! * With that file gone, the players that survey found, remembered in the
 //!   store, are tried when nothing else finds any: `zones` finds them again.
+//! * Discovering one household by seed still finds the other from its remembered players.
 
 mod e2e;
 
@@ -114,6 +115,33 @@ fn speakers_are_found_where_ssdp_never_answers() {
         "cli",
         "with the seed file gone, zones finds the players the last survey found",
         run.ok() && zones(&run) == 4,
+        format!("{run:?}"),
+    );
+
+    let one_seed = s.sim_handle().unwrap().player("Kitchen").unwrap().ip;
+    std::fs::write(
+        data.join("seeds.toml"),
+        format!("players = [\"{one_seed}\"]\n"),
+    )
+    .expect("seed only the S1 household");
+    let run = s.cli_without(
+        "partial-discover",
+        &["--direct", "--routes", &quiet_routes, "discover", "--json"],
+        &no_seeds,
+    );
+    let discovery: Value = serde_json::from_str(&run.stdout).unwrap_or(Value::Null);
+    let players = discovery["players"].as_array();
+    s.check(
+        "partial-discover",
+        "cli",
+        "a reachable S1 seed does not hide the other remembered household",
+        run.ok()
+            && players.is_some_and(|rows| {
+                rows.len() == 4
+                    && ["S1", "S2"]
+                        .iter()
+                        .all(|g| rows.iter().any(|p| p["generation"] == *g))
+            }),
         format!("{run:?}"),
     );
 

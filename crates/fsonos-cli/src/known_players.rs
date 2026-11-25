@@ -1,12 +1,10 @@
-//! The players a survey found, remembered in the store for the next run:
-//! when discovery and the seeds find no players (a network that filters
-//! multicast), the survey tries the addresses each household's latest survey
-//! found (see `fsonos_core::inventory::survey_or_remembered`). Only then is
-//! the store read, and an address that no longer answers tried.
+//! Discovery hints retained across CLI and daemon restarts. Cached players
+//! identify which households to probe. Only a fresh survey supplies live rooms.
 
 use fsonos_core::HouseholdState;
 use fsonos_core::live::Surveyed;
 use fsonos_core::store::{SqliteStore, Store};
+use fsonos_types::HouseholdId;
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::path::Path;
@@ -15,9 +13,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::config::GlobalArgs;
 use crate::daemon::DB_FILE;
 
-/// The players remembered in `data_dir`'s store (none when there is no
-/// store yet).
-pub fn remembered(data_dir: Option<&Path>) -> Vec<IpAddr> {
+/// Household and member identities for a full discovery pass. Missing stores
+/// are normal on the first run.
+pub fn remembered_households(data_dir: Option<&Path>) -> Vec<HouseholdState> {
     let Some(db) = data_dir.map(|d| d.join(DB_FILE)) else {
         return Vec::new();
     };
@@ -25,7 +23,7 @@ pub fn remembered(data_dir: Option<&Path>) -> Vec<IpAddr> {
         return Vec::new();
     }
     match SqliteStore::open(&db) {
-        Ok(store) => addresses(&store),
+        Ok(store) => cached_households(&store),
         Err(e) => {
             tracing::warn!("no remembered players: the store: {e}");
             Vec::new()
@@ -33,12 +31,22 @@ pub fn remembered(data_dir: Option<&Path>) -> Vec<IpAddr> {
     }
 }
 
-/// The addresses of each identified household's latest survey, without
-/// duplicates. Its omitted players keep their rows but are not tried again.
-/// Anonymous players may belong to different households, so keep every
-/// player's current cached address until its identity is known. A UUID's
-/// updated row still replaces its old address.
-fn addresses(store: &dyn Store) -> Vec<IpAddr> {
+/// Known-first surveys try the current cached addresses without multicast.
+pub fn remembered(data_dir: Option<&Path>) -> Vec<IpAddr> {
+    addresses(remembered_households(data_dir))
+}
+
+fn addresses(households: Vec<HouseholdState>) -> Vec<IpAddr> {
+    let mut found = Vec::new();
+    for player in households.into_iter().flat_map(|h| h.players) {
+        if !found.contains(&player.ip) {
+            found.push(player.ip);
+        }
+    }
+    found
+}
+
+fn cached_households(store: &dyn Store) -> Vec<HouseholdState> {
     let players = match store.cached_players() {
         Ok(players) => players,
         Err(e) => {
@@ -46,21 +54,34 @@ fn addresses(store: &dyn Store) -> Vec<IpAddr> {
             return Vec::new();
         }
     };
-    let latest = |household: &str| {
-        players
-            .iter()
-            .filter(|p| p.household == household)
-            .map(|p| p.last_seen)
-            .max()
-    };
-    let mut found: Vec<IpAddr> = Vec::new();
-    for p in &players {
-        if (p.household.is_empty() || Some(p.last_seen) == latest(&p.household))
-            && !found.contains(&p.player.ip)
-        {
-            found.push(p.player.ip);
+    let mut latest = HashMap::new();
+    for row in &players {
+        let stamp = latest
+            .entry(row.household.as_str())
+            .or_insert(row.last_seen);
+        *stamp = (*stamp).max(row.last_seen);
+    }
+    let mut identified = BTreeMap::<&str, HouseholdState>::new();
+    let mut found = Vec::new();
+    for row in &players {
+        if row.household.is_empty() {
+            // These players may belong to different households. A fresh sighting
+            // of one UUID must not suppress probes for the others.
+            found.push(HouseholdState {
+                players: vec![row.player.clone()],
+                ..HouseholdState::default()
+            });
+        } else if latest.get(row.household.as_str()) == Some(&row.last_seen) {
+            let house = identified
+                .entry(&row.household)
+                .or_insert_with(|| HouseholdState {
+                    id: Some(HouseholdId(row.household.clone())),
+                    ..HouseholdState::default()
+                });
+            house.players.push(row.player.clone());
         }
     }
+    found.extend(identified.into_values());
     found
 }
 
@@ -189,7 +210,7 @@ mod tests {
             "the grouping too"
         );
         assert_eq!(
-            addresses(&store),
+            addresses(cached_households(&store)),
             ["192.0.2.10", "192.0.2.11"].map(|a| a.parse::<IpAddr>().unwrap())
         );
 
@@ -200,7 +221,10 @@ mod tests {
             ..house.clone()
         };
         remember(&mut store, &[moved], 200);
-        assert_eq!(addresses(&store), ["192.0.2.20".parse::<IpAddr>().unwrap()]);
+        assert_eq!(
+            addresses(cached_households(&store)),
+            ["192.0.2.20".parse::<IpAddr>().unwrap()]
+        );
 
         // Two households found only through seeds (no id): both remembered,
         // and no group of either saved under "".
@@ -221,7 +245,7 @@ mod tests {
             ],
             300,
         );
-        assert_eq!(addresses(&store).len(), 2);
+        assert_eq!(addresses(cached_households(&store)).len(), 2);
         assert!(store.cached_groups("").unwrap().is_empty());
     }
 
@@ -294,7 +318,7 @@ mod tests {
             assert_eq!(cached.last_seen, 200);
         }
         assert_eq!(store.cached_groups("household-one").unwrap(), first.groups);
-        let remembered = addresses(&store);
+        let remembered = addresses(cached_households(&store));
         assert_eq!(
             remembered.len(),
             3,
@@ -349,7 +373,7 @@ mod tests {
             },
         ];
         remember(&mut store, &refreshed, 200);
-        let mut kept = addresses(&store);
+        let mut kept = addresses(cached_households(&store));
         kept.sort();
         assert_eq!(
             kept,
@@ -364,7 +388,7 @@ mod tests {
             ..HouseholdState::default()
         };
         remember(&mut store, &[returned], 300);
-        let mut kept = addresses(&store);
+        let mut kept = addresses(cached_households(&store));
         kept.sort();
         assert_eq!(
             kept,

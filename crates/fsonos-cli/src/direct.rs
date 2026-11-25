@@ -71,13 +71,22 @@ impl Direct {
     ) -> Result<Self, Failure> {
         let seeds = global.seed_addrs()?;
         let data_dir = global.data_dir();
-        let remembered = move || crate::known_players::remembered(data_dir.as_deref());
         let wait = global.wait();
         let lan = global.lan()?;
         let survey = if known_first {
-            inventory::survey_known_first(&*lan, &seeds, &remembered, wait)?
+            inventory::survey_known_first(
+                &*lan,
+                &seeds,
+                || crate::known_players::remembered(data_dir.as_deref()),
+                wait,
+            )?
         } else {
-            inventory::survey_or_remembered(&*lan, &seeds, &remembered, wait)?
+            inventory::survey_known(
+                &*lan,
+                &seeds,
+                &crate::known_players::remembered_households(data_dir.as_deref()),
+                wait,
+            )?
         };
         if let Some(dir) = global.data_dir() {
             crate::completions::remember_rooms(
@@ -105,7 +114,13 @@ impl Direct {
             if let Some(households) = first.lock().ok().and_then(|mut f| f.take()) {
                 return Ok(households);
             }
-            Ok(inventory::survey_or_remembered(transport, &seeds, &remembered, wait)?.households)
+            Ok(inventory::survey_known(
+                transport,
+                &seeds,
+                &crate::known_players::remembered_households(data_dir.as_deref()),
+                wait,
+            )?
+            .households)
         });
         let mut surface =
             Surface::new(lan, again, policy, Box::new(SystemClock)).with_dj(Box::new(
