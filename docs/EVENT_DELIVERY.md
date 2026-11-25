@@ -71,6 +71,16 @@ resend a command or acknowledge an uncertain write. The DJ retires its cached
 queue proof before reconciliation, and MCP event/resource consumers receive
 the same journal changes.
 
+The phone remote isolates failed room-state, queue and DJ reads to their exact
+household, coordinator and member set. Healthy groups continue to refresh from
+their own events while the unavailable group retries with bounded backoff.
+Repeated events cannot accelerate that retry, and recovery reads only the
+failed group. A partial first snapshot also leaves healthy rooms live. Equal
+room names in S1 and S2 have independent recovery state. Changed or unreadable
+topology still requires a full map refresh, and retired groups lose their old
+retry timers. Server-requested read cooldowns survive reconnects and page
+hide/show; these read retries never resend playback commands.
+
 ## Compatibility and limits
 
 SSE comments keep the existing 15-second heartbeat interval; HTTP long polls

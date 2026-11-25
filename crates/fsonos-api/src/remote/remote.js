@@ -341,7 +341,31 @@ async function readEach(items, read, current = () => true) {
   if (failure && current()) throw failure;
 }
 
-async function loadZones() {
+async function readZones(zones, current = () => true, knownTargets = null) {
+  const roomReads = { observed: [], failed: [], known: knownTargets };
+  let topologyChanged = false, retryAfter = 0;
+  try {
+    await readEach(zones, async (zone) => {
+      const target = groupShape(zone);
+      try { await refreshZone(zone); roomReads.observed.push(target); }
+      catch (error) {
+        roomReads.failed.push(target);
+        topologyChanged ||= error?.topologyChanged === true;
+        if (typeof error?.retryAfter === 'number' && error.retryAfter > 0) retryAfter = Math.max(retryAfter, error.retryAfter);
+        throw error;
+      }
+    }, current);
+  } catch (error) {
+    // The topology was accepted. A failed player/queue/DJ observation can be
+    // repaired independently; an observed regrouping still needs a new map.
+    throw Object.assign(new Error(error?.message || 'Room state unavailable'), {
+      ...(topologyChanged ? {} : { roomReads }), retryAfter,
+    });
+  }
+  return roomReads;
+}
+
+async function loadZones(skipTargets = []) {
   const version = ++house.readVersion;
   let zones;
   try { zones = checkedZones(await call('zones')); }
@@ -353,7 +377,8 @@ async function loadZones() {
   house.zones = zones;
   render();
   catalogs.reconcile(zones);
-  await readEach(zones, refreshZone, () => version === house.readVersion);
+  return readZones(zones.filter(zone => !skipTargets.includes(groupShape(zone))),
+    () => version === house.readVersion, zones.map(groupShape));
 }
 
 function ownsCard(parts) {
@@ -686,7 +711,9 @@ async function refreshZone(zone) {
       throw new Error('The playback state is unreadable.');
     }
     checkedZones([state.zone]);
-    if (groupShape(state.zone) !== groupShape(parts.zone)) throw new Error('The group changed; refreshing topology.');
+    if (groupShape(state.zone) !== groupShape(parts.zone)) {
+      throw Object.assign(new Error('The group changed; refreshing topology.'), { topologyChanged: true });
+    }
   } catch (error) {
     if (!current()) return;
     parts.state.textContent = 'State unavailable; last observation shown';
@@ -879,23 +906,59 @@ const LiveRemote = (() => {
   const ROOM_CONCURRENCY = 4;
 
   function model({ connect, reload, refresh, status = () => {}, invalidate = () => {}, catalog = () => {},
-    schedule = setTimeout, cancel = clearTimeout }) {
+    eventTargets = room => [room],
+    schedule = setTimeout, cancel = clearTimeout, now = () => globalThis.performance?.now() ?? Date.now() }) {
     let active = false, disposed = false, connected = false, busy = false;
     let full = false, synced = false, failedRead = false, generation = 0;
-    let stream = null, flush = null, retry = null, backoff = FALLBACK;
-    const rooms = new Set();
+    let stream = null, flush = null, retry = null, backoff = FALLBACK, cooldown = null, notBefore = 0;
+    const rooms = new Set(), recovering = new Map();
+    function forgetRoom(room) {
+      const entry = recovering.get(room);
+      if (entry && entry.timer !== null) cancel(entry.timer);
+      recovering.delete(room);
+    }
+    const cooling = room => recovering.get(room)?.timer != null;
+    function observed(result) {
+      if (!result || !Array.isArray(result.observed) || !Array.isArray(result.failed)
+          || result.failed.length > MAX_PENDING || (result.known !== null && !Array.isArray(result.known))) return false;
+      const retained = [...recovering.keys()].filter(room => !result.observed.includes(room)
+        && (result.known === null || result.known.includes(room)));
+      if (new Set([...retained, ...result.failed]).size > MAX_PENDING) return false;
+      if (result.known !== null) {
+        const known = new Set(result.known);
+        for (const room of recovering.keys()) if (!known.has(room)) forgetRoom(room);
+      }
+      for (const room of result.observed) forgetRoom(room);
+      for (const room of result.failed) {
+        const previous = recovering.get(room);
+        const entry = { wait: Math.min(MAX_BACKOFF, (previous?.wait || FALLBACK) * 2), timer: null };
+        forgetRoom(room);
+        recovering.set(room, entry);
+        entry.timer = schedule(() => {
+          entry.timer = null;
+          if (!active || recovering.get(room) !== entry) return;
+          // Retry only this original group. A topology change retires its key.
+          if (rooms.size >= MAX_PENDING) { full = true; rooms.clear(); invalidate(null); }
+          else { rooms.add(room); invalidate(room); }
+          queueFlush();
+        }, entry.wait);
+      }
+      return true;
+    }
     const clear = () => {
       if (flush !== null) cancel(flush);
       if (retry !== null) cancel(retry);
-      flush = retry = null;
+      if (cooldown !== null) cancel(cooldown);
+      flush = retry = cooldown = null;
     };
     const report = () => status(!active ? 'Live updates paused'
-      : failedRead ? 'State refresh failed; retrying…'
+      : failedRead || recovering.size ? 'State refresh failed; retrying…'
         : connected ? (synced ? 'Live' : 'Synchronizing…')
           : 'Refreshing without live events');
 
     function armRetry() {
       if (!active || busy || retry !== null || (connected && !failedRead)) return;
+      if (now() < notBefore) { armCooldown(); return; }
       retry = schedule(() => {
         retry = null;
         openFeed();
@@ -903,51 +966,95 @@ const LiveRemote = (() => {
       }, backoff);
     }
 
+    function armCooldown() {
+      if (!active || busy || cooldown !== null || !Number.isFinite(notBefore)) return;
+      cooldown = schedule(() => {
+        cooldown = null;
+        if (now() < notBefore) armCooldown();
+        else { queueFlush(); armRetry(); }
+      }, Math.min(MAX_BACKOFF, Math.max(0, notBefore - now())));
+    }
+
+    function serverDelay(error) {
+      if (typeof error?.retryAfter === 'number' && error.retryAfter > 0) {
+        notBefore = Math.max(notBefore, now() + error.retryAfter);
+      }
+    }
+
     function queueFlush() {
-      if (!active || busy || flush !== null || (failedRead && retry !== null) || (!full && !rooms.size)) return;
+      if (active && now() < notBefore) { armCooldown(); return; }
+      if (!active || busy || flush !== null || (failedRead && retry !== null)
+          || (!full && ![...rooms].some(room => !cooling(room)))) return;
       flush = schedule(() => { flush = null; void run(); }, COALESCE);
     }
 
     function request(room = null) {
       if (!active) return;
-      invalidate(room);
-      if (typeof room !== 'string' || !room.trim() || room.length > 512 || rooms.size >= MAX_PENDING) {
+      let targets = null;
+      if (typeof room === 'string' && room.trim() && room.length <= 512) {
+        try { targets = eventTargets(room); } catch (_) { /* Unknown identity requires a topology read. */ }
+      }
+      if (!Array.isArray(targets) || !targets.length || targets.length + rooms.size > MAX_PENDING) {
+        invalidate(null);
         full = true;
         rooms.clear();
-      } else if (!full) rooms.add(room);
+      } else for (const target of targets) {
+        invalidate(target);
+        if (!full) rooms.add(target);
+      }
       queueFlush();
     }
 
     async function run() {
       if (!active || busy) return;
+      if (now() < notBefore) { armCooldown(); return; }
       const version = generation;
       const all = full;
-      const batch = [...rooms];
+      const batch = [...rooms].filter(room => !cooling(room));
       full = false;
       rooms.clear();
       busy = true;
       if (retry !== null) cancel(retry);
       retry = null;
       try {
-        if (all) await reload();
+        if (all) {
+          const result = await reload([...recovering.keys()].filter(cooling));
+          if (active && version === generation) observed(result);
+        }
         else {
           let index = 0, failure = null;
           await Promise.all(Array.from({ length: Math.min(ROOM_CONCURRENCY, batch.length) }, async () => {
-            while (active && version === generation && index < batch.length) {
+            while (active && version === generation && now() >= notBefore && index < batch.length) {
               const room = batch[index++];
-              try { await refresh(room); } catch (error) { failure ??= error; }
+              try {
+                const result = await refresh(room);
+                if (active && version === generation) {
+                  if (!observed(result)) forgetRoom(room);
+                }
+              } catch (error) {
+                serverDelay(error);
+                if (active && version === generation && observed(error?.roomReads)) continue;
+                failure ??= error;
+              }
             }
           }));
+          if (active && version === generation && !full) for (const room of batch.slice(index)) rooms.add(room);
           if (failure && active && version === generation) throw failure;
         }
         if (active && version === generation) {
           if (all) { synced = true; failedRead = false; }
           backoff = FALLBACK;
         }
-      } catch (_) {
+      } catch (error) {
+        serverDelay(error);
         if (active && version === generation) {
-          failedRead = true;
-          backoff = Math.min(MAX_BACKOFF, backoff * 2);
+          if (observed(error?.roomReads)) {
+            if (all) synced = true;
+            failedRead = false; backoff = FALLBACK;
+          } else {
+            failedRead = true;
+            backoff = Math.min(MAX_BACKOFF, backoff * 2);
+          }
         }
       } finally {
         busy = false;
@@ -962,6 +1069,7 @@ const LiveRemote = (() => {
     function loseContinuity() {
       synced = false;
       ++generation;
+      for (const room of recovering.keys()) forgetRoom(room);
       // Fence observations started on the previous connection, not commands.
       invalidate(null, true);
       catalog(null);
@@ -1229,10 +1337,11 @@ function listen() {
     connect: connectEvents,
     reload: loadZones,
     refresh: async (room) => {
-      const zones = LiveRemote.affected(house.zones, room);
-      if (!zones.length) await loadZones();
-      else for (const zone of zones) await refreshZone(zone);
+      const zones = house.zones.filter(zone => groupShape(zone) === room);
+      if (!zones.length) return loadZones();
+      return readZones(zones);
     },
+    eventTargets: room => LiveRemote.affected(house.zones, room).map(groupShape),
     status: (text) => { $('live').textContent = text; },
     catalog(change) {
       catalogs.invalidate(change);
@@ -1242,9 +1351,8 @@ function listen() {
     },
     invalidate: (room, lost = false) => {
       if (lost) { ++house.readVersion; requestJson.cancelReads(); }
-      const matches = typeof room === 'string' ? LiveRemote.affected(house.zones, room) : [];
       for (const parts of house.cards.values()) {
-        if (!matches.length || parts.zone.members.includes(room)) {
+        if (room == null || groupShape(parts.zone) === room) {
           if (lost) {
             ++parts.readVersion;
             for (const entry of parts.sliders.values()) ++entry.readVersion;

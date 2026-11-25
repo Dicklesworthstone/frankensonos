@@ -24,8 +24,10 @@ unchanged. Detached controls cannot act on a newly displayed snapshot.
 A queue that shrinks past the open page is read once more at its new final
 page (or position zero when empty). Continuing churn produces a recoverable
 read failure rather than an unbounded paging loop. Background failures retain
-an explicitly stale snapshot and propagate to the existing household
-backoff. Manual refresh still reports its own error without replaying a write.
+an explicitly stale snapshot and use the affected group's bounded recovery
+backoff. Healthy groups continue to follow their own events; a failed room
+does not force repeated whole-house reads. Manual refresh still reports its
+own error without replaying a write.
 Live reconciliation waits for outstanding manual reads, including a corrective
 page read, instead of adding overlapping automatic requests.
 
