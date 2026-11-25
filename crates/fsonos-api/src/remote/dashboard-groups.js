@@ -2,6 +2,7 @@
 'use strict';
 const DashboardGroups = (() => {
   const C = typeof DashboardCore !== 'undefined' ? DashboardCore : require('./dashboard-core.js');
+  const queues = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote : require('./queue-tracks.js');
   const ACTIONS = Object.freeze({ join: 'Add a room', leave: 'Separate a room', party: 'Group the household',
     move: 'Move music', replay: 'Replay elsewhere and stop here' });
   const transferring = action => action === 'move' || action === 'replay';
@@ -109,7 +110,9 @@ const DashboardGroups = (() => {
       identity: JSON.stringify([signature(zone), playback.transport_state, uri, position, track?.duration_secs ?? null]) });
   }
   const sameAudio = (left, right) => left.source.identity === right.source.identity
-    && left.destination.identity === right.destination.identity;
+    && left.destination.identity === right.destination.identity
+    && queues.sameTransferQueue(left.source.queue, right.source.queue)
+    && queues.sameTransferQueue(left.destination.queue, right.destination.queue);
 
   function model({ call, controller, changed = () => {}, now = () => performance.now() }) {
     let version = 0, active = true, disposed = false, reading = null, readAt = 0;
@@ -225,12 +228,20 @@ const DashboardGroups = (() => {
       const source = observations.find(value => value.target === C.key(plan.sourceGroup));
       const destination = observations.find(value => value.target === C.key(plan.destinationGroup));
       if (!source?.uri) fail('The source group has no music loaded to transfer.');
+      let reviewedSource = source, reviewedDestination = destination;
+      if (plan.body.copy ? source.position != null : plan.body.zone === source.target) {
+        const observed = await queues.transferQueues(source.target, destination.target, target =>
+          call('/zones/' + encodeURIComponent(target) + '/queue?offset=0&limit=1', undefined, { signal }));
+        valid();
+        reviewedSource = Object.freeze({ ...source, queue: observed[0] });
+        reviewedDestination = source === destination ? reviewedSource : Object.freeze({ ...destination, queue: observed[1] });
+      }
       const groups = inventory(await call('/zones', undefined, { signal }));
       valid();
       if (proposal(groups, plan.target, plan.action, plan.room, plan.destination).signature !== plan.signature) {
         fail('The affected groups changed while their music was being read. Review again.');
       }
-      return Object.freeze({ source, destination });
+      return Object.freeze({ source: reviewedSource, destination: reviewedDestination });
     }
     async function reviewTransfer() {
       const plan = proposal(state.groups, state.target, state.action, state.room, state.destination);
@@ -283,7 +294,7 @@ const DashboardGroups = (() => {
           if (pending.audio) {
             const audio = await readAudio(pending, valid);
             valid();
-            if (!sameAudio(audio, pending.audio)) fail('The source or destination music, queue occurrence or playback state changed. Review both groups again.');
+            if (!sameAudio(audio, pending.audio)) fail('The source or destination music, queue contents, occurrence or playback state changed. Review both groups again.');
           }
           const result = await send(pending.url, pending.body);
           if (typeof result?.done !== 'string' || !result.done.trim()) fail('The group change was not confirmed.');
@@ -360,7 +371,8 @@ const DashboardGroups = (() => {
         if (shown?.audio) {
           for (const [role, value] of [['Source', shown.audio.source], ['Destination', shown.audio.destination]]) {
             const row = doc.createElement('li'); row.textContent = role + ': ' + value.group + ' — ' + value.label
-              + ' · ' + value.transport + (value.position ? ' · queue #' + value.position : '');
+              + ' · ' + value.transport + (value.position ? ' · queue #' + value.position : '')
+              + (value.queue ? ' · ' + value.queue.total + ' queued' : '');
             $('groups-audio').append(row);
           }
         }

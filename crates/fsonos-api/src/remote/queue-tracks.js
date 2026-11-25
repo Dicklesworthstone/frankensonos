@@ -120,6 +120,24 @@ const QueueTracksRemote = (() => {
     }
     return Object.freeze({ revision: value.revision, total: value.total, playing: value.playing ?? null });
   }
+  // A copied move may reconstruct the entire source queue at the destination.
+  // The one-row observations also identify a destination's inactive queue.
+  async function transferQueues(source, destination, read) {
+    const observe = async target => {
+      const value = await read(target);
+      try { return queueOf(value, target); }
+      catch (_) { throw new Error('The queue for ' + target + ' is unreadable. Refresh before moving music.'); }
+    };
+    if (source === destination) {
+      const queue = await observe(source);
+      return [queue, queue];
+    }
+    return Promise.all([observe(source), observe(destination)]);
+  }
+  function sameTransferQueue(left, right) {
+    return left === right || (!!left && !!right && left.revision === right.revision
+      && left.total === right.total && left.playing === right.playing);
+  }
   function verifyQueue(before, current, next) {
     if (!before || !current || before.revision !== current.revision || before.total !== current.total
         || (next && before.playing !== current.playing)) {
@@ -167,6 +185,6 @@ const QueueTracksRemote = (() => {
     }
     return { done: result.done, changed: true, notes: result.notes };
   }
-  return { MAX_TRACKS, supported, basketPage, contextKey, pageKey, originLabel, basket, tracksOf, queueOf, verifyQueue, playbackOf, body, playBody, receipt, playReceipt };
+  return { MAX_TRACKS, supported, basketPage, contextKey, pageKey, originLabel, basket, tracksOf, queueOf, transferQueues, sameTransferQueue, verifyQueue, playbackOf, body, playBody, receipt, playReceipt };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = QueueTracksRemote;

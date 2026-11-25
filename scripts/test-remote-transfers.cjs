@@ -12,6 +12,8 @@ const deferred = () => {
 };
 function fixture() {
   let groups = topology();
+  const queues = new Map(groups.map(g => [g.coordinator_room + '@' + g.household,
+    { zone: g.coordinator_room, revision: 'first', total: 2, playing: 2, items: [{ position: 1, title: 'First' }] }]));
   let read = (room) => {
     const zone = groups.find((g) => g.members.some((m) => `${m}@${g.household}` === room));
     return { zone, transport_state: 'playing', track: {
@@ -25,9 +27,10 @@ function fixture() {
     calls.push([route, args]);
     if (route === 'zones') return structuredClone(groups);
     if (route === 'state') return read(args.params.room);
+    if (route === 'queue') return structuredClone(queues.get(args.params.room));
     return response();
   } });
-  return { model, calls, read(fn) { const before = read; read = (room) => fn(room, before); },
+  return { model, calls, queues, read(fn) { const before = read; read = (room) => fn(room, before); },
     response(fn) { response = fn; }, groups(value) { groups = value; },
     writes: () => calls.filter(([route]) => route.startsWith('groups')) };
 }
@@ -171,4 +174,50 @@ test('a group change during the final playback reads cancels the transfer', asyn
   f.read((room,before)=>{ const state=before(room); f.groups([...topology().slice(0,1),group('S1','Kitchen','Guest')]);return state; });
   assert.equal(await f.model.confirm(),false);
   assert.deepEqual(f.writes(),[]);
+});
+
+test('a same-length edit outside the selected track cancels replay and coordinator moves', async () => {
+  for (const [kind, to] of [['move', 'Kitchen@S1'], ['replay', 'Den@S2']]) {
+    for (const edited of ['Den@S1', to]) {
+      const f = fixture(); await ready(f, 'Den@S1', to);
+      assert.equal(await f.model.reviewTransfer(kind), true);
+      assert.equal(f.model.state.pending.audio[0].queue.total, 2);
+      f.queues.get(edited).revision = 'later';
+      assert.equal(await f.model.confirm(), false);
+      assert.match(f.model.state.message, /queue was edited/);
+      assert.deepEqual(f.writes(), []);
+    }
+  }
+});
+
+test('a paused queue transfer protects the inactive destination queue and refuses missing proof', async () => {
+  const f = fixture(); await ready(f, 'Study@S1', 'Hall@S2');
+  f.read((room, before) => ({ ...before(room), transport_state: 'paused' }));
+  f.queues.get('Den@S2').playing = null;
+  assert.equal(await f.model.reviewTransfer('replay'), true);
+  f.queues.get('Den@S2').revision = null;
+  assert.equal(await f.model.confirm(), false);
+  assert.deepEqual(f.writes(), []);
+});
+
+test('a member-only move reads no queues; same-group handoff reads one queue per check', async () => {
+  const f = fixture(); await ready(f);
+  assert.equal(await f.model.reviewTransfer('move'), true);
+  assert.equal(await f.model.confirm(), true);
+  assert.equal(f.calls.some(([route]) => route === 'queue'), false);
+  const same = fixture(); await ready(same, 'Den@S1', 'Study@S1');
+  assert.equal(await same.model.reviewTransfer('move'), true);
+  assert.equal(await same.model.confirm(), true);
+  assert.deepEqual(same.calls.filter(([route]) => route === 'queue').map(([, args]) => args),
+    Array(2).fill({ params: { room: 'Den@S1' }, query: { offset: 0, limit: 1 } }));
+});
+
+test('explicit replay of an unnumbered radio source needs no queue access', async () => {
+  const f = fixture(); await ready(f, 'Study@S1', 'Hall@S2');
+  f.read((room, before) => room === 'Study@S1'
+    ? { ...before(room), track: { uri: 'x-sonosapi-stream:fixture' } } : before(room));
+  f.queues.clear();
+  assert.equal(await f.model.reviewTransfer('replay'), true);
+  assert.equal(await f.model.confirm(), true);
+  assert.equal(f.calls.some(([route]) => route === 'queue'), false);
 });

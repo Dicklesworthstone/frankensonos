@@ -45,10 +45,15 @@ function fixture({ demo = false, dom = false } = {}) {
   ];
   const tracks = new Map(zones.map(zone => [C.key(zone), { uri: 'fixture:track', title: 'Synthetic song',
     queue_position: 2, position_secs: 30, duration_secs: 180 }]));
+  const queues = new Map(zones.map(zone => [C.key(zone), { zone: zone.coordinator_room,
+    revision: 'initial', total: 2, playing: 2, items: [{ position: 1, title: 'First' }] }]));
   let time = 1000, reader = null, writer = null, groups;
   const calls = [], doc = dom ? documentFixture() : null;
   const normalRead = url => {
     if (url === '/zones') return copy(zones);
+    for (const [target, queue] of queues) {
+      if (url === '/zones/' + encodeURIComponent(target) + '/queue?offset=0&limit=1') return copy(queue);
+    }
     const zone = zones.find(row => url === '/zones/' + encodeURIComponent(C.key(row)) + '/state');
     if (!zone) throw new Error('Unexpected fixture read: ' + url);
     return { zone: copy(zone), transport_state: zone.transport_state, volume: 20,
@@ -62,7 +67,7 @@ function fixture({ demo = false, dom = false } = {}) {
   const ctl = C.model({ call, demo, now: () => time, changed: () => groups?.observe() });
   const options = { call, controller: ctl, now: () => time };
   groups = dom ? Groups.panel({ ...options, document: doc }) : Groups.model(options);
-  return { ctl, groups, zones, tracks, calls, doc, normalRead,
+  return { ctl, groups, zones, tracks, queues, calls, doc, normalRead,
     writes: () => calls.filter(row => row.body !== undefined).map(({ url, body }) => ({ url, body })),
     read(fn) { reader = fn; }, write(fn) { writer = fn; }, time(value) { time = value; },
     async ready() { assert.equal(await ctl.refresh(), true); ctl.connection(true); return this; },
@@ -790,4 +795,37 @@ test('clearing a destination through the real panel retires its captured transfe
   assert.equal($('groups-confirm').disabled, true);
   $('groups-confirm').fire('click');
   assert.equal(f.writes().length, 0);
+});
+
+test('retire replay and coordinator moves after a same-length edit to either reviewed queue', async () => {
+  for (const kind of ['replay', 'move']) {
+    for (const role of ['source', 'destination']) {
+      const f = await fixture().ready();
+      const pending = await f.reviewed(kind);
+      assert.equal(pending.audio[role].queue.total, 2);
+      f.queues.get(pending.audio[role].target).revision = 'later';
+      assert.equal(await f.groups.apply(), false);
+      assert.deepEqual(f.writes(), []);
+    }
+  }
+});
+
+test('an idle destination with queued music requires its observed revision', async () => {
+  const f = await fixture().ready();
+  f.queues.get('Synthetic main@Fixture S1').playing = null;
+  f.tracks.set('Synthetic main@Fixture S1', null);
+  const pending = await f.reviewed('replay');
+  assert.equal(pending.audio.destination.queue.total, 2);
+  f.queues.get(pending.audio.destination.target).revision = '';
+  assert.equal(await f.groups.apply(), false);
+  assert.deepEqual(f.writes(), []);
+});
+
+test('explicit replay of an unnumbered station leaves unreadable dormant queues alone', async () => {
+  const f = await fixture().ready();
+  f.tracks.set('Synthetic main@Fixture S2', { uri: 'x-sonosapi-stream:fixture' });
+  f.queues.clear();
+  await f.reviewed('replay');
+  assert.equal(await f.groups.apply(), true);
+  assert.equal(f.calls.some(({ url }) => url.includes('/queue?')), false);
 });

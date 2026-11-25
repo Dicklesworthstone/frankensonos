@@ -61,8 +61,21 @@ changes that are observed do invalidate it.
 These are client-side checks over the daemon's live/cached API view, not an
 atomic lock on the speakers. A competing controller can act after a check;
 identical room names reused after a rename or a track restarted with the same
-reported identity are not a device-epoch guarantee. Queue contents beyond the
-current entry are not frozen by a transfer review. The existing controller
+reported identity are not a device-epoch guarantee.
+
+For **Replay elsewhere** from a numbered track and native moves from a
+coordinator, both web remotes show the source and destination groups' queue
+lengths. Confirmation checks a one-entry page from each group's queue for the
+same coordinator-qualified revision, total and selected occurrence. Editing
+another entry invalidates the review even if the selected track and queue
+length still match. This includes paused or inactive destination queues and
+native handoffs that can fall back to copying. A follower-only native move
+only regroups rooms. It needs no queue reads, and neither does replaying a
+stream with no reported queue position.
+
+The review covers the currently visible group queues. The move endpoint
+accepts the room names and copy intent. Another controller can edit a queue
+after the final browser check and before the daemon begins. The existing controller
 remains responsible for native orchestration, policy, volume caps, and logging.
 
 Only one panel operation runs at a time. A lost, malformed, or failed mutation

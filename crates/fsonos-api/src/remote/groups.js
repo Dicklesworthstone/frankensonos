@@ -2,6 +2,7 @@
 'use strict';
 
 const GroupsRemote = (() => {
+  const queues = typeof QueueTracksRemote !== 'undefined' ? QueueTracksRemote : require('./queue-tracks.js');
   const routes = {
     groupsJoin: ['POST', '/group'],
     groupsLeave: ['POST', '/ungroup'],
@@ -144,7 +145,7 @@ const GroupsRemote = (() => {
       signature: JSON.stringify([expected.signature, value.transport_state, uri,
         track && track.queue_position != null ? track.queue_position : null]),
       uri, label: track ? (text(track.title) ? track.title : track.uri) : 'Nothing loaded',
-      transport: value.transport_state,
+      transport: value.transport_state, position: track?.queue_position ?? null,
     });
   }
 
@@ -215,6 +216,15 @@ const GroupsRemote = (() => {
       const audio = [playbackOf(source, pending.sourceGroup),
         playbackOf(destination, pending.destinationGroup)];
       if (!audio[0].uri) throw new Error('The source group has no music loaded to move.');
+      // A follower move only regroups. A coordinator handoff may fall back
+      // to copying. An explicit replay cannot copy an unnumbered queue item.
+      const sourceTarget = key(pending.sourceGroup.coordinator, pending.sourceGroup.household);
+      if (pending.body.copy ? audio[0].position != null : pending.body.zone === sourceTarget) {
+        const destinationTarget = key(pending.destinationGroup.coordinator, pending.destinationGroup.household);
+        const observed = await queues.transferQueues(sourceTarget, destinationTarget, room =>
+          call('queue', { params: { room }, query: { offset: 0, limit: 1 } }));
+        for (const [i, queue] of observed.entries()) audio[i] = Object.freeze({ ...audio[i], queue });
+      }
       if (!unchanged(groupsOf(await call('zones')), pending)) {
         throw new Error('The affected groups changed while playback was being read.');
       }
@@ -268,8 +278,9 @@ const GroupsRemote = (() => {
         if (pending.audio) {
           const audio = await transferState(pending);
           if (!active(version)) return false;
-          if (!audio.every((value, i) => value.signature === pending.audio[i].signature)) {
-            throw new Error('The source or destination playback changed. Review the music again.');
+          if (!audio.every((value, i) => value.signature === pending.audio[i].signature
+              && queues.sameTransferQueue(value.queue, pending.audio[i].queue))) {
+            throw new Error('The source or destination playback changed, or its queue was edited. Review the music again.');
           }
         }
         attempted = true;
@@ -348,8 +359,11 @@ const GroupsRemote = (() => {
         const review = el('section', { class: 'groups-review', 'aria-label': 'Review group change' },
           el('h3', { text: pending.title }), el('p', { text: pending.warning }));
         if (pending.audio) {
-          review.append(el('p', { text: `Source: ${pending.audio[0].label} (${pending.audio[0].transport}).` }),
-            el('p', { text: `Destination: ${pending.audio[1].label} (${pending.audio[1].transport}).` }));
+          for (const [index, role] of ['Source', 'Destination'].entries()) {
+            const audio = pending.audio[index];
+            const count = audio.queue ? ` · ${audio.queue.total} queued` : '';
+            review.append(el('p', { text: `${role}: ${audio.label} (${audio.transport})${count}.` }));
+          }
         }
         const affected = el('ul');
         for (const label of pending.labels) affected.append(el('li', { text: label }));
