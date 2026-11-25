@@ -366,8 +366,8 @@ fn plan_transport(snap: &ZoneSnapshot, source_restored: bool, plan: &mut Restore
             Aspect::Transport,
             "not resumed: its source could not be restored",
         ),
-        // Setting a source leaves the transport stopped; with no source to
-        // set, stop explicitly.
+        // Inactive sources are loaded through an independently authorized,
+        // confirmed pause. With no source to set, stop explicitly.
         _ if matches!(snap.source, SnapshotSource::Nothing) => {
             plan.op(Aspect::Transport, RestoreOp::Stop);
         }
@@ -375,7 +375,8 @@ fn plan_transport(snap: &ZoneSnapshot, source_restored: bool, plan: &mut Restore
     }
 }
 
-/// Put `snap` back. Independent room levels are restored even after failures.
+/// Put `snap` back. Independent room levels are restored even after failures,
+/// except when a source that should stay silent could not be confirmed inactive.
 /// A failed group, source or seek blocks dependent playback operations; the
 /// report distinguishes restored aspects from failed or blocked ones.
 pub fn restore<T: Transport + ?Sized>(
@@ -400,7 +401,9 @@ pub fn restore_only<T: Transport + ?Sized>(
 
 /// [`restore_only`] with each step passed through `vet` first: it runs as
 /// `vet` returns it (a lower volume, say), or not at all with the reason
-/// `vet` gives, reported like a step that failed.
+/// `vet` gives, reported like a step that failed. Restoring an inactive source
+/// may also need pause authorization, requested through [`RestoreOp::Stop`]
+/// before either Pause or an unpausable stream's fallback Stop is sent.
 pub fn restore_vetted<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -436,6 +439,16 @@ pub fn restore_vetted<T: Transport + ?Sized>(
         let prerequisite = match aspect {
             Aspect::Source => blocked.filter(|a| *a == Aspect::Group),
             Aspect::Position | Aspect::Transport => blocked,
+            Aspect::Volume | Aspect::Mute
+                if matches!(
+                    snap.transport_state,
+                    TransportState::Paused | TransportState::Stopped
+                ) =>
+            {
+                // Do not raise the level of a source that should have been
+                // restored silently while its inactive state remains unproved.
+                blocked.filter(|a| *a == Aspect::Source)
+            }
             _ => None,
         };
         if let Some(prerequisite) = prerequisite {

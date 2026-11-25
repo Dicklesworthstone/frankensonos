@@ -11,6 +11,8 @@ use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::Duration;
 
+mod silent;
+
 /// A just-finished announcement can briefly refuse a source with UPnP 402.
 const SETTLE: Duration = Duration::from_millis(750);
 
@@ -85,12 +87,15 @@ struct Anchor {
 }
 
 impl Anchor {
+    fn same_source(&self, after: &Self) -> bool {
+        super::same_media(&self.media, &after.media) && self.members == after.members
+    }
+
     fn agrees(&self, after: &Self) -> bool {
-        super::same_media(&self.media, &after.media)
+        self.same_source(after)
             && self.track == after.track
             && self.track_uri == after.track_uri
             && self.state == after.state
-            && self.members == after.members
     }
 
     fn read<T: Transport + ?Sized>(
@@ -147,11 +152,23 @@ pub(super) fn restore<T: Transport + ?Sized>(
         return run(t, household, host, &snap.coordinator, op);
     };
     let before = Anchor::read(t, host, &snap.coordinator)?;
+    let silent = matches!(
+        snap.transport_state,
+        TransportState::Paused | TransportState::Stopped
+    );
+    let before = if silent {
+        silent::prepare(t, household, host, &snap.coordinator, before, vet)?
+    } else {
+        before
+    };
     target.queue_unchanged(t, host)?;
     // These reads can outlive the caller's ownership proof. Recheck the
     // same approved operation after them, immediately before its write.
     if !vet(op).is_ok_and(|approved| approved == *op) {
         return Err(unproven("source restoration authorization changed"));
+    }
+    if silent {
+        silent::before_selection(t, host, &snap.coordinator, &before)?;
     }
     let first = run(t, household, host, &snap.coordinator, op);
     let result = match first {
@@ -162,7 +179,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
             let unchanged = target.queue_unchanged(t, host).is_ok()
                 && Anchor::read(t, host, &snap.coordinator)
                     .is_ok_and(|after| before.agrees(&after))
-                && vet(op).is_ok_and(|approved| approved == *op);
+                && vet(op).is_ok_and(|approved| approved == *op)
+                && (!silent
+                    || silent::before_selection(t, host, &snap.coordinator, &before).is_ok());
             if !unchanged {
                 return Err(error);
             }
@@ -198,6 +217,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
             }
         }
     }?;
+    if silent {
+        silent::after_selection(t, host, &snap.coordinator, &target, &before.members)?;
+    }
     if matches!(op, RestoreOp::PlayQueue)
         && let Some(mode) = snap.play_mode
     {
@@ -210,6 +232,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
         super::play_mode::restore(t, host, &snap.coordinator, mode)?;
         if !target.confirmed(t, host, &snap.coordinator, &before.members)? {
             return Err(unproven("the queue changed while restoring its play mode"));
+        }
+        if silent {
+            silent::after_selection(t, host, &snap.coordinator, &target, &before.members)?;
         }
     }
     Ok(())

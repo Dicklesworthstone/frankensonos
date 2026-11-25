@@ -257,3 +257,6 @@ mod source_recovery;
 
 #[path = "snapshot_failures_sim/metadata.rs"]
 mod metadata;
+
+#[path = "snapshot_failures_sim/silent.rs"]
+mod silent;

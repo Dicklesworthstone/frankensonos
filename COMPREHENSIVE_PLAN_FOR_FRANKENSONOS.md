@@ -1098,6 +1098,16 @@ the house to agents they can bound and reverse. The guardrails live in
   `fsonos log`, `fsonos undo`, MCP `recent_actions` and `undo_last`. Undo says
   what it could not restore (for example, a queue that was replaced since).
 
+Snapshot capture and restoration compare native DIDL metadata by its XML
+meaning, so prefix, attribute-order and entity spelling changes do not lose a
+valid source. Resource URLs, account descriptors and vendor values still have
+to agree. Restoring a paused or stopped source separately authorizes and
+confirms inactivity before source selection; it never relies on source
+selection to stop playback. Unknown or resumed playback blocks dependent seeks
+and level restoration. New S1/S2 regressions cover these paths and uncertain
+replies; Rust execution remains pending after dependency builds exhausted
+storage and the executor restarted.
+
 Queue-add undo retains bounded before/after queue observations and the original
 coordinator address, physical group, source and known boot identity. Each native
 add must advance the revision by exactly one to issue a receipt. Undo checks the
@@ -1658,6 +1668,15 @@ account signals (§12.1). Today the `feedback` rows carry `work_key`,
 `performer`; separate artist and album keys come with the library migration
 of `c-dj-taste`. Time-of-day programs set the
 default mood when none is given.
+
+An unreadable feedback history is distinct from an empty history: new starts,
+skips and rehearsals report the failure, while automatic selection retains
+queued music and waits for a successful read with a 30-second retry backoff.
+The last accepted model stays intact, including whole-work exclusions. DJ stop
+remains available. Confirmed explicit and implicit feedback writes stay saved
+when only model readback fails, preventing duplicate signals during recovery.
+New S1/S2 regressions cover failures, recovery and duplicate prevention; their
+Rust execution is still blocked by the dependency-build resource failure.
 
 `dj stop` now checks the current source, selected queue occurrence, retained
 work contents and group incarnation before sending Stop. A source handed to
