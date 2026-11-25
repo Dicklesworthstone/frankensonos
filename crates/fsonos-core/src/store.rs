@@ -523,6 +523,10 @@ pub struct SpotifyLibraryOwner {
 pub struct SpotifyAvailability {
     pub available: Vec<String>,
     pub unavailable: Vec<String>,
+    /// Original catalog receipt when this batch includes retained negative
+    /// evidence. Fresh observations need no additional receipt; other full-read
+    /// fences still apply. A mismatch rejects the entire publication.
+    pub expected_revision: Option<u64>,
 }
 
 /// An artist-discovery cursor update consumed with the accepted library.
@@ -569,6 +573,10 @@ pub struct SpotifyPlaylistPublication {
     /// Fresh denials from these unpublished observations. Additive reads never
     /// clear accepted denials, even when their metadata includes the track.
     pub unavailable: Vec<String>,
+    /// Catalog receipt captured before the fresh negative observations. Kept
+    /// with private progress so a later accepted read cannot be overwritten by
+    /// a delayed denial. Required for nonempty `unavailable`.
+    pub unavailable_revision: Option<u64>,
     pub observations: Vec<SpotifyPlaylistPublicationItem>,
 }
 
@@ -635,8 +643,9 @@ pub trait Store {
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError>;
 
     /// Monotonic revision of the public library, playlist, album and genre catalog.
-    /// A supported store changes it atomically with every catalog write,
-    /// including writes by another connection. Private sync progress, listening
+    /// A supported store changes it atomically with every catalog write and
+    /// accepted fresh positive availability, including across connections. This
+    /// also fences pending denials against newer reads. Private progress, listening
     /// history and artist-genre timestamp-only refreshes do not change this token.
     /// Same-value row rewrites may conservatively advance it. Callers must
     /// bracket a catalog snapshot with equal revisions before reusing it.
@@ -752,7 +761,9 @@ pub trait Store {
     /// a stale cursor leaves the library, all receipts and progress untouched.
     /// Fresh availability changes commit in this same transaction. None (or an
     /// empty delta) preserves prior denials; ordinary candidate rows cannot
-    /// clear them, and denied rows remain ineligible for the DJ.
+    /// clear them, and denied rows remain ineligible for the DJ. A supplied
+    /// availability revision also fences retained negative observations against
+    /// newer accepted evidence, without consuming the completed read on conflict.
     #[allow(clippy::too_many_arguments)]
     fn publish_spotify_library_from_progress(
         &mut self,
@@ -1265,6 +1276,19 @@ fn validate_spotify_availability(
     Ok(())
 }
 
+/// Fresh positives invalidate older unpublished denials even when they do not
+/// change a public row. Contradictory negative evidence still wins.
+fn spotify_available_observed(availability: &SpotifyAvailability) -> bool {
+    if availability.available.is_empty() {
+        return false;
+    }
+    let unavailable: HashSet<_> = availability.unavailable.iter().collect();
+    availability
+        .available
+        .iter()
+        .any(|uri| !unavailable.contains(uri))
+}
+
 fn validate_spotify_artist_discovery(
     owner: &SpotifyLibraryOwner,
     expected: Option<&str>,
@@ -1444,6 +1468,15 @@ fn validate_spotify_playlist_publication(
         &publication.observations,
     )?;
     validate_spotify_availability(&[], &publication.unavailable)?;
+    if !publication.unavailable.is_empty()
+        && publication
+            .unavailable_revision
+            .is_none_or(|revision| i64::try_from(revision).is_err())
+    {
+        return Err(StoreError::Backend(
+            "playlist availability needs a valid observation catalog receipt".into(),
+        ));
+    }
     if !publication.unavailable.is_empty()
         && !publication
             .observations
@@ -2020,8 +2053,17 @@ impl Store for MemStore {
         if self.library_progress_for(&owner.owner_id, Some(owner)) != Some(expected) {
             return Ok(false);
         }
+        if let Some(revision) = availability.and_then(|evidence| evidence.expected_revision)
+            && self.library_catalog_revision()? != Some(revision)
+        {
+            return Ok(false);
+        }
         let availability_changed = if let Some(availability) = availability {
-            self.apply_spotify_availability(&availability.available, &availability.unavailable)?
+            let changed = self.apply_spotify_availability(
+                &availability.available,
+                &availability.unavailable,
+            )?;
+            changed || spotify_available_observed(availability)
         } else {
             false
         };
@@ -2055,7 +2097,9 @@ impl Store for MemStore {
             owner,
             publication.expected_directory.as_deref(),
             &publication.observations,
-        ) {
+        ) || (!publication.unavailable.is_empty()
+            && self.library_catalog_revision()? != publication.unavailable_revision)
+        {
             return Ok(false);
         }
         let mut changed = self.apply_spotify_availability(&[], &publication.unavailable)?;

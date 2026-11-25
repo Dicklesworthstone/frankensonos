@@ -1031,6 +1031,33 @@ fn playlist_evidence_matches(
     Ok(true)
 }
 
+fn catalog_revision_matches(
+    connection: &AsyncConnection,
+    revision: u64,
+) -> Result<bool, FrankenError> {
+    let Ok(revision) = i64::try_from(revision) else {
+        return Ok(false);
+    };
+    let rows = connection.query_with_params_sync(
+        "SELECT singleton FROM library_catalog_clock WHERE singleton = 1 AND revision = ?1",
+        &[revision.into()],
+    )?;
+    Ok(!rows.is_empty())
+}
+
+fn playlist_availability_matches(
+    connection: &AsyncConnection,
+    publication: &SpotifyPlaylistPublication,
+) -> Result<bool, FrankenError> {
+    if publication.unavailable.is_empty() {
+        return Ok(true);
+    }
+    match publication.unavailable_revision {
+        Some(revision) => catalog_revision_matches(connection, revision),
+        None => Ok(false),
+    }
+}
+
 fn write_playlist_evidence(
     connection: &AsyncConnection,
     owner: &SpotifyLibraryOwner,
@@ -1764,12 +1791,18 @@ impl Store for SqliteStore {
             {
                 return Ok(false);
             }
+            if let Some(revision) = availability.and_then(|evidence| evidence.expected_revision)
+                && !catalog_revision_matches(connection, revision)?
+            {
+                return Ok(false);
+            }
             let mut changed = if let Some(availability) = availability {
-                write_spotify_availability(
+                let changed = write_spotify_availability(
                     connection,
                     &availability.available,
                     &availability.unavailable,
-                )?
+                )?;
+                changed || super::spotify_available_observed(availability)
             } else {
                 false
             };
@@ -1809,10 +1842,12 @@ impl Store for SqliteStore {
                 owner,
                 publication.expected_directory.as_deref(),
                 &publication.observations,
-            )? {
+            )? || !playlist_availability_matches(connection, publication)?
+            {
                 return Ok(false);
             }
-            let mut changed = write_spotify_availability(connection, &[], &publication.unavailable)?;
+            let mut changed =
+                write_spotify_availability(connection, &[], &publication.unavailable)?;
             changed |= merge_playlist_library(connection, &publication.entries)?;
             changed |= write_spotify_library(connection, &projection)?;
             changed |= write_playlist_observations(connection, &publication.observations)?;

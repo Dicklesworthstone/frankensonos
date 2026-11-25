@@ -73,6 +73,7 @@ fn publication(entries: Vec<LibraryEntry>) -> SpotifyPlaylistPublication {
         }],
         entries,
         unavailable: Vec::new(),
+        unavailable_revision: None,
     }
 }
 

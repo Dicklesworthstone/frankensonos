@@ -19,11 +19,12 @@ deduplicated, with their taste weights captured by the accepted full refresh.
 Those retained signals also preserve the existing treatment of guest credits.
 
 Each background pass attempts at most 50 artists. Successful artists leave the
-pending set; unavailable or temporarily failed artists yield to later artists,
-retain their accepted cached music, and retry with bounded backoff. A global
-halt or Spotify cooldown does not consume artists whose reads were never
-attempted. Once the pending cohort is empty, automatic sample reads stop until
-another full refresh establishes new work.
+pending set; artists without usable samples yield to later artists and retry
+with bounded backoff. Failed or deferred reads preserve cached music. Fresh
+explicit track denials retire affected candidates through account-bound
+exclusions. A global halt or Spotify cooldown does not consume artists whose
+reads were never attempted. Once the pending cohort is empty, automatic sample
+reads stop until another full refresh establishes new work.
 
 For example, with 120 eligible artists and successful samples, the full refresh
 can sample 50, then two background passes can sample 50 and 20. A restart between

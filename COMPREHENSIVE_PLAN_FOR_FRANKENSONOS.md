@@ -651,8 +651,10 @@ from a genre the DJ was built around.
   new DJ picks cannot revive those old movements from disk. Personal saved
   music and the last full-refresh timestamp remain intact. New timestamp,
   HTTP/SQLite and scheduler regressions await execution because the build
-  runtime became unavailable. Immediate negative evidence learned from other
-  Spotify endpoints still needs a separate account-bound availability model.
+  runtime became unavailable. Account-bound track exclusions from accepted
+  full reads and background artist and playlist observations also prevent
+  older album caches from restoring known unavailable movements; see
+  [Spotify read recovery](docs/SPOTIFY_READ_RECOVERY.md#availability-survives-restarts).
 - Works longer than `max_work_minutes` (default 75: most complete operas
   and Passions) are left out unless the mood allows them. A parsed work is never
   split; titles that don't parse fall back to single-track units.
@@ -723,11 +725,16 @@ their standing preferences on every surface and in the daemon. What is on
   publication cannot. Recording boundaries are selected before unavailable
   movements are removed, and a known missing movement keeps a work partial.
   Changed evidence invalidates the warmed DJ pool through its catalog receipt;
-  account changes retire the prior account's exclusions. Background artist
-  sampling also publishes fresh explicit denials in the same transaction as
-  its music and exact cohort receipt. Negative-only changes invalidate the
-  warmed DJ pool; a newer full refresh or account rejects an older result.
-  Background positives still cannot clear an exclusion. See
+  account changes retire the prior account's exclusions. Background artist and
+  playlist continuation now publish fresh explicit denials in the same
+  transaction as their music, checked against the account and exact receipt.
+  Negative-only changes also invalidate the warmed DJ pool. Playlist checkpoints
+  retain pending denials until their exact window is acknowledged. Their original
+  catalog revision prevents old unpublished evidence from overriding a newer
+  accepted positive observation; a stale proof starts a fresh private scan while
+  retaining the public playlist. Background positives still cannot clear an
+  exclusion; that requires a fresh playable observation accepted by a full
+  refresh. See
   [Spotify read recovery](docs/SPOTIFY_READ_RECOVERY.md#availability-survives-restarts).
 - The library cache records, per track, whether it is a DJ candidate, its
   genres, release year, explicit flag and taste weight (migration 7), and
@@ -823,8 +830,9 @@ their standing preferences on every surface and in the daemon. What is on
   at most 50 artists and samples three tracks per artist with the existing
   top-tracks/catalog fallback. Stable IDs distinguish namesakes; captured taste
   signals retain their weights and guest-credit behavior without rereading saved
-  music or the followed/top directories. Unavailable artists yield to later
-  ones while accepted cached music remains playable. Completed cohorts go idle.
+  music or the followed/top directories. Failed or deferred artist reads yield
+  to later ones and preserve cached music; fresh explicit track denials retire
+  the affected candidates. Completed cohorts go idle.
   Migration 23's existing account-bound opaque progress now retains the finite
   cohort as well as its fair cursor; legacy cursors remain readable and receive
   a cohort at the next full refresh. Additive publication atomically compares

@@ -264,6 +264,7 @@ fn private_writes(store: &mut dyn Store) {
                 &SpotifyPlaylistPublication {
                     entries: Vec::new(),
                     unavailable: Vec::new(),
+                    unavailable_revision: None,
                     playlists: None,
                     observations: Vec::new(),
                     expected_directory: Some("directory".into()),
@@ -471,6 +472,7 @@ fn playlist_publications(store: &mut dyn Store) {
     let publication = SpotifyPlaylistPublication {
         entries: vec![row.clone()],
         unavailable: Vec::new(),
+        unavailable_revision: None,
         playlists: Some(vec![(PLAYLIST.into(), "Name".into())]),
         observations: vec![SpotifyPlaylistPublicationItem {
             contents: observation(std::slice::from_ref(&row), true),
@@ -506,6 +508,7 @@ fn playlist_publications(store: &mut dyn Store) {
     let partial = SpotifyPlaylistPublication {
         entries: vec![row.clone()],
         unavailable: Vec::new(),
+        unavailable_revision: None,
         playlists: None,
         observations: vec![SpotifyPlaylistPublicationItem {
             contents: observation(std::slice::from_ref(&row), false),

@@ -47,6 +47,14 @@ struct Progress {
     #[serde(default)]
     limited: bool,
     tracks: Vec<Occurrence>,
+    /// Denials in accepted windows still awaiting their public transaction.
+    /// The acknowledgement clears these so later reuse cannot replay them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unavailable: Vec<String>,
+    /// Public catalog observed before these pages were read. A later full
+    /// refresh may restore a track; an older unpublished denial must be reread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unavailable_revision: Option<u64>,
 }
 
 fn version(value: &str) -> bool {
@@ -68,6 +76,8 @@ impl Progress {
             refresh_offset: 0,
             limited: false,
             tracks: Vec::new(),
+            unavailable: Vec::new(),
+            unavailable_revision: None,
         }
     }
 
@@ -78,6 +88,10 @@ impl Progress {
             || !version(&self.snapshot_id)
             || (self.limited && self.complete)
             || self.examined > MAX_PLAYLIST_ENTRIES
+            || self.unavailable.len() > MAX_PLAYLIST_ENTRIES as usize
+            || (self.applied && !self.unavailable.is_empty())
+            || (!self.unavailable.is_empty() && self.unavailable_revision.is_none())
+            || self.unavailable.iter().any(|uri| !super::valid_track_uri(uri))
             || (self.refresh_offset != 0
                 && (!self.complete || self.refresh_offset >= self.examined))
             || self.source_total.is_some_and(|total| {
@@ -97,9 +111,15 @@ impl Progress {
         })
     }
 
+    fn denials_are_current(&self, revision: Option<u64>) -> bool {
+        self.unavailable.is_empty()
+            || (revision.is_some() && self.unavailable_revision == revision)
+    }
+
     fn append(
         &mut self,
         entries: Observation<serde_json::Value>,
+        revision: Option<u64>,
     ) -> Result<Vec<String>, SpotifyError> {
         let mut tracks = Vec::new();
         let mut unavailable = Vec::new();
@@ -121,6 +141,17 @@ impl Progress {
                 tracks.push(Occurrence { position, item });
             }
         }
+        if !unavailable.is_empty() {
+            if revision.is_none() || !self.denials_are_current(revision) {
+                return Err(SpotifyError::Decode(
+                    "the playlist availability window has no current catalog revision".into(),
+                ));
+            }
+            self.unavailable_revision = revision;
+        }
+        self.unavailable.extend(unavailable.iter().cloned());
+        self.unavailable.sort_unstable();
+        self.unavailable.dedup();
         self.tracks.extend(tracks);
         self.examined = entries.examined;
         self.source_total = entries.source_total;
@@ -249,12 +280,16 @@ pub(super) fn publication(
     if progress.limited
         || progress.observation(contents.fetched_at) != *contents
         || progress.snapshot_id != observation.snapshot_id
+        || progress.unavailable != observation.unavailable
+        || progress.unavailable_revision != observation.unavailable_revision
     {
         return Err(StoreError::Backend(
             "playlist publication differs from its accepted checkpoint".into(),
         ));
     }
     progress.applied = true;
+    progress.unavailable.clear();
+    progress.unavailable_revision = None;
     let applied =
         serde_json::to_string(&progress).map_err(|error| StoreError::Backend(error.to_string()))?;
     Ok(Some(SpotifyPlaylistPublicationItem {
@@ -358,6 +393,17 @@ impl Reader<'_> {
                 return None;
             }
         };
+        let revision = match store.library_catalog_revision() {
+            Ok(revision) => revision,
+            Err(error) => {
+                self.playlist_failed(error);
+                return None;
+            }
+        };
+        // Keep the public last-good contents, but reobserve an unpublished
+        // denial superseded by any catalog publication. Never attach old
+        // negative evidence to a newly read directory or revision.
+        let previous = previous.filter(|progress| progress.denials_are_current(revision));
         let checkpoint = Checkpoint {
             owner: receipt,
             expected,
@@ -393,7 +439,7 @@ impl Reader<'_> {
                 // that whole proof instead of turning a long complete list into
                 // a prefix and preventing authoritative library reconciliation.
                 return self
-                    .refresh_snapshot(store, &checkpoint, progress, pages, now)
+                    .refresh_snapshot(store, &checkpoint, progress, pages, now, revision)
                     .await;
             }
             previous => previous,
@@ -422,7 +468,7 @@ impl Reader<'_> {
             return None;
         }
         let failed = entries.failed;
-        let unavailable = match progress.append(entries) {
+        let unavailable = match progress.append(entries, revision) {
             Ok(unavailable) => unavailable,
             Err(error) => {
                 self.playlist_failed(error);
@@ -458,6 +504,7 @@ impl Reader<'_> {
         mut progress: Progress,
         pages: usize,
         now: i64,
+        revision: Option<u64>,
     ) -> Option<(Progress, bool, Option<String>)> {
         let id = progress
             .playlist_uri
@@ -498,7 +545,7 @@ impl Reader<'_> {
             &progress.snapshot_id,
         );
         window.examined = first;
-        let unavailable = match window.append(entries) {
+        let unavailable = match window.append(entries, revision) {
             Ok(unavailable) => unavailable,
             Err(error) => {
                 self.playlist_failed(error);
@@ -516,6 +563,12 @@ impl Reader<'_> {
             .map(|entry| entry.item.source_uri.clone())
             .collect();
         progress.tracks.extend(window.tracks);
+        if !window.unavailable.is_empty() {
+            progress.unavailable_revision = window.unavailable_revision;
+        }
+        progress.unavailable.extend(window.unavailable);
+        progress.unavailable.sort_unstable();
+        progress.unavailable.dedup();
         progress.tracks.sort_by_key(|entry| entry.position);
         progress.refresh_offset = if window.complete { 0 } else { window.examined };
         progress.source_total = window.source_total;
@@ -569,6 +622,14 @@ impl Reader<'_> {
         if !progress.complete || progress.limited || progress.snapshot_id != snapshot {
             return None;
         }
+        match store.library_catalog_revision() {
+            Ok(revision) if progress.denials_are_current(revision) => {}
+            Ok(_) => return None,
+            Err(error) => {
+                self.playlist_failed(error);
+                return None;
+            }
+        }
         let (tracks, observation) = project(progress, list, named, false, encoded);
         self.read.playlist_tracks += tracks.len();
         Some((tracks, observation))
@@ -601,6 +662,8 @@ impl Reader<'_> {
             progress.limited = true;
             progress.complete = false;
             progress.tracks.clear();
+            progress.unavailable.clear();
+            progress.unavailable_revision = None;
             match serde_json::to_string(&progress) {
                 Ok(marker) => {
                     self.save_checkpoint(store, checkpoint, &progress, &marker);
@@ -687,6 +750,8 @@ fn project(
         progress: encoded,
         applied: progress.applied,
         failed,
+        unavailable: progress.unavailable.clone(),
+        unavailable_revision: progress.unavailable_revision,
     };
     let stated = crate::genre_guess::from_name(&list.name);
     let tracks = progress

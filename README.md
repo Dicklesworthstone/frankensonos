@@ -848,7 +848,8 @@ weights without rereading saved music or the artist directories. Publication
 adds playable samples while preserving current saved-track metadata and stronger
 weights; the account generation, exact prior progress and new music commit
 together. Failed or superseded passes cannot skip a batch or overwrite a newer
-account. Cached samples for deferred or unavailable artists remain playable.
+account. Failed or deferred artist reads preserve cached music. Fresh explicit
+track denials retire affected candidates through account-bound exclusions.
 CLI, HTTP, MCP and the web sync panel show artist-sampling progress separately
 from the last full refresh. This remains a bounded sample of each artist's
 catalog, with the existing catalog fallback when top tracks are unavailable.

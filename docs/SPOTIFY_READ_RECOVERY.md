@@ -78,8 +78,8 @@ the accepted account. This includes unavailable liked tracks and fresh taste
 observations, even when those tracks contribute no playable library row.
 Migration 25 stores the exclusions beside the local library. Publication changes
 them in the same transaction as the library and its saved-read, playlist and
-artist receipts. An incomplete scan, malformed response, or stale publication
-cannot replace the accepted evidence.
+artist receipts. An incomplete essential saved-library scan, malformed
+observation, or stale publication cannot replace accepted evidence.
 
 This matters when the DJ completes a liked classical movement from an older
 album cache: the cache cannot put an excluded movement back into the work.
@@ -95,14 +95,27 @@ album-cache refreshes and additive background readers retain prior exclusions
 instead of treating older positive metadata as new permission. A change to the
 accepted Spotify account clears the previous account's exclusions.
 
-Background artist sampling also publishes fresh explicit denials, including a
-pass that returns no playable tracks. The denials, accepted music and exact
-cohort receipt commit together under the current account. A negative-only change
-advances the catalog revision, so a warmed DJ pool stops selecting that track
-without waiting for a full library refresh. A newer full refresh or account
-change rejects an older in-flight artist result. Background positive metadata
-cannot clear an exclusion; that still requires a fresh playable observation
-accepted by a full refresh.
+Background artist sampling and playlist completion also publish fresh explicit
+denials, including a pass that returns no playable tracks. The denials, accepted
+music and exact continuation receipt commit together under the current account.
+A negative-only change advances the catalog revision, so a warmed DJ pool stops
+selecting that track without waiting for a full library refresh. Background
+positive metadata cannot clear an exclusion; that still requires a fresh
+playable observation accepted by a full refresh.
+
+A playlist window retains its pending denials in the private checkpoint until
+publication acknowledges that exact window. An interrupted publication can
+therefore resume without losing the evidence. Consumed windows do not replay
+old denials after a newer accepted full refresh restores a track. The checkpoint
+also retains the catalog revision observed before its provider read. If newer
+accepted evidence changes that revision before an unpublished window is reused,
+the reader starts a new private scan while retaining the last public playlist.
+Publication checks the same revision inside the transaction, closing the race
+between validation and the write. A full refresh that accepts a fresh positive
+observation advances the catalog revision even when its visible rows do not
+change.
+Competing account changes or advanced receipts reject the entire stale
+publication.
 
 Saved-library checkpoints include unavailable identities in their page proofs.
 Version 2 checkpoints verify those identities when resuming; an older private
@@ -151,6 +164,14 @@ These new receipt, watcher and catalog tests await Rust execution: the
 implementation environment filled during dependency compilation and became
 unavailable before the project test binaries could run.
 
+Background-availability regressions cover artist reads returning only denied
+tracks, persistence after SQLite reopen, warm and cold DJ pool invalidation,
+stale account and cohort rejection, bounded evidence, and transaction rollback.
+Playlist cases cover interrupted publication, consumed-proof reuse, newer
+positive evidence, and a competing publication after the read. These Rust tests
+were added and reviewed, but could not run before the execution workspace
+became unavailable; compilation, formatting and runtime validation remain pending.
+
 The focused filters below exercise this behavior; live Spotify operation and
 physical-speaker acceptance are separate. The stalled-body
 case uses an interruptible 30-second scripted body against a one-second total
@@ -159,6 +180,9 @@ budget, so loaded-host scheduling cannot turn it into a zero-request race. Run:
 ```sh
 cargo test -p fsonos-spotify client::tests::
 cargo test -p fsonos-spotify session::
+cargo test -p fsonos-core --test spotify_availability_store
+cargo test -p fsonos-spotify artist_rotation::continuation::
+cargo test -p fsonos-spotify playlist_continuation::availability::
 cargo test -p fsonos-cli dj::sync::
 cargo test -p fsonos-cli dj::catalog::
 cargo fmt --check

@@ -164,7 +164,9 @@ A missing directory version, changed snapshot, incomplete or capped checkpoint,
 or failed read does not establish absence. The sync preserves prior taste
 candidates until the full set of granted signals is authoritative. Saved and
 liked music, top/recent tracks and unread-artist retention continue through
-the same full-library projection; playlist evidence alone cannot retire them.
+the same full-library projection; playlist membership changes alone cannot
+retire them. Fresh explicit track availability denials use the shared
+account-bound exclusions and can retire affected candidates across these origins.
 
 ### The daemon completes unfinished reads in the background
 

@@ -205,9 +205,43 @@ pub(crate) struct PlaylistObservation {
     /// A failed refresh preserves the last useful observation. Partial
     /// windows never replace an already complete published observation.
     pub(crate) failed: bool,
+    /// Explicit denials whose saved window has not yet been published. They
+    /// travel with that exact private checkpoint, never an applied cached list.
+    pub(crate) unavailable: Vec<String>,
+    pub(crate) unavailable_revision: Option<u64>,
 }
 
 impl Taste {
+    pub(crate) fn pending_playlist_denials(
+        &self,
+        revision: Option<u64>,
+    ) -> Result<Vec<String>, SpotifyError> {
+        let mut denied = HashSet::new();
+        for observation in &self.playlist_contents {
+            if observation.failed || observation.applied || observation.progress.is_none() {
+                continue;
+            }
+            if !observation.unavailable.is_empty()
+                && (revision.is_none() || observation.unavailable_revision != revision)
+            {
+                return Err(SpotifyError::Decode(
+                    "the catalog changed since the playlist availability observations; reread the pending window".into(),
+                ));
+            }
+            for uri in &observation.unavailable {
+                denied.insert(uri.clone());
+                if denied.len() > MAX_UNAVAILABLE_TRACKS {
+                    return Err(SpotifyError::Decode(
+                        "unavailable-track evidence exceeded its 10,000-identity limit; playlist publication was not accepted".into(),
+                    ));
+                }
+            }
+        }
+        let mut denied: Vec<_> = denied.into_iter().collect();
+        denied.sort_unstable();
+        Ok(denied)
+    }
+
     fn track(&mut self, item: LibraryItem, pm: u32) {
         lift(&mut self.track_pm, &item.source_uri, pm);
         self.tracks.push(item);
@@ -610,12 +644,14 @@ impl Reader<'_> {
     }
 }
 
+fn valid_track_uri(uri: &str) -> bool {
+    uri.strip_prefix("spotify:track:").is_some_and(|id| {
+        !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    })
+}
+
 fn valid_taste_track(item: &LibraryItem) -> bool {
-    item.source_uri
-        .strip_prefix("spotify:track:")
-        .is_some_and(|id| {
-            !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
-        })
+    valid_track_uri(&item.source_uri)
         && std::iter::once(item.title.as_str())
             .chain(item.artists.iter().map(String::as_str))
             .chain(item.album.as_deref())

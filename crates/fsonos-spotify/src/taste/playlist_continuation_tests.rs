@@ -10,6 +10,9 @@ const OWNER: &str = "test-owner";
 const ID: &str = "BackgroundLong";
 const URI: &str = "spotify:playlist:BackgroundLong";
 
+#[path = "playlist_availability_tests.rs"]
+mod availability;
+
 fn populate(server: &Server, snapshot: &str, total: usize, first: usize) {
     server.set(
         "/v1/me/playlists",

@@ -20,8 +20,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Finish only unread or unfinished playlist snapshots for the last full
 /// sync's owner. It reads the directory and at most 25 bounded windows; no
 /// saved albums/likes, top items, artist endpoints or speaker calls occur.
-/// Existing candidates and their weights survive this additive enrichment.
-/// Only a full sync has authority to retire music absent from the account.
+/// Existing candidates and their weights survive this additive enrichment,
+/// except tracks Spotify explicitly denies in a verified window. Only a full
+/// sync has authority to retire music merely absent from the account.
 /// Album completion shares the full sync's separate bounded page allowance.
 pub async fn continue_playlists<S: Store + ?Sized>(
     session: &mut Session,
@@ -160,6 +161,13 @@ pub(super) fn publish_playlist_read<S: Store + ?Sized>(
         None,
         &taste.playlist_contents,
     )?;
+    let revision = store.library_catalog_revision()?;
+    let unavailable = taste.pending_playlist_denials(revision)?;
+    let unavailable_revision = if unavailable.is_empty() {
+        None
+    } else {
+        revision
+    };
     let supported: HashSet<&str> = fence
         .observations
         .iter()
@@ -185,7 +193,8 @@ pub(super) fn publish_playlist_read<S: Store + ?Sized>(
         playlists: taste.playlists.clone(),
         entries,
         observations: fence.observations,
-        unavailable: Vec::new(),
+        unavailable,
+        unavailable_revision,
     };
     if store.publish_spotify_playlist_continuation(owner, &publication)? {
         taste.directory = directory;

@@ -296,7 +296,15 @@ async fn sync_library_observed<S: Store + ?Sized>(
             "playable-track evidence exceeded its 100,000-identity limit; the library refresh was not published".into(),
         ));
     }
-    let availability = availability_for_read(&items, &saved.unavailable, &read);
+    let availability_revision = store.library_catalog_revision()?;
+    let pending_denials = taste.pending_playlist_denials(availability_revision)?;
+    let availability = availability_for_read(
+        &items,
+        &saved.unavailable,
+        &read,
+        &pending_denials,
+        availability_revision,
+    );
     let mut unavailable = store.spotify_unavailable_tracks()?;
     for uri in &availability.available {
         unavailable.remove(uri);
@@ -380,9 +388,11 @@ fn availability_for_read(
     saved: &[LibraryItem],
     saved_unavailable: &[String],
     read: &TasteRead,
+    pending_denials: &[String],
+    revision: Option<u64>,
 ) -> SpotifyAvailability {
     let saved: HashSet<String> = saved.iter().map(|item| item.source_uri.clone()).collect();
-    let unavailable: HashSet<String> = saved_unavailable
+    let mut unavailable: HashSet<String> = saved_unavailable
         .iter()
         .chain(&read.unavailable)
         // Preserve the existing priority of fresh saved music over an
@@ -395,9 +405,20 @@ fn availability_for_read(
         .chain(read.available.iter().cloned())
         .filter(|uri| !unavailable.contains(uri))
         .collect();
+    // Retained windows can supply denials after interruption, but fresh
+    // observations take precedence. Any denial relying only on an older
+    // window keeps its original catalog fence through the final transaction.
+    let retained: Vec<_> = pending_denials
+        .iter()
+        .filter(|uri| !available.contains(*uri) && !unavailable.contains(*uri))
+        .cloned()
+        .collect();
+    let expected_revision = if retained.is_empty() { None } else { revision };
+    unavailable.extend(retained);
     SpotifyAvailability {
         available: available.into_iter().collect(),
         unavailable: unavailable.into_iter().collect(),
+        expected_revision,
     }
 }
 

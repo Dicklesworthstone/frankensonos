@@ -75,6 +75,8 @@ fn stage_playlist(store: &mut dyn Store, owner: &SpotifyLibraryOwner, numbers: &
         progress: Some(progress),
         applied: false,
         failed: false,
+        unavailable: Vec::new(),
+        unavailable_revision: None,
     });
     let directory = json!({
         "version": 1, "owner_id": OWNER, "generation": owner.generation,
@@ -274,4 +276,35 @@ fn essential_publication_requires_the_exact_read_and_playlist_directory() {
     let pool = pool_from_store(&store).unwrap();
     assert_eq!(pool.len(), 1);
     assert!(pool.get(&song(3).source_uri).is_some());
+}
+
+#[test]
+fn full_refresh_retained_denials_keep_their_epoch_until_fresh_observations_replace_them() {
+    let item = song(1);
+    let pending = vec![item.source_uri.clone()];
+    let mut read = TasteRead::default();
+    let availability = availability_for_read(&[], &[], &read, &pending, Some(17));
+    assert_eq!(availability.unavailable, pending);
+    assert_eq!(availability.expected_revision, Some(17));
+
+    read.available.insert(item.source_uri.clone());
+    let availability = availability_for_read(&[], &[], &read, &pending, Some(17));
+    assert!(availability.unavailable.is_empty());
+    assert_eq!(availability.available, pending);
+    assert_eq!(availability.expected_revision, None);
+
+    // Current negative evidence wins over an optional positive response, but
+    // does not rely on the retained proof's earlier catalog revision.
+    read.unavailable.insert(item.source_uri.clone());
+    let availability = availability_for_read(&[], &[], &read, &pending, Some(17));
+    assert_eq!(availability.unavailable, pending);
+    assert!(availability.available.is_empty());
+    assert_eq!(availability.expected_revision, None);
+
+    // The existing full-refresh precedence of fresh personal saved music
+    // over contradictory optional-source metadata is preserved.
+    let availability = availability_for_read(&[item], &[], &read, &pending, Some(17));
+    assert!(availability.unavailable.is_empty());
+    assert_eq!(availability.available, pending);
+    assert_eq!(availability.expected_revision, None);
 }

@@ -63,6 +63,8 @@ fn prepare_competing_window(
         progress: Some(encoded),
         applied: false,
         failed: false,
+        unavailable: Vec::new(),
+        unavailable_revision: None,
     };
     let directory = store.spotify_playlist_directory(&owner).unwrap();
     let (fence, _) = crate::taste::prepare_playlist_publication(
@@ -86,6 +88,7 @@ fn prepare_competing_window(
             entries,
             observations: fence.observations,
             unavailable: Vec::new(),
+            unavailable_revision: None,
         },
     )
 }

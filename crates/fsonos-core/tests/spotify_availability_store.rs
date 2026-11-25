@@ -36,6 +36,7 @@ fn delta(available: &[&str], unavailable: &[&str]) -> SpotifyAvailability {
     SpotifyAvailability {
         available: available.iter().map(|uri| (*uri).into()).collect(),
         unavailable: unavailable.iter().map(|uri| (*uri).into()).collect(),
+        expected_revision: None,
     }
 }
 
@@ -288,11 +289,12 @@ fn both_backends_accept_artist_denials_without_waiting_for_a_full_refresh() {
     artist_denials_publish_before_metadata(&mut SqliteStore::open_in_memory().unwrap());
 }
 
-fn pending_playlist_denial() -> SpotifyPlaylistPublication {
+fn pending_playlist_denial(revision: Option<u64>) -> SpotifyPlaylistPublication {
     SpotifyPlaylistPublication {
         expected_directory: Some("directory before".into()),
         directory: Some("directory after".into()),
         unavailable: vec![URI.into()],
+        unavailable_revision: revision,
         observations: vec![SpotifyPlaylistPublicationItem {
             contents: CachedPlaylist::new(PLAYLIST.into(), 20, Some(2), 1, false, Vec::new()),
             expected_progress: "unpublished snapshot".into(),
@@ -321,7 +323,7 @@ fn playlist_denials_publish_without_replacing_complete_contents(store: &mut dyn 
     stage_playlist(store, &owner);
     let complete = CachedPlaylist::new(PLAYLIST.into(), 10, Some(0), 0, true, Vec::new());
     store.save_playlist_contents(&complete).unwrap();
-    let mut publication = pending_playlist_denial();
+    let mut publication = pending_playlist_denial(store.library_catalog_revision().unwrap());
     let clock = store.library_catalog_revision().unwrap().unwrap();
     assert!(
         store
@@ -339,9 +341,20 @@ fn playlist_denials_publish_without_replacing_complete_contents(store: &mut dyn 
             .as_deref(),
         Some("published snapshot")
     );
+    assert!(
+        store
+            .save_spotify_playlist_progress(
+                &owner,
+                PLAYLIST,
+                Some("published snapshot"),
+                "repeated fresh observation",
+            )
+            .unwrap()
+    );
+    publication.unavailable_revision = store.library_catalog_revision().unwrap();
     publication.expected_directory = publication.directory.clone();
     publication.directory = Some("repeated denial directory".into());
-    publication.observations[0].expected_progress = "published snapshot".into();
+    publication.observations[0].expected_progress = "repeated fresh observation".into();
     publication.observations[0].applied_progress = "repeated denial snapshot".into();
     assert!(
         store
@@ -398,7 +411,7 @@ fn background_denials_require_current_receipts(store: &mut dyn Store) {
     let owner = store.adopt_spotify_library_owner(ACCOUNT).unwrap().0;
     store.upsert_library(&[entry()]).unwrap();
     stage_playlist(store, &owner);
-    let publication = pending_playlist_denial();
+    let publication = pending_playlist_denial(store.library_catalog_revision().unwrap());
     let fence = SpotifyArtistDiscoveryFence {
         expected: None,
         progress: "new artist receipt".into(),
@@ -451,11 +464,128 @@ fn both_backends_reject_stale_background_denials_atomically() {
     background_denials_require_current_receipts(&mut SqliteStore::open_in_memory().unwrap());
 }
 
+fn positive_only_refresh_supersedes_pending_playlist_denials(store: &mut dyn Store) {
+    let owner = store.adopt_spotify_library_owner(ACCOUNT).unwrap().0;
+    store.upsert_library(&[entry()]).unwrap();
+    stage_playlist(store, &owner);
+    let mut publication = pending_playlist_denial(store.library_catalog_revision().unwrap());
+    let rows = store.library().unwrap();
+    let revision = store.library_catalog_revision().unwrap().unwrap();
+    stage(store, &owner);
+    assert!(publish(store, &owner, &[], Some(&delta(&[URI], &[]))));
+    assert_eq!(store.library().unwrap(), rows);
+    assert_eq!(
+        store.library_catalog_revision().unwrap(),
+        Some(revision + 1),
+        "accepted positive observations fence old negatives without changing rows"
+    );
+    let before = background_state(store, &owner);
+    assert!(
+        !store
+            .publish_spotify_playlist_continuation(&owner, &publication)
+            .unwrap()
+    );
+    assert_eq!(background_state(store, &owner), before);
+
+    // A genuinely new observation can still remove eligibility after a later
+    // provider restriction. Its private proof and original revision are new.
+    assert!(
+        store
+            .save_spotify_playlist_progress(
+                &owner,
+                PLAYLIST,
+                Some("unpublished snapshot"),
+                "fresh negative observation",
+            )
+            .unwrap()
+    );
+    publication.observations[0].expected_progress = "fresh negative observation".into();
+    publication.observations[0].applied_progress = "fresh negative accepted".into();
+    publication.unavailable_revision = store.library_catalog_revision().unwrap();
+    assert!(
+        store
+            .publish_spotify_playlist_continuation(&owner, &publication)
+            .unwrap()
+    );
+    assert!(store.spotify_unavailable_tracks().unwrap().contains(URI));
+    assert!(!store.library().unwrap()[0].is_candidate());
+}
+
+#[test]
+fn both_backends_fence_pending_denials_against_positive_only_refreshes() {
+    positive_only_refresh_supersedes_pending_playlist_denials(&mut MemStore::default());
+    positive_only_refresh_supersedes_pending_playlist_denials(
+        &mut SqliteStore::open_in_memory().unwrap(),
+    );
+}
+
+fn full_refresh_fences_retained_negative_observations(store: &mut dyn Store) {
+    let owner = store.adopt_spotify_library_owner(ACCOUNT).unwrap().0;
+    store.upsert_library(&[entry()]).unwrap();
+    let retained = SpotifyAvailability {
+        unavailable: vec![URI.into()],
+        expected_revision: store.library_catalog_revision().unwrap(),
+        ..SpotifyAvailability::default()
+    };
+    stage(store, &owner);
+    assert!(publish(store, &owner, &[], Some(&delta(&[URI], &[]))));
+    // The essential read is current, but the optional playlist observation was
+    // retained before the newer full read accepted a fresh playable response.
+    stage(store, &owner);
+    let before = background_state(store, &owner);
+    assert!(!publish(store, &owner, &[entry()], Some(&retained)));
+    assert_eq!(background_state(store, &owner), before);
+    assert_eq!(
+        store
+            .spotify_library_progress(ACCOUNT, Some(&owner))
+            .unwrap()
+            .as_deref(),
+        Some(PROOF)
+    );
+    assert!(publish(store, &owner, &[entry()], None));
+}
+
+#[test]
+fn both_backends_reject_stale_retained_denials_in_full_publications() {
+    full_refresh_fences_retained_negative_observations(&mut MemStore::default());
+    full_refresh_fences_retained_negative_observations(
+        &mut SqliteStore::open_in_memory().unwrap(),
+    );
+}
+
+#[test]
+fn sqlite_checks_negative_observation_revision_across_connections() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("background-availability-race.db");
+    let mut delayed = SqliteStore::open(&file).unwrap();
+    let owner = delayed.adopt_spotify_library_owner(ACCOUNT).unwrap().0;
+    delayed.upsert_library(&[entry()]).unwrap();
+    stage_playlist(&mut delayed, &owner);
+    let publication = pending_playlist_denial(delayed.library_catalog_revision().unwrap());
+    let mut current = SqliteStore::open(&file).unwrap();
+    stage(&mut current, &owner);
+    assert!(publish(
+        &mut current,
+        &owner,
+        &[],
+        Some(&delta(&[URI], &[]))
+    ));
+    let before = background_state(&delayed, &owner);
+    assert!(
+        !delayed
+            .publish_spotify_playlist_continuation(&owner, &publication)
+            .unwrap()
+    );
+    assert_eq!(background_state(&delayed, &owner), before);
+    current.close().unwrap();
+    delayed.close().unwrap();
+}
+
 fn background_denials_validate_before_consuming_receipts(store: &mut dyn Store) {
     let owner = store.adopt_spotify_library_owner(ACCOUNT).unwrap().0;
     store.upsert_library(&[entry()]).unwrap();
     stage_playlist(store, &owner);
-    let publication = pending_playlist_denial();
+    let publication = pending_playlist_denial(store.library_catalog_revision().unwrap());
     let fence = SpotifyArtistDiscoveryFence {
         expected: None,
         progress: "new artist receipt".into(),
@@ -474,6 +604,15 @@ fn background_denials_validate_before_consuming_receipts(store: &mut dyn Store) 
         );
         let mut invalid = publication.clone();
         invalid.unavailable = vec![uri.into()];
+        assert!(
+            store
+                .publish_spotify_playlist_continuation(&owner, &invalid)
+                .is_err()
+        );
+    }
+    for revision in [None, Some(u64::try_from(i64::MAX).unwrap() + 1)] {
+        let mut invalid = publication.clone();
+        invalid.unavailable_revision = revision;
         assert!(
             store
                 .publish_spotify_playlist_continuation(&owner, &invalid)
@@ -614,6 +753,7 @@ fn oversized_availability_does_not_consume_a_completed_proof() {
     let oversized = SpotifyAvailability {
         available: vec![String::new(); MAX_SPOTIFY_AVAILABILITY_ENTRIES + 1],
         unavailable: Vec::new(),
+        expected_revision: None,
     };
     let failure = store
         .publish_spotify_library_from_progress(
@@ -645,7 +785,7 @@ fn oversized_background_denials_leave_both_readers_unacknowledged() {
     let owner = store.adopt_spotify_library_owner(ACCOUNT).unwrap().0;
     store.upsert_library(&[entry()]).unwrap();
     stage_playlist(&mut store, &owner);
-    let mut publication = pending_playlist_denial();
+    let mut publication = pending_playlist_denial(store.library_catalog_revision().unwrap());
     publication.unavailable = vec![String::new(); MAX_SPOTIFY_AVAILABILITY_ENTRIES + 1];
     let before = background_state(&store, &owner);
     assert!(
@@ -681,9 +821,10 @@ fn sqlite_background_denials_and_consumed_receipts_survive_restart() {
     let owner = store.adopt_spotify_library_owner(ACCOUNT).unwrap().0;
     store.upsert_library(&[entry()]).unwrap();
     stage_playlist(&mut store, &owner);
+    let publication = pending_playlist_denial(store.library_catalog_revision().unwrap());
     assert!(
         store
-            .publish_spotify_playlist_continuation(&owner, &pending_playlist_denial())
+            .publish_spotify_playlist_continuation(&owner, &publication)
             .unwrap()
     );
     assert!(
@@ -720,6 +861,7 @@ fn sqlite_background_failure_rolls_back_denials_candidates_and_receipts() {
     store.upsert_library(&[entry()]).unwrap();
     stage_playlist(&mut store, &owner);
     let before = store.library().unwrap();
+    let publication = pending_playlist_denial(store.library_catalog_revision().unwrap());
     let raw = fsqlite::AsyncConnection::open_sync(file.to_string_lossy()).unwrap();
     // Force failure after the denial, candidate retirement and receipt writes.
     raw.execute_sync("DROP TABLE library_catalog_clock").unwrap();
@@ -741,7 +883,7 @@ fn sqlite_background_failure_rolls_back_denials_candidates_and_receipts() {
     assert_eq!(store.spotify_artist_discovery(&owner).unwrap(), None);
     assert!(
         store
-            .publish_spotify_playlist_continuation(&owner, &pending_playlist_denial())
+            .publish_spotify_playlist_continuation(&owner, &publication)
             .is_err()
     );
     assert!(store.spotify_unavailable_tracks().unwrap().is_empty());
