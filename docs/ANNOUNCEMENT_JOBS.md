@@ -129,6 +129,24 @@ while the job phase is `cancelled`. A cancellation with incomplete restoration
 ends as `failed` and preserves those reasons. Inspect the final receipt before
 assuming the earlier playback and volume were restored everywhere.
 
+A speaker's `ERROR_OCCURRED` status ends delivery as a failure even when its
+transport state still says playing or transitioning, or has already stopped.
+The daemon confirms that the failed source is still its announcement, then
+starts the existing ownership-checked restoration without waiting for the full
+clip deadline. Status-only GENA events trigger that confirmation too. Newer
+manual sources, pauses and grouping changes retain their usual protection.
+The failed clip is not replayed. A background job ends as `failed` even when
+all original music and levels were restored; inspect the per-household report
+to distinguish delivery failure from incomplete restoration.
+
+Regression coverage includes direct S1/S2 status combinations, accepted GENA
+errors, an intervening source event and the public background-job receipt. Run
+`cargo test -p fsonos-core --test announce_events_sim`,
+`cargo test -p fsonos-core --lib announce::watch` and
+`cargo test -p fsonos-api --lib renderer_errors_finish_background_jobs`.
+These Rust cases remain unexecuted locally: the pinned `asupersync` dependency
+compiler was killed before the workspace check reached project code.
+
 ## Phone remote and dashboard
 
 Both announcement panels submit once, display the accepted job, and expose

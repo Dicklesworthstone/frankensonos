@@ -22,6 +22,19 @@ pub(super) enum Interrupted {
     /// The players stopped answering (a Wi-Fi drop). The put-back checks for
     /// itself what the announcement still owns once they answer again.
     Unanswered(String),
+    /// The still-owned clip failed at the renderer. Restore its snapshots,
+    /// but never report delivery or replay the failed source.
+    Failed(String),
+}
+
+impl Interrupted {
+    fn with_failure(self, failure: &str) -> Self {
+        match self {
+            Self::LeaveAlone(why) => Self::LeaveAlone(format!("{failure}; {why}")),
+            Self::Unanswered(why) => Self::Unanswered(format!("{failure}; {why}")),
+            Self::Failed(why) => Self::Failed(format!("{failure}; {why}")),
+        }
+    }
 }
 
 impl From<CoreError> for Interrupted {
@@ -101,13 +114,23 @@ impl<T: Transport + ?Sized> Watch<'_, T> {
         // Read identity after state, so a source change during that read wins.
         let read = soap::get_transport_info(self.transport, self.host)
             .map_err(Interrupted::from)
-            .and_then(|info| self.owns_source().map(|()| info.state));
-        let state = match read {
-            Ok(state) => state,
+            .and_then(|info| self.owns_source().map(|()| info));
+        let info = match read {
+            Ok(info) => info,
             // A player may finish the clip while temporarily unreachable.
             Err(Interrupted::Unanswered(_)) if !self.remaining().is_zero() => return Ok(None),
             Err(interrupted) => return Err(interrupted),
         };
+        let state = info.state;
+        // Status is independent of state: a failed clip can still say
+        // PLAYING/TRANSITIONING, or reach STOPPED without having delivered.
+        // An explicit newer pause keeps its existing leave-alone semantics.
+        if info.status == "ERROR_OCCURRED" && state != TransportState::Paused {
+            return Err(Interrupted::Failed(
+                "announcement renderer reported ERROR_OCCURRED; delivery failed and the clip was not replayed"
+                    .into(),
+            ));
+        }
         self.observed = Some(state);
         // A manual pause retains its existing supersession semantics even
         // when a cancellation request happens at the same time.
@@ -133,7 +156,7 @@ impl<T: Transport + ?Sized> Watch<'_, T> {
         Ok(None)
     }
 
-    fn cancellation_state(&self) -> Result<TransportState, Interrupted> {
+    fn stoppable_state(&self) -> Result<TransportState, Interrupted> {
         self.owns_group()?;
         let state = soap::get_transport_info(self.transport, self.host)?.state;
         self.owns_source()?;
@@ -142,18 +165,18 @@ impl<T: Transport + ?Sized> Watch<'_, T> {
                 Ok(state)
             }
             TransportState::Paused => Err(Interrupted::LeaveAlone(
-                "announcement was paused; cancellation left the newer intent alone".into(),
+                "announcement was paused; its newer playback intent was left alone".into(),
             )),
             TransportState::Unknown => Err(Interrupted::LeaveAlone(
-                "announcement transport is unknown; cancellation left playback alone".into(),
+                "announcement transport is unknown; playback was left alone".into(),
             )),
         }
     }
 
     /// Stop exactly once after fresh ownership reads. A lost reply can be
     /// proved by reads, but never causes another Stop or source replay.
-    fn stop_cancelled(&self) -> Result<(), Interrupted> {
-        if self.cancellation_state()? == TransportState::Stopped {
+    fn stop_owned(&self) -> Result<(), Interrupted> {
+        if self.stoppable_state()? == TransportState::Stopped {
             return Ok(());
         }
         let sent = soap::stop(self.transport, self.host);
@@ -162,10 +185,10 @@ impl<T: Transport + ?Sized> Watch<'_, T> {
         {
             return Err(Interrupted::LeaveAlone(error.to_string()));
         }
-        match self.cancellation_state() {
+        match self.stoppable_state() {
             Ok(TransportState::Stopped) => Ok(()),
             Ok(_) => Err(Interrupted::LeaveAlone(
-                "announcement cancellation did not establish a stopped clip; playback was left alone"
+                "announcement Stop did not establish a stopped clip; playback was left alone"
                     .into(),
             )),
             Err(Interrupted::Unanswered(why)) => Err(Interrupted::Unanswered(
@@ -204,13 +227,25 @@ pub(super) fn wait<T: Transport + ?Sized>(
         return events::wait(&mut watch, incoming);
     }
     loop {
-        if let Some(ending) = watch.inspect()? {
+        let ending = match watch.inspect() {
+            Ok(ending) => ending,
+            Err(Interrupted::Failed(why)) => {
+                // Native return to an unannounced survivor requires a stopped
+                // clip, including when the failed renderer still says PLAYING.
+                watch
+                    .stop_owned()
+                    .map_err(|error| error.with_failure(&why))?;
+                return Err(Interrupted::Failed(why));
+            }
+            Err(interrupted) => return Err(interrupted),
+        };
+        if let Some(ending) = ending {
             if ending == Ending::Deadline {
                 watch.owns_group()?;
                 watch.owns_source()?;
                 soap::stop(watch.transport, watch.host)?;
             } else if ending == Ending::Cancelled {
-                watch.stop_cancelled()?;
+                watch.stop_owned()?;
             }
             return Ok(ending);
         }

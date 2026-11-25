@@ -1849,6 +1849,16 @@ shutdown. The bounded drain does not wait for a five-minute clip to finish.
 Hard-crash restoration remains unimplemented because announcement snapshots and
 attempted effects are process-local.
 
+An owned announcement's explicit renderer error now fails delivery and starts
+normal restoration without waiting for its clip deadline. The error takes
+precedence over playing, transitioning and stopped transport states. Fresh
+source checks and intervening GENA events still preserve newer manual sources,
+pauses and group ownership; status-only callbacks also wake the watcher. The
+clip is never replayed, and completed restoration cannot turn failed delivery
+into a successful background job. Direct S1/S2, GENA and job-receipt regressions
+are included; their Rust execution remains blocked by the existing dependency
+compiler's SIGKILL.
+
 Announcements use a media URL selected for each household's actual temporary
 leader after fresh topology is read. The same generated clip is served through
 the listener on that player's local route; missing routes fail only their own

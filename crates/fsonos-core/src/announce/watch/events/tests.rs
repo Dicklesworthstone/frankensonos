@@ -152,6 +152,24 @@ fn unrelated_rooms_and_rendering_updates_do_not_restart_ownership_checks() {
 }
 
 #[test]
+fn a_status_only_error_requests_inspection_without_authorizing_restoration() {
+    let mut evidence = playing();
+    evidence.changed = false;
+    heard(
+        &mut evidence,
+        LiveEvent::Playback {
+            player: player(),
+            changes: Changes {
+                transport_status: Some((Some("OK".into()), Some("ERROR_OCCURRED".into()))),
+                ..Changes::default()
+            },
+        },
+    );
+    assert!(evidence.inspect && evidence.changed);
+    assert!(evidence.clip && evidence.began);
+}
+
+#[test]
 fn a_bounded_burst_does_not_skip_a_later_source_change() {
     let mut evidence = playing();
     let (send, receive) = mpsc::channel();

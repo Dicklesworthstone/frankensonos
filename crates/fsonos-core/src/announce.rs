@@ -706,8 +706,9 @@ impl Announcer {
                     effects.preserve = Some(why.clone());
                     why
                 }
-                // Put back once the players answer again, if still owned.
-                watch::Interrupted::Unanswered(why) => why,
+                // Put back a failed clip (or once players answer again),
+                // only while its source and group remain ours.
+                watch::Interrupted::Unanswered(why) | watch::Interrupted::Failed(why) => why,
             }),
         };
         (outcome, effects)

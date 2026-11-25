@@ -11,7 +11,7 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{GenaEvent, SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -172,6 +172,313 @@ fn clip() -> Clip {
         url: CLIP.into(),
         title: "Live announcement".into(),
         duration: Duration::from_secs(3),
+    }
+}
+
+/// The speaker accepts Play but subsequently fails to render the clip. Its
+/// independent state may lag the error; the status remains authoritative.
+struct RendererFailure<'a> {
+    fixture: &'a Fixture,
+    reported_state: &'static str,
+    failed: AtomicBool,
+    lose_stop: bool,
+    stop_lost: AtomicBool,
+}
+
+impl<'a> RendererFailure<'a> {
+    fn new(fixture: &'a Fixture, reported_state: &'static str) -> Self {
+        Self {
+            fixture,
+            reported_state,
+            failed: AtomicBool::new(false),
+            lose_stop: false,
+            stop_lost: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Transport for RendererFailure<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let mut response = self.fixture.transport.soap_post(host, path, action, body)?;
+        let name = action.trim_matches('"');
+        if name.ends_with("#Play")
+            && soap::get_media_info(&self.fixture.transport.lan, host)?.uri == CLIP
+            && !self.failed.swap(true, Ordering::AcqRel)
+        {
+            self.fixture.sim.playback_error("Alpha").unwrap();
+        }
+        if name.ends_with("#GetTransportInfo") && response.contains("ERROR_OCCURRED") {
+            response = response.replace(
+                "<CurrentTransportState>STOPPED</CurrentTransportState>",
+                &format!(
+                    "<CurrentTransportState>{}</CurrentTransportState>",
+                    self.reported_state
+                ),
+            );
+        }
+        if name.ends_with("#Stop")
+            && self.lose_stop
+            && self.failed.load(Ordering::Acquire)
+            && !self.stop_lost.swap(true, Ordering::AcqRel)
+        {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "synthetic lost Stop acknowledgement".into(),
+            });
+        }
+        Ok(response)
+    }
+}
+
+fn assert_no_clip_replay(fixture: &Fixture, from: usize) {
+    assert_eq!(
+        fixture.sim.soap_log()[from..]
+            .iter()
+            .filter(|entry| {
+                entry.action == "SetAVTransportURI"
+                    && entry
+                        .args
+                        .iter()
+                        .any(|(name, value)| name == "CurrentURI" && value == CLIP)
+            })
+            .count(),
+        1,
+        "a failed clip must not be replayed"
+    );
+}
+
+#[test]
+fn renderer_failures_restore_both_generations_without_success_or_clip_replay() {
+    for s2 in [false, true] {
+        for state in ["PLAYING", "TRANSITIONING", "STOPPED"] {
+            let fixture = Fixture::new(s2);
+            let houses = fixture.houses();
+            let targets = [
+                resolve_room(&houses, "Alpha").unwrap(),
+                resolve_room(&houses, "Beta").unwrap(),
+            ];
+            let transport = RendererFailure::new(&fixture, state);
+            let from = fixture.sim.soap_log().len();
+            let report = Announcer::with_timing(Duration::from_millis(10), Duration::from_secs(5))
+                .announce(&transport, &targets, &clip(), 25, &|_| 100)
+                .unwrap();
+            let house = &report.households[0];
+            assert!(
+                house
+                    .outcome
+                    .as_ref()
+                    .is_err_and(|why| why.contains("ERROR_OCCURRED")),
+                "s2={s2}, state={state}: {report:?}"
+            );
+            assert!(!house.is_clean());
+            assert!(house.restore_failed.is_empty(), "{report:?}");
+            assert!(
+                house
+                    .restored
+                    .iter()
+                    .all(|(_, restored)| restored.skipped.is_empty()),
+                "{report:?}"
+            );
+            fixture.assert_restored();
+            assert_no_clip_replay(&fixture, from);
+            assert_eq!(
+                fixture.sim.soap_log()[from..]
+                    .iter()
+                    .filter(|entry| entry.action == "Stop")
+                    .count(),
+                usize::from(state != "STOPPED"),
+                "only a still-running failed clip needs Stop, and only once"
+            );
+            fixture.live.stop();
+            fixture.sim.shutdown();
+        }
+    }
+}
+
+#[test]
+fn failed_clip_returns_to_unannounced_music_after_one_stop_even_when_its_reply_is_lost() {
+    for s2 in [false, true] {
+        for state in ["PLAYING", "TRANSITIONING"] {
+            let fixture = Fixture::new(s2);
+            let houses = fixture.houses();
+            let alpha = resolve_room(&houses, "Alpha").unwrap().player.id.clone();
+            let beta = resolve_room(&houses, "Beta").unwrap().player.id.clone();
+            fsonos_core::control::join(&fixture.transport.lan, &houses, &beta, &alpha).unwrap();
+            let houses = fixture.houses();
+            let targets = [resolve_room(&houses, "Alpha").unwrap()];
+            let transport = RendererFailure {
+                lose_stop: true,
+                ..RendererFailure::new(&fixture, state)
+            };
+            let from = fixture.sim.soap_log().len();
+            let report = Announcer::with_timing(Duration::from_millis(10), Duration::from_secs(5))
+                .announce(&transport, &targets, &clip(), 25, &|_| 100)
+                .unwrap();
+            let house = &report.households[0];
+            assert!(
+                house
+                    .outcome
+                    .as_ref()
+                    .is_err_and(|why| why.contains("ERROR_OCCURRED")),
+                "{report:?}"
+            );
+            assert!(house.restore_failed.is_empty(), "{report:?}");
+            assert!(
+                house
+                    .restored
+                    .iter()
+                    .all(|(_, restored)| restored.skipped.is_empty()),
+                "{report:?}"
+            );
+            assert!(transport.stop_lost.load(Ordering::Acquire));
+            let now = fixture.houses();
+            for (room, volume, mute) in [("Alpha", 18, false), ("Beta", 27, true)] {
+                let target = resolve_room(&now, room).unwrap();
+                assert_eq!(target.coordinator.id, alpha);
+                assert_eq!(
+                    soap::get_volume(&fixture.transport.lan, target.player.ip).unwrap(),
+                    volume
+                );
+                assert_eq!(
+                    soap::get_mute(&fixture.transport.lan, target.player.ip).unwrap(),
+                    mute
+                );
+            }
+            let host = fixture.sim.player("Alpha").unwrap().ip;
+            assert_eq!(
+                soap::get_media_info(&fixture.transport.lan, host)
+                    .unwrap()
+                    .uri,
+                ALPHA
+            );
+            assert_eq!(
+                soap::get_transport_info(&fixture.transport.lan, host)
+                    .unwrap()
+                    .state,
+                TransportState::Playing
+            );
+            assert_no_clip_replay(&fixture, from);
+            let log = fixture.sim.soap_log();
+            assert_eq!(
+                log[from..]
+                    .iter()
+                    .filter(|entry| entry.action == "Stop")
+                    .count(),
+                1
+            );
+            assert!(
+                !log[from..].iter().any(|entry| {
+                    entry.action == "SetAVTransportURI"
+                        && entry
+                            .args
+                            .iter()
+                            .any(|(name, value)| name == "CurrentURI" && value == ALPHA)
+                }),
+                "the unannounced group's live music must return natively, without source replay"
+            );
+            fixture.live.stop();
+            fixture.sim.shutdown();
+        }
+    }
+}
+
+#[test]
+fn a_manual_pause_with_a_renderer_error_keeps_the_newer_intent() {
+    for s2 in [false, true] {
+        let fixture = Fixture::new(s2);
+        let houses = fixture.houses();
+        let targets = [resolve_room(&houses, "Alpha").unwrap()];
+        let transport = RendererFailure::new(&fixture, "PAUSED_PLAYBACK");
+        let from = fixture.sim.soap_log().len();
+        let report = Announcer::with_timing(Duration::from_millis(10), Duration::from_secs(5))
+            .announce(&transport, &targets, &clip(), 25, &|_| 100)
+            .unwrap();
+        let house = &report.households[0];
+        assert!(
+            house
+                .outcome
+                .as_ref()
+                .is_err_and(|why| why.contains("paused")),
+            "{report:?}"
+        );
+        assert!(
+            house
+                .restored
+                .iter()
+                .any(|(_, restored)| !restored.skipped.is_empty())
+        );
+        assert_eq!(
+            soap::get_media_info(
+                &fixture.transport.lan,
+                fixture.sim.player("Alpha").unwrap().ip
+            )
+            .unwrap()
+            .uri,
+            CLIP
+        );
+        assert_no_clip_replay(&fixture, from);
+        assert!(
+            fixture.sim.soap_log()[from..]
+                .iter()
+                .all(|entry| entry.action != "Stop")
+        );
+        fixture.live.stop();
+        fixture.sim.shutdown();
+    }
+}
+
+#[test]
+fn accepted_error_events_restore_music_and_report_failed_delivery() {
+    for s2 in [false, true] {
+        let fixture = Fixture::new(s2);
+        let houses = fixture.houses();
+        let targets = [
+            resolve_room(&houses, "Alpha").unwrap(),
+            resolve_room(&houses, "Beta").unwrap(),
+        ];
+        let clip = clip();
+        let announcer = Announcer::with_timing(Duration::from_millis(10), Duration::from_secs(5));
+        let (send, receive) = mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                send.send(announcer.announce_with_live(
+                    &fixture.transport,
+                    &targets,
+                    &clip,
+                    25,
+                    &|_| 100,
+                    Some(&fixture.live),
+                ))
+                .unwrap();
+            });
+            fixture.wait_for_clip();
+            fixture.sim.playback_error("Alpha").unwrap();
+            // The simulator's clock never advances to EOF. An error must
+            // finish through the accepted callbacks/fresh status read.
+            let report = receive
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .unwrap();
+            let house = &report.households[0];
+            assert!(
+                house
+                    .outcome
+                    .as_ref()
+                    .is_err_and(|why| why.contains("ERROR_OCCURRED")),
+                "{report:?}"
+            );
+            assert!(!house.is_clean());
+            assert!(house.restore_failed.is_empty(), "{report:?}");
+            fixture.assert_restored();
+        });
+        fixture.live.stop();
+        fixture.sim.shutdown();
     }
 }
 

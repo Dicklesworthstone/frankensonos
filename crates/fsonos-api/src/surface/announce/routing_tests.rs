@@ -332,3 +332,81 @@ fn scheduled_clips_share_household_routes_without_replaying_the_occurrence() {
     );
     assert_eq!(house.sim.fetch_log().len(), 2);
 }
+
+#[test]
+fn renderer_errors_finish_background_jobs_as_failed_after_restoring_both_households() {
+    let house = House::new();
+    let started = house
+        .surface
+        .start_announcement(&Client::Cli, &request())
+        .unwrap();
+    let lan = house.sim.lan();
+    let deadline = Instant::now() + WAIT;
+    let mut pending = LEADS.to_vec();
+    // Do not advance the simulator clock: only the explicit renderer failure
+    // can finish each clip, rather than the normal end of its media duration.
+    while !pending.is_empty() {
+        pending.retain(|name| {
+            let host = house.sim.player(name).unwrap().ip;
+            let playing = soap::get_transport_info(&lan, host).unwrap().state;
+            let source = soap::get_media_info(&lan, host).unwrap().uri;
+            if source.contains("/media/") && playing == TransportState::Playing {
+                house.sim.playback_error(name).unwrap();
+                false
+            } else {
+                true
+            }
+        });
+        assert!(
+            Instant::now() < deadline,
+            "clips never started: {pending:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let finished = house.finished(&started.id);
+    assert_eq!(finished.phase, AnnouncementJobPhase::Failed, "{finished:?}");
+    assert!(!finished.can_cancel && !finished.cancel_requested);
+    assert!(
+        finished.error.is_none(),
+        "delivery retains its household report"
+    );
+    let report = finished.result.as_ref().unwrap();
+    assert!(!report.clean);
+    assert_eq!(report.households.len(), 2);
+    for result in &report.households {
+        assert_eq!(result.outcome, "failed");
+        assert!(
+            result
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("ERROR_OCCURRED")),
+            "{result:?}"
+        );
+        assert!(result.not_restored.is_empty(), "{result:?}");
+    }
+    house.assert_restored();
+    // Late cancellation is only a read of the final failed-delivery receipt.
+    assert_eq!(
+        house
+            .surface
+            .cancel_announcement(&Client::Cli, &started.id)
+            .unwrap(),
+        finished
+    );
+    assert_eq!(
+        house
+            .sim
+            .soap_log()
+            .iter()
+            .filter(|entry| {
+                entry.action == "SetAVTransportURI"
+                    && entry
+                        .args
+                        .iter()
+                        .any(|(name, value)| name == "CurrentURI" && value.contains("/media/"))
+            })
+            .count(),
+        2,
+        "each household receives the clip once, with no retry after failure"
+    );
+}

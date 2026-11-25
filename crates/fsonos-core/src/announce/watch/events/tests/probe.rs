@@ -16,6 +16,8 @@ struct Probed {
     events: Sender<LiveEvent>,
     first: AtomicBool,
     reads: AtomicUsize,
+    renderer_failed: bool,
+    during_stop: bool,
 }
 
 impl Transport for Probed {
@@ -27,10 +29,19 @@ impl Transport for Probed {
         body: &str,
     ) -> Result<String, ProtoError> {
         self.reads.fetch_add(1, Ordering::Relaxed);
-        let response = self.lan.soap_post(host, path, action, body)?;
-        if action.trim_matches('"').ends_with("#GetMediaInfo")
-            && self.first.swap(false, Ordering::AcqRel)
-        {
+        let mut response = self.lan.soap_post(host, path, action, body)?;
+        if self.renderer_failed && action.trim_matches('"').ends_with("#GetTransportInfo") {
+            response = response.replace(
+                "<CurrentTransportStatus>OK</CurrentTransportStatus>",
+                "<CurrentTransportStatus>ERROR_OCCURRED</CurrentTransportStatus>",
+            );
+        }
+        let observe = if self.during_stop {
+            "#Stop"
+        } else {
+            "#GetMediaInfo"
+        };
+        if action.trim_matches('"').ends_with(observe) && self.first.swap(false, Ordering::AcqRel) {
             // The response still names the clip, but the accepted event
             // prefix recorded a source away and back while it was read.
             for uri in ["test:newer", CLIP] {
@@ -52,6 +63,20 @@ impl Transport for Probed {
 
 #[test]
 fn recovery_read_keeps_intervening_source_events_terminal() {
+    recovery_read_keeps_source_events(false, false);
+}
+
+#[test]
+fn failed_clip_keeps_intervening_source_events_terminal() {
+    recovery_read_keeps_source_events(true, false);
+}
+
+#[test]
+fn failed_clip_keeps_source_events_arriving_during_stop_terminal() {
+    recovery_read_keeps_source_events(true, true);
+}
+
+fn recovery_read_keeps_source_events(renderer_failed: bool, during_stop: bool) {
     let sim = SimHousehold::builder()
         .s2([SimPlayerSpec::new("Alpha", SimModel::One)])
         .spawn()
@@ -76,6 +101,8 @@ fn recovery_read_keeps_intervening_source_events_terminal() {
         events: send,
         first: AtomicBool::new(true),
         reads: AtomicUsize::new(0),
+        renderer_failed,
+        during_stop,
     };
     let mut watch = Watch {
         transport: &transport,
@@ -93,7 +120,16 @@ fn recovery_read_keeps_intervening_source_events_terminal() {
         wait(&mut watch, &receive),
         Err(Interrupted::LeaveAlone(why)) if why.contains("superseded")
     ));
-    assert_eq!(transport.reads.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        transport.reads.load(Ordering::Relaxed),
+        if during_stop {
+            11
+        } else if renderer_failed {
+            4
+        } else {
+            2
+        }
+    );
     assert!(
         receive.try_recv().is_ok(),
         "never discard the queued return to our clip"
@@ -102,6 +138,18 @@ fn recovery_read_keeps_intervening_source_events_terminal() {
         soap::get_transport_info(&transport.lan, host)
             .unwrap()
             .state,
-        TransportState::Playing
+        if during_stop {
+            TransportState::Stopped
+        } else {
+            TransportState::Playing
+        }
+    );
+    assert_eq!(
+        sim.soap_log()
+            .iter()
+            .filter(|entry| entry.action == "Stop")
+            .count(),
+        usize::from(during_stop),
+        "observed supersession cannot authorize a second Stop"
     );
 }

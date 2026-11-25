@@ -59,6 +59,13 @@ impl Evidence {
                 changes,
             } if heard == *player => {
                 let was_ours = self.clip;
+                if changes.transport_status.is_some() {
+                    // A status-only renderer failure can leave both source
+                    // and transport state unchanged. Inspect it promptly;
+                    // the event alone never authorizes restoration.
+                    self.inspect = true;
+                    self.changed = true;
+                }
                 if let Some((_, uri)) = changes.track {
                     self.changed = true;
                     match uri.as_deref() {
@@ -187,10 +194,20 @@ pub(super) fn wait<T: Transport + ?Sized>(
         {
             evidence.inspect = false;
             evidence.changed = false;
-            let ending = watch.inspect()?;
+            let (ending, failure) = match watch.inspect() {
+                Ok(ending) => (ending, None),
+                Err(Interrupted::Failed(why)) => {
+                    // inspect proved this exact source after reading the
+                    // failure. Retain that identity through the callback
+                    // prefix without borrowing PLAYING as delivery proof.
+                    evidence.clip = true;
+                    (None, Some(why))
+                }
+                Err(interrupted) => return Err(interrupted),
+            };
             evidence.observed_source(watch.observed);
             verify_at = Instant::now() + VERIFY_AFTER;
-            if let Some(ending) = ending {
+            if ending.is_some() || failure.is_some() {
                 // Current source and group still own the announcement. A
                 // callback arriving during either read must get its turn too.
                 watch.owns_group()?;
@@ -200,22 +217,17 @@ pub(super) fn wait<T: Transport + ?Sized>(
                     evidence.inspect = true;
                     continue;
                 }
+                if let Some(why) = failure {
+                    stop_owned(watch, &mut evidence, incoming)
+                        .map_err(|error| error.with_failure(&why))?;
+                    return Err(Interrupted::Failed(why));
+                }
+            }
+            if let Some(ending) = ending {
                 if ending == Ending::Deadline {
                     soap::stop(watch.transport, watch.host)?;
                 } else if ending == Ending::Cancelled {
-                    watch.stop_cancelled()?;
-                    // Our Stop can produce an ordinary terminal event, but
-                    // queued owner source/pause/group changes must still win
-                    // before restoration. Never loop into a second Stop.
-                    if !evidence.drain(incoming, None, &watch.plan.lead, &watch.clip.url)? {
-                        return Err(Interrupted::LeaveAlone(
-                            "announcement callbacks did not settle after cancellation; newer playback was left alone"
-                                .into(),
-                        ));
-                    }
-                    if evidence.topology {
-                        watch.owns_group()?;
-                    }
+                    stop_owned(watch, &mut evidence, incoming)?;
                 }
                 return Ok(ending);
             }
@@ -238,6 +250,27 @@ pub(super) fn wait<T: Transport + ?Sized>(
             }
         }
     }
+}
+
+fn stop_owned<T: Transport + ?Sized>(
+    watch: &Watch<'_, T>,
+    evidence: &mut Evidence,
+    incoming: &Receiver<LiveEvent>,
+) -> Result<(), Interrupted> {
+    watch.stop_owned()?;
+    // Our Stop can produce an ordinary terminal event, but queued owner
+    // source/pause/group changes must still win before restoration. Never
+    // loop into a second Stop, including after a failed renderer's reply.
+    if !evidence.drain(incoming, None, &watch.plan.lead, &watch.clip.url)? {
+        return Err(Interrupted::LeaveAlone(
+            "announcement callbacks did not settle after Stop; newer playback was left alone"
+                .into(),
+        ));
+    }
+    if evidence.topology {
+        watch.owns_group()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
