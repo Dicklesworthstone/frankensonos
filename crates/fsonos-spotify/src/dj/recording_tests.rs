@@ -485,3 +485,60 @@ fn artist_spacing_does_not_skip_older_works_when_an_uneven_shelf_rotates() {
         }
     }
 }
+
+#[test]
+fn exhausted_household_rotates_by_the_latest_listen_across_rooms_and_recordings() {
+    let pool = shelf();
+    let track = |index: usize| pool.works()[index].movements[0].track.source_uri.as_str();
+    // The first two recordings are of the same work. The later occurrence
+    // in another room keeps both recordings out of the oldest slot.
+    let elsewhere = [
+        PlayRecord::at(track(1), 999),
+        PlayRecord::at(track(0), 100),
+        PlayRecord::at(track(2), 300),
+        PlayRecord::at(track(3), 200),
+    ];
+    let ctx = PickContext {
+        elsewhere: &elsewhere,
+        now: Some(1_000),
+        ..PickContext::default()
+    };
+    let pick = |context: &PickContext<'_>| {
+        let picked =
+            pick_next(&pool, context, &without_artist_spacing(), &mut Rng::new(3)).unwrap();
+        assert!(picked.reason.has(Factor::Rotation));
+        picked.work.work_key.as_str()
+    };
+    assert_eq!(pick(&ctx), pool.works()[3].work_key);
+
+    // Replaying (or queuing) the oldest work here makes the next oldest
+    // eligible. Catalogue order and external observation order differ.
+    let history = [PlayRecord::at(track(3), 1_000)];
+    let ctx = PickContext {
+        history: &history,
+        ..ctx
+    };
+    assert_eq!(pick(&ctx), pool.works()[2].work_key);
+}
+
+#[test]
+fn local_repeats_cannot_starve_older_music_heard_in_another_room() {
+    let pool = shelf();
+    let track = |index: usize| pool.works()[index].movements[0].track.source_uri.as_str();
+    let history = [PlayRecord::at(track(0), 900)];
+    let elsewhere = [
+        PlayRecord::at(track(3), 1_000),
+        PlayRecord::at(track(2), 100),
+    ];
+    let ctx = PickContext {
+        history: &history,
+        elsewhere: &elsewhere,
+        now: Some(1_000),
+        ..PickContext::default()
+    };
+    let picks = plan(&pool, &ctx, &without_artist_spacing(), 3, &mut Rng::new(7));
+    assert_eq!(picks[0].work.work_key, pool.works()[2].work_key);
+    assert_eq!(picks[1].work.work_key, pool.works()[0].work_key);
+    // The other room's current selection still waits when timestamps tie.
+    assert_ne!(picks[2].work.work_key, pool.works()[3].work_key);
+}

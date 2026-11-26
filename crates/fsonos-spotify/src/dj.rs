@@ -879,13 +879,28 @@ fn eligible<'p>(
         }
     } else {
         let quarter = (distinct_allowed / 4).max(1);
-        // Least recently played here first; what another room plays, has queued
-        // or played lately goes last, never ahead as "not played here".
-        allowed.sort_by_key(|w| {
-            (
-                elsewhere(w),
-                Reverse(recency.work_ago.get(key(w)).copied().unwrap_or(usize::MAX)),
-            )
+        // Rank by the latest observation anywhere: another room's current
+        // selection cannot count as "never played here". Expired external
+        // plays stop influencing this room. With untimed local history only
+        // its sequence is comparable; defer known external plays as before.
+        let timed = ctx
+            .history
+            .iter()
+            .rev()
+            .take(config.history_horizon)
+            .all(|play| play.played_at.is_some());
+        allowed.sort_by_cached_key(|w| {
+            let key = key(w);
+            let away = recency.elsewhere_at.get(key).filter(|at| lately(Some(at)));
+            let ago = Reverse(recency.work_ago.get(key).copied().unwrap_or(usize::MAX));
+            let latest = if timed {
+                recency.work_at.get(key).max(away)
+            } else {
+                away
+            };
+            // When times tie, a claim in another room goes last. Equal
+            // local timestamps (including planned works) retain play order.
+            (latest.copied(), away.is_some() && away == latest, ago)
         });
         // Choose the stalest distinct works, retaining every permitted recording
         // of each. Many editions must neither force an early repeat nor crowd
