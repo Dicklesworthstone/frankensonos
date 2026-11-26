@@ -31,7 +31,11 @@ fn group<'a>(state: &'a ZoneGroupState, leader: &PlayerId) -> Option<&'a ZoneGro
 
 /// Canonical room primaries and their present physical players. Use the same
 /// room construction as discovery: a channel map on either half is sufficient.
-fn rooms(state: &ZoneGroupState, source: &PlayerId, target: &PlayerId) -> BTreeMap<String, Members> {
+fn rooms(
+    state: &ZoneGroupState,
+    source: &PlayerId,
+    target: &PlayerId,
+) -> BTreeMap<String, Members> {
     let mut house = crate::HouseholdState::default();
     house.apply_topology(state);
     house
@@ -113,7 +117,9 @@ impl Layout {
     }
 
     fn observe(&self, state: &ZoneGroupState) -> Observed {
-        if crate::topology::validate(state).is_err() || rooms(state, &self.source, &self.target) != self.rooms {
+        if crate::topology::validate(state).is_err()
+            || rooms(state, &self.source, &self.target) != self.rooms
+        {
             return Observed::Changed;
         }
         let source = group(state, &self.source).map(members);
@@ -407,7 +413,11 @@ mod layout_tests {
     // The visible source has no ChannelMapSet. Only its hidden right half
     // names the bond. The destination has a nested home-theater satellite.
     fn topology(transferred: bool, paired: bool) -> ZoneGroupState {
-        let bond = if paired { r#"ChannelMapSet="source:LF;right:RF""# } else { "" };
+        let bond = if paired {
+            r#"ChannelMapSet="source:LF;right:RF""#
+        } else {
+            ""
+        };
         let split = if transferred {
             r#"</ZoneGroup><ZoneGroup Coordinator="target" ID="two">"#
         } else {
@@ -431,7 +441,11 @@ mod layout_tests {
         let layout = Layout::capture(&topology(false, true), &source, &target).unwrap();
         let after = topology(true, true);
         assert!(layout.observe(&after) == Observed::Transferred);
-        assert!(layout.require_partition(&after, &layout.rooms["target"]).is_ok());
+        assert!(
+            layout
+                .require_partition(&after, &layout.rooms["target"])
+                .is_ok()
+        );
     }
 
     #[test]
@@ -441,6 +455,10 @@ mod layout_tests {
         let layout = Layout::capture(&topology(false, true), &source, &target).unwrap();
         let unpaired = topology(true, false);
         assert!(layout.observe(&unpaired) == Observed::Changed);
-        assert!(layout.require_partition(&unpaired, &layout.rooms["target"]).is_err());
+        assert!(
+            layout
+                .require_partition(&unpaired, &layout.rooms["target"])
+                .is_err()
+        );
     }
 }

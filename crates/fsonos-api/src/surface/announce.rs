@@ -112,7 +112,9 @@ impl ReminderAudience {
                 .enumerate()
                 .filter(|(_, house)| household.is_none() || house.id == *household)
                 .flat_map(|(index, house)| {
-                    house.rooms.iter()
+                    house
+                        .rooms
+                        .iter()
                         .filter(move |room| room.primary == admitted.primary)
                         .map(move |room| (index, room))
                 });
@@ -446,10 +448,14 @@ impl Surface {
     ) -> Result<ReminderAudience, Failure> {
         let targets = targets(rooms, names)?;
         self.announcement_recovery_ready(
-            &targets.iter().map(|target| target.household).collect::<Vec<_>>(),
+            &targets
+                .iter()
+                .map(|target| target.household)
+                .collect::<Vec<_>>(),
         )?;
         Ok(ReminderAudience(
-            targets.into_iter()
+            targets
+                .into_iter()
                 .map(|target| (target.household.id.clone(), target.room.clone()))
                 .collect(),
         ))
@@ -1062,10 +1068,18 @@ mod tests {
         assert_eq!(targets[0].player.id, id);
         assert!(admitted_targets(&houses, &[(2, other.clone())]).is_err());
         let audience = ReminderAudience(vec![(None, houses[1].rooms[0].clone())]);
-        assert!(audience.current(&houses).is_err(), "ambiguous room identity");
+        assert!(
+            audience.current(&houses).is_err(),
+            "ambiguous room identity"
+        );
         let mut house = houses[1].clone();
         house.rooms[0].name = "Renamed room".into();
-        assert_eq!(audience.current(std::slice::from_ref(&house)).unwrap()[0].player.id, id);
+        assert_eq!(
+            audience.current(std::slice::from_ref(&house)).unwrap()[0]
+                .player
+                .id,
+            id
+        );
         house.rooms[0].players.push(other);
         assert!(audience.current(&[house]).is_err(), "changed bonded room");
     }

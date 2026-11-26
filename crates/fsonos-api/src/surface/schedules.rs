@@ -2093,7 +2093,9 @@ fn fire(
             rooms,
             volume,
         } => {
-            let (Some(permit), Some(PreparedRun::Announcement(audience))) = (announcement, prepared) else {
+            let (Some(permit), Some(PreparedRun::Announcement(audience))) =
+                (announcement, prepared)
+            else {
                 return Err(Failure::new(
                     ErrorCode::Internal,
                     "scheduled announcement dispatch has no admitted audience or reservation",

@@ -314,22 +314,32 @@ mod tests {
             input: Input::Paired {
                 format: "lavfi".into(),
                 source: format!(
-                    "{},aformat=channel_layouts=mono,asplit[dry][wet];[wet]adelay=400[late];\
+                    "{},aformat=channel_layouts=mono,asplit[dry][wet];[wet]adelay=4125[late];\
                      [dry][late]join=inputs=2:channel_layout=stereo:map=0.0-FL|1.0-FR",
                     SIGNAL.trim()
                 ),
             },
-            max_lag_ms: 1_000,
+            max_lag_ms: 5_000,
         };
         let stop = Stop {
             session: Arc::new(AtomicBool::new(false)),
             stream: Arc::new(AtomicBool::new(false)),
             deadline: Some(Instant::now() + Duration::from_secs(60)),
         };
-        let measured =
-            measurement::collect(1_000, &stop, || capture::record(&options, &stop)).unwrap();
+        let measured = measurement::collect(options.max_lag_ms, &stop, || {
+            capture::record(&options, &stop)
+        })
+        .unwrap();
         assert_eq!(measured.windows_read, 3);
-        assert!(measured.estimate.lag_samples.abs_diff(3_200) <= 2);
+        assert!(measured.estimate.lag_samples.abs_diff(33_000) <= 2);
+        let mut captures = 0;
+        let startup = measurement::collect_startup(options.max_lag_ms, &stop, || {
+            captures += 1;
+            assert_eq!(captures, 1, "a clean first probe should finish calibration");
+            capture::record(&options, &stop)
+        })
+        .unwrap();
+        assert!(startup.lag_samples.abs_diff(33_000) <= 2);
     }
 
     #[test]
