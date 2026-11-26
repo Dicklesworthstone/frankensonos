@@ -600,7 +600,7 @@ impl Transport for DieAfter<'_> {
 
 #[test]
 fn interrupted_preparation_is_durable_but_is_never_falsely_recovered() {
-    for action in ["SetVolume", "Play"] {
+    for action in ["SetVolume", "SetMute"] {
         let sim = sim(false, false);
         let lan = sim.lan();
         queue(&sim, &lan, "Alpha");
@@ -630,6 +630,136 @@ fn interrupted_preparation_is_durable_but_is_never_falsely_recovered() {
         assert!(mutations(&sim.soap_log()[from..]).is_empty());
         assert!(journal.completed());
     }
+}
+
+#[test]
+fn accepted_clip_writes_recover_after_a_crash_before_the_established_checkpoint() {
+    for s2 in [false, true] {
+        for action in ["SetAVTransportURI", "Play"] {
+            let sim = sim(s2, true);
+            let lan = sim.lan();
+            queue(&sim, &lan, "Alpha");
+            // The Play boundary also exercises a completed partial-group
+            // handoff whose survivor keeps the original live queue.
+            if action == "Play" {
+                join(&sim, &lan, "Beta", "Alpha");
+                join(&sim, &lan, "Gamma", "Alpha");
+            }
+            soap::set_volume(&lan, host(&sim, "Alpha"), 18).unwrap();
+            let journal = Journal::default();
+            let dying = DieAfter { lan: &lan, action };
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| announce(
+                    &sim,
+                    &lan,
+                    &dying,
+                    &["Alpha"],
+                    &journal
+                )))
+                .is_err()
+            );
+            let journal = journal.reopened();
+            assert!(
+                !journal.record().recoverable(),
+                "the worker never saved an established marker"
+            );
+            assert_eq!(
+                soap::get_media_info(&lan, host(&sim, "Alpha"))
+                    .unwrap()
+                    .uri,
+                CLIP
+            );
+            let from = sim.soap_log().len();
+            let report = fast().recover(&lan, &journal.record(), &journal, None);
+            assert!(report.restore_failed.is_empty(), "{action}: {report:#?}");
+            assert!(
+                report
+                    .restored
+                    .iter()
+                    .all(|(_, restored)| restored.skipped.is_empty()),
+                "{action}: {report:#?}"
+            );
+            assert_eq!(soap::get_volume(&lan, host(&sim, "Alpha")).unwrap(), 18);
+            assert_eq!(
+                soap::get_position_info(&lan, host(&sim, "Alpha"))
+                    .unwrap()
+                    .track,
+                2
+            );
+            assert_eq!(
+                soap::get_transport_info(&lan, host(&sim, "Alpha"))
+                    .unwrap()
+                    .state,
+                TransportState::Playing
+            );
+            if action == "Play" {
+                let current = houses(&sim, &lan);
+                for room in ["Alpha", "Beta", "Gamma"] {
+                    assert_eq!(
+                        resolve_room(&current, room).unwrap().coordinator.id,
+                        id(&sim, "Alpha")
+                    );
+                }
+            }
+            no_clip_replayed(&sim.soap_log()[from..]);
+            assert!(journal.completed());
+        }
+    }
+}
+
+struct BeforeClip<'a>(&'a SimLan);
+
+impl Transport for BeforeClip<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        assert!(
+            !(action.contains("#SetAVTransportURI") && body.contains(CLIP)),
+            "synthetic process death before clip dispatch"
+        );
+        self.0.soap_post(host, path, action, body)
+    }
+}
+
+#[test]
+fn an_attempted_clip_record_cannot_restore_without_an_actual_owned_clip() {
+    let sim = sim(false, false);
+    let lan = sim.lan();
+    queue(&sim, &lan, "Alpha");
+    let journal = Journal::default();
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| announce(
+            &sim,
+            &lan,
+            &BeforeClip(&lan),
+            &["Alpha"],
+            &journal
+        )))
+        .is_err()
+    );
+    let journal = journal.reopened();
+    assert!(!journal.record().recoverable());
+    let from = sim.soap_log().len();
+    let report = fast().recover(&lan, &journal.record(), &journal, None);
+    assert!(
+        report
+            .restored
+            .iter()
+            .all(|(_, restored)| restored.restored.is_empty()),
+        "{report:#?}"
+    );
+    assert!(mutations(&sim.soap_log()[from..]).is_empty());
+    assert_eq!(
+        soap::get_position_info(&lan, host(&sim, "Alpha"))
+            .unwrap()
+            .track,
+        2
+    );
+    assert!(journal.completed());
 }
 
 #[test]
