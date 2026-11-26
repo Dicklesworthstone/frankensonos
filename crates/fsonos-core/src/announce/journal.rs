@@ -41,9 +41,10 @@ pub trait AnnouncementCheckpoint: Send + Sync {
 
 /// Private saved-file evidence for one household. This contains native source
 /// metadata and physical identities; public job observations should expose only
-/// its summary. Preparing records explain incomplete effects but never authorize
-/// automatic playback restoration. Established records can return a still-owned
-/// clip to its original sources or its unannounced survivors' current playback.
+/// its summary. Preparing records need fresh evidence that their attempted clip
+/// actually became the source before they can authorize playback restoration.
+/// A still-owned clip can return to its original sources or its unannounced
+/// survivors' current playback without repeating announcement delivery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnnouncementRecovery {
     version: u8,
@@ -88,6 +89,26 @@ impl AnnouncementRecovery {
     #[must_use]
     pub fn recoverable(&self) -> bool {
         self.established && self.effects.preserve.is_none() && self.proof.boot_known()
+    }
+
+    /// A crash can lose the successful SetURI/Play acknowledgement and the
+    /// established marker. The complete pre-dispatch record remains eligible
+    /// for the same fresh ownership proof; it never authorizes replaying Play.
+    fn clip_candidate(&self) -> bool {
+        self.effects.preserve.is_none()
+            && self.proof.boot_known()
+            && self.snapshots.len() == self.plan.zones.len()
+            && self.levels.len() == self.selected.len()
+            && self.effects.volumes.len() == self.selected.len()
+            && self.effects.mutes.len() == self.selected.len()
+            && self
+                .selected
+                .iter()
+                .all(|player| self.effects.mutes.contains(player))
+            && self.effects.sources.contains(&self.plan.lead)
+            && self.effects.before_clip.is_some()
+            && self.effects.clip.as_deref() == Some(self.clip_url.as_str())
+            && self.expected_groups().is_some()
     }
 
     #[must_use]
@@ -486,10 +507,11 @@ impl<T: Transport + ?Sized> Transport for Claimed<'_, T> {
 }
 
 impl Announcer {
-    /// Return an interrupted, established clip to the original sources without
-    /// ever replaying that clip. Preparation-only, changed, expired or already
-    /// claimed records produce explicit preserved receipts. Unavailable initial
-    /// observations remain pending; after claim every outcome is terminal.
+    /// Return an interrupted clip to its original sources without replaying it.
+    /// An attempted install also needs fresh proof that the clip actually became
+    /// the source. Unproved preparation, changed, expired or already claimed
+    /// records produce preserved receipts. Unavailable initial observations
+    /// remain pending; after claim every outcome is terminal.
     #[allow(clippy::too_many_lines)] // Claim, mutation and terminal boundaries form one lifecycle.
     pub fn recover<T: Transport + ?Sized>(
         &self,
@@ -503,7 +525,7 @@ impl Announcer {
             Some("the saved announcement evidence is invalid; nothing was restored")
         } else if !record.recent() {
             Some("the saved announcement is outside the recovery window; nothing was restored")
-        } else if !record.recoverable() {
+        } else if !record.clip_candidate() {
             Some(
                 "the interrupted announcement never durably established clip ownership; incomplete preparation was left for inspection",
             )
@@ -568,12 +590,18 @@ impl Announcer {
                     ));
                 }
             }
+            // The post-claim observation proves installation even when the
+            // original worker died before receiving/saving that result. A
+            // later return to the pre-clip URI is new intent, not a rejected
+            // source-install fallback that cleanup may overwrite.
+            let mut effects = record.effects.clone();
+            effects.installed = true;
             recovery::put_back(
                 &guarded,
                 &record.before,
                 &record.plan,
                 &record.snapshots,
-                &record.effects,
+                &effects,
                 &[],
                 Instant::now(),
                 Instant::now() + self.patience,
