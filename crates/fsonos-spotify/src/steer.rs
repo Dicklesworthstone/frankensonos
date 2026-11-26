@@ -13,7 +13,7 @@
 //! Composers and periods steer the classical part of the library; artists, genres,
 //! decades and keywords steer any genre.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::str::FromStr;
@@ -279,10 +279,10 @@ pub struct Steer {
 }
 
 /// The works the constraints admit, as indices into `works`. Keywords, then
-/// periods, decades and length relax until at least `min` pass (or every
-/// work, in a smaller pool); genres, composers and artists relax only when
-/// nothing passes, so "just Pärt" rotates the few Pärt works rather than
-/// ignoring the request. Strict constraints never relax; a smaller matching
+/// periods, decades and length relax until at least `min` distinct works pass
+/// (or every distinct work, in a smaller pool). Genres, composers and artists
+/// relax only when nothing passes, so "just Pärt" rotates the few Pärt works
+/// rather than ignoring the request. Strict constraints never relax; a smaller matching
 /// set stays smaller, and no matches returns an empty set.
 /// `haystacks[i]` is [`haystack`]`(&works[i])`.
 #[must_use]
@@ -309,7 +309,17 @@ pub fn admit_among(
     if among.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let want = min.clamp(1, among.len());
+    // Count the music, not its editions. Stop once the requested variety is
+    // reached, so an ordinary large library only needs a handful of keys.
+    let distinct = |indices: &[usize]| {
+        let mut seen = HashSet::new();
+        indices
+            .iter()
+            .filter(|&&w| seen.insert(works[w].work_key.as_str()))
+            .take(min.max(1))
+            .count()
+    };
+    let want = distinct(among);
     let mut relaxed = Vec::new();
     loop {
         let admitted: Vec<usize> = among
@@ -317,7 +327,7 @@ pub fn admit_among(
             .copied()
             .filter(|&w| admits(&works[w], &haystacks[w], constraints, &relaxed))
             .collect();
-        if constraints.strict || admitted.len() >= want {
+        if constraints.strict || admitted.len() == among.len() || distinct(&admitted) >= want {
             return (admitted, relaxed);
         }
         let next = Relaxation::ORDER.into_iter().find(|&r| {
@@ -1737,6 +1747,66 @@ mod tests {
             ..DjConstraints::default()
         });
         assert_eq!(merged.exclude_decades, [1980, 1990], "they add up");
+    }
+
+    #[test]
+    fn steering_variety_counts_distinct_music_and_preserves_matching_editions() {
+        let mut items = Vec::new();
+        for (index, (title, album, artist)) in [
+            ("Homeward", "Evening edition", "First Artist"),
+            ("Homeward", "Evening concert", "First Artist"),
+            ("Homeward", "Evening session", "First Artist"),
+            ("Passing", "Morning set", "Second Artist"),
+            ("Homeward", "Morning edition", "First Artist"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            items.push(item(
+                format!("spotify:track:edition{index}"),
+                title.into(),
+                artist,
+                (album.into(), format!("spotify:album:edition{index}")),
+                180,
+                Origin::SavedAlbum,
+            ));
+        }
+        let pool = works_of(&items);
+        let all = pool.works();
+        let hays: Vec<_> = all.iter().map(haystack).collect();
+        let evening = DjConstraints {
+            include_keywords: words(&["evening"]),
+            ..DjConstraints::default()
+        };
+        // Three evening recordings are only one song. The adaptive selector
+        // must widen to both songs to achieve its two-work variety floor.
+        let (admitted, relaxed) = admit(all, &hays, &evening, 2);
+        assert_eq!(admitted.len(), 5);
+        assert_eq!(relaxed, [Relaxation::Keywords]);
+        // Each song has a morning edition: keep that filter even when the
+        // requested five distinct works exceed the whole permitted shelf.
+        let morning = DjConstraints {
+            include_keywords: words(&["morning"]),
+            ..DjConstraints::default()
+        };
+        let (admitted, relaxed) = admit(all, &hays, &morning, 5);
+        assert_eq!(admitted.len(), 2);
+        assert!(relaxed.is_empty());
+        for constraints in [
+            DjConstraints {
+                strict: true,
+                ..evening
+            },
+            DjConstraints {
+                include_artists: words(&["First Artist"]),
+                ..DjConstraints::default()
+            },
+        ] {
+            let (admitted, relaxed) = admit(all, &hays, &constraints, 5);
+            assert!(relaxed.is_empty());
+            assert!(!admitted.is_empty());
+            assert!(admitted.iter().all(|&w| all[w].composer == "First Artist"));
+        }
     }
 
     #[test]
