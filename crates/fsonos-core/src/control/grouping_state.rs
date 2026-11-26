@@ -93,6 +93,7 @@ pub(super) fn prepare_join<T: Transport + ?Sized>(
     households: &[HouseholdState],
     member: &PlayerId,
     coordinator: &PlayerId,
+    guard: impl Fn(&ZoneGroupState) -> Result<(), CoreError>,
 ) -> Result<HouseholdState, CoreError> {
     let (index, known) = household(households, member)?;
     let (destination_index, _) = household(households, coordinator)?;
@@ -113,8 +114,10 @@ pub(super) fn prepare_join<T: Transport + ?Sized>(
             "the requested rooms no longer share this destination",
         ));
     }
+    guard(&target)?;
     let current = get_zone_group_state(t, host)?;
     validate(households, index, &current, member, host)?;
+    guard(&current)?;
     if !crate::topology::coordinator_at(&current, destination, coordinator)? {
         return Err(changed("the destination no longer leads its group"));
     }

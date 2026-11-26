@@ -8,7 +8,7 @@ use fsonos_proto::soap::{self, AV_TRANSPORT};
 use fsonos_proto::topology::{ZoneGroupInfo, ZoneGroupState, get_zone_group_state};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,26 @@ fn group<'a>(state: &'a ZoneGroupState, leader: &PlayerId) -> Option<&'a ZoneGro
     groups.next().is_none().then_some(found)
 }
 
+/// Canonical room primaries and their present physical players. Use the same
+/// room construction as discovery: a channel map on either half is sufficient.
+fn rooms(state: &ZoneGroupState, source: &PlayerId, target: &PlayerId) -> BTreeMap<String, Members> {
+    let mut house = crate::HouseholdState::default();
+    house.apply_topology(state);
+    house
+        .rooms
+        .into_iter()
+        .filter(|room| room.coordinator == *source || room.coordinator == *target)
+        .map(|room| {
+            (
+                room.primary.0,
+                room.players.into_iter().map(|p| p.0).collect(),
+            )
+        })
+        .collect()
+}
+
 pub(super) struct Layout {
+    pub(super) rooms: BTreeMap<String, Members>,
     source: PlayerId,
     target: PlayerId,
     original: Members,
@@ -53,23 +72,18 @@ impl Layout {
         crate::topology::validate(state)?;
         let original_group = group(state, source).ok_or_else(changed)?;
         let original = members(original_group);
-        let leader = original_group
-            .members
-            .iter()
-            .find(|m| m.uuid == *source)
-            .ok_or_else(changed)?;
-        // A source room takes its bonded players with it, not the other rooms.
-        // An offline bonded player absent from the topology adds no evidence.
-        let retained: Members = leader
-            .bonded_players()
-            .filter(|p| original.contains(&p.0))
-            .map(|p| p.0.clone())
-            .collect();
+        let rooms = rooms(state, source, target);
+        let retained = rooms
+            .values()
+            .find(|players| players.contains(&source.0))
+            .ok_or_else(changed)?
+            .clone();
         let moved: Members = original.difference(&retained).cloned().collect();
-        if !retained.contains(&source.0) || !moved.contains(&target.0) {
+        if !rooms.contains_key(&target.0) || !moved.contains(&target.0) {
             return Err(changed());
         }
         Ok(Self {
+            rooms,
             source: source.clone(),
             target: target.clone(),
             original,
@@ -78,8 +92,28 @@ impl Layout {
         })
     }
 
+    /// Only the rooms already moved belong to the new coordinator. Every
+    /// other original player must still belong to the source.
+    pub(super) fn require_partition(
+        &self,
+        state: &ZoneGroupState,
+        destination: &Members,
+    ) -> Result<(), crate::CoreError> {
+        crate::topology::validate(state)?;
+        if rooms(state, &self.source, &self.target) != self.rooms
+            || group(state, &self.target).map(members).as_ref() != Some(destination)
+            || !group(state, &self.source)
+                .is_some_and(|g| members(g).iter().eq(self.original.difference(destination)))
+        {
+            return Err(crate::CoreError::TargetChanged(
+                "a room left or joined the playback transfer; inspect both groups before another move".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn observe(&self, state: &ZoneGroupState) -> Observed {
-        if crate::topology::validate(state).is_err() {
+        if crate::topology::validate(state).is_err() || rooms(state, &self.source, &self.target) != self.rooms {
             return Observed::Changed;
         }
         let source = group(state, &self.source).map(members);
@@ -362,5 +396,51 @@ pub(super) fn handoff<T: Transport + ?Sized>(
             Err(_) => {}
         }
         std::thread::sleep(JOIN_POLL.min(remaining));
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use fsonos_proto::topology::parse_zone_group_state;
+
+    // The visible source has no ChannelMapSet. Only its hidden right half
+    // names the bond. The destination has a nested home-theater satellite.
+    fn topology(transferred: bool, paired: bool) -> ZoneGroupState {
+        let bond = if paired { r#"ChannelMapSet="source:LF;right:RF""# } else { "" };
+        let split = if transferred {
+            r#"</ZoneGroup><ZoneGroup Coordinator="target" ID="two">"#
+        } else {
+            ""
+        };
+        parse_zone_group_state(&format!(r#"<ZoneGroupState><ZoneGroups>
+            <ZoneGroup Coordinator="source" ID="one">
+            <ZoneGroupMember UUID="source" Location="http://192.0.2.1:1400/" ZoneName="Source"/>
+            <ZoneGroupMember UUID="right" Location="http://192.0.2.2:1400/" ZoneName="Source" Invisible="1" {bond}/>
+            {split}
+            <ZoneGroupMember UUID="target" Location="http://192.0.2.3:1400/" ZoneName="Target">
+              <Satellite UUID="rear" Location="http://192.0.2.4:1400/" ZoneName="Target"/>
+            </ZoneGroupMember>
+            </ZoneGroup></ZoneGroups></ZoneGroupState>"#)).unwrap()
+    }
+
+    #[test]
+    fn handoff_preserves_reverse_declared_bonds_and_nested_satellites() {
+        let source = PlayerId("source".into());
+        let target = PlayerId("target".into());
+        let layout = Layout::capture(&topology(false, true), &source, &target).unwrap();
+        let after = topology(true, true);
+        assert!(layout.observe(&after) == Observed::Transferred);
+        assert!(layout.require_partition(&after, &layout.rooms["target"]).is_ok());
+    }
+
+    #[test]
+    fn equal_group_membership_cannot_confirm_an_unpaired_room() {
+        let source = PlayerId("source".into());
+        let target = PlayerId("target".into());
+        let layout = Layout::capture(&topology(false, true), &source, &target).unwrap();
+        let unpaired = topology(true, false);
+        assert!(layout.observe(&unpaired) == Observed::Changed);
+        assert!(layout.require_partition(&unpaired, &layout.rooms["target"]).is_err());
     }
 }

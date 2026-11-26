@@ -917,7 +917,20 @@ pub(crate) fn join_within<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     wait: Duration,
 ) -> Result<(), CoreError> {
-    let current = grouping_state::prepare_join(t, households, member, coordinator)?;
+    join_checked(t, households, member, coordinator, wait, |_| Ok(()))
+}
+
+/// Check both endpoints against the move's expected group membership before
+/// dispatching a companion join. A normal join accepts any original group.
+pub(crate) fn join_checked<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+    coordinator: &PlayerId,
+    wait: Duration,
+    guard: impl Fn(&ZoneGroupState) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    let current = grouping_state::prepare_join(t, households, member, coordinator, guard)?;
     let households = std::slice::from_ref(&current);
     let result = soap::join_group(t, addr(households, member)?, coordinator);
     match result {

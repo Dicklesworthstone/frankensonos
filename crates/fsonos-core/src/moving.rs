@@ -213,8 +213,9 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
 ) -> Result<bool, MoveError> {
     let source_host = ip(households, coordinator)?;
     let target_host = ip(households, target)?;
-    let layout =
-        delegation::Layout::capture(&get_zone_group_state(t, source_host)?, coordinator, target)?;
+    let topology = get_zone_group_state(t, source_host)?;
+    let layout = delegation::Layout::capture(&topology, coordinator, target)?;
+    let mut arrived = layout.rooms[&target.0].clone();
     let snap = snapshot::capture(t, households, coordinator, 0)?;
     let prepared = replay::Prepared::new(t, households, &snap, target)?;
     if prepared.is_empty() {
@@ -223,15 +224,29 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
     layout.require_unchanged(&get_zone_group_state(t, source_host)?)?;
     prepared.confirm_queue(t)?;
     control::leave(t, households, target)?;
+    layout.require_partition(&get_zone_group_state(t, target_host)?, &arrived)?;
     let revision = prepared.apply(t, target_host, target)?;
-    for member in snap
-        .members
-        .iter()
-        .filter(|m| *m != coordinator && *m != target)
-    {
-        soap::join_group(t, ip(households, member)?, target)?;
+    let started = std::time::Instant::now();
+    for (primary, players) in &layout.rooms {
+        if primary == &target.0 || players.contains(&coordinator.0) {
+            continue;
+        }
+        control::join_checked(
+            t,
+            households,
+            &PlayerId(primary.clone()),
+            target,
+            join_deadline.saturating_sub(started.elapsed()),
+            |state| layout.require_partition(state, &arrived),
+        )?;
+        arrived.extend(players.iter().cloned());
     }
-    layout.confirm_replay(t, source_host, target_host, join_deadline)?;
+    layout.confirm_replay(
+        t,
+        source_host,
+        target_host,
+        join_deadline.saturating_sub(started.elapsed()),
+    )?;
     prepared.confirm_destination(t, target_host, target, revision)?;
     layout.confirm_replay(t, source_host, target_host, Duration::ZERO)?;
     prepared.release_origin(t, households, &snap)?;

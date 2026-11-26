@@ -151,6 +151,9 @@ enum Fault {
     Ignored,
     Refused,
     RefusedNewSource,
+    CompanionDeparted,
+    CompanionLostJoinReply,
+    CompanionMalformedJoinReply,
     RefusedDestinationChanged,
     RefusedDestinationRacing,
     PreflightChanged,
@@ -250,6 +253,12 @@ impl Transport for Replies {
             }
             if sent && host == self.target_host {
                 match (self.fault, name) {
+                    (Fault::CompanionDeparted, "Play") if !self.injected.replace(true) => {
+                        let companion = resolve_room(&self.houses, "Companion").unwrap();
+                        control::leave(&self.inner, &self.houses, &companion.room.primary).unwrap();
+                        soap::set_av_transport_uri(&self.inner, companion.player.ip, RADIO, "")?;
+                        soap::play(&self.inner, companion.player.ip)?;
+                    }
                     (Fault::PausedTarget, "GetTransportInfo") => {
                         return Ok(response.replace(">PLAYING<", ">PAUSED_PLAYBACK<"));
                     }
@@ -281,6 +290,11 @@ impl Transport for Replies {
                 && host != self.target_host
             {
                 self.companions_joined.set(true);
+                match self.fault {
+                    Fault::CompanionLostJoinReply => return Err(Self::lost(host)),
+                    Fault::CompanionMalformedJoinReply => return Ok("<invalid-response>".into()),
+                    _ => {}
+                }
                 if matches!(self.fault, Fault::RefusedDestinationChanged) {
                     soap::set_av_transport_uri(&self.inner, self.target_host, RADIO, "")?;
                     soap::play(&self.inner, self.target_host)?;
@@ -317,6 +331,9 @@ impl Transport for Replies {
             self.fault,
             Fault::Refused
                 | Fault::RefusedNewSource
+                | Fault::CompanionDeparted
+                | Fault::CompanionLostJoinReply
+                | Fault::CompanionMalformedJoinReply
                 | Fault::RefusedDestinationChanged
                 | Fault::RefusedDestinationRacing
         ) {
@@ -493,6 +510,73 @@ fn fallback_waits_for_every_room_before_stopping_the_source() {
                     .unwrap()
                     .state,
                 TransportState::Stopped
+            );
+        }
+    }
+}
+
+#[test]
+fn a_listener_can_take_a_companion_elsewhere_while_the_destination_is_loaded() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation, true);
+        let t = Replies::new(&f, Fault::CompanionDeparted);
+        let result = f.handoff(&t, Duration::ZERO);
+        assert!(t.injected.get());
+        assert!(result.is_err());
+        assert!(!t.companions_joined.get());
+        let companion = f.sim.player("Companion").unwrap();
+        let lan = f.sim.lan();
+        assert_eq!(soap::get_media_info(&lan, companion.ip).unwrap().uri, RADIO);
+        for host in [companion.ip, f.source_host] {
+            assert_eq!(
+                soap::get_transport_info(&lan, host).unwrap().state,
+                TransportState::Playing
+            );
+        }
+    }
+}
+
+#[test]
+fn a_copied_handoff_observes_a_companion_join_after_lost_or_malformed_ack() {
+    for generation in [1, 2] {
+        for fault in [
+            Fault::CompanionLostJoinReply,
+            Fault::CompanionMalformedJoinReply,
+        ] {
+            let f = Fixture::new(generation, true);
+            let t = Replies::new(&f, fault);
+            let since = f.sim.soap_log().len();
+            assert_eq!(
+                f.handoff(&t, Duration::ZERO).unwrap().method,
+                MoveMethod::Copied
+            );
+            assert!(t.companions_joined.get());
+            let log = f.sim.soap_log();
+            assert_eq!(
+                log[since..]
+                    .iter()
+                    .filter(|call| {
+                        call.room == "Companion" && call.action == "SetAVTransportURI"
+                    })
+                    .count(),
+                1
+            );
+            assert_eq!(
+                soap::get_transport_info(&f.sim.lan(), f.source_host)
+                    .unwrap()
+                    .state,
+                TransportState::Stopped
+            );
+            let topology = get_zone_group_state(&f.sim.lan(), f.target_host).unwrap();
+            assert_eq!(
+                topology
+                    .groups
+                    .iter()
+                    .find(|g| g.coordinator == f.target)
+                    .unwrap()
+                    .members
+                    .len(),
+                4
             );
         }
     }
