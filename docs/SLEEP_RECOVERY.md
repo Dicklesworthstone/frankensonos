@@ -38,6 +38,12 @@ the evidence:
 - A changed source or physical group retires the old recovery without a
   volume write. Missing or failed reads keep its evidence for another attempt.
 
+Direct-source metadata is compared by its XML meaning. Changed namespace
+prefixes, attribute order or entity spelling do not strand an otherwise owned
+fade after restart. The source URI, resource URLs, renderer-account descriptors
+and vendor values must still agree; missing or changed metadata does not grant
+restoration authority.
+
 Cancellation, extension and replacement keep unfinished cleanup separate from
 the timer definition. A replacement fade waits until its predecessor's cleanup
 settles, so it cannot capture an attenuated level as its starting volume. A
@@ -127,6 +133,12 @@ interrupted before and after acknowledgement, resumption with original levels,
 an accepted pause, manual volume overrides, changed sources/groups, and failed
 checkpoints. Core sleep dispatch tests also cover a worker waiting on a room
 step while a checkpoint reads the timer map and nonblocking timer adoption.
+
+The metadata module serializes and reloads interrupted journals on both S1 and
+S2, then checks resumed fades and volume-only cleanup after harmless native XML
+reserialization. Changed resources, accounts, vendor fields and newer source
+URIs remain barriers. These new cases have passed pinned formatting; execution
+is pending in CI after the local dependency build was killed.
 
 The endpoint module adds 18 S1/S2 scenarios for stale room bindings, actual
 address reuse, stale coordinator addresses and changes during checkpoint saves.

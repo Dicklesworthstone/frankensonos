@@ -54,6 +54,8 @@ mod deadline_tests;
 #[cfg(test)]
 mod description_tests;
 #[cfg(test)]
+mod notify_tests;
+#[cfg(test)]
 mod redirect_tests;
 
 /// The port every player serves its UPnP control and description on.
@@ -1148,6 +1150,8 @@ pub type MediaFiles = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 /// are answered 200; overload is answered 503 and reported by
 /// [`EventSink::recv_event`] after the retained prefix. Bind a specific
 /// address, not the wildcard: it is also the Host the players will send.
+/// Event identity/type headers and a decimal sequence are required; malformed
+/// headers or UTF-8 cannot become a queued initial-state notification.
 ///
 /// Started with [`MediaFiles`] ([`EventSink::start_serving`]), it also
 /// answers `GET /media/<name>`, so the players fetch announcement clips from
@@ -1321,20 +1325,42 @@ fn accept_notify(req: &Request, queue: &inbox::Sender) -> Response {
     if !matches!(&req.method, Method::Extension(m) if m.eq_ignore_ascii_case("NOTIFY")) {
         return Response::new(405, "Method Not Allowed", Vec::new());
     }
-    let header = |name: &str| {
-        req.headers
+    // Each event has exactly one subscription, type and sequence. Taking the
+    // first of conflicting headers could turn a delta into an initial event.
+    let mut headers = [None; 4];
+    for (name, value) in &req.headers {
+        if let Some(index) = ["SID", "NT", "NTS", "SEQ"]
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.trim().to_string())
-    };
-    // UPnP: a NOTIFY without a SID (or NT/NTS) is answered 412.
-    let Some(sid) = header("SID").filter(|s| !s.is_empty()) else {
+            .position(|key| name.eq_ignore_ascii_case(key))
+            && headers[index].replace(value.trim()).is_some()
+        {
+            return Response::new(400, "Bad Request", Vec::new());
+        }
+    }
+    let [sid, nt, nts, seq] = headers;
+    // UPnP Device Architecture: missing SID is 412; missing NT/NTS is 400,
+    // while a supplied type other than the event/property-change pair is 412.
+    let Some(sid) = sid.filter(|s| !s.is_empty()) else {
         return Response::new(412, "Precondition Failed", Vec::new());
     };
-    let seq = header("SEQ").and_then(|s| s.parse().ok()).unwrap_or(0);
-    match gena::parse_propertyset(&String::from_utf8_lossy(&req.body)) {
+    let (Some(nt), Some(nts)) = (nt, nts) else {
+        return Response::new(400, "Bad Request", Vec::new());
+    };
+    if nt != "upnp:event" || nts != "upnp:propchange" {
+        return Response::new(412, "Precondition Failed", Vec::new());
+    }
+    let Some(seq) = seq
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
+        return Response::new(400, "Bad Request", Vec::new());
+    };
+    let Ok(body) = std::str::from_utf8(&req.body) else {
+        return Response::new(400, "Bad Request", Vec::new());
+    };
+    match gena::parse_propertyset(body) {
         Ok(properties) => match queue.send(Notify {
-            sid,
+            sid: sid.to_string(),
             seq,
             path: req.uri.clone(),
             properties,

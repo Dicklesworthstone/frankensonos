@@ -25,6 +25,27 @@ an admitted clip can finish using its original media URL. The daemon retains
 at most 16 listeners, including retired ones; reaching that bound reports an
 unavailable route and retries after capacity becomes available.
 
+## Admitting event notifications
+
+The callback listener admits a NOTIFY only with one unambiguous subscription
+identifier, the GENA event/property-change type headers, an explicit decimal
+32-bit sequence number and a valid UTF-8 property document. Missing, malformed
+or duplicated sequence headers cannot become an invented initial `SEQ: 0`
+event. Header names remain case-insensitive, and explicit initial zero and the
+maximum-to-one sequence wrap retain their existing behavior.
+
+Malformed requests are refused before entering the bounded event inbox. A
+missing subscription identifier or invalid supplied event type returns 412;
+missing type headers, ambiguous headers, invalid sequence numbers and invalid
+UTF-8 return 400. A subsequent valid notification keeps its original sequence,
+so the subscription engine can detect a missed initial event or sequence gap
+and use its existing state-recovery path.
+
+`cargo test --locked -p fsonos-proto --lib net::notify_tests` covers these cases
+through real localhost HTTP requests, including recovery of valid intake after
+each refusal. The changes pass pinned formatting and independent source review;
+local execution remains blocked by the unchanged dependency compiler's SIGKILL.
+
 ## Discovery while some speakers are offline
 
 The LAN transport reads independent device descriptions concurrently, with at
