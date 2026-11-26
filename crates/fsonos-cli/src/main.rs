@@ -2027,18 +2027,30 @@ mod tests {
             })
         ));
         let id = "0123456789abcdef0123456789abcdef";
-        for action in ["status", "cancel"] {
-            let Command::Announcements(args) = parse(&["announcements", action, id]) else {
+        for action in ["status", "cancel", "abandon"] {
+            let mut command = vec!["announcements", action, id];
+            if action == "abandon" {
+                command.push("--confirm-abandon");
+            }
+            let Command::Announcements(args) = parse(&command) else {
                 panic!("job command")
             };
             let actual = match args.action.unwrap() {
                 announce_cmd::JobsCommand::Status { id }
                 | announce_cmd::JobsCommand::Cancel { id } => id,
+                announce_cmd::JobsCommand::Abandon {
+                    id,
+                    confirm_abandon,
+                } => {
+                    assert!(confirm_abandon);
+                    id
+                }
                 announce_cmd::JobsCommand::List => panic!("exact job action"),
             };
             assert_eq!(actual, id);
         }
         assert!(Cli::try_parse_from(["fsonos", "announcements", "cancel"]).is_err());
+        assert!(Cli::try_parse_from(["fsonos", "announcements", "abandon", id]).is_err());
     }
 
     #[test]

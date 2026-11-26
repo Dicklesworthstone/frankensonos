@@ -236,7 +236,7 @@ test('both served bundles include the common favorites model before its panel an
   const root = path.resolve(__dirname, '../crates/fsonos-api/src');
   for (const file of ['http/remote.rs', 'http/remote/dashboard.rs']) {
     const source = fs.readFileSync(path.join(root, file), 'utf8'), parts = new Map();
-    for (const match of source.matchAll(/const (\w+): &str = include_str!\("([^"]+)"\);/g)) parts.set(match[1], fs.readFileSync(path.resolve(root, path.dirname(file), match[2]), 'utf8'));
+    for (const match of source.matchAll(/const\s+(\w+):\s*&str\s*=\s*include_str!\("([^"]+)"\);/g)) parts.set(match[1], fs.readFileSync(path.resolve(root, path.dirname(file), match[2]), 'utf8'));
     const chain = [...source.matchAll(/"((?:\{\w+\}\\n)+\{\w+\})"/g)].map(match => match[1]).find(value => value.includes(file === 'http/remote.rs' ? '{EVENT_FEED_SCRIPT}' : '{EVENTS}'));
     assert.ok(chain); const keys = [...chain.matchAll(/\{(\w+)\}/g)].map(match => match[1]);
     const model = file === 'http/remote.rs' ? 'FAVORITES_SCRIPT' : 'FAVORITES';
