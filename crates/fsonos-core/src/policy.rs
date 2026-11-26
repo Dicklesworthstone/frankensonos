@@ -70,6 +70,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+pub mod configuration;
+
 /// The policy file's name inside the data directory.
 pub const FILE_NAME: &str = "policy.toml";
 
@@ -118,6 +120,7 @@ pub const CLASSES: [(&str, &[&str]); 10] = [
             "save_scene",
             "delete_scene",
             "configure_rooms",
+            "configure_policy",
             "add_schedule",
             "update_schedule",
             "remove_schedule",
@@ -1804,6 +1807,7 @@ deny = ["house-config"]
             "remove_favorite",
             "update_schedule",
             "configure_rooms",
+            "configure_policy",
         ] {
             assert_eq!(class_of(tool), Some("house-config"));
             assert!(matches!(
