@@ -1909,6 +1909,18 @@ completed restoration. Exact admitted room identities survive alias edits;
 ordinary callers see their own jobs and the configured owner can inspect all.
 See [Announcement jobs](docs/ANNOUNCEMENT_JOBS.md).
 
+Retained pending recovery now has an explicit abandonment action on CLI,
+HTTP, MCP and both browser job panels. The original caller or configured owner
+can keep current playback and retire all remaining unclaimed household records
+for that job in one durable transaction. This sends no speaker commands and
+unblocks only those retired records; an active cleanup claim refuses the whole
+request. Existing household receipts survive, and abandoned recovery remains
+failed/incomplete with an explanation of the state left unrestored. Browser
+confirmation is separate from ordinary cancellation; uncertain replies consume
+the confirmation without replay. All 98 Node announcement regressions passed;
+new Rust ownership, transaction-race, restart and storage-boundary coverage
+requires a Rust toolchain before its results can be claimed.
+
 An orderly daemon stop closes announcement admission and cancels all accepted
 delivery before draining workers. Queued clips and speech generation stop;
 active clips restore through the same ownership checks as explicit cancellation.
@@ -1916,18 +1928,25 @@ Earlier scheduler reservations and requests still resolving rooms cannot bypass
 shutdown. The bounded drain does not wait for a five-minute clip to finish.
 The daemon now journals per-household snapshots, physical identities, temporary
 group ownership and attempted effects before speaker writes. On restart, a
-supervised worker can restore an established, still-owned announcement without
-replaying its clip. Fresh source, pause, group, endpoint and boot checks preserve
+supervised worker can restore a still-owned announcement without replaying its
+clip, including a start whose SetAVTransportURI or Play applied before the
+established marker was saved. Complete pre-dispatch evidence admits the existing
+fresh ownership proof; it never authorizes cleanup by itself. The original
+persisted record remains the exact claim/current/complete authority. Fresh source, pause, group, endpoint and boot checks preserve
 newer listener intent; restored levels use the initiating caller's current caps.
 A durable claim precedes cleanup, so a second crash never replays uncertain
-restoration. Unfinished preparation and previously claimed cleanup retain
+restoration. Incomplete preparation and previously claimed cleanup retain
 explicit incomplete receipts instead of inventing recovery authority. Recovery
 expires after 24 hours, keeps unavailable households pending, and retains bounded
 receipts under the original job and caller identities. Interrupted sleep fades
 are retired by their exact old coordinator and deadline; a newer timer survives.
-Direct clients without the daemon journal retain process-local recovery. The
-new Rust integration tests still require an executable workspace build; storage
-checks alone do not establish Sonos or complete daemon acceptance.
+Direct clients without the daemon journal retain process-local recovery.
+Startup crash coverage includes both applied source selection and applied Play
+on S1/S2, original groups/queues/levels/mutes, live survivor handback, newer
+listener intent, unreadable devices, expiry and one-time cleanup claims.
+The new Rust integration tests still require an executable workspace build;
+no Rust toolchain is installed in the current environment, and storage checks
+alone do not establish Sonos or complete daemon acceptance.
 
 Announcement cleanup rechecks each room's current volume cap immediately before
 restoring an owned level. Quiet hours and policy edits during the clip can lower

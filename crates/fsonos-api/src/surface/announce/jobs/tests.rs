@@ -137,24 +137,31 @@ fn journal_import_preserves_live_authority_then_exposes_failed_worker_recovery()
         report("failed", false),
         progress.clone(),
         true,
+        true,
         20,
     )
     .unwrap();
     assert_eq!(job.view(), before);
     assert!(jobs.live(&job.id));
     job.finish(&Err(Failure::new(ErrorCode::Internal, "worker panic")), 21);
-    jobs.import(&context, report("failed", false), progress, true, 22)
+    jobs.import(&context, report("failed", false), progress.clone(), true, true, 22)
         .unwrap();
     let recovering = job.view();
     assert_eq!(recovering.phase, AnnouncementJobPhase::Restoring);
     assert!(!recovering.can_cancel);
     assert!(recovering.recovery);
+    assert!(recovering.can_abandon_recovery);
     assert!(!jobs.live(&job.id));
     assert!(!job.request_cancel());
-    jobs.import(&context, report("failed", false), Vec::new(), false, 23)
+    jobs.import(&context, report("failed", false), Vec::new(), false, false, 23)
         .unwrap();
     assert_eq!(job.view().phase, AnnouncementJobPhase::Failed);
     assert_eq!(job.view().finished_at, Some(23));
+    assert!(!job.view().can_abandon_recovery);
+    let completed = job.view();
+    jobs.import(&context, report("failed", false), progress, true, true, 22)
+        .unwrap();
+    assert_eq!(job.view(), completed, "a pre-abandonment observation cannot reopen recovery");
 }
 
 #[test]

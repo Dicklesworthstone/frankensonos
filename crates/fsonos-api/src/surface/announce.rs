@@ -38,7 +38,8 @@ mod jobs;
 pub use jobs::{AnnouncementJobDto, AnnouncementJobPhase, AnnouncementProgressDto};
 mod recovery;
 pub use recovery::{
-    AnnouncementContext, AnnouncementJournal, AnnouncementRecoveryPass, PendingAnnouncement,
+    AbandonAnnouncementRecoveryRequest, AnnouncementContext, AnnouncementJournal,
+    AnnouncementRecoveryPass, PendingAnnouncement,
 };
 
 /// The tool name announcements are authorized and logged under.

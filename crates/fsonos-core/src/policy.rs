@@ -130,7 +130,12 @@ pub const CLASSES: [(&str, &[&str]); 10] = [
     ),
     (
         "announce",
-        &["announce", "announce_start", "cancel_announcement"],
+        &[
+            "announce",
+            "announce_start",
+            "cancel_announcement",
+            "abandon_announcement_recovery",
+        ],
     ),
     (
         "dj",

@@ -4,7 +4,8 @@
 const AnnouncementRemote = (() => {
   const routes = { announceAudio: ['POST', '/announce'], announcementStart: ['POST', '/announcements'],
     announcementJobs: ['GET', '/announcements'], announcementJob: ['GET', '/announcements/{id}'],
-    announcementCancel: ['POST', '/announcements/{id}/cancel'] };
+    announcementCancel: ['POST', '/announcements/{id}/cancel'],
+    announcementAbandon: ['POST', '/announcements/{id}/abandon'] };
   const chimes = Object.freeze(['bell', 'beep', 'rise']);
   const text = (value) => typeof value === 'string' && value.trim() !== '';
   const problem = (error) => error && typeof error.message === 'string'
@@ -148,11 +149,13 @@ const AnnouncementRemote = (() => {
         || (value.finished_at !== null && !Number.isSafeInteger(value.finished_at))
         || typeof value.cancel_requested !== 'boolean' || typeof value.can_cancel !== 'boolean'
         || (value.recovery !== undefined && typeof value.recovery !== 'boolean')
+        || (value.can_abandon_recovery !== undefined && typeof value.can_abandon_recovery !== 'boolean')
         || !Array.isArray(value.progress) || value.progress.length > 512) invalid();
     const terminal = jobFinished(value);
     if ((recovery ? value.can_cancel || value.cancel_requested || (!terminal && value.phase !== 'restoring')
         : value.can_cancel !== (!terminal && !value.cancel_requested))
-        || terminal !== (value.finished_at !== null)) invalid();
+        || terminal !== (value.finished_at !== null)
+        || (value.can_abandon_recovery === true && (!recovery || terminal))) invalid();
     const progress = value.progress.map(row => {
       if (!row || (row.household !== null && !text(row.household)) || !text(row.lead)
           || !Array.isArray(row.rooms) || !row.rooms.length || row.rooms.length > 512 || !row.rooms.every(text)
@@ -178,7 +181,8 @@ const AnnouncementRemote = (() => {
         || result.households.some(row => !['finished', 'cancelled'].includes(row.outcome) || row.error || row.not_restored.length))) invalid();
     return Object.freeze({ id: value.id, done: value.done, kind: value.kind, rooms: Object.freeze([...value.rooms]),
       phase: value.phase, created_at: value.created_at, finished_at: value.finished_at,
-      cancel_requested: value.cancel_requested, can_cancel: value.can_cancel, recovery, progress: Object.freeze(progress), result,
+      cancel_requested: value.cancel_requested, can_cancel: value.can_cancel, recovery,
+      can_abandon_recovery: value.can_abandon_recovery === true, progress: Object.freeze(progress), result,
       error: error === null ? null : Object.freeze({ code: error.code, detail: error.detail, hint: error.hint || '' }) });
   }
 
@@ -203,7 +207,8 @@ const AnnouncementRemote = (() => {
   function jobModel({ call, changed = () => {}, completed = () => {}, setTimer = setTimeout,
     clearTimer = clearTimeout, maxReads = 240, intervalMs = 2000 }) {
     let disposed = false, version = 0, timer = null, reading = null, remaining = maxReads;
-    const state = { visible: false, loading: false, stale: true, jobs: [], cancelling: new Set(), uncertain: new Set(), message: '' };
+    const state = { visible: false, loading: false, stale: true, jobs: [], cancelling: new Set(),
+      abandoning: new Set(), pendingAbandon: null, uncertain: new Set(), message: '' };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     function stopRead() {
       ++version;
@@ -216,12 +221,14 @@ const AnnouncementRemote = (() => {
       }
     }
     function schedule() {
-      if (disposed || !state.visible || state.loading || timer !== null || !state.jobs.some(job => !jobFinished(job))) return;
+      if (disposed || !state.visible || state.loading || state.pendingAbandon || timer !== null
+          || !state.jobs.some(job => !jobFinished(job))) return;
       if (remaining <= 0) { state.message = 'Automatic job updates paused. Refresh jobs for the latest status.'; publish(); return; }
       timer = setTimer(() => { timer = null; void refresh(false); }, intervalMs);
     }
     async function refresh(reset = true) {
-      if (disposed || !state.visible || state.loading || state.cancelling.size) return false;
+      if (disposed || !state.visible || state.loading || state.cancelling.size || state.abandoning.size) return false;
+      state.pendingAbandon = null;
       if (reset) remaining = maxReads;
       if (remaining <= 0) { schedule(); return false; }
       stopRead(); --remaining;
@@ -256,7 +263,7 @@ const AnnouncementRemote = (() => {
     function accept(value, reviewed) {
       const job = reviewed ? admittedJob(value, reviewed) : jobOf(value);
       if (disposed) return job;
-      stopRead(); remaining = maxReads;
+      stopRead(); state.pendingAbandon = null; remaining = maxReads;
       const previous = state.jobs.find(old => old.id === job.id);
       if (previous && jobIdentity(previous) !== jobIdentity(job)) throw new Error('The admitted announcement reused a different job identity. Refresh jobs.');
       const before = state.jobs;
@@ -288,14 +295,53 @@ const AnnouncementRemote = (() => {
         state.cancelling.delete(job.id); publish(); schedule();
       }
     }
+    const canAbandon = job => !disposed && state.visible && !state.loading && !state.stale
+      && job?.can_abandon_recovery && !state.abandoning.has(job.id)
+      && !state.uncertain.has(job.id) && state.jobs.includes(job);
+    function reviewAbandon(job) {
+      if (!canAbandon(job)) return null;
+      stopRead(); state.pendingAbandon = job; state.message = ''; publish(); return job;
+    }
+    function cancelAbandonReview() {
+      state.pendingAbandon = null; publish(); schedule();
+    }
+    async function abandon(reviewed = state.pendingAbandon) {
+      if (!reviewed || reviewed !== state.pendingAbandon || !canAbandon(reviewed)) return false;
+      const job = reviewed;
+      stopRead(); state.pendingAbandon = null; state.abandoning.add(job.id);
+      state.message = 'Stopping pending recovery without changing current playback…'; publish();
+      try {
+        const receipt = jobOf(await call('announcementAbandon', {
+          params: { id: job.id }, body: { confirm_abandon: true },
+        }));
+        if (jobIdentity(receipt) !== jobIdentity(job) || !receipt.recovery || !jobFinished(receipt)) {
+          throw new Error('The abandonment receipt did not finish this exact recovery. Refresh jobs.');
+        }
+        if (!disposed) {
+          const before = state.jobs;
+          state.jobs = state.jobs.map(old => old.id === job.id ? receipt : old);
+          state.uncertain.delete(job.id); state.message = receipt.done;
+          notifyFinished(before, state.jobs);
+        }
+        return true;
+      } catch (error) {
+        if (!disposed) {
+          state.uncertain.add(job.id);
+          state.message = `${problem(error)} The abandonment request was not repeated. Refresh jobs to check its outcome.`;
+        }
+        return false;
+      } finally {
+        state.abandoning.delete(job.id); publish(); schedule();
+      }
+    }
     function setVisible(visible) {
       if (disposed || state.visible === visible) return Promise.resolve(false);
       state.visible = visible;
-      if (!visible) { stopRead(); state.stale = true; publish(); return Promise.resolve(false); }
+      if (!visible) { stopRead(); state.pendingAbandon = null; state.stale = true; publish(); return Promise.resolve(false); }
       return refresh();
     }
-    return { state, refresh, accept, canCancel, cancel, setVisible,
-      dispose() { stopRead(); disposed = true; state.visible = false; state.stale = true; } };
+    return { state, refresh, accept, canCancel, cancel, canAbandon, reviewAbandon, cancelAbandonReview, abandon, setVisible,
+      dispose() { stopRead(); state.pendingAbandon = null; disposed = true; state.visible = false; state.stale = true; } };
   }
 
   function jobPanel({ call, el, completed, document: doc = document }) {
@@ -308,7 +354,7 @@ const AnnouncementRemote = (() => {
     const control = jobModel({ call, completed, changed: render });
     function render(state) {
       const focus = doc.activeElement?.getAttribute?.('data-announcement-job');
-      refresh.disabled = state.loading || !!state.cancelling.size || !state.visible;
+      refresh.disabled = state.loading || !!state.cancelling.size || !!state.abandoning.size || !state.visible;
       message.textContent = state.loading ? 'Reading announcement jobs…' : state.message;
       list.replaceChildren();
       for (const job of state.jobs) {
@@ -332,7 +378,24 @@ const AnnouncementRemote = (() => {
             'data-announcement-job': job.id, onclick: () => { void control.cancel(job); } });
           cancel.disabled = !control.canCancel(job); card.append(cancel);
         }
-        if (state.uncertain.has(job.id)) card.append(el('p', { text: 'Cancellation outcome is unknown. Refresh jobs before another attempt.' }));
+        if (job.recovery && !jobFinished(job)) {
+          if (state.pendingAbandon === job) {
+            const confirm = el('button', { type: 'button', text: 'Keep current playback and abandon recovery',
+              'data-announcement-confirm-abandon': job.id, onclick: () => { void control.abandon(job); } });
+            confirm.disabled = !control.canAbandon(job);
+            card.append(el('div', { role: 'group', 'aria-label': 'Confirm abandonment of announcement recovery' },
+              el('p', { text: 'Keep playback as it is and stop the remaining recovery for this job? Previous music, grouping, position and levels will not be restored. A clip still playing will not be stopped. You can control the rooms and start new announcements afterward. Cleanup already in progress cannot be abandoned.' }),
+              confirm, el('button', { type: 'button', text: 'Keep waiting for recovery', onclick: () => control.cancelAbandonReview() })));
+          } else {
+            const abandon = el('button', { type: 'button',
+              text: state.abandoning.has(job.id) ? 'Stopping recovery…' : 'Abandon recovery…',
+              'data-announcement-abandon': job.id, onclick: () => control.reviewAbandon(job) });
+            abandon.disabled = !control.canAbandon(job); card.append(abandon);
+          }
+        }
+        if (state.uncertain.has(job.id)) card.append(el('p', { text: job.recovery
+          ? 'Recovery abandonment outcome is unknown. Refresh jobs before another attempt.'
+          : 'Cancellation outcome is unknown. Refresh jobs before another attempt.' }));
         list.append(card);
       }
       if (!state.jobs.length) list.append(el('p', { text: state.stale ? 'Read jobs to see active announcements and recent results.' : 'No retained announcement jobs.' }));

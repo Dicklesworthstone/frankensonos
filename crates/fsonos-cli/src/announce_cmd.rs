@@ -6,7 +6,8 @@
 //! `fsonos serve` serves clips from its event listener instead.
 
 use fsonos_api::surface::announce::{
-    AnnounceDto, AnnounceRequest, AnnouncementJobDto, Announcements,
+    AbandonAnnouncementRecoveryRequest, AnnounceDto, AnnounceRequest, AnnouncementJobDto,
+    Announcements,
 };
 use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::announce::clip::{MediaStore, read_wav};
@@ -68,7 +69,7 @@ pub struct Where {
     pub background: bool,
 }
 
-/// Inspect or cancel process-local announcement jobs held by the daemon.
+/// Inspect announcement jobs, cancel delivery or abandon retained recovery.
 #[derive(Debug, Clone, clap::Args)]
 pub struct JobsArgs {
     #[command(subcommand)]
@@ -83,6 +84,13 @@ pub enum JobsCommand {
     Status { id: String },
     /// Request cancellation; cleanup may still be running in the reply.
     Cancel { id: String },
+    /// Keep current playback and stop pending recovery, without speaker commands.
+    Abandon {
+        id: String,
+        /// Confirm that previous playback, grouping and levels will not be restored.
+        #[arg(long, required = true)]
+        confirm_abandon: bool,
+    },
 }
 
 impl SayArgs {
@@ -191,7 +199,11 @@ pub fn jobs(global: &GlobalArgs, args: &JobsArgs) -> anyhow::Result<()> {
                 }
             })
         }
-        Some(JobsCommand::Status { id } | JobsCommand::Cancel { id }) => {
+        Some(
+            JobsCommand::Status { id }
+            | JobsCommand::Cancel { id }
+            | JobsCommand::Abandon { id, .. },
+        ) => {
             if id.len() != 32
                 || !id
                     .bytes()
@@ -203,12 +215,18 @@ pub fn jobs(global: &GlobalArgs, args: &JobsArgs) -> anyhow::Result<()> {
                 .into());
             }
             let path = format!("/announcements/{id}");
-            let job: AnnouncementJobDto =
-                if matches!(args.action.as_ref(), Some(JobsCommand::Cancel { .. })) {
+            let job: AnnouncementJobDto = match args.action.as_ref() {
+                Some(JobsCommand::Cancel { .. }) => {
                     daemon.post(&format!("{path}/cancel"), &serde_json::json!({}))?
-                } else {
-                    daemon.get(&path)?
-                };
+                }
+                Some(JobsCommand::Abandon { confirm_abandon, .. }) => daemon.post(
+                    &format!("{path}/abandon"),
+                    &AbandonAnnouncementRecoveryRequest {
+                        confirm_abandon: *confirm_abandon,
+                    },
+                )?,
+                _ => daemon.get(&path)?,
+            };
             crate::emit(global.json, &job, AnnouncementJobDto::text)
         }
     }
@@ -240,6 +258,32 @@ pub fn text(announced: &AnnounceDto) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abandoning_recovery_requires_a_deliberate_confirmation_flag() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            jobs: JobsArgs,
+        }
+
+        let id = "0123456789abcdef0123456789abcdef";
+        assert!(Cli::try_parse_from(["announcements", "abandon", id]).is_err());
+        let parsed = Cli::try_parse_from([
+            "announcements",
+            "abandon",
+            id,
+            "--confirm-abandon",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.jobs.action,
+            Some(JobsCommand::Abandon { confirm_abandon: true, .. })
+        ));
+        assert!(Cli::try_parse_from(["announcements", "cancel", id]).is_ok());
+    }
 
     #[test]
     fn flags_become_the_request() {

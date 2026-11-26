@@ -1,8 +1,10 @@
-# Announcement jobs and cancellation
+# Announcement jobs, cancellation and recovery
 
 Start speech, a generated chime, or an uploaded WAV and receive a job ID while
 the daemon handles playback and restoration. Inspect that job from the CLI,
 HTTP, MCP, phone remote, or dashboard, and cancel a queued or active clip.
+If an interrupted recovery is still pending, you can explicitly abandon it
+and keep the rooms' current playback.
 The existing synchronous announcement commands and `POST /announce` still
 wait for the final restoration report.
 
@@ -19,6 +21,7 @@ fsonos announcements
 fsonos announcements list
 fsonos announcements status <job-id>
 fsonos announcements cancel <job-id>
+fsonos announcements abandon <job-id> --confirm-abandon
 fsonos --json announcements status <job-id>
 ```
 
@@ -52,25 +55,27 @@ returning an admitted job; audio generation and playback continue afterwards.
 | List visible active jobs and recent receipts | `GET /announcements` | `list_announcements` |
 | Inspect one job | `GET /announcements/{id}` | `get_announcement` with `id` |
 | Request cancellation | `POST /announcements/{id}/cancel` with `{}` | `cancel_announcement` with `id` |
+| Abandon pending recovery without speaker commands | `POST /announcements/{id}/abandon` with `{"confirm_abandon":true}` | `abandon_announcement_recovery` with `id` and `confirm_abandon: true` |
 | Wait for the final report | `POST /announce` | `announce` |
 
-Start, inspection, and cancellation return HTTP 200 with the current job
+Start, inspection, cancellation, and successful recovery abandonment return HTTP 200 with the current job
 observation. Admission means the daemon accepted responsibility for the job;
 it does not mean the clip has played. A cancellation reply is also an
 observation: continue reading the job until it has a terminal phase.
 
 The job includes `id`, `kind`, resolved `rooms`, `created_at`, `finished_at`,
-`phase`, `cancel_requested`, `can_cancel`, per-household `progress`, and a
+`phase`, `cancel_requested`, `can_cancel`, `recovery`, `can_abandon_recovery`,
+per-household `progress`, and a
 human-readable `done` summary. `result` holds the final announcement report;
 `error` describes a failure outside that report. Status and history contain
 neither the spoken text nor the uploaded audio.
 
-Read and cancel operations use the caller's current permissions. A caller sees
-its own jobs; the local CLI identity and the configured house owner can inspect
-and cancel all jobs. The `announce` policy class covers both synchronous and
+Read, cancel and recovery-abandonment operations use the caller's current
+permissions. A caller sees its own jobs; the local CLI identity and the
+configured house owner can inspect and act on all jobs. The `announce` policy class covers both synchronous and
 asynchronous writes. Policies that allow exact tool names can grant
 `announce_start`, `list_announcements`, `get_announcement`, and
-`cancel_announcement` separately. An unknown, expired, or invisible job returns
+`cancel_announcement` and `abandon_announcement_recovery` separately. An unknown, expired, or invisible job returns
 `NO_MATCH`.
 
 The initiating operation is checked again after synthesis, when each household
@@ -161,6 +166,42 @@ It stops automatically after a bounded observation period or a failed read;
 exact job. A lost or mismatched cancellation reply prompts a status refresh
 without automatically repeating the command.
 
+## Explicitly abandoning pending recovery
+
+An unavailable or replaced player can keep an interrupted household pending.
+Choose **Abandon recovery…** on that exact job, then confirm **Keep current
+playback and abandon recovery**. The CLI and HTTP/MCP forms require the explicit
+confirmation shown above. The `can_abandon_recovery` field is advisory: the
+server checks ownership, permission and durable claim state again.
+
+Abandonment leaves current playback, grouping, queue position, volume and mute
+as found. It sends no speaker commands, including Stop. A clip still playing
+can therefore continue until it ends or you control the room. The job receives
+a terminal failed/incomplete receipt explaining that the previous state was
+not restored. Its retired records no longer block new announcements in those
+households; any other pending job still applies its own household restriction.
+
+The daemon retires the entire exact unclaimed pending set for the original job
+in one durable transaction. Previously completed household results remain
+available. If any pending household was claimed by the recovery worker, its
+proof changed, or another pending record appeared, the action refuses without
+partially retiring the job. Cleanup already in progress must finish and publish
+its receipt. Ordinary **Cancel** still requests restoration of an active clip.
+
+Retirement is published before success is returned. A second request after
+completion reads the retained receipt and cannot reopen recovery. If a response
+is lost, refresh the job before deciding what to do; the browser consumes the
+confirmation and never automatically repeats it. A capacity refusal leaves the
+pending evidence unchanged. If journal publication or the response fails,
+read the job again before assuming the retirement did or did not take effect.
+
+The 98 Node announcement regressions passed, covering the explicit confirmation,
+request identity, stale views, lost responses, and the shared phone/dashboard
+job panel. Rust API, CLI/MCP and durable-journal cases cover caller/owner policy,
+no speaker writes, complete-set retirement, claim races, restart persistence and
+bounded receipt retention; these remain unexecuted because the current
+environment has no Rust toolchain.
+
 ## Capacity and lifetime
 
 Background, synchronous, and scheduled delivery share the same admission
@@ -199,9 +240,14 @@ bounded to 64 household records and 8 MiB; unfinished records are never evicted
 to admit another announcement. An unreadable or invalid journal is preserved
 and refuses new announcement writes.
 
-On restart, a supervised worker inspects each interrupted household. An
-established announcement can be restored only while its exact clip, temporary
-group, endpoints and boot identities remain owned. Newer playback, a paused
+On restart, a supervised worker inspects each interrupted household. A clip
+whose source selection or Play reached the speaker before the worker died can
+be recovered even if the post-start ownership marker was never saved. This
+requires the complete durable pre-dispatch record: original snapshots and
+levels, attempted volume/mute changes, planned temporary grouping, prior source,
+exact clip URL and known boot identities. The worker then proves the exact
+clip, temporary group, endpoints and boot identities against fresh observations
+before claiming cleanup. An already established clip uses the same proof. Newer playback, a paused
 clip, regrouping, changed devices and listener level changes are preserved.
 Current quiet-hour and caller caps still limit restored volume. Missing or
 unreadable speakers remain pending, and automatic recovery expires after
@@ -211,12 +257,14 @@ available.
 
 Cleanup takes a durable claim before its first speaker write. If that cleanup
 is interrupted again, the next process reports its uncertain result and does
-not replay it. Interrupted preparation that never established clip ownership
-also remains an explicit incomplete result for inspection. Recovery receipts
+not replay it. Earlier or incomplete preparation still remains an explicit incomplete result
+for inspection. A fully prepared start is never enough on its own: the live
+ownership proof must also succeed, and recovery never resends the clip. Recovery receipts
 appear through the existing CLI, HTTP, MCP and browser job views. A crash leaves
 delivery failed even when its owned music and groups were restored; it cannot
 be reported as a successfully delivered clip. Recovery jobs have no original
-playback worker to cancel.
+playback worker to cancel; use explicit abandonment only for unclaimed pending
+recovery when you intend to keep the current state.
 
 A fade that the abandoned announcement could have interrupted is retired only
 when its original coordinator and deadline still match. Recovery creates no new

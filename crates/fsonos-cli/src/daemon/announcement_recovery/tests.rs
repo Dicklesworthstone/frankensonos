@@ -552,3 +552,159 @@ fn journal_and_lock_are_private_files() {
         );
     }
 }
+
+#[test]
+fn explicit_abandonment_is_durable_and_old_checkpoints_cannot_restore_or_reopen() {
+    let dir = directory();
+    let journal = Journal::new(dir.path()).unwrap();
+    let ctx = context(71);
+    let record = recovery(71);
+    let checkpoint = journal.checkpoint(&ctx);
+    checkpoint.save(&record).unwrap();
+    let pending = journal.pending().unwrap();
+    let abandoned = report("recovery abandoned; current playback left as found");
+    assert!(journal.abandon(&pending, std::slice::from_ref(&abandoned)).unwrap());
+    assert!(!checkpoint.current(&record));
+    assert!(!checkpoint.claim(&record).unwrap());
+    assert!(checkpoint.save(&record).is_err());
+    assert!(checkpoint.complete(&record, &report("late cleanup")).is_err());
+    let reopened = Journal::new(dir.path()).unwrap();
+    assert!(reopened.pending().unwrap().is_empty());
+    assert_eq!(reopened.completed().unwrap()[0].report, Some(abandoned));
+    assert!(!reopened.checkpoint(&ctx).claim(&record).unwrap());
+    assert!(!reopened.abandon(&pending, &[report("duplicate request")]).unwrap());
+}
+
+#[test]
+fn abandonment_compares_the_complete_unclaimed_job_set_before_any_retirement() {
+    let dir = directory();
+    let journal = Journal::new(dir.path()).unwrap();
+    let ctx = context(72);
+    let a = recovery(72);
+    let b = recovery(73);
+    let first = journal.checkpoint(&ctx);
+    let second = journal.checkpoint(&ctx);
+    first.save(&a).unwrap();
+    let older_set = journal.pending().unwrap();
+    second.save(&b).unwrap();
+    let both = journal.pending().unwrap();
+    let before = fs::read(dir.path().join(FILE)).unwrap();
+    assert!(!journal.abandon(&older_set, &[report("stale partial set")]).unwrap());
+    assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), before);
+    assert!(second.claim(&b).unwrap());
+    let claimed = fs::read(dir.path().join(FILE)).unwrap();
+    assert!(!journal.abandon(&both, &[report("a"), report("b")]).unwrap());
+    assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), claimed);
+    assert_eq!(journal.pending().unwrap().len(), 2);
+    let completed = report("original cleanup receipt");
+    second.complete(&b, &completed).unwrap();
+    let remaining = journal.pending().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert!(journal.abandon(&remaining, &[report("a abandoned")]).unwrap());
+    let receipts = journal.completed().unwrap();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts.iter().find(|entry| entry.recovery == b).unwrap().report, Some(completed));
+}
+
+#[test]
+fn abandonment_rejects_changed_revisions_callers_and_duplicate_proofs_without_writes() {
+    let dir = directory();
+    let journal = Journal::new(dir.path()).unwrap();
+    let ctx = context(74);
+    let original = recovery(74);
+    let checkpoint = journal.checkpoint(&ctx);
+    checkpoint.save(&original).unwrap();
+    let old = journal.pending().unwrap();
+    let revised = change_record(&original, |saved| {
+        saved["clip_url"] = "http://192.0.2.250:3400/media/revised.wav".into();
+    });
+    checkpoint.save(&revised).unwrap();
+    let mut wrong_owner = journal.pending().unwrap();
+    wrong_owner[0].context.client = "different-original-caller".into();
+    let before = fs::read(dir.path().join(FILE)).unwrap();
+    assert!(!journal.abandon(&old, &[report("stale revision")]).unwrap());
+    assert!(!journal.abandon(&wrong_owner, &[report("wrong owner")]).unwrap());
+    let mut wrong_proof = old.clone();
+    wrong_proof[0].recovery = recovery(75);
+    assert!(!journal.abandon(&wrong_proof, &[report("wrong proof")]).unwrap());
+    assert!(journal.abandon(&[old[0].clone(), old[0].clone()], &[report("a"), report("b")]).is_err());
+    assert!(journal.abandon(&old, &[]).is_err());
+    assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), before);
+    assert!(checkpoint.current(&revised));
+    assert!(!checkpoint.current(&original));
+}
+
+#[test]
+fn claim_and_abandon_race_for_one_durable_authority() {
+    for n in 80..96 {
+        let dir = directory();
+        let journal = Journal::new(dir.path()).unwrap();
+        let record = recovery(n);
+        let checkpoint = journal.checkpoint(&context(n));
+        checkpoint.save(&record).unwrap();
+        let pending = journal.pending().unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let (claimed, abandoned) = std::thread::scope(|scope| {
+            let start = Arc::clone(&barrier);
+            let worker = Arc::clone(&checkpoint);
+            let expected = record.clone();
+            let claim = scope.spawn(move || {
+                start.wait();
+                worker.claim(&expected).unwrap()
+            });
+            let start = Arc::clone(&barrier);
+            let abandoning = journal.clone();
+            let abandon = scope.spawn(move || {
+                start.wait();
+                abandoning.abandon(&pending, &[report("explicit abandonment")]).unwrap()
+            });
+            (claim.join().unwrap(), abandon.join().unwrap())
+        });
+        assert_ne!(claimed, abandoned, "exactly one transition can win");
+        let reopened = Journal::new(dir.path()).unwrap();
+        if claimed {
+            assert_eq!(reopened.pending().unwrap().len(), 1);
+            assert!(reopened.pending().unwrap()[0].claimed);
+            assert!(reopened.completed().unwrap().is_empty());
+            assert!(checkpoint.current(&record));
+        } else {
+            assert!(reopened.pending().unwrap().is_empty());
+            assert_eq!(reopened.completed().unwrap().len(), 1);
+            assert!(!checkpoint.current(&record));
+            assert!(!checkpoint.claim(&record).unwrap());
+        }
+    }
+}
+
+#[test]
+fn abandonment_never_evicts_its_own_receipts_to_report_a_partial_success() {
+    let dir = directory();
+    let journal = Journal::new(dir.path()).unwrap();
+    let ctx = context(100);
+    let completed = recovery(100);
+    let pending = recovery(101);
+    let checkpoint = journal.checkpoint(&ctx);
+    checkpoint.save(&completed).unwrap();
+    checkpoint.save(&pending).unwrap();
+    assert!(checkpoint.claim(&completed).unwrap());
+    checkpoint.complete(&completed, &report("old")).unwrap();
+
+    // Leave a valid ledger just below its byte bound. Completing the other
+    // household would fit only by discarding this same job's older receipt.
+    let path = dir.path().join(FILE);
+    let bytes = fs::read(&path).unwrap();
+    let mut ledger: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let padding = "x".repeat(super::MAX_BYTES - bytes.len() + "old".len() - 16);
+    let record = ledger["records"].as_array_mut().unwrap().iter_mut()
+        .find(|record| record["recovery"]["id"] == completed.id()).unwrap();
+    record["state"]["report"] = serde_json::to_value(report(&padding)).unwrap();
+    let before = serde_json::to_vec(&ledger).unwrap();
+    assert!(before.len() < super::MAX_BYTES);
+    fs::write(&path, &before).unwrap();
+    let expected = journal.pending().unwrap();
+    assert!(journal.abandon(&expected, &[report("explicitly abandoned recovery")]).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(journal.pending().unwrap().len(), 1);
+    assert_eq!(journal.completed().unwrap().len(), 1);
+    assert!(checkpoint.current(&pending));
+}

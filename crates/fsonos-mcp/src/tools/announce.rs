@@ -2,7 +2,9 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest, AnnouncementJobDto};
+use fsonos_api::surface::announce::{
+    AbandonAnnouncementRecoveryRequest, AnnounceDto, AnnounceRequest, AnnouncementJobDto,
+};
 
 use super::{Backend, respond, with_backend_off_thread};
 
@@ -71,6 +73,28 @@ impl Backend {
         }
         respond(|| {
             let job = self.surface.cancel_announcement(&self.client, id)?;
+            Ok((job.done.clone(), job))
+        })
+    }
+
+    pub fn abandon_announcement_recovery(
+        &self,
+        id: &str,
+        confirm_abandon: bool,
+    ) -> McpResult<FinalCallToolResult> {
+        let request = AbandonAnnouncementRecoveryRequest { confirm_abandon };
+        let body = serde_json::to_value(&request).ok();
+        let path = format!("/announcements/{}/abandon", super::segment(id));
+        if let Some(answer) = self.on_daemon(
+            "POST",
+            &path,
+            body.as_ref(),
+            |job: &AnnouncementJobDto| job.done.clone(),
+        ) {
+            return answer;
+        }
+        respond(|| {
+            let job = self.surface.abandon_announcement_recovery(&self.client, id, &request)?;
             Ok((job.done.clone(), job))
         })
     }
@@ -166,6 +190,20 @@ async fn cancel_announcement(
     id: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |backend| backend.cancel_announcement(&id)).await
+}
+
+#[tool(
+    description = "Explicitly abandon your interrupted announcement recovery, or any recovery as the configured owner. Give the exact job id and confirm_abandon=true after deciding to keep current playback and manage the rooms yourself. Sends no speaker commands: it does not stop the clip or restore the previous source, grouping, position or levels. Durably retires all still-unclaimed household records for this job together, retains incomplete receipts and permits new announcements. Claimed/in-progress cleanup refuses without abandoning any household; ordinary cancel_announcement keeps its restoration behavior. Repeating a completed request returns the retained final receipt. If a response is lost, read get_announcement before another intent."
+)]
+async fn abandon_announcement_recovery(
+    ctx: &McpContext,
+    id: String,
+    confirm_abandon: bool,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |backend| {
+        backend.abandon_announcement_recovery(&id, confirm_abandon)
+    })
+    .await
 }
 
 #[cfg(test)]

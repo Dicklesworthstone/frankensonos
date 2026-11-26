@@ -150,6 +150,7 @@ fn job_tools_register_with_read_hints_and_required_cancel_identity() {
     .tool(ListAnnouncements)
     .tool(GetAnnouncement)
     .tool(CancelAnnouncement)
+    .tool(AbandonAnnouncementRecovery)
     .try_build()
     .unwrap();
     for tool in server.tools() {
@@ -161,7 +162,7 @@ fn job_tools_register_with_read_hints_and_required_cancel_identity() {
         assert_eq!(value["annotations"]["readOnlyHint"] == true, read);
         if matches!(
             tool.name.as_str(),
-            "get_announcement" | "cancel_announcement"
+            "get_announcement" | "cancel_announcement" | "abandon_announcement_recovery"
         ) {
             assert!(
                 value["inputSchema"]["required"]
@@ -170,10 +171,49 @@ fn job_tools_register_with_read_hints_and_required_cancel_identity() {
                     .contains(&json!("id"))
             );
         }
+        if tool.name == "abandon_announcement_recovery" {
+            assert!(value["inputSchema"]["required"].as_array().unwrap()
+                .contains(&json!("confirm_abandon")));
+        }
         if tool.name == "announce_start" {
             for key in ["text", "chime", "wav_base64", "voice", "rooms", "volume"] {
                 assert!(value["inputSchema"]["properties"].get(key).is_some());
             }
         }
     }
+}
+
+#[test]
+fn abandon_forwards_the_exact_confirmed_job_without_local_fallback_or_replay() {
+    for confirm_abandon in [false, true] {
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Err(Failure::new(ErrorCode::OutcomeUncertain, "reply lost")),
+        });
+        assert!(backend(&reply).abandon_announcement_recovery(ID, confirm_abandon).is_err());
+        assert_eq!(*reply.calls.lock().unwrap(), [json!([
+            "POST", format!("/announcements/{ID}/abandon"),
+            {"confirm_abandon": confirm_abandon}
+        ])]);
+    }
+    let mut receipt = job();
+    receipt["phase"] = json!("failed");
+    receipt["finished_at"] = json!(20);
+    receipt["can_cancel"] = json!(false);
+    receipt["recovery"] = json!(true);
+    receipt["can_abandon_recovery"] = json!(false);
+    receipt["done"] = json!("recovery abandoned; playback left as found");
+    receipt["result"] = json!({
+        "done": "recovery abandoned; playback left as found",
+        "clean": false,
+        "households": [{
+            "lead": "Den", "rooms": ["Den"], "levels": [], "outcome": "failed",
+            "error": "recovery abandoned by explicit request",
+            "not_restored": ["previous playback and levels were not restored"]
+        }]
+    });
+    let reply = Arc::new(Reply { calls: Mutex::default(), answer: Ok(receipt.clone()) });
+    assert_eq!(backend(&reply).abandon_announcement_recovery(ID, true)
+        .unwrap().structured_content, Some(receipt));
+    assert_eq!(reply.calls.lock().unwrap().len(), 1);
 }

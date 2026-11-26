@@ -294,6 +294,7 @@ fn configured_server(
             .tool(tools::ListAnnouncements)
             .tool(tools::GetAnnouncement)
             .tool(tools::CancelAnnouncement)
+            .tool(tools::AbandonAnnouncementRecovery)
             .tool(tools::dj_feedback::DjFeedback)
             .tool(tools::dj_prefs::DjPreferences)
             .tool(tools::dj_prefs::DjPrefer)

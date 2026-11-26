@@ -25,12 +25,14 @@ function job(phase = 'queued', patch = {}) {
     ] } : null, error: null, ...patch };
 }
 function fixture({ jobs = [job()], maxReads = 240, completed } = {}) {
-  let read = () => jobs, cancel = () => job('restoring', { cancel_requested: true, can_cancel: false }), serial = 0;
+  let read = () => jobs, cancel = () => job('restoring', { cancel_requested: true, can_cancel: false }),
+    abandon = () => abandonedJob(), serial = 0;
   const calls = [], timers = new Map();
   const c = A.jobModel({ maxReads, completed, setTimer(fn) { timers.set(++serial, fn); return serial; }, clearTimer(id) { timers.delete(id); },
-    call: async (name, args) => { calls.push([name, args]); return copy(await (name === 'announcementJobs' ? read(args) : cancel(args))); } });
-  return { c, calls, timers, read(fn) { read = fn; }, cancel(fn) { cancel = fn; },
-    writes: () => calls.filter(([name]) => name === 'announcementCancel'),
+    call: async (name, args) => { calls.push([name, args]); return copy(await (name === 'announcementJobs' ? read(args)
+      : name === 'announcementAbandon' ? abandon(args) : cancel(args))); } });
+  return { c, calls, timers, read(fn) { read = fn; }, cancel(fn) { cancel = fn; }, abandon(fn) { abandon = fn; },
+    writes: () => calls.filter(([name]) => ['announcementCancel', 'announcementAbandon'].includes(name)),
     async tick() { const entry = timers.entries().next().value; assert.ok(entry, 'one visible observation is scheduled'); timers.delete(entry[0]); entry[1](); await settle(); },
   };
 }
@@ -260,7 +262,7 @@ function documentFixture() {
 function find(node, predicate) { if (predicate(node)) return node; for (const child of node.children || []) { const found = find(child, predicate); if (found) return found; } return null; }
 const content = node => [node.textContent || '', ...(node.children || []).map(content)].join(' ');
 
-async function dashboardFixture({ panel = false, response = job() } = {}) {
+async function dashboardFixture({ panel = false, response = job(), listed = [job('playing')] } = {}) {
   const calls = [], inventory = groups(), doc = documentFixture(); let announcer;
   const call = async (url, body) => {
     calls.push({ url, body });
@@ -269,8 +271,9 @@ async function dashboardFixture({ panel = false, response = job() } = {}) {
       const target = decodeURIComponent(url.slice(7, -6)), zone = inventory.find(zone => `${zone.coordinator_room}@${zone.household}` === target);
       return { zone: copy(zone), transport_state: zone.transport_state, volume: 25, mute: false, track: null };
     }
-    if (url === '/announcements') return body ? copy(response) : [copy(job('playing'))];
+    if (url === '/announcements') return body ? copy(response) : copy(listed);
     if (url === `/announcements/${ID}/cancel`) return job('failed', { cancel_requested: true });
+    if (url === `/announcements/${ID}/abandon`) { listed = [abandonedJob()]; return copy(listed[0]); }
     throw new Error(`Unexpected request ${url}`);
   };
   const ctl = C.model({ call, now: () => 1000, changed: () => announcer?.observe() });
@@ -339,4 +342,104 @@ test('the real HTTP adapter sends one admission and one exact cancellation with 
     { method: 'POST', url: '/announcements', body: { rooms: ['Main@S2'], volume: 35, text: 'Dinner' } },
     { method: 'POST', url: `/announcements/${ID}/cancel`, body: {} },
   ]);
+});
+
+function recoverableJob(patch = {}) {
+  return job('restoring', { recovery: true, can_cancel: false, can_abandon_recovery: true,
+    result: job('failed').result, ...patch });
+}
+function abandonedJob(patch = {}) {
+  const result = { done: 'Recovery abandoned; current playback left as found', clean: false,
+    households: [{ lead: 'Main', rooms: ['Main'], levels: [], outcome: 'failed',
+      error: 'Recovery abandoned by explicit request',
+      not_restored: ['Previous playback, grouping, position and levels were not restored'] }] };
+  return job('failed', { recovery: true, can_cancel: false, can_abandon_recovery: false, result, ...patch });
+}
+
+test('only pending recovery can advertise explicit abandonment', () => {
+  assert.equal(A.jobOf(recoverableJob()).can_abandon_recovery, true);
+  assert.equal(A.jobOf(recoverableJob({ can_abandon_recovery: false })).can_abandon_recovery, false);
+  assert.equal(A.jobOf(job()).can_abandon_recovery, false, 'older daemon receipts grant no new permission');
+  for (const value of [job('playing', { can_abandon_recovery: true }),
+    abandonedJob({ can_abandon_recovery: true }), recoverableJob({ can_abandon_recovery: 'yes' })]) {
+    assert.throws(() => A.jobOf(value));
+  }
+});
+
+test('abandonment requires a separate review and sends exactly one confirmed POST', async () => {
+  const f = fixture({ jobs: [recoverableJob()] }), reply = deferred();
+  await f.c.setVisible(true); const selected = f.c.state.jobs[0];
+  assert.equal(await f.c.abandon(selected), false, 'an unreviewed action cannot dispatch');
+  const review = f.c.reviewAbandon(selected);
+  assert.equal(review, selected); assert.equal(f.writes().length, 0);
+  assert.equal(f.timers.size, 0, 'confirmation pauses obsolete polling');
+  f.abandon(() => reply.promise);
+  const first = f.c.abandon(review);
+  assert.equal(await f.c.abandon(review), false);
+  assert.deepEqual(f.writes(), [['announcementAbandon', { params: { id: ID }, body: { confirm_abandon: true } }]]);
+  reply.resolve(abandonedJob()); assert.equal(await first, true);
+  assert.equal(f.c.state.jobs[0].phase, 'failed'); assert.equal(f.c.state.jobs[0].result.clean, false);
+  assert.match(f.c.state.jobs[0].result.households[0].not_restored[0], /were not restored/);
+  assert.equal(f.c.canAbandon(f.c.state.jobs[0]), false); assert.equal(f.timers.size, 0);
+  assert.equal(await f.c.cancel(selected), false, 'ordinary cancellation is never substituted'); f.c.dispose();
+});
+
+test('refresh, hiding and backing out retire an abandonment confirmation without writes', async () => {
+  for (const action of ['refresh', 'hide', 'back']) {
+    const f = fixture({ jobs: [recoverableJob()] }); await f.c.setVisible(true);
+    const reviewed = f.c.reviewAbandon(f.c.state.jobs[0]);
+    if (action === 'refresh') await f.c.refresh();
+    else if (action === 'hide') await f.c.setVisible(false);
+    else f.c.cancelAbandonReview();
+    assert.equal(f.c.state.pendingAbandon, null);
+    assert.equal(await f.c.abandon(reviewed), false); assert.equal(f.writes().length, 0); f.c.dispose();
+  }
+});
+
+test('lost, refused or mismatched abandonment replies never repeat and require a new observation', async () => {
+  for (const reply of [new Error('Cleanup already claimed'), new Error('Response lost'),
+    abandonedJob({ id: OTHER }), abandonedJob({ rooms: ['Main@S1'] }), recoverableJob()]) {
+    const f = fixture({ jobs: [recoverableJob()] }); await f.c.setVisible(true);
+    f.abandon(() => { if (reply instanceof Error) throw reply; return reply; });
+    const reviewed = f.c.reviewAbandon(f.c.state.jobs[0]);
+    assert.equal(await f.c.abandon(reviewed), false); assert.ok(f.c.state.uncertain.has(ID));
+    assert.equal(f.c.reviewAbandon(f.c.state.jobs[0]), null);
+    assert.equal(await f.c.abandon(reviewed), false); assert.equal(f.writes().length, 1);
+    f.read(() => [abandonedJob()]); await f.tick();
+    assert.equal(f.c.state.uncertain.size, 0); assert.equal(f.c.state.jobs[0].phase, 'failed');
+    assert.equal(f.writes().length, 1); f.c.dispose();
+  }
+});
+
+test('claimed recovery cannot be abandoned and a late terminal reply survives hiding', async () => {
+  const claimed = fixture({ jobs: [recoverableJob({ can_abandon_recovery: false })] });
+  await claimed.c.setVisible(true);
+  assert.equal(claimed.c.reviewAbandon(claimed.c.state.jobs[0]), null);
+  assert.equal(claimed.writes().length, 0); claimed.c.dispose();
+  const f = fixture({ jobs: [recoverableJob()] }), reply = deferred(); await f.c.setVisible(true);
+  const review = f.c.reviewAbandon(f.c.state.jobs[0]); f.abandon(() => reply.promise);
+  const request = f.c.abandon(review); await f.c.setVisible(false);
+  assert.equal(f.writes()[0][1].signal, undefined);
+  reply.resolve(abandonedJob()); assert.equal(await request, true);
+  assert.equal(f.c.state.jobs[0].phase, 'failed'); assert.equal(f.timers.size, 0); f.c.dispose();
+});
+
+test('shared dashboard job panel explains abandonment and requires two distinct activations', async t => {
+  const f = await dashboardFixture({ panel: true, listed: [recoverableJob()] });
+  t.after(() => f.announcer.dispose());
+  const dialog = f.doc.getElementById('announcements-dialog');
+  assert.equal(find(dialog, node => node.attrs?.['data-announcement-job'] === ID), null,
+    'normal cancellation remains unavailable for recovery');
+  const review = find(dialog, node => node.attrs?.['data-announcement-abandon'] === ID);
+  assert.ok(review); assert.equal(review.disabled, false); review.fire('click'); await settle();
+  assert.equal(f.calls.filter(call => call.body !== undefined).length, 0);
+  assert.match(content(dialog), /Previous music, grouping, position and levels will not be restored/);
+  assert.match(content(dialog), /clip still playing will not be stopped/);
+  const confirm = find(dialog, node => node.attrs?.['data-announcement-confirm-abandon'] === ID);
+  assert.ok(confirm); confirm.fire('click'); await settle();
+  assert.deepEqual(f.calls.filter(call => call.body !== undefined), [
+    { url: `/announcements/${ID}/abandon`, body: { confirm_abandon: true } },
+  ]);
+  assert.match(content(dialog), /Needs attention/); assert.match(content(dialog), /were not restored/);
+  assert.equal(find(dialog, node => node.attrs?.['data-announcement-abandon'] === ID), null);
 });

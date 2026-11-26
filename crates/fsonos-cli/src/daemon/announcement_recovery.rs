@@ -144,6 +144,14 @@ impl Journal {
         &self,
         change: impl FnOnce(&mut Ledger) -> Result<(T, bool), CoreError>,
     ) -> Result<T, CoreError> {
+        self.transaction_retaining(None, change)
+    }
+
+    fn transaction_retaining<T>(
+        &self,
+        retained_job: Option<&str>,
+        change: impl FnOnce(&mut Ledger) -> Result<(T, bool), CoreError>,
+    ) -> Result<T, CoreError> {
         let _writing = self
             .state
             .writing
@@ -175,7 +183,10 @@ impl Journal {
                     .records
                     .iter()
                     .enumerate()
-                    .filter(|(_, record)| matches!(record.state, State::Complete { .. }))
+                    .filter(|(_, record)| {
+                        matches!(record.state, State::Complete { .. })
+                            && retained_job != Some(record.context.id.as_str())
+                    })
                     .min_by_key(|(_, record)| record.recovery.created_at())
                     .map(|(index, _)| index)
                     .ok_or_else(|| failure("pending recovery records exceed the journal limit"))?;
@@ -284,6 +295,65 @@ impl AnnouncementJournal for Journal {
                     .collect(),
                 false,
             ))
+        })
+    }
+
+    fn abandon(
+        &self,
+        pending: &[PendingAnnouncement],
+        reports: &[HouseholdAnnouncement],
+    ) -> Result<bool, CoreError> {
+        let Some(first) = pending.first() else {
+            return Ok(false);
+        };
+        let mut ids = HashSet::new();
+        if pending.len() != reports.len()
+            || pending.iter().any(|entry| {
+                !entry.valid()
+                    || entry.claimed
+                    || entry.report.is_some()
+                    || entry.context.id != first.context.id
+                    || entry.context.client != first.context.client
+                    || !ids.insert(entry.recovery.id())
+            })
+        {
+            return Err(failure("invalid recovery abandonment request"));
+        }
+        // Retain this job's prior and newly abandoned household receipts in
+        // the same publication. If they cannot fit, leave the pending proof
+        // unchanged instead of reporting a success that was already evicted.
+        self.transaction_retaining(Some(&first.context.id), |ledger| {
+            let unfinished: Vec<_> = ledger
+                .records
+                .iter()
+                .filter(|record| {
+                    record.context.id == first.context.id
+                        && !matches!(record.state, State::Complete { .. })
+                })
+                .collect();
+            if unfinished.len() != pending.len()
+                || unfinished.iter().any(|record| {
+                    !matches!(record.state, State::Pending)
+                        || !pending.iter().any(|entry| {
+                            record.matches(&entry.context, &entry.recovery)
+                        })
+                })
+            {
+                return Ok((false, false));
+            }
+            // This lock is also the claim lock. Validate the complete pending
+            // set first; a claimed household never permits partial retirement.
+            for (entry, report) in pending.iter().zip(reports) {
+                let record = ledger
+                    .records
+                    .iter_mut()
+                    .find(|record| record.matches(&entry.context, &entry.recovery))
+                    .expect("the exact unclaimed set was checked under this transaction");
+                record.state = State::Complete {
+                    report: report.clone(),
+                };
+            }
+            Ok((true, true))
         })
     }
 

@@ -7,7 +7,9 @@ use serde::Deserialize;
 
 use super::{CONTROL, Ctx, Op, answer, body, body_or_default, percent_decode};
 use crate::Failure;
-use crate::surface::announce::{AnnounceDto, AnnounceRequest, AnnouncementJobDto, TOOL};
+use crate::surface::announce::{
+    AbandonAnnouncementRecoveryRequest, AnnounceDto, AnnounceRequest, AnnouncementJobDto, TOOL,
+};
 
 #[derive(Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -94,6 +96,28 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         .response_schema::<AnnouncementJobDto>(
             200,
             "Cancellation requested, or an already terminal receipt; never replays Stop",
+        ),
+        cx.route(
+            &Op::post(
+                "/announcements/{id}/abandon",
+                "abandon_announcement_recovery",
+                CONTROL,
+                "Keep current playback and stop pending recovery; explicit confirmation required",
+            ),
+            |surface, client, req| {
+                answer(
+                    body::<AbandonAnnouncementRecoveryRequest>(req).and_then(|request| {
+                        id(req).and_then(|id| {
+                            surface.abandon_announcement_recovery(client, &id, &request)
+                        })
+                    }),
+                )
+            },
+        )
+        .request_schema::<AbandonAnnouncementRecoveryRequest>(true)
+        .response_schema::<AnnouncementJobDto>(
+            200,
+            "Durably retired recovery or existing final receipt; no speaker commands sent",
         ),
         cx.route(
             &Op::post(

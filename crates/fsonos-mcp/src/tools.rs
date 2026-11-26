@@ -47,7 +47,8 @@ pub use reviewed_sources::{ControlSource, ResolveRooms};
 
 mod announce;
 pub use announce::{
-    Announce, AnnounceStart, CancelAnnouncement, GetAnnouncement, ListAnnouncements,
+    AbandonAnnouncementRecovery, Announce, AnnounceStart, CancelAnnouncement, GetAnnouncement,
+    ListAnnouncements,
 };
 
 mod eq;

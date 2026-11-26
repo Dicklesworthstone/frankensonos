@@ -95,6 +95,9 @@ pub struct AnnouncementJobDto {
     /// Its result may be partial while another household remains unavailable.
     #[serde(default)]
     pub recovery: bool,
+    /// Advisory: the durable journal rechecks every claim before abandonment.
+    #[serde(default)]
+    pub can_abandon_recovery: bool,
     pub progress: Vec<AnnouncementProgressDto>,
     pub result: Option<AnnounceDto>,
     pub error: Option<ApiError>,
@@ -114,6 +117,7 @@ struct State {
     error: Option<ApiError>,
     /// Imported recovery has no original playback worker to cancel.
     recovery: Option<Vec<AnnouncementProgressDto>>,
+    can_abandon_recovery: bool,
 }
 
 pub(super) struct Job {
@@ -169,7 +173,7 @@ impl Job {
         }
     }
 
-    fn view(&self) -> AnnouncementJobDto {
+    pub(super) fn view(&self) -> AnnouncementJobDto {
         let state = self.state();
         let progress: Vec<_> = state.recovery.clone().unwrap_or_else(|| {
             self.control
@@ -228,6 +232,7 @@ impl Job {
             cancel_requested,
             can_cancel: state.recovery.is_none() && !phase.terminal() && !cancel_requested,
             recovery: state.recovery.is_some(),
+            can_abandon_recovery: state.can_abandon_recovery && !phase.terminal(),
             progress,
             result: state.result.clone(),
             error: state.error.clone(),
@@ -287,6 +292,7 @@ impl Jobs {
                 result: None,
                 error: None,
                 recovery: None,
+                can_abandon_recovery: false,
             }),
         });
         let mut entries = self.entries();
@@ -327,6 +333,7 @@ impl Jobs {
         result: AnnounceDto,
         progress: Vec<AnnouncementProgressDto>,
         pending: bool,
+        can_abandon_recovery: bool,
         at: i64,
     ) -> Result<(), Failure> {
         let phase = if pending {
@@ -358,7 +365,13 @@ impl Jobs {
             if state.recovery.is_none() && (!state.phase.terminal() || !pending) {
                 return Ok(());
             }
+            // A worker may import an observation read before an abandonment.
+            // Durable terminal recovery must never regain pending authority.
+            if state.recovery.is_some() && state.phase.terminal() && pending {
+                return Ok(());
+            }
             state.phase = phase;
+            state.can_abandon_recovery = can_abandon_recovery;
             state.finished_at = if pending {
                 None
             } else {
@@ -394,6 +407,7 @@ impl Jobs {
                 result: Some(result),
                 error: None,
                 recovery: Some(progress),
+                can_abandon_recovery,
             }),
         }));
         Ok(())
@@ -465,7 +479,7 @@ impl Surface {
         Ok(admitted)
     }
 
-    fn announcement_owner(&self, client: &Client) -> bool {
+    pub(super) fn announcement_owner(&self, client: &Client) -> bool {
         match client {
             Client::Cli => true,
             Client::Tailnet(login) => self
@@ -486,7 +500,7 @@ impl Surface {
             })
     }
 
-    fn announcement_job(&self, client: &Client, id: &str) -> Result<Arc<Job>, Failure> {
+    pub(super) fn announcement_job(&self, client: &Client, id: &str) -> Result<Arc<Job>, Failure> {
         validate_id(id)?;
         self.visible_announcement_jobs(client).into_iter().find(|job| job.id == id).ok_or_else(|| {
             Failure::new(ErrorCode::NoMatch, "no retained announcement with that id is visible to this caller")

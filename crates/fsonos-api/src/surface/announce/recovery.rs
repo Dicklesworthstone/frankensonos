@@ -2,10 +2,12 @@
 //! the surface boundary. Speaker ownership remains the core announcer's job.
 
 use super::{
-    AnnounceDto, AnnounceReport, AnnouncementProgressDto, Announcements, HouseholdAnnouncement,
-    Surface,
+    AnnounceDto, AnnounceReport, AnnouncementJobDto, AnnouncementProgressDto, Announcements,
+    HouseholdAnnouncement, Surface,
 };
 use crate::{ErrorCode, Failure};
+use fastapi::{JsonSchema, fastapi_openapi};
+use fsonos_core::policy::Client;
 use fsonos_core::announce::{AnnouncementCheckpoint, AnnouncementRecovery};
 use fsonos_core::sleep::{SleepResume, SleepTimer};
 use fsonos_core::{CoreError, HouseholdState, Room};
@@ -100,6 +102,18 @@ pub trait AnnouncementJournal: Send + Sync {
         Ok(records)
     }
 
+    /// Retire every unfinished household record for one original job in one
+    /// durable transaction, without speaker I/O. All entries must be exact,
+    /// unclaimed pending revisions and account for the entire unfinished set.
+    /// A concurrent claim, changed revision or additional pending record must
+    /// return false without retiring any record. After success, `claim`,
+    /// `current` and `save` must never revive these records.
+    fn abandon(
+        &self,
+        pending: &[PendingAnnouncement],
+        reports: &[HouseholdAnnouncement],
+    ) -> Result<bool, CoreError>;
+
     /// Atomically retire an exact orphaned claim without repeating cleanup.
     /// A live checkpoint owner must prevent retirement and return false.
     fn retire_claimed(
@@ -107,6 +121,14 @@ pub trait AnnouncementJournal: Send + Sync {
         pending: &PendingAnnouncement,
         report: &HouseholdAnnouncement,
     ) -> Result<bool, CoreError>;
+}
+
+/// Explicitly leave current playback as found and retire future restoration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AbandonAnnouncementRecoveryRequest {
+    /// Must be true: no previous source, grouping, position or level is restored.
+    pub confirm_abandon: bool,
 }
 
 /// A bounded read/recovery pass. Pending records require another observation;
@@ -396,6 +418,81 @@ impl Surface {
         })
     }
 
+    /// Abandon only retained, unclaimed recovery; ordinary cancellation keeps
+    /// its ownership-checked restoration semantics. The journal transaction
+    /// races the worker's durable claim, so only one can acquire authority.
+    pub fn abandon_announcement_recovery(
+        &self,
+        client: &Client,
+        id: &str,
+        request: &AbandonAnnouncementRecoveryRequest,
+    ) -> Result<AnnouncementJobDto, Failure> {
+        self.guard(client)
+            .authorize("abandon_announcement_recovery", false)?;
+        super::jobs::validate_id(id)?;
+        if !request.confirm_abandon {
+            return Err(Failure::invalid(
+                "confirm_abandon must be true to keep current playback and stop recovery",
+            )
+            .with_hint("Abandoning does not stop the clip or restore previous playback, groups, position or levels. Inspect the rooms and confirm only if you want to manage them yourself."));
+        }
+        self.prepare_announcement_recovery()?;
+        let job = self.announcement_job(client, id)?.view();
+        if !job.recovery {
+            return Err(Failure::invalid(
+                "only an interrupted announcement recovery can be abandoned",
+            )
+            .with_hint("Use cancel_announcement for a queued or active clip; cancellation continues safe restoration."));
+        }
+        let with = self.announcements.as_ref().expect("a retained job has announcements");
+        let journal = with.journal.as_ref().ok_or_else(|| {
+            Failure::new(ErrorCode::NotImplemented, "no durable announcement journal is configured")
+        })?;
+        let _admission = with.admitting()?;
+        let all = all_records(&**journal)?;
+        if !all.iter().any(|entry| {
+            entry.context.id == id
+                && (entry.context.client == client.key() || self.announcement_owner(client))
+        }) {
+            return Err(Failure::new(
+                ErrorCode::NoMatch,
+                "the durable announcement recovery receipt is no longer retained",
+            ));
+        }
+        let pending: Vec<_> = all
+            .iter()
+            .filter(|entry| entry.context.id == id && entry.report.is_none())
+            .cloned()
+            .collect();
+        // A repeat after durable completion is a read, even if the first
+        // response was lost. Never re-open a completed household's recovery.
+        if pending.is_empty() {
+            import(self, with, &all)?;
+            return self.announcement_job(client, id).map(|job| job.view());
+        }
+        if pending.iter().any(|entry| entry.claimed) || with.jobs.live(id) {
+            import(self, with, &all)?;
+            return Err(abandon_refused());
+        }
+        let reports: Vec<_> = pending.iter().map(abandoned).collect();
+        if !journal.abandon(&pending, &reports).map_err(failure)? {
+            import(self, with, &all_records(&**journal)?)?;
+            return Err(abandon_refused());
+        }
+        // Publish only after the durable transaction. A lost reply or a crash
+        // here leaves terminal receipts which the next process imports.
+        import(self, with, &all_records(&**journal)?)?;
+        let result = self.announcement_job(client, id)?.view();
+        self.record(
+            client,
+            format!("abandon_announcement_recovery: {id}"),
+            "allow".into(),
+            result.done.clone(),
+            None,
+        );
+        Ok(result)
+    }
+
     /// A new clip cannot overtake a retained recovery in the same household.
     /// Other households remain available, and active jobs in this process are
     /// serialized by the announcer's ordinary household turns.
@@ -420,7 +517,7 @@ impl Surface {
                 ErrorCode::NotReady,
                 "an interrupted announcement in this household is still being inspected",
             )
-            .with_hint("Read the announcement jobs for the restoration outcome before requesting another clip. Playback controls remain available."));
+            .with_hint("Read the announcement jobs for the restoration outcome. To keep current playback and stop pending recovery, explicitly abandon it; claimed cleanup must finish first. Playback controls remain available."));
         }
         Ok(())
     }
@@ -484,6 +581,27 @@ fn sleep_notes(context: &AnnouncementContext, report: &mut HouseholdAnnouncement
         report.restore_failed.push((coordinator.clone(),
             "the interrupted sleep fade was not resumed after restart; no new sleep timer was created".into()));
     }
+}
+
+fn abandon_refused() -> Failure {
+    Failure::new(
+        ErrorCode::NotReady,
+        "announcement recovery changed or cleanup was already claimed; no recovery was abandoned by this request",
+    )
+    .with_hint("Read this announcement again. Claimed cleanup cannot be abandoned or cancelled; wait for its restoration receipt before another action.")
+}
+
+fn abandoned(entry: &PendingAnnouncement) -> HouseholdAnnouncement {
+    let mut report = waiting(
+        entry,
+        "recovery abandoned by explicit request; no speaker commands were sent",
+    );
+    report.restore_failed.push((
+        entry.recovery.lead().clone(),
+        "previous playback, grouping, position and levels were not restored; current playback was left as found and future recovery was stopped".into(),
+    ));
+    sleep_notes(&entry.context, &mut report);
+    report
 }
 
 fn waiting(entry: &PendingAnnouncement, why: &str) -> HouseholdAnnouncement {
@@ -594,6 +712,7 @@ fn import(
             dto,
             progress,
             pending,
+            pending && entries.iter().all(|entry| entry.report.is_some() || !entry.claimed),
             surface.clock.now().timestamp(),
         )?;
     }
