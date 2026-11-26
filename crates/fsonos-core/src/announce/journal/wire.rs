@@ -71,7 +71,10 @@ struct SavedHousehold {
 }
 
 pub(super) mod household {
-    use super::{Deserialize, Deserializer, HouseholdState, SavedHousehold, Serialize, Serializer};
+    use super::{
+        Deserialize, Deserializer, HouseholdState, Room, SavedHousehold, SavedRoom, Serialize,
+        Serializer,
+    };
 
     pub(in crate::announce) fn serialize<S: Serializer>(
         household: &HouseholdState,
